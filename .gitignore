@@ -32,3 +32,5 @@ Thumbs.db
 *.log
 tmp/
 data/
+.dev/
+.vite/

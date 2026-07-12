@@ -170,6 +170,42 @@ table, verify the RLS gate still passes after migration.
 **Do not claim "done" without having run the thing.** State what was
 verified and what was not in the commit message or PR description.
 
+## Dev Control Script
+
+`scripts/dev.sh` is the one-command dev environment controller. It
+manages the full local stack — Docker Compose services (Postgres, NATS,
+SigNoz, OTel), the Go control plane, and the Vite frontend — so a new
+contributor can get everything running with a single command:
+
+```
+scripts/dev.sh start     # dev stack → migrations → control plane → frontend
+scripts/dev.sh stop      # stop everything
+scripts/dev.sh status    # show status of all components + endpoint checks
+scripts/dev.sh restart   # stop then start
+scripts/dev.sh logs      # tail control-plane + frontend logs
+```
+
+Or via Make: `make dev-start`, `make dev-stop`, `make dev-status`,
+`make dev-restart`, `make dev-logs`.
+
+PID files and logs live in `.dev/` (gitignored).
+
+### Every phase MUST update this script
+
+When a phase adds a new runtime component — a reconciler, an adapter
+process, the recovery engine, the policy engine, a webhook dispatcher,
+etc. — **update `scripts/dev.sh`** so that `dev.sh start` brings it up
+and `dev.sh stop` tears it down. A phase is not complete if the dev
+script does not manage its components. Specifically:
+
+- Add the component to `start_*` (build, launch, wait-for-ready).
+- Add the component to `do_stop` (PID file cleanup, graceful shutdown).
+- Add the component to `do_status` (running check + endpoint probe).
+- Add the component to `do_logs` if it has a log file.
+
+This keeps the dev experience reproducible: one script, one command,
+the whole system up or down.
+
 ## Design Doc Index
 
 | Doc | Subsystem |
