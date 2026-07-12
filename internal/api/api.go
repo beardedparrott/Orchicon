@@ -1,18 +1,33 @@
 // Package api wires Connect handlers for the public API surface
 // (docs/07_API_Specification.md). The generated connect-go service
-// clients are mounted here onto a single mux. v0.1 scaffolds the
-// ProjectService; later phases add the remaining services.
+// handlers are mounted here onto a single mux, wrapped by the
+// tenant-resolution middleware. v0.1 mounts ProjectService; later
+// phases add the remaining services.
 package api
 
 import (
+	"log/slog"
 	"net/http"
 
+	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/middleware"
+	"github.com/beardedparrott/orchicon/internal/project"
 	"github.com/beardedparrott/orchicon/internal/version"
 )
 
-// Mount returns an http.Handler serving the Orchicon API on the given
-// mux. Generated connect-go handlers are registered as they are added.
-func Mount(mux *http.ServeMux) http.Handler {
+// Dependencies bundles the resources the API layer needs. Constructed
+// once by the server and passed to Mount.
+type Dependencies struct {
+	Pool *db.Pool
+	Log  *slog.Logger
+}
+
+// Mount returns an http.Handler serving the Orchicon API. Generated
+// connect-go handlers are registered as they are added. The whole
+// surface is wrapped by the tenant-resolution middleware so every
+// tenant-scoped RPC carries tenant context into the data-access layer.
+func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
@@ -21,5 +36,12 @@ func Mount(mux *http.ServeMux) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"version":"` + version.Current().Tag + `"}`))
 	})
-	return mux
+
+	// ProjectService (docs/07 §3.1). The Vite dev-server proxy
+	// (frontend/vite.config.ts) forwards /orchicon.api.v1 paths here,
+	// so no CORS headers are needed in dev (docs/10 §9).
+	projSvc := project.New(deps.Pool, deps.Log)
+	mux.Handle(apiv1connect.NewProjectServiceHandler(projSvc))
+
+	return middleware.ResolveTenant(mux)
 }
