@@ -56,6 +56,7 @@ func (s *Service) CreateProject(ctx context.Context, req *connect.Request[apiv1.
 	}
 
 	row := db.ProjectRow{
+		ID:       db.NewID(),
 		TenantID: tenantID,
 		Name:     name,
 		Slug:     slug,
@@ -69,12 +70,7 @@ func (s *Service) CreateProject(ctx context.Context, req *connect.Request[apiv1.
 	}
 	defer ttx.Rollback(ctx)
 
-	if err := db.CreateProject(ctx, ttx.Tx, row); err != nil {
-		return nil, mapDBError(err)
-	}
-	// Re-read the inserted row to get the generated id, timestamps, and
-	// version in one shot (the insert returns none of these).
-	created, err := db.GetProject(ctx, ttx.Tx, row.ID)
+	created, err := db.CreateProject(ctx, ttx.Tx, row)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
@@ -102,7 +98,7 @@ func (s *Service) GetProject(ctx context.Context, req *connect.Request[apiv1.Get
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
-	p, err := db.GetProject(ctx, ttx.Tx, req.Msg.Id)
+	p, err := db.GetProject(ctx, ttx.Tx, tenantID, req.Msg.Id)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
@@ -179,11 +175,11 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 	defer ttx.Rollback(ctx)
 
 	// Read current version for optimistic concurrency.
-	current, err := db.GetProject(ctx, ttx.Tx, msg.Id)
+	current, err := db.GetProject(ctx, ttx.Tx, tenantID, msg.Id)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	updated, err := db.UpdateProject(ctx, ttx.Tx, msg.Id, current.Version, fields)
+	updated, err := db.UpdateProject(ctx, ttx.Tx, tenantID, msg.Id, current.Version, fields)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
@@ -211,11 +207,11 @@ func (s *Service) ArchiveProject(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
-	current, err := db.GetProject(ctx, ttx.Tx, req.Msg.Id)
+	current, err := db.GetProject(ctx, ttx.Tx, tenantID, req.Msg.Id)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	archived, err := db.ArchiveProject(ctx, ttx.Tx, req.Msg.Id, current.Version)
+	archived, err := db.ArchiveProject(ctx, ttx.Tx, tenantID, req.Msg.Id, current.Version)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
@@ -245,16 +241,17 @@ func (s *Service) PauseProject(ctx context.Context, req *connect.Request[apiv1.P
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
-	current, err := db.GetProject(ctx, ttx.Tx, req.Msg.Id)
+	current, err := db.GetProject(ctx, ttx.Tx, tenantID, req.Msg.Id)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
 	// Direct status CAS to paused; version bump is handled by the query.
+	// tenant_id is in the WHERE clause as the primary isolation layer.
 	const q = `UPDATE projects SET status = 'paused', updated_at = now(), version = version + 1
-		WHERE id = $1 AND version = $2
+		WHERE tenant_id = $1 AND id = $2 AND version = $3
 		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at`
 	var p db.ProjectRow
-	err = ttx.Tx.QueryRow(ctx, q, req.Msg.Id, current.Version).Scan(
+	err = ttx.Tx.QueryRow(ctx, q, tenantID, req.Msg.Id, current.Version).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
 	)

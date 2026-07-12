@@ -120,3 +120,10 @@ func nullableStr(s string) any {
 // entropy is a process-local ULID entropy source. crypto/rand provides
 // the 124-bit uniqueness required for ULID's monotonicity guarantees.
 var entropy = ulid.Monotonic(rand.Reader, 0)
+
+// NewID generates a ULID suitable for use as a primary key. IDs are
+// generated server-side, never accepted from the client on create
+// (AGENTS.md security standards).
+func NewID() string {
+	return ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
+}

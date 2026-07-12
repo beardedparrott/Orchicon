@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/oklog/ulid/v2"
 )
 
 // ProjectRow is the data-access shape of a projects table row. It maps
@@ -34,30 +33,38 @@ var ErrNotFound = errors.New("db: not found")
 // CreateProject inserts a new project row within the given tenant
 // transaction. The caller controls the transaction so the outbox row can
 // be enqueued in the same atomic unit (docs/09 §6). Optimistic
-// concurrency is not needed on insert; version starts at 1.
-func CreateProject(ctx context.Context, tx pgx.Tx, p ProjectRow) error {
-	if p.ID == "" {
-		p.ID = ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
-	}
+// concurrency is not needed on insert; version starts at 1. The
+// generated id, timestamps, and version are returned via RETURNING.
+//
+// The tenant_id is written from p.TenantID (the primary isolation layer)
+// and RLS is the backstop (docs/09 §8.5).
+func CreateProject(ctx context.Context, tx pgx.Tx, p ProjectRow) (ProjectRow, error) {
 	const q = `INSERT INTO projects
 		(id, tenant_id, name, slug, status, goals)
-		VALUES ($1, $2, $3, $4, $5, $6)`
-	if _, err := tx.Exec(ctx, q,
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at`
+	row := p
+	err := tx.QueryRow(ctx, q,
 		p.ID, p.TenantID, p.Name, p.Slug, p.Status, p.Goals,
-	); err != nil {
-		return fmt.Errorf("db: create project: %w", err)
+	).Scan(
+		&row.ID, &row.TenantID, &row.Name, &row.Slug, &row.Status, &row.Goals,
+		&row.Version, &row.CreatedAt, &row.UpdatedAt,
+	)
+	if err != nil {
+		return ProjectRow{}, fmt.Errorf("db: create project: %w", err)
 	}
-	return nil
+	return row, nil
 }
 
-// GetProject fetches a single project by id within the tenant scope
-// established by the TenantTx (RLS backstop enforces it).
-func GetProject(ctx context.Context, tx pgx.Tx, id string) (ProjectRow, error) {
+// GetProject fetches a single project by id within the tenant scope.
+// The tenant_id is injected into the WHERE clause as the primary
+// isolation layer; RLS is the backstop (docs/09 §8.5).
+func GetProject(ctx context.Context, tx pgx.Tx, tenantID, id string) (ProjectRow, error) {
 	const q = `SELECT id, tenant_id, name, slug, status, goals, version,
 		created_at, updated_at
-		FROM projects WHERE id = $1`
+		FROM projects WHERE id = $1 AND tenant_id = $2`
 	var p ProjectRow
-	err := tx.QueryRow(ctx, q, id).Scan(
+	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
 	)
@@ -73,15 +80,16 @@ func GetProject(ctx context.Context, tx pgx.Tx, id string) (ProjectRow, error) {
 // ListProjectsFilter scopes a list query to a tenant. Excluded statuses
 // (e.g. deleted) are filtered out by default; the caller may override.
 type ListProjectsFilter struct {
-	TenantID         string
-	ExcludeStatuses  []string // e.g. []string{"deleted"}
-	PageSize         int
-	AfterID          string // cursor: list rows with id > AfterID (ULID ordering)
+	TenantID        string
+	ExcludeStatuses []string // e.g. []string{"deleted"}
+	PageSize        int
+	AfterID         string // cursor: list rows with id > AfterID (ULID ordering)
 }
 
 // ListProjects returns a page of projects for the tenant, ordered by ULID
 // id for stable cursor pagination (docs/07 §5.2). The cursor is the last
-// id of the page; the client passes it as page_token.
+// id of the page; the client passes it as page_token. The tenant_id is
+// injected into the WHERE clause as the primary isolation layer.
 func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]ProjectRow, error) {
 	if f.PageSize <= 0 || f.PageSize > 1000 {
 		f.PageSize = 100
@@ -89,8 +97,8 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 	q := `SELECT id, tenant_id, name, slug, status, goals, version,
 		created_at, updated_at
 		FROM projects
-		WHERE ($1 = '' OR id > $1)`
-	args := []any{f.AfterID}
+		WHERE tenant_id = $1 AND ($2 = '' OR id > $2)`
+	args := []any{f.TenantID, f.AfterID}
 	if len(f.ExcludeStatuses) > 0 {
 		q += fmt.Sprintf(` AND status <> ALL($%d)`, len(args)+1)
 		args = append(args, f.ExcludeStatuses)
@@ -125,11 +133,12 @@ type UpdateProjectFields struct {
 }
 
 // UpdateProject applies a partial update with optimistic concurrency.
-// Returns ErrNotFound if no row matches the id+version (either the id
-// doesn't exist or a concurrent update bumped the version).
-func UpdateProject(ctx context.Context, tx pgx.Tx, id string, expectedVersion int, f UpdateProjectFields) (ProjectRow, error) {
+// The tenant_id is injected into the WHERE clause as the primary
+// isolation layer. Returns ErrNotFound if no row matches the
+// id+tenant+version.
+func UpdateProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, f UpdateProjectFields) (ProjectRow, error) {
 	q := `UPDATE projects SET updated_at = now(), version = version + 1`
-	args := []any{id, expectedVersion}
+	args := []any{tenantID, id, expectedVersion}
 	setIdx := len(args) + 1
 	if f.Name != nil {
 		q += fmt.Sprintf(`, name = $%d`, setIdx)
@@ -141,7 +150,7 @@ func UpdateProject(ctx context.Context, tx pgx.Tx, id string, expectedVersion in
 		args = append(args, *f.Goals)
 		setIdx++
 	}
-	q += ` WHERE id = $1 AND version = $2`
+	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at`
 	var p ProjectRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
@@ -158,14 +167,15 @@ func UpdateProject(ctx context.Context, tx pgx.Tx, id string, expectedVersion in
 }
 
 // ArchiveProject transitions a project to archived status with optimistic
-// concurrency. Returns the updated row or ErrNotFound.
-func ArchiveProject(ctx context.Context, tx pgx.Tx, id string, expectedVersion int) (ProjectRow, error) {
+// concurrency. The tenant_id is injected into the WHERE clause. Returns
+// the updated row or ErrNotFound.
+func ArchiveProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int) (ProjectRow, error) {
 	const q = `UPDATE projects
 		SET status = 'archived', updated_at = now(), version = version + 1
-		WHERE id = $1 AND version = $2
+		WHERE tenant_id = $1 AND id = $2 AND version = $3
 		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at`
 	var p ProjectRow
-	err := tx.QueryRow(ctx, q, id, expectedVersion).Scan(
+	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
 	)
