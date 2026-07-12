@@ -2,6 +2,9 @@
 
 > This file is the entry point for any AI agent working on Orchicon.
 > Read it before making any changes.
+>
+> **Start with § Implementation Progress** — it tells you what phases
+> are done, in flight, and not started, so you know where you are.
 
 ## Project
 
@@ -24,6 +27,9 @@
 - Write clear commit messages in present tense:
   `Add project CRUD service and data-access layer`
 - Stage only the files relevant to the commit. Never `git add -A` blindly.
+- **Update § Implementation Progress in this file** when you complete or
+  advance a phase. Keep the one-line "What landed" notes short and
+  high-level — they orient the next agent, not replace commit history.
 
 ### Pull Requests
 
@@ -78,3 +84,38 @@
 | `docs/08_Event_Bus_and_Telemetry_Model.md` | NATS, OTel, SigNoz, events |
 | `docs/09_Database_Schema.md` | Tables, outbox, RLS, migrations |
 | `docs/10_Frontend_Architecture.md` | React, Connect-ES, workflow editor |
+
+## Implementation Progress
+
+> **This is the high-level "where are we" tracker.**
+> Phases mirror the vertical-slice build order in
+> `docs/01_Architecture_Vision.md` §9. Update this table whenever you
+> complete, advance, or scope-change a phase — keep the notes to one or
+> two high-level lines per phase (commit history has the detail).
+>
+> Status values: `not started` · `in progress` · `done`.
+
+| # | Phase | Status | What landed |
+|---|---|---|---|
+| 1 | Foundation | done | Go module + binary skeleton (`cmd/orchicon`, `internal/`); Protobuf schema (`orchicon.api.v1`, `orchicon.adapter.v1`); Connect codegen (Go + TS); Atlas migrations for tenants/identities/projects with RLS + CI gate; Docker Compose (Postgres, NATS, SigNoz, OTel); Makefile; Vite+React+TS shell with Connect-ES, TanStack Router, Tailwind+shadcn/ui |
+| 2 | Projects slice | not started | Project CRUD (full stack) + frontend project list and detail views |
+| 3 | Realtime + infrastructure | not started | Outbox relay, reconciler framework, OTel, frontend streaming (`useStream` hook) |
+| 4 | Workers + WorkItems | not started | Worker versioning, WorkItem hierarchy, dependencies + frontend catalog, tree/board, dependency graph |
+| 5 | Scheduling + adapters | not started | TaskReconciler, dispatch, OpenCode adapter + frontend execution live view |
+| 6 | Workflows | not started | Workflow CRUD, step DAG, runs + frontend visual drag-and-drop editor (React Flow) |
+| 7 | Recovery + Policy | not started | Recovery Engine, Rego Policy Engine + frontend recovery timeline, policy editor |
+| 8 | Telemetry + Cost | not started | OTel pipeline, SigNoz integration, cost attribution + frontend SigNoz embedding, cost explorer |
+| 9 | Auth + Webhooks + Polish | not started | OIDC, API keys, RBAC, webhooks, edit locks + frontend auth flow, end-to-end integration |
+
+### Cross-cutting notes
+
+- **Connect-ES codegen** is pinned to local v1 npm plugins
+  (`protoc-gen-es` / `protoc-gen-connect-es`) matching the v1 runtime.
+  `make gen` prepends `frontend/node_modules/.bin` to PATH. See PR #1
+  notes before bumping to v2.
+- **Atlas RLS** policies are hand-appended SQL (the free tier does not
+  diff `policy` blocks). After hand-editing a migration, run
+  `make migrate-hash`. Future diffs won't drop RLS.
+- **Phase 2 entry point**: the `ProjectService` proto and Connect-ES
+  client already exist; the next step is the Go handler + data-access
+  layer in `internal/` wiring the generated `api/gen/go` service.
