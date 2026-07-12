@@ -7,6 +7,9 @@
 #
 # Usage: check-rls.sh <postgres-url>
 #   e.g. scripts/check-rls.sh "postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable"
+#
+# If psql is not on PATH (common on dev hosts), falls back to
+# `docker exec orchicon-postgres psql` against the local dev container.
 set -euo pipefail
 
 if [ "$#" -lt 1 ]; then
@@ -15,13 +18,23 @@ if [ "$#" -lt 1 ]; then
 fi
 
 URL="$1"
+CONTAINER="orchicon-postgres"
+
+# Run SQL via psql on the host, or via the dev container if psql is absent.
+run_sql() {
+  if command -v psql >/dev/null 2>&1; then
+    psql "$URL" -t -A -F '|'
+  else
+    docker exec -i "$CONTAINER" psql -U orchicon -d orchicon -t -A -F '|'
+  fi
+}
 
 # Tables that have a tenant_id column but must NOT carry the RLS
 # backstop (none expected — the tenants table itself has no tenant_id).
 # Extend this allowlist only with a documented exception.
 ALLOWLIST_REGEX='^$'
 
-violations=$(psql "$URL" -t -A -F '|' <<'SQL'
+violations=$(run_sql <<SQL
 SELECT c.table_name
 FROM information_schema.columns c
 JOIN pg_tables t ON t.tablename = c.table_name AND t.schemaname = c.table_schema
