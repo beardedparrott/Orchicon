@@ -39,7 +39,7 @@ tools: ## Install buf and atlas into $$GOPATH/bin
 # --- Codegen ---------------------------------------------------------------
 .PHONY: gen lint proto
 gen: ## Generate Go + TypeScript from the Protobuf schema (buf generate)
-	$(BUF) generate
+	PATH="$(CURDIR)/frontend/node_modules/.bin:$$PATH" $(BUF) generate
 
 lint: ## Lint the Protobuf schema (buf lint)
 	$(BUF) lint
