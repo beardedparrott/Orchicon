@@ -21,51 +21,42 @@ processors:
   batch:
     timeout: 5s
     send_batch_size: 1000
-  # Drop high-volume adapter transcripts (docs/08 §5.3) — they are
-  # stored as artifacts, not OTel logs. Keep ClickHouse log volume bounded.
   memory_limiter:
     check_interval: 2s
     limit_percentage: 80
     spike_limit_percentage: 25
 
 exporters:
-  clickhouse:
-    endpoint: tcp://clickhouse:9000
-    database: signoz
-    username: signoz
-    password: signoz
-    ttl_days: 7
-    traces_table_name: signoz_traces
-    metrics_table_name: signoz_metrics
-    logs_table_name: signoz_logs
-    timeout: 5s
+  # SigNoz-specific ClickHouse exporters (not generic "clickhouse").
+  # DSN includes credentials matching the clickhouse service env.
+  clickhousetraces:
+    datasource: tcp://signoz:signoz@clickhouse:9000/signoz_traces
     retry_on_failure:
       enabled: true
-      initial_interval: 1s
-      max_interval: 10s
-      max_elapsed_time: 1m
-
-service:
-  telemetry:
-    logs:
-      level: info
-  extensions:
-    health_check:
-      endpoint: 0.0.0.0:13133
-  pipelines:
-    traces:
-      receivers: [otlp]
-      processors: [memory_limiter, batch]
-      exporters: [clickhouse]
-    metrics:
-      receivers: [otlp]
-      processors: [memory_limiter, batch]
-      exporters: [clickhouse]
-    logs:
-      receivers: [otlp]
-      processors: [memory_limiter, batch]
-      exporters: [clickhouse]
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+  signozclickhousemetrics:
+    dsn: tcp://signoz:signoz@clickhouse:9000/signoz_metrics
+  clickhouselogsexporter:
+    dsn: tcp://signoz:signoz@clickhouse:9000/signoz_logs
 
 extensions:
   health_check:
     endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [clickhousetraces]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [signozclickhousemetrics]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [clickhouselogsexporter]

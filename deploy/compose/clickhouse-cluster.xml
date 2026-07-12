@@ -1,0 +1,22 @@
+<!-- ClickHouse cluster config for single-node SigNoz dev setup.
+     SigNoz's schema migrator and query-service expect a cluster named
+     "cluster"; this maps it to the local single-node instance.
+     ZooKeeper is configured for ReplicatedMergeTree tables. -->
+<clickhouse>
+    <zookeeper>
+        <node>
+            <host>zookeeper</host>
+            <port>2181</port>
+        </node>
+    </zookeeper>
+    <remote_servers>
+        <cluster>
+            <shard>
+                <replica>
+                    <host>localhost</host>
+                    <port>9000</port>
+                </replica>
+            </shard>
+        </cluster>
+    </remote_servers>
+</clickhouse>

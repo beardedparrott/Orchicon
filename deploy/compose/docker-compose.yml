@@ -13,6 +13,9 @@
 #
 # The control plane itself runs from source (`make run`) and connects
 # to these services. SigNoz UI: http://localhost:3301
+#
+# NOTE: SigNoz's internal API uses :8081 here to avoid clashing with
+# the Orchicon control plane on :8080.
 
 services:
   postgres:
@@ -54,9 +57,28 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # ZooKeeper — required by ClickHouse for ReplicatedMergeTree tables
+  # used by SigNoz's schema. Single-node for local dev.
+  zookeeper:
+    image: zookeeper:3.7
+    container_name: orchicon-zookeeper
+    environment:
+      ALLOW_ANONYMOUS_LOGIN: "yes"
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper-data:/data
+      - zookeeper-datalog:/datalog
+    healthcheck:
+      test: ["CMD-SHELL", "echo srvr | nc -w 2 localhost 2181 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   # ClickHouse is the storage backend for SigNoz (telemetry plane).
   clickhouse:
-    image: clickhouse/clickhouse-server:24.1.2-alpine
+    image: clickhouse/clickhouse-server:25.8
     container_name: orchicon-clickhouse
     environment:
       CLICKHOUSE_DB: signoz
@@ -67,10 +89,14 @@ services:
       - "8123:8123"   # http
     volumes:
       - clickhouse-data:/var/lib/clickhouse
+      - ./clickhouse-cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
     ulimits:
       nofile:
         soft: 262144
         hard: 262144
+    depends_on:
+      zookeeper:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
       interval: 5s
@@ -78,11 +104,23 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # SigNoz schema migrator — one-shot init container that creates the
+  # ClickHouse databases (signoz_traces, signoz_metrics, signoz_logs)
+  # before the collector and query-service start.
+  signoz-schema-migrator:
+    image: signoz/signoz-schema-migrator:latest
+    container_name: orchicon-signoz-schema-migrator
+    command: ["--dev", "sync", "--dsn=tcp://signoz:signoz@clickhouse:9000", "--up="]
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: "no"
+
   # OTel collector receives OTLP from the control plane (and frontend)
   # and exports to ClickHouse. This is the boundary of the telemetry
   # plane (docs/08 §5). Control plane connects OTLP gRPC to :4317.
   otel-collector:
-    image: signoz/signoz-otel-collector:0.111.5
+    image: signoz/signoz-otel-collector:latest
     container_name: orchicon-otel-collector
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
@@ -95,27 +133,32 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
+      signoz-schema-migrator:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:13133/"]
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/13133' || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 10
     restart: unless-stopped
 
-  # SigNoz query-service (backend) — reads telemetry from ClickHouse
-  # and serves the SigNoz UI / API.
+  # SigNoz query-service — reads telemetry from ClickHouse and serves
+  # the SigNoz UI (bundled frontend) on :3301 and the API on :8080.
+  # The API is mapped to host :8081 to avoid clashing with the
+  # Orchicon control plane on :8080.
   signoz:
-    image: signoz/signoz:0.111.5
+    image: signoz/signoz:latest
     container_name: orchicon-signoz
-    command: ["--config=/root/config.yaml", "-DSTORAGE=clickhouse", "-GODEBUG=netdns=go"]
+    command: ["--config=/root/config.yaml", "-DSTORAGE=clickhouse"]
     environment:
       CLICKHOUSE_USER: signoz
       CLICKHOUSE_PASSWORD: signoz
+      SIGNOZ_TOKENIZER_JWT_SECRET: "dev-secret-not-for-production"
     volumes:
       - ./signoz-config.yaml:/root/config.yaml:ro
       - signoz-data:/var/lib/signoz
     ports:
-      - "8080:8080"   # SigNoz query-service API (internal)
+      - "3301:8080"   # SigNoz UI + API (frontend bundled, remapped to avoid control-plane clash on :8080)
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -125,23 +168,13 @@ services:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/api/v1/health"]
       interval: 10s
       timeout: 3s
-      retries: 20
-    restart: unless-stopped
-
-  # SigNoz frontend — the telemetry exploration UI (docs/10 §5).
-  # Seamlessly embedded in the Orchicon shell later; standalone for dev.
-  signoz-frontend:
-    image: signoz/signoz-frontend:0.111.5
-    container_name: orchicon-signoz-frontend
-    depends_on:
-      signoz:
-        condition: service_healthy
-    ports:
-      - "3301:3301"   # SigNoz UI
+      retries: 30
     restart: unless-stopped
 
 volumes:
   postgres-data:
   nats-data:
+  zookeeper-data:
+  zookeeper-datalog:
   clickhouse-data:
   signoz-data:

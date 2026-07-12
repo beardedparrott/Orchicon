@@ -80,6 +80,32 @@
   diagnostics surface in the edit loop. Treat them as fast feedback;
   `make ci` is the authoritative gate.
 
+## Verification
+
+> **Compilation passing is not the same as working.**
+> Agents must verify runtime behavior, not just `go build` / `tsc`.
+
+Before marking a phase or task as complete, verify the following at
+minimum (adapt to what the change touches):
+
+1. **`make ci` passes end-to-end** — buf lint, codegen, go vet/test,
+   RLS gate. This is the authoritative CI gate.
+2. **Dev stack starts healthy** — `make up` then `make ps` shows all
+   containers `healthy` (not just `running`).
+3. **Migrations apply cleanly** — `make migrate` against the compose
+   Postgres; `make rls-check` passes.
+4. **Control plane boots and serves** — `make build && make run`, then
+   `curl http://localhost:8080/healthz` returns `{"status":"ok"}`.
+5. **Frontend renders** — `make fe-dev` (or `npx vite`), then
+   `curl http://localhost:5173/` returns HTTP 200 with the app shell.
+
+If the change adds a new API RPC, also verify the Connect endpoint
+responds (e.g. via `curl` or a frontend smoke test). If it adds a new
+table, verify the RLS gate still passes after migration.
+
+**Do not claim "done" without having run the thing.** State what was
+verified and what was not in the commit message or PR description.
+
 ## Design Doc Index
 
 | Doc | Subsystem |
