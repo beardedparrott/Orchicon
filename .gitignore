@@ -1,0 +1,34 @@
+# Go
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+bin/
+vendor/
+go.work
+go.work.sum
+
+# Node/Frontend
+node_modules/
+dist/
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local dev artifacts
+*.log
+tmp/
+data/
