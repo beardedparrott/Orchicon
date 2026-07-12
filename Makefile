@@ -127,6 +127,14 @@ dev-restart: ## Restart the full dev environment
 dev-logs: ## Tail control-plane + frontend logs
 	scripts/dev.sh logs
 
+# --- Install ---------------------------------------------------------------
+.PHONY: install-dry-run install-uninstall
+install-dry-run: ## Dry-run the install script (no changes made)
+	scripts/install.sh --dry-run
+
+install-uninstall: ## Uninstall Orchicon via the install script
+	scripts/install.sh --uninstall
+
 # --- CI --------------------------------------------------------------------
 .PHONY: ci
 ci: lint gen vet test rls-check ## Run the full CI gate locally

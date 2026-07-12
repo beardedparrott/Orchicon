@@ -206,6 +206,47 @@ script does not manage its components. Specifically:
 This keeps the dev experience reproducible: one script, one command,
 the whole system up or down.
 
+## Install Scripts
+
+`scripts/install.sh` (Linux/macOS) and `scripts/install.ps1` (Windows)
+are the one-line installers published at `orchicon.dev`:
+
+```
+curl -fsSL https://orchicon.dev/install | bash          # Linux/macOS
+irm https://orchicon.dev/install.ps1 | iex               # Windows
+```
+
+They download the latest release binary from GitHub Releases, install
+it to `~/.local/bin` (or a chosen dir), and verify the install. The
+release workflow (`.github/workflows/release.yml`) builds binaries for
+linux/darwin/windows × amd64/arm64 on tag push and attaches them to
+the GitHub Release.
+
+### Every phase MUST update these scripts
+
+When a phase changes what ships in the binary — a new subcommand, a
+new dependency the binary needs at runtime, a new asset (e.g. the
+frontend bundle, adapter binaries, Rego policy files), or a new
+platform/architecture target — **update the install scripts and the
+release workflow** so the installer stays correct. A phase is not
+complete if the installer does not work end-to-end. Specifically:
+
+- **`scripts/install.sh`** — update if the download asset name changes,
+  new files need to be downloaded alongside the binary, or new
+  post-install steps are required (e.g. installing an adapter).
+- **`scripts/install.ps1`** — mirror any changes from `install.sh`
+  for Windows. Both scripts must stay in sync.
+- **`.github/workflows/release.yml`** — update the build matrix if a
+  new OS/arch is added, add build steps if the binary now needs the
+  frontend embedded, and verify the asset naming matches what the
+  install scripts download.
+- **README.md** — update the Installation section if the commands or
+  prerequisites change.
+
+Verify by running the installer against a draft release at minimum
+(`bash scripts/install.sh --version vX.Y.Z --dry-run` on each target
+platform, or `--uninstall` to test cleanup).
+
 ## Design Doc Index
 
 | Doc | Subsystem |
