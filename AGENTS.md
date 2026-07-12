@@ -70,6 +70,16 @@
 8. Recovery is opt-out, not opt-in.
 9. Migrations are forward-only.
 
+## Tooling hints
+
+- When you need library docs (Connect-ES, Atlas, TanStack Router, pgx,
+  NATS, SigNoz), use `context7` tools before guessing.
+- If unsure how to use a library or pattern, use `gh_grep` to search
+  real GitHub usage examples.
+- LSP servers (gopls, typescript, eslint, yaml-ls) are enabled —
+  diagnostics surface in the edit loop. Treat them as fast feedback;
+  `make ci` is the authoritative gate.
+
 ## Design Doc Index
 
 | Doc | Subsystem |
