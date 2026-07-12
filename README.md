@@ -41,8 +41,67 @@ The original design brief: [`Orchicon_Architecture_Design_Document_v0.1.md`](./O
 
 ## Status
 
-**v0.1 — design phase.** Architecture documents are direction-level;
-implementation has not started.
+**v0.1 — scaffolding.** Architecture documents are direction-level.
+Phase 1 (Foundation) is landed: Go module, Protobuf schema + Connect
+codegen, Atlas migrations with RLS, Docker Compose dev stack, and the
+Vite+React frontend shell.
+
+## Development
+
+The control plane is Go; the frontend is TypeScript + Vite. All common
+tasks are in the `Makefile` (`make help`).
+
+### Prerequisites
+
+- Go 1.26+
+- Node 22+
+- Docker + Docker Compose
+- [`buf`](https://buf.build) and [`atlas`](https://atlasgo.io) — install
+  with `make tools`
+
+### Quick start
+
+```bash
+make up           # start Postgres, NATS, SigNoz, OTel collector
+make migrate      # apply Atlas migrations (tenants, identities, projects + RLS)
+make run          # run the control plane on :8080
+make fe-install   # install frontend deps (first time only)
+make fe-dev       # Vite dev server on :5173 (proxies API to :8080)
+```
+
+### Codegen
+
+The Protobuf schema (`proto/`) is the single source of truth. One
+schema generates the Go (connect-go) and TypeScript (Connect-ES)
+clients:
+
+```bash
+make gen          # buf generate → api/gen/go + frontend/src/api/gen
+```
+
+Generated code is committed (docs/10 §3.1).
+
+### Layout
+
+| Path | Concern |
+|---|---|
+| `cmd/orchicon/` | Control-plane binary entry point |
+| `internal/` | api, config, db, domain, outbox, reconciler, server, blobstore, version |
+| `proto/` | Protobuf schema (`orchicon.api.v1`, `orchicon.adapter.v1`) |
+| `api/gen/` | Generated Go code |
+| `db/` | Atlas declarative schema + versioned migrations |
+| `deploy/compose/` | Local dev Docker Compose stack |
+| `frontend/` | Vite + React + Connect-ES + TanStack Router + shadcn/ui |
+| `scripts/` | CI gates (RLS check) |
+
+### CI gate
+
+```bash
+make ci          # buf lint + codegen + go vet/test + RLS gate
+```
+
+The RLS gate (docs/09 §8.5) fails if any `tenant_id`-bearing table
+lacks the `tenant_isolation` policy.
 
 ## License
 
