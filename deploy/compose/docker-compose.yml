@@ -1,0 +1,180 @@
+# Orchicon local development stack.
+#
+# Per docs/01_Architecture_Vision.md §3, the local-dev deployment runs
+# the control plane plus all dependencies on one machine:
+#   - PostgreSQL 16 (source of truth, RLS, advisory locks)
+#   - NATS JetStream (event bus, docs/08 §2)
+#   - OTel collector → SigNoz/ClickHouse (fully separated telemetry
+#     plane, docs/01 §3, docs/08 §5)
+#
+# Start:      make up      (or: docker compose -f deploy/compose/docker-compose.yml up -d)
+# Stop:       make down
+# Reset:      make nuke
+#
+# The control plane itself runs from source (`make run`) and connects
+# to these services. SigNoz UI: http://localhost:3301
+#
+# NOTE: SigNoz's internal API uses :8081 here to avoid clashing with
+# the Orchicon control plane on :8080.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: orchicon-postgres
+    environment:
+      POSTGRES_USER: orchicon
+      POSTGRES_PASSWORD: orchicon
+      POSTGRES_DB: orchicon
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-postgres.sql:/docker-entrypoint-initdb.d/init-postgres.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orchicon -d orchicon"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  nats:
+    image: nats:2.10-alpine
+    container_name: orchicon-nats
+    command: >
+      nats-server
+      --js
+      --store_dir /data
+      -m 8222
+    ports:
+      - "4222:4222"   # client
+      - "8222:8222"   # monitoring
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # ZooKeeper — required by ClickHouse for ReplicatedMergeTree tables
+  # used by SigNoz's schema. Single-node for local dev.
+  zookeeper:
+    image: zookeeper:3.7
+    container_name: orchicon-zookeeper
+    environment:
+      ALLOW_ANONYMOUS_LOGIN: "yes"
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper-data:/data
+      - zookeeper-datalog:/datalog
+    healthcheck:
+      test: ["CMD-SHELL", "echo srvr | nc -w 2 localhost 2181 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ClickHouse is the storage backend for SigNoz (telemetry plane).
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    container_name: orchicon-clickhouse
+    environment:
+      CLICKHOUSE_DB: signoz
+      CLICKHOUSE_USER: signoz
+      CLICKHOUSE_PASSWORD: signoz
+    ports:
+      - "9000:9000"   # native
+      - "8123:8123"   # http
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./clickhouse-cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # SigNoz schema migrator — one-shot init container that creates the
+  # ClickHouse databases (signoz_traces, signoz_metrics, signoz_logs)
+  # before the collector and query-service start.
+  signoz-schema-migrator:
+    image: signoz/signoz-schema-migrator:latest
+    container_name: orchicon-signoz-schema-migrator
+    command: ["--dev", "sync", "--dsn=tcp://signoz:signoz@clickhouse:9000", "--up="]
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: "no"
+
+  # OTel collector receives OTLP from the control plane (and frontend)
+  # and exports to ClickHouse. This is the boundary of the telemetry
+  # plane (docs/08 §5). Control plane connects OTLP gRPC to :4317.
+  otel-collector:
+    image: signoz/signoz-otel-collector:latest
+    container_name: orchicon-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    environment:
+      LOW_MEMORY_MODE: "true"
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      signoz-schema-migrator:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/13133' || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # SigNoz query-service — reads telemetry from ClickHouse and serves
+  # the SigNoz UI (bundled frontend) on :3301 and the API on :8080.
+  # The API is mapped to host :8081 to avoid clashing with the
+  # Orchicon control plane on :8080.
+  signoz:
+    image: signoz/signoz:latest
+    container_name: orchicon-signoz
+    command: ["--config=/root/config.yaml", "-DSTORAGE=clickhouse"]
+    environment:
+      CLICKHOUSE_USER: signoz
+      CLICKHOUSE_PASSWORD: signoz
+      SIGNOZ_TOKENIZER_JWT_SECRET: "dev-secret-not-for-production"
+    volumes:
+      - ./signoz-config.yaml:/root/config.yaml:ro
+      - signoz-data:/var/lib/signoz
+    ports:
+      - "3301:8080"   # SigNoz UI + API (frontend bundled, remapped to avoid control-plane clash on :8080)
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      otel-collector:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/api/v1/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  nats-data:
+  zookeeper-data:
+  zookeeper-datalog:
+  clickhouse-data:
+  signoz-data:

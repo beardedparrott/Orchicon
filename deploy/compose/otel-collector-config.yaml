@@ -1,0 +1,62 @@
+# OTel collector config for the Orchicon telemetry plane.
+#
+# Receives OTLP (gRPC + HTTP) from the control plane and frontend,
+# exports to ClickHouse (SigNoz). Telemetry is fully separated from
+# control state (docs/01 §3, docs/08 §5). The control plane never
+# owns this infrastructure.
+#
+# Per docs/08 §5.1, canonical spans include api.<service>.<rpc>,
+# reconcile.<kind>.<id>, dispatch.<task_id>, adapter.execute.*,
+# recovery.*, and gateway.* — all flow through this collector.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+  memory_limiter:
+    check_interval: 2s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+exporters:
+  # SigNoz-specific ClickHouse exporters (not generic "clickhouse").
+  # DSN includes credentials matching the clickhouse service env.
+  clickhousetraces:
+    datasource: tcp://signoz:signoz@clickhouse:9000/signoz_traces
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+  signozclickhousemetrics:
+    dsn: tcp://signoz:signoz@clickhouse:9000/signoz_metrics
+  clickhouselogsexporter:
+    dsn: tcp://signoz:signoz@clickhouse:9000/signoz_logs
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [clickhousetraces]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [signozclickhousemetrics]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [clickhouselogsexporter]

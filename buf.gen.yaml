@@ -1,0 +1,35 @@
+# Orchicon Buf codegen.
+#
+# One schema generates:
+#   - connect-go service handlers and message types (Go control plane)
+#   - Connect-ES TypeScript clients and message types (frontend)
+#
+# See docs/07_API_Specification.md §2 and docs/10_Frontend_Architecture.md §3.
+version: v2
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/beardedparrott/orchicon/api/gen/go
+plugins:
+  # Go: connect-go service + messages
+  - remote: buf.build/connectrpc/go
+    out: api/gen/go
+    opt: paths=source_relative
+  - remote: buf.build/protocolbuffers/go
+    out: api/gen/go
+    opt: paths=source_relative
+  # TypeScript: Connect-ES clients + messages (frontend).
+  # Local npm plugins pinned to v1 to match the @connectrpc/connect v1
+  # runtime (the BSR default connectrpc/es plugin emits v1-style
+  # descriptors). Run via `make gen` which puts frontend/node_modules/.bin
+  # on PATH. import_extension is omitted; the Vite bundler resolves
+  # extensionless imports (moduleResolution: bundler in tsconfig).
+  - local: protoc-gen-es
+    out: frontend/src/api/gen
+    opt:
+      - target=ts
+  - local: protoc-gen-connect-es
+    out: frontend/src/api/gen
+    opt:
+      - target=ts
