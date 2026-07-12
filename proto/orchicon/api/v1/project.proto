@@ -1,0 +1,88 @@
+// Orchicon public API.
+//
+// This package defines the Protobuf contract for the Orchicon control
+// plane's external API surface. A single schema generates gRPC,
+// Connect-REST, and TypeScript clients (docs/07_API_Specification.md §2).
+//
+// v0.1 scaffolds ProjectService; later phases add the remaining
+// services defined in docs/07 §3.
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Project is the persistent source of work. All schedulable entities
+// belong to a Project (docs/02_Domain_Model.md §2.1).
+message Project {
+  string id = 1;
+  string tenant_id = 2;
+  string name = 3;
+  string slug = 4;
+  ProjectStatus status = 5;
+  string goals = 6; // JSON-encoded goals document
+  int32 version = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+}
+
+// Project lifecycle states. See docs/02_Domain_Model.md §2.1.
+enum ProjectStatus {
+  PROJECT_STATUS_UNSPECIFIED = 0;
+  PROJECT_STATUS_DRAFTING = 1;
+  PROJECT_STATUS_ACTIVE = 2;
+  PROJECT_STATUS_PAUSED = 3;
+  PROJECT_STATUS_ARCHIVED = 4;
+  PROJECT_STATUS_DELETED = 5;
+}
+
+// Request/response messages for ProjectService (docs/07 §3.1).
+message CreateProjectRequest {
+  string tenant_id = 1;
+  string name = 2;
+  string slug = 3;
+  string goals = 4; // JSON
+  string request_id = 5; // idempotency key (docs/07 §5.5)
+}
+
+message GetProjectRequest {
+  string id = 1;
+}
+
+message ListProjectsRequest {
+  string tenant_id = 1;
+  string page_token = 2; // cursor (docs/07 §5.2)
+  int32 page_size = 3;
+}
+
+message ListProjectsResponse {
+  repeated Project projects = 1;
+  string next_page_token = 2;
+}
+
+message UpdateProjectRequest {
+  string id = 1;
+  optional string name = 2;
+  optional string goals = 3;
+  // FieldMask support added as the schema grows (docs/07 §5.4).
+  string request_id = 4;
+}
+
+message ArchiveProjectRequest {
+  string id = 1;
+}
+
+message PauseProjectRequest {
+  string id = 1;
+}
+
+// A lifecycle event streamed from StreamProjectEvents
+// (docs/07 §3.1, docs/08 §4.1).
+message ProjectEvent {
+  string event_id = 1;
+  string event_type = 2; // e.g. "project.paused"
+  string tenant_id = 3;
+  string project_id = 4;
+  google.protobuf.Timestamp occurred_at = 5;
+  bytes payload = 6; // event-specific JSON
+}

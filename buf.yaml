@@ -1,0 +1,12 @@
+version: v2
+modules:
+  - path: proto
+deps: []
+lint:
+  use:
+    - STANDARD
+  except:
+    - PACKAGE_VERSION_SUFFIX
+breaking:
+  use:
+    - WIRE_JSON

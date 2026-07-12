@@ -1,0 +1,52 @@
+// Orchicon ProjectService.
+//
+// CRUD + lifecycle + streaming for the Project entity
+// (docs/07_API_Specification.md §3.1). All mutations write through the
+// transactional outbox (docs/09_Database_Schema.md §6).
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "orchicon/api/v1/project.proto";
+
+service ProjectService {
+  rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse);
+  rpc GetProject(GetProjectRequest) returns (GetProjectResponse);
+  rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
+  rpc UpdateProject(UpdateProjectRequest) returns (UpdateProjectResponse);
+  rpc ArchiveProject(ArchiveProjectRequest) returns (ArchiveProjectResponse);
+  rpc PauseProject(PauseProjectRequest) returns (PauseProjectResponse);
+  rpc StreamProjectEvents(StreamProjectEventsRequest) returns (stream StreamProjectEventsResponse);
+}
+
+message CreateProjectResponse {
+  Project project = 1;
+}
+
+message GetProjectResponse {
+  Project project = 1;
+}
+
+message UpdateProjectResponse {
+  Project project = 1;
+}
+
+message ArchiveProjectResponse {
+  Project project = 1;
+}
+
+message PauseProjectResponse {
+  Project project = 1;
+}
+
+message StreamProjectEventsRequest {
+  string tenant_id = 1;
+  optional string project_id = 2;
+  // Resume from this sequence number after reconnect (docs/07 §4).
+  optional int64 from_sequence = 3;
+}
+
+message StreamProjectEventsResponse {
+  ProjectEvent event = 1;
+  int64 sequence = 2;
+}

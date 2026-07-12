@@ -1,0 +1,32 @@
+# Orchicon Buf codegen.
+#
+# One schema generates:
+#   - connect-go service handlers and message types (Go control plane)
+#   - Connect-ES TypeScript clients and message types (frontend)
+#
+# See docs/07_API_Specification.md §2 and docs/10_Frontend_Architecture.md §3.
+version: v2
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/beardedparrott/orchicon/api/gen/go
+plugins:
+  # Go: connect-go service + messages
+  - remote: buf.build/connectrpc/go
+    out: api/gen/go
+    opt: paths=source_relative
+  - remote: buf.build/protocolbuffers/go
+    out: api/gen/go
+    opt: paths=source_relative
+  # TypeScript: Connect-ES clients + messages (frontend)
+  - remote: buf.build/bufbuild/es
+    out: frontend/src/api/gen
+    opt:
+      - target=ts
+      - import_extension=js
+  - remote: buf.build/connectrpc/es
+    out: frontend/src/api/gen
+    opt:
+      - target=ts
+      - import_extension=js
