@@ -221,3 +221,42 @@ LLM training, in-platform IDE.
 - **Leader election**: Postgres advisory locks are the canonical
   mechanism. No etcd, no NATS-based lease. Postgres is the source of
   truth, so it is also the lock authority.
+
+---
+
+## 9. Development Workflow
+
+### Git
+
+- **Repo**: https://github.com/beardedparrott/Orchicon.git
+- **No commits directly to `main`.** Every major change gets a branch.
+- Branch naming: `<type>/<short-description>`
+  (e.g. `feat/project-crud`, `fix/outbox-relay-dedup`).
+- Types: `feat`, `fix`, `chore`, `refactor`, `docs`, `test`.
+- Commit early and often; stage only relevant files.
+- Push branches and create PRs via `gh pr create`.
+- See `AGENTS.md` at repo root for the full agent-facing workflow.
+
+### Build order: vertical slices
+
+Development proceeds in vertical slices — each phase delivers a working
+backend + frontend increment, not "all backend, then all frontend."
+
+1. **Foundation**: Go module, proto schema, Atlas migrations, Docker
+   Compose, Vite+React scaffold.
+2. **Projects slice**: Project CRUD (full stack) + frontend project list
+   and detail views.
+3. **Realtime + infrastructure**: Outbox relay, reconciler framework,
+   OTel, frontend streaming (`useStream` hook).
+4. **Workers + WorkItems**: Worker versioning, WorkItem hierarchy,
+   dependencies + frontend catalog, tree/board, dependency graph.
+5. **Scheduling + adapters**: TaskReconciler, dispatch, OpenCode adapter
+   + frontend execution live view.
+6. **Workflows**: Workflow CRUD, step DAG, runs + frontend visual
+   drag-and-drop editor (React Flow).
+7. **Recovery + Policy**: Recovery Engine, Rego Policy Engine + frontend
+   recovery timeline, policy editor.
+8. **Telemetry + Cost**: OTel pipeline, SigNoz integration, cost
+   attribution + frontend seamless SigNoz embedding, cost explorer.
+9. **Auth + Webhooks + Polish**: OIDC, API keys, RBAC, webhooks,
+   edit locks + frontend auth flow, end-to-end integration.
