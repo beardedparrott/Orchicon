@@ -190,3 +190,73 @@ table "projects" {
     columns = [column.tenant_id, column.status]
   }
 }
+
+table "outbox" {
+  schema = schema.public
+  comment = "Transactional outbox: every mutation writes a row here in the same tx (docs/09 §6, §3.9). RLS-enabled."
+
+  column "id" {
+    type = text
+    null = false
+  }
+  column "tenant_id" {
+    type = text
+    null = false
+  }
+  column "event_id" {
+    type = text
+    null = false
+  }
+  column "aggregate_type" {
+    type = text
+    null = false
+  }
+  column "aggregate_id" {
+    type = text
+    null = false
+  }
+  column "aggregate_version" {
+    type = integer
+    null = false
+  }
+  column "event_type" {
+    type = text
+    null = false
+  }
+  column "payload" {
+    type = jsonb
+    null = false
+  }
+  column "occurred_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+  column "published_at" {
+    type = timestamptz
+    null = true
+  }
+  column "trace_id" {
+    type = text
+    null = true
+  }
+  column "correlation_id" {
+    type = text
+    null = true
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  // Hot path: relay polls unpublished rows ordered by occurrence time
+  // (docs/09 §7). Partial index keeps it small as rows get published.
+  index "outbox_unpublished_idx" {
+    columns = [column.occurred_at]
+    where = "published_at IS NULL"
+  }
+  index "outbox_event_id_idx" {
+    unique  = true
+    columns = [column.event_id]
+  }
+}
