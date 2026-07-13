@@ -110,6 +110,31 @@ fe-build: ## Build the frontend for production
 fe-lint: ## Lint the frontend
 	cd frontend && npm run lint
 
+# --- Dev control script ----------------------------------------------------
+.PHONY: dev-start dev-stop dev-status dev-restart dev-logs
+dev-start: ## Start the full dev environment (stack + control plane + frontend)
+	scripts/dev.sh start
+
+dev-stop: ## Stop the full dev environment
+	scripts/dev.sh stop
+
+dev-status: ## Show status of all dev components
+	scripts/dev.sh status
+
+dev-restart: ## Restart the full dev environment
+	scripts/dev.sh restart
+
+dev-logs: ## Tail control-plane + frontend logs
+	scripts/dev.sh logs
+
+# --- Install ---------------------------------------------------------------
+.PHONY: install-dry-run install-uninstall
+install-dry-run: ## Dry-run the install script (no changes made)
+	scripts/install.sh --dry-run
+
+install-uninstall: ## Uninstall Orchicon via the install script
+	scripts/install.sh --uninstall
+
 # --- CI --------------------------------------------------------------------
 .PHONY: ci
 ci: lint gen vet test rls-check ## Run the full CI gate locally

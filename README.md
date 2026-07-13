@@ -46,6 +46,50 @@ Phase 1 (Foundation) is landed: Go module, Protobuf schema + Connect
 codegen, Atlas migrations with RLS, Docker Compose dev stack, and the
 Vite+React frontend shell.
 
+## Installation
+
+### One-line install (Linux / macOS)
+
+```bash
+curl -fsSL https://orchicon.dev/install | bash
+```
+
+### Windows (PowerShell)
+
+```powershell
+irm https://orchicon.dev/install.ps1 | iex
+```
+
+### Options
+
+| Flag | Description |
+|---|---|
+| `--version <tag>` | Install a specific version (e.g. `v0.2.0`). Default: latest. |
+| `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). |
+| `--uninstall` | Remove Orchicon from the install directory. |
+
+```bash
+# Install a specific version
+curl -fsSL https://orchicon.dev/install | bash -s -- --version v0.2.0
+
+# Uninstall
+curl -fsSL https://orchicon.dev/install | bash -s -- --uninstall
+```
+
+After installation, verify with `orchicon version` and start the dev
+environment with `orchicon dev start`.
+
+> **Note:** Pre-built binaries are published to [GitHub
+> Releases](https://github.com/beardedparrott/Orchicon/releases). If no
+> releases exist yet (pre-v1), build from source instead:
+
+```bash
+git clone https://github.com/beardedparrott/Orchicon.git
+cd Orchicon
+make build          # → bin/orchicon
+make dev-start      # full dev environment
+```
+
 ## Development
 
 The control plane is Go; the frontend is TypeScript + Vite. All common

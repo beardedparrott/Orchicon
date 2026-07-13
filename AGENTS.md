@@ -70,6 +70,70 @@
 8. Recovery is opt-out, not opt-in.
 9. Migrations are forward-only.
 
+## Security Standards (applies to every slice)
+
+Every piece of functionality built in this repo must follow these
+security standards. They are the floor, not the ceiling — review them
+when adding any new RPC, handler, or frontend form.
+
+### Secrets & credentials
+
+- **No secrets in code or commits.** DSNs, API keys, tokens, and
+  passwords come from the environment (`internal/config`) or a secret
+  store — never hardcoded, never committed. The `.env.example` file
+  documents the variables without containing real values.
+- **No secrets in logs.** Never log DSNs, tokens, passwords, or
+  full request payloads that may carry credentials. The slog setup in
+  `cmd/orchicon/main.go` logs structured fields; only log non-sensitive
+  identifiers (tenant id, project id, trace id).
+- **Hashed at rest.** API keys are hashed before storage (never
+  plaintext). Passwords are never stored by the control plane (OIDC
+  handles authentication). See docs/07 §6.1.
+- **The dev stack credentials** in `deploy/compose/docker-compose.yml`
+  (e.g. `orchicon:orchicon`) are local-dev-only placeholders. They must
+  never appear in a production deployment config.
+
+### Input validation & sanitization
+
+- **Validate at the API boundary.** Every RPC handler validates and
+  sanitizes input before it reaches the data-access layer. See
+  `internal/project/validate.go` for the pattern: trim, bound-check
+  length, regex-validate structured fields (e.g. slug), and reject
+  malformed data with `connect.CodeInvalidArgument`.
+- **Parameterized queries only.** All SQL uses pgx parameterized
+  queries (`$1`, `$2`, …). No string interpolation of user input into
+  SQL, ever. The data-access layer (`internal/db`) is the only place
+  SQL lives (invariant #4).
+- **JSON fields are validated.** JSON-typed columns (e.g. `goals`)
+  must be parsed/validated as valid JSON before storage. Reject
+  malformed JSON at the handler, not the database.
+- **Size bounds on all inputs.** Every text input has a max length
+  enforced at the handler to prevent memory-exhaustion abuse.
+- **Slugs and identifiers are regex-validated.** Slugs match
+  `^[a-z0-9]+(?:-[a-z0-9]+)*$`; IDs are ULIDs generated server-side,
+  never accepted from the client on create.
+
+### Tenant isolation
+
+- **Every request is tenant-scoped.** The middleware resolves the
+  tenant and the data-access layer sets `app.tenant_id` per
+  transaction. RLS is the backstop — even a buggy query cannot leak
+  cross-tenant data (docs/09 §8.5).
+- **No cross-tenant queries.** The data-access layer injects
+  `tenant_id` into every `WHERE` and `INSERT`. A query without a
+  tenant scope is a bug, not an optimization.
+
+### Frontend
+
+- **The browser never stores long-lived secrets.** Access tokens live
+  in memory; refresh tokens in HttpOnly secure cookies (docs/10 §7).
+  API keys are for headless/CI clients only.
+- **Client-side validation is UX, not security.** Zod schemas in forms
+  improve the user experience but every rule is re-validated
+  server-side. Never trust client-side validation as the security gate.
+- **No business logic in the frontend** (invariant #1). The UI does
+  not make policy, scheduling, or recovery decisions.
+
 ## Tooling hints
 
 - When you need library docs (Connect-ES, Atlas, TanStack Router, pgx,
@@ -106,6 +170,83 @@ table, verify the RLS gate still passes after migration.
 **Do not claim "done" without having run the thing.** State what was
 verified and what was not in the commit message or PR description.
 
+## Dev Control Script
+
+`scripts/dev.sh` is the one-command dev environment controller. It
+manages the full local stack — Docker Compose services (Postgres, NATS,
+SigNoz, OTel), the Go control plane, and the Vite frontend — so a new
+contributor can get everything running with a single command:
+
+```
+scripts/dev.sh start     # dev stack → migrations → control plane → frontend
+scripts/dev.sh stop      # stop everything
+scripts/dev.sh status    # show status of all components + endpoint checks
+scripts/dev.sh restart   # stop then start
+scripts/dev.sh logs      # tail control-plane + frontend logs
+```
+
+Or via Make: `make dev-start`, `make dev-stop`, `make dev-status`,
+`make dev-restart`, `make dev-logs`.
+
+PID files and logs live in `.dev/` (gitignored).
+
+### Every phase MUST update this script
+
+When a phase adds a new runtime component — a reconciler, an adapter
+process, the recovery engine, the policy engine, a webhook dispatcher,
+etc. — **update `scripts/dev.sh`** so that `dev.sh start` brings it up
+and `dev.sh stop` tears it down. A phase is not complete if the dev
+script does not manage its components. Specifically:
+
+- Add the component to `start_*` (build, launch, wait-for-ready).
+- Add the component to `do_stop` (PID file cleanup, graceful shutdown).
+- Add the component to `do_status` (running check + endpoint probe).
+- Add the component to `do_logs` if it has a log file.
+
+This keeps the dev experience reproducible: one script, one command,
+the whole system up or down.
+
+## Install Scripts
+
+`scripts/install.sh` (Linux/macOS) and `scripts/install.ps1` (Windows)
+are the one-line installers published at `orchicon.dev`:
+
+```
+curl -fsSL https://orchicon.dev/install | bash          # Linux/macOS
+irm https://orchicon.dev/install.ps1 | iex               # Windows
+```
+
+They download the latest release binary from GitHub Releases, install
+it to `~/.local/bin` (or a chosen dir), and verify the install. The
+release workflow (`.github/workflows/release.yml`) builds binaries for
+linux/darwin/windows × amd64/arm64 on tag push and attaches them to
+the GitHub Release.
+
+### Every phase MUST update these scripts
+
+When a phase changes what ships in the binary — a new subcommand, a
+new dependency the binary needs at runtime, a new asset (e.g. the
+frontend bundle, adapter binaries, Rego policy files), or a new
+platform/architecture target — **update the install scripts and the
+release workflow** so the installer stays correct. A phase is not
+complete if the installer does not work end-to-end. Specifically:
+
+- **`scripts/install.sh`** — update if the download asset name changes,
+  new files need to be downloaded alongside the binary, or new
+  post-install steps are required (e.g. installing an adapter).
+- **`scripts/install.ps1`** — mirror any changes from `install.sh`
+  for Windows. Both scripts must stay in sync.
+- **`.github/workflows/release.yml`** — update the build matrix if a
+  new OS/arch is added, add build steps if the binary now needs the
+  frontend embedded, and verify the asset naming matches what the
+  install scripts download.
+- **README.md** — update the Installation section if the commands or
+  prerequisites change.
+
+Verify by running the installer against a draft release at minimum
+(`bash scripts/install.sh --version vX.Y.Z --dry-run` on each target
+platform, or `--uninstall` to test cleanup).
+
 ## Design Doc Index
 
 | Doc | Subsystem |
@@ -134,8 +275,8 @@ verified and what was not in the commit message or PR description.
 | # | Phase | Status | What landed |
 |---|---|---|---|
 | 1 | Foundation | done | Go module + binary skeleton (`cmd/orchicon`, `internal/`); Protobuf schema (`orchicon.api.v1`, `orchicon.adapter.v1`); Connect codegen (Go + TS); Atlas migrations for tenants/identities/projects with RLS + CI gate; Docker Compose (Postgres, NATS, SigNoz, OTel); Makefile; Vite+React+TS shell with Connect-ES, TanStack Router, Tailwind+shadcn/ui |
-| 2 | Projects slice | not started | Project CRUD (full stack) + frontend project list and detail views |
-| 3 | Realtime + infrastructure | not started | Outbox relay, reconciler framework, OTel, frontend streaming (`useStream` hook) |
+| 2 | Projects slice | done | Project CRUD (Create/Get/List/Update/Archive) full stack: Go handler + data-access layer with pgx + tenant scoping + RLS backstop; Connect handler wiring; transactional outbox with NATS JetStream relay; frontend project list + detail + create form (React Hook Form + Zod + TanStack Query) |
+| 3 | Realtime + infrastructure | not started | Outbox relay (started), reconciler framework, OTel, frontend streaming (`useStream` hook), `orchicon dev` subcommand (embeds compose + migrations + frontend → one-binary dev experience) |
 | 4 | Workers + WorkItems | not started | Worker versioning, WorkItem hierarchy, dependencies + frontend catalog, tree/board, dependency graph |
 | 5 | Scheduling + adapters | not started | TaskReconciler, dispatch, OpenCode adapter + frontend execution live view |
 | 6 | Workflows | not started | Workflow CRUD, step DAG, runs + frontend visual drag-and-drop editor (React Flow) |
@@ -152,6 +293,13 @@ verified and what was not in the commit message or PR description.
 - **Atlas RLS** policies are hand-appended SQL (the free tier does not
   diff `policy` blocks). After hand-editing a migration, run
   `make migrate-hash`. Future diffs won't drop RLS.
-- **Phase 2 entry point**: the `ProjectService` proto and Connect-ES
-  client already exist; the next step is the Go handler + data-access
-  layer in `internal/` wiring the generated `api/gen/go` service.
+- **Phase 3 entry point**: the outbox relay (`internal/outbox/relay.go`)
+  and NATS publisher (`internal/eventbus/nats.go`) are wired and running
+  from Phase 2; the next step is the reconciler framework + OTel + the
+  `useStream` hook projecting NATS events into the frontend. Phase 3 also
+  adds the `orchicon dev` subcommand to the binary itself (replacing the
+  repo-local `scripts/dev.sh`) so that `curl ... | bash` → `orchicon dev
+  start` is the full experience: the binary embeds the Docker Compose
+  stack, migrations, and frontend bundle via `go:embed`, and manages
+  everything internally. This makes the install script + dev control
+  script one seamless path for new users.

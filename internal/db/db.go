@@ -61,7 +61,12 @@ func (p *Pool) BeginTenantTx(ctx context.Context, tenantID string) (*TenantTx, e
 	if err != nil {
 		return nil, fmt.Errorf("db: begin tx: %w", err)
 	}
-	if _, err := tx.Exec(ctx, "SET LOCAL app.tenant_id = $1", tenantID); err != nil {
+	// set_config with is_local=true sets the variable for the duration of
+	// this transaction only. We use the function form (not SET LOCAL)
+	// because SET does not accept parameterized values in pgx — using
+	// set_config keeps the tenant id parameterized so it is never
+	// string-interpolated into SQL (AGENTS.md security standards).
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.tenant_id', $1, true)", tenantID); err != nil {
 		_ = tx.Rollback(ctx)
 		return nil, fmt.Errorf("db: set tenant context: %w", err)
 	}

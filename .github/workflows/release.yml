@@ -1,0 +1,122 @@
+# Orchicon release workflow.
+#
+# Builds the control-plane binary for Linux, macOS, and Windows (amd64
+# + arm64), packages them as tar.gz/zip with the naming convention the
+# install scripts expect, and creates a GitHub Release. The frontend is
+# built and embedded so the binary serves the SPA in production mode
+# (docs/10 §9). Triggers on version tags (v*.*.*).
+#
+# The install scripts (scripts/install.sh, scripts/install.ps1) download
+# these release assets. When a phase adds new runtime components that
+# need to ship in the binary, update the build step here and verify the
+# install scripts still work end-to-end (AGENTS.md §Install Scripts).
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v0.2.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}/${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            archive: tar.gz
+          - os: linux
+            arch: arm64
+            archive: tar.gz
+          - os: darwin
+            arch: amd64
+            archive: tar.gz
+          - os: darwin
+            arch: arm64
+            archive: tar.gz
+          - os: windows
+            arch: amd64
+            archive: zip
+          - os: windows
+            arch: arm64
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build frontend
+        run: cd frontend && npm ci && npm run build
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: 0
+        run: |
+          VERSION="${GITHUB_REF_NAME:-${{ inputs.version }}}"
+          LDFLAGS="-X github.com/beardedparrott/orchicon/internal/version.gitCommit=$(git rev-parse --short HEAD) \
+                   -X github.com/beardedparrott/orchicon/internal/version.gitTag=${VERSION} \
+                   -X github.com/beardedparrott/orchicon/internal/version.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          EXT=""
+          [ "${{ matrix.os }}" = "windows" ] && EXT=".exe"
+          go build -ldflags "$LDFLAGS" -o "orchicon${EXT}" ./cmd/orchicon
+
+      - name: Package
+        run: |
+          VERSION="${GITHUB_REF_NAME:-${{ inputs.version }}}"
+          VERSION_NUM="${VERSION#v}"
+          EXT=""
+          [ "${{ matrix.os }}" = "windows" ] && EXT=".exe"
+          ASSET="orchicon_${VERSION_NUM}_${{ matrix.os }}_${{ matrix.arch }}"
+          mkdir -p "$ASSET"
+          cp "orchicon${EXT}" "$ASSET/"
+          cp README.md "$ASSET/" 2>/dev/null || true
+          cp LICENSE "$ASSET/" 2>/dev/null || true
+          if [ "${{ matrix.archive }}" = "tar.gz" ]; then
+            tar -czf "${ASSET}.tar.gz" "$ASSET"
+          else
+            zip -r "${ASSET}.zip" "$ASSET"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchicon-${{ matrix.os }}-${{ matrix.arch }}
+          path: orchicon_*
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifacts@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name || inputs.version }}
+          name: ${{ github.ref_name || inputs.version }}
+          generate_release_notes: true
+          files: artifacts/*
