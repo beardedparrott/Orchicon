@@ -446,8 +446,10 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 		if !priorStepsSucceeded(stepID, runByStep) {
 			break
 		}
-		// Run the step.
-		if err := r.runStep(ctx, ttx.Tx, tenantID, rec, &sr); err != nil {
+		// Run the step. rec is passed by pointer so steps that mutate
+		// the recovery (summarize, plan) refresh the version for the next
+		// step + escalate (avoids stale-version "not found" errors).
+		if err := r.runStep(ctx, ttx.Tx, tenantID, &rec, &sr); err != nil {
 			return err
 		}
 		runByStep[stepID] = sr
@@ -514,8 +516,10 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 // drives each step directly (the recovery workflow driver is the engine
 // itself), recording the full narrative (why/what/how/where/when —
 // docs/06 §11). Real Reviewer Worker dispatch for steps 2/4/5 is the
-// v0.2 path; v0.1 validates the end-to-end recovery arc.
-func (r *Reconciler) runStep(ctx context.Context, tx pgx.Tx, tenantID string, rec db.RecoveryExecutionRow, sr *db.RecoveryStepRunRow) error {
+// v0.2 path; v0.1 validates the end-to-end recovery arc. rec is a
+// pointer so steps that mutate the recovery refresh its version for
+// subsequent steps + escalate.
+func (r *Reconciler) runStep(ctx context.Context, tx pgx.Tx, tenantID string, rec *db.RecoveryExecutionRow, sr *db.RecoveryStepRunRow) error {
 	now := time.Now().UTC()
 	// Mark running.
 	updated, err := db.UpdateRecoveryStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateRecoveryStepRunFields{
@@ -527,28 +531,34 @@ func (r *Reconciler) runStep(ctx context.Context, tx pgx.Tx, tenantID string, re
 		return fmt.Errorf("mark step running: %w", err)
 	}
 	*sr = updated
-	_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventStepStarted, rec, sr.StepID, sr.ID, rec.TriggerReason, stepAction(sr.StepID), "")
+	_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventStepStarted, *rec, sr.StepID, sr.ID, rec.TriggerReason, stepAction(sr.StepID), "")
 
-	// Execute the step logic.
+	// Execute the step logic. stepSummarize + stepPlan mutate rec
+	// (summary, plan link, relax) and refresh its version via the
+	// pointer so the next step + escalate see the current version.
 	var stepResult []byte
 	var stepErr error
 	switch sr.StepID {
 	case domain.RecoveryStepCapture:
-		stepResult, stepErr = r.stepCapture(ctx, tx, tenantID, rec)
+		stepResult, stepErr = r.stepCapture(ctx, tx, tenantID, *rec)
 	case domain.RecoveryStepSummarize:
 		stepResult, stepErr = r.stepSummarize(ctx, tx, tenantID, rec)
 	case domain.RecoveryStepPreserve:
-		stepResult, stepErr = r.stepPreserve(ctx, tx, tenantID, rec)
+		stepResult, stepErr = r.stepPreserve(ctx, tx, tenantID, *rec)
 	case domain.RecoveryStepReview:
-		stepResult, stepErr = r.stepReview(ctx, tx, tenantID, rec)
+		stepResult, stepErr = r.stepReview(ctx, tx, tenantID, *rec)
 	case domain.RecoveryStepPlan:
 		stepResult, stepErr = r.stepPlan(ctx, tx, tenantID, rec)
 	case domain.RecoveryStepResume:
-		stepResult, stepErr = r.stepResume(ctx, tx, tenantID, rec)
+		stepResult, stepErr = r.stepResume(ctx, tx, tenantID, *rec)
 	}
 
 	endNow := time.Now().UTC()
 	if stepErr != nil {
+		// Ensure result is never nil (column is NOT NULL — docs/09 §3.6).
+		if stepResult == nil {
+			stepResult = []byte("{}")
+		}
 		failed, err := db.UpdateRecoveryStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateRecoveryStepRunFields{
 			Status:  strPtr(domain.RecoveryStepFailed),
 			EndedAt: &endNow,
@@ -558,8 +568,12 @@ func (r *Reconciler) runStep(ctx context.Context, tx pgx.Tx, tenantID string, re
 			return fmt.Errorf("mark step failed: %w", err)
 		}
 		*sr = failed
-		_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventStepFailed, rec, sr.StepID, sr.ID, rec.TriggerReason, "step failed: "+stepErr.Error(), "")
+		_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventStepFailed, *rec, sr.StepID, sr.ID, rec.TriggerReason, "step failed: "+stepErr.Error(), "")
 		return nil
+	}
+	// Ensure result is never nil (column is NOT NULL).
+	if stepResult == nil {
+		stepResult = []byte("{}")
 	}
 	succeeded, err := db.UpdateRecoveryStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateRecoveryStepRunFields{
 		Status:  strPtr(domain.RecoveryStepSucceeded),
@@ -570,7 +584,7 @@ func (r *Reconciler) runStep(ctx context.Context, tx pgx.Tx, tenantID string, re
 		return fmt.Errorf("mark step succeeded: %w", err)
 	}
 	*sr = succeeded
-	_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventStepCompleted, rec, sr.StepID, sr.ID, rec.TriggerReason, stepAction(sr.StepID), "")
+	_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventStepCompleted, *rec, sr.StepID, sr.ID, rec.TriggerReason, stepAction(sr.StepID), "")
 	return nil
 }
 
@@ -599,21 +613,24 @@ func (r *Reconciler) stepCapture(ctx context.Context, tx pgx.Tx, tenantID string
 
 // stepSummarize produces a concise summary of completed work (docs/06 §3
 // step 2). v0.1: the engine produces a textual summary from the
-// execution snapshot; v0.2 dispatches a Reviewer-class Worker.
-func (r *Reconciler) stepSummarize(ctx context.Context, tx pgx.Tx, tenantID string, rec db.RecoveryExecutionRow) ([]byte, error) {
+// execution snapshot; v0.2 dispatches a Reviewer-class Worker. rec is a
+// pointer so the version bump from the summary update is visible to the
+// next step + escalate.
+func (r *Reconciler) stepSummarize(ctx context.Context, tx pgx.Tx, tenantID string, rec *db.RecoveryExecutionRow) ([]byte, error) {
 	exec, err := db.GetExecution(ctx, tx, tenantID, rec.FailedExecutionID)
 	if err != nil {
 		return nil, fmt.Errorf("get execution: %w", err)
 	}
 	summary := fmt.Sprintf("Execution %s failed after %d tokens ($%.4f). Worker %s v%d. Resuming from captured state.",
 		exec.ID, exec.TokenUsage, exec.CostUSD, exec.WorkerID, exec.WorkerVersion)
-	// Persist the summary on the recovery.
-	_, err = db.UpdateRecoveryExecution(ctx, tx, tenantID, rec.ID, rec.Version, db.UpdateRecoveryExecutionFields{
+	// Persist the summary on the recovery + refresh rec.Version.
+	updated, err := db.UpdateRecoveryExecution(ctx, tx, tenantID, rec.ID, rec.Version, db.UpdateRecoveryExecutionFields{
 		Summary: &summary,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("update summary: %w", err)
 	}
+	*rec = updated
 	result, _ := json.Marshal(map[string]string{"summary": summary})
 	return result, nil
 }
@@ -641,8 +658,9 @@ func (r *Reconciler) stepReview(ctx context.Context, tx pgx.Tx, tenantID string,
 // corrections (docs/06 §3 step 5, §8). The plan is persisted as a
 // ContinuationPlan row and linked to the recovery. If the recovery
 // needs human approval (budget > 150% — docs/06 §11), the plan status
-// is pending and the recovery blocks at L3.
-func (r *Reconciler) stepPlan(ctx context.Context, tx pgx.Tx, tenantID string, rec db.RecoveryExecutionRow) ([]byte, error) {
+// is pending and the recovery blocks at L3. rec is a pointer so the
+// version bump is visible to escalate + the next step.
+func (r *Reconciler) stepPlan(ctx context.Context, tx pgx.Tx, tenantID string, rec *db.RecoveryExecutionRow) ([]byte, error) {
 	task, err := db.GetWorkItem(ctx, tx, tenantID, rec.TaskID)
 	if err != nil {
 		return nil, fmt.Errorf("get task: %w", err)
@@ -690,7 +708,7 @@ func (r *Reconciler) stepPlan(ctx context.Context, tx pgx.Tx, tenantID string, r
 	if needsHuman {
 		status = domain.RecoveryBlocked
 	}
-	_, err = db.UpdateRecoveryExecution(ctx, tx, tenantID, rec.ID, rec.Version, db.UpdateRecoveryExecutionFields{
+	updated, err := db.UpdateRecoveryExecution(ctx, tx, tenantID, rec.ID, rec.Version, db.UpdateRecoveryExecutionFields{
 		ContinuationPlanID:  &planID,
 		BudgetRelaxFraction: &relaxFraction,
 		NeedsHumanApproval:  &needsHuman,
@@ -699,6 +717,7 @@ func (r *Reconciler) stepPlan(ctx context.Context, tx pgx.Tx, tenantID string, r
 	if err != nil {
 		return nil, fmt.Errorf("link plan: %w", err)
 	}
+	*rec = updated
 
 	result, _ := json.Marshal(map[string]any{
 		"plan_id":            planID,
@@ -707,9 +726,9 @@ func (r *Reconciler) stepPlan(ctx context.Context, tx pgx.Tx, tenantID string, r
 		"remaining_work":     task.Title,
 	})
 	if needsHuman {
-		_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventBlocked, rec, domain.RecoveryStepPlan, "", rec.TriggerReason, "budget exceeds 150% — human approval required", "")
+		_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventBlocked, *rec, domain.RecoveryStepPlan, "", rec.TriggerReason, "budget exceeds 150% — human approval required", "")
 	} else {
-		_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventPlanProduced, rec, domain.RecoveryStepPlan, "", rec.TriggerReason, "continuation plan produced", "")
+		_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventPlanProduced, *rec, domain.RecoveryStepPlan, "", rec.TriggerReason, "continuation plan produced", "")
 	}
 	return result, nil
 }
