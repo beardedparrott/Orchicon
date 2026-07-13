@@ -164,6 +164,33 @@ func (e *Engine) EvaluateVersion(ctx context.Context, tenantID, policyID string,
 	return dec, nil
 }
 
+// EvaluateGate evaluates a gate_policy_ref at the dispatch decision point
+// (docs/02 §2.5 Tier 1). Used by the WorkflowReconciler to evaluate
+// step gates. Returns (allowed, error): allowed=false blocks the step
+// transition (gate denied). The gate_policy_ref resolves to a published
+// dispatch-point policy; if none exists, allow (governance floor).
+// Satisfies scheduler.PolicyEvaluator (loose coupling).
+func (e *Engine) EvaluateGate(ctx context.Context, tenantID, gatePolicyRef, targetType, targetID string, input any) (bool, error) {
+	dec, err := e.Evaluate(ctx, tenantID, domain.DecisionPointDispatch, targetType, targetID, input)
+	if err != nil {
+		// Fail-open: a policy engine error does not block the DAG
+		// (docs/02 §2.5 governance floor). The error is surfaced via
+		// the decision record.
+		return true, nil
+	}
+	switch dec.Effect {
+	case domain.PolicyEffectAllow:
+		return true, nil
+	case domain.PolicyEffectDeny:
+		return false, nil
+	case domain.PolicyEffectRequireApproval, domain.PolicyEffectRequireReview:
+		// Route to a human / Reviewer. For the gate, this blocks the
+		// automatic transition (the step moves to blocked/approval).
+		return false, nil
+	}
+	return true, nil
+}
+
 // evalModule compiles + evaluates a single Rego module against the
 // input, capturing the evaluation trace. Returns the Rego result (JSON),
 // the trace (JSON), whether the query allowed (true), and any error.

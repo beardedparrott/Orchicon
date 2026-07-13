@@ -51,16 +51,29 @@ func New(log *slog.Logger) *Adapter {
 // Start spawns an OpenCode subprocess for the given execution and
 // streams telemetry back via the callbacks (docs/03 §4, docs/04 §6).
 // The subprocess runs until completion or context cancellation.
+//
+// Per AGENTS.md verification standards: this adapter calls the REAL
+// `opencode` runtime. Simulation mode is an explicit opt-in via the
+// ORCHICON_SIMULATE_ADAPTER=1 env var (offline dev only) — it is NOT
+// a silent fallback. If `opencode` is absent from PATH and simulation
+// is not explicitly enabled, Start returns an error so the failure is
+// loud and visible (do not fall back to simulation and claim dispatch
+// works). Verification workers/executions must pin a free model in
+// model_ref (e.g. opencode/deepseek-v4-flash-free).
 func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, callbacks scheduler.ExecutionCallbacks) error {
-	// In v0.1, if the `opencode` binary is not on PATH, we run in
-	// "simulation mode" — emitting synthetic telemetry events so the
-	// end-to-end dispatch flow can be verified without a real runtime
-	// (docs/04 §6.3: "for local dev, an in-process adapter is supported
-	// for tests only").
+	// Simulation mode is opt-in ONLY (offline dev). Never a silent
+	// fallback (AGENTS.md verification standards).
+	if os.Getenv("ORCHICON_SIMULATE_ADAPTER") == "1" {
+		a.log.Warn("opencode simulation mode ENABLED via ORCHICON_SIMULATE_ADAPTER=1 (offline dev only — not for verification)", "execution", execRow.ID)
+		return a.runSimulation(ctx, execRow, manifest, callbacks)
+	}
+
 	binary, err := exec.LookPath("opencode")
 	if err != nil {
-		a.log.Warn("opencode binary not found — running in simulation mode", "execution", execRow.ID)
-		return a.runSimulation(ctx, execRow, manifest, callbacks)
+		// Loud failure: do not silently fall back to simulation. The
+		// caller (TaskReconciler) marks the execution failed_to_start
+		// and the operator sees the error (AGENTS.md).
+		return fmt.Errorf("opencode binary not found on PATH (set ORCHICON_SIMULATE_ADAPTER=1 for offline dev only): %w", err)
 	}
 
 	// Build the command. opencode v1.x uses `opencode run [message]`

@@ -23,7 +23,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/outbox"
+	"github.com/beardedparrott/orchicon/internal/policy"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
+	"github.com/beardedparrott/orchicon/internal/recovery"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
@@ -88,7 +90,20 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	}
 
 	mux := http.NewServeMux()
-	deps := api.Dependencies{Pool: pool, Log: log, Subscriber: sub}
+	// Phase 7: Policy Engine (Rego) + Recovery Workflow Engine. The
+	// PolicyEngine evaluates published Policies at decision points
+	// (admission/dispatch/budget/approval/recovery/completion — docs/02
+	// §2.5 Tier 1). The RecoveryEngine triggers + progresses recoveries
+	// through the default 6-step workflow (docs/06).
+	policyEngine := policy.New(pool, log)
+	recoveryEngine := recovery.New(pool, log)
+	deps := api.Dependencies{
+		Pool:           pool,
+		Log:            log,
+		Subscriber:     sub,
+		PolicyEngine:   policyEngine,
+		RecoveryEngine: recoveryEngine,
+	}
 	handler := api.Mount(mux, deps)
 
 	// Wrap with OTel tracing interceptor (spans on every API call).
@@ -113,10 +128,17 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	// simulation mode for dev verification.
 	adapterBridge := opencode.New(log)
 	taskRec := scheduler.NewTaskReconciler(pool, log, adapterBridge)
-	workflowRec := scheduler.NewWorkflowReconciler(pool, log)
+	// Phase 7: the TaskReconciler triggers recovery when an execution
+	// fails (docs/06 §2). The RecoveryEngine satisfies the scheduler's
+	// RecoveryTrigger interface (loose coupling — no scheduler→recovery
+	// import).
+	taskRec.SetRecoveryTrigger(recoveryEngine)
+	workflowRec := scheduler.NewWorkflowReconciler(pool, log, policyEngine)
+	recoveryRec := recovery.NewReconciler(recoveryEngine)
 	s.rcmgr = reconciler.NewManager(pool, log)
 	s.rcmgr.Register(taskRec)
 	s.rcmgr.Register(workflowRec)
+	s.rcmgr.Register(recoveryRec)
 
 	// Seed an in-process OpenCode adapter registration so the
 	// TaskReconciler can find a ready adapter for dispatch (docs/04 §6.3:

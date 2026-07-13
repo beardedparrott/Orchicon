@@ -15,7 +15,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/execution"
 	"github.com/beardedparrott/orchicon/internal/middleware"
+	"github.com/beardedparrott/orchicon/internal/policy"
 	"github.com/beardedparrott/orchicon/internal/project"
+	"github.com/beardedparrott/orchicon/internal/recovery"
 	"github.com/beardedparrott/orchicon/internal/version"
 	"github.com/beardedparrott/orchicon/internal/worker"
 	"github.com/beardedparrott/orchicon/internal/workflow"
@@ -25,9 +27,11 @@ import (
 // Dependencies bundles the resources the API layer needs. Constructed
 // once by the server and passed to Mount.
 type Dependencies struct {
-	Pool       *db.Pool
-	Log        *slog.Logger
-	Subscriber eventbus.Subscriber
+	Pool          *db.Pool
+	Log           *slog.Logger
+	Subscriber    eventbus.Subscriber
+	PolicyEngine  *policy.Engine
+	RecoveryEngine *recovery.Engine
 }
 
 // Mount returns an http.Handler serving the Orchicon API. Generated
@@ -76,6 +80,18 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// edit locks for the visual Workflow editor.
 	workflowSvc := workflow.New(deps.Pool, deps.Log, deps.Subscriber)
 	mux.Handle(apiv1connect.NewWorkflowServiceHandler(workflowSvc))
+
+	// PolicyService (docs/07 §3.5). Policy CRUD + publish/supersede +
+	// EvaluatePolicy (dry-run) + ExplainDecision (Rego trace) + decision
+	// log. Tier 1 (decision-point) Rego-only baseline.
+	policySvc := policy.NewService(deps.Pool, deps.Log, deps.PolicyEngine, deps.Subscriber)
+	mux.Handle(apiv1connect.NewPolicyServiceHandler(policySvc))
+
+	// RecoveryService (docs/07 §3.6, docs/06). Trigger/cancel, streaming
+	// events, continuation-plan approval, MarkTaskSucceeded (Reviewer/
+	// human task completion).
+	recoverySvc := recovery.NewService(deps.Pool, deps.Log, deps.RecoveryEngine, deps.Subscriber)
+	mux.Handle(apiv1connect.NewRecoveryServiceHandler(recoverySvc))
 
 	return middleware.ResolveTenant(mux)
 }
