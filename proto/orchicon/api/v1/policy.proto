@@ -1,0 +1,134 @@
+// Orchicon Policy entity (docs/02_Domain_Model.md §2.5, docs/07 §3.5).
+//
+// Policy is a first-class, versioned, reusable rule evaluated by the
+// Policy Engine at well-defined decision points. Tier 1 (decision-point)
+// policy is the v0.1 baseline, always-on, Rego-only (Open Policy Agent).
+// Tier 2 (per-tool-call gating) is opt-in per Worker and surfaces through
+// ExecutionService.ApproveToolCall; Go hooks are deferred to v0.2.
+//
+// A published Policy version is immutable; edits create a new version.
+// Policies attach at any scope (tenant | project | worker | task);
+// narrowest-scope match wins, first definitive decision wins
+// (docs/02 §2.5). The Explain RPC returns the Rego evaluation trace.
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Policy is the immutable header row for a reusable rule (docs/02 §2.5).
+// The mutable snapshot (Rego module, decision_point, scope, effect) lives
+// in PolicyVersion. project_id / worker_id are empty unless the scope is
+// project or worker (narrowest-scope match wins).
+message Policy {
+  string id = 1;
+  string tenant_id = 2;
+  string name = 3;
+  PolicyStatus status = 4;
+  int32 current_version = 5; // latest published version
+  int32 version = 6;        // optimistic concurrency (docs/09 §5)
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+// PolicyVersion is the immutable snapshot of a Policy's Rego module at a
+// specific version (docs/02 §2.5). Once published, a version is
+// immutable; changes create a new version. The `rego_module` is the
+// Rego source (a single `package orchicon.policy.<id>` module). The
+// `query` is the Rego query expression evaluated against `input`
+// (default: `data.orchicon.policy.<id>.allow`).
+message PolicyVersion {
+  string id = 1;
+  string tenant_id = 2;
+  string policy_id = 3;
+  int32 version = 4;          // monotonic integer
+  string version_note = 5;
+  PolicyVersionStatus status = 6;
+  DecisionPoint decision_point = 7; // lifecycle point this policy governs
+  PolicyScope scope = 8;           // tenant | project | worker | task
+  string scope_ref = 9;           // project_id / worker_id (empty for tenant scope)
+  PolicyEffect effect = 10;       // decision when the rule allows/denies
+  string rego_module = 11;        // Rego source (single module)
+  string query = 12;              // Rego query (default: data...allow)
+  google.protobuf.Timestamp published_at = 13;
+  google.protobuf.Timestamp created_at = 14;
+}
+
+// PolicyDecision is a recorded evaluation of a Policy at a decision point
+// (docs/02 §2.5, docs/07 §3.5). Persisted so ExplainDecision can return
+// the Rego trace for a past `policy.evaluated` event by decision_id or
+// trace_id. Carries the actor, input snapshot, effect, and trace.
+message PolicyDecision {
+  string id = 1;                 // decision_id (ULID)
+  string tenant_id = 2;
+  string policy_id = 3;
+  int32 policy_version = 4;
+  string decision_point = 5;     // admission | dispatch | budget | approval | recovery | completion
+  PolicyEffect effect = 6;
+  string scope = 7;             // policy scope at evaluation time
+  string scope_ref = 8;
+  string target_type = 9;       // work_item | execution | workflow_run | step_run
+  string target_id = 10;
+  string actor_type = 11;       // system | user | adapter
+  string actor_id = 12;
+  string input = 13;            // JSON: the input document fed to Rego
+  string result = 14;          // JSON: the Rego output (bindings / value)
+  string trace = 15;           // JSON: the Rego evaluation trace (for ExplainDecision)
+  string trace_id = 16;       // OTel trace id (joins event to telemetry)
+  string error = 17;          // non-empty if evaluation errored
+  google.protobuf.Timestamp occurred_at = 18;
+}
+
+// Policy lifecycle states (docs/02 §2.5):
+// draft → published → superseded.
+enum PolicyStatus {
+  POLICY_STATUS_UNSPECIFIED = 0;
+  POLICY_STATUS_DRAFT = 1;
+  POLICY_STATUS_PUBLISHED = 2;
+  POLICY_STATUS_SUPERSEDED = 3;
+}
+
+// PolicyVersion lifecycle states (docs/02 §2.5). A version is draft
+// until published; published is immutable; superseded when a newer
+// version is published.
+enum PolicyVersionStatus {
+  POLICY_VERSION_STATUS_UNSPECIFIED = 0;
+  POLICY_VERSION_STATUS_DRAFT = 1;
+  POLICY_VERSION_STATUS_PUBLISHED = 2;
+  POLICY_VERSION_STATUS_SUPERSEDED = 3;
+}
+
+// DecisionPoint enumerates the Tier 1 lifecycle points where Policy is
+// evaluated (docs/02 §2.5 Tier 1). Not every tool call is gated — only
+// these transitions.
+enum DecisionPoint {
+  DECISION_POINT_UNSPECIFIED = 0;
+  DECISION_POINT_ADMISSION = 1;  // may this work item be created/started?
+  DECISION_POINT_DISPATCH = 2;   // may this worker begin this task on this runtime?
+  DECISION_POINT_BUDGET = 3;     // is spend/time within envelope?
+  DECISION_POINT_APPROVAL = 4;   // does this transition require a human?
+  DECISION_POINT_RECOVERY = 5;   // which recovery workflow applies?
+  DECISION_POINT_COMPLETION = 6; // may this task be marked succeeded?
+}
+
+// PolicyScope enumerates the attachment scope (docs/02 §2.5). Narrowest
+// scope wins; first definitive decision wins.
+enum PolicyScope {
+  POLICY_SCOPE_UNSPECIFIED = 0;
+  POLICY_SCOPE_TENANT = 1;
+  POLICY_SCOPE_PROJECT = 2;
+  POLICY_SCOPE_WORKER = 3;
+  POLICY_SCOPE_TASK = 4;
+}
+
+// PolicyEffect is the decision a Policy asserts when its rule matches
+// (docs/02 §2.5). `allow` permits the transition; `deny` blocks;
+// `require_approval` routes to a human; `require_review` routes to a
+// Reviewer Worker (recovery).
+enum PolicyEffect {
+  POLICY_EFFECT_UNSPECIFIED = 0;
+  POLICY_EFFECT_ALLOW = 1;
+  POLICY_EFFECT_DENY = 2;
+  POLICY_EFFECT_REQUIRE_APPROVAL = 3;
+  POLICY_EFFECT_REQUIRE_REVIEW = 4;
+}
