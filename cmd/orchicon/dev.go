@@ -308,9 +308,14 @@ func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 	indexHTML, _ := fs.ReadFile(spaFS, "index.html")
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Pass through API + health/version routes.
+		// Pass through API + auth + health/version routes. The /auth/*
+		// endpoints (dev-login, refresh, oidc, session — docs/07 §6.1)
+		// are mounted on the API mux; without this pass-through they
+		// would be shadowed by the SPA's index.html fallback and login
+		// would silently serve HTML instead of minting a token.
 		path := r.URL.Path
 		if strings.HasPrefix(path, "/orchicon.api.v1") ||
+			strings.HasPrefix(path, "/auth/") ||
 			path == "/healthz" || path == "/versionz" {
 			apiHandler.ServeHTTP(w, r)
 			return
