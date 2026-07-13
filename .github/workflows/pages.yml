@@ -1,0 +1,54 @@
+# GitHub Pages deploy for orchicon.dev
+#
+# Builds the static site in docs-site/ and publishes it to GitHub Pages
+# (custom domain: orchicon.dev, configured via docs-site/CNAME). Triggers
+# on push to main and via manual dispatch.
+#
+# The install scripts themselves are NOT bundled with the site — they
+# live in scripts/install.sh and scripts/install.ps1. The redirect from
+# orchicon.dev/install to raw.githubusercontent.com is configured in
+# CloudFlare (see docs-site/CLOUDFLARE_SETUP.md).
+
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs-site/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs-site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

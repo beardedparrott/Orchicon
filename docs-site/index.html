@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Orchicon is an AI orchestration and operations platform. It separates orchestration from execution: it manages projects, workers, scheduling, policies, telemetry, recovery, and governance, while pluggable runtimes do the work." />
+  <meta name="theme-color" content="#0b0d12" />
+  <title>Orchicon — AI orchestration for autonomous work</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2300d4aa'/%3E%3Cpath d='M9 22V10h3v5l4-5h3.5l-4.5 5.5L20 22h-3.6L13 17.5l-1 1.2V22z' fill='%230b0d12'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <a class="brand" href="/">
+        <span class="logo">O</span>
+        <span class="brand-name">orchicon</span>
+      </a>
+      <nav class="nav">
+        <a href="#install">Install</a>
+        <a href="#what">What it is</a>
+        <a href="https://github.com/beardedparrott/Orchicon" rel="noopener">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="container">
+        <p class="kicker">AI orchestration &amp; operations</p>
+        <h1>Coordinate autonomous AI work<br /><span class="muted">like a control plane should.</span></h1>
+        <p class="lede">
+          Orchicon orchestrates. Runtimes execute. One binary, one
+          command, and your local stack — Postgres, NATS, OpenTelemetry,
+          the SPA — is up.
+        </p>
+
+        <div class="install" id="install">
+          <div class="install-tabs" role="tablist">
+            <button class="tab active" data-tab="mac" role="tab" aria-selected="true">macOS / Linux</button>
+            <button class="tab" data-tab="win" role="tab" aria-selected="false">Windows</button>
+          </div>
+          <div class="install-body">
+            <pre class="install-cmd active" data-tab="mac"><code><span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash</code></pre>
+            <pre class="install-cmd" data-tab="win"><code><span class="prompt">PS&gt;</span> irm https://orchicon.dev/install.ps1 | iex</code></pre>
+          </div>
+          <p class="install-note">
+            Installs the <code>orchicon</code> binary to
+            <code>~/.local/bin</code>. Re-running updates to the latest
+            release. See <a href="#options">options</a> below.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="quick">
+      <div class="container">
+        <h2>Quick start</h2>
+        <ol class="steps">
+          <li>
+            <span class="step-num">1</span>
+            <div>
+              <h3>Install</h3>
+              <p>Run the one-liner above. Requires <code>curl</code> and <code>tar</code> (or PowerShell on Windows).</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-num">2</span>
+            <div>
+              <h3>Start the dev stack</h3>
+              <pre class="cmd"><code><span class="prompt">$</span> orchicon dev start</code></pre>
+              <p>Boots Postgres, NATS, SigNoz, the OTel collector, runs migrations, and serves the control plane + embedded UI on <a href="http://localhost:8080" rel="noopener">localhost:8080</a>. Requires Docker.</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-num">3</span>
+            <div>
+              <h3>Log in &amp; build</h3>
+              <p>Open the URL, sign in with the built-in dev IdP, create a project, define a Worker, and dispatch a Task. The whole <a href="https://github.com/beardedparrott/Orchicon#status">end-to-end flow</a> is verifiable locally.</p>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="what" id="what">
+      <div class="container">
+        <h2>What Orchicon is</h2>
+        <p class="lede">
+          An orchestration platform for autonomous AI work. It
+          coordinates the moving parts — projects, workers, scheduling,
+          policies, telemetry, recovery, governance — and talks to
+          pluggable runtimes (OpenCode first) over gRPC.
+        </p>
+
+        <div class="grid">
+          <div class="card">
+            <h3>Projects &amp; work</h3>
+            <p>Tenants, projects, work items as a DAG (Epic → Feature → Task → Subtask), with cycle-detected dependencies.</p>
+          </div>
+          <div class="card">
+            <h3>Workers &amp; dispatch</h3>
+            <p>Versioned Worker definitions (system prompt, permissions, gated tools, budgets). Reconciler-driven dispatch to healthy adapters.</p>
+          </div>
+          <div class="card">
+            <h3>Workflows</h3>
+            <p>Step-DAG workflows: task, decision, approval, parallel, recover. Visual React Flow editor. Real-time step transitions.</p>
+          </div>
+          <div class="card">
+            <h3>Recovery engine</h3>
+            <p>Default 6-step recovery workflow (capture → summarize → preserve → review → plan → resume) with checkpoint replay and bounded auto-relax.</p>
+          </div>
+          <div class="card">
+            <h3>Rego policy</h3>
+            <p>OPA v1 at the dispatch decision point. Narrowest-scope-first evaluation, full Rego trace per decision for explainability.</p>
+          </div>
+          <div class="card">
+            <h3>Telemetry &amp; cost</h3>
+            <p>OTel → SigNoz. Per-tenant cost roll-up (Tenant → Project → Task → Execution) with streamed usage events.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="principle">
+      <div class="container">
+        <blockquote>
+          <p>Orchicon orchestrates. Runtimes execute.</p>
+        </blockquote>
+        <p class="muted small">
+          The control plane is a single Go binary. The runtime is a
+          sidecar. Adapters never touch Postgres or NATS directly — they
+          stream telemetry over gRPC. Swap OpenCode for something else
+          by implementing <a href="https://github.com/beardedparrott/Orchicon/blob/main/docs/04_Runtime_Adapter_SDK.md" rel="noopener"><code>orchicon.adapter.v1</code></a>.
+        </p>
+      </div>
+    </section>
+
+    <section class="options" id="options">
+      <div class="container">
+        <h2>Installer options</h2>
+
+        <h3>macOS / Linux</h3>
+        <pre class="cmd"><code><span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --version v0.2.0
+<span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --install-dir /usr/local/bin
+<span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --uninstall</code></pre>
+
+        <h3>Windows</h3>
+        <pre class="cmd"><code><span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Version v0.2.0
+<span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -InstallDir "C:\bin"
+<span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Uninstall</code></pre>
+
+        <table class="flags">
+          <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>--version &lt;tag&gt;</code></td><td>Install a specific version (e.g. <code>v0.2.0</code>). Default: latest.</td></tr>
+            <tr><td><code>--install-dir &lt;dir&gt;</code></td><td>Where to drop the binary. Default: <code>~/.local/bin</code>.</td></tr>
+            <tr><td><code>--uninstall</code></td><td>Remove Orchicon from the install directory.</td></tr>
+            <tr><td><code>--dry-run</code></td><td>Print what would happen without making changes.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="build">
+      <div class="container">
+        <h2>Build from source</h2>
+        <p>Pre-built binaries ship from <a href="https://github.com/beardedparrott/Orchicon/releases" rel="noopener">GitHub Releases</a>. Until the first release is cut, build from source:</p>
+        <pre class="cmd"><code><span class="prompt">$</span> git clone https://github.com/beardedparrott/Orchicon.git
+<span class="prompt">$</span> cd Orchicon
+<span class="prompt">$</span> make build         <span class="cmt"># → bin/orchicon</span>
+<span class="prompt">$</span> make dev-start     <span class="cmt"># full dev environment</span></code></pre>
+        <p>Prereqs: Go 1.26+, Node 22+, Docker. The Makefile installs <a href="https://buf.build" rel="noopener">buf</a> and <a href="https://atlasgo.io" rel="noopener">atlas</a> via <code>make tools</code>.</p>
+      </div>
+    </section>
+
+    <section class="cta">
+      <div class="container cta-inner">
+        <div>
+          <h2>Read the design</h2>
+          <p>Ten design documents, one for each subsystem.</p>
+        </div>
+        <a class="btn primary" href="https://github.com/beardedparrott/Orchicon#documentation" rel="noopener">Open the docs →</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="container foot-inner">
+      <span class="muted small">Apache-2.0 (TBD) · built by <a href="https://github.com/beardedparrott" rel="noopener">@beardedparrott</a></span>
+      <span class="muted small">
+        <a href="https://github.com/beardedparrott/Orchicon" rel="noopener">Source</a>
+        ·
+        <a href="https://github.com/beardedparrott/Orchicon/issues" rel="noopener">Issues</a>
+        ·
+        <a href="https://github.com/beardedparrott/Orchicon/releases" rel="noopener">Releases</a>
+      </span>
+    </div>
+  </footer>
+
+  <script>
+    (function () {
+      var tabs = document.querySelectorAll('.install-tabs .tab');
+      var panels = document.querySelectorAll('.install-cmd');
+      tabs.forEach(function (t) {
+        t.addEventListener('click', function () {
+          tabs.forEach(function (x) { x.classList.remove('active'); x.setAttribute('aria-selected', 'false'); });
+          panels.forEach(function (p) { p.classList.remove('active'); });
+          t.classList.add('active');
+          t.setAttribute('aria-selected', 'true');
+          var name = t.getAttribute('data-tab');
+          var panel = document.querySelector('.install-cmd[data-tab="' + name + '"]');
+          if (panel) panel.classList.add('active');
+        });
+      });
+    })();
+  </script>
+</body>
+</html>
