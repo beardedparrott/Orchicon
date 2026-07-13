@@ -149,12 +149,19 @@ export class Worker extends Message<Worker> {
   createdBy = "";
 
   /**
-   * @generated from field: google.protobuf.Timestamp created_at = 10;
+   * optimistic concurrency (docs/09 §5)
+   *
+   * @generated from field: int32 version = 10;
+   */
+  version = 0;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp created_at = 11;
    */
   createdAt?: Timestamp;
 
   /**
-   * @generated from field: google.protobuf.Timestamp updated_at = 11;
+   * @generated from field: google.protobuf.Timestamp updated_at = 12;
    */
   updatedAt?: Timestamp;
 
@@ -175,8 +182,9 @@ export class Worker extends Message<Worker> {
     { no: 7, name: "status", kind: "enum", T: proto3.getEnumType(WorkerStatus) },
     { no: 8, name: "current_version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 9, name: "created_by", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 10, name: "created_at", kind: "message", T: Timestamp },
-    { no: 11, name: "updated_at", kind: "message", T: Timestamp },
+    { no: 10, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 11, name: "created_at", kind: "message", T: Timestamp },
+    { no: 12, name: "updated_at", kind: "message", T: Timestamp },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Worker {

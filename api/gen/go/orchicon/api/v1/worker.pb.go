@@ -156,8 +156,9 @@ type Worker struct {
 	Status         WorkerStatus           `protobuf:"varint,7,opt,name=status,proto3,enum=orchicon.api.v1.WorkerStatus" json:"status,omitempty"`
 	CurrentVersion int32                  `protobuf:"varint,8,opt,name=current_version,json=currentVersion,proto3" json:"current_version,omitempty"` // latest version number
 	CreatedBy      string                 `protobuf:"bytes,9,opt,name=created_by,json=createdBy,proto3" json:"created_by,omitempty"`
-	CreatedAt      *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt      *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	Version        int32                  `protobuf:"varint,10,opt,name=version,proto3" json:"version,omitempty"` // optimistic concurrency (docs/09 §5)
+	CreatedAt      *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt      *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -253,6 +254,13 @@ func (x *Worker) GetCreatedBy() string {
 		return x.CreatedBy
 	}
 	return ""
+}
+
+func (x *Worker) GetVersion() int32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
 }
 
 func (x *Worker) GetCreatedAt() *timestamppb.Timestamp {
@@ -528,7 +536,7 @@ var File_orchicon_api_v1_worker_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_worker_proto_rawDesc = "" +
 	"\n" +
-	"\x1corchicon/api/v1/worker.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x8e\x03\n" +
+	"\x1corchicon/api/v1/worker.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa8\x03\n" +
 	"\x06Worker\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x12\n" +
@@ -539,12 +547,13 @@ const file_orchicon_api_v1_worker_proto_rawDesc = "" +
 	"\x06status\x18\a \x01(\x0e2\x1d.orchicon.api.v1.WorkerStatusR\x06status\x12'\n" +
 	"\x0fcurrent_version\x18\b \x01(\x05R\x0ecurrentVersion\x12\x1d\n" +
 	"\n" +
-	"created_by\x18\t \x01(\tR\tcreatedBy\x129\n" +
+	"created_by\x18\t \x01(\tR\tcreatedBy\x12\x18\n" +
+	"\aversion\x18\n" +
+	" \x01(\x05R\aversion\x129\n" +
 	"\n" +
-	"created_at\x18\n" +
-	" \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
+	"created_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xd6\x05\n" +
+	"updated_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xd6\x05\n" +
 	"\rWorkerVersion\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x12\x18\n" +

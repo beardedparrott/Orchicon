@@ -24,8 +24,9 @@ message Worker {
   WorkerStatus status = 7;
   int32 current_version = 8; // latest version number
   string created_by = 9;
-  google.protobuf.Timestamp created_at = 10;
-  google.protobuf.Timestamp updated_at = 11;
+  int32 version = 10; // optimistic concurrency (docs/09 §5)
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp updated_at = 12;
 }
 
 // WorkerVersion is the immutable snapshot of a Worker's mutable fields
