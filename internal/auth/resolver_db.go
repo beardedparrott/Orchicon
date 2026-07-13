@@ -55,31 +55,19 @@ func (r *Resolver) EnsureIdentityForSubject(ctx context.Context, tenantID, subje
 }
 
 // ResolveApiKey looks up an active API key by its hash (no tenant scope
-// — the key identifies the tenant). Returns the row + the entitlements
-// derived from the key's identity (role bindings) union the key's own
-// scopes.
+// — the key identifies the tenant). Returns the row + the key's own
+// scopes as the effective entitlement set. An API key is a
+// least-privilege machine credential: its scopes ARE the entitlements,
+// and it is never an admin (admins bypass per-call checks — a machine
+// credential must declare exactly what it may do, docs/07 §6.1).
 func (r *Resolver) ResolveApiKey(ctx context.Context, hash string) (db.ApiKeyRow, []string, bool, error) {
 	keyRow, err := db.LookupApiKeyByHash(ctx, r.pool, hash)
 	if err != nil {
 		return db.ApiKeyRow{}, nil, false, err
 	}
-	ents, isAdmin, err := r.ResolveIdentity(ctx, keyRow.TenantID, keyRow.IdentityID)
-	if err != nil {
-		// The identity may not have role bindings; fall back to the
-		// key's own scopes.
-		ents = nil
-		isAdmin = false
-	}
-	// Union the key's own scopes (entitlements).
-	seen := map[string]struct{}{}
-	for _, e := range ents {
-		seen[e] = struct{}{}
-	}
-	for _, e := range keyRow.Scopes {
-		if _, ok := seen[e]; !ok {
-			seen[e] = struct{}{}
-			ents = append(ents, e)
-		}
-	}
-	return keyRow, ents, isAdmin, nil
+	// The key's scopes are the effective entitlement set. We do NOT
+	// union the identity's role entitlements — that would widen the
+	// key beyond its declared scope and defeat least-privilege. The
+	// identity is only used to resolve the tenant + record the caller.
+	return keyRow, keyRow.Scopes, false, nil
 }
