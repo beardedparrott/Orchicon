@@ -82,6 +82,7 @@ type WorkflowStepRunRow struct {
 	WorkerExecutionID  string
 	StartedAt          *time.Time
 	EndedAt            *time.Time
+	Version            int
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 }
@@ -538,7 +539,7 @@ func CreateWorkflowStepRun(ctx context.Context, tx pgx.Tx, s WorkflowStepRunRow)
 		 status, attempt, result, worker_execution_id, started_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING id, tenant_id, workflow_run_id, step_id, step_name, step_kind,
-			status, attempt, result, worker_execution_id, started_at, ended_at,
+			status, attempt, result, 		worker_execution_id, started_at, ended_at, version,
 			created_at, updated_at`
 	row := s
 	err := tx.QueryRow(ctx, q,
@@ -547,7 +548,7 @@ func CreateWorkflowStepRun(ctx context.Context, tx pgx.Tx, s WorkflowStepRunRow)
 	).Scan(
 		&row.ID, &row.TenantID, &row.WorkflowRunID, &row.StepID, &row.StepName,
 		&row.StepKind, &row.Status, &row.Attempt, &row.Result,
-		&row.WorkerExecutionID, &row.StartedAt, &row.EndedAt,
+		&row.WorkerExecutionID, &row.StartedAt, &row.EndedAt, &row.Version,
 		&row.CreatedAt, &row.UpdatedAt,
 	)
 	if err != nil {
@@ -559,14 +560,14 @@ func CreateWorkflowStepRun(ctx context.Context, tx pgx.Tx, s WorkflowStepRunRow)
 // GetWorkflowStepRun fetches a single step run by id within the tenant.
 func GetWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkflowStepRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_run_id, step_id, step_name, step_kind,
-		status, attempt, result, worker_execution_id, started_at, ended_at,
+		status, attempt, result, 		worker_execution_id, started_at, ended_at, version,
 		created_at, updated_at
 		FROM workflow_step_runs WHERE id = $1 AND tenant_id = $2`
 	var s WorkflowStepRunRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&s.ID, &s.TenantID, &s.WorkflowRunID, &s.StepID, &s.StepName,
 		&s.StepKind, &s.Status, &s.Attempt, &s.Result,
-		&s.WorkerExecutionID, &s.StartedAt, &s.EndedAt,
+		&s.WorkerExecutionID, &s.StartedAt, &s.EndedAt, &s.Version,
 		&s.CreatedAt, &s.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -583,7 +584,7 @@ func GetWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (Wo
 // the runtime state of a step within a run.
 func GetWorkflowStepRunByStep(ctx context.Context, tx pgx.Tx, tenantID, runID, stepID string) (WorkflowStepRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_run_id, step_id, step_name, step_kind,
-		status, attempt, result, worker_execution_id, started_at, ended_at,
+		status, attempt, result, 		worker_execution_id, started_at, ended_at, version,
 		created_at, updated_at
 		FROM workflow_step_runs
 		WHERE tenant_id = $1 AND workflow_run_id = $2 AND step_id = $3
@@ -592,7 +593,7 @@ func GetWorkflowStepRunByStep(ctx context.Context, tx pgx.Tx, tenantID, runID, s
 	err := tx.QueryRow(ctx, q, tenantID, runID, stepID).Scan(
 		&s.ID, &s.TenantID, &s.WorkflowRunID, &s.StepID, &s.StepName,
 		&s.StepKind, &s.Status, &s.Attempt, &s.Result,
-		&s.WorkerExecutionID, &s.StartedAt, &s.EndedAt,
+		&s.WorkerExecutionID, &s.StartedAt, &s.EndedAt, &s.Version,
 		&s.CreatedAt, &s.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -607,7 +608,7 @@ func GetWorkflowStepRunByStep(ctx context.Context, tx pgx.Tx, tenantID, runID, s
 // ListWorkflowStepRuns returns all step runs for a workflow run.
 func ListWorkflowStepRuns(ctx context.Context, tx pgx.Tx, tenantID, runID string) ([]WorkflowStepRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_run_id, step_id, step_name, step_kind,
-		status, attempt, result, worker_execution_id, started_at, ended_at,
+		status, attempt, result, 		worker_execution_id, started_at, ended_at, version,
 		created_at, updated_at
 		FROM workflow_step_runs
 		WHERE tenant_id = $1 AND workflow_run_id = $2
@@ -623,7 +624,7 @@ func ListWorkflowStepRuns(ctx context.Context, tx pgx.Tx, tenantID, runID string
 		if err := rows.Scan(
 			&s.ID, &s.TenantID, &s.WorkflowRunID, &s.StepID, &s.StepName,
 			&s.StepKind, &s.Status, &s.Attempt, &s.Result,
-			&s.WorkerExecutionID, &s.StartedAt, &s.EndedAt,
+			&s.WorkerExecutionID, &s.StartedAt, &s.EndedAt, &s.Version,
 			&s.CreatedAt, &s.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan workflow step run: %w", err)
@@ -682,13 +683,13 @@ func UpdateWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string, 
 	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, workflow_run_id, step_id, step_name, step_kind,
-		status, attempt, result, worker_execution_id, started_at, ended_at,
+		status, attempt, result, 		worker_execution_id, started_at, ended_at, version,
 		created_at, updated_at`
 	var s WorkflowStepRunRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&s.ID, &s.TenantID, &s.WorkflowRunID, &s.StepID, &s.StepName,
 		&s.StepKind, &s.Status, &s.Attempt, &s.Result,
-		&s.WorkerExecutionID, &s.StartedAt, &s.EndedAt,
+		&s.WorkerExecutionID, &s.StartedAt, &s.EndedAt, &s.Version,
 		&s.CreatedAt, &s.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

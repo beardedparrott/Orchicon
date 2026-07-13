@@ -532,7 +532,7 @@ func (s *Service) AbortWorkflow(ctx context.Context, req *connect.Request[apiv1.
 	}
 	for _, sr := range stepRuns {
 		if sr.Status == domain.StepRunPending || sr.Status == domain.StepRunReady || sr.Status == domain.StepRunRunning || sr.Status == domain.StepRunApprovalPending {
-			if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, 0, db.UpdateWorkflowStepRunFields{
+			if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 				Status:  strPtr(domain.StepRunFailed),
 				EndedAt: &now,
 			}); err != nil {

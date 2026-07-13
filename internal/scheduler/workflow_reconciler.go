@@ -168,7 +168,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			continue
 		}
 		if r.depsSatisfied(step, runByID) {
-			updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, 0, db.UpdateWorkflowStepRunFields{
+			updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 				Status: strPtr(domain.StepRunReady),
 			})
 			if err != nil {
@@ -202,7 +202,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		allowed := r.evaluateGate(ctx, step, run)
 		if !allowed {
 			now := time.Now().UTC()
-			updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, 0, db.UpdateWorkflowStepRunFields{
+			updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 				Status:  strPtr(domain.StepRunBlocked),
 				EndedAt: &now,
 			})
@@ -233,20 +233,16 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		}
 		if terminal {
 			endNow := time.Now().UTC()
-			updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, 0, db.UpdateWorkflowStepRunFields{
-				Status:  strPtr(domain.StepRunSucceeded),
+			finalStatus := domain.StepRunSucceeded
+			if failed {
+				finalStatus = domain.StepRunFailed
+			}
+			updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:  strPtr(finalStatus),
 				EndedAt: &endNow,
 			})
 			if err != nil {
-				return fmt.Errorf("mark task step succeeded: %w", err)
-			}
-			if failed {
-				_, err = db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, 0, db.UpdateWorkflowStepRunFields{
-					Status: strPtr(domain.StepRunFailed),
-				})
-				if err != nil {
-					return fmt.Errorf("mark task step failed: %w", err)
-				}
+				return fmt.Errorf("mark task step terminal: %w", err)
 			}
 			stepRuns[i] = updated
 			runByID[sr.StepID] = updated
@@ -390,7 +386,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		}
 		// Record the work_item_id on the step run so we can poll it.
 		stepResult, _ := json.Marshal(map[string]string{"_work_item_id": workItem.ID})
-		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, 0, db.UpdateWorkflowStepRunFields{
+		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 			Status: strPtr(domain.StepRunRunning),
 			Result: &stepResult,
 			StartedAt: &now,
@@ -407,7 +403,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 	case domain.StepKindDecision:
 		// v0.1: default branch (true). Branch-condition evaluation from
 		// step.config arrives with richer decision config.
-		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, 0, db.UpdateWorkflowStepRunFields{
+		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 			Status:    strPtr(domain.StepRunSucceeded),
 			StartedAt: &now,
 			EndedAt:   &now,
@@ -424,7 +420,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		// Fan-out: mark succeeded; downstream steps that depend on this
 		// one become ready on the next pass (their deps are now
 		// satisfied).
-		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, 0, db.UpdateWorkflowStepRunFields{
+		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 			Status:    strPtr(domain.StepRunSucceeded),
 			StartedAt: &now,
 			EndedAt:   &now,
@@ -440,7 +436,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 	case domain.StepKindRecover:
 		// v0.1: recovery workflow invocation arrives with the Recovery
 		// Engine (Phase 7). For now mark succeeded so the DAG progresses.
-		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, 0, db.UpdateWorkflowStepRunFields{
+		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 			Status:    strPtr(domain.StepRunSucceeded),
 			StartedAt: &now,
 			EndedAt:   &now,
@@ -458,7 +454,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		// wiring (an ApproveStep RPC + Policy-derived decision) arrives
 		// with the Policy engine, Phase 7. The run view shows the step
 		// waiting.
-		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, 0, db.UpdateWorkflowStepRunFields{
+		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 			Status:    strPtr(domain.StepRunApprovalPending),
 			StartedAt: &now,
 		})
@@ -472,7 +468,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 
 	default:
 		// Unknown kind → fail the step rather than stall the run.
-		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, 0, db.UpdateWorkflowStepRunFields{
+		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 			Status:  strPtr(domain.StepRunFailed),
 			EndedAt: &now,
 		})

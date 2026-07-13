@@ -1130,6 +1130,11 @@ table "workflow_step_runs" {
     null = false
     default = ""
   }
+  column "version" {
+    type = integer
+    null = false
+    default = 1
+  }
   column "started_at" {
     type = timestamptz
     null = true
