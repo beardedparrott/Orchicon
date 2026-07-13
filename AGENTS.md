@@ -279,7 +279,7 @@ platform, or `--uninstall` to test cleanup).
 | 3 | Realtime + infrastructure | done | `orchicon dev` subcommand (embeds compose + migrations + frontend via go:embed); outbox relay lag metrics (`orchicon_outbox_lag`); reconciler framework (work queue + advisory-lock leadership + manager); OTel pipeline (tracer/meter/exporter → SigNoz); StreamProjectEvents server-stream RPC fanning out from NATS; trace propagation via Connect headers; `useStream` hook (reconnect + backoff + dedup + resume) + live event feed on project detail page |
 | 4 | Workers + WorkItems | done | WorkerService (CreateWorker, PublishWorkerVersion, DeprecateWorker, RetireWorker, GetWorker, ListWorkers, ListWorkerVersions) + edit locks (TTL, heartbeat, visual editor); WorkItemService (CRUD, AddDependency/RemoveDependency with recursive-CTE cycle rejection, GetDependencyGraph, AssignWorker) with CAS optimistic concurrency + outbox events; Atlas migrations (workers, worker_versions, work_items, work_item_dependencies, edit_locks) with RLS; frontend worker catalog + version history + create form (system_prompt template vars, permissions, gated_tools, budget overrides) + work item tree view + Kanban board + dependency graph (read-only React Flow) + edit lock banner on worker editor |
 | 5 | Scheduling + adapters | done | TaskReconciler (dependency resolution via recursive CTE, rule-based worker/adapter selection, dispatch flow with CAS status transitions); RuntimeAdapterService (orchicon.adapter.v1: Register/Heartbeat/Execute bistream) + public RuntimeAdapterService (ListAdapters, GetAdapterCapabilities); ExecutionService (Get/List/StreamExecutionEvents via NATS fan-out, Pause/Resume/Cancel/CheckpointNow, ApproveToolCall Tier 2 per-tool-call gating); OpenCode adapter bridge (CLI subprocess wrapper, stdout JSON → telemetry events, simulation mode for dev); Atlas migrations (runtime_adapters, worker_executions, checkpoints) with RLS; frontend execution live view (streaming telemetry, manual controls), tool-call approval dialog, adapter registry |
-| 6 | Workflows | not started | Workflow CRUD, step DAG, runs + frontend visual drag-and-drop editor (React Flow) |
+| 6 | Workflows | done | WorkflowService (CreateWorkflow, UpdateWorkflowVersion, PublishWorkflow, DeprecateWorkflow, GetWorkflow, ListWorkflows, ListWorkflowVersions, StartWorkflow, AbortWorkflow, GetWorkflowRun, ListWorkflowRuns, GetWorkflowStepRuns, StreamWorkflowEvents, AcquireEditLock/ReleaseEditLock/GetEditLock) + WorkflowReconciler (step DAG progression, gate evaluation — Rego pass-through pending Phase 7, task-step→WorkItem handoff to TaskReconciler) + step types (task/decision/approval/parallel/recover); Atlas migrations (workflows, workflow_versions, workflow_runs, workflow_step_runs) with RLS; frontend full visual drag-and-drop React Flow editor (draggable Worker tiles, gate/decision/approval/parallel/recover step nodes, wire connections, inline property editing, undo/redo, client-side cycle-detection validation, edit lock banner) + workflow run view (live step-transition overlay on canvas, streaming event feed) + list + create form; manager scan pass (Reconcile with empty key) so both reconcilers discover work; TaskReconciler transitions WorkItem to succeeded/failed on execution result; dev adapter heartbeat renewal |
 | 7 | Recovery + Policy | not started | Recovery Engine, Rego Policy Engine + frontend recovery timeline, policy editor |
 | 8 | Telemetry + Cost | not started | OTel pipeline, SigNoz integration, cost attribution + frontend SigNoz embedding, cost explorer |
 | 9 | Auth + Webhooks + Polish | not started | OIDC, API keys, RBAC, webhooks, edit locks + frontend auth flow, end-to-end integration |
@@ -338,3 +338,28 @@ platform, or `--uninstall` to test cleanup).
   adapter (`adp_opencode_dev`) on boot so the TaskReconciler has a
   ready adapter for dispatch. The next step (Phase 6) adds Workflow
   CRUD, step DAG, runs + frontend visual drag-and-drop editor.
+- **Phase 6**: Workflows are the top-level reconcilable object for
+  execution; tasks are reconciled as children (docs/02 §2.4). The
+  WorkflowReconciler progresses a run's step DAG: pending steps whose
+  `depends_on` are all satisfied transition to ready; ready steps
+  evaluate their `gate_policy_ref` (Rego pass-through for v0.1 — the
+  Policy Engine lands in Phase 7) then dispatch by kind. Task steps
+  create a WorkItem (kind=task) with the step's Worker ref and hand it
+  to the TaskReconciler for dispatch (only the TaskReconciler creates
+  WorkerExecutions — docs/03 §8 invariant #1); the step run polls the
+  WorkItem to completion. Decision/parallel/recover steps complete
+  immediately; approval steps block at `approval_pending` (human
+  approval wiring arrives with the Policy engine). The reconciler
+  manager gained a scan pass (`Reconcile(ctx, "")` when the work queue
+  is empty) so both the TaskReconciler and WorkflowReconciler discover
+  work without an explicit enqueue path. The TaskReconciler now
+  transitions the linked WorkItem to succeeded/failed when an execution
+  terminates (`OnResult`), closing the loop for workflow task-step
+  polling. The dev server renews the in-process adapter heartbeat every
+  30s so dispatch works beyond the 60s heartbeat TTL. The visual editor
+  is a full React Flow drag-and-drop canvas (docs/10 §11): draggable
+  Worker tiles + gate/decision/approval/parallel/recover step nodes,
+  wired connections (= `depends_on`), inline property editing,
+  undo/redo (Ctrl+Z / Ctrl+Shift+Z), and client-side cycle-detection
+  validation. The run view overlays live step transitions on the same
+  canvas via `StreamWorkflowEvents`.

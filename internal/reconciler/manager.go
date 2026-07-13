@@ -103,6 +103,7 @@ func (m *Manager) runReconciler(ctx context.Context, j *job) {
 }
 
 func (m *Manager) processQueue(ctx context.Context, j *job) {
+	didWork := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -111,8 +112,9 @@ func (m *Manager) processQueue(ctx context.Context, j *job) {
 		}
 		key, ok := j.queue.dequeue()
 		if !ok {
-			return
+			break
 		}
+		didWork = true
 		ctx, span := startReconcileSpan(ctx, j.rec.Kind(), key)
 		result := j.rec.Reconcile(ctx, key)
 		span.End()
@@ -130,6 +132,20 @@ func (m *Manager) processQueue(ctx context.Context, j *job) {
 		j.queue.markDone(key)
 		if result.RequeueAfter > 0 {
 			j.queue.requeueAfter(key, result.RequeueAfter)
+		}
+	}
+	// Scan pass: when the work queue is empty, let the reconciler
+	// discover new work by calling Reconcile with an empty key
+	// (docs/03 §2.1). Reconcilers that don't implement scanning return
+	// an empty Result for an empty key (no-op). This lets the
+	// WorkflowReconciler scan pending runs and the TaskReconciler scan
+	// ready tasks without an explicit enqueue path.
+	if !didWork {
+		ctx, span := startReconcileSpan(ctx, j.rec.Kind(), "scan")
+		result := j.rec.Reconcile(ctx, "")
+		span.End()
+		if result.Error != nil {
+			m.log.Warn("reconcile scan failed", "kind", j.rec.Kind(), "error", result.Error)
 		}
 	}
 }

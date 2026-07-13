@@ -105,7 +105,79 @@ const (
 
 // Resource types for edit locks (docs/07 §3.3).
 const (
-	EditLockResourceWorker = "worker"
+	EditLockResourceWorker   = "worker"
+	EditLockResourceWorkflow = "workflow"
+)
+
+// Workflow lifecycle states (docs/02 §2.4):
+// draft → published → deprecated. A published version is immutable.
+const (
+	WorkflowDraft      = "draft"
+	WorkflowPublished  = "published"
+	WorkflowDeprecated = "deprecated"
+)
+
+// WorkflowVersion lifecycle states (docs/02 §2.4). A version is draft
+// until published; published is immutable.
+const (
+	WorkflowVersionDraft      = "draft"
+	WorkflowVersionPublished  = "published"
+	WorkflowVersionDeprecated = "deprecated"
+)
+
+// WorkflowRun lifecycle states (docs/02 §2.4, docs/03 §2):
+// pending → running → completed | failed | aborted | paused.
+const (
+	WorkflowRunPending   = "pending"
+	WorkflowRunRunning   = "running"
+	WorkflowRunCompleted = "completed"
+	WorkflowRunFailed    = "failed"
+	WorkflowRunAborted   = "aborted"
+	WorkflowRunPaused    = "paused"
+)
+
+// StepKind — the five step types (docs/02 §2.4):
+//   - task: dispatches a Worker (creates a WorkerExecution)
+//   - decision: branches based on a prior step's result
+//   - approval: blocks until a human approves (gate)
+//   - parallel: fans out to multiple sub-steps, joins on completion
+//   - recover: invokes a recovery workflow
+const (
+	StepKindTask      = "task"
+	StepKindDecision  = "decision"
+	StepKindApproval  = "approval"
+	StepKindParallel  = "parallel"
+	StepKindRecover   = "recover"
+)
+
+// StepRun lifecycle states (docs/03 §2, docs/09 §3.4):
+// pending → ready → running → succeeded | failed | skipped | blocked |
+// approval_pending.
+const (
+	StepRunPending          = "pending"
+	StepRunReady            = "ready"
+	StepRunRunning          = "running"
+	StepRunSucceeded        = "succeeded"
+	StepRunFailed           = "failed"
+	StepRunSkipped          = "skipped"
+	StepRunBlocked          = "blocked"
+	StepRunApprovalPending  = "approval_pending"
+)
+
+// WorkflowEventType — event kinds streamed via StreamWorkflowEvents
+// (docs/07 §3.4, docs/10 §4.1). Step transitions + run lifecycle.
+const (
+	WorkflowEventRunStarted       = "workflow.run_started"
+	WorkflowEventRunCompleted     = "workflow.run_completed"
+	WorkflowEventRunFailed        = "workflow.run_failed"
+	WorkflowEventRunAborted       = "workflow.run_aborted"
+	WorkflowEventStepReady        = "workflow.step_ready"
+	WorkflowEventStepStarted      = "workflow.step_started"
+	WorkflowEventStepSucceeded    = "workflow.step_succeeded"
+	WorkflowEventStepFailed       = "workflow.step_failed"
+	WorkflowEventStepSkipped      = "workflow.step_skipped"
+	WorkflowEventStepBlocked      = "workflow.step_blocked"
+	WorkflowEventStepApproval     = "workflow.step_approval_pending"
 )
 
 // AdapterStatus — runtime adapter registration lifecycle

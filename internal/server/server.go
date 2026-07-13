@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/api"
 	"github.com/beardedparrott/orchicon/internal/config"
@@ -112,8 +113,10 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	// simulation mode for dev verification.
 	adapterBridge := opencode.New(log)
 	taskRec := scheduler.NewTaskReconciler(pool, log, adapterBridge)
+	workflowRec := scheduler.NewWorkflowReconciler(pool, log)
 	s.rcmgr = reconciler.NewManager(pool, log)
 	s.rcmgr.Register(taskRec)
+	s.rcmgr.Register(workflowRec)
 
 	// Seed an in-process OpenCode adapter registration so the
 	// TaskReconciler can find a ready adapter for dispatch (docs/04 §6.3:
@@ -153,6 +156,12 @@ func (s *Server) Run(ctx context.Context) error {
 		go func() { errCh <- s.rcmgr.Run(ctx) }()
 	}
 
+	// Periodically heartbeat the in-process dev adapter so the
+	// TaskReconciler can dispatch tasks beyond the initial 60s heartbeat
+	// TTL (docs/03 §5). Dev-only: the seed adapter is in-process
+	// (docs/04 §6.3); production adapters heartbeat themselves.
+	go s.heartbeatDevAdapter(ctx)
+
 	select {
 	case <-ctx.Done():
 		s.log.Info("shutting down", "timeout", s.cfg.ShutdownTimeout)
@@ -179,6 +188,32 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) shutdownOTel() {
 	if s.otel != nil {
 		s.otel.Shutdown(context.Background())
+	}
+}
+
+// heartbeatDevAdapter renews the in-process dev adapter's heartbeat
+// every 30s so the TaskReconciler can dispatch tasks beyond the initial
+// heartbeat TTL (docs/03 §5, docs/04 §6.3). Dev-only: the seed adapter
+// is in-process; production adapters heartbeat themselves over the
+// adapter gRPC lease path.
+func (s *Server) heartbeatDevAdapter(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	caps := `{"model_providers":["anthropic","openai","local"],"tools":["file_edit","terminal","web_fetch","git"],"context":["file_index"],"telemetry":["tool_calls_streamed","file_diffs"],"execution":["checkpoint","pause_resume","cancellation"]}`
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			ttx, err := s.pool.BeginTenantTx(ctx, "tnt_dev")
+			if err != nil {
+				continue
+			}
+			if err := db.HeartbeatAdapter(ctx, ttx.Tx, "tnt_dev", "adp_opencode_dev", []byte(caps)); err != nil {
+				s.log.Warn("dev adapter heartbeat failed", "error", err)
+			}
+			_ = ttx.Commit(ctx)
+		}
 	}
 }
 

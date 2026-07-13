@@ -20,7 +20,7 @@ const NAV: NavItem[] = [
   { label: "Projects", to: "/projects" },
   { label: "Work Items", to: "/work-items" },
   { label: "Workers", to: "/workers" },
-  { label: "Workflows", to: "/workflows", disabled: true },
+  { label: "Workflows", to: "/workflows" },
   { label: "Policies", to: "/policies", disabled: true },
   { label: "Recovery", to: "/recovery", disabled: true },
   { label: "Executions", to: "/executions" },

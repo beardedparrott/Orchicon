@@ -57,11 +57,32 @@ func (r *TaskReconciler) Kind() string { return "task" }
 //
 // The reconciler is driven by the manager's work queue, which enqueues
 // ready tasks. When called with an empty key, it scans for ready tasks
-// (used by the poll loop when the queue is empty).
+// and dispatches them (docs/03 §4) — this is the scan pass the manager
+// invokes when the queue is empty, which lets workflow task steps (and
+// any other ready task) get dispatched without an explicit enqueue path.
 func (r *TaskReconciler) Reconcile(ctx context.Context, key string) reconciler.Result {
 	if key == "" {
-		// Scan pass: find ready tasks and let the manager enqueue them.
-		// This is a no-op here; the poll loop handles scanning.
+		// Scan pass: find ready tasks and dispatch each (docs/03 §4).
+		// Limited to a batch per tick so one scan doesn't monopolize the
+		// reconciler goroutine. v0.1: single dev tenant.
+		tenantID := "tnt_dev"
+		ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+		if err != nil {
+			return reconciler.Result{Error: err}
+		}
+		ready, err := db.ListReadyTasks(ctx, ttx.Tx, tenantID)
+		ttx.Rollback(ctx)
+		if err != nil {
+			return reconciler.Result{Error: fmt.Errorf("scan ready tasks: %w", err)}
+		}
+		for i, task := range ready {
+			if i >= 16 {
+				break
+			}
+			if err := r.reconcileOne(ctx, task.ID); err != nil {
+				r.log.Warn("scan: dispatch ready task failed", "task", task.ID, "error", err)
+			}
+		}
 		return reconciler.Result{}
 	}
 	if err := r.reconcileOne(ctx, key); err != nil {
@@ -328,13 +349,56 @@ func (r *TaskReconciler) OnStarted(ctx context.Context, execID string) {
 }
 
 // OnResult is called by the adapter bridge when the execution reaches a
-// terminal state (docs/03 §6: running → succeeded|failed).
+// terminal state (docs/03 §6: running → succeeded|failed). It updates
+// the execution status and transitions the linked WorkItem to
+// succeeded/failed so downstream consumers (the WorkflowReconciler
+// polling task steps) observe completion (docs/02 §2.4: tasks are
+// reconciled as children of workflows).
 func (r *TaskReconciler) OnResult(ctx context.Context, execID string, succeeded bool) {
 	status := domain.ExecutionTerminated
 	if !succeeded {
 		status = domain.ExecutionUnhealthy
 	}
 	r.updateExecStatus(ctx, execID, status, domain.HealthTerminating)
+	r.transitionWorkItemOnResult(ctx, execID, succeeded)
+}
+
+// transitionWorkItemOnResult moves the WorkItem linked to the execution
+// to succeeded/failed when the execution terminates. This closes the
+// loop so the WorkflowReconciler's task-step polling observes the
+// terminal state (docs/02 §2.4, docs/03 §6).
+func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID string, succeeded bool) {
+	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		r.log.Error("transition work item: begin tx", "execution", execID, "error", err)
+		return
+	}
+	defer ttx.Rollback(ctx)
+	exec, err := db.GetExecution(ctx, ttx.Tx, "tnt_dev", execID)
+	if err != nil {
+		r.log.Error("transition work item: get execution", "execution", execID, "error", err)
+		return
+	}
+	// Fetch the work item to use its current version for optimistic
+	// concurrency (docs/09 §5). Passing 0 would never match.
+	wi, err := db.GetWorkItem(ctx, ttx.Tx, "tnt_dev", exec.TaskID)
+	if err != nil {
+		r.log.Error("transition work item: get work item", "task", exec.TaskID, "error", err)
+		return
+	}
+	workItemStatus := domain.WorkItemSucceeded
+	if !succeeded {
+		workItemStatus = domain.WorkItemFailed
+	}
+	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, "tnt_dev", exec.TaskID, wi.Version, db.UpdateWorkItemFields{
+		Status: strPtr(workItemStatus),
+	}); err != nil {
+		r.log.Error("transition work item: update", "task", exec.TaskID, "error", err)
+		return
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		r.log.Error("transition work item: commit", "execution", execID, "error", err)
+	}
 }
 
 // OnHealth is called by the adapter bridge to update the execution's

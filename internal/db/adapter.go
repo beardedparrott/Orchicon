@@ -162,12 +162,15 @@ func UpdateAdapterStatus(ctx context.Context, tx pgx.Tx, tenantID, id string, ex
 // ready/registered state with a recent heartbeat (within ttl). Used by
 // the TaskReconciler for adapter selection (docs/03 §4.2).
 func ListReadyAdaptersByKind(ctx context.Context, tx pgx.Tx, tenantID, kind string, heartbeatTTL time.Duration) ([]AdapterRow, error) {
+	// Multiply the numeric seconds by a 1-second interval so pgx only has
+	// to encode a float64 (not an interval) — pgx v5 cannot encode a Go
+	// float64 directly into the interval OID.
 	const q = `SELECT id, tenant_id, kind, version, endpoint, capabilities, status,
 		max_concurrent_executions, registered_at, last_heartbeat_at
 		FROM runtime_adapters
 		WHERE tenant_id = $1 AND kind = $2
 		  AND status IN ('registered', 'ready')
-		  AND (last_heartbeat_at IS NULL OR last_heartbeat_at >= now() - $3::interval)
+		  AND (last_heartbeat_at IS NULL OR last_heartbeat_at >= now() - ($3 * interval '1 second'))
 		ORDER BY last_heartbeat_at DESC NULLS LAST`
 	rows, err := tx.Query(ctx, q, tenantID, kind, heartbeatTTL.Seconds())
 	if err != nil {
