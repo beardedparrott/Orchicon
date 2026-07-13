@@ -260,3 +260,389 @@ table "outbox" {
     columns = [column.event_id]
   }
 }
+
+// --- Phase 4: Workers + Work Items ----------------------------------------
+// Workers are tenant-owned, versioned, reusable execution profiles
+// (docs/05_Worker_Specification.md). `workers` is the immutable header;
+// `worker_versions` holds the mutable snapshot per version. A published
+// version is immutable; changes create a new version (docs/05 §4, §5).
+
+table "workers" {
+  schema = schema.public
+  comment = "Worker header: reusable, versioned execution profile (docs/05 §3, docs/09 §3.3). RLS-enabled."
+
+  column "id" {
+    type = text
+    null = false
+  }
+  column "tenant_id" {
+    type = text
+    null = false
+  }
+  column "name" {
+    type = text
+    null = false
+  }
+  column "slug" {
+    type = text
+    null = false
+  }
+  column "description" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "purpose" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "status" {
+    type = text
+    null = false
+    default = "draft"
+  }
+  column "current_version" {
+    type = integer
+    null = false
+    default = 0
+  }
+  column "created_by" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "version" {
+    type = integer
+    null = false
+    default = 1
+  }
+  column "created_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+  column "updated_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  index "workers_tenant_slug_idx" {
+    unique  = true
+    columns = [column.tenant_id, column.slug]
+  }
+  index "workers_tenant_status_idx" {
+    columns = [column.tenant_id, column.status]
+  }
+}
+
+table "worker_versions" {
+  schema = schema.public
+  comment = "Worker version snapshot: immutable once published (docs/05 §5, docs/09 §3.3). RLS-enabled."
+
+  column "id" {
+    type = text
+    null = false
+  }
+  column "tenant_id" {
+    type = text
+    null = false
+  }
+  column "worker_id" {
+    type = text
+    null = false
+  }
+  column "version" {
+    type = integer
+    null = false
+  }
+  column "version_note" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "status" {
+    type = text
+    null = false
+    default = "draft"
+  }
+  column "runtime_ref" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "model_ref" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "system_prompt" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "context_sources" {
+    type = jsonb
+    null = false
+    default = "[]"
+  }
+  column "permissions" {
+    type = jsonb
+    null = false
+    default = "{}"
+  }
+  column "gated_tools" {
+    type = jsonb
+    null = false
+    default = "[]"
+  }
+  column "budget_overrides" {
+    type = jsonb
+    null = false
+    default = "{}"
+  }
+  column "execution_policy_ref" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "concurrency_limit" {
+    type = integer
+    null = false
+    default = 1
+  }
+  column "recovery_workflow_ref" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "labels" {
+    type = jsonb
+    null = false
+    default = "{}"
+  }
+  column "published_at" {
+    type = timestamptz
+    null = true
+  }
+  column "created_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  index "worker_versions_worker_version_idx" {
+    unique  = true
+    columns = [column.worker_id, column.version]
+  }
+  index "worker_versions_tenant_status_idx" {
+    columns = [column.tenant_id, column.status]
+  }
+}
+
+// Work Items: the Epic → Feature → Task → Subtask hierarchy
+// (docs/02_Domain_Model.md §2.2). Dependencies are edges in a DAG.
+
+table "work_items" {
+  schema = schema.public
+  comment = "Work hierarchy: epic/feature/task/subtask (docs/02 §2.2, docs/09 §3.2). RLS-enabled."
+
+  column "id" {
+    type = text
+    null = false
+  }
+  column "tenant_id" {
+    type = text
+    null = false
+  }
+  column "project_id" {
+    type = text
+    null = false
+  }
+  column "parent_id" {
+    type = text
+    null = true
+  }
+  column "kind" {
+    type = text
+    null = false
+  }
+  column "title" {
+    type = text
+    null = false
+  }
+  column "description" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "acceptance_criteria" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "status" {
+    type = text
+    null = false
+    default = "pending"
+  }
+  column "assigned_worker_ref" {
+    type = jsonb
+    null = true
+  }
+  column "workflow_id" {
+    type = text
+    null = true
+  }
+  column "priority" {
+    type = integer
+    null = false
+    default = 0
+  }
+  column "budgets" {
+    type = jsonb
+    null = false
+    default = "{}"
+  }
+  column "context_window" {
+    type = integer
+    null = false
+    default = 0
+  }
+  column "results" {
+    type = jsonb
+    null = false
+    default = "{}"
+  }
+  column "version" {
+    type = integer
+    null = false
+    default = 1
+  }
+  column "created_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+  column "updated_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  index "work_items_project_status_priority_idx" {
+    columns = [column.project_id, column.status, column.priority]
+  }
+  index "work_items_project_parent_idx" {
+    columns = [column.project_id, column.parent_id]
+  }
+  index "work_items_tenant_status_idx" {
+    columns = [column.tenant_id, column.status]
+  }
+}
+
+table "work_item_dependencies" {
+  schema = schema.public
+  comment = "DAG edges between work items (docs/02 §2.2, docs/09 §3.2). Cycles rejected at admission. RLS-enabled."
+
+  column "id" {
+    type = text
+    null = false
+  }
+  column "tenant_id" {
+    type = text
+    null = false
+  }
+  column "project_id" {
+    type = text
+    null = false
+  }
+  column "from_id" {
+    type = text
+    null = false
+  }
+  column "to_id" {
+    type = text
+    null = false
+  }
+  column "type" {
+    type = text
+    null = false
+    default = "depends_on"
+  }
+  column "created_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  index "work_item_deps_from_idx" {
+    columns = [column.from_id]
+  }
+  index "work_item_deps_to_idx" {
+    columns = [column.to_id]
+  }
+  index "work_item_deps_project_idx" {
+    columns = [column.project_id]
+  }
+  index "work_item_deps_pair_idx" {
+    unique  = true
+    columns = [column.from_id, column.to_id, column.type]
+  }
+}
+
+// Edit locks for the visual Worker editor (docs/07 §3.3). Prevents
+// concurrent edits; expires automatically on TTL. Shared by the
+// WorkerService (and later WorkflowService).
+table "edit_locks" {
+  schema = schema.public
+  comment = "Advisory edit lock for the visual editor (docs/07 §3.3). RLS-enabled."
+
+  column "resource_id" {
+    type = text
+    null = false
+  }
+  column "tenant_id" {
+    type = text
+    null = false
+  }
+  column "resource_type" {
+    type = text
+    null = false
+    default = "worker"
+  }
+  column "held_by" {
+    type = text
+    null = false
+  }
+  column "acquired_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+  column "expires_at" {
+    type = timestamptz
+    null = false
+  }
+
+  primary_key {
+    columns = [column.resource_id, column.resource_type]
+  }
+}
