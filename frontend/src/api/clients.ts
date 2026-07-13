@@ -14,6 +14,8 @@ import { WorkItemService } from "@/api/gen/orchicon/api/v1/work_item_service_con
 import { RuntimeAdapterService } from "@/api/gen/orchicon/api/v1/adapter_service_connect";
 import { ExecutionService } from "@/api/gen/orchicon/api/v1/execution_service_connect";
 import { WorkflowService } from "@/api/gen/orchicon/api/v1/workflow_service_connect";
+import { PolicyService } from "@/api/gen/orchicon/api/v1/policy_service_connect";
+import { RecoveryService } from "@/api/gen/orchicon/api/v1/recovery_service_connect";
 
 // TenantHeader is the request header carrying the tenant id. Must match
 // internal/middleware/tenant.go.
@@ -51,3 +53,5 @@ export const workItemClient = createClient(WorkItemService, connectTransport);
 export const adapterClient = createClient(RuntimeAdapterService, connectTransport);
 export const executionClient = createClient(ExecutionService, connectTransport);
 export const workflowClient = createClient(WorkflowService, connectTransport);
+export const policyClient = createClient(PolicyService, connectTransport);
+export const recoveryClient = createClient(RecoveryService, connectTransport);

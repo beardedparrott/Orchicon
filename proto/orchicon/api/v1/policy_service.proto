@@ -1,0 +1,206 @@
+// Orchicon PolicyService (docs/07_API_Specification.md §3.5).
+//
+// Policy CRUD + versioning lifecycle (publish/supersede) + dry-run
+// evaluation + decision explanation. Tier 1 (decision-point) policy is
+// the v0.1 baseline, always-on, Rego-only. All mutations write through
+// the transactional outbox (docs/09 §6). A published Policy version is
+// immutable; changes create a new version (docs/02 §2.5).
+//
+// Policies are evaluated in order of narrowest scope first; first
+// definitive decision wins (docs/02 §2.5). EvaluatePolicy runs a dry-run
+// against a decision point + input without persisting a decision;
+// ExplainDecision returns the Rego evaluation trace for a past
+// `policy.evaluated` event by decision_id or trace_id.
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "orchicon/api/v1/policy.proto";
+
+service PolicyService {
+  // CreatePolicy creates a new Policy in draft state with its first draft
+  // version (docs/02 §2.5). The Rego module is compiled at publish time.
+  rpc CreatePolicy(CreatePolicyRequest) returns (CreatePolicyResponse);
+
+  // PublishPolicy publishes the draft version, compiling the Rego module
+  // into the active bundle. The version becomes immutable; the Policy
+  // transitions to published.
+  rpc PublishPolicy(PublishPolicyRequest) returns (PublishPolicyResponse);
+
+  // SupersedePolicy transitions a published Policy to superseded when a
+  // newer published version exists.
+  rpc SupersedePolicy(SupersedePolicyRequest) returns (SupersedePolicyResponse);
+
+  // GetPolicy returns a single Policy header by id, with its latest
+  // published version (if any).
+  rpc GetPolicy(GetPolicyRequest) returns (GetPolicyResponse);
+
+  // ListPolicies returns a page of Policies for the tenant, optionally
+  // scoped by decision point.
+  rpc ListPolicies(ListPoliciesRequest) returns (ListPoliciesResponse);
+
+  // ListPolicyVersions returns all versions of a Policy, newest first.
+  rpc ListPolicyVersions(ListPolicyVersionsRequest) returns (ListPolicyVersionsResponse);
+
+  // UpdatePolicyVersion saves edits to a draft version's Rego module (and
+  // decision_point / scope / effect / query). Only draft versions are
+  // mutable; published versions are immutable (docs/02 §2.5). This is the
+  // "save" action in the policy editor.
+  rpc UpdatePolicyVersion(UpdatePolicyVersionRequest) returns (UpdatePolicyVersionResponse);
+
+  // EvaluatePolicy runs a dry-run evaluation against a decision point +
+  // input document without persisting a decision. Returns the effect and
+  // the Rego trace (docs/07 §3.5). Used by the policy editor's "test"
+  // pane and by API clients validating a policy before publish.
+  rpc EvaluatePolicy(EvaluatePolicyRequest) returns (EvaluatePolicyResponse);
+
+  // ExplainDecision returns the Rego evaluation trace for a past
+  // `policy.evaluated` event by decision_id or trace_id (docs/07 §3.5).
+  // The UI's decision log drills down to the trace for a single decision.
+  rpc ExplainDecision(ExplainDecisionRequest) returns (ExplainDecisionResponse);
+
+  // ListDecisions returns a page of recorded PolicyDecisions, optionally
+  // filtered by decision point, target, or policy. The decision log
+  // (docs/07 §3.5) renders this list with drill-down to the trace.
+  rpc ListDecisions(ListDecisionsRequest) returns (ListDecisionsResponse);
+
+  // GetDecision returns a single PolicyDecision by id (full detail
+  // including the Rego trace).
+  rpc GetDecision(GetDecisionRequest) returns (GetDecisionResponse);
+}
+
+message CreatePolicyRequest {
+  string tenant_id = 1;
+  string name = 2;
+  // First-version snapshot fields (docs/02 §2.5):
+  DecisionPoint decision_point = 3;
+  PolicyScope scope = 4;
+  string scope_ref = 5;       // project_id / worker_id (empty for tenant scope)
+  PolicyEffect effect = 6;
+  string rego_module = 7;     // Rego source (single module)
+  string query = 8;          // Rego query (default: data...allow)
+  string version_note = 9;
+  string request_id = 10;   // idempotency (docs/07 §5.5)
+}
+
+message CreatePolicyResponse {
+  Policy policy = 1;
+  PolicyVersion version = 2;
+}
+
+message PublishPolicyRequest {
+  string policy_id = 1;
+  string version_note = 2; // optional note for this publish
+}
+
+message PublishPolicyResponse {
+  Policy policy = 1;
+  PolicyVersion version = 2;
+}
+
+message SupersedePolicyRequest {
+  string policy_id = 1;
+}
+
+message SupersedePolicyResponse {
+  Policy policy = 1;
+}
+
+message GetPolicyRequest {
+  string id = 1;
+}
+
+message GetPolicyResponse {
+  Policy policy = 1;
+  PolicyVersion latest_version = 2; // latest published version, if any
+}
+
+message ListPoliciesRequest {
+  string tenant_id = 1;
+  optional DecisionPoint decision_point = 2; // optional scope
+  string page_token = 3;
+  int32 page_size = 4;
+  optional PolicyStatus status = 5;
+}
+
+message ListPoliciesResponse {
+  repeated Policy policies = 1;
+  string next_page_token = 2;
+}
+
+message ListPolicyVersionsRequest {
+  string policy_id = 1;
+}
+
+message ListPolicyVersionsResponse {
+  repeated PolicyVersion versions = 1;
+}
+
+message UpdatePolicyVersionRequest {
+  string policy_id = 1;
+  DecisionPoint decision_point = 2;
+  PolicyScope scope = 3;
+  string scope_ref = 4;
+  PolicyEffect effect = 5;
+  string rego_module = 6;
+  string query = 7;
+  string version_note = 8; // optional: update the version note
+}
+
+message UpdatePolicyVersionResponse {
+  PolicyVersion version = 1;
+}
+
+message EvaluatePolicyRequest {
+  string tenant_id = 1;
+  DecisionPoint decision_point = 2;
+  string target_type = 3;  // work_item | execution | workflow_run | step_run
+  string target_id = 4;
+  string input = 5;       // JSON: the input document fed to Rego
+  // Optional: evaluate a specific policy version (dry-run an unpublished
+  // draft). Empty = evaluate all published policies at this decision
+  // point (narrowest-scope match wins).
+  string policy_id = 6;
+  int32 policy_version = 7; // 0 = latest
+}
+
+message EvaluatePolicyResponse {
+  PolicyEffect effect = 1;
+  string policy_id = 2;       // the policy that produced the decisive effect
+  int32 policy_version = 3;
+  string result = 4;          // JSON: the Rego output
+  string trace = 5;           // JSON: the Rego evaluation trace
+  string error = 6;          // non-empty if evaluation errored
+}
+
+message ExplainDecisionRequest {
+  string decision_id = 1; // by decision_id
+  string trace_id = 2;    // or by OTel trace_id
+}
+
+message ExplainDecisionResponse {
+  PolicyDecision decision = 1;
+}
+
+message ListDecisionsRequest {
+  string tenant_id = 1;
+  optional DecisionPoint decision_point = 2;
+  string target_type = 3; // optional filter
+  string target_id = 4;  // optional filter
+  string policy_id = 5;  // optional filter
+  string page_token = 6;
+  int32 page_size = 7;
+}
+
+message ListDecisionsResponse {
+  repeated PolicyDecision decisions = 1;
+  string next_page_token = 2;
+}
+
+message GetDecisionRequest {
+  string id = 1;
+}
+
+message GetDecisionResponse {
+  PolicyDecision decision = 1;
+}

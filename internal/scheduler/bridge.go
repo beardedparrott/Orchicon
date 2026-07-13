@@ -49,3 +49,22 @@ type AdapterBridge interface {
 // TaskReconciler implements ExecutionCallbacks so the adapter bridge can
 // notify it of lifecycle transitions without import cycles.
 var _ ExecutionCallbacks = (*TaskReconciler)(nil)
+
+// RecoveryTrigger is the interface the TaskReconciler uses to trigger
+// recovery when an execution fails (docs/06 §2). Satisfied by the
+// recovery.Engine; declared here to avoid a scheduler→recovery import
+// (loose coupling).
+type RecoveryTrigger interface {
+	TriggerOnFailure(ctx context.Context, tenantID, taskID, failedExecID, triggerReason string) error
+}
+
+// PolicyEvaluator is the interface the WorkflowReconciler uses to
+// evaluate gate policies (docs/02 §2.5 Tier 1). Satisfied by the
+// policy.Engine; declared here to avoid a scheduler→policy import for
+// the reconciler (the engine is still constructed in the server and
+// injected).
+type PolicyEvaluator interface {
+	// EvaluateGate returns (allowed, error). allowed=false blocks the
+	// step transition (docs/02 §2.5: gate denied → blocked).
+	EvaluateGate(ctx context.Context, tenantID, gatePolicyRef, targetType, targetID string, input any) (bool, error)
+}

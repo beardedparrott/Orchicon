@@ -49,13 +49,16 @@ import (
 // the "workflow" kind. It polls the workflow_runs table for pending/
 // running runs and progresses their step DAGs.
 type WorkflowReconciler struct {
-	pool *db.Pool
-	log  *slog.Logger
+	pool   *db.Pool
+	log    *slog.Logger
+	policy PolicyEvaluator // Phase 7: Rego gate evaluation (docs/02 §2.5)
 }
 
-// NewWorkflowReconciler creates a WorkflowReconciler.
-func NewWorkflowReconciler(pool *db.Pool, log *slog.Logger) *WorkflowReconciler {
-	return &WorkflowReconciler{pool: pool, log: log}
+// NewWorkflowReconciler creates a WorkflowReconciler. The policy
+// evaluator evaluates gate_policy_ref before a ready step runs (Phase 7,
+// docs/02 §2.5 Tier 1). May be nil (pass-through allow — v0.1 dev).
+func NewWorkflowReconciler(pool *db.Pool, log *slog.Logger, pe PolicyEvaluator) *WorkflowReconciler {
+	return &WorkflowReconciler{pool: pool, log: log, policy: pe}
 }
 
 // Kind returns the reconciler kind (docs/03 §2.1).
@@ -335,16 +338,30 @@ func (r *WorkflowReconciler) depsSatisfied(step workflow.StepWire, runs map[stri
 }
 
 // evaluateGate evaluates the step's gate_policy_ref (docs/02 §2.5 Tier
-// 1). The Rego Policy Engine arrives in Phase 7; for v0.1 the gate is a
-// pass-through that logs the decision (allow) so the DAG progresses
-// end-to-end for dev verification.
+// 1). Phase 7: the Rego Policy Engine evaluates the gate; if no policy
+// is referenced or no PolicyEvaluator is wired, the gate is a pass-
+// through (allow) so the DAG progresses (v0.1 dev fallback).
 func (r *WorkflowReconciler) evaluateGate(ctx context.Context, step workflow.StepWire, run db.WorkflowRunRow) bool {
 	if step.GatePolicyRef == "" {
 		return true
 	}
-	r.log.Info("workflow gate evaluated (pass-through, Rego engine pending Phase 7)",
-		"run", run.ID, "step", step.ID, "gate_policy_ref", step.GatePolicyRef, "decision", "allow")
-	return true
+	if r.policy == nil {
+		r.log.Info("workflow gate pass-through (no policy engine)",
+			"run", run.ID, "step", step.ID, "gate_policy_ref", step.GatePolicyRef, "decision", "allow")
+		return true
+	}
+	allowed, err := r.policy.EvaluateGate(ctx, run.TenantID, step.GatePolicyRef, "step_run", run.ID, map[string]any{
+		"workflow_id": run.WorkflowID, "run_id": run.ID, "step_id": step.ID,
+		"step_kind": step.Kind, "project_id": run.ProjectID,
+	})
+	if err != nil {
+		r.log.Warn("workflow gate evaluation error (fail-open)",
+			"run", run.ID, "step", step.ID, "error", err)
+		return true
+	}
+	r.log.Info("workflow gate evaluated",
+		"run", run.ID, "step", step.ID, "gate_policy_ref", step.GatePolicyRef, "allowed", allowed)
+	return allowed
 }
 
 // dispatchStep dispatches a ready step by kind (docs/02 §2.4).

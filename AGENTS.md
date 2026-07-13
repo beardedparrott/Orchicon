@@ -162,6 +162,16 @@ minimum (adapt to what the change touches):
    `curl http://localhost:8080/healthz` returns `{"status":"ok"}`.
 5. **Frontend renders** — `make fe-dev` (or `npx vite`), then
    `curl http://localhost:5173/` returns HTTP 200 with the app shell.
+6. **Runtime calls are real, not simulated** — end-to-end verification
+   that exercises adapter dispatch MUST call the real `opencode` runtime
+   with a **free model** (e.g. `opencode/deepseek-v4-flash-free`), never
+   the simulation-mode fallback. Simulation mode is a development aid for
+   the offline case only; it must not be used to "verify" dispatch,
+   recovery, or any flow that depends on adapter telemetry. If
+   `opencode` is absent from PATH, fix the environment (install it) —
+   do not fall back to simulation and claim the slice works. Seed
+   workers / executions used for verification must pin a free model in
+   `model_ref` so verification is reproducible at no cost.
 
 If the change adds a new API RPC, also verify the Connect endpoint
 responds (e.g. via `curl` or a frontend smoke test). If it adds a new
@@ -169,6 +179,18 @@ table, verify the RLS gate still passes after migration.
 
 **Do not claim "done" without having run the thing.** State what was
 verified and what was not in the commit message or PR description.
+
+### Token discipline
+
+The project's model spend is rising. Be economical:
+
+- Prefer parallel tool calls when independent (one message, many
+  tools) to cut round-trips.
+- Read only the slice of a file you need; avoid re-reading whole files.
+- Keep edits surgical — match surrounding style, don't reflow untouched
+  code.
+- Skip preamble/postamble in responses; the diff speaks for itself.
+- Run `make ci` once at the end, not after every edit.
 
 ## Dev Control Script
 
@@ -280,7 +302,7 @@ platform, or `--uninstall` to test cleanup).
 | 4 | Workers + WorkItems | done | WorkerService (CreateWorker, PublishWorkerVersion, DeprecateWorker, RetireWorker, GetWorker, ListWorkers, ListWorkerVersions) + edit locks (TTL, heartbeat, visual editor); WorkItemService (CRUD, AddDependency/RemoveDependency with recursive-CTE cycle rejection, GetDependencyGraph, AssignWorker) with CAS optimistic concurrency + outbox events; Atlas migrations (workers, worker_versions, work_items, work_item_dependencies, edit_locks) with RLS; frontend worker catalog + version history + create form (system_prompt template vars, permissions, gated_tools, budget overrides) + work item tree view + Kanban board + dependency graph (read-only React Flow) + edit lock banner on worker editor |
 | 5 | Scheduling + adapters | done | TaskReconciler (dependency resolution via recursive CTE, rule-based worker/adapter selection, dispatch flow with CAS status transitions); RuntimeAdapterService (orchicon.adapter.v1: Register/Heartbeat/Execute bistream) + public RuntimeAdapterService (ListAdapters, GetAdapterCapabilities); ExecutionService (Get/List/StreamExecutionEvents via NATS fan-out, Pause/Resume/Cancel/CheckpointNow, ApproveToolCall Tier 2 per-tool-call gating); OpenCode adapter bridge (CLI subprocess wrapper, stdout JSON → telemetry events, simulation mode for dev); Atlas migrations (runtime_adapters, worker_executions, checkpoints) with RLS; frontend execution live view (streaming telemetry, manual controls), tool-call approval dialog, adapter registry |
 | 6 | Workflows | done | WorkflowService (CreateWorkflow, UpdateWorkflowVersion, PublishWorkflow, DeprecateWorkflow, GetWorkflow, ListWorkflows, ListWorkflowVersions, StartWorkflow, AbortWorkflow, GetWorkflowRun, ListWorkflowRuns, GetWorkflowStepRuns, StreamWorkflowEvents, AcquireEditLock/ReleaseEditLock/GetEditLock) + WorkflowReconciler (step DAG progression, gate evaluation — Rego pass-through pending Phase 7, task-step→WorkItem handoff to TaskReconciler) + step types (task/decision/approval/parallel/recover); Atlas migrations (workflows, workflow_versions, workflow_runs, workflow_step_runs) with RLS; frontend full visual drag-and-drop React Flow editor (draggable Worker tiles, gate/decision/approval/parallel/recover step nodes, wire connections, inline property editing, undo/redo, client-side cycle-detection validation, edit lock banner) + workflow run view (live step-transition overlay on canvas, streaming event feed) + list + create form; manager scan pass (Reconcile with empty key) so both reconcilers discover work; TaskReconciler transitions WorkItem to succeeded/failed on execution result; dev adapter heartbeat renewal |
-| 7 | Recovery + Policy | not started | Recovery Engine, Rego Policy Engine + frontend recovery timeline, policy editor |
+| 7 | Recovery + Policy | done | PolicyService (CreatePolicy, PublishPolicy, SupersedePolicy, GetPolicy, ListPolicies, ListPolicyVersions, UpdatePolicyVersion, EvaluatePolicy dry-run, ExplainDecision by decision_id/trace_id, ListDecisions, GetDecision) + Rego Policy Engine (OPA v1: bundle loading from Postgres, narrowest-scope-first + first-definitive-decision-wins, Rego trace capture for ExplainDecision, CompileModule at publish, EvaluateGate at the dispatch decision point — wired into WorkflowReconciler gate, fail-open governance floor); RecoveryService (TriggerRecovery, CancelRecovery, GetRecovery, ListRecoveries, GetRecoveryStepRuns, StreamRecoveryEvents, ApproveContinuationPlan, RejectContinuationPlan, GetContinuationPlan, MarkTaskSucceeded) + RecoveryReconciler (default 6-step workflow: capture→summarize→preserve→review→plan→resume; checkpoint vs summarize-resume selection; bounded auto-relax 25%/150% thresholds; escalation L1→L2→L3; Reviewer/human task completion); TaskReconciler triggers recovery on execution failure (opt-out, idempotent); Atlas migrations (policies, policy_versions, policy_decisions, recovery_executions, recovery_step_runs, continuation_plans) with RLS; opencode adapter simulation mode now explicit opt-in (ORCHICON_SIMULATE_ADAPTER=1) — no silent fallback (real runtime calls with free model); frontend policy editor (Rego module + decision point/scope/effect + dry-run test pane + decision log) + rich recovery timeline (full narrative why/what/how/where/when per step, continuation-plan approval, MarkTaskSucceeded, live event feed) + lists + create form; verified end-to-end with real opencode dispatch on opencode/deepseek-v4-flash-free (recovery progressed to RESUMED) |
 | 8 | Telemetry + Cost | not started | OTel pipeline, SigNoz integration, cost attribution + frontend SigNoz embedding, cost explorer |
 | 9 | Auth + Webhooks + Polish | not started | OIDC, API keys, RBAC, webhooks, edit locks + frontend auth flow, end-to-end integration |
 
@@ -363,3 +385,34 @@ platform, or `--uninstall` to test cleanup).
   undo/redo (Ctrl+Z / Ctrl+Shift+Z), and client-side cycle-detection
   validation. The run view overlays live step transitions on the same
   canvas via `StreamWorkflowEvents`.
+- **Phase 7**: The Rego Policy Engine (OPA v1) evaluates published
+  Policies at decision points (admission/dispatch/budget/approval/
+  recovery/completion — docs/02 §2.5 Tier 1). It loads policies on-demand
+  from Postgres (the Rego modules live in `policy_versions`); a compiled-
+  bundle mode is a v0.2 optimization. Evaluation order is narrowest-
+  scope-first (task > worker > project > tenant) then first-definitive-
+  decision-wins; when no published policy matches, the default is allow
+  (governance floor). Each evaluation captures the Rego trace
+  (`topdown.BufferTracer`) persisted as a `policy_decision` row so
+  `ExplainDecision` can return it. `CompileModule` validates Rego at
+  publish time. The WorkflowReconciler gate now calls `EvaluateGate` (the
+  dispatch decision point); fail-open on error. The Recovery Workflow
+  Engine (docs/06) is a `RecoveryReconciler` (registered with the
+  manager — 3 reconcilers now) that progresses recoveries through the
+  default 6-step workflow (capture→summarize→preserve→review→plan→
+  resume). The TaskReconciler triggers recovery on execution failure via
+  the `RecoveryTrigger` interface (loose coupling — no scheduler→recovery
+  import): on failure, the task transitions to `recovering` and
+  `TriggerOnFailure` runs (idempotent — docs/06 §9). Resumption path
+  selection (docs/06 §4): direct checkpoint replay when a checkpoint
+  exists, else summarize-resume. Bounded auto-relax (docs/06 §11): up to
+  +25% automatically, >150% blocks at L3 for human approval. Escalation
+  L1→L2→L3 (docs/06 §7). `MarkTaskSucceeded` allows the Reviewer Worker
+  (during recovery) or a human to mark a Task succeeded (docs/02 §4 #2).
+  The opencode adapter's simulation mode is now explicit opt-in
+  (`ORCHICON_SIMULATE_ADAPTER=1`, offline dev only) — NOT a silent
+  fallback (AGENTS.md verification: real runtime calls with a free model).
+  Verified end-to-end: a real opencode dispatch on
+  `opencode/deepseek-v4-flash-free` + a triggered recovery progressed
+  through all 6 steps to `RECOVERY_STATUS_RESUMED`, with the full timeline
+  narrative (why/what/how/where/when per step) visible in the UI.

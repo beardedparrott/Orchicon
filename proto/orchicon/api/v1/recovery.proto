@@ -1,0 +1,180 @@
+// Orchicon Recovery entity (docs/06_Recovery_Workflow_Engine.md,
+// docs/02_Domain_Model.md §2.6, docs/07 §3.6).
+//
+// Recovery is a workflow, not a function. A RecoveryExecution is a
+// specialized WorkerExecution whose Worker is the recovery workflow
+// driver. Recovery preserves progress, minimizes context loss, and
+// resumes forward motion with minimal human intervention
+// (docs/06 §1). Recovery is opt-out, not opt-in: every workflow
+// recovers by default (docs/06 §1).
+//
+// The default recovery workflow has six steps (docs/06 §3):
+// capture → summarize → preserve → review → plan → resume. The engine
+// picks direct checkpoint replay when a compatible adapter accepts the
+// prior checkpoint; otherwise it runs the full summarize-resume path
+// (docs/06 §4).
+//
+// Bounded auto-relax (docs/06 §11): recovery may increase a Task's budget
+// by up to 25% of the original automatically (with an audit event);
+// beyond 150% of the original budget, human approval is required.
+//
+// Task completion (docs/06 §11, docs/02 §4 #2): a Task may be marked
+// succeeded by the completion Policy, by the Reviewer Worker during
+// recovery, or by a human. All three paths produce an audit event with
+// the actor recorded.
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// RecoveryExecution is the runtime state of a recovery workflow run
+// (docs/06 §2, §9). Created on trigger; progressed by the
+// RecoveryReconciler. Idempotent: a control-plane crash mid-recovery
+// resumes from the last completed step (docs/06 §9).
+message RecoveryExecution {
+  string id = 1;
+  string tenant_id = 2;
+  string project_id = 3;
+  string task_id = 4;             // the affected Task (WorkItem)
+  string failed_execution_id = 5; // the original WorkerExecution
+  string recovery_workflow_id = 6; // the recovery workflow being run
+  string trigger_reason = 7;      // docs/06 §2 triggers
+  RecoveryLevel level = 8;        // L1 | L2 | L3
+  RecoveryStatus status = 9;
+  string current_step = 10;       // step id currently running / last completed
+  string resumption_path = 11;   // "checkpoint" | "summarize_resume"
+  // Budget tracking (docs/06 §6): the recovery budget is derived from
+  // the affected Task's budget (default 25% of the Task's budget, capped).
+  int64 budget_tokens_limit = 12;
+  int64 budget_tokens_used = 13;
+  double budget_cost_limit_usd = 14;
+  double budget_cost_used_usd = 15;
+  // Auto-relax state (docs/06 §11): the cumulative budget increase
+  // applied automatically, as a fraction of the original budget.
+  double budget_relax_fraction = 16; // e.g. 0.25 = +25% applied
+  bool needs_human_approval = 17;    // true when >150% of original
+  string continuation_plan_id = 18; // set when plan step completes
+  string reviewer_worker_id = 19;   // the Reviewer Worker for steps 2/4
+  string summary = 20;              // the captured/summarized context
+  int32 version = 21;              // optimistic concurrency (docs/09 §5)
+  google.protobuf.Timestamp triggered_at = 22;
+  google.protobuf.Timestamp ended_at = 23;
+  google.protobuf.Timestamp created_at = 24;
+  google.protobuf.Timestamp updated_at = 25;
+}
+
+// RecoveryStepRun is the runtime state of a single step within a
+// RecoveryExecution (docs/06 §3, §9). Steps are idempotent: re-running a
+// step for the same RecoveryExecution yields the same artifacts (docs/06
+// §9).
+message RecoveryStepRun {
+  string id = 1;
+  string tenant_id = 2;
+  string recovery_id = 3;
+  string step_id = 4;      // capture | summarize | preserve | review | plan | resume
+  string step_name = 5;
+  RecoveryStepStatus status = 6;
+  int32 attempt = 7;       // retry count
+  string result = 8;      // JSON: step output (summary, verdict, plan ref)
+  string worker_execution_id = 9; // for Reviewer-driven steps
+  // Rich narrative fields (docs/06 §11): each step records the
+  // why/what/how/where/when so the timeline answers "what went wrong,
+  // what did recovery do, and what was the outcome?" at a glance.
+  string trigger_reason = 10;  // why: the trigger that caused this step
+  string affected_ref = 11;     // what: the affected execution/task
+  string adapter_ref = 12;      // where: the adapter/runtime involved
+  string action = 13;           // how: the recovery action taken
+  google.protobuf.Timestamp started_at = 14;
+  google.protobuf.Timestamp ended_at = 15;
+  int32 version = 16;
+  google.protobuf.Timestamp created_at = 17;
+  google.protobuf.Timestamp updated_at = 18;
+}
+
+// ContinuationPlan is the structured artifact produced by the plan step
+// (docs/06 §8). The replacement WorkerExecution receives this plan in
+// its StartExecution.continuation_plan. The plan is versioned; the
+// replacement records which plan version it operated from.
+message ContinuationPlan {
+  string id = 1;
+  string tenant_id = 2;
+  string recovery_id = 3;
+  int32 version = 4;           // plan version (monotonic)
+  string completed = 5;       // JSON: list of work items verified done
+  string in_progress = 6;     // JSON: what was mid-flight at capture
+  string remaining = 7;       // JSON: outstanding work vs acceptance criteria
+  string corrections = 8;    // JSON: changes the Reviewer/Architect require
+  string context_summary = 9; // the compacted context to seed the replacement
+  string checkpoint_ref = 10; // opaque blob ref (when direct replay intended)
+  string assumptions = 11;   // JSON: explicit assumptions to verify
+  PlanStatus status = 12;    // pending | approved | rejected
+  string approved_by = 13;   // actor that approved/rejected
+  google.protobuf.Timestamp created_at = 14;
+  google.protobuf.Timestamp decided_at = 15;
+}
+
+// RecoveryEvent is a lifecycle event streamed via StreamRecoveryEvents
+// (docs/07 §3.6, docs/06 §11). The recovery timeline renders the full
+// narrative with drill-down to span-level traces and event payloads.
+message RecoveryEvent {
+  string event_id = 1;
+  string event_type = 2;   // recovery.triggered | recovery.step.started | ...
+  string tenant_id = 3;
+  string project_id = 4;
+  string recovery_id = 5;
+  string task_id = 6;
+  string failed_execution_id = 7;
+  string step_id = 8;     // empty for recovery-level events
+  string step_run_id = 9;
+  RecoveryStatus recovery_status = 10;
+  RecoveryStepStatus step_status = 11;
+  string trigger_reason = 12;  // why
+  string action = 13;          // how (the recovery action)
+  string adapter_ref = 14;     // where
+  google.protobuf.Timestamp occurred_at = 15;
+  bytes payload = 16;         // event-specific JSON (full narrative)
+}
+
+// RecoveryStatus lifecycle (docs/06 §3, §7):
+// pending → running → resumed | escalated | failed | cancelled | blocked.
+enum RecoveryStatus {
+  RECOVERY_STATUS_UNSPECIFIED = 0;
+  RECOVERY_STATUS_PENDING = 1;     // triggered, not yet started
+  RECOVERY_STATUS_RUNNING = 2;     // progressing the step DAG
+  RECOVERY_STATUS_RESUMED = 3;     // handoff back to scheduler (success)
+  RECOVERY_STATUS_ESCALATED = 4;   // escalated to L2/L3
+  RECOVERY_STATUS_FAILED = 5;      // recovery itself failed terminally
+  RECOVERY_STATUS_CANCELLED = 6;   // operator-cancelled
+  RECOVERY_STATUS_BLOCKED = 7;     // awaiting human approval (L3)
+}
+
+// RecoveryStepStatus lifecycle (docs/06 §3, §9):
+// pending → ready → running → succeeded | failed | skipped | blocked.
+enum RecoveryStepStatus {
+  RECOVERY_STEP_STATUS_UNSPECIFIED = 0;
+  RECOVERY_STEP_STATUS_PENDING = 1;
+  RECOVERY_STEP_STATUS_READY = 2;
+  RECOVERY_STEP_STATUS_RUNNING = 3;
+  RECOVERY_STEP_STATUS_SUCCEEDED = 4;
+  RECOVERY_STEP_STATUS_FAILED = 5;
+  RECOVERY_STEP_STATUS_SKIPPED = 6;   // e.g. checkpoint replay skips summarize/plan
+  RECOVERY_STEP_STATUS_BLOCKED = 7;   // awaiting human approval
+}
+
+// RecoveryLevel (docs/06 §7): L0 normal, L1 recovery, L2 recovery-of-
+// recovery, L3 human escalation.
+enum RecoveryLevel {
+  RECOVERY_LEVEL_UNSPECIFIED = 0;
+  RECOVERY_LEVEL_L1 = 1; // default workflow, original budget fraction
+  RECOVERY_LEVEL_L2 = 2; // tighter budget, summary-only resume
+  RECOVERY_LEVEL_L3 = 3; // human escalation (pause task, await approval)
+}
+
+// PlanStatus for ContinuationPlan (docs/06 §8).
+enum PlanStatus {
+  PLAN_STATUS_UNSPECIFIED = 0;
+  PLAN_STATUS_PENDING = 1;   // produced, awaiting approval (L3)
+  PLAN_STATUS_APPROVED = 2; // human approved → resume
+  PLAN_STATUS_REJECTED = 3; // human rejected → recovery fails/escalates
+}

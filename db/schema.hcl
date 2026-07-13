@@ -1165,3 +1165,151 @@ table "workflow_step_runs" {
     columns = [column.workflow_run_id, column.status]
   }
 }
+
+// --- Phase 7: Recovery + Policy (docs/02 §2.5, §2.6, docs/06, docs/09 §3.5, §3.6) ---
+
+table "policies" {
+  schema = schema.public
+  comment = "Policy header: reusable, versioned rule (docs/02 §2.5, docs/09 §3.5). RLS-enabled."
+  column "id" { type = text; null = false }
+  column "tenant_id" { type = text; null = false }
+  column "name" { type = text; null = false }
+  column "current_version" { type = integer; null = false; default = 0 }
+  column "status" { type = text; null = false; default = "draft" }
+  column "version" { type = integer; null = false; default = 1 }
+  column "created_at" { type = timestamptz; null = false; default = sql("now()") }
+  column "updated_at" { type = timestamptz; null = false; default = sql("now()") }
+  primary_key { columns = [column.id] }
+  index "policies_tenant_status_idx" { columns = [column.tenant_id, column.status] }
+}
+
+table "policy_versions" {
+  schema = schema.public
+  comment = "Policy version snapshot: immutable once published (docs/02 §2.5, docs/09 §3.5). rego_module is the Rego source. RLS-enabled."
+  column "id" { type = text; null = false }
+  column "tenant_id" { type = text; null = false }
+  column "policy_id" { type = text; null = false }
+  column "version" { type = integer; null = false }
+  column "version_note" { type = text; null = false; default = "" }
+  column "status" { type = text; null = false; default = "draft" }
+  column "decision_point" { type = text; null = false; default = "admission" }
+  column "scope" { type = text; null = false; default = "tenant" }
+  column "scope_ref" { type = text; null = false; default = "" }
+  column "effect" { type = text; null = false; default = "allow" }
+  column "rego_module" { type = text; null = false; default = "" }
+  column "query" { type = text; null = false; default = "" }
+  column "published_at" { type = timestamptz; null = true }
+  column "created_at" { type = timestamptz; null = false; default = sql("now()") }
+  primary_key { columns = [column.id] }
+  index "policy_versions_policy_version_idx" { unique = true; columns = [column.policy_id, column.version] }
+  index "policy_versions_tenant_status_idx" { columns = [column.tenant_id, column.status] }
+  index "policy_versions_point_scope_idx" { columns = [column.decision_point, column.scope, column.scope_ref] }
+}
+
+table "policy_decisions" {
+  schema = schema.public
+  comment = "Recorded Policy evaluation (docs/02 §2.5, docs/07 §3.5). trace holds the Rego evaluation for ExplainDecision. RLS-enabled."
+  column "id" { type = text; null = false }
+  column "tenant_id" { type = text; null = false }
+  column "policy_id" { type = text; null = false; default = "" }
+  column "policy_version" { type = integer; null = false; default = 0 }
+  column "decision_point" { type = text; null = false }
+  column "effect" { type = text; null = false; default = "allow" }
+  column "scope" { type = text; null = false; default = "tenant" }
+  column "scope_ref" { type = text; null = false; default = "" }
+  column "target_type" { type = text; null = false; default = "" }
+  column "target_id" { type = text; null = false; default = "" }
+  column "actor_type" { type = text; null = false; default = "system" }
+  column "actor_id" { type = text; null = false; default = "" }
+  column "input" { type = jsonb; null = false; default = sql("'{}'") }
+  column "result" { type = jsonb; null = false; default = sql("'{}'") }
+  column "trace" { type = jsonb; null = false; default = sql("'[]'") }
+  column "trace_id" { type = text; null = false; default = "" }
+  column "error" { type = text; null = false; default = "" }
+  column "occurred_at" { type = timestamptz; null = false; default = sql("now()") }
+  primary_key { columns = [column.id] }
+  index "policy_decisions_tenant_point_idx" { columns = [column.tenant_id, column.decision_point, column.occurred_at] }
+  index "policy_decisions_target_idx" { columns = [column.target_type, column.target_id] }
+  index "policy_decisions_trace_idx" { columns = [column.trace_id] }
+}
+
+table "recovery_executions" {
+  schema = schema.public
+  comment = "Recovery workflow run (docs/06 §2, docs/09 §3.6). RLS-enabled."
+  column "id" { type = text; null = false }
+  column "tenant_id" { type = text; null = false }
+  column "project_id" { type = text; null = false }
+  column "task_id" { type = text; null = false }
+  column "failed_execution_id" { type = text; null = false }
+  column "recovery_workflow_id" { type = text; null = false; default = "" }
+  column "trigger_reason" { type = text; null = false }
+  column "level" { type = integer; null = false; default = 1 }
+  column "status" { type = text; null = false; default = "pending" }
+  column "current_step" { type = text; null = false; default = "" }
+  column "resumption_path" { type = text; null = false; default = "summarize_resume" }
+  column "budget_tokens_limit" { type = bigint; null = false; default = 0 }
+  column "budget_tokens_used" { type = bigint; null = false; default = 0 }
+  column "budget_cost_limit_usd" { type = double precision; null = false; default = 0 }
+  column "budget_cost_used_usd" { type = double precision; null = false; default = 0 }
+  column "budget_relax_fraction" { type = double precision; null = false; default = 0 }
+  column "needs_human_approval" { type = boolean; null = false; default = false }
+  column "continuation_plan_id" { type = text; null = false; default = "" }
+  column "reviewer_worker_id" { type = text; null = false; default = "" }
+  column "summary" { type = text; null = false; default = "" }
+  column "version" { type = integer; null = false; default = 1 }
+  column "triggered_at" { type = timestamptz; null = false; default = sql("now()") }
+  column "ended_at" { type = timestamptz; null = true }
+  column "created_at" { type = timestamptz; null = false; default = sql("now()") }
+  column "updated_at" { type = timestamptz; null = false; default = sql("now()") }
+  primary_key { columns = [column.id] }
+  index "recovery_executions_tenant_project_idx" { columns = [column.tenant_id, column.project_id] }
+  index "recovery_executions_task_idx" { columns = [column.task_id] }
+  index "recovery_executions_status_idx" { columns = [column.status] }
+}
+
+table "recovery_step_runs" {
+  schema = schema.public
+  comment = "Runtime state of a single step within a RecoveryExecution (docs/06 §3, docs/09 §3.6). Rich narrative fields for the timeline (docs/06 §11). RLS-enabled."
+  column "id" { type = text; null = false }
+  column "tenant_id" { type = text; null = false }
+  column "recovery_id" { type = text; null = false }
+  column "step_id" { type = text; null = false }
+  column "step_name" { type = text; null = false; default = "" }
+  column "status" { type = text; null = false; default = "pending" }
+  column "attempt" { type = integer; null = false; default = 0 }
+  column "result" { type = jsonb; null = false; default = sql("'{}'") }
+  column "worker_execution_id" { type = text; null = false; default = "" }
+  column "trigger_reason" { type = text; null = false; default = "" }
+  column "affected_ref" { type = text; null = false; default = "" }
+  column "adapter_ref" { type = text; null = false; default = "" }
+  column "action" { type = text; null = false; default = "" }
+  column "started_at" { type = timestamptz; null = true }
+  column "ended_at" { type = timestamptz; null = true }
+  column "version" { type = integer; null = false; default = 1 }
+  column "created_at" { type = timestamptz; null = false; default = sql("now()") }
+  column "updated_at" { type = timestamptz; null = false; default = sql("now()") }
+  primary_key { columns = [column.id] }
+  index "recovery_step_runs_recovery_idx" { columns = [column.recovery_id] }
+}
+
+table "continuation_plans" {
+  schema = schema.public
+  comment = "Continuation plan produced by the plan step (docs/06 §8, docs/09 §3.6). RLS-enabled."
+  column "id" { type = text; null = false }
+  column "tenant_id" { type = text; null = false }
+  column "recovery_id" { type = text; null = false }
+  column "version" { type = integer; null = false; default = 1 }
+  column "completed" { type = jsonb; null = false; default = sql("'[]'") }
+  column "in_progress" { type = jsonb; null = false; default = sql("'[]'") }
+  column "remaining" { type = jsonb; null = false; default = sql("'[]'") }
+  column "corrections" { type = jsonb; null = false; default = sql("'[]'") }
+  column "context_summary" { type = text; null = false; default = "" }
+  column "checkpoint_ref" { type = text; null = false; default = "" }
+  column "assumptions" { type = jsonb; null = false; default = sql("'[]'") }
+  column "status" { type = text; null = false; default = "pending" }
+  column "approved_by" { type = text; null = false; default = "" }
+  column "created_at" { type = timestamptz; null = false; default = sql("now()") }
+  column "decided_at" { type = timestamptz; null = true }
+  primary_key { columns = [column.id] }
+  index "continuation_plans_recovery_idx" { columns = [column.recovery_id] }
+}

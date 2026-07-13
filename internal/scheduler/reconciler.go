@@ -41,12 +41,20 @@ type TaskReconciler struct {
 	pool     *db.Pool
 	log      *slog.Logger
 	bridge   AdapterBridge
+	recovery RecoveryTrigger // Phase 7: trigger recovery on failure (docs/06 §2)
 }
 
 // NewTaskReconciler creates a TaskReconciler.
 func NewTaskReconciler(pool *db.Pool, log *slog.Logger, bridge AdapterBridge) *TaskReconciler {
 	return &TaskReconciler{pool: pool, log: log, bridge: bridge}
 }
+
+// SetRecoveryTrigger injects the recovery trigger (Phase 7). Called by
+// the server after constructing both the TaskReconciler and the
+// RecoveryEngine. When set, the TaskReconciler triggers a recovery
+// when an execution fails (docs/06 §2). Recovery is opt-out, not opt-in
+// (docs/06 §1).
+func (r *TaskReconciler) SetRecoveryTrigger(rt RecoveryTrigger) { r.recovery = rt }
 
 // Kind returns the reconciler kind (docs/03 §2.1).
 func (r *TaskReconciler) Kind() string { return "task" }
@@ -366,7 +374,9 @@ func (r *TaskReconciler) OnResult(ctx context.Context, execID string, succeeded 
 // transitionWorkItemOnResult moves the WorkItem linked to the execution
 // to succeeded/failed when the execution terminates. This closes the
 // loop so the WorkflowReconciler's task-step polling observes the
-// terminal state (docs/02 §2.4, docs/03 §6).
+// terminal state (docs/02 §2.4, docs/03 §6). On failure, the
+// TaskReconciler triggers recovery (Phase 7, docs/06 §2) — recovery is
+// opt-out, not opt-in (docs/06 §1).
 func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID string, succeeded bool) {
 	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {
@@ -386,18 +396,37 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 		r.log.Error("transition work item: get work item", "task", exec.TaskID, "error", err)
 		return
 	}
-	workItemStatus := domain.WorkItemSucceeded
-	if !succeeded {
-		workItemStatus = domain.WorkItemFailed
-	}
-	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, "tnt_dev", exec.TaskID, wi.Version, db.UpdateWorkItemFields{
-		Status: strPtr(workItemStatus),
-	}); err != nil {
-		r.log.Error("transition work item: update", "task", exec.TaskID, "error", err)
-		return
+	if succeeded {
+		if _, err := db.UpdateWorkItem(ctx, ttx.Tx, "tnt_dev", exec.TaskID, wi.Version, db.UpdateWorkItemFields{
+			Status: strPtr(domain.WorkItemSucceeded),
+		}); err != nil {
+			r.log.Error("transition work item: update", "task", exec.TaskID, "error", err)
+			return
+		}
+	} else {
+		// Failure: transition to recovering and trigger the recovery
+		// workflow (docs/06 §2). Recovery is opt-out, not opt-in
+		// (docs/06 §1). The trigger is idempotent (docs/06 §9).
+		if _, err := db.UpdateWorkItem(ctx, ttx.Tx, "tnt_dev", exec.TaskID, wi.Version, db.UpdateWorkItemFields{
+			Status: strPtr(domain.WorkItemRecovering),
+		}); err != nil {
+			r.log.Error("transition work item: update", "task", exec.TaskID, "error", err)
+			return
+		}
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		r.log.Error("transition work item: commit", "execution", execID, "error", err)
+		return
+	}
+	// Trigger recovery on failure (Phase 7). Done after commit so the
+	// recovering state is durable; the recovery trigger is idempotent
+	// (docs/06 §9). If no RecoveryTrigger is wired (nil), the task
+	// stays in recovering — the operator can trigger manually.
+	if !succeeded && r.recovery != nil {
+		triggerReason := "execution_failed"
+		if err := r.recovery.TriggerOnFailure(ctx, "tnt_dev", exec.TaskID, execID, triggerReason); err != nil {
+			r.log.Error("trigger recovery on failure", "task", exec.TaskID, "execution", execID, "error", err)
+		}
 	}
 }
 

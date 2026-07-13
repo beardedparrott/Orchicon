@@ -1,0 +1,166 @@
+// Orchicon RecoveryService (docs/07_API_Specification.md §3.6,
+// docs/06_Recovery_Workflow_Engine.md).
+//
+// Recovery workflow management: trigger/cancel, streaming events, and
+// continuation-plan approval (docs/06 §8). The RecoveryReconciler
+// progresses RecoveryExecutions through the default 6-step workflow
+// (capture → summarize → preserve → review → plan → resume) and handles
+// escalation (L1 → L2 → L3) and bounded auto-relax (docs/06 §11).
+//
+// MarkTaskSucceeded allows the Reviewer Worker (during recovery) or a
+// human to mark a Task succeeded (docs/06 §11, docs/02 §4 #2). All three
+// completion paths (Policy, Reviewer, human) produce an audit event with
+// the actor recorded.
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "orchicon/api/v1/recovery.proto";
+
+service RecoveryService {
+  // TriggerRecovery manually triggers a recovery for a Task (docs/06 §2
+  // manual trigger). The RecoveryReconciler picks up the created
+  // RecoveryExecution and progresses it.
+  rpc TriggerRecovery(TriggerRecoveryRequest) returns (TriggerRecoveryResponse);
+
+  // CancelRecovery transitions a running recovery to cancelled
+  // (docs/06 §3). The affected Task returns to its prior state.
+  rpc CancelRecovery(CancelRecoveryRequest) returns (CancelRecoveryResponse);
+
+  // GetRecovery returns a single RecoveryExecution by id.
+  rpc GetRecovery(GetRecoveryRequest) returns (GetRecoveryResponse);
+
+  // ListRecoveries returns a page of RecoveryExecutions, optionally
+  // scoped to a project or task.
+  rpc ListRecoveries(ListRecoveriesRequest) returns (ListRecoveriesResponse);
+
+  // GetRecoveryStepRuns returns all step runs for a recovery (the
+  // timeline materialized server-side).
+  rpc GetRecoveryStepRuns(GetRecoveryStepRunsRequest) returns (GetRecoveryStepRunsResponse);
+
+  // StreamRecoveryEvents is the server-stream RPC that fans out recovery
+  // events from NATS to connected clients (docs/07 §4, docs/06 §11). The
+  // recovery timeline renders the full narrative with drill-down.
+  rpc StreamRecoveryEvents(StreamRecoveryEventsRequest) returns (stream StreamRecoveryEventsResponse);
+
+  // ApproveContinuationPlan approves a pending continuation plan (L3
+  // human escalation, docs/06 §7, §8). Resumes the recovery.
+  rpc ApproveContinuationPlan(ApproveContinuationPlanRequest) returns (ApproveContinuationPlanResponse);
+
+  // RejectContinuationPlan rejects a pending continuation plan. The
+  // recovery fails / escalates further (docs/06 §8).
+  rpc RejectContinuationPlan(RejectContinuationPlanRequest) returns (RejectContinuationPlanResponse);
+
+  // GetContinuationPlan returns the continuation plan for a recovery.
+  rpc GetContinuationPlan(GetContinuationPlanRequest) returns (GetContinuationPlanResponse);
+
+  // MarkTaskSucceeded marks a Task succeeded by the Reviewer Worker
+  // (during recovery) or a human (docs/06 §11, docs/02 §4 #2). Both
+  // system (Reviewer) and human can deem a task complete; an audit event
+  // is emitted with the actor recorded.
+  rpc MarkTaskSucceeded(MarkTaskSucceededRequest) returns (MarkTaskSucceededResponse);
+}
+
+message TriggerRecoveryRequest {
+  string tenant_id = 1;
+  string task_id = 2;
+  string trigger_reason = 3; // docs/06 §2 triggers; "manual" for operator-initiated
+}
+
+message TriggerRecoveryResponse {
+  RecoveryExecution recovery = 1;
+}
+
+message CancelRecoveryRequest {
+  string recovery_id = 1;
+  string reason = 2;
+}
+
+message CancelRecoveryResponse {
+  RecoveryExecution recovery = 1;
+}
+
+message GetRecoveryRequest {
+  string id = 1;
+}
+
+message GetRecoveryResponse {
+  RecoveryExecution recovery = 1;
+}
+
+message ListRecoveriesRequest {
+  string tenant_id = 1;
+  string project_id = 2; // optional scope
+  string task_id = 3;    // optional scope
+  optional RecoveryStatus status = 4;
+  string page_token = 5;
+  int32 page_size = 6;
+}
+
+message ListRecoveriesResponse {
+  repeated RecoveryExecution recoveries = 1;
+  string next_page_token = 2;
+}
+
+message GetRecoveryStepRunsRequest {
+  string recovery_id = 1;
+}
+
+message GetRecoveryStepRunsResponse {
+  repeated RecoveryStepRun step_runs = 1;
+}
+
+message StreamRecoveryEventsRequest {
+  string tenant_id = 1;
+  string project_id = 2;    // optional scope
+  string recovery_id = 3;   // optional scope (most common: a single recovery)
+  optional int64 from_sequence = 4; // resume after reconnect (docs/07 §4)
+}
+
+message StreamRecoveryEventsResponse {
+  RecoveryEvent event = 1;
+  int64 sequence = 2;
+}
+
+message ApproveContinuationPlanRequest {
+  string recovery_id = 1;
+  string actor = 2;   // identity approving the plan
+}
+
+message ApproveContinuationPlanResponse {
+  ContinuationPlan plan = 1;
+  RecoveryExecution recovery = 2;
+}
+
+message RejectContinuationPlanRequest {
+  string recovery_id = 1;
+  string actor = 2;
+  string reason = 3;
+}
+
+message RejectContinuationPlanResponse {
+  ContinuationPlan plan = 1;
+  RecoveryExecution recovery = 2;
+}
+
+message GetContinuationPlanRequest {
+  string recovery_id = 1;
+}
+
+message GetContinuationPlanResponse {
+  ContinuationPlan plan = 1; // empty if no plan produced yet
+}
+
+message MarkTaskSucceededRequest {
+  string tenant_id = 1;
+  string task_id = 2;
+  string actor_type = 3; // reviewer | human | system
+  string actor_id = 4;
+  string reason = 5;     // why the task is deemed complete
+}
+
+message MarkTaskSucceededResponse {
+  string task_id = 1;
+  string status = 2; // "succeeded"
+  string audit_event_id = 3;
+}

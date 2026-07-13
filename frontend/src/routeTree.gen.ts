@@ -12,7 +12,9 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as WorkflowsRouteImport } from './routes/workflows'
 import { Route as WorkersRouteImport } from './routes/workers'
 import { Route as WorkItemsRouteImport } from './routes/work-items'
+import { Route as RecoveryRouteImport } from './routes/recovery'
 import { Route as ProjectsRouteImport } from './routes/projects'
+import { Route as PoliciesRouteImport } from './routes/policies'
 import { Route as ExecutionsRouteImport } from './routes/executions'
 import { Route as AdaptersRouteImport } from './routes/adapters'
 import { Route as IndexRouteImport } from './routes/index'
@@ -23,8 +25,11 @@ import { Route as WorkersIdRouteImport } from './routes/workers.$id'
 import { Route as WorkItemsNewRouteImport } from './routes/work-items.new'
 import { Route as WorkItemsGraphRouteImport } from './routes/work-items.graph'
 import { Route as WorkItemsIdRouteImport } from './routes/work-items.$id'
+import { Route as RecoveryIdRouteImport } from './routes/recovery.$id'
 import { Route as ProjectsNewRouteImport } from './routes/projects.new'
 import { Route as ProjectsIdRouteImport } from './routes/projects.$id'
+import { Route as PoliciesNewRouteImport } from './routes/policies.new'
+import { Route as PoliciesIdRouteImport } from './routes/policies.$id'
 import { Route as ExecutionsIdRouteImport } from './routes/executions.$id'
 import { Route as WorkflowsIdRunsRunIdRouteImport } from './routes/workflows.$id.runs.$runId'
 
@@ -43,9 +48,19 @@ const WorkItemsRoute = WorkItemsRouteImport.update({
   path: '/work-items',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RecoveryRoute = RecoveryRouteImport.update({
+  id: '/recovery',
+  path: '/recovery',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProjectsRoute = ProjectsRouteImport.update({
   id: '/projects',
   path: '/projects',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PoliciesRoute = PoliciesRouteImport.update({
+  id: '/policies',
+  path: '/policies',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ExecutionsRoute = ExecutionsRouteImport.update({
@@ -98,6 +113,11 @@ const WorkItemsIdRoute = WorkItemsIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => WorkItemsRoute,
 } as any)
+const RecoveryIdRoute = RecoveryIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => RecoveryRoute,
+} as any)
 const ProjectsNewRoute = ProjectsNewRouteImport.update({
   id: '/new',
   path: '/new',
@@ -107,6 +127,16 @@ const ProjectsIdRoute = ProjectsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
   getParentRoute: () => ProjectsRoute,
+} as any)
+const PoliciesNewRoute = PoliciesNewRouteImport.update({
+  id: '/new',
+  path: '/new',
+  getParentRoute: () => PoliciesRoute,
+} as any)
+const PoliciesIdRoute = PoliciesIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => PoliciesRoute,
 } as any)
 const ExecutionsIdRoute = ExecutionsIdRouteImport.update({
   id: '/$id',
@@ -123,13 +153,18 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/adapters': typeof AdaptersRoute
   '/executions': typeof ExecutionsRouteWithChildren
+  '/policies': typeof PoliciesRouteWithChildren
   '/projects': typeof ProjectsRouteWithChildren
+  '/recovery': typeof RecoveryRouteWithChildren
   '/work-items': typeof WorkItemsRouteWithChildren
   '/workers': typeof WorkersRouteWithChildren
   '/workflows': typeof WorkflowsRouteWithChildren
   '/executions/$id': typeof ExecutionsIdRoute
+  '/policies/$id': typeof PoliciesIdRoute
+  '/policies/new': typeof PoliciesNewRoute
   '/projects/$id': typeof ProjectsIdRoute
   '/projects/new': typeof ProjectsNewRoute
+  '/recovery/$id': typeof RecoveryIdRoute
   '/work-items/$id': typeof WorkItemsIdRoute
   '/work-items/graph': typeof WorkItemsGraphRoute
   '/work-items/new': typeof WorkItemsNewRoute
@@ -143,13 +178,18 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/adapters': typeof AdaptersRoute
   '/executions': typeof ExecutionsRouteWithChildren
+  '/policies': typeof PoliciesRouteWithChildren
   '/projects': typeof ProjectsRouteWithChildren
+  '/recovery': typeof RecoveryRouteWithChildren
   '/work-items': typeof WorkItemsRouteWithChildren
   '/workers': typeof WorkersRouteWithChildren
   '/workflows': typeof WorkflowsRouteWithChildren
   '/executions/$id': typeof ExecutionsIdRoute
+  '/policies/$id': typeof PoliciesIdRoute
+  '/policies/new': typeof PoliciesNewRoute
   '/projects/$id': typeof ProjectsIdRoute
   '/projects/new': typeof ProjectsNewRoute
+  '/recovery/$id': typeof RecoveryIdRoute
   '/work-items/$id': typeof WorkItemsIdRoute
   '/work-items/graph': typeof WorkItemsGraphRoute
   '/work-items/new': typeof WorkItemsNewRoute
@@ -164,13 +204,18 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/adapters': typeof AdaptersRoute
   '/executions': typeof ExecutionsRouteWithChildren
+  '/policies': typeof PoliciesRouteWithChildren
   '/projects': typeof ProjectsRouteWithChildren
+  '/recovery': typeof RecoveryRouteWithChildren
   '/work-items': typeof WorkItemsRouteWithChildren
   '/workers': typeof WorkersRouteWithChildren
   '/workflows': typeof WorkflowsRouteWithChildren
   '/executions/$id': typeof ExecutionsIdRoute
+  '/policies/$id': typeof PoliciesIdRoute
+  '/policies/new': typeof PoliciesNewRoute
   '/projects/$id': typeof ProjectsIdRoute
   '/projects/new': typeof ProjectsNewRoute
+  '/recovery/$id': typeof RecoveryIdRoute
   '/work-items/$id': typeof WorkItemsIdRoute
   '/work-items/graph': typeof WorkItemsGraphRoute
   '/work-items/new': typeof WorkItemsNewRoute
@@ -186,13 +231,18 @@ export interface FileRouteTypes {
     | '/'
     | '/adapters'
     | '/executions'
+    | '/policies'
     | '/projects'
+    | '/recovery'
     | '/work-items'
     | '/workers'
     | '/workflows'
     | '/executions/$id'
+    | '/policies/$id'
+    | '/policies/new'
     | '/projects/$id'
     | '/projects/new'
+    | '/recovery/$id'
     | '/work-items/$id'
     | '/work-items/graph'
     | '/work-items/new'
@@ -206,13 +256,18 @@ export interface FileRouteTypes {
     | '/'
     | '/adapters'
     | '/executions'
+    | '/policies'
     | '/projects'
+    | '/recovery'
     | '/work-items'
     | '/workers'
     | '/workflows'
     | '/executions/$id'
+    | '/policies/$id'
+    | '/policies/new'
     | '/projects/$id'
     | '/projects/new'
+    | '/recovery/$id'
     | '/work-items/$id'
     | '/work-items/graph'
     | '/work-items/new'
@@ -226,13 +281,18 @@ export interface FileRouteTypes {
     | '/'
     | '/adapters'
     | '/executions'
+    | '/policies'
     | '/projects'
+    | '/recovery'
     | '/work-items'
     | '/workers'
     | '/workflows'
     | '/executions/$id'
+    | '/policies/$id'
+    | '/policies/new'
     | '/projects/$id'
     | '/projects/new'
+    | '/recovery/$id'
     | '/work-items/$id'
     | '/work-items/graph'
     | '/work-items/new'
@@ -247,7 +307,9 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AdaptersRoute: typeof AdaptersRoute
   ExecutionsRoute: typeof ExecutionsRouteWithChildren
+  PoliciesRoute: typeof PoliciesRouteWithChildren
   ProjectsRoute: typeof ProjectsRouteWithChildren
+  RecoveryRoute: typeof RecoveryRouteWithChildren
   WorkItemsRoute: typeof WorkItemsRouteWithChildren
   WorkersRoute: typeof WorkersRouteWithChildren
   WorkflowsRoute: typeof WorkflowsRouteWithChildren
@@ -276,11 +338,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkItemsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/recovery': {
+      id: '/recovery'
+      path: '/recovery'
+      fullPath: '/recovery'
+      preLoaderRoute: typeof RecoveryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/projects': {
       id: '/projects'
       path: '/projects'
       fullPath: '/projects'
       preLoaderRoute: typeof ProjectsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/policies': {
+      id: '/policies'
+      path: '/policies'
+      fullPath: '/policies'
+      preLoaderRoute: typeof PoliciesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/executions': {
@@ -353,6 +429,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkItemsIdRouteImport
       parentRoute: typeof WorkItemsRoute
     }
+    '/recovery/$id': {
+      id: '/recovery/$id'
+      path: '/$id'
+      fullPath: '/recovery/$id'
+      preLoaderRoute: typeof RecoveryIdRouteImport
+      parentRoute: typeof RecoveryRoute
+    }
     '/projects/new': {
       id: '/projects/new'
       path: '/new'
@@ -366,6 +449,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/projects/$id'
       preLoaderRoute: typeof ProjectsIdRouteImport
       parentRoute: typeof ProjectsRoute
+    }
+    '/policies/new': {
+      id: '/policies/new'
+      path: '/new'
+      fullPath: '/policies/new'
+      preLoaderRoute: typeof PoliciesNewRouteImport
+      parentRoute: typeof PoliciesRoute
+    }
+    '/policies/$id': {
+      id: '/policies/$id'
+      path: '/$id'
+      fullPath: '/policies/$id'
+      preLoaderRoute: typeof PoliciesIdRouteImport
+      parentRoute: typeof PoliciesRoute
     }
     '/executions/$id': {
       id: '/executions/$id'
@@ -396,6 +493,20 @@ const ExecutionsRouteWithChildren = ExecutionsRoute._addFileChildren(
   ExecutionsRouteChildren,
 )
 
+interface PoliciesRouteChildren {
+  PoliciesIdRoute: typeof PoliciesIdRoute
+  PoliciesNewRoute: typeof PoliciesNewRoute
+}
+
+const PoliciesRouteChildren: PoliciesRouteChildren = {
+  PoliciesIdRoute: PoliciesIdRoute,
+  PoliciesNewRoute: PoliciesNewRoute,
+}
+
+const PoliciesRouteWithChildren = PoliciesRoute._addFileChildren(
+  PoliciesRouteChildren,
+)
+
 interface ProjectsRouteChildren {
   ProjectsIdRoute: typeof ProjectsIdRoute
   ProjectsNewRoute: typeof ProjectsNewRoute
@@ -408,6 +519,18 @@ const ProjectsRouteChildren: ProjectsRouteChildren = {
 
 const ProjectsRouteWithChildren = ProjectsRoute._addFileChildren(
   ProjectsRouteChildren,
+)
+
+interface RecoveryRouteChildren {
+  RecoveryIdRoute: typeof RecoveryIdRoute
+}
+
+const RecoveryRouteChildren: RecoveryRouteChildren = {
+  RecoveryIdRoute: RecoveryIdRoute,
+}
+
+const RecoveryRouteWithChildren = RecoveryRoute._addFileChildren(
+  RecoveryRouteChildren,
 )
 
 interface WorkItemsRouteChildren {
@@ -469,7 +592,9 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdaptersRoute: AdaptersRoute,
   ExecutionsRoute: ExecutionsRouteWithChildren,
+  PoliciesRoute: PoliciesRouteWithChildren,
   ProjectsRoute: ProjectsRouteWithChildren,
+  RecoveryRoute: RecoveryRouteWithChildren,
   WorkItemsRoute: WorkItemsRouteWithChildren,
   WorkersRoute: WorkersRouteWithChildren,
   WorkflowsRoute: WorkflowsRouteWithChildren,
