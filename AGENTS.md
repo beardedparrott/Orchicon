@@ -278,7 +278,7 @@ platform, or `--uninstall` to test cleanup).
 | 2 | Projects slice | done | Project CRUD (Create/Get/List/Update/Archive) full stack: Go handler + data-access layer with pgx + tenant scoping + RLS backstop; Connect handler wiring; transactional outbox with NATS JetStream relay; frontend project list + detail + create form (React Hook Form + Zod + TanStack Query) |
 | 3 | Realtime + infrastructure | done | `orchicon dev` subcommand (embeds compose + migrations + frontend via go:embed); outbox relay lag metrics (`orchicon_outbox_lag`); reconciler framework (work queue + advisory-lock leadership + manager); OTel pipeline (tracer/meter/exporter → SigNoz); StreamProjectEvents server-stream RPC fanning out from NATS; trace propagation via Connect headers; `useStream` hook (reconnect + backoff + dedup + resume) + live event feed on project detail page |
 | 4 | Workers + WorkItems | done | WorkerService (CreateWorker, PublishWorkerVersion, DeprecateWorker, RetireWorker, GetWorker, ListWorkers, ListWorkerVersions) + edit locks (TTL, heartbeat, visual editor); WorkItemService (CRUD, AddDependency/RemoveDependency with recursive-CTE cycle rejection, GetDependencyGraph, AssignWorker) with CAS optimistic concurrency + outbox events; Atlas migrations (workers, worker_versions, work_items, work_item_dependencies, edit_locks) with RLS; frontend worker catalog + version history + create form (system_prompt template vars, permissions, gated_tools, budget overrides) + work item tree view + Kanban board + dependency graph (read-only React Flow) + edit lock banner on worker editor |
-| 5 | Scheduling + adapters | not started | TaskReconciler, dispatch, OpenCode adapter + frontend execution live view |
+| 5 | Scheduling + adapters | done | TaskReconciler (dependency resolution via recursive CTE, rule-based worker/adapter selection, dispatch flow with CAS status transitions); RuntimeAdapterService (orchicon.adapter.v1: Register/Heartbeat/Execute bistream) + public RuntimeAdapterService (ListAdapters, GetAdapterCapabilities); ExecutionService (Get/List/StreamExecutionEvents via NATS fan-out, Pause/Resume/Cancel/CheckpointNow, ApproveToolCall Tier 2 per-tool-call gating); OpenCode adapter bridge (CLI subprocess wrapper, stdout JSON → telemetry events, simulation mode for dev); Atlas migrations (runtime_adapters, worker_executions, checkpoints) with RLS; frontend execution live view (streaming telemetry, manual controls), tool-call approval dialog, adapter registry |
 | 6 | Workflows | not started | Workflow CRUD, step DAG, runs + frontend visual drag-and-drop editor (React Flow) |
 | 7 | Recovery + Policy | not started | Recovery Engine, Rego Policy Engine + frontend recovery timeline, policy editor |
 | 8 | Telemetry + Cost | not started | OTel pipeline, SigNoz integration, cost attribution + frontend SigNoz embedding, cost explorer |
@@ -319,5 +319,22 @@ platform, or `--uninstall` to test cleanup).
   `ReleaseEditLock`. The frontend uses React Flow for the read-only
   dependency graph, TanStack Query for server state, and React Hook
   Form + Zod for the worker create form (system_prompt template vars,
-  permissions, gated_tools, budget overrides). The next step (Phase 5)
-  adds the TaskReconciler, dispatch, and the OpenCode adapter.
+  permissions, gated_tools, budget overrides).
+- **Phase 5**: The TaskReconciler is the only component permitted to
+  create WorkerExecutions (docs/03 §8 invariant #1). It polls ready
+  tasks, checks dependencies via a recursive CTE
+  (`CheckDependenciesSatisfied`), selects a Worker by rule-based
+  ranking (published + health + concurrency), selects an Adapter by
+  kind + heartbeat freshness + free capacity, and dispatches via the
+  AdapterBridge interface with CAS status transitions
+  (ready→assigned→running). The OpenCode adapter bridge wraps the
+  `opencode` CLI as a subprocess, parsing stdout JSON lines into
+  telemetry events; if the binary is absent, it runs in simulation
+  mode for dev verification (docs/04 §6.3). The ExecutionService
+  streams events from NATS (`orchicon.events.execution.>`), provides
+  manual controls (Pause/Resume/Cancel/CheckpointNow), and routes
+  Tier 2 per-tool-call approvals (docs/05 §7.1) via an in-memory
+  approval registry. The dev server seeds an in-process OpenCode
+  adapter (`adp_opencode_dev`) on boot so the TaskReconciler has a
+  ready adapter for dispatch. The next step (Phase 6) adds Workflow
+  CRUD, step DAG, runs + frontend visual drag-and-drop editor.
