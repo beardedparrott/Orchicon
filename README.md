@@ -52,6 +52,12 @@ with the built-in dev IdP.
 
 ## Installation
 
+The install scripts (`scripts/install.sh`, `scripts/install.ps1`) are
+served from `orchicon.dev` via a CloudFlare redirect to the raw files
+in `main`. See [`docs-site/CLOUDFLARE_SETUP.md`](./docs-site/CLOUDFLARE_SETUP.md)
+for the one-time DNS + redirect setup, and [`docs-site/`](./docs-site/)
+for the landing page source.
+
 ### One-line install (Linux / macOS)
 
 ```bash

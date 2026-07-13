@@ -321,6 +321,18 @@ platform, or `--uninstall` to test cleanup).
 
 ### Cross-cutting notes
 
+- **Landing page + install redirect**: `docs-site/` holds the static
+  landing page (deployed to GitHub Pages via
+  `.github/workflows/pages.yml` on push to `main`); the CNAME
+  (`orchicon.dev`) ships in `docs-site/CNAME`. The install scripts
+  themselves stay in `scripts/install.sh` and `scripts/install.ps1` —
+  single source of truth. CloudFlare `Rules → Redirect Rules` map
+  `orchicon.dev/install` and `orchicon.dev/install.ps1` to the raw
+  GitHub URLs on `main` (so script fixes ship immediately, no DNS
+  change needed). Full DNS + redirect recipe lives in
+  `docs-site/CLOUDFLARE_SETUP.md`. When the script changes, push to
+  `main` — the redirect serves the latest automatically. (Phase 10
+  placeholder until a real release / launch site lands.)
 - **Connect-ES codegen** is pinned to local v1 npm plugins
   (`protoc-gen-es` / `protoc-gen-connect-es`) matching the v1 runtime.
   `make gen` prepends `frontend/node_modules/.bin` to PATH. See PR #1
