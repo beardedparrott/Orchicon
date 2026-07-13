@@ -9,6 +9,8 @@ import { createClient, type Interceptor } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
 
 import { ProjectService } from "@/api/gen/orchicon/api/v1/project_service_connect";
+import { WorkerService } from "@/api/gen/orchicon/api/v1/worker_service_connect";
+import { WorkItemService } from "@/api/gen/orchicon/api/v1/work_item_service_connect";
 
 // TenantHeader is the request header carrying the tenant id. Must match
 // internal/middleware/tenant.go.
@@ -41,3 +43,5 @@ export const connectTransport = createConnectTransport({
 // Typed service client handles. Import these rather than constructing
 // clients at call sites. Add services here as the schema grows.
 export const projectClient = createClient(ProjectService, connectTransport);
+export const workerClient = createClient(WorkerService, connectTransport);
+export const workItemClient = createClient(WorkItemService, connectTransport);

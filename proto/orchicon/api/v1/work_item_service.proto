@@ -1,0 +1,159 @@
+// Orchicon WorkItemService.
+//
+// WorkItem CRUD + dependency DAG management + worker assignment
+// (docs/07_API_Specification.md §3.2). All mutations write through the
+// transactional outbox (docs/09_Database_Schema.md §6) and use
+// optimistic concurrency via the version column (docs/09 §5).
+// Dependency traversal uses a recursive CTE
+// (docs/09_Database_Schema.md §11).
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "orchicon/api/v1/work_item.proto";
+
+service WorkItemService {
+  // CreateWorkItem creates a new work item (epic/feature/task/subtask)
+  // within a project. Depth is constrained to 4 levels.
+  rpc CreateWorkItem(CreateWorkItemRequest) returns (CreateWorkItemResponse);
+
+  // GetWorkItem returns a single work item by id.
+  rpc GetWorkItem(GetWorkItemRequest) returns (GetWorkItemResponse);
+
+  // ListWorkItems returns a page of work items for a project, optionally
+  // filtered by parent (tree) or status (Kanban).
+  rpc ListWorkItems(ListWorkItemsRequest) returns (ListWorkItemsResponse);
+
+  // UpdateWorkItem applies a partial update with optimistic concurrency.
+  // Only mutable fields are written (field-mask semantics — docs/07 §5.4).
+  rpc UpdateWorkItem(UpdateWorkItemRequest) returns (UpdateWorkItemResponse);
+
+  // DeleteWorkItem soft-deletes a work item (sets status to cancelled).
+  rpc DeleteWorkItem(DeleteWorkItemRequest) returns (DeleteWorkItemResponse);
+
+  // AddDependency adds an edge to the work DAG. Cycles are rejected at
+  // admission (docs/02 §2.2, docs/09 §3.2).
+  rpc AddDependency(AddDependencyRequest) returns (AddDependencyResponse);
+
+  // RemoveDependency removes an edge from the work DAG.
+  rpc RemoveDependency(RemoveDependencyRequest) returns (RemoveDependencyResponse);
+
+  // GetDependencyGraph returns the full DAG (nodes + edges) for a
+  // project. Used by the frontend's read-only React Flow graph (docs/10).
+  rpc GetDependencyGraph(GetDependencyGraphRequest) returns (GetDependencyGraphResponse);
+
+  // AssignWorker binds a Worker (id + version) to a Task/Subtask.
+  rpc AssignWorker(AssignWorkerRequest) returns (AssignWorkerResponse);
+
+  // UnassignWorker removes the worker binding from a Task/Subtask.
+  rpc UnassignWorker(UnassignWorkerRequest) returns (UnassignWorkerResponse);
+}
+
+message CreateWorkItemRequest {
+  string tenant_id = 1;
+  string project_id = 2;
+  string parent_id = 3; // empty for top-level (epic)
+  WorkItemKind kind = 4;
+  string title = 5;
+  string description = 6;
+  string acceptance_criteria = 7;
+  int32 priority = 8;
+  string budgets = 9; // JSON
+  int32 context_window = 10;
+  string request_id = 11; // idempotency (docs/07 §5.5)
+}
+
+message CreateWorkItemResponse {
+  WorkItem work_item = 1;
+}
+
+message GetWorkItemRequest {
+  string id = 1;
+}
+
+message GetWorkItemResponse {
+  WorkItem work_item = 1;
+}
+
+message ListWorkItemsRequest {
+  string tenant_id = 1;
+  string project_id = 2;
+  optional string parent_id = 3; // filter by parent (tree view)
+  optional WorkItemStatus status = 4; // filter by status (Kanban)
+  string page_token = 5;
+  int32 page_size = 6;
+}
+
+message ListWorkItemsResponse {
+  repeated WorkItem work_items = 1;
+  string next_page_token = 2;
+}
+
+message UpdateWorkItemRequest {
+  string id = 1;
+  optional string title = 2;
+  optional string description = 3;
+  optional string acceptance_criteria = 4;
+  optional WorkItemStatus status = 5;
+  optional int32 priority = 6;
+  optional string budgets = 7;
+  optional int32 context_window = 8;
+  string request_id = 9;
+}
+
+message UpdateWorkItemResponse {
+  WorkItem work_item = 1;
+}
+
+message DeleteWorkItemRequest {
+  string id = 1;
+}
+
+message DeleteWorkItemResponse {
+  WorkItem work_item = 1;
+}
+
+message AddDependencyRequest {
+  string tenant_id = 1;
+  string project_id = 2;
+  string from_id = 3; // work item that depends
+  string to_id = 4; // work item that is depended upon
+  DependencyType type = 5;
+  string request_id = 6;
+}
+
+message AddDependencyResponse {
+  WorkItemDependency dependency = 1;
+}
+
+message RemoveDependencyRequest {
+  string id = 1; // dependency id
+}
+
+message RemoveDependencyResponse {}
+
+message GetDependencyGraphRequest {
+  string tenant_id = 1;
+  string project_id = 2;
+}
+
+message GetDependencyGraphResponse {
+  DependencyGraph graph = 1;
+}
+
+message AssignWorkerRequest {
+  string id = 1; // work item id
+  string worker_ref = 2; // JSON: {worker_id, version}
+}
+
+message AssignWorkerResponse {
+  WorkItem work_item = 1;
+}
+
+message UnassignWorkerRequest {
+  string id = 1;
+}
+
+message UnassignWorkerResponse {
+  WorkItem work_item = 1;
+}

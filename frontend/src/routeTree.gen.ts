@@ -9,11 +9,28 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as WorkersRouteImport } from './routes/workers'
+import { Route as WorkItemsRouteImport } from './routes/work-items'
 import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as WorkersNewRouteImport } from './routes/workers.new'
+import { Route as WorkersIdRouteImport } from './routes/workers.$id'
+import { Route as WorkItemsNewRouteImport } from './routes/work-items.new'
+import { Route as WorkItemsGraphRouteImport } from './routes/work-items.graph'
+import { Route as WorkItemsIdRouteImport } from './routes/work-items.$id'
 import { Route as ProjectsNewRouteImport } from './routes/projects.new'
 import { Route as ProjectsIdRouteImport } from './routes/projects.$id'
 
+const WorkersRoute = WorkersRouteImport.update({
+  id: '/workers',
+  path: '/workers',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const WorkItemsRoute = WorkItemsRouteImport.update({
+  id: '/work-items',
+  path: '/work-items',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProjectsRoute = ProjectsRouteImport.update({
   id: '/projects',
   path: '/projects',
@@ -23,6 +40,31 @@ const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
+} as any)
+const WorkersNewRoute = WorkersNewRouteImport.update({
+  id: '/new',
+  path: '/new',
+  getParentRoute: () => WorkersRoute,
+} as any)
+const WorkersIdRoute = WorkersIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => WorkersRoute,
+} as any)
+const WorkItemsNewRoute = WorkItemsNewRouteImport.update({
+  id: '/new',
+  path: '/new',
+  getParentRoute: () => WorkItemsRoute,
+} as any)
+const WorkItemsGraphRoute = WorkItemsGraphRouteImport.update({
+  id: '/graph',
+  path: '/graph',
+  getParentRoute: () => WorkItemsRoute,
+} as any)
+const WorkItemsIdRoute = WorkItemsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => WorkItemsRoute,
 } as any)
 const ProjectsNewRoute = ProjectsNewRouteImport.update({
   id: '/new',
@@ -38,37 +80,108 @@ const ProjectsIdRoute = ProjectsIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/projects': typeof ProjectsRouteWithChildren
+  '/work-items': typeof WorkItemsRouteWithChildren
+  '/workers': typeof WorkersRouteWithChildren
   '/projects/$id': typeof ProjectsIdRoute
   '/projects/new': typeof ProjectsNewRoute
+  '/work-items/$id': typeof WorkItemsIdRoute
+  '/work-items/graph': typeof WorkItemsGraphRoute
+  '/work-items/new': typeof WorkItemsNewRoute
+  '/workers/$id': typeof WorkersIdRoute
+  '/workers/new': typeof WorkersNewRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/projects': typeof ProjectsRouteWithChildren
+  '/work-items': typeof WorkItemsRouteWithChildren
+  '/workers': typeof WorkersRouteWithChildren
   '/projects/$id': typeof ProjectsIdRoute
   '/projects/new': typeof ProjectsNewRoute
+  '/work-items/$id': typeof WorkItemsIdRoute
+  '/work-items/graph': typeof WorkItemsGraphRoute
+  '/work-items/new': typeof WorkItemsNewRoute
+  '/workers/$id': typeof WorkersIdRoute
+  '/workers/new': typeof WorkersNewRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/projects': typeof ProjectsRouteWithChildren
+  '/work-items': typeof WorkItemsRouteWithChildren
+  '/workers': typeof WorkersRouteWithChildren
   '/projects/$id': typeof ProjectsIdRoute
   '/projects/new': typeof ProjectsNewRoute
+  '/work-items/$id': typeof WorkItemsIdRoute
+  '/work-items/graph': typeof WorkItemsGraphRoute
+  '/work-items/new': typeof WorkItemsNewRoute
+  '/workers/$id': typeof WorkersIdRoute
+  '/workers/new': typeof WorkersNewRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/projects' | '/projects/$id' | '/projects/new'
+  fullPaths:
+    | '/'
+    | '/projects'
+    | '/work-items'
+    | '/workers'
+    | '/projects/$id'
+    | '/projects/new'
+    | '/work-items/$id'
+    | '/work-items/graph'
+    | '/work-items/new'
+    | '/workers/$id'
+    | '/workers/new'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/projects' | '/projects/$id' | '/projects/new'
-  id: '__root__' | '/' | '/projects' | '/projects/$id' | '/projects/new'
+  to:
+    | '/'
+    | '/projects'
+    | '/work-items'
+    | '/workers'
+    | '/projects/$id'
+    | '/projects/new'
+    | '/work-items/$id'
+    | '/work-items/graph'
+    | '/work-items/new'
+    | '/workers/$id'
+    | '/workers/new'
+  id:
+    | '__root__'
+    | '/'
+    | '/projects'
+    | '/work-items'
+    | '/workers'
+    | '/projects/$id'
+    | '/projects/new'
+    | '/work-items/$id'
+    | '/work-items/graph'
+    | '/work-items/new'
+    | '/workers/$id'
+    | '/workers/new'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ProjectsRoute: typeof ProjectsRouteWithChildren
+  WorkItemsRoute: typeof WorkItemsRouteWithChildren
+  WorkersRoute: typeof WorkersRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/workers': {
+      id: '/workers'
+      path: '/workers'
+      fullPath: '/workers'
+      preLoaderRoute: typeof WorkersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/work-items': {
+      id: '/work-items'
+      path: '/work-items'
+      fullPath: '/work-items'
+      preLoaderRoute: typeof WorkItemsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/projects': {
       id: '/projects'
       path: '/projects'
@@ -82,6 +195,41 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/workers/new': {
+      id: '/workers/new'
+      path: '/new'
+      fullPath: '/workers/new'
+      preLoaderRoute: typeof WorkersNewRouteImport
+      parentRoute: typeof WorkersRoute
+    }
+    '/workers/$id': {
+      id: '/workers/$id'
+      path: '/$id'
+      fullPath: '/workers/$id'
+      preLoaderRoute: typeof WorkersIdRouteImport
+      parentRoute: typeof WorkersRoute
+    }
+    '/work-items/new': {
+      id: '/work-items/new'
+      path: '/new'
+      fullPath: '/work-items/new'
+      preLoaderRoute: typeof WorkItemsNewRouteImport
+      parentRoute: typeof WorkItemsRoute
+    }
+    '/work-items/graph': {
+      id: '/work-items/graph'
+      path: '/graph'
+      fullPath: '/work-items/graph'
+      preLoaderRoute: typeof WorkItemsGraphRouteImport
+      parentRoute: typeof WorkItemsRoute
+    }
+    '/work-items/$id': {
+      id: '/work-items/$id'
+      path: '/$id'
+      fullPath: '/work-items/$id'
+      preLoaderRoute: typeof WorkItemsIdRouteImport
+      parentRoute: typeof WorkItemsRoute
     }
     '/projects/new': {
       id: '/projects/new'
@@ -114,9 +262,40 @@ const ProjectsRouteWithChildren = ProjectsRoute._addFileChildren(
   ProjectsRouteChildren,
 )
 
+interface WorkItemsRouteChildren {
+  WorkItemsIdRoute: typeof WorkItemsIdRoute
+  WorkItemsGraphRoute: typeof WorkItemsGraphRoute
+  WorkItemsNewRoute: typeof WorkItemsNewRoute
+}
+
+const WorkItemsRouteChildren: WorkItemsRouteChildren = {
+  WorkItemsIdRoute: WorkItemsIdRoute,
+  WorkItemsGraphRoute: WorkItemsGraphRoute,
+  WorkItemsNewRoute: WorkItemsNewRoute,
+}
+
+const WorkItemsRouteWithChildren = WorkItemsRoute._addFileChildren(
+  WorkItemsRouteChildren,
+)
+
+interface WorkersRouteChildren {
+  WorkersIdRoute: typeof WorkersIdRoute
+  WorkersNewRoute: typeof WorkersNewRoute
+}
+
+const WorkersRouteChildren: WorkersRouteChildren = {
+  WorkersIdRoute: WorkersIdRoute,
+  WorkersNewRoute: WorkersNewRoute,
+}
+
+const WorkersRouteWithChildren =
+  WorkersRoute._addFileChildren(WorkersRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ProjectsRoute: ProjectsRouteWithChildren,
+  WorkItemsRoute: WorkItemsRouteWithChildren,
+  WorkersRoute: WorkersRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

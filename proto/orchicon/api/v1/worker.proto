@@ -1,0 +1,85 @@
+// Orchicon Worker entity (docs/05_Worker_Specification.md).
+//
+// A Worker is a reusable, tenant-owned, versioned execution profile. It
+// declares what is permitted (permissions, budgets) but does not carry
+// runtime capabilities — those belong to the adapter (docs/05 §2). A
+// published Worker is immutable; mutations create a new version
+// (docs/05 §4, §5).
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Worker is the immutable header row for a reusable execution profile.
+// The mutable snapshot (system_prompt, model_ref, permissions, budgets)
+// lives in WorkerVersion. See docs/05_Worker_Specification.md §3.
+message Worker {
+  string id = 1;
+  string tenant_id = 2;
+  string name = 3;
+  string slug = 4;
+  string description = 5;
+  string purpose = 6; // short statement of the worker's role
+  WorkerStatus status = 7;
+  int32 current_version = 8; // latest version number
+  string created_by = 9;
+  int32 version = 10; // optimistic concurrency (docs/09 §5)
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp updated_at = 12;
+}
+
+// WorkerVersion is the immutable snapshot of a Worker's mutable fields
+// at a specific version (docs/05 §5). Once published, a version is
+// immutable; changes create a new version.
+message WorkerVersion {
+  string id = 1;
+  string worker_id = 2;
+  int32 version = 3; // monotonic integer
+  string version_note = 4;
+  WorkerVersionStatus status = 5;
+  string runtime_ref = 6; // adapter kind, e.g. "opencode"
+  string model_ref = 7; // exact provider + model id; no failover (docs/05 §11)
+  string system_prompt = 8; // supports template variables (docs/05 §11)
+  string context_sources = 9; // JSON: ordered list of context source refs
+  string permissions = 10; // JSON: capability allowlist (docs/05 §7)
+  string gated_tools = 11; // JSON: per-call gated tool set (docs/05 §7.1)
+  string budget_overrides = 12; // JSON: per-worker ceilings (docs/05 §8)
+  string execution_policy_ref = 13;
+  int32 concurrency_limit = 14;
+  string recovery_workflow_ref = 15;
+  string labels = 16; // JSON: free-form key/value for filtering
+  google.protobuf.Timestamp published_at = 17;
+  google.protobuf.Timestamp created_at = 18;
+}
+
+// Worker lifecycle states. draft → published → deprecated → retired
+// (docs/05_Worker_Specification.md §4). Retire is per-Worker (all
+// versions), not per-version.
+enum WorkerStatus {
+  WORKER_STATUS_UNSPECIFIED = 0;
+  WORKER_STATUS_DRAFT = 1;
+  WORKER_STATUS_PUBLISHED = 2;
+  WORKER_STATUS_DEPRECATED = 3;
+  WORKER_STATUS_RETIRED = 4;
+}
+
+// WorkerVersion lifecycle states (docs/05 §4). A version is draft
+// until published; deprecation is per-version; retirement is per-Worker.
+enum WorkerVersionStatus {
+  WORKER_VERSION_STATUS_UNSPECIFIED = 0;
+  WORKER_VERSION_STATUS_DRAFT = 1;
+  WORKER_VERSION_STATUS_PUBLISHED = 2;
+  WORKER_VERSION_STATUS_DEPRECATED = 3;
+}
+
+// EditLock is an explicit advisory lock on a Worker for the visual
+// editor (docs/07 §3.3). Prevents concurrent edits; other users see
+// "currently being edited by [user]" and can view read-only. Lock
+// expires automatically on disconnect (TTL).
+message EditLock {
+  string resource_id = 1; // worker id
+  string held_by = 2; // actor identity
+  google.protobuf.Timestamp acquired_at = 3;
+  google.protobuf.Timestamp expires_at = 4;
+}

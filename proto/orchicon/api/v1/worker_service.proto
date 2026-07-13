@@ -1,0 +1,159 @@
+// Orchicon WorkerService.
+//
+// Worker CRUD + versioning lifecycle (publish/deprecate/retire) + edit
+// locks for the visual Worker editor (docs/07_API_Specification.md §3.3).
+// All mutations write through the transactional outbox
+// (docs/09_Database_Schema.md §6). A published Worker is immutable;
+// changes create a new version (docs/05_Worker_Specification.md §4).
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "orchicon/api/v1/worker.proto";
+
+service WorkerService {
+  // CreateWorker creates a new Worker in draft state with its first
+  // draft version. The version is mutable until published.
+  rpc CreateWorker(CreateWorkerRequest) returns (CreateWorkerResponse);
+
+  // PublishWorkerVersion publishes the draft version of a Worker,
+  // making it dispatchable. The Worker transitions to published. The
+  // version becomes immutable (docs/05 §4).
+  rpc PublishWorkerVersion(PublishWorkerVersionRequest) returns (PublishWorkerVersionResponse);
+
+  // DeprecateWorker transitions a published Worker to deprecated. Still
+  // dispatchable for in-flight Workflows; no new Workflows may bind
+  // (docs/05 §4).
+  rpc DeprecateWorker(DeprecateWorkerRequest) returns (DeprecateWorkerResponse);
+
+  // RetireWorker transitions a deprecated Worker to retired. No new
+  // dispatches; in-flight executions run to completion (docs/05 §4).
+  rpc RetireWorker(RetireWorkerRequest) returns (RetireWorkerResponse);
+
+  // GetWorker returns a single Worker header by id.
+  rpc GetWorker(GetWorkerRequest) returns (GetWorkerResponse);
+
+  // ListWorkers returns a page of Workers for the tenant.
+  rpc ListWorkers(ListWorkersRequest) returns (ListWorkersResponse);
+
+  // ListWorkerVersions returns all versions of a Worker, newest first.
+  rpc ListWorkerVersions(ListWorkerVersionsRequest) returns (ListWorkerVersionsResponse);
+
+  // AcquireEditLock acquires an exclusive edit lock on a Worker for the
+  // visual editor (docs/07 §3.3). Prevents concurrent edits; expires
+  // automatically on TTL.
+  rpc AcquireEditLock(AcquireEditLockRequest) returns (AcquireEditLockResponse);
+
+  // ReleaseEditLock releases a held edit lock.
+  rpc ReleaseEditLock(ReleaseEditLockRequest) returns (ReleaseEditLockResponse);
+
+  // GetEditLock returns the current edit lock state for a Worker, if any.
+  rpc GetEditLock(GetEditLockRequest) returns (GetEditLockResponse);
+}
+
+message CreateWorkerRequest {
+  string tenant_id = 1;
+  string name = 2;
+  string slug = 3;
+  string description = 4;
+  string purpose = 5;
+  // First-version snapshot fields (docs/05 §3):
+  string runtime_ref = 6;
+  string model_ref = 7;
+  string system_prompt = 8;
+  string context_sources = 9; // JSON
+  string permissions = 10; // JSON
+  string gated_tools = 11; // JSON
+  string budget_overrides = 12; // JSON
+  string execution_policy_ref = 13;
+  int32 concurrency_limit = 14;
+  string recovery_workflow_ref = 15;
+  string labels = 16; // JSON
+  string version_note = 17;
+  string request_id = 18; // idempotency (docs/07 §5.5)
+}
+
+message CreateWorkerResponse {
+  Worker worker = 1;
+  WorkerVersion version = 2;
+}
+
+message PublishWorkerVersionRequest {
+  string worker_id = 1;
+  string version_note = 2; // optional note for this publish
+}
+
+message PublishWorkerVersionResponse {
+  Worker worker = 1;
+  WorkerVersion version = 2;
+}
+
+message DeprecateWorkerRequest {
+  string worker_id = 1;
+}
+
+message DeprecateWorkerResponse {
+  Worker worker = 1;
+}
+
+message RetireWorkerRequest {
+  string worker_id = 1;
+}
+
+message RetireWorkerResponse {
+  Worker worker = 1;
+}
+
+message GetWorkerRequest {
+  string id = 1;
+}
+
+message GetWorkerResponse {
+  Worker worker = 1;
+  WorkerVersion latest_version = 2; // latest published version, if any
+}
+
+message ListWorkersRequest {
+  string tenant_id = 1;
+  string page_token = 2;
+  int32 page_size = 3;
+  optional WorkerStatus status = 4; // optional filter
+}
+
+message ListWorkersResponse {
+  repeated Worker workers = 1;
+  string next_page_token = 2;
+}
+
+message ListWorkerVersionsRequest {
+  string worker_id = 1;
+}
+
+message ListWorkerVersionsResponse {
+  repeated WorkerVersion versions = 1;
+}
+
+message AcquireEditLockRequest {
+  string worker_id = 1;
+  string actor = 2; // identity claiming the lock
+}
+
+message AcquireEditLockResponse {
+  EditLock lock = 1;
+  bool acquired = 2; // false if already held by another actor
+}
+
+message ReleaseEditLockRequest {
+  string worker_id = 1;
+  string actor = 2;
+}
+
+message ReleaseEditLockResponse {}
+
+message GetEditLockRequest {
+  string worker_id = 1;
+}
+
+message GetEditLockResponse {
+  EditLock lock = 1; // empty if no lock held
+}
