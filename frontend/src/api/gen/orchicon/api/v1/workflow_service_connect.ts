@@ -17,7 +17,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortWorkflowRequest, AbortWorkflowResponse, AcquireWorkflowEditLockRequest, AcquireWorkflowEditLockResponse, CreateWorkflowRequest, CreateWorkflowResponse, DeprecateWorkflowRequest, DeprecateWorkflowResponse, GetWorkflowEditLockRequest, GetWorkflowEditLockResponse, GetWorkflowRequest, GetWorkflowResponse, GetWorkflowRunRequest, GetWorkflowRunResponse, GetWorkflowStepRunsRequest, GetWorkflowStepRunsResponse, ListWorkflowRunsRequest, ListWorkflowRunsResponse, ListWorkflowsRequest, ListWorkflowsResponse, ListWorkflowVersionsRequest, ListWorkflowVersionsResponse, PublishWorkflowRequest, PublishWorkflowResponse, ReleaseWorkflowEditLockRequest, ReleaseWorkflowEditLockResponse, StartWorkflowRequest, StartWorkflowResponse, StreamWorkflowEventsRequest, StreamWorkflowEventsResponse } from "./workflow_service_pb.js";
+import { AbortWorkflowRequest, AbortWorkflowResponse, AcquireWorkflowEditLockRequest, AcquireWorkflowEditLockResponse, CreateWorkflowRequest, CreateWorkflowResponse, DeprecateWorkflowRequest, DeprecateWorkflowResponse, GetWorkflowEditLockRequest, GetWorkflowEditLockResponse, GetWorkflowRequest, GetWorkflowResponse, GetWorkflowRunRequest, GetWorkflowRunResponse, GetWorkflowStepRunsRequest, GetWorkflowStepRunsResponse, ListWorkflowRunsRequest, ListWorkflowRunsResponse, ListWorkflowsRequest, ListWorkflowsResponse, ListWorkflowVersionsRequest, ListWorkflowVersionsResponse, PublishWorkflowRequest, PublishWorkflowResponse, ReleaseWorkflowEditLockRequest, ReleaseWorkflowEditLockResponse, StartWorkflowRequest, StartWorkflowResponse, StreamWorkflowEventsRequest, StreamWorkflowEventsResponse, UpdateWorkflowVersionRequest, UpdateWorkflowVersionResponse } from "./workflow_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -97,6 +97,20 @@ export const WorkflowService = {
       name: "ListWorkflowVersions",
       I: ListWorkflowVersionsRequest,
       O: ListWorkflowVersionsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * UpdateWorkflowVersion saves edits to a draft version's steps (and
+     * inputs/outputs/recovery_policy_ref). Only draft versions are mutable;
+     * published versions are immutable (docs/02 §2.4). This is the "save"
+     * action in the visual editor.
+     *
+     * @generated from rpc orchicon.api.v1.WorkflowService.UpdateWorkflowVersion
+     */
+    updateWorkflowVersion: {
+      name: "UpdateWorkflowVersion",
+      I: UpdateWorkflowVersionRequest,
+      O: UpdateWorkflowVersionResponse,
       kind: MethodKind.Unary,
     },
     /**

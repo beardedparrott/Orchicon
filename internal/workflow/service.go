@@ -316,6 +316,87 @@ func (s *Service) ListWorkflowVersions(ctx context.Context, req *connect.Request
 	return connect.NewResponse(resp), nil
 }
 
+// UpdateWorkflowVersion saves edits to a draft version's steps (and
+// inputs/outputs/recovery_policy_ref). Only draft versions are mutable;
+// published versions are immutable (docs/02 §2.4). This is the "save"
+// action in the visual editor. The steps JSON is validated as a
+// well-formed JSON array (AGENTS.md security standards).
+func (s *Service) UpdateWorkflowVersion(ctx context.Context, req *connect.Request[apiv1.UpdateWorkflowVersionRequest]) (*connect.Response[apiv1.UpdateWorkflowVersionResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.WorkflowId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("workflow_id must not be empty"))
+	}
+	steps, err := validateStepsField(req.Msg.Steps)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	inputs, err := validateJSONField(req.Msg.Inputs, "{}", "inputs", maxJSONFieldLen)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	outputs, err := validateJSONField(req.Msg.Outputs, "{}", "outputs", maxJSONFieldLen)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	recoveryPolicyRef, err := validateTextField(req.Msg.RecoveryPolicyRef, maxNameLen, "recovery_policy_ref")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	versionNote, err := validateTextField(req.Msg.VersionNote, maxVersionNoteLen, "version_note")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	// Only the latest draft version is mutable.
+	latest, err := db.GetLatestWorkflowVersion(ctx, ttx.Tx, tenantID, req.Msg.WorkflowId, false)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if latest.Status != domain.WorkflowVersionDraft {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("latest version (v%d) is not draft (status=%s); published versions are immutable", latest.Version, latest.Status))
+	}
+
+	// Update the draft version's mutable fields. The version number and
+	// id are unchanged; this is an in-place edit of the draft snapshot.
+	const q = `UPDATE workflow_versions
+		SET steps = $3, inputs = $4, outputs = $5, recovery_policy_ref = $6,
+		    version_note = CASE WHEN $7 = '' THEN version_note ELSE $7 END
+		WHERE tenant_id = $1 AND id = $2
+		RETURNING id, tenant_id, workflow_id, version, version_note, status,
+			steps, inputs, outputs, recovery_policy_ref, published_at, created_at`
+	var v db.WorkflowVersionRow
+	err = ttx.Tx.QueryRow(ctx, q,
+		tenantID, latest.ID, steps, inputs, outputs, recoveryPolicyRef, versionNote,
+	).Scan(
+		&v.ID, &v.TenantID, &v.WorkflowID, &v.Version, &v.VersionNote,
+		&v.Status, &v.Steps, &v.Inputs, &v.Outputs,
+		&v.RecoveryPolicyRef, &v.PublishedAt, &v.CreatedAt,
+	)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("db: update workflow version: %w", err))
+	}
+
+	// Enqueue a workflow.updated event for the streaming feed.
+	wf, _ := db.GetWorkflow(ctx, ttx.Tx, tenantID, req.Msg.WorkflowId)
+	if err := enqueueWorkflowEvent(ctx, ttx.Tx, "workflow.updated", wf, v, db.WorkflowRunRow{}, ""); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("workflow version updated", "workflow", req.Msg.WorkflowId, "version", v.Version)
+	return connect.NewResponse(&apiv1.UpdateWorkflowVersionResponse{Version: versionRowToProto(v)}), nil
+}
+
 // StartWorkflow creates a WorkflowRun from a published version, seeds a
 // WorkflowStepRun for each step in the DAG, and enqueues a run_started
 // event (docs/02 §2.4, docs/03 §2). The WorkflowReconciler picks up the

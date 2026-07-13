@@ -44,6 +44,12 @@ service WorkflowService {
   // ListWorkflowVersions returns all versions of a Workflow, newest first.
   rpc ListWorkflowVersions(ListWorkflowVersionsRequest) returns (ListWorkflowVersionsResponse);
 
+  // UpdateWorkflowVersion saves edits to a draft version's steps (and
+  // inputs/outputs/recovery_policy_ref). Only draft versions are mutable;
+  // published versions are immutable (docs/02 §2.4). This is the "save"
+  // action in the visual editor.
+  rpc UpdateWorkflowVersion(UpdateWorkflowVersionRequest) returns (UpdateWorkflowVersionResponse);
+
   // StartWorkflow creates a WorkflowRun from a published version and
   // hands it to the WorkflowReconciler (docs/02 §2.4, docs/03 §2).
   rpc StartWorkflow(StartWorkflowRequest) returns (StartWorkflowResponse);
@@ -143,6 +149,19 @@ message ListWorkflowVersionsRequest {
 
 message ListWorkflowVersionsResponse {
   repeated WorkflowVersion versions = 1;
+}
+
+message UpdateWorkflowVersionRequest {
+  string workflow_id = 1;
+  string steps = 2; // JSON array of Step messages
+  string inputs = 3; // JSON
+  string outputs = 4; // JSON
+  string recovery_policy_ref = 5;
+  string version_note = 6; // optional: update the version note
+}
+
+message UpdateWorkflowVersionResponse {
+  WorkflowVersion version = 1;
 }
 
 message StartWorkflowRequest {
