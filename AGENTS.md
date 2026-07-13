@@ -321,18 +321,25 @@ platform, or `--uninstall` to test cleanup).
 
 ### Cross-cutting notes
 
-- **Landing page + install redirect**: `docs-site/` holds the static
-  landing page (deployed to GitHub Pages via
-  `.github/workflows/pages.yml` on push to `main`); the CNAME
-  (`orchicon.dev`) ships in `docs-site/CNAME`. The install scripts
-  themselves stay in `scripts/install.sh` and `scripts/install.ps1` —
-  single source of truth. CloudFlare `Rules → Redirect Rules` map
-  `orchicon.dev/install` and `orchicon.dev/install.ps1` to the raw
-  GitHub URLs on `main` (so script fixes ship immediately, no DNS
-  change needed). Full DNS + redirect recipe lives in
-  `docs-site/CLOUDFLARE_SETUP.md`. When the script changes, push to
-  `main` — the redirect serves the latest automatically. (Phase 10
-  placeholder until a real release / launch site lands.)
+- **Landing page + install deploy**: `site/` holds the static landing
+  page (hero with one-liner install, quick start, what-it-is grid,
+  options table, build-from-source, CTA). It is deployed to
+  CloudFlare Pages as project `orchicon-site`, bound to the custom
+  domain `orchicon.dev` (configured in the CF dashboard; no DNS
+  records or wrangling needed — Pages handles the cert). The build
+  step (`scripts/build-site.sh`, referenced by `wrangler.toml`) copies
+  the canonical install scripts from `scripts/install.{sh,ps1}` into
+  the deployed bundle, so
+  `curl -fsSL https://orchicon.dev/install | bash` and
+  `irm https://orchicon.dev/install.ps1 | iex` are served directly
+  from the Pages project — no CloudFlare redirect rules. Single source
+  of truth for the installers stays in `scripts/`. When a script
+  changes, push to `main` — CloudFlare Pages auto-deploys within a
+  minute and the new version is live. `site/install` and
+  `site/install.ps1` are git-ignored build artifacts, never edited by
+  hand. Full setup recipe + troubleshooting lives in
+  `CLOUDFLARE_SETUP.md`. (Phase 10 placeholder until a real release /
+  launch site lands.)
 - **Connect-ES codegen** is pinned to local v1 npm plugins
   (`protoc-gen-es` / `protoc-gen-connect-es`) matching the v1 runtime.
   `make gen` prepends `frontend/node_modules/.bin` to PATH. See PR #1
