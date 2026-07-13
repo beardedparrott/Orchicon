@@ -38,7 +38,40 @@ type Adapter struct {
 	log    *slog.Logger
 	mu     sync.Mutex
 	active map[string]*exec.Cmd // execution_id → running subprocess
+
+	// usageRecorder records LLM usage (Postgres dual-write + OTel
+	// metrics) on each step_finish event carrying tokens + cost
+	// (docs/04 §6.1, docs/08 §5.2). Injected by the server; nil =
+	// usage is not recorded (telemetry loss never blocks control flow
+	// — docs/08 §8 invariant #5).
+	usageRecorder UsageRecorderFunc
 }
+
+// UsageRecord is the usage sample the adapter emits on step_finish
+// (docs/04 §6.1 step_finish carries tokens + cost).
+type UsageRecord struct {
+	TenantID         string
+	ProjectID        string
+	TaskID           string
+	ExecutionID      string
+	WorkerID         string
+	Provider         string
+	Model            string
+	PromptTokens     int64
+	CompletionTokens int64
+	CostUSD          float64
+	CorrelationID    string
+	TraceID          string
+}
+
+// UsageRecorderFunc records a usage sample. Decoupled from the
+// aigateway package via a function type so the adapter has no import
+// dependency on the gateway (docs/04 §6.0: adapter is a thin bridge).
+type UsageRecorderFunc func(ctx context.Context, in UsageRecord) error
+
+// SetUsageRecorder injects the usage recording callback. The server
+// constructs it from the aigateway.UsageRecorder.
+func (a *Adapter) SetUsageRecorder(fn UsageRecorderFunc) { a.usageRecorder = fn }
 
 // New creates an OpenCode adapter bridge.
 func New(log *slog.Logger) *Adapter {
@@ -169,7 +202,7 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		if line == "" {
 			continue
 		}
-		a.parseStdoutLine(ctx, execRow.ID, line, callbacks, monitor)
+		a.parseStdoutLine(ctx, execRow, manifest, line, callbacks, monitor)
 	}
 
 	// Wait for the process to exit.
@@ -188,11 +221,11 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 // each line has `type`, `timestamp`, `sessionID`, and a `part` object.
 // Each event is also fed to the progress monitor (may be nil in tests)
 // for stall detection (docs/06 §2 stalled trigger).
-func (a *Adapter) parseStdoutLine(ctx context.Context, execID, line string, callbacks scheduler.ExecutionCallbacks, monitor *progressMonitor) {
+func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, line string, callbacks scheduler.ExecutionCallbacks, monitor *progressMonitor) {
 	var evt map[string]any
 	if err := json.Unmarshal([]byte(line), &evt); err != nil {
 		// Non-JSON line: treat as a log/progress marker.
-		a.log.Debug("opencode stdout (non-JSON)", "execution", execID, "line", line)
+		a.log.Debug("opencode stdout (non-JSON)", "execution", execRow.ID, "line", line)
 		return
 	}
 	eventType, _ := evt["type"].(string)
@@ -200,6 +233,7 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execID, line string, call
 	if monitor != nil {
 		monitor.observe(eventType, part)
 	}
+	execID := execRow.ID
 	switch eventType {
 	case "step_start":
 		a.log.Info("opencode step started", "execution", execID)
@@ -217,10 +251,14 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execID, line string, call
 		path, _ := part["path"].(string)
 		a.log.Info("opencode file diff", "execution", execID, "path", path)
 	case "step_finish":
-		// Step completion carries token usage + cost.
+		// Step completion carries token usage + cost (docs/04 §6.1).
+		// Record it via the AI Gateway dual-write: Postgres source of
+		// truth + OTel metrics → ClickHouse (docs/08 §5.2). Best-effort
+		// — telemetry loss never blocks control flow (docs/08 §8).
 		tokens, _ := part["tokens"].(map[string]any)
 		cost, _ := part["cost"].(float64)
 		a.log.Info("opencode step finished", "execution", execID, "cost", cost, "tokens", tokens)
+		a.recordUsage(ctx, execRow, manifest, tokens, cost)
 	case "health":
 		if state, ok := evt["state"].(string); ok {
 			callbacks.OnHealth(ctx, execID, state)
@@ -232,6 +270,64 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execID, line string, call
 	default:
 		a.log.Debug("opencode event", "execution", execID, "type", eventType)
 	}
+}
+
+// recordUsage records a usage sample from a step_finish event via the
+// AI Gateway dual-write (docs/08 §5.2). It extracts token counts from
+// the opencode JSON shape and derives provider/model from the manifest's
+// ModelRef (which the human defined — docs/05 §11). Best-effort: a nil
+// recorder means usage is not recorded (docs/08 §8).
+func (a *Adapter) recordUsage(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, tokens map[string]any, cost float64) {
+	if a.usageRecorder == nil {
+		return
+	}
+	promptTokens := toInt64(tokens["prompt_tokens"])
+	completionTokens := toInt64(tokens["completion_tokens"])
+	if promptTokens == 0 && completionTokens == 0 && cost == 0 {
+		return
+	}
+	provider, model := parseModelRef(manifest.ModelRef)
+	in := UsageRecord{
+		TenantID:         execRow.TenantID,
+		ProjectID:        execRow.ProjectID,
+		TaskID:           execRow.TaskID,
+		ExecutionID:      execRow.ID,
+		WorkerID:         manifest.WorkerID,
+		Provider:         provider,
+		Model:            model,
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		CostUSD:          cost,
+	}
+	if err := a.usageRecorder(ctx, in); err != nil {
+		a.log.Warn("usage record failed", "execution", execRow.ID, "error", err)
+	}
+}
+
+// parseModelRef splits a model ref like "anthropic/claude-sonnet-4" or
+// "opencode/deepseek-v4-flash-free" into (provider, model). If there is
+// no "/", provider is "unknown" and model is the whole ref.
+func parseModelRef(ref string) (provider, model string) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "unknown", "unknown"
+	}
+	if i := strings.IndexByte(ref, '/'); i > 0 {
+		return ref[:i], ref[i+1:]
+	}
+	return "unknown", ref
+}
+
+func toInt64(v any) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	}
+	return 0
 }
 
 // runSimulation emits synthetic telemetry events so the dispatch flow

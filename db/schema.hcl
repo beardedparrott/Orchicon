@@ -1313,3 +1313,29 @@ table "continuation_plans" {
   primary_key { columns = [column.id] }
   index "continuation_plans_recovery_idx" { columns = [column.recovery_id] }
 }
+
+table "usage_records" {
+  schema = schema.public
+  comment = "Usage + cost records (docs/08 §5.2, docs/09 §3.7). Postgres is source of truth; mirrored to ClickHouse as OTel metrics. Cost attribution rolls up Tenant→Project→Task→Execution. RLS-enabled."
+  column "id" { type = text; null = false }
+  column "tenant_id" { type = text; null = false }
+  column "project_id" { type = text; null = false; default = "" }
+  column "task_id" { type = text; null = false; default = "" }
+  column "execution_id" { type = text; null = false; default = "" }
+  column "worker_id" { type = text; null = false; default = "" }
+  column "provider" { type = text; null = false }
+  column "model" { type = text; null = false }
+  column "prompt_tokens" { type = bigint; null = false; default = 0 }
+  column "completion_tokens" { type = bigint; null = false; default = 0 }
+  column "total_tokens" { type = bigint; null = false; default = 0 }
+  column "cost_usd" { type = double precision; null = false; default = 0 }
+  column "correlation_id" { type = text; null = false; default = "" }
+  column "trace_id" { type = text; null = false; default = "" }
+  column "occurred_at" { type = timestamptz; null = false; default = sql("now()") }
+  column "created_at" { type = timestamptz; null = false; default = sql("now()") }
+  primary_key { columns = [column.id] }
+  index "usage_records_tenant_occurred_idx" { columns = [column.tenant_id, column.occurred_at] }
+  index "usage_records_tenant_project_idx" { columns = [column.tenant_id, column.project_id, column.occurred_at] }
+  index "usage_records_execution_idx" { columns = [column.execution_id] }
+  index "usage_records_tenant_provider_model_idx" { columns = [column.tenant_id, column.provider, column.model, column.occurred_at] }
+}

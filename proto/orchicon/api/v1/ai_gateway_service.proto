@@ -1,0 +1,82 @@
+// Orchicon AIGatewayService (docs/07_API_Specification.md §3.10,
+// docs/01 §2: AI Gateway embedded in the control plane binary).
+//
+// Lists configured providers and queries usage + cost with drill-down
+// roll-ups (Tenant → Project → Task → Execution). Usage records are
+// dual-written to Postgres (source of truth) and ClickHouse (OTel
+// metrics) — this service reads Postgres for authoritative cost; the
+// TelemetryService reads SigNoz for raw metric exploration.
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "google/protobuf/timestamp.proto";
+import "orchicon/api/v1/ai_gateway.proto";
+
+service AIGatewayService {
+  // ListProviders returns the LLM providers known to the gateway
+  // (docs/01 §2, docs/07 §3.10).
+  rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse);
+
+  // GetUsage returns usage records matching the tenant-scoped filter.
+  // The proxy injects tenant_id from the request context.
+  rpc GetUsage(GetUsageRequest) returns (GetUsageResponse);
+
+  // GetCost returns a cost roll-up at the requested drill-down level
+  // (docs/10 §11 cost explorer). Tenant → Project → Task → Execution.
+  rpc GetCost(GetCostRequest) returns (GetCostResponse);
+
+  // StreamUsageEvents is the server-stream RPC that fans out live
+  // usage/cost events from NATS to connected clients (docs/07 §4,
+  // docs/08 §5.2). Each event mirrors a usage_records Postgres row.
+  rpc StreamUsageEvents(StreamUsageEventsRequest) returns (stream StreamUsageEventsResponse);
+}
+
+message ListProvidersRequest {
+  // No filters — providers are not tenant-scoped in v0.1.
+}
+message ListProvidersResponse {
+  repeated AIProvider providers = 1;
+}
+
+message GetUsageRequest {
+  string tenant_id = 1;     // injected from request context
+  string project_id = 2;   // optional scope
+  string task_id = 3;       // optional scope
+  string execution_id = 4;  // optional scope
+  string provider = 5;      // optional scope
+  string model = 6;         // optional scope
+  google.protobuf.Timestamp start = 7;
+  google.protobuf.Timestamp end = 8;
+  string page_token = 9;
+  int32 page_size = 10;
+}
+message GetUsageResponse {
+  repeated UsageRecord records = 1;
+  string next_page_token = 2;
+}
+
+message GetCostRequest {
+  string tenant_id = 1;     // injected from request context
+  string project_id = 2;   // optional: drill into a project
+  string task_id = 3;       // optional: drill into a task
+  string execution_id = 4;  // optional: drill into an execution
+  UsageRollup rollup = 5;   // group-by granularity
+  google.protobuf.Timestamp start = 6;
+  google.protobuf.Timestamp end = 7;
+}
+message GetCostResponse {
+  repeated CostSummary summaries = 1; // grouped at the rollup level
+  CostSummary total = 2;              // the grand total for the window
+}
+
+message StreamUsageEventsRequest {
+  string tenant_id = 1;
+  string project_id = 2;   // optional scope
+  string execution_id = 3;  // optional scope
+  optional int64 from_sequence = 4;
+}
+message StreamUsageEventsResponse {
+  UsageEvent event = 1; // from ai_gateway.proto
+  int64 sequence = 2;
+}
