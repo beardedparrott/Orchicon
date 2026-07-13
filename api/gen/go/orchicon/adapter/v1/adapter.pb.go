@@ -1248,7 +1248,13 @@ const file_orchicon_adapter_v1_adapter_proto_rawDesc = "" +
 	"\fexecution_id\x18\x01 \x01(\tR\vexecutionId\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x1c\n" +
 	"\tretryable\x18\x03 \x01(\bR\tretryable\x12\x12\n" +
-	"\x04code\x18\x04 \x01(\tR\x04codeB\xe2\x01\n" +
+	"\x04code\x18\x04 \x01(\tR\x04code2\x83\x03\n" +
+	"\x15RuntimeAdapterService\x12W\n" +
+	"\bRegister\x12$.orchicon.adapter.v1.RegisterRequest\x1a%.orchicon.adapter.v1.RegisterResponse\x12]\n" +
+	"\n" +
+	"Deregister\x12&.orchicon.adapter.v1.DeregisterRequest\x1a'.orchicon.adapter.v1.DeregisterResponse\x12Z\n" +
+	"\tHeartbeat\x12%.orchicon.adapter.v1.HeartbeatRequest\x1a&.orchicon.adapter.v1.HeartbeatResponse\x12V\n" +
+	"\aExecute\x12\".orchicon.adapter.v1.ClientMessage\x1a#.orchicon.adapter.v1.AdapterMessage(\x010\x01B\xe2\x01\n" +
 	"\x17com.orchicon.adapter.v1B\fAdapterProtoP\x01ZKgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/adapter/v1;adapterv1\xa2\x02\x03OAX\xaa\x02\x13Orchicon.Adapter.V1\xca\x02\x13Orchicon\\Adapter\\V1\xe2\x02\x1fOrchicon\\Adapter\\V1\\GPBMetadata\xea\x02\x15Orchicon::Adapter::V1b\x06proto3"
 
 var (
@@ -1294,8 +1300,16 @@ var file_orchicon_adapter_v1_adapter_proto_depIdxs = []int32{
 	14, // 6: orchicon.adapter.v1.AdapterMessage.result:type_name -> orchicon.adapter.v1.ExecutionResult
 	15, // 7: orchicon.adapter.v1.AdapterMessage.error:type_name -> orchicon.adapter.v1.Error
 	0,  // 8: orchicon.adapter.v1.ControlCommand.action:type_name -> orchicon.adapter.v1.ControlCommand.Action
-	9,  // [9:9] is the sub-list for method output_type
-	9,  // [9:9] is the sub-list for method input_type
+	1,  // 9: orchicon.adapter.v1.RuntimeAdapterService.Register:input_type -> orchicon.adapter.v1.RegisterRequest
+	3,  // 10: orchicon.adapter.v1.RuntimeAdapterService.Deregister:input_type -> orchicon.adapter.v1.DeregisterRequest
+	5,  // 11: orchicon.adapter.v1.RuntimeAdapterService.Heartbeat:input_type -> orchicon.adapter.v1.HeartbeatRequest
+	7,  // 12: orchicon.adapter.v1.RuntimeAdapterService.Execute:input_type -> orchicon.adapter.v1.ClientMessage
+	2,  // 13: orchicon.adapter.v1.RuntimeAdapterService.Register:output_type -> orchicon.adapter.v1.RegisterResponse
+	4,  // 14: orchicon.adapter.v1.RuntimeAdapterService.Deregister:output_type -> orchicon.adapter.v1.DeregisterResponse
+	6,  // 15: orchicon.adapter.v1.RuntimeAdapterService.Heartbeat:output_type -> orchicon.adapter.v1.HeartbeatResponse
+	8,  // 16: orchicon.adapter.v1.RuntimeAdapterService.Execute:output_type -> orchicon.adapter.v1.AdapterMessage
+	13, // [13:17] is the sub-list for method output_type
+	9,  // [9:13] is the sub-list for method input_type
 	9,  // [9:9] is the sub-list for extension type_name
 	9,  // [9:9] is the sub-list for extension extendee
 	0,  // [0:9] is the sub-list for field type_name
@@ -1329,7 +1343,7 @@ func file_orchicon_adapter_v1_adapter_proto_init() {
 			NumEnums:      1,
 			NumMessages:   15,
 			NumExtensions: 0,
-			NumServices:   0,
+			NumServices:   1,
 		},
 		GoTypes:           file_orchicon_adapter_v1_adapter_proto_goTypes,
 		DependencyIndexes: file_orchicon_adapter_v1_adapter_proto_depIdxs,

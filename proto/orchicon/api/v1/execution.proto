@@ -1,0 +1,193 @@
+// Orchicon ExecutionService.
+//
+// Manages WorkerExecutions: the concrete invocations of a Worker
+// against a Task on a RuntimeAdapter (docs/02_Domain_Model.md §2.7,
+// docs/07_API_Specification.md §3.8). Provides live streaming of
+// telemetry/tool-call/health events, manual control (pause/resume/
+// cancel/checkpoint), and Tier 2 per-tool-call approval
+// (docs/05_Worker_Specification.md §7.1).
+//
+// The scheduler (TaskReconciler) is the only component permitted to
+// create WorkerExecutions (docs/03 §8 invariant #1); this service
+// reads and controls existing executions.
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// WorkerExecution is a concrete invocation of a Worker against a Task on
+// a specific RuntimeAdapter instance (docs/02 §2.7, docs/09 §3.3).
+// Created by the scheduler at dispatch; owns the adapter session.
+message WorkerExecution {
+  string id = 1;
+  string tenant_id = 2;
+  string project_id = 3;
+  string task_id = 4;
+  string worker_id = 5;
+  int32 worker_version = 6;
+  string adapter_id = 7;
+  ExecutionStatus status = 8;
+  HealthState health_state = 9;
+  google.protobuf.Timestamp started_at = 10;
+  google.protobuf.Timestamp ended_at = 11;
+  int64 token_usage = 12;
+  double cost_usd = 13;
+  string checkpoint_ref = 14;
+  string recovery_id = 15;
+  int32 version = 16; // optimistic concurrency (docs/09 §5)
+}
+
+// ExecutionStatus — lifecycle of a WorkerExecution
+// (docs/02 §2.7, docs/03 §6):
+// dispatching → running → healthy | stalled | unhealthy → terminating → terminated
+enum ExecutionStatus {
+  EXECUTION_STATUS_UNSPECIFIED = 0;
+  EXECUTION_STATUS_DISPATCHING = 1;
+  EXECUTION_STATUS_RUNNING = 2;
+  EXECUTION_STATUS_HEALTHY = 3;
+  EXECUTION_STATUS_STALLED = 4;
+  EXECUTION_STATUS_UNHEALTHY = 5;
+  EXECUTION_STATUS_TERMINATING = 6;
+  EXECUTION_STATUS_TERMINATED = 7;
+  EXECUTION_STATUS_FAILED_TO_START = 8;
+}
+
+// HealthState is the union of heartbeat freshness, progress rate,
+// error rate, context-window usage, runtime-reported health
+// (docs/03 §5).
+enum HealthState {
+  HEALTH_STATE_UNSPECIFIED = 0;
+  HEALTH_STATE_HEALTHY = 1;
+  HEALTH_STATE_STALLED = 2;
+  HEALTH_STATE_UNHEALTHY = 3;
+  HEALTH_STATE_TERMINATING = 4;
+}
+
+// ExecutionEvent is a single telemetry/control/health signal from an
+// execution, streamed via StreamExecutionEvents
+// (docs/04 §4, docs/07 §3.8).
+message ExecutionEvent {
+  string event_id = 1;
+  string execution_id = 2;
+  string tenant_id = 3;
+  ExecutionEventType event_type = 4;
+  google.protobuf.Timestamp occurred_at = 5;
+  bytes payload = 6; // JSON: event-specific detail
+}
+
+enum ExecutionEventType {
+  EXECUTION_EVENT_TYPE_UNSPECIFIED = 0;
+  EXECUTION_EVENT_TYPE_STARTED = 1;
+  EXECUTION_EVENT_TYPE_TELEMETRY = 2;
+  EXECUTION_EVENT_TYPE_TOOL_CALL = 3;
+  EXECUTION_EVENT_TYPE_CHECKPOINT = 4;
+  EXECUTION_EVENT_TYPE_APPROVAL_REQUEST = 5;
+  EXECUTION_EVENT_TYPE_HEALTH = 6;
+  EXECUTION_EVENT_TYPE_RESULT = 7;
+  EXECUTION_EVENT_TYPE_ERROR = 8;
+  EXECUTION_EVENT_TYPE_CONTROL = 9;
+}
+
+// ApprovalRequest is a Tier 2 per-tool-call gating request
+// (docs/05 §7.1, docs/07 §3.8). When a Worker's gated_tools declares
+// terminal/web_fetch/git, the adapter emits an ApprovalRequest for
+// each call in that category; the human or Policy-derived decision is
+// returned via ApproveToolCall.
+message ApprovalRequest {
+  string request_id = 1;
+  string execution_id = 2;
+  string tool_category = 3; // terminal | web_fetch | git (docs/05 §7.1)
+  bytes detail = 4; // JSON: tool-call detail
+  google.protobuf.Timestamp requested_at = 5;
+  bool resolved = 6;
+  bool approved = 7;
+  string reason = 8;
+}
+
+// Request/response messages for ExecutionService (docs/07 §3.8).
+message GetExecutionRequest {
+  string id = 1;
+}
+
+message GetExecutionResponse {
+  WorkerExecution execution = 1;
+}
+
+message ListExecutionsRequest {
+  string tenant_id = 1;
+  optional string project_id = 2;
+  optional string task_id = 3;
+  optional ExecutionStatus status = 4;
+  string page_token = 5;
+  int32 page_size = 6;
+}
+
+message ListExecutionsResponse {
+  repeated WorkerExecution executions = 1;
+  string next_page_token = 2;
+}
+
+message StreamExecutionEventsRequest {
+  string tenant_id = 1;
+  string execution_id = 2;
+  optional int64 from_sequence = 3; // resume after reconnect (docs/07 §4)
+}
+
+message StreamExecutionEventsResponse {
+  ExecutionEvent event = 1;
+  int64 sequence = 2;
+}
+
+message PauseExecutionRequest {
+  string id = 1;
+}
+
+message PauseExecutionResponse {
+  WorkerExecution execution = 1;
+}
+
+message ResumeExecutionRequest {
+  string id = 1;
+}
+
+message ResumeExecutionResponse {
+  WorkerExecution execution = 1;
+}
+
+message CancelExecutionRequest {
+  string id = 1;
+  string reason = 2;
+}
+
+message CancelExecutionResponse {
+  WorkerExecution execution = 1;
+}
+
+message CheckpointNowRequest {
+  string id = 1;
+}
+
+message CheckpointNowResponse {
+  WorkerExecution execution = 1;
+  string checkpoint_ref = 2;
+}
+
+message ApproveToolCallRequest {
+  string request_id = 1;
+  bool approved = 2;
+  string reason = 3;
+}
+
+message ApproveToolCallResponse {
+  ApprovalRequest approval = 1;
+}
+
+message ListPendingApprovalsRequest {
+  string tenant_id = 1;
+  optional string execution_id = 2;
+}
+
+message ListPendingApprovalsResponse {
+  repeated ApprovalRequest approvals = 1;
+}

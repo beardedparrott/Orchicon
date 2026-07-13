@@ -120,3 +120,31 @@ message Error {
   bool retryable = 3;
   string code = 4;
 }
+
+// RuntimeAdapterService is the gRPC sidecar contract between the
+// Orchicon control plane and pluggable execution runtimes
+// (docs/04_Runtime_Adapter_SDK.md §2–4). The adapter is a process the
+// control plane drives over gRPC; adapters hold no durable state and
+// never touch Postgres or NATS directly (docs/04 §1, §9).
+service RuntimeAdapterService {
+  // Register announces the adapter with its kind/version/capabilities.
+  // Control plane records a RuntimeAdapter row and begins a heartbeat
+  // lease (docs/04 §2).
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+
+  // Deregister gracefully drains — new executions refused, in-flight
+  // allowed to complete (docs/04 §2).
+  rpc Deregister(DeregisterRequest) returns (DeregisterResponse);
+
+  // Heartbeat renews the adapter's lease and carries a health snapshot
+  // (docs/04 §2, docs/03 §5).
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // Execute is one bidirectional stream per WorkerExecution
+  // (docs/04 §3). Client messages (start/control/approval) go down;
+  // adapter messages (telemetry/tool_call/checkpoint/result/error) come
+  // up. All telemetry is dual-written: onto the stream (low-latency for
+  // live UI) and onto NATS (durable) by the control plane
+  // (docs/04 §4).
+  rpc Execute(stream ClientMessage) returns (stream AdapterMessage);
+}

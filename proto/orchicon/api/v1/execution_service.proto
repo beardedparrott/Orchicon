@@ -1,0 +1,49 @@
+// Orchicon ExecutionService.
+//
+// Manages WorkerExecutions: live streaming telemetry, manual control
+// (pause/resume/cancel/checkpoint), and Tier 2 per-tool-call approval
+// (docs/07_API_Specification.md §3.8, docs/05 §7.1).
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "orchicon/api/v1/execution.proto";
+
+service ExecutionService {
+  // GetExecution returns a single execution by id.
+  rpc GetExecution(GetExecutionRequest) returns (GetExecutionResponse);
+
+  // ListExecutions returns a page of executions, optionally filtered
+  // by project/task/status.
+  rpc ListExecutions(ListExecutionsRequest) returns (ListExecutionsResponse);
+
+  // StreamExecutionEvents is the server-stream RPC that fans out
+  // execution events (telemetry, tool calls, health, results) from
+  // NATS to connected clients (docs/07 §4, docs/10 §4).
+  rpc StreamExecutionEvents(StreamExecutionEventsRequest) returns (stream StreamExecutionEventsResponse);
+
+  // PauseExecution transitions a running execution to checkpointing
+  // (docs/03 §6). Best-effort in v0.1 CLI mode (docs/04 §6.1).
+  rpc PauseExecution(PauseExecutionRequest) returns (PauseExecutionResponse);
+
+  // ResumeExecution transitions a checkpointed execution back to
+  // running (docs/03 §6).
+  rpc ResumeExecution(ResumeExecutionRequest) returns (ResumeExecutionResponse);
+
+  // CancelExecution transitions an execution to terminated
+  // (docs/03 §6).
+  rpc CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse);
+
+  // CheckpointNow requests an immediate checkpoint from the adapter
+  // (docs/04 §5).
+  rpc CheckpointNow(CheckpointNowRequest) returns (CheckpointNowResponse);
+
+  // ApproveToolCall resolves a Tier 2 per-tool-call approval request
+  // (docs/05 §7.1, docs/07 §3.8). The decision is routed to the
+  // adapter via the Execute bistream.
+  rpc ApproveToolCall(ApproveToolCallRequest) returns (ApproveToolCallResponse);
+
+  // ListPendingApprovals returns unresolved Tier 2 approval requests
+  // for the tenant (optionally scoped to an execution).
+  rpc ListPendingApprovals(ListPendingApprovalsRequest) returns (ListPendingApprovalsResponse);
+}

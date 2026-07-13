@@ -1,0 +1,17 @@
+// Orchicon RuntimeAdapterService — public API surface
+// (docs/07_API_Specification.md §3.7).
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "orchicon/api/v1/adapter.proto";
+
+service RuntimeAdapterService {
+  // ListAdapters returns registered adapters, optionally filtered by
+  // kind.
+  rpc ListAdapters(ListAdaptersRequest) returns (ListAdaptersResponse);
+
+  // GetAdapterCapabilities returns the capability manifest for a
+  // registered adapter (docs/04 §3.2).
+  rpc GetAdapterCapabilities(GetAdapterCapabilitiesRequest) returns (GetAdapterCapabilitiesResponse);
+}
