@@ -77,7 +77,9 @@ curl -fsSL https://orchicon.dev/install | bash -s -- --uninstall
 ```
 
 After installation, verify with `orchicon version` and start the dev
-environment with `orchicon dev start`.
+environment with `orchicon dev start` — the binary embeds the Docker
+Compose stack, migrations, and frontend bundle, so it's the complete
+one-command experience (requires Docker).
 
 > **Note:** Pre-built binaries are published to [GitHub
 > Releases](https://github.com/beardedparrott/Orchicon/releases). If no
@@ -129,8 +131,9 @@ Generated code is committed (docs/10 §3.1).
 
 | Path | Concern |
 |---|---|
-| `cmd/orchicon/` | Control-plane binary entry point |
-| `internal/` | api, config, db, domain, outbox, reconciler, server, blobstore, version |
+| `cmd/orchicon/` | Control-plane binary entry point + `dev` subcommand |
+| `internal/` | api, config, db, domain, eventbus, outbox, reconciler, server, telemetry, migrate, middleware, tenant, blobstore, version |
+| `assets.go` | go:embed directives for compose, migrations, frontend |
 | `proto/` | Protobuf schema (`orchicon.api.v1`, `orchicon.adapter.v1`) |
 | `api/gen/` | Generated Go code |
 | `db/` | Atlas declarative schema + versioned migrations |

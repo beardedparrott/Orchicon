@@ -276,7 +276,7 @@ platform, or `--uninstall` to test cleanup).
 |---|---|---|---|
 | 1 | Foundation | done | Go module + binary skeleton (`cmd/orchicon`, `internal/`); Protobuf schema (`orchicon.api.v1`, `orchicon.adapter.v1`); Connect codegen (Go + TS); Atlas migrations for tenants/identities/projects with RLS + CI gate; Docker Compose (Postgres, NATS, SigNoz, OTel); Makefile; Vite+React+TS shell with Connect-ES, TanStack Router, Tailwind+shadcn/ui |
 | 2 | Projects slice | done | Project CRUD (Create/Get/List/Update/Archive) full stack: Go handler + data-access layer with pgx + tenant scoping + RLS backstop; Connect handler wiring; transactional outbox with NATS JetStream relay; frontend project list + detail + create form (React Hook Form + Zod + TanStack Query) |
-| 3 | Realtime + infrastructure | not started | Outbox relay (started), reconciler framework, OTel, frontend streaming (`useStream` hook), `orchicon dev` subcommand (embeds compose + migrations + frontend → one-binary dev experience) |
+| 3 | Realtime + infrastructure | done | `orchicon dev` subcommand (embeds compose + migrations + frontend via go:embed); outbox relay lag metrics (`orchicon_outbox_lag`); reconciler framework (work queue + advisory-lock leadership + manager); OTel pipeline (tracer/meter/exporter → SigNoz); StreamProjectEvents server-stream RPC fanning out from NATS; trace propagation via Connect headers; `useStream` hook (reconnect + backoff + dedup + resume) + live event feed on project detail page |
 | 4 | Workers + WorkItems | not started | Worker versioning, WorkItem hierarchy, dependencies + frontend catalog, tree/board, dependency graph |
 | 5 | Scheduling + adapters | not started | TaskReconciler, dispatch, OpenCode adapter + frontend execution live view |
 | 6 | Workflows | not started | Workflow CRUD, step DAG, runs + frontend visual drag-and-drop editor (React Flow) |
@@ -293,13 +293,16 @@ platform, or `--uninstall` to test cleanup).
 - **Atlas RLS** policies are hand-appended SQL (the free tier does not
   diff `policy` blocks). After hand-editing a migration, run
   `make migrate-hash`. Future diffs won't drop RLS.
-- **Phase 3 entry point**: the outbox relay (`internal/outbox/relay.go`)
-  and NATS publisher (`internal/eventbus/nats.go`) are wired and running
-  from Phase 2; the next step is the reconciler framework + OTel + the
-  `useStream` hook projecting NATS events into the frontend. Phase 3 also
-  adds the `orchicon dev` subcommand to the binary itself (replacing the
-  repo-local `scripts/dev.sh`) so that `curl ... | bash` → `orchicon dev
-  start` is the full experience: the binary embeds the Docker Compose
-  stack, migrations, and frontend bundle via `go:embed`, and manages
-  everything internally. This makes the install script + dev control
-  script one seamless path for new users.
+- **Phase 3**: the `orchicon dev` subcommand embeds the compose stack,
+  migrations, and frontend bundle via `go:embed` (assets.go at the
+  module root). `orchicon dev start` is the complete one-binary dev
+  experience: compose up → wait healthy → migrate → serve (control
+  plane + embedded frontend). `scripts/dev.sh` delegates to `orchicon
+  dev` when the binary is available. The OTel pipeline exports to the
+  OTel collector at `cfg.OTelEndpoint`; the NATS subscriber
+  (`eventbus.NATSSubscriber`) fans out events to streaming RPCs; the
+  reconciler framework (`reconciler.Manager`) provides per-kind
+  leadership via `pg_try_advisory_lock`. The frontend `useStream` hook
+  wraps Connect-ES server streams with reconnect + backoff + dedup +
+  resume. The next step (Phase 4) adds concrete reconcilers and the
+  Worker/WorkItem hierarchy.

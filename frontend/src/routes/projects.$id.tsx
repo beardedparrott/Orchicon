@@ -1,6 +1,8 @@
 import { createRoute, useNavigate } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 
-import { useArchiveProject, useGetProject } from "@/api/projects";
+import { useArchiveProject, useGetProject, projectKeys } from "@/api/projects";
+import { useStreamProjectEvents } from "@/api/projectEvents";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -12,8 +14,9 @@ import {
 import { Route as rootRoute } from "@/routes/__root";
 
 // Project detail (docs/10 §5). Shows the project's lifecycle state,
-// goals, and version. Archive is a server-confirmed mutation (no
-// optimistic transition — docs/10 invariant #3).
+// goals, version, and a live event feed (docs/10 §4 Realtime Model).
+// Archive is a server-confirmed mutation (no optimistic transition —
+// docs/10 invariant #3).
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/projects/$id",
@@ -25,6 +28,17 @@ function ProjectDetailPage() {
   const { data: project, isLoading, error } = useGetProject(id);
   const archiveProject = useArchiveProject();
   const navigate = useNavigate();
+  const qc = useQueryClient();
+
+  // Live event feed (docs/10 §4). Subscribes to StreamProjectEvents
+  // filtered to this project. Events invalidate the detail query so
+  // the UI reflects server-confirmed state.
+  const { events, status } = useStreamProjectEvents({
+    projectId: id,
+    onEvent: () => {
+      qc.invalidateQueries({ queryKey: projectKeys.detail(id) });
+    },
+  });
 
   const handleArchive = async () => {
     await archiveProject.mutateAsync(id);
@@ -109,7 +123,89 @@ function ProjectDetailPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Live event feed (docs/10 §4). Streams project lifecycle events
+          in real-time with automatic reconnect and dedup. */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>Live Events</CardTitle>
+              <CardDescription>
+                Real-time project lifecycle events (streamed via NATS).
+              </CardDescription>
+            </div>
+            <StreamStatusBadge status={status} />
+          </div>
+        </CardHeader>
+        <CardContent>
+          {events.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No events yet. Create or update this project to see events
+              stream live.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {events.map((resp, i) => {
+                const evt = resp.event;
+                if (!evt) return null;
+                return (
+                  <div
+                    key={`${evt.eventId}-${i}`}
+                    className="flex items-start gap-3 rounded-md border p-3 text-sm"
+                  >
+                    <span className="mt-0.5 text-xs font-mono text-muted-foreground">
+                      {evt.occurredAt
+                        ? new Date(
+                            Number(evt.occurredAt.seconds) * 1000,
+                          ).toLocaleTimeString()
+                        : "--:--:--"}
+                    </span>
+                    <div className="flex-1">
+                      <span className="font-medium">
+                        {evt.eventType || "unknown"}
+                      </span>
+                      {evt.payload && evt.payload.length > 0 && (
+                        <pre className="mt-1 overflow-auto rounded bg-muted p-2 text-xs text-muted-foreground">
+                          {formatPayload(evt.payload)}
+                        </pre>
+                      )}
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      #{String(resp.sequence)}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
+  );
+}
+
+function StreamStatusBadge({ status }: { status: string }) {
+  const colors: Record<string, string> = {
+    idle: "text-muted-foreground",
+    connecting: "text-yellow-600",
+    open: "text-green-600",
+    reconnecting: "text-yellow-600",
+    closed: "text-muted-foreground",
+    error: "text-destructive",
+  };
+  const labels: Record<string, string> = {
+    idle: "idle",
+    connecting: "connecting…",
+    open: "live",
+    reconnecting: "reconnecting…",
+    closed: "disconnected",
+    error: "error",
+  };
+  return (
+    <span className={`text-xs font-medium ${colors[status] ?? ""}`}>
+      ● {labels[status] ?? status}
+    </span>
   );
 }
 
@@ -129,5 +225,14 @@ function formatJson(s: string): string {
     return JSON.stringify(JSON.parse(s), null, 2);
   } catch {
     return s;
+  }
+}
+
+function formatPayload(data: Uint8Array): string {
+  try {
+    const text = new TextDecoder().decode(data);
+    return formatJson(text);
+  } catch {
+    return `${data.length} bytes`;
   }
 }

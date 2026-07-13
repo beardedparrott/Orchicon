@@ -13,6 +13,10 @@ go.work.sum
 # Node/Frontend
 node_modules/
 dist/
+# Keep frontend/dist/.gitkeep so go:embed always has a target at build time.
+!frontend/dist/
+frontend/dist/*
+!frontend/dist/.gitkeep
 .env
 .env.local
 .env.*.local

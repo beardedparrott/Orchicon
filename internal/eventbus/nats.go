@@ -1,8 +1,10 @@
-// Package eventbus is the thin NATS JetStream publisher used by the
-// outbox relay (docs/08_Event_Bus_and_Telemetry_Model.md §2). No
-// component other than the relay publishes to NATS (AGENTS.md
-// invariant #3), and the relay only publishes events that were already
-// committed to the outbox table.
+// Package eventbus is the thin NATS JetStream publisher and subscriber
+// used by the outbox relay and streaming RPCs
+// (docs/08_Event_Bus_and_Telemetry_Model.md §2). No component other than
+// the relay publishes to NATS (AGENTS.md invariant #3), and the relay
+// only publishes events that were already committed to the outbox table.
+// Streaming RPCs subscribe to NATS subjects to fan-out events to clients
+// (docs/07 §4, docs/10 §4).
 package eventbus
 
 import (
@@ -22,6 +24,25 @@ type Publisher interface {
 	// so concurrent relays publishing the same outbox row are idempotent
 	// (docs/09 §6). Subject is derived from the aggregate/event type.
 	Publish(ctx context.Context, subject, msgID string, data []byte) error
+}
+
+// Subscriber is the interface streaming RPCs depend on. It creates
+// ephemeral JetStream consumers that fan-out NATS events to connected
+// clients (docs/07 §4, docs/10 §4).
+type Subscriber interface {
+	// Subscribe creates a consumer on the ORCHICON_EVENTS stream
+	// filtered to the given subject filter. The fromSeq parameter, if
+	// non-zero, resumes from that JetStream sequence (docs/07 §4).
+	// Messages are delivered to the returned channel. Cancelling ctx
+	// tears down the consumer.
+	Subscribe(ctx context.Context, filter string, fromSeq uint64) (<-chan EventMsg, error)
+}
+
+// EventMsg is a NATS message projected to the streaming RPC layer.
+type EventMsg struct {
+	Subject  string
+	Seq      uint64
+	Data     []byte
 }
 
 // SubjectFor returns the NATS subject for an event. Events are
@@ -77,4 +98,81 @@ func (p *NATSPublisher) Publish(ctx context.Context, subject, msgID string, data
 		return fmt.Errorf("eventbus: publish %s: %w", subject, err)
 	}
 	return nil
+}
+
+// NATSSubscriber subscribes to NATS JetStream subjects for streaming
+// RPCs. Each call to Subscribe creates an ephemeral consumer.
+type NATSSubscriber struct {
+	nc *nats.Conn
+	js jetstream.JetStream
+}
+
+// NewNATSSubscriber connects to NATS and returns a subscriber. The
+// connection is separate from the publisher so consumer and publisher
+// lifecycles are independent.
+func NewNATSSubscriber(ctx context.Context, url string) (*NATSSubscriber, error) {
+	nc, err := nats.Connect(url,
+		nats.Name("orchicon-stream-subscriber"),
+		nats.MaxReconnects(-1),
+		nats.ReconnectWait(2*time.Second),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("eventbus: connect nats subscriber: %w", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil, fmt.Errorf("eventbus: new jetstream subscriber: %w", err)
+	}
+	return &NATSSubscriber{nc: nc, js: js}, nil
+}
+
+// Subscribe implements Subscriber. It creates an ephemeral JetStream
+// consumer filtered to the given subject pattern. If fromSeq is
+// non-zero, the consumer starts from that sequence (resume after
+// reconnect — docs/07 §4). Messages are delivered on the returned
+// channel; cancelling ctx tears down the consumer.
+func (s *NATSSubscriber) Subscribe(ctx context.Context, filter string, fromSeq uint64) (<-chan EventMsg, error) {
+	cfg := jetstream.ConsumerConfig{
+		Durable:       "",
+		FilterSubject: filter,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+	}
+	if fromSeq > 0 {
+		cfg.OptStartSeq = fromSeq
+		cfg.DeliverPolicy = jetstream.DeliverByStartSequencePolicy
+	}
+
+	cons, err := s.js.CreateOrUpdateConsumer(ctx, "ORCHICON_EVENTS", cfg)
+	if err != nil {
+		return nil, fmt.Errorf("eventbus: create consumer: %w", err)
+	}
+
+	ch := make(chan EventMsg, 64)
+
+	go func() {
+		defer close(ch)
+		_, err := cons.Consume(func(msg jetstream.Msg) {
+			meta, mErr := msg.Metadata()
+			if mErr != nil {
+				return
+			}
+			em := EventMsg{
+				Subject: msg.Subject(),
+				Seq:     meta.Sequence.Stream,
+				Data:    msg.Data(),
+			}
+			select {
+			case ch <- em:
+				_ = msg.Ack()
+			case <-ctx.Done():
+				_ = msg.Nak()
+			}
+		})
+		if err != nil {
+			return
+		}
+		<-ctx.Done()
+	}()
+
+	return ch, nil
 }

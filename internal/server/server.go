@@ -2,6 +2,10 @@
 // pool, runs migrations (if enabled), seeds the dev tenant, starts the
 // outbox relay, mounts the API, and serves HTTP + gRPC until shutdown.
 // It is the single composition root.
+//
+// Phase 3 adds: the OTel telemetry pipeline (tracer/meter/exporter),
+// the reconciler framework (work queue + advisory-lock leadership), and
+// the NATS subscriber for streaming RPCs.
 package server
 
 import (
@@ -16,6 +20,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/outbox"
+	"github.com/beardedparrott/orchicon/internal/reconciler"
+	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
 )
 
@@ -25,14 +31,25 @@ type Server struct {
 	log     *slog.Logger
 	pool    *db.Pool
 	relay   *outbox.Relay
+	rcmgr   *reconciler.Manager
+	otel    *telemetry.Shutdowner
 	httpSrv *http.Server
 }
 
-// New constructs a Server from configuration. It opens the DB pool and
-// connects to NATS eagerly so boot failures surface before serving.
+// New constructs a Server from configuration. It opens the DB pool,
+// connects to NATS, sets up OTel, starts the outbox relay, and mounts
+// the API.
 func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
+	}
+
+	// OTel telemetry pipeline (tracer + meter + OTLP exporter → SigNoz).
+	// If the collector is unreachable, telemetry is dropped with bounded
+	// in-process buffering; control flow is not blocked (docs/08 §8).
+	otelShutdown, err := telemetry.Setup(context.Background(), cfg, log)
+	if err != nil {
+		log.Warn("otel setup failed (telemetry disabled)", "error", err)
 	}
 
 	pool, err := db.Open(context.Background(), cfg.PostgresDSN)
@@ -52,38 +69,74 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	pub, err := eventbus.NewNATSPublisher(context.Background(), cfg.NATSURL)
 	if err != nil {
 		log.Warn("nats publisher unavailable at boot (relay will retry via reconnect)", "error", err)
-		// Don't fail boot — the outbox is the source of truth; NATS is
-		// a derivable sink. The relay is skipped if the publisher is nil.
 	} else {
 		log.Info("nats publisher connected", "url", cfg.NATSURL)
 	}
 
+	// NATS subscriber for streaming RPCs (StreamProjectEvents etc.).
+	// Created lazily by the eventbus when a stream RPC first connects.
+	var sub eventbus.Subscriber
+	if pub != nil {
+		sub, err = eventbus.NewNATSSubscriber(context.Background(), cfg.NATSURL)
+		if err != nil {
+			log.Warn("nats subscriber unavailable at boot (streaming disabled)", "error", err)
+		}
+	}
+
 	mux := http.NewServeMux()
-	handler := api.Mount(mux, api.Dependencies{Pool: pool, Log: log})
+	deps := api.Dependencies{Pool: pool, Log: log, Subscriber: sub}
+	handler := api.Mount(mux, deps)
+
+	// Wrap with OTel tracing interceptor (spans on every API call).
+	handler = telemetry.Middleware(handler)
+
 	httpSrv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           handler,
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 	}
 
-	s := &Server{cfg: cfg, log: log, pool: pool, httpSrv: httpSrv}
+	s := &Server{cfg: cfg, log: log, pool: pool, httpSrv: httpSrv, otel: otelShutdown}
 	if pub != nil {
 		s.relay = outbox.NewRelay(pool, pub, log)
 	}
+
+	// Reconciler framework (docs/03 §2). Concrete reconcilers arrive
+	// in later phases; the framework ships now: work queue, per-kind
+	// leadership via Postgres advisory locks, graceful shutdown.
+	s.rcmgr = reconciler.NewManager(pool, log)
+
 	return s, nil
 }
 
+// Handler returns the current HTTP handler (API + middleware). Used by
+// the dev subcommand to wrap the handler with frontend serving.
+func (s *Server) Handler() http.Handler {
+	return s.httpSrv.Handler
+}
+
+// SetHandler replaces the HTTP handler. Used by the dev subcommand to
+// inject the embedded frontend SPA serving alongside the API.
+func (s *Server) SetHandler(h http.Handler) {
+	s.httpSrv.Handler = h
+}
+
 // Run blocks until ctx is cancelled, serving traffic, running the outbox
-// relay, and shutting down gracefully within ShutdownTimeout.
+// relay and reconciler framework, and shutting down gracefully within
+// ShutdownTimeout.
 func (s *Server) Run(ctx context.Context) error {
 	s.log.Info("starting orchicon control plane",
 		"version", version.Current().String(), "http", s.cfg.HTTPAddr)
 
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 4)
 	go func() { errCh <- s.httpSrv.ListenAndServe() }()
 
 	if s.relay != nil {
 		go func() { errCh <- s.relay.Run(ctx) }()
+	}
+
+	if s.rcmgr != nil {
+		go func() { errCh <- s.rcmgr.Run(ctx) }()
 	}
 
 	select {
@@ -93,15 +146,24 @@ func (s *Server) Run(ctx context.Context) error {
 		defer cancel()
 		if err := s.httpSrv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			s.pool.Close()
+			s.shutdownOTel()
 			return fmt.Errorf("server: shutdown: %w", err)
 		}
 		s.pool.Close()
+		s.shutdownOTel()
 		return nil
 	case err := <-errCh:
 		s.pool.Close()
+		s.shutdownOTel()
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
 		return fmt.Errorf("server: serve: %w", err)
+	}
+}
+
+func (s *Server) shutdownOTel() {
+	if s.otel != nil {
+		s.otel.Shutdown(context.Background())
 	}
 }

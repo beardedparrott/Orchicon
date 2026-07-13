@@ -110,6 +110,18 @@ func (p *Pool) MarkPublished(ctx context.Context, ids []string) error {
 	return nil
 }
 
+// CountUnpublished returns the number of outbox rows with
+// published_at IS NULL. Used by the relay's lag reporter for the
+// orchicon_outbox_lag metric (docs/08 §5.2).
+func (p *Pool) CountUnpublished(ctx context.Context) (int64, error) {
+	var count int64
+	err := p.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE published_at IS NULL`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("db: count unpublished: %w", err)
+	}
+	return count, nil
+}
+
 func nullableStr(s string) any {
 	if s == "" {
 		return nil
