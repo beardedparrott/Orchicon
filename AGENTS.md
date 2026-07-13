@@ -317,7 +317,7 @@ platform, or `--uninstall` to test cleanup).
 | 6 | Workflows | done | WorkflowService (CreateWorkflow, UpdateWorkflowVersion, PublishWorkflow, DeprecateWorkflow, GetWorkflow, ListWorkflows, ListWorkflowVersions, StartWorkflow, AbortWorkflow, GetWorkflowRun, ListWorkflowRuns, GetWorkflowStepRuns, StreamWorkflowEvents, AcquireEditLock/ReleaseEditLock/GetEditLock) + WorkflowReconciler (step DAG progression, gate evaluation — Rego pass-through pending Phase 7, task-step→WorkItem handoff to TaskReconciler) + step types (task/decision/approval/parallel/recover); Atlas migrations (workflows, workflow_versions, workflow_runs, workflow_step_runs) with RLS; frontend full visual drag-and-drop React Flow editor (draggable Worker tiles, gate/decision/approval/parallel/recover step nodes, wire connections, inline property editing, undo/redo, client-side cycle-detection validation, edit lock banner) + workflow run view (live step-transition overlay on canvas, streaming event feed) + list + create form; manager scan pass (Reconcile with empty key) so both reconcilers discover work; TaskReconciler transitions WorkItem to succeeded/failed on execution result; dev adapter heartbeat renewal |
 | 7 | Recovery + Policy | done | PolicyService (CreatePolicy, PublishPolicy, SupersedePolicy, GetPolicy, ListPolicies, ListPolicyVersions, UpdatePolicyVersion, EvaluatePolicy dry-run, ExplainDecision by decision_id/trace_id, ListDecisions, GetDecision) + Rego Policy Engine (OPA v1: bundle loading from Postgres, narrowest-scope-first + first-definitive-decision-wins, Rego trace capture for ExplainDecision, CompileModule at publish, EvaluateGate at the dispatch decision point — wired into WorkflowReconciler gate, fail-open governance floor); RecoveryService (TriggerRecovery, CancelRecovery, GetRecovery, ListRecoveries, GetRecoveryStepRuns, StreamRecoveryEvents, ApproveContinuationPlan, RejectContinuationPlan, GetContinuationPlan, MarkTaskSucceeded) + RecoveryReconciler (default 6-step workflow: capture→summarize→preserve→review→plan→resume; checkpoint vs summarize-resume selection; bounded auto-relax 25%/150% thresholds; escalation L1→L2→L3; Reviewer/human task completion); TaskReconciler triggers recovery on execution failure (opt-out, idempotent); Atlas migrations (policies, policy_versions, policy_decisions, recovery_executions, recovery_step_runs, continuation_plans) with RLS; opencode adapter simulation mode now explicit opt-in (ORCHICON_SIMULATE_ADAPTER=1) — no silent fallback (real runtime calls with free model); frontend policy editor (Rego module + decision point/scope/effect + dry-run test pane + decision log) + rich recovery timeline (full narrative why/what/how/where/when per step, continuation-plan approval, MarkTaskSucceeded, live event feed) + lists + create form; verified end-to-end with real opencode dispatch on opencode/deepseek-v4-flash-free (recovery progressed to RESUMED) |
 | 8 | Telemetry + Cost | done | OTel pipeline finalized with `correlation_id` propagation (baggage + span attribute) across API→reconciler→adapter→AI Gateway (docs/08 §3, §5.1); middleware generates + echoes `x-orchicon-correlation-id`; TelemetryService (QueryTraces/Metrics/Logs proxy to SigNoz/ClickHouse with tenant-scoped filters injected from context, StreamTelemetry fans out usage events from NATS, GetDashboard custom Orchicon roll-up); AIGatewayService (ListProviders, GetUsage, GetCost with drill-down roll-up Tenant→Project→Task→Execution, StreamUsageEvents); usage_records dual-write (Postgres source of truth + OTel metrics `orchicon_tokens_consumed`/`orchicon_cost_usd` → ClickHouse) recorded by the opencode adapter on `step_finish`; Atlas migration (usage_records) with RLS; config `ORCHICON_SIGNOZ_URL`; frontend telemetry hub (tabbed: Overview dashboard + custom cost explorer with Tenant→Project→Task→Execution drill-down + embedded SigNoz traces/metrics/logs via same-origin `/signoz` proxy — seamless embedding inside the Orchicon shell) |
-| 9 | Auth + Webhooks + Polish | not started | OIDC, API keys, RBAC, webhooks, edit locks + frontend auth flow, end-to-end integration |
+| 9 | Auth + Webhooks + Polish | done | OIDC auth (dev IdP HS256 tokens + production code-flow via coreos/go-oidc) + token refresh (HttpOnly cookie); API keys hashed at rest (SHA-256) with least-privilege scoped entitlements + rotation; RBAC middleware (per-RPC Connect interceptor mapping procedures to resource:action entitlements, admin bypass); AuthService + WebhookService protos; Atlas migrations (roles, role_bindings, api_keys, event_subscriptions, webhook_deliveries + identity_type column) with RLS; WebhookService Connect handler (create/get/list/update/delete/test subscriptions, list deliveries, replay dead-letter, stream) + NATS consumer dispatcher (HTTP POST + HMAC signing + exponential backoff + dead-letter); BlobStore abstraction (local filesystem — production-viable: content-addressed + atomic writes + path-traversal-safe; S3-compatible); deployment-mode validation (local/production — production enforces real OIDC + signing key); frontend auth flow (in-memory access token + refresh-on-401 interceptor, /login dev+OIDC, /auth/callback, session bootstrap, RBAC-gated nav + RequireEntitlement); admin views (tabbed: tenants, identities, roles, API keys w/ one-time plaintext + rotate/revoke, audit); webhook subscription management + deliveries; verified end-to-end: dev-login → session → authed RPCs → scoped API key denied project:write (403) → webhook CRUD → token refresh |
 
 ### Cross-cutting notes
 
@@ -456,3 +456,45 @@ platform, or `--uninstall` to test cleanup).
   `<= 'epoch'::timestamptz` so Go's `time.Time{}` (year 1) is treated as
   "no bound" — `'epoch'` alone did not match year 1 and silently excluded
   all rows.
+- **Phase 9**: Auth is OIDC-based with a built-in dev IdP for local
+  verification. In local mode (`ORCHICON_OIDC_ISSUER=local`) the control
+  plane mints short-lived HS256 access tokens + refresh tokens itself
+  — the full auth flow (login → session → authed RPCs → refresh) is
+  verifiable locally with no external identity provider
+  (AGENTS.md verification). In production mode the control plane runs
+  the OIDC authorization-code flow (coreos/go-oidc) against a configured
+  issuer, verifies ID tokens, upserts the identity, and issues its own
+  access tokens thereafter (docs/07 §6.1). The access token lives in
+  memory (frontend); the refresh token in an HttpOnly secure cookie
+  (docs/10 §7). The Connect-ES transport interceptor injects the bearer
+  token and transparently refreshes on 401 (shared refresh guard avoids
+  a storm). API keys are hashed at rest (SHA-256 — appropriate for
+  high-entropy keys; bcrypt is for human passwords, which Orchicon
+  never stores). API keys are least-privilege: the key's own scopes ARE
+  the effective entitlement set, never an admin (a machine credential
+  must declare exactly what it may do — unioning the bound identity's
+  role entitlements would widen the key beyond its declared scope).
+  RBAC is a per-RPC Connect interceptor (`rbac.EntitlementFor`
+  maps `/<package>.<Service>/<Method>` → `resource:action`; read RPCs by
+  convention need `resource:read`, mutations `resource:write` unless a
+  granular action like `worker:publish` is declared). Admins (identity
+  bound to the `admin` role) bypass per-call checks; the dev flow binds
+  the admin role to the dev identity on first login so the dev user has
+  full access. UI gating (`RequireEntitlement`, `useIsAdmin`) hides
+  affordances the identity cannot perform — it is UX only; the server
+  is the security boundary (docs/10 §10 invariant #5). The webhook
+  dispatcher is a NATS consumer that fans out events from the
+  `ORCHICON_EVENTS` stream to matching subscriptions, POSTs with HMAC
+  signing + exponential backoff retries (2^n s, capped at 5 min), and
+  dead-letters events that exceed the retry budget (replayable via
+  `ReplayDelivery`). It runs inside the control-plane binary (started
+  in `server.Run`), so `scripts/dev.sh` already manages it — no new
+  process. The BlobStore ships two production backends: local filesystem
+  (content-addressed, atomic temp+rename writes, path-traversal-safe)
+  and S3-compatible (AWS SDK v2, path-style so MinIO works). Deployment
+  mode (`ORCHICON_MODE`) validates on boot: production requires a real
+  OIDC issuer (not `local`) and a non-default signing key — the local
+  dev defaults are rejected. Verified end-to-end: dev-login → session →
+  authed ListProjects → scoped API key (`project:read`) denied
+  `project:write` with HTTP 403 → webhook subscription CRUD → token
+  refresh via the HttpOnly cookie.

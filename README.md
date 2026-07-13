@@ -43,9 +43,12 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 ## Status
 
 **v0.1 — scaffolding.** Architecture documents are direction-level.
-Phase 1 (Foundation) is landed: Go module, Protobuf schema + Connect
-codegen, Atlas migrations with RLS, Docker Compose dev stack, and the
-Vite+React frontend shell.
+Phases 1–9 have landed: foundation, projects, realtime + infrastructure,
+workers + work items, scheduling + adapters, workflows, recovery +
+policy, telemetry + cost, and auth + webhooks + polish. The full
+end-to-end user journey (login → project creation → workflow building →
+dispatch → telemetry → recovery → cost review) is verifiable locally
+with the built-in dev IdP.
 
 ## Installation
 
@@ -116,6 +119,16 @@ make fe-install   # install frontend deps (first time only)
 make fe-dev       # Vite dev server on :5173 (proxies API to :8080)
 ```
 
+### Authentication
+
+The control plane authenticates every RPC. In local mode
+(`ORCHICON_OIDC_ISSUER=local`) a built-in dev identity provider mints
+short-lived access tokens + refresh tokens with no external IdP — the
+full auth flow is verifiable locally. Production sets a real OIDC
+issuer (`ORCHICON_MODE=production` enforces this on boot). The frontend
+login page (`/login`) offers both the dev IdP and OIDC SSO. See
+`.env.example` for the auth config variables.
+
 ### Codegen
 
 The Protobuf schema (`proto/`) is the single source of truth. One
@@ -133,7 +146,7 @@ Generated code is committed (docs/10 §3.1).
 | Path | Concern |
 |---|---|
 | `cmd/orchicon/` | Control-plane binary entry point + `dev` subcommand |
-| `internal/` | api, config, db, domain, eventbus, outbox, reconciler, server, telemetry, migrate, middleware, tenant, blobstore, version |
+| `internal/` | api, auth, config, db, domain, eventbus, outbox, reconciler, server, telemetry, migrate, middleware, rbac, tenant, blobstore, webhook, version |
 | `assets.go` | go:embed directives for compose, migrations, frontend |
 | `proto/` | Protobuf schema (`orchicon.api.v1`, `orchicon.adapter.v1`) |
 | `api/gen/` | Generated Go code |
