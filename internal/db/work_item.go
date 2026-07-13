@@ -39,8 +39,15 @@ type WorkItemRow struct {
 // CreateWorkItem inserts a new work item within the given tenant
 // transaction. The caller controls the transaction so the outbox row
 // can be enqueued in the same atomic unit (docs/09 §6). Version starts
-// at 1.
+// at 1. JSON-typed columns (budgets, results) default to "{}" if the
+// caller doesn't provide them.
 func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow, error) {
+	if w.Budgets == nil {
+		w.Budgets = []byte("{}")
+	}
+	if w.Results == nil {
+		w.Results = []byte("{}")
+	}
 	const q = `INSERT INTO work_items
 		(id, tenant_id, project_id, parent_id, kind, title, description,
 		 acceptance_criteria, status, assigned_worker_ref, workflow_id,

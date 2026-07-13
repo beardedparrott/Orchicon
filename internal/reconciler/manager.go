@@ -63,6 +63,15 @@ func (m *Manager) Run(ctx context.Context) error {
 			m.runReconciler(ctx, j)
 		}(&m.jobs[i])
 	}
+	// If there are no reconcilers registered yet, block on context so
+	// the manager doesn't exit immediately (which would cause the server
+	// to treat it as an error). Concrete reconcilers arrive in later
+	// phases (Phase 5+).
+	if len(m.jobs) == 0 {
+		<-ctx.Done()
+		m.log.Info("reconciler manager stopped")
+		return nil
+	}
 	wg.Wait()
 	m.log.Info("reconciler manager stopped")
 	return nil
