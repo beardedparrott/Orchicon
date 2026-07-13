@@ -747,9 +747,9 @@ export class StreamSubscriptionDeliveriesRequest extends Message<StreamSubscript
   subscriptionId?: string;
 
   /**
-   * @generated from field: optional string from_sequence = 3;
+   * @generated from field: optional int64 from_sequence = 3;
    */
-  fromSequence?: string;
+  fromSequence?: bigint;
 
   constructor(data?: PartialMessage<StreamSubscriptionDeliveriesRequest>) {
     super();
@@ -761,7 +761,7 @@ export class StreamSubscriptionDeliveriesRequest extends Message<StreamSubscript
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "tenant_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "subscription_id", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
-    { no: 3, name: "from_sequence", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 3, name: "from_sequence", kind: "scalar", T: 3 /* ScalarType.INT64 */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): StreamSubscriptionDeliveriesRequest {

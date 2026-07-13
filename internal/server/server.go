@@ -18,6 +18,8 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/api"
 	"github.com/beardedparrott/orchicon/internal/aigateway"
+	"github.com/beardedparrott/orchicon/internal/auth"
+	"github.com/beardedparrott/orchicon/internal/blobstore"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -30,6 +32,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
+	"github.com/beardedparrott/orchicon/internal/webhook"
 )
 
 // Server owns the running control plane process and its dependencies.
@@ -41,6 +44,10 @@ type Server struct {
 	rcmgr   *reconciler.Manager
 	otel    *telemetry.Shutdowner
 	httpSrv *http.Server
+	// Phase 9
+	blobs    blobstore.Store
+	authH    *auth.Handler
+	webhookD *webhook.Dispatcher
 }
 
 // New constructs a Server from configuration. It opens the DB pool,
@@ -103,13 +110,40 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	// disables proxying (queries degrade gracefully — docs/08 §8).
 	signozClient := telemetry.NewSigNozClient(cfg.SigNozURL)
 	log.Info("signoz proxy configured", "url", cfg.SigNozURL)
+
+	// Phase 9: BlobStore abstraction (docs/01 §2). The local filesystem
+	// store is production-viable; S3 is the cloud backend.
+	blobs, err := blobstore.New(context.Background(), cfg.BlobStore)
+	if err != nil {
+		log.Warn("blob store init failed (object storage disabled)", "error", err)
+	} else {
+		log.Info("blob store ready", "kind", cfg.BlobStore.Kind)
+	}
+
+	// Phase 9: Auth handler (OIDC code-flow + dev IdP + token issuer).
+	// Constructs the TokenIssuer + identity Resolver shared with the
+	// auth middleware (docs/07 §6).
+	authHandler := auth.NewHandler(cfg, pool, log)
+	log.Info("auth configured", "issuer", cfg.Auth.Issuer, "mode", cfg.Mode)
+
+	// Phase 9: Webhook dispatcher (NATS consumer → HTTP POST + retries +
+	// dead-letter — docs/07 §3.11). Starts in Run(); nil when NATS is
+	// unavailable (webhooks degrade gracefully).
+	var webhookDisp *webhook.Dispatcher
+	if sub != nil {
+		webhookDisp = webhook.NewDispatcher(pool, sub, log)
+	}
+
 	deps := api.Dependencies{
-		Pool:           pool,
-		Log:            log,
-		Subscriber:     sub,
-		PolicyEngine:   policyEngine,
-		RecoveryEngine: recoveryEngine,
-		SigNozClient:   signozClient,
+		Pool:              pool,
+		Log:               log,
+		Subscriber:        sub,
+		PolicyEngine:      policyEngine,
+		RecoveryEngine:    recoveryEngine,
+		SigNozClient:      signozClient,
+		AuthHandler:       authHandler,
+		WebhookDispatcher: webhookDisp,
+		Mode:              cfg.Mode,
 	}
 	handler := api.Mount(mux, deps)
 
@@ -122,7 +156,8 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 	}
 
-	s := &Server{cfg: cfg, log: log, pool: pool, httpSrv: httpSrv, otel: otelShutdown}
+	s := &Server{cfg: cfg, log: log, pool: pool, httpSrv: httpSrv, otel: otelShutdown,
+		blobs: blobs, authH: authHandler, webhookD: webhookDisp}
 	if pub != nil {
 		s.relay = outbox.NewRelay(pool, pub, log)
 	}
@@ -208,6 +243,13 @@ func (s *Server) Run(ctx context.Context) error {
 		go func() { errCh <- s.rcmgr.Run(ctx) }()
 	}
 
+	// Phase 9: webhook dispatcher (NATS consumer → HTTP POST + retries +
+	// dead-letter — docs/07 §3.11). Degrades gracefully when NATS is
+	// unavailable (the dispatcher logs and returns nil).
+	if s.webhookD != nil {
+		go func() { errCh <- s.webhookD.Run(ctx) }()
+	}
+
 	// Periodically heartbeat the in-process dev adapter so the
 	// TaskReconciler can dispatch tasks beyond the initial 60s heartbeat
 	// TTL (docs/03 §5). Dev-only: the seed adapter is in-process
@@ -217,6 +259,9 @@ func (s *Server) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		s.log.Info("shutting down", "timeout", s.cfg.ShutdownTimeout)
+		if s.webhookD != nil {
+			s.webhookD.Stop()
+		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
 		defer cancel()
 		if err := s.httpSrv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {

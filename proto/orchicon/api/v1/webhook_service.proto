@@ -94,7 +94,7 @@ message ReplayDeliveryResponse {
 message StreamSubscriptionDeliveriesRequest {
   string tenant_id = 1;
   optional string subscription_id = 2;
-  optional string from_sequence = 3;
+  optional int64 from_sequence = 3;
 }
 message StreamSubscriptionDeliveriesResponse {
   WebhookDelivery delivery = 1;

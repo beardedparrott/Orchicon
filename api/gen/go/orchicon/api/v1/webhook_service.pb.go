@@ -884,7 +884,7 @@ type StreamSubscriptionDeliveriesRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	TenantId       string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	SubscriptionId *string                `protobuf:"bytes,2,opt,name=subscription_id,json=subscriptionId,proto3,oneof" json:"subscription_id,omitempty"`
-	FromSequence   *string                `protobuf:"bytes,3,opt,name=from_sequence,json=fromSequence,proto3,oneof" json:"from_sequence,omitempty"`
+	FromSequence   *int64                 `protobuf:"varint,3,opt,name=from_sequence,json=fromSequence,proto3,oneof" json:"from_sequence,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -933,11 +933,11 @@ func (x *StreamSubscriptionDeliveriesRequest) GetSubscriptionId() string {
 	return ""
 }
 
-func (x *StreamSubscriptionDeliveriesRequest) GetFromSequence() string {
+func (x *StreamSubscriptionDeliveriesRequest) GetFromSequence() int64 {
 	if x != nil && x.FromSequence != nil {
 		return *x.FromSequence
 	}
-	return ""
+	return 0
 }
 
 type StreamSubscriptionDeliveriesResponse struct {
@@ -1062,7 +1062,7 @@ const file_orchicon_api_v1_webhook_service_proto_rawDesc = "" +
 	"#StreamSubscriptionDeliveriesRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12,\n" +
 	"\x0fsubscription_id\x18\x02 \x01(\tH\x00R\x0esubscriptionId\x88\x01\x01\x12(\n" +
-	"\rfrom_sequence\x18\x03 \x01(\tH\x01R\ffromSequence\x88\x01\x01B\x12\n" +
+	"\rfrom_sequence\x18\x03 \x01(\x03H\x01R\ffromSequence\x88\x01\x01B\x12\n" +
 	"\x10_subscription_idB\x10\n" +
 	"\x0e_from_sequence\"\x80\x01\n" +
 	"$StreamSubscriptionDeliveriesResponse\x12<\n" +
