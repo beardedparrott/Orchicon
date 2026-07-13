@@ -60,6 +60,17 @@ func New(log *slog.Logger) *Adapter {
 // loud and visible (do not fall back to simulation and claim dispatch
 // works). Verification workers/executions must pin a free model in
 // model_ref (e.g. opencode/deepseek-v4-flash-free).
+//
+// Two recovery-relevant guardrails (docs/06 §2 triggers):
+//   - Stall detection: a progress monitor detects stuck-looping (no
+//     progress, no file changes, repeated tool calls) and raises
+//     OnStall → triggers recovery. Catches the loop a hard timeout
+//     can't (a worker making "progress" but spinning).
+//   - Wall-clock timeout: the worker's budget_overrides.wall_clock_seconds
+//     (default 3600) is enforced as a per-execution context deadline.
+//     When it hits, the subprocess is killed (exec.CommandContext) →
+//     OnResult(false) → recovery triggered with reason
+//     "wall_clock_timeout". This is the runaway-spend backstop.
 func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, callbacks scheduler.ExecutionCallbacks) error {
 	// Simulation mode is opt-in ONLY (offline dev). Never a silent
 	// fallback (AGENTS.md verification standards).
@@ -74,6 +85,16 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		// caller (TaskReconciler) marks the execution failed_to_start
 		// and the operator sees the error (AGENTS.md).
 		return fmt.Errorf("opencode binary not found on PATH (set ORCHICON_SIMULATE_ADAPTER=1 for offline dev only): %w", err)
+	}
+
+	// Wall-clock timeout backstop (docs/06 §2 budget overrun trigger).
+	// The worker's budget_overrides.wall_clock_seconds bounds the
+	// subprocess; when the deadline hits the process is killed →
+	// OnResult(false) → recovery with reason "wall_clock_timeout".
+	if deadline, ok := wallClockDeadline(ctx, manifest.Budgets); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline)
+		defer cancel()
 	}
 
 	// Build the command. opencode v1.x uses `opencode run [message]`
@@ -128,8 +149,19 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// Signal execution started (docs/03 §6: assigned → running).
 	callbacks.OnStarted(ctx, execRow.ID)
 
+	// Progress monitor: detects stuck-looping (no progress, no file
+	// changes, repeated tool calls) and raises OnStall → triggers
+	// recovery (docs/06 §2 stalled trigger; docs/03 §5). One monitor
+	// per execution; closed when the subprocess exits.
+	monitor := newProgressMonitor(execRow.ID, defaultStallWindows())
+	go monitor.run(ctx, func(execID, reason string) {
+		callbacks.OnStall(ctx, execID, reason)
+	})
+	defer monitor.close()
+
 	// Parse stdout JSON lines into telemetry events
-	// (docs/04 §6.1: line-buffered stdout parsing).
+	// (docs/04 §6.1: line-buffered stdout parsing). Each event is also
+	// fed to the progress monitor for stall detection.
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for scanner.Scan() {
@@ -137,7 +169,7 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		if line == "" {
 			continue
 		}
-		a.parseStdoutLine(ctx, execRow.ID, line, callbacks)
+		a.parseStdoutLine(ctx, execRow.ID, line, callbacks, monitor)
 	}
 
 	// Wait for the process to exit.
@@ -154,7 +186,9 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 // telemetry event and routes it to the callbacks. The JSON shape follows
 // opencode v1.x's `--format json` event stream (docs/04 §6.1):
 // each line has `type`, `timestamp`, `sessionID`, and a `part` object.
-func (a *Adapter) parseStdoutLine(ctx context.Context, execID, line string, callbacks scheduler.ExecutionCallbacks) {
+// Each event is also fed to the progress monitor (may be nil in tests)
+// for stall detection (docs/06 §2 stalled trigger).
+func (a *Adapter) parseStdoutLine(ctx context.Context, execID, line string, callbacks scheduler.ExecutionCallbacks, monitor *progressMonitor) {
 	var evt map[string]any
 	if err := json.Unmarshal([]byte(line), &evt); err != nil {
 		// Non-JSON line: treat as a log/progress marker.
@@ -163,6 +197,9 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execID, line string, call
 	}
 	eventType, _ := evt["type"].(string)
 	part, _ := evt["part"].(map[string]any)
+	if monitor != nil {
+		monitor.observe(eventType, part)
+	}
 	switch eventType {
 	case "step_start":
 		a.log.Info("opencode step started", "execution", execID)
