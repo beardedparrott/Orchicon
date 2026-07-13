@@ -97,8 +97,8 @@ func ListUsageRecords(ctx context.Context, tx pgx.Tx, f ListUsageRecordsFilter) 
 		  AND ($4 = '' OR execution_id = $4)
 		  AND ($5 = '' OR provider = $5)
 		  AND ($6 = '' OR model = $6)
-		  AND ($7::timestamptz = 'epoch' OR occurred_at >= $7::timestamptz)
-		  AND ($8::timestamptz = 'epoch' OR occurred_at <  $8::timestamptz)
+		  AND ($7::timestamptz <= 'epoch'::timestamptz OR occurred_at >= $7::timestamptz)
+		  AND ($8::timestamptz <= 'epoch'::timestamptz OR occurred_at <  $8::timestamptz)
 		ORDER BY occurred_at DESC
 		LIMIT $9`
 	rows, err := tx.Query(ctx, q,
@@ -177,8 +177,8 @@ func GetCostRollup(ctx context.Context, tx pgx.Tx, tenantID string, level CostRo
 		  AND ($2 = '' OR project_id = $2)
 		  AND ($3 = '' OR task_id = $3)
 		  AND ($4 = '' OR execution_id = $4)
-		  AND ($5::timestamptz = 'epoch' OR occurred_at >= $5::timestamptz)
-		  AND ($6::timestamptz = 'epoch' OR occurred_at <  $6::timestamptz)
+		  AND ($5::timestamptz <= 'epoch'::timestamptz OR occurred_at >= $5::timestamptz)
+		  AND ($6::timestamptz <= 'epoch'::timestamptz OR occurred_at <  $6::timestamptz)
 		GROUP BY %s
 		ORDER BY cost_usd DESC`, groupCol, groupCol)
 	rows, err := tx.Query(ctx, q, tenantID, projectID, taskID, executionID, start, end)
@@ -212,8 +212,8 @@ func GetCostTotal(ctx context.Context, tx pgx.Tx, tenantID, projectID, taskID, e
 		  AND ($2 = '' OR project_id = $2)
 		  AND ($3 = '' OR task_id = $3)
 		  AND ($4 = '' OR execution_id = $4)
-		  AND ($5::timestamptz = 'epoch' OR occurred_at >= $5::timestamptz)
-		  AND ($6::timestamptz = 'epoch' OR occurred_at <  $6::timestamptz)`
+		  AND ($5::timestamptz <= 'epoch'::timestamptz OR occurred_at >= $5::timestamptz)
+		  AND ($6::timestamptz <= 'epoch'::timestamptz OR occurred_at <  $6::timestamptz)`
 	var r CostSummaryRow
 	r.GroupKey = "total"
 	if err := tx.QueryRow(ctx, q, tenantID, projectID, taskID, executionID, start, end).Scan(

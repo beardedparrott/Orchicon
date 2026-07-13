@@ -16,6 +16,8 @@ import { ExecutionService } from "@/api/gen/orchicon/api/v1/execution_service_co
 import { WorkflowService } from "@/api/gen/orchicon/api/v1/workflow_service_connect";
 import { PolicyService } from "@/api/gen/orchicon/api/v1/policy_service_connect";
 import { RecoveryService } from "@/api/gen/orchicon/api/v1/recovery_service_connect";
+import { TelemetryService } from "@/api/gen/orchicon/api/v1/telemetry_service_connect";
+import { AIGatewayService } from "@/api/gen/orchicon/api/v1/ai_gateway_service_connect";
 
 // TenantHeader is the request header carrying the tenant id. Must match
 // internal/middleware/tenant.go.
@@ -55,3 +57,11 @@ export const executionClient = createClient(ExecutionService, connectTransport);
 export const workflowClient = createClient(WorkflowService, connectTransport);
 export const policyClient = createClient(PolicyService, connectTransport);
 export const recoveryClient = createClient(RecoveryService, connectTransport);
+export const telemetryClient = createClient(TelemetryService, connectTransport);
+export const aiGatewayClient = createClient(AIGatewayService, connectTransport);
+
+// SigNoz UI base URL for the embedded telemetry explorer (docs/10 §11:
+// seamless SigNoz embedding — same auth, same visual language, inside
+// the Orchicon shell). The dev server proxies /signoz to the SigNoz
+// query-service to keep it same-origin with the Orchicon shell.
+export const SIGNOZ_UI_URL = "/signoz";
