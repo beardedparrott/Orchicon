@@ -276,7 +276,7 @@ platform, or `--uninstall` to test cleanup).
 |---|---|---|---|
 | 1 | Foundation | done | Go module + binary skeleton (`cmd/orchicon`, `internal/`); Protobuf schema (`orchicon.api.v1`, `orchicon.adapter.v1`); Connect codegen (Go + TS); Atlas migrations for tenants/identities/projects with RLS + CI gate; Docker Compose (Postgres, NATS, SigNoz, OTel); Makefile; Vite+React+TS shell with Connect-ES, TanStack Router, Tailwind+shadcn/ui |
 | 2 | Projects slice | done | Project CRUD (Create/Get/List/Update/Archive) full stack: Go handler + data-access layer with pgx + tenant scoping + RLS backstop; Connect handler wiring; transactional outbox with NATS JetStream relay; frontend project list + detail + create form (React Hook Form + Zod + TanStack Query) |
-| 3 | Realtime + infrastructure | not started | Outbox relay (started), reconciler framework, OTel, frontend streaming (`useStream` hook) |
+| 3 | Realtime + infrastructure | not started | Outbox relay (started), reconciler framework, OTel, frontend streaming (`useStream` hook), `orchicon dev` subcommand (embeds compose + migrations + frontend → one-binary dev experience) |
 | 4 | Workers + WorkItems | not started | Worker versioning, WorkItem hierarchy, dependencies + frontend catalog, tree/board, dependency graph |
 | 5 | Scheduling + adapters | not started | TaskReconciler, dispatch, OpenCode adapter + frontend execution live view |
 | 6 | Workflows | not started | Workflow CRUD, step DAG, runs + frontend visual drag-and-drop editor (React Flow) |
@@ -296,4 +296,10 @@ platform, or `--uninstall` to test cleanup).
 - **Phase 3 entry point**: the outbox relay (`internal/outbox/relay.go`)
   and NATS publisher (`internal/eventbus/nats.go`) are wired and running
   from Phase 2; the next step is the reconciler framework + OTel + the
-  `useStream` hook projecting NATS events into the frontend.
+  `useStream` hook projecting NATS events into the frontend. Phase 3 also
+  adds the `orchicon dev` subcommand to the binary itself (replacing the
+  repo-local `scripts/dev.sh`) so that `curl ... | bash` → `orchicon dev
+  start` is the full experience: the binary embeds the Docker Compose
+  stack, migrations, and frontend bundle via `go:embed`, and manages
+  everything internally. This makes the install script + dev control
+  script one seamless path for new users.
