@@ -18,8 +18,8 @@ type NavItem = {
 const NAV: NavItem[] = [
   { label: "Dashboard", to: "/" },
   { label: "Projects", to: "/projects" },
-  { label: "Work Items", to: "/work-items", disabled: true },
-  { label: "Workers", to: "/workers", disabled: true },
+  { label: "Work Items", to: "/work-items" },
+  { label: "Workers", to: "/workers" },
   { label: "Workflows", to: "/workflows", disabled: true },
   { label: "Policies", to: "/policies", disabled: true },
   { label: "Recovery", to: "/recovery", disabled: true },
