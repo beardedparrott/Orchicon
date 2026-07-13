@@ -162,6 +162,16 @@ minimum (adapt to what the change touches):
    `curl http://localhost:8080/healthz` returns `{"status":"ok"}`.
 5. **Frontend renders** — `make fe-dev` (or `npx vite`), then
    `curl http://localhost:5173/` returns HTTP 200 with the app shell.
+6. **Runtime calls are real, not simulated** — end-to-end verification
+   that exercises adapter dispatch MUST call the real `opencode` runtime
+   with a **free model** (e.g. `opencode/deepseek-v4-flash-free`), never
+   the simulation-mode fallback. Simulation mode is a development aid for
+   the offline case only; it must not be used to "verify" dispatch,
+   recovery, or any flow that depends on adapter telemetry. If
+   `opencode` is absent from PATH, fix the environment (install it) —
+   do not fall back to simulation and claim the slice works. Seed
+   workers / executions used for verification must pin a free model in
+   `model_ref` so verification is reproducible at no cost.
 
 If the change adds a new API RPC, also verify the Connect endpoint
 responds (e.g. via `curl` or a frontend smoke test). If it adds a new
@@ -169,6 +179,18 @@ table, verify the RLS gate still passes after migration.
 
 **Do not claim "done" without having run the thing.** State what was
 verified and what was not in the commit message or PR description.
+
+### Token discipline
+
+The project's model spend is rising. Be economical:
+
+- Prefer parallel tool calls when independent (one message, many
+  tools) to cut round-trips.
+- Read only the slice of a file you need; avoid re-reading whole files.
+- Keep edits surgical — match surrounding style, don't reflow untouched
+  code.
+- Skip preamble/postamble in responses; the diff speaks for itself.
+- Run `make ci` once at the end, not after every edit.
 
 ## Dev Control Script
 
