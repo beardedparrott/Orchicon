@@ -1,0 +1,230 @@
+// Orchicon WorkflowService.
+//
+// Workflow CRUD + versioning lifecycle (publish/deprecate) + runs
+// (start/abort) + streaming + edit locks for the visual Workflow editor
+// (docs/07_API_Specification.md §3.4). All mutations write through the
+// transactional outbox (docs/09_Database_Schema.md §6). A published
+// Workflow version is immutable; changes create a new version
+// (docs/02 §2.4).
+//
+// Edit locks (docs/07 §3.3, docs/10 §11) prevent concurrent edits in
+// the visual editor. Other users see "currently being edited by [user]"
+// and can view read-only. Lock expires automatically on disconnect
+// (TTL).
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "orchicon/api/v1/workflow.proto";
+import "orchicon/api/v1/worker.proto";
+
+service WorkflowService {
+  // CreateWorkflow creates a new Workflow in draft state with its first
+  // draft version (docs/02 §2.4). project_id is empty for tenant-level
+  // templates.
+  rpc CreateWorkflow(CreateWorkflowRequest) returns (CreateWorkflowResponse);
+
+  // PublishWorkflow publishes the draft version, making the workflow
+  // runnable. The version becomes immutable; the Workflow transitions
+  // to published (docs/02 §2.4).
+  rpc PublishWorkflow(PublishWorkflowRequest) returns (PublishWorkflowResponse);
+
+  // DeprecateWorkflow transitions a published Workflow to deprecated.
+  // Still runnable for in-flight runs; no new runs may start.
+  rpc DeprecateWorkflow(DeprecateWorkflowRequest) returns (DeprecateWorkflowResponse);
+
+  // GetWorkflow returns a single Workflow header by id, with its latest
+  // published version (if any).
+  rpc GetWorkflow(GetWorkflowRequest) returns (GetWorkflowResponse);
+
+  // ListWorkflows returns a page of Workflows for the tenant, optionally
+  // scoped to a project.
+  rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse);
+
+  // ListWorkflowVersions returns all versions of a Workflow, newest first.
+  rpc ListWorkflowVersions(ListWorkflowVersionsRequest) returns (ListWorkflowVersionsResponse);
+
+  // StartWorkflow creates a WorkflowRun from a published version and
+  // hands it to the WorkflowReconciler (docs/02 §2.4, docs/03 §2).
+  rpc StartWorkflow(StartWorkflowRequest) returns (StartWorkflowResponse);
+
+  // AbortWorkflow transitions a running WorkflowRun to aborted
+  // (docs/02 §2.4). In-flight step runs are cancelled.
+  rpc AbortWorkflow(AbortWorkflowRequest) returns (AbortWorkflowResponse);
+
+  // GetWorkflowRun returns a single WorkflowRun by id.
+  rpc GetWorkflowRun(GetWorkflowRunRequest) returns (GetWorkflowRunResponse);
+
+  // ListWorkflowRuns returns a page of WorkflowRuns for a workflow.
+  rpc ListWorkflowRuns(ListWorkflowRunsRequest) returns (ListWorkflowRunsResponse);
+
+  // GetWorkflowStepRuns returns all step runs for a WorkflowRun.
+  rpc GetWorkflowStepRuns(GetWorkflowStepRunsRequest) returns (GetWorkflowStepRunsResponse);
+
+  // StreamWorkflowEvents is the server-stream RPC that fans out workflow
+  // run events from NATS to connected clients (docs/07 §4, docs/10 §4.1).
+  // The editor run view overlays live step transitions on the canvas
+  // (docs/10 §5.1).
+  rpc StreamWorkflowEvents(StreamWorkflowEventsRequest) returns (stream StreamWorkflowEventsResponse);
+
+  // AcquireEditLock acquires an exclusive edit lock on a Workflow for the
+  // visual editor (docs/07 §3.3). Prevents concurrent edits; expires
+  // automatically on TTL.
+  rpc AcquireEditLock(AcquireWorkflowEditLockRequest) returns (AcquireWorkflowEditLockResponse);
+
+  // ReleaseEditLock releases a held edit lock.
+  rpc ReleaseEditLock(ReleaseWorkflowEditLockRequest) returns (ReleaseWorkflowEditLockResponse);
+
+  // GetEditLock returns the current edit lock state for a Workflow, if any.
+  rpc GetEditLock(GetWorkflowEditLockRequest) returns (GetWorkflowEditLockResponse);
+}
+
+message CreateWorkflowRequest {
+  string tenant_id = 1;
+  string project_id = 2; // empty for tenant-level template
+  string name = 3;
+  // First-version snapshot fields (docs/02 §2.4):
+  string steps = 4; // JSON array of Step messages
+  string inputs = 5; // JSON
+  string outputs = 6; // JSON
+  string recovery_policy_ref = 7;
+  string version_note = 8;
+  string request_id = 9; // idempotency (docs/07 §5.5)
+}
+
+message CreateWorkflowResponse {
+  Workflow workflow = 1;
+  WorkflowVersion version = 2;
+}
+
+message PublishWorkflowRequest {
+  string workflow_id = 1;
+  string version_note = 2; // optional note for this publish
+}
+
+message PublishWorkflowResponse {
+  Workflow workflow = 1;
+  WorkflowVersion version = 2;
+}
+
+message DeprecateWorkflowRequest {
+  string workflow_id = 1;
+}
+
+message DeprecateWorkflowResponse {
+  Workflow workflow = 1;
+}
+
+message GetWorkflowRequest {
+  string id = 1;
+}
+
+message GetWorkflowResponse {
+  Workflow workflow = 1;
+  WorkflowVersion latest_version = 2; // latest published version, if any
+}
+
+message ListWorkflowsRequest {
+  string tenant_id = 1;
+  string project_id = 2; // optional scope; empty = all tenant workflows
+  string page_token = 3;
+  int32 page_size = 4;
+  optional WorkflowStatus status = 5;
+}
+
+message ListWorkflowsResponse {
+  repeated Workflow workflows = 1;
+  string next_page_token = 2;
+}
+
+message ListWorkflowVersionsRequest {
+  string workflow_id = 1;
+}
+
+message ListWorkflowVersionsResponse {
+  repeated WorkflowVersion versions = 1;
+}
+
+message StartWorkflowRequest {
+  string workflow_id = 1;
+  string project_id = 2; // run scoped to this project (workflow may be a template)
+  string run_context = 3; // JSON: input values for this run
+}
+
+message StartWorkflowResponse {
+  WorkflowRun run = 1;
+}
+
+message AbortWorkflowRequest {
+  string run_id = 1;
+  string reason = 2;
+}
+
+message AbortWorkflowResponse {
+  WorkflowRun run = 1;
+}
+
+message GetWorkflowRunRequest {
+  string id = 1;
+}
+
+message GetWorkflowRunResponse {
+  WorkflowRun run = 1;
+}
+
+message ListWorkflowRunsRequest {
+  string workflow_id = 1;
+  string page_token = 2;
+  int32 page_size = 3;
+  optional WorkflowRunStatus status = 4;
+}
+
+message ListWorkflowRunsResponse {
+  repeated WorkflowRun runs = 1;
+  string next_page_token = 2;
+}
+
+message GetWorkflowStepRunsRequest {
+  string run_id = 1;
+}
+
+message GetWorkflowStepRunsResponse {
+  repeated WorkflowStepRun step_runs = 1;
+}
+
+message StreamWorkflowEventsRequest {
+  string tenant_id = 1;
+  string workflow_id = 2; // optional scope
+  string workflow_run_id = 3; // optional scope (most common: a single run)
+  optional int64 from_sequence = 4; // resume after reconnect (docs/07 §4)
+}
+
+message StreamWorkflowEventsResponse {
+  WorkflowEvent event = 1;
+  int64 sequence = 2;
+}
+
+message AcquireWorkflowEditLockRequest {
+  string workflow_id = 1;
+  string actor = 2; // identity claiming the lock
+}
+
+message AcquireWorkflowEditLockResponse {
+  EditLock lock = 1;
+  bool acquired = 2; // false if already held by another actor
+}
+
+message ReleaseWorkflowEditLockRequest {
+  string workflow_id = 1;
+  string actor = 2;
+}
+
+message ReleaseWorkflowEditLockResponse {}
+
+message GetWorkflowEditLockRequest {
+  string workflow_id = 1;
+}
+
+message GetWorkflowEditLockResponse {
+  EditLock lock = 1; // empty if no lock held
+}

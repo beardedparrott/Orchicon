@@ -1,0 +1,192 @@
+// Orchicon Workflow entity (docs/02_Domain_Model.md §2.4, docs/09 §3.4).
+//
+// A Workflow is a composable execution plan referencing Workers and
+// Steps. Workflows live at the project level (a Project's execution
+// plan) or as reusable templates at the tenant level (project_id
+// empty). A published Workflow version is immutable; edits create a new
+// version (docs/02 §2.4).
+//
+// A Step is: id, kind (task | decision | approval | parallel |
+// recover), ref (Worker reference or sub-workflow), depends_on (other
+// step ids), gate_policy_ref. Steps form a DAG; the WorkflowReconciler
+// progresses the DAG one step at a time, evaluating gates at each
+// transition (docs/03 §2, docs/02 §2.4).
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Workflow is the immutable header row for a composable execution plan
+// (docs/02 §2.4, docs/09 §3.4). The mutable snapshot (steps, inputs,
+// outputs, recovery_policy_ref) lives in WorkflowVersion. project_id is
+// empty for tenant-level templates.
+message Workflow {
+  string id = 1;
+  string tenant_id = 2;
+  string project_id = 3; // empty for tenant-level templates
+  string name = 4;
+  WorkflowStatus status = 5;
+  int32 current_version = 6; // latest version number
+  int32 version = 7; // optimistic concurrency (docs/09 §5)
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+}
+
+// WorkflowVersion is the immutable snapshot of a Workflow's steps at a
+// specific version (docs/02 §2.4, docs/09 §3.4). Once published, a
+// version is immutable; changes create a new version. The steps field
+// is a JSON array of Step messages (docs/02 §2.4).
+message WorkflowVersion {
+  string id = 1;
+  string tenant_id = 2;
+  string workflow_id = 3;
+  int32 version = 4; // monotonic integer
+  string version_note = 5;
+  WorkflowVersionStatus status = 6;
+  string steps = 7; // JSON array of Step messages (docs/02 §2.4)
+  string inputs = 8; // JSON: workflow input schema
+  string outputs = 9; // JSON: workflow output schema
+  string recovery_policy_ref = 10;
+  google.protobuf.Timestamp published_at = 11;
+  google.protobuf.Timestamp created_at = 12;
+}
+
+// Step is a single node in the workflow DAG (docs/02 §2.4). A Step
+// references a Worker (for task steps), a sub-workflow, or a gate. The
+// `depends_on` list forms the DAG; the WorkflowReconciler progresses
+// steps whose dependencies are satisfied. `config` is step-kind-specific
+// JSON (e.g. decision branches, approval timeout, parallel fan-out).
+// `position` is editor canvas coordinates persisted so the visual layout
+// is stable across edits (docs/10 §5.1).
+message Step {
+  string id = 1; // stable within the workflow version
+  string name = 2;
+  StepKind kind = 3;
+  string ref = 4; // worker_id+version (task), sub-workflow_id, or empty
+  int32 worker_version = 5; // pinned worker version for task steps
+  repeated string depends_on = 6; // step ids that must complete first
+  string gate_policy_ref = 7; // gate evaluated before this step runs
+  string config = 8; // JSON: step-kind-specific configuration
+  double position_x = 9; // editor canvas X (docs/10 §5.1)
+  double position_y = 10; // editor canvas Y (docs/10 §5.1)
+}
+
+// WorkflowRun is a single execution of a published Workflow version
+// (docs/02 §2.4, docs/09 §3.4). Created by StartWorkflow; progressed by
+// the WorkflowReconciler. current_step is the step id currently running
+// (or the last completed step).
+message WorkflowRun {
+  string id = 1;
+  string tenant_id = 2;
+  string workflow_id = 3;
+  int32 workflow_version = 4;
+  string project_id = 5;
+  WorkflowRunStatus status = 6;
+  string current_step = 7; // step id
+  string run_context = 8; // JSON: input/output values for this run
+  int32 version = 9; // optimistic concurrency (docs/09 §5)
+  google.protobuf.Timestamp started_at = 10;
+  google.protobuf.Timestamp ended_at = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+}
+
+// WorkflowStepRun is the runtime state of a single step within a
+// WorkflowRun (docs/09 §3.4). The WorkflowReconciler transitions step
+// runs through the DAG, evaluating gates before each transition
+// (docs/03 §2, docs/02 §2.4).
+message WorkflowStepRun {
+  string id = 1;
+  string tenant_id = 2;
+  string workflow_run_id = 3;
+  string step_id = 4; // matches Step.id in the workflow version
+  string step_name = 5;
+  StepKind step_kind = 6;
+  StepRunStatus status = 7;
+  int32 attempt = 8; // retry count
+  string result = 9; // JSON: step result / output
+  string worker_execution_id = 10; // for task steps: the dispatched execution
+  google.protobuf.Timestamp started_at = 11;
+  google.protobuf.Timestamp ended_at = 12;
+  google.protobuf.Timestamp created_at = 13;
+  google.protobuf.Timestamp updated_at = 14;
+}
+
+// Workflow lifecycle states (docs/02 §2.4):
+// draft → published → running → completed | failed | aborted.
+// A workflow is "running" while any run is in progress; the header
+// status reflects the published template, not individual runs.
+enum WorkflowStatus {
+  WORKFLOW_STATUS_UNSPECIFIED = 0;
+  WORKFLOW_STATUS_DRAFT = 1;
+  WORKFLOW_STATUS_PUBLISHED = 2;
+  WORKFLOW_STATUS_DEPRECATED = 3;
+}
+
+// WorkflowVersion lifecycle states (docs/02 §2.4). A version is draft
+// until published; published is immutable.
+enum WorkflowVersionStatus {
+  WORKFLOW_VERSION_STATUS_UNSPECIFIED = 0;
+  WORKFLOW_VERSION_STATUS_DRAFT = 1;
+  WORKFLOW_VERSION_STATUS_PUBLISHED = 2;
+  WORKFLOW_VERSION_STATUS_DEPRECATED = 3;
+}
+
+// StepKind enumerates the five step types (docs/02 §2.4):
+//   - task: dispatches a Worker (creates a WorkerExecution)
+//   - decision: branches based on a prior step's result
+//   - approval: blocks until a human approves (gate)
+//   - parallel: fans out to multiple sub-steps, joins on completion
+//   - recover: invokes a recovery workflow
+enum StepKind {
+  STEP_KIND_UNSPECIFIED = 0;
+  STEP_KIND_TASK = 1;
+  STEP_KIND_DECISION = 2;
+  STEP_KIND_APPROVAL = 3;
+  STEP_KIND_PARALLEL = 4;
+  STEP_KIND_RECOVER = 5;
+}
+
+// WorkflowRun lifecycle states (docs/02 §2.4, docs/03 §2):
+// pending → running → completed | failed | aborted | paused.
+enum WorkflowRunStatus {
+  WORKFLOW_RUN_STATUS_UNSPECIFIED = 0;
+  WORKFLOW_RUN_STATUS_PENDING = 1;
+  WORKFLOW_RUN_STATUS_RUNNING = 2;
+  WORKFLOW_RUN_STATUS_COMPLETED = 3;
+  WORKFLOW_RUN_STATUS_FAILED = 4;
+  WORKFLOW_RUN_STATUS_ABORTED = 5;
+  WORKFLOW_RUN_STATUS_PAUSED = 6;
+}
+
+// StepRun lifecycle states (docs/03 §2, docs/09 §3.4):
+// pending → ready → running → succeeded | failed | skipped | blocked.
+enum StepRunStatus {
+  STEP_RUN_STATUS_UNSPECIFIED = 0;
+  STEP_RUN_STATUS_PENDING = 1; // not yet ready (deps incomplete)
+  STEP_RUN_STATUS_READY = 2; // deps satisfied, awaiting gate/dispatch
+  STEP_RUN_STATUS_RUNNING = 3; // in flight (worker executing / approval pending)
+  STEP_RUN_STATUS_SUCCEEDED = 4;
+  STEP_RUN_STATUS_FAILED = 5;
+  STEP_RUN_STATUS_SKIPPED = 6; // decision branch not taken
+  STEP_RUN_STATUS_BLOCKED = 7; // gate denied
+  STEP_RUN_STATUS_APPROVAL_PENDING = 8; // awaiting human approval
+}
+
+// WorkflowEvent is a lifecycle event streamed via StreamWorkflowEvents
+// (docs/07 §3.4, docs/10 §4.1: workflow editor run view overlays live
+// step transitions on the same canvas).
+message WorkflowEvent {
+  string event_id = 1;
+  string event_type = 2; // e.g. "workflow.step_succeeded"
+  string tenant_id = 3;
+  string workflow_id = 4;
+  string workflow_run_id = 5;
+  string step_id = 6; // empty for workflow-level events
+  string step_run_id = 7; // empty for workflow-level events
+  WorkflowRunStatus run_status = 8;
+  StepRunStatus step_status = 9;
+  google.protobuf.Timestamp occurred_at = 10;
+  bytes payload = 11; // event-specific JSON
+}
