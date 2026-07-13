@@ -865,3 +865,298 @@ table "checkpoints" {
     columns = [column.worker_execution_id]
   }
 }
+
+// --- Phase 6: Workflows -----------------------------------------------------
+// Workflows are composable execution plans referencing Workers and
+// Steps (docs/02_Domain_Model.md §2.4, docs/09 §3.4). `workflows` is the
+// immutable header; `workflow_versions` holds the steps snapshot per
+// version. A published version is immutable; changes create a new
+// version. Workflows live at project level (project_id set) or as
+// tenant-level templates (project_id empty).
+
+table "workflows" {
+  schema = schema.public
+  comment = "Workflow header: composable execution plan (docs/02 §2.4, docs/09 §3.4). project_id empty for templates. RLS-enabled."
+
+  column "id" {
+    type = text
+    null = false
+  }
+  column "tenant_id" {
+    type = text
+    null = false
+  }
+  column "project_id" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "name" {
+    type = text
+    null = false
+  }
+  column "current_version" {
+    type = integer
+    null = false
+    default = 0
+  }
+  column "status" {
+    type = text
+    null = false
+    default = "draft"
+  }
+  column "version" {
+    type = integer
+    null = false
+    default = 1
+  }
+  column "created_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+  column "updated_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  index "workflows_tenant_project_idx" {
+    columns = [column.tenant_id, column.project_id]
+  }
+  index "workflows_tenant_status_idx" {
+    columns = [column.tenant_id, column.status]
+  }
+}
+
+table "workflow_versions" {
+  schema = schema.public
+  comment = "Workflow version snapshot: immutable once published (docs/02 §2.4, docs/09 §3.4). steps is a JSON array of Step messages. RLS-enabled."
+
+  column "id" {
+    type = text
+    null = false
+  }
+  column "tenant_id" {
+    type = text
+    null = false
+  }
+  column "workflow_id" {
+    type = text
+    null = false
+  }
+  column "version" {
+    type = integer
+    null = false
+  }
+  column "version_note" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "status" {
+    type = text
+    null = false
+    default = "draft"
+  }
+  column "steps" {
+    type = jsonb
+    null = false
+    default = "[]"
+  }
+  column "inputs" {
+    type = jsonb
+    null = false
+    default = "{}"
+  }
+  column "outputs" {
+    type = jsonb
+    null = false
+    default = "{}"
+  }
+  column "recovery_policy_ref" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "published_at" {
+    type = timestamptz
+    null = true
+  }
+  column "created_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  index "workflow_versions_workflow_version_idx" {
+    unique  = true
+    columns = [column.workflow_id, column.version]
+  }
+  index "workflow_versions_tenant_status_idx" {
+    columns = [column.tenant_id, column.status]
+  }
+}
+
+table "workflow_runs" {
+  schema = schema.public
+  comment = "A single execution of a published Workflow version (docs/02 §2.4, docs/09 §3.4). RLS-enabled."
+
+  column "id" {
+    type = text
+    null = false
+  }
+  column "tenant_id" {
+    type = text
+    null = false
+  }
+  column "workflow_id" {
+    type = text
+    null = false
+  }
+  column "workflow_version" {
+    type = integer
+    null = false
+  }
+  column "project_id" {
+    type = text
+    null = false
+  }
+  column "status" {
+    type = text
+    null = false
+    default = "pending"
+  }
+  column "current_step" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "run_context" {
+    type = jsonb
+    null = false
+    default = "{}"
+  }
+  column "version" {
+    type = integer
+    null = false
+    default = 1
+  }
+  column "started_at" {
+    type = timestamptz
+    null = true
+  }
+  column "ended_at" {
+    type = timestamptz
+    null = true
+  }
+  column "created_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+  column "updated_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  index "workflow_runs_tenant_project_idx" {
+    columns = [column.tenant_id, column.project_id]
+  }
+  index "workflow_runs_workflow_status_idx" {
+    columns = [column.workflow_id, column.status]
+  }
+}
+
+table "workflow_step_runs" {
+  schema = schema.public
+  comment = "Runtime state of a single step within a WorkflowRun (docs/09 §3.4). RLS-enabled."
+
+  column "id" {
+    type = text
+    null = false
+  }
+  column "tenant_id" {
+    type = text
+    null = false
+  }
+  column "workflow_run_id" {
+    type = text
+    null = false
+  }
+  column "step_id" {
+    type = text
+    null = false
+  }
+  column "step_name" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "step_kind" {
+    type = text
+    null = false
+  }
+  column "status" {
+    type = text
+    null = false
+    default = "pending"
+  }
+  column "attempt" {
+    type = integer
+    null = false
+    default = 0
+  }
+  column "result" {
+    type = jsonb
+    null = false
+    default = "{}"
+  }
+  column "worker_execution_id" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "started_at" {
+    type = timestamptz
+    null = true
+  }
+  column "ended_at" {
+    type = timestamptz
+    null = true
+  }
+  column "created_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+  column "updated_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  index "workflow_step_runs_run_idx" {
+    columns = [column.workflow_run_id]
+  }
+  index "workflow_step_runs_run_status_idx" {
+    columns = [column.workflow_run_id, column.status]
+  }
+}
