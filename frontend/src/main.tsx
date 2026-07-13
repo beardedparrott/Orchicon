@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 
 import { router } from "@/router";
+import { AuthProvider } from "@/auth/auth";
 import "@/index.css";
 
 // TanStack Query holds server state; UI-only state lives in Zustand
@@ -24,7 +25,9 @@ if (!root) throw new Error("#root not found");
 createRoot(root).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <AuthProvider>
+        <RouterProvider router={router} />
+      </AuthProvider>
     </QueryClientProvider>
   </StrictMode>
 );

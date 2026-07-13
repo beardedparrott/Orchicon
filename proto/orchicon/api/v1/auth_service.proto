@@ -1,0 +1,186 @@
+// Orchicon AuthService.
+//
+// Manages API keys (hashed, scoped entitlements), identity info,
+// RBAC roles + role bindings, and the audit view. OIDC login is
+// handled out-of-band via HTTP endpoints (docs/07 §6.1); this service
+// manages issued tokens/keys and entitlements (docs/07 §3.12).
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "orchicon/api/v1/auth.proto";
+
+service AuthService {
+  // --- API keys (machine credentials) ---
+  rpc CreateApiKey(CreateApiKeyRequest) returns (CreateApiKeyResponse);
+  rpc RevokeApiKey(RevokeApiKeyRequest) returns (RevokeApiKeyResponse);
+  rpc RotateApiKey(RotateApiKeyRequest) returns (RotateApiKeyResponse);
+  rpc ListApiKeys(ListApiKeysRequest) returns (ListApiKeysResponse);
+  rpc GetApiKey(GetApiKeyRequest) returns (GetApiKeyResponse);
+
+  // --- Identity + entitlements ---
+  rpc GetIdentity(GetIdentityRequest) returns (GetIdentityResponse);
+  rpc ListIdentities(ListIdentitiesRequest) returns (ListIdentitiesResponse);
+  rpc ListEntitlements(ListEntitlementsRequest) returns (ListEntitlementsResponse);
+
+  // --- RBAC roles + bindings ---
+  rpc CreateRole(CreateRoleRequest) returns (CreateRoleResponse);
+  rpc ListRoles(ListRolesRequest) returns (ListRolesResponse);
+  rpc AssignRole(AssignRoleRequest) returns (AssignRoleResponse);
+  rpc RevokeRole(RevokeRoleRequest) returns (RevokeRoleResponse);
+  rpc ListRoleBindings(ListRoleBindingsRequest) returns (ListRoleBindingsResponse);
+
+  // --- Tenants (admin) ---
+  rpc ListTenants(ListTenantsRequest) returns (ListTenantsResponse);
+
+  // --- Audit ---
+  rpc ListAuditEntries(ListAuditEntriesRequest) returns (ListAuditEntriesResponse);
+}
+
+// ---------------------------------------------------------------------------
+// API keys
+// ---------------------------------------------------------------------------
+
+message CreateApiKeyRequest {
+  string tenant_id = 1;
+  string identity_id = 2;
+  string name = 3;
+  repeated string scopes = 4; // entitlements granted to this key
+}
+message CreateApiKeyResponse {
+  ApiKey api_key = 1;
+  ApiKeySecret secret = 2; // plaintext key — shown once
+}
+message RevokeApiKeyRequest {
+  string id = 1;
+}
+message RevokeApiKeyResponse {
+  ApiKey api_key = 1;
+}
+message RotateApiKeyRequest {
+  string id = 1;
+}
+message RotateApiKeyResponse {
+  ApiKey api_key = 1;
+  ApiKeySecret secret = 2; // new plaintext key — shown once
+}
+message ListApiKeysRequest {
+  string tenant_id = 1;
+  string identity_id = 2; // optional filter
+  string page_token = 3;
+  int32 page_size = 4;
+}
+message ListApiKeysResponse {
+  repeated ApiKey api_keys = 1;
+  string next_page_token = 2;
+}
+message GetApiKeyRequest {
+  string id = 1;
+}
+message GetApiKeyResponse {
+  ApiKey api_key = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Identity + entitlements
+// ---------------------------------------------------------------------------
+
+message GetIdentityRequest {
+  string id = 1;
+}
+message GetIdentityResponse {
+  Identity identity = 1;
+}
+message ListIdentitiesRequest {
+  string tenant_id = 1;
+  string page_token = 2;
+  int32 page_size = 3;
+}
+message ListIdentitiesResponse {
+  repeated Identity identities = 1;
+  string next_page_token = 2;
+}
+message ListEntitlementsRequest {
+  string identity_id = 1;
+}
+message ListEntitlementsResponse {
+  repeated Entitlement entitlements = 1;
+  bool is_admin = 2; // tenant admin bypasses per-call RBAC checks
+}
+
+// ---------------------------------------------------------------------------
+// RBAC roles + bindings
+// ---------------------------------------------------------------------------
+
+message CreateRoleRequest {
+  string tenant_id = 1;
+  string name = 2;
+  string scope = 3; // "tenant" | "project"
+  string scope_ref = 4;
+  repeated string entitlements = 5;
+}
+message CreateRoleResponse {
+  Role role = 1;
+}
+message ListRolesRequest {
+  string tenant_id = 1;
+  string page_token = 2;
+  int32 page_size = 3;
+}
+message ListRolesResponse {
+  repeated Role roles = 1;
+  string next_page_token = 2;
+}
+message AssignRoleRequest {
+  string tenant_id = 1;
+  string identity_id = 2;
+  string role_id = 3;
+  string scope = 4;
+  string scope_ref = 5;
+}
+message AssignRoleResponse {
+  RoleBinding binding = 1;
+}
+message RevokeRoleRequest {
+  string id = 1; // role_binding id
+}
+message RevokeRoleResponse {}
+message ListRoleBindingsRequest {
+  string tenant_id = 1;
+  string identity_id = 2; // optional filter
+  string page_token = 3;
+  int32 page_size = 4;
+}
+message ListRoleBindingsResponse {
+  repeated RoleBinding bindings = 1;
+  string next_page_token = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Tenants
+// ---------------------------------------------------------------------------
+
+message ListTenantsRequest {
+  string page_token = 1;
+  int32 page_size = 2;
+}
+message ListTenantsResponse {
+  repeated Tenant tenants = 1;
+  string next_page_token = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Audit
+// ---------------------------------------------------------------------------
+
+message ListAuditEntriesRequest {
+  string tenant_id = 1;
+  string decision_point = 2; // optional filter
+  string actor_id = 3; // optional filter
+  string page_token = 4;
+  int32 page_size = 5;
+}
+message ListAuditEntriesResponse {
+  repeated AuditEntry entries = 1;
+  string next_page_token = 2;
+}

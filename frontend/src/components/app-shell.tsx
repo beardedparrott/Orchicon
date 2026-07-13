@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
-import { Link, useRouterState } from "@tanstack/react-router";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 
 import { cn } from "@/lib/utils";
+import { useSession, logout } from "@/auth/auth";
 
 // Application layout shell (docs/10_Frontend_Architecture.md §5).
 //
@@ -12,7 +13,7 @@ import { cn } from "@/lib/utils";
 type NavItem = {
   label: string;
   to: string;
-  disabled?: boolean;
+  admin?: boolean;
 };
 
 const NAV: NavItem[] = [
@@ -26,7 +27,8 @@ const NAV: NavItem[] = [
   { label: "Executions", to: "/executions" },
   { label: "Telemetry", to: "/telemetry" },
   { label: "Adapters", to: "/adapters" },
-  { label: "Admin", to: "/admin", disabled: true },
+  { label: "Webhooks", to: "/webhooks" },
+  { label: "Admin", to: "/admin", admin: true },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -43,25 +45,15 @@ export function AppShell({ children }: { children: ReactNode }) {
 
 function Sidebar() {
   const path = useRouterState({ select: (s) => s.location.pathname });
+  const session = useSession();
   return (
     <aside className="hidden w-60 shrink-0 border-r bg-card md:block">
       <div className="flex h-14 items-center gap-2 border-b px-5">
         <span className="text-lg font-semibold tracking-tight">Orchicon</span>
       </div>
       <nav className="space-y-1 p-3">
-        {NAV.map((item) => {
-          const active = path === item.to;
-          if (item.disabled) {
-            return (
-              <span
-                key={item.to}
-                className="flex cursor-not-allowed items-center rounded-md px-3 py-2 text-sm text-muted-foreground/50"
-                title="Coming soon"
-              >
-                {item.label}
-              </span>
-            );
-          }
+        {NAV.filter((item) => !item.admin || session.is_admin).map((item) => {
+          const active = path === item.to || path.startsWith(item.to + "/");
           return (
             <Link
               key={item.to}
@@ -83,14 +75,44 @@ function Sidebar() {
 }
 
 function TopBar() {
+  const session = useSession();
+  const navigate = useNavigate();
+  if (!session.authenticated) {
+    return (
+      <header className="flex h-14 items-center justify-between border-b px-6">
+        <div className="text-sm text-muted-foreground">
+          Orchicon control plane · v0.1
+        </div>
+        <Link
+          to="/login"
+          className="text-xs font-medium text-primary hover:underline"
+        >
+          Sign in
+        </Link>
+      </header>
+    );
+  }
   return (
     <header className="flex h-14 items-center justify-between border-b px-6">
       <div className="text-sm text-muted-foreground">
         Orchicon control plane · v0.1
       </div>
-      <div className="text-xs text-muted-foreground">
-        {/* Auth flow arrives in a later phase (docs/10 §7). */}
-        not signed in
+      <div className="flex items-center gap-4 text-xs text-muted-foreground">
+        <span>
+          {session.is_admin ? "admin" : "user"} ·{" "}
+          <span className="font-mono">
+            {session.identity_id?.slice(-8) ?? "—"}
+          </span>
+        </span>
+        <button
+          className="text-primary hover:underline"
+          onClick={() => {
+            logout();
+            navigate({ to: "/login" });
+          }}
+        >
+          Sign out
+        </button>
       </div>
     </header>
   );

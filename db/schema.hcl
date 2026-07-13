@@ -91,6 +91,11 @@ table "identities" {
     type = text
     null = true
   }
+  column "identity_type" {
+    type = text
+    null = false
+    default = "user"
+  }
   column "status" {
     type = text
     null = false
@@ -1338,4 +1343,104 @@ table "usage_records" {
   index "usage_records_tenant_project_idx" { columns = [column.tenant_id, column.project_id, column.occurred_at] }
   index "usage_records_execution_idx" { columns = [column.execution_id] }
   index "usage_records_tenant_provider_model_idx" { columns = [column.tenant_id, column.provider, column.model, column.occurred_at] }
+}
+
+// --- Phase 9: Auth + Webhooks (docs/07 §6, §3.11, docs/09 §3.1, §3.9) ---
+
+table "roles" {
+  schema = schema.public
+  comment = "RBAC role: named bundle of entitlements (docs/07 §6.2). RLS-enabled."
+  column "id" { type = text; null = false }
+  column "tenant_id" { type = text; null = false }
+  column "name" { type = text; null = false }
+  column "scope" { type = text; null = false; default = "tenant" }
+  column "scope_ref" { type = text; null = false; default = "" }
+  column "entitlements" { type = jsonb; null = false; default = "[]" }
+  column "version" { type = integer; null = false; default = 1 }
+  column "created_at" { type = timestamptz; null = false; default = sql("now()") }
+  column "updated_at" { type = timestamptz; null = false; default = sql("now()") }
+  primary_key { columns = [column.id] }
+  index "roles_tenant_idx" { columns = [column.tenant_id] }
+  index "roles_tenant_name_idx" { columns = [column.tenant_id, column.name] }
+}
+
+table "role_bindings" {
+  schema = schema.public
+  comment = "RBAC role binding (docs/07 §6.2). RLS-enabled."
+  column "id" { type = text; null = false }
+  column "tenant_id" { type = text; null = false }
+  column "identity_id" { type = text; null = false }
+  column "role_id" { type = text; null = false }
+  column "scope" { type = text; null = false; default = "tenant" }
+  column "scope_ref" { type = text; null = false; default = "" }
+  column "created_at" { type = timestamptz; null = false; default = sql("now()") }
+  primary_key { columns = [column.id] }
+  index "role_bindings_identity_idx" { columns = [column.identity_id] }
+  index "role_bindings_role_idx" { columns = [column.role_id] }
+  index "role_bindings_tenant_idx" { columns = [column.tenant_id] }
+}
+
+table "api_keys" {
+  schema = schema.public
+  comment = "Hashed API keys with scoped entitlements (docs/07 §6.1). RLS-enabled."
+  column "id" { type = text; null = false }
+  column "tenant_id" { type = text; null = false }
+  column "identity_id" { type = text; null = false }
+  column "name" { type = text; null = false }
+  column "key_prefix" { type = text; null = false }
+  column "key_hash" { type = text; null = false }
+  column "scopes" { type = jsonb; null = false; default = "[]" }
+  column "status" { type = text; null = false; default = "active" }
+  column "last_used_at" { type = timestamptz; null = true }
+  column "version" { type = integer; null = false; default = 1 }
+  column "created_at" { type = timestamptz; null = false; default = sql("now()") }
+  column "updated_at" { type = timestamptz; null = false; default = sql("now()") }
+  primary_key { columns = [column.id] }
+  index "api_keys_tenant_idx" { columns = [column.tenant_id] }
+  index "api_keys_identity_idx" { columns = [column.identity_id] }
+  index "api_keys_hash_idx" { columns = [column.key_hash] }
+}
+
+table "event_subscriptions" {
+  schema = schema.public
+  comment = "Webhook delivery subscription (docs/07 §3.11, docs/09 §3.9). RLS-enabled."
+  column "id" { type = text; null = false }
+  column "tenant_id" { type = text; null = false }
+  column "name" { type = text; null = false }
+  column "target_url" { type = text; null = false }
+  column "event_filter" { type = text; null = false; default = "*" }
+  column "scope" { type = text; null = false; default = "tenant" }
+  column "scope_ref" { type = text; null = false; default = "" }
+  column "secret_hint" { type = text; null = false; default = "" }
+  column "secret_hash" { type = text; null = false; default = "" }
+  column "max_retries" { type = integer; null = false; default = 5 }
+  column "status" { type = text; null = false; default = "active" }
+  column "version" { type = integer; null = false; default = 1 }
+  column "created_at" { type = timestamptz; null = false; default = sql("now()") }
+  column "updated_at" { type = timestamptz; null = false; default = sql("now()") }
+  primary_key { columns = [column.id] }
+  index "event_subscriptions_tenant_idx" { columns = [column.tenant_id] }
+  index "event_subscriptions_status_idx" { columns = [column.status] }
+}
+
+table "webhook_deliveries" {
+  schema = schema.public
+  comment = "Webhook delivery attempt (docs/07 §3.11). RLS-enabled."
+  column "id" { type = text; null = false }
+  column "tenant_id" { type = text; null = false }
+  column "subscription_id" { type = text; null = false }
+  column "event_id" { type = text; null = false }
+  column "event_type" { type = text; null = false }
+  column "payload" { type = jsonb; null = false; default = "{}" }
+  column "attempt" { type = integer; null = false; default = 0 }
+  column "status_code" { type = integer; null = false; default = 0 }
+  column "status" { type = text; null = false; default = "retrying" }
+  column "error" { type = text; null = false; default = "" }
+  column "next_attempt_at" { type = timestamptz; null = true }
+  column "occurred_at" { type = timestamptz; null = false; default = sql("now()") }
+  primary_key { columns = [column.id] }
+  index "webhook_deliveries_subscription_idx" { columns = [column.subscription_id] }
+  index "webhook_deliveries_tenant_idx" { columns = [column.tenant_id] }
+  index "webhook_deliveries_status_idx" { columns = [column.status] }
+  index "webhook_deliveries_retry_idx" { columns = [column.status, column.next_attempt_at] }
 }
