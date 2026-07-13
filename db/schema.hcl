@@ -646,3 +646,222 @@ table "edit_locks" {
     columns = [column.resource_id, column.resource_type]
   }
 }
+
+// --- Phase 5: Scheduling + Adapters ----------------------------------------
+// Runtime adapters are registered sidecar processes offering execution
+// capabilities (docs/02 §2.8, docs/04, docs/09 §3.7). WorkerExecutions
+// are the concrete invocations created by the TaskReconciler at
+// dispatch (docs/02 §2.7, docs/03 §4).
+
+table "runtime_adapters" {
+  schema = schema.public
+  comment = "Registered adapter process offering execution capabilities (docs/04, docs/09 §3.7). RLS-enabled."
+
+  column "id" {
+    type = text
+    null = false
+  }
+  column "tenant_id" {
+    type = text
+    null = false
+  }
+  column "kind" {
+    type = text
+    null = false
+  }
+  column "version" {
+    type = text
+    null = false
+  }
+  column "endpoint" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "capabilities" {
+    type = jsonb
+    null = false
+    default = "{}"
+  }
+  column "status" {
+    type = text
+    null = false
+    default = "registered"
+  }
+  column "max_concurrent_executions" {
+    type = integer
+    null = false
+    default = 1
+  }
+  column "registered_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+  column "last_heartbeat_at" {
+    type = timestamptz
+    null = true
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  index "runtime_adapters_tenant_kind_idx" {
+    columns = [column.tenant_id, column.kind]
+  }
+  index "runtime_adapters_tenant_status_idx" {
+    columns = [column.tenant_id, column.status]
+  }
+}
+
+table "worker_executions" {
+  schema = schema.public
+  comment = "Concrete invocation of a Worker against a Task on an adapter (docs/02 §2.7, docs/09 §3.3). RLS-enabled."
+
+  column "id" {
+    type = text
+    null = false
+  }
+  column "tenant_id" {
+    type = text
+    null = false
+  }
+  column "project_id" {
+    type = text
+    null = false
+  }
+  column "task_id" {
+    type = text
+    null = false
+  }
+  column "worker_id" {
+    type = text
+    null = false
+  }
+  column "worker_version" {
+    type = integer
+    null = false
+  }
+  column "adapter_id" {
+    type = text
+    null = true
+  }
+  column "status" {
+    type = text
+    null = false
+    default = "dispatching"
+  }
+  column "health_state" {
+    type = text
+    null = false
+    default = "healthy"
+  }
+  column "started_at" {
+    type = timestamptz
+    null = true
+  }
+  column "ended_at" {
+    type = timestamptz
+    null = true
+  }
+  column "token_usage" {
+    type = bigint
+    null = false
+    default = 0
+  }
+  column "cost_usd" {
+    type = sql("double precision")
+    null = false
+    default = 0
+  }
+  column "checkpoint_ref" {
+    type = text
+    null = true
+  }
+  column "recovery_id" {
+    type = text
+    null = true
+  }
+  column "version" {
+    type = integer
+    null = false
+    default = 1
+  }
+  column "created_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+  column "updated_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  index "worker_executions_task_idx" {
+    columns = [column.task_id]
+  }
+  index "worker_executions_worker_status_idx" {
+    columns = [column.worker_id, column.status]
+  }
+  index "worker_executions_status_health_idx" {
+    columns = [column.status, column.health_state]
+  }
+  index "worker_executions_tenant_project_idx" {
+    columns = [column.tenant_id, column.project_id]
+  }
+}
+
+table "checkpoints" {
+  schema = schema.public
+  comment = "Adapter-produced checkpoint blob (docs/04 §5, docs/09 §3.8). RLS-enabled."
+
+  column "id" {
+    type = text
+    null = false
+  }
+  column "tenant_id" {
+    type = text
+    null = false
+  }
+  column "worker_execution_id" {
+    type = text
+    null = false
+  }
+  column "format_version" {
+    type = text
+    null = false
+  }
+  column "blob_ref" {
+    type = text
+    null = false
+  }
+  column "size_bytes" {
+    type = bigint
+    null = false
+    default = 0
+  }
+  column "sha256" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "created_at" {
+    type = timestamptz
+    null = false
+    default = sql("now()")
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  index "checkpoints_execution_idx" {
+    columns = [column.worker_execution_id]
+  }
+}
