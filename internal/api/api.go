@@ -11,6 +11,7 @@ import (
 
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/middleware"
 	"github.com/beardedparrott/orchicon/internal/project"
 	"github.com/beardedparrott/orchicon/internal/version"
@@ -19,8 +20,9 @@ import (
 // Dependencies bundles the resources the API layer needs. Constructed
 // once by the server and passed to Mount.
 type Dependencies struct {
-	Pool *db.Pool
-	Log  *slog.Logger
+	Pool       *db.Pool
+	Log        *slog.Logger
+	Subscriber eventbus.Subscriber
 }
 
 // Mount returns an http.Handler serving the Orchicon API. Generated
@@ -40,7 +42,7 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// ProjectService (docs/07 §3.1). The Vite dev-server proxy
 	// (frontend/vite.config.ts) forwards /orchicon.api.v1 paths here,
 	// so no CORS headers are needed in dev (docs/10 §9).
-	projSvc := project.New(deps.Pool, deps.Log)
+	projSvc := project.New(deps.Pool, deps.Log, deps.Subscriber)
 	mux.Handle(apiv1connect.NewProjectServiceHandler(projSvc))
 
 	return middleware.ResolveTenant(mux)

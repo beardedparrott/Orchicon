@@ -32,6 +32,20 @@ LOG_DIR="$DEV_DIR/logs"
 COMPOSE="docker compose -f $COMPOSE_FILE"
 DB_URL="${ORCHICON_POSTGRES_DSN:-postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable}"
 
+# --- Binary delegation ------------------------------------------------------
+# If the orchicon binary is available (built or installed), delegate to
+# `orchicon dev` which embeds the compose stack, migrations, and frontend
+# bundle — the complete one-binary experience (AGENTS.md §Dev Control
+# Script).
+ORCHICON_BIN="${ORCHICON_BIN:-./bin/orchicon}"
+if [ "${1:-}" != "--no-binary" ] && command -v "$ORCHICON_BIN" >/dev/null 2>&1; then
+  case "${1:-}" in
+    start|stop|status|restart|logs)
+      exec "$ORCHICON_BIN" dev "$@"
+      ;;
+  esac
+fi
+
 # --- Colors -----------------------------------------------------------------
 if [ -t 1 ]; then
   C_RESET='\033[0m'

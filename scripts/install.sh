@@ -177,6 +177,9 @@ main() {
   echo -e "  ${D}orchicon dev start        Start the full dev environment${X}"
   echo -e "  ${D}orchicon dev status       Check what's running${X}"
   echo ""
+  echo -e "${B}Note:${X} ${D}orchicon dev start requires Docker (for Postgres, NATS, SigNoz).${X}"
+  echo -e "  The binary embeds the compose stack, migrations, and frontend.${X}"
+  echo ""
   echo -e "${B}Documentation:${X} ${D}https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}#readme${X}"
 }
 

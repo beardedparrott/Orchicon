@@ -4,10 +4,17 @@
 // serves the API, runs reconcilers, the outbox relay, recovery engine,
 // policy engine, and AI gateway. v0.1 ships a minimal HTTP server with
 // health/version endpoints; later phases add the full surface.
+//
+// Subcommands:
+//
+//	(default)        Run the control plane (serve API + relay + reconcilers)
+//	dev              Manage the full local dev stack (compose → migrate → serve)
+//	version          Print version info
 package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -20,6 +27,22 @@ import (
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	// Subcommand dispatch. If the first arg matches a known subcommand,
+	// dispatch to it; otherwise run the control plane (default).
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "dev":
+			os.Exit(runDev(os.Args[2:]))
+		case "version", "--version", "-v":
+			fmt.Println(version.Current().String())
+			return
+		case "--help", "-h":
+			printHelp()
+			return
+		}
+	}
+
 	log.Info("orchicon control plane", "version", version.Current().String())
 
 	cfg := config.Default()
@@ -41,4 +64,19 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("orchicon stopped")
+}
+
+func printHelp() {
+	fmt.Printf(`orchicon %s — Orchicon control plane
+
+Usage:
+  orchicon              Run the control plane (API + relay + reconcilers)
+  orchicon dev start    Start the full dev stack (compose → migrate → serve)
+  orchicon dev stop     Stop the dev stack
+  orchicon dev status   Show what's running
+  orchicon version      Print version info
+
+The binary embeds the Docker Compose stack, migrations, and the frontend
+bundle, so `+"`orchicon dev start`"+` is the complete one-command experience.
+`, version.Current().Tag)
 }

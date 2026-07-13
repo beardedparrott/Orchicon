@@ -13,7 +13,9 @@ import (
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
+	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/jackc/pgx/v5"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Service implements the ProjectService Connect handler
@@ -21,8 +23,9 @@ import (
 // row in the same transaction as the state change (AGENTS.md invariant
 // #3); the relay publishes it to NATS asynchronously.
 type Service struct {
-	pool *db.Pool
-	log  *slog.Logger
+	pool       *db.Pool
+	log        *slog.Logger
+	subscriber eventbus.Subscriber
 	apiv1connect.UnimplementedProjectServiceHandler
 }
 
@@ -30,8 +33,8 @@ type Service struct {
 var _ apiv1connect.ProjectServiceHandler = (*Service)(nil)
 
 // New constructs a ProjectService handler.
-func New(pool *db.Pool, log *slog.Logger) *Service {
-	return &Service{pool: pool, log: log}
+func New(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber) *Service {
+	return &Service{pool: pool, log: log, subscriber: sub}
 }
 
 // CreateProject validates input, inserts the project, and enqueues a
@@ -271,11 +274,91 @@ func (s *Service) PauseProject(ctx context.Context, req *connect.Request[apiv1.P
 	return connect.NewResponse(&apiv1.PauseProjectResponse{Project: rowToProto(p)}), nil
 }
 
-// StreamProjectEvents is not yet implemented; it arrives with the
-// realtime + infrastructure phase (Phase 3) when the useStream hook and
-// NATS fan-out are built.
+// StreamProjectEvents is the server-stream RPC that fans out project
+// events from NATS to connected clients (docs/07 §4, docs/10 §4). It
+// subscribes to the orchicon.events.project.* subject filter and streams
+// each event as a StreamProjectEventsResponse. If from_sequence is
+// provided, the consumer resumes from that JetStream sequence
+// (docs/07 §4: resume after reconnect).
+//
+// The stream stays open until the client disconnects (context
+// cancelled) or the subscriber is unavailable. When NATS is down, the
+// RPC returns Unavailable (docs/08 §8: "frontend realtime degrades —
+// reconnect on recovery").
 func (s *Service) StreamProjectEvents(ctx context.Context, req *connect.Request[apiv1.StreamProjectEventsRequest], stream *connect.ServerStream[apiv1.StreamProjectEventsResponse]) error {
-	return connect.NewError(connect.CodeUnimplemented, errors.New("StreamProjectEvents arrives in Phase 3"))
+	if s.subscriber == nil {
+		return connect.NewError(connect.CodeUnavailable, errors.New("event streaming is unavailable (NATS subscriber not connected)"))
+	}
+
+	// Subject filter: project events only. If project_id is specified,
+	// the client filters further on its side (the NATS subject does
+	// not encode project_id in v0.1 — events carry it in the payload).
+	filter := "orchicon.events.project.>"
+
+	var fromSeq uint64
+	if req.Msg.FromSequence != nil && *req.Msg.FromSequence > 0 {
+		fromSeq = uint64(*req.Msg.FromSequence)
+	}
+
+	ch, err := s.subscriber.Subscribe(ctx, filter, fromSeq)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("subscribe to project events: %w", err))
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case msg, ok := <-ch:
+			if !ok {
+				// Channel closed — subscriber shut down. Return nil so
+				// the client can reconnect with backoff (docs/10 §4).
+				return nil
+			}
+			evt, err := parseProjectEvent(msg.Data)
+			if err != nil {
+				s.log.Warn("failed to parse project event", "subject", msg.Subject, "error", err)
+				continue
+			}
+			resp := &apiv1.StreamProjectEventsResponse{
+				Event:    evt,
+				Sequence: int64(msg.Seq),
+			}
+			if err := stream.Send(resp); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// parseProjectEvent decodes the JSON event payload from the outbox/NATS
+// into a ProjectEvent proto message. The payload is the envelope written
+// by buildEventPayload.
+func parseProjectEvent(data []byte) (*apiv1.ProjectEvent, error) {
+	var env struct {
+		EventType    string `json:"event_type"`
+		TenantID     string `json:"tenant_id"`
+		ProjectID    string `json:"project_id"`
+		AggregateVer int    `json:"aggregate_version"`
+		Status       string `json:"status"`
+		Name         string `json:"name"`
+		Slug         string `json:"slug"`
+		OccurredAt   string `json:"occurred_at"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		return nil, fmt.Errorf("parse project event: %w", err)
+	}
+	evt := &apiv1.ProjectEvent{
+		EventId:   "", // event_id is the outbox row id, not in the payload
+		EventType: env.EventType,
+		TenantId:  env.TenantID,
+		ProjectId: env.ProjectID,
+		Payload:   data,
+	}
+	if t, err := time.Parse(time.RFC3339Nano, env.OccurredAt); err == nil {
+		evt.OccurredAt = timestamppb.New(t)
+	}
+	return evt, nil
 }
 
 // enqueueProjectEvent builds a ProjectEvent envelope, encodes it as JSON,

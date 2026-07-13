@@ -137,4 +137,7 @@ Write-Host "  orchicon --help           Show available commands" -ForegroundColo
 Write-Host "  orchicon dev start        Start the full dev environment" -ForegroundColor DarkGray
 Write-Host "  orchicon dev status       Check what's running" -ForegroundColor DarkGray
 Write-Host ""
+Write-Host "Note: orchicon dev start requires Docker (for Postgres, NATS, SigNoz)." -ForegroundColor DarkGray
+Write-Host "The binary embeds the compose stack, migrations, and frontend." -ForegroundColor DarkGray
+Write-Host ""
 Write-Host "Documentation: https://github.com/$GitHubOwner/$GitHubRepo#readme" -ForegroundColor DarkGray
