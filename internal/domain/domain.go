@@ -53,3 +53,57 @@ const (
 	ProjectArchived = "archived"
 	ProjectDeleted  = "deleted"
 )
+
+// Worker lifecycle states. draft → published → deprecated → retired
+// (docs/05_Worker_Specification.md §4).
+const (
+	WorkerDraft      = "draft"
+	WorkerPublished  = "published"
+	WorkerDeprecated = "deprecated"
+	WorkerRetired    = "retired"
+)
+
+// WorkerVersion lifecycle states (docs/05 §4). A version is draft
+// until published; deprecation is per-version.
+const (
+	WorkerVersionDraft      = "draft"
+	WorkerVersionPublished  = "published"
+	WorkerVersionDeprecated = "deprecated"
+)
+
+// WorkItem kinds — the four levels of the work hierarchy
+// (docs/02_Domain_Model.md §2.2). Depth is constrained to 4 levels.
+const (
+	WorkItemKindEpic    = "epic"
+	WorkItemKindFeature = "feature"
+	WorkItemKindTask    = "task"
+	WorkItemKindSubtask = "subtask"
+)
+
+// WorkItemStatus — schedulable kinds follow:
+// pending → ready → assigned → running → checkpointing →
+// succeeded | failed | cancelled | recovering (docs/02 §2.2).
+const (
+	WorkItemPending       = "pending"
+	WorkItemReady        = "ready"
+	WorkItemAssigned     = "assigned"
+	WorkItemRunning      = "running"
+	WorkItemCheckpointing = "checkpointing"
+	WorkItemSucceeded    = "succeeded"
+	WorkItemFailed       = "failed"
+	WorkItemCancelled    = "cancelled"
+	WorkItemRecovering   = "recovering"
+)
+
+// Dependency types — edges in the work DAG
+// (docs/02_Domain_Model.md §2.2).
+const (
+	DependencyBlocks     = "blocks"
+	DependencyDependsOn  = "depends_on"
+	DependencyRelatesTo  = "relates_to"
+)
+
+// Resource types for edit locks (docs/07 §3.3).
+const (
+	EditLockResourceWorker = "worker"
+)

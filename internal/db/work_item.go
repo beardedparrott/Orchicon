@@ -1,0 +1,324 @@
+package db
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// WorkItemRow is the data-access shape of a work_items table row
+// (docs/02 §2.2, docs/09 §3.2). All four kinds (epic/feature/task/
+// subtask) share this shape. JSON-typed columns (budgets, results,
+// assigned_worker_ref) are stored as raw []byte and validated at the
+// API boundary. The version column powers optimistic concurrency
+// (docs/09 §5).
+type WorkItemRow struct {
+	ID                 string
+	TenantID           string
+	ProjectID          string
+	ParentID           *string
+	Kind               string
+	Title              string
+	Description        string
+	AcceptanceCriteria string
+	Status             string
+	AssignedWorkerRef  []byte // jsonb: {worker_id, version}
+	WorkflowID         *string
+	Priority           int
+	Budgets            []byte // jsonb
+	ContextWindow      int
+	Results            []byte // jsonb
+	Version            int
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
+
+// CreateWorkItem inserts a new work item within the given tenant
+// transaction. The caller controls the transaction so the outbox row
+// can be enqueued in the same atomic unit (docs/09 §6). Version starts
+// at 1.
+func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow, error) {
+	const q = `INSERT INTO work_items
+		(id, tenant_id, project_id, parent_id, kind, title, description,
+		 acceptance_criteria, status, assigned_worker_ref, workflow_id,
+		 priority, budgets, context_window, results)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
+			acceptance_criteria, status, assigned_worker_ref, workflow_id,
+			priority, budgets, context_window, results, version, created_at, updated_at`
+	row := w
+	err := tx.QueryRow(ctx, q,
+		w.ID, w.TenantID, w.ProjectID, w.ParentID, w.Kind, w.Title, w.Description,
+		w.AcceptanceCriteria, w.Status, w.AssignedWorkerRef, w.WorkflowID,
+		w.Priority, w.Budgets, w.ContextWindow, w.Results,
+	).Scan(
+		&row.ID, &row.TenantID, &row.ProjectID, &row.ParentID, &row.Kind, &row.Title,
+		&row.Description, &row.AcceptanceCriteria, &row.Status, &row.AssignedWorkerRef,
+		&row.WorkflowID, &row.Priority, &row.Budgets, &row.ContextWindow, &row.Results,
+		&row.Version, &row.CreatedAt, &row.UpdatedAt,
+	)
+	if err != nil {
+		return WorkItemRow{}, fmt.Errorf("db: create work item: %w", err)
+	}
+	return row, nil
+}
+
+// GetWorkItem fetches a single work item by id within the tenant scope.
+func GetWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkItemRow, error) {
+	const q = `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
+		acceptance_criteria, status, assigned_worker_ref, workflow_id,
+		priority, budgets, context_window, results, version, created_at, updated_at
+		FROM work_items WHERE id = $1 AND tenant_id = $2`
+	var w WorkItemRow
+	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
+		&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
+		&w.Description, &w.AcceptanceCriteria, &w.Status, &w.AssignedWorkerRef,
+		&w.WorkflowID, &w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
+		&w.Version, &w.CreatedAt, &w.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return WorkItemRow{}, ErrNotFound
+	}
+	if err != nil {
+		return WorkItemRow{}, fmt.Errorf("db: get work item: %w", err)
+	}
+	return w, nil
+}
+
+// ListWorkItemsFilter scopes a list query to a tenant + project,
+// optionally filtered by parent (tree view) or status (Kanban).
+type ListWorkItemsFilter struct {
+	TenantID  string
+	ProjectID string
+	ParentID  *string // nil = all; empty string = top-level only
+	Status    string  // empty = all statuses
+	PageSize  int
+	AfterID   string
+}
+
+// ListWorkItems returns a page of work items for a project, ordered by
+// ULID id for stable cursor pagination (docs/07 §5.2).
+func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]WorkItemRow, error) {
+	if f.PageSize <= 0 || f.PageSize > 1000 {
+		f.PageSize = 100
+	}
+	q := `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
+		acceptance_criteria, status, assigned_worker_ref, workflow_id,
+		priority, budgets, context_window, results, version, created_at, updated_at
+		FROM work_items
+		WHERE tenant_id = $1 AND project_id = $2 AND ($3 = '' OR id > $3)`
+	args := []any{f.TenantID, f.ProjectID, f.AfterID}
+	if f.ParentID != nil {
+		if *f.ParentID == "" {
+			q += fmt.Sprintf(` AND parent_id IS NULL`)
+		} else {
+			q += fmt.Sprintf(` AND parent_id = $%d`, len(args)+1)
+			args = append(args, *f.ParentID)
+		}
+	}
+	if f.Status != "" {
+		q += fmt.Sprintf(` AND status = $%d`, len(args)+1)
+		args = append(args, f.Status)
+	}
+	q += ` ORDER BY id ASC LIMIT $` + fmt.Sprint(len(args)+1)
+	args = append(args, f.PageSize)
+	rows, err := tx.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: list work items: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkItemRow
+	for rows.Next() {
+		var w WorkItemRow
+		if err := rows.Scan(
+			&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
+			&w.Description, &w.AcceptanceCriteria, &w.Status, &w.AssignedWorkerRef,
+			&w.WorkflowID, &w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
+			&w.Version, &w.CreatedAt, &w.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan work item: %w", err)
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// UpdateWorkItemFields is a partial update applied with optimistic
+// concurrency (docs/09 §5). Only non-nil fields are written (field-mask
+// semantics — docs/07 §5.4).
+type UpdateWorkItemFields struct {
+	Title              *string
+	Description        *string
+	AcceptanceCriteria *string
+	Status             *string
+	Priority           *int
+	Budgets            *[]byte
+	ContextWindow      *int
+	AssignedWorkerRef  *[]byte
+}
+
+// UpdateWorkItem applies a partial update with optimistic concurrency.
+// The tenant_id is injected into the WHERE clause. Returns ErrNotFound
+// if no row matches the id+tenant+version.
+func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, f UpdateWorkItemFields) (WorkItemRow, error) {
+	q := `UPDATE work_items SET updated_at = now(), version = version + 1`
+	args := []any{tenantID, id, expectedVersion}
+	setIdx := len(args) + 1
+	if f.Title != nil {
+		q += fmt.Sprintf(`, title = $%d`, setIdx)
+		args = append(args, *f.Title)
+		setIdx++
+	}
+	if f.Description != nil {
+		q += fmt.Sprintf(`, description = $%d`, setIdx)
+		args = append(args, *f.Description)
+		setIdx++
+	}
+	if f.AcceptanceCriteria != nil {
+		q += fmt.Sprintf(`, acceptance_criteria = $%d`, setIdx)
+		args = append(args, *f.AcceptanceCriteria)
+		setIdx++
+	}
+	if f.Status != nil {
+		q += fmt.Sprintf(`, status = $%d`, setIdx)
+		args = append(args, *f.Status)
+		setIdx++
+	}
+	if f.Priority != nil {
+		q += fmt.Sprintf(`, priority = $%d`, setIdx)
+		args = append(args, *f.Priority)
+		setIdx++
+	}
+	if f.Budgets != nil {
+		q += fmt.Sprintf(`, budgets = $%d`, setIdx)
+		args = append(args, *f.Budgets)
+		setIdx++
+	}
+	if f.ContextWindow != nil {
+		q += fmt.Sprintf(`, context_window = $%d`, setIdx)
+		args = append(args, *f.ContextWindow)
+		setIdx++
+	}
+	if f.AssignedWorkerRef != nil {
+		q += fmt.Sprintf(`, assigned_worker_ref = $%d`, setIdx)
+		args = append(args, *f.AssignedWorkerRef)
+		setIdx++
+	}
+	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
+	q += ` RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
+		acceptance_criteria, status, assigned_worker_ref, workflow_id,
+		priority, budgets, context_window, results, version, created_at, updated_at`
+	var w WorkItemRow
+	err := tx.QueryRow(ctx, q, args...).Scan(
+		&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
+		&w.Description, &w.AcceptanceCriteria, &w.Status, &w.AssignedWorkerRef,
+		&w.WorkflowID, &w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
+		&w.Version, &w.CreatedAt, &w.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return WorkItemRow{}, ErrNotFound
+	}
+	if err != nil {
+		return WorkItemRow{}, fmt.Errorf("db: update work item: %w", err)
+	}
+	return w, nil
+}
+
+// DependencyRow is the data-access shape of a work_item_dependencies
+// table row — an edge in the work DAG (docs/02 §2.2, docs/09 §3.2).
+type DependencyRow struct {
+	ID        string
+	TenantID  string
+	ProjectID  string
+	FromID    string
+	ToID      string
+	Type      string
+	CreatedAt time.Time
+}
+
+// CreateDependency inserts a new DAG edge within the given tenant
+// transaction. The caller is responsible for cycle detection before
+// calling this (docs/02 §2.2: cycles are rejected at admission).
+func CreateDependency(ctx context.Context, tx pgx.Tx, d DependencyRow) (DependencyRow, error) {
+	const q = `INSERT INTO work_item_dependencies
+		(id, tenant_id, project_id, from_id, to_id, type)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, tenant_id, project_id, from_id, to_id, type, created_at`
+	row := d
+	err := tx.QueryRow(ctx, q,
+		d.ID, d.TenantID, d.ProjectID, d.FromID, d.ToID, d.Type,
+	).Scan(
+		&row.ID, &row.TenantID, &row.ProjectID, &row.FromID, &row.ToID,
+		&row.Type, &row.CreatedAt,
+	)
+	if err != nil {
+		return DependencyRow{}, fmt.Errorf("db: create dependency: %w", err)
+	}
+	return row, nil
+}
+
+// DeleteDependency removes a DAG edge by id within the tenant scope.
+func DeleteDependency(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
+	const q = `DELETE FROM work_item_dependencies WHERE tenant_id = $1 AND id = $2`
+	tag, err := tx.Exec(ctx, q, tenantID, id)
+	if err != nil {
+		return fmt.Errorf("db: delete dependency: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ListDependencies returns all dependency edges for a project.
+func ListDependencies(ctx context.Context, tx pgx.Tx, tenantID, projectID string) ([]DependencyRow, error) {
+	const q = `SELECT id, tenant_id, project_id, from_id, to_id, type, created_at
+		FROM work_item_dependencies
+		WHERE tenant_id = $1 AND project_id = $2
+		ORDER BY created_at`
+	rows, err := tx.Query(ctx, q, tenantID, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("db: list dependencies: %w", err)
+	}
+	defer rows.Close()
+	var out []DependencyRow
+	for rows.Next() {
+		var d DependencyRow
+		if err := rows.Scan(&d.ID, &d.TenantID, &d.ProjectID, &d.FromID, &d.ToID,
+			&d.Type, &d.CreatedAt); err != nil {
+			return nil, fmt.Errorf("db: scan dependency: %w", err)
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// CheckCycleWithRecursiveCTE checks whether adding an edge from→to
+// would create a cycle in the dependency DAG. It uses WITH RECURSIVE to
+// traverse the existing edges starting from `to` — if `from` is
+// reachable from `to`, adding the edge would close a cycle
+// (docs/09 §11: recursive CTE for dependency traversal).
+//
+// Returns true if adding from→to would create a cycle.
+func CheckCycleWithRecursiveCTE(ctx context.Context, tx pgx.Tx, tenantID, projectID, fromID, toID string) (bool, error) {
+	// Traverse forward from `to`: follow from_id → to_id edges. If we
+	// reach `from`, then from→to would close a cycle.
+	const q = `WITH RECURSIVE reach AS (
+		SELECT to_id AS node FROM work_item_dependencies
+		WHERE tenant_id = $1 AND project_id = $2 AND from_id = $3
+		UNION
+		SELECT d.to_id FROM work_item_dependencies d
+		JOIN reach r ON d.from_id = r.node
+		WHERE d.tenant_id = $1 AND d.project_id = $2
+	)
+	SELECT EXISTS(SELECT 1 FROM reach WHERE node = $4)`
+	var creates bool
+	err := tx.QueryRow(ctx, q, tenantID, projectID, toID, fromID).Scan(&creates)
+	if err != nil {
+		return false, fmt.Errorf("db: check cycle (recursive CTE): %w", err)
+	}
+	return creates, nil
+}
