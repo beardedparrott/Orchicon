@@ -277,7 +277,7 @@ platform, or `--uninstall` to test cleanup).
 | 1 | Foundation | done | Go module + binary skeleton (`cmd/orchicon`, `internal/`); Protobuf schema (`orchicon.api.v1`, `orchicon.adapter.v1`); Connect codegen (Go + TS); Atlas migrations for tenants/identities/projects with RLS + CI gate; Docker Compose (Postgres, NATS, SigNoz, OTel); Makefile; Vite+React+TS shell with Connect-ES, TanStack Router, Tailwind+shadcn/ui |
 | 2 | Projects slice | done | Project CRUD (Create/Get/List/Update/Archive) full stack: Go handler + data-access layer with pgx + tenant scoping + RLS backstop; Connect handler wiring; transactional outbox with NATS JetStream relay; frontend project list + detail + create form (React Hook Form + Zod + TanStack Query) |
 | 3 | Realtime + infrastructure | done | `orchicon dev` subcommand (embeds compose + migrations + frontend via go:embed); outbox relay lag metrics (`orchicon_outbox_lag`); reconciler framework (work queue + advisory-lock leadership + manager); OTel pipeline (tracer/meter/exporter → SigNoz); StreamProjectEvents server-stream RPC fanning out from NATS; trace propagation via Connect headers; `useStream` hook (reconnect + backoff + dedup + resume) + live event feed on project detail page |
-| 4 | Workers + WorkItems | not started | Worker versioning, WorkItem hierarchy, dependencies + frontend catalog, tree/board, dependency graph |
+| 4 | Workers + WorkItems | done | WorkerService (CreateWorker, PublishWorkerVersion, DeprecateWorker, RetireWorker, GetWorker, ListWorkers, ListWorkerVersions) + edit locks (TTL, heartbeat, visual editor); WorkItemService (CRUD, AddDependency/RemoveDependency with recursive-CTE cycle rejection, GetDependencyGraph, AssignWorker) with CAS optimistic concurrency + outbox events; Atlas migrations (workers, worker_versions, work_items, work_item_dependencies, edit_locks) with RLS; frontend worker catalog + version history + create form (system_prompt template vars, permissions, gated_tools, budget overrides) + work item tree view + Kanban board + dependency graph (read-only React Flow) + edit lock banner on worker editor |
 | 5 | Scheduling + adapters | not started | TaskReconciler, dispatch, OpenCode adapter + frontend execution live view |
 | 6 | Workflows | not started | Workflow CRUD, step DAG, runs + frontend visual drag-and-drop editor (React Flow) |
 | 7 | Recovery + Policy | not started | Recovery Engine, Rego Policy Engine + frontend recovery timeline, policy editor |
@@ -304,5 +304,20 @@ platform, or `--uninstall` to test cleanup).
   reconciler framework (`reconciler.Manager`) provides per-kind
   leadership via `pg_try_advisory_lock`. The frontend `useStream` hook
   wraps Connect-ES server streams with reconnect + backoff + dedup +
-  resume. The next step (Phase 4) adds concrete reconcilers and the
-  Worker/WorkItem hierarchy.
+  resume.
+- **Phase 4**: WorkerService implements the full worker lifecycle
+  (draft → published → deprecated → retired — docs/05 §4) with
+  versioned snapshots (`worker_versions` table). A published version is
+  immutable; changes require a new version. WorkItemService implements
+  the work hierarchy (Epic → Feature → Task → Subtask, max 4 levels)
+  with dependency edges as a DAG. Cycle detection uses a recursive CTE
+  on `work_item_dependencies` (docs/09 §11) — `CheckCycleWithRecursiveCTE`
+  traverses forward from the target and rejects the edge if the source
+  is reachable. Edit locks (`edit_locks` table) prevent concurrent edits
+  in the visual Worker editor (docs/07 §3.3); they expire automatically
+  on TTL and are acquired/released via `AcquireEditLock`/
+  `ReleaseEditLock`. The frontend uses React Flow for the read-only
+  dependency graph, TanStack Query for server state, and React Hook
+  Form + Zod for the worker create form (system_prompt template vars,
+  permissions, gated_tools, budget overrides). The next step (Phase 5)
+  adds the TaskReconciler, dispatch, and the OpenCode adapter.
