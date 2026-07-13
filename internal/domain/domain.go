@@ -226,3 +226,147 @@ const (
 	ExecEventError            = "error"
 	ExecEventControl          = "control"
 )
+
+// Policy lifecycle states (docs/02 §2.5):
+// draft → published → superseded. A published Policy version is immutable.
+const (
+	PolicyDraft      = "draft"
+	PolicyPublished  = "published"
+	PolicySuperseded = "superseded"
+)
+
+// PolicyVersion lifecycle states (docs/02 §2.5).
+const (
+	PolicyVersionDraft      = "draft"
+	PolicyVersionPublished  = "published"
+	PolicyVersionSuperseded = "superseded"
+)
+
+// DecisionPoint — Tier 1 lifecycle points where Policy is evaluated
+// (docs/02 §2.5). Not every tool call is gated — only these transitions.
+const (
+	DecisionPointAdmission  = "admission"
+	DecisionPointDispatch   = "dispatch"
+	DecisionPointBudget     = "budget"
+	DecisionPointApproval   = "approval"
+	DecisionPointRecovery   = "recovery"
+	DecisionPointCompletion = "completion"
+)
+
+// PolicyScope — attachment scope (docs/02 §2.5). Narrowest scope wins.
+const (
+	PolicyScopeTenant  = "tenant"
+	PolicyScopeProject = "project"
+	PolicyScopeWorker  = "worker"
+	PolicyScopeTask    = "task"
+)
+
+// PolicyEffect — the decision a Policy asserts (docs/02 §2.5).
+const (
+	PolicyEffectAllow            = "allow"
+	PolicyEffectDeny             = "deny"
+	PolicyEffectRequireApproval  = "require_approval"
+	PolicyEffectRequireReview    = "require_review"
+)
+
+// RecoveryStatus lifecycle (docs/06 §3, §7):
+// pending → running → resumed | escalated | failed | cancelled | blocked.
+const (
+	RecoveryPending    = "pending"
+	RecoveryRunning    = "running"
+	RecoveryResumed    = "resumed"
+	RecoveryEscalated  = "escalated"
+	RecoveryFailed     = "failed"
+	RecoveryCancelled  = "cancelled"
+	RecoveryBlocked    = "blocked"
+)
+
+// RecoveryStepStatus lifecycle (docs/06 §3, §9).
+const (
+	RecoveryStepPending   = "pending"
+	RecoveryStepReady     = "ready"
+	RecoveryStepRunning   = "running"
+	RecoveryStepSucceeded = "succeeded"
+	RecoveryStepFailed    = "failed"
+	RecoveryStepSkipped   = "skipped"
+	RecoveryStepBlocked   = "blocked"
+)
+
+// RecoveryStep IDs for the default 6-step recovery workflow
+// (docs/06 §3): capture → summarize → preserve → review → plan → resume.
+const (
+	RecoveryStepCapture   = "capture"
+	RecoveryStepSummarize = "summarize"
+	RecoveryStepPreserve  = "preserve"
+	RecoveryStepReview    = "review"
+	RecoveryStepPlan      = "plan"
+	RecoveryStepResume    = "resume"
+)
+
+// DefaultRecoverySteps is the ordered default recovery workflow
+// (docs/06 §3). Organizations may replace any or all of them.
+var DefaultRecoverySteps = []string{
+	RecoveryStepCapture,
+	RecoveryStepSummarize,
+	RecoveryStepPreserve,
+	RecoveryStepReview,
+	RecoveryStepPlan,
+	RecoveryStepResume,
+}
+
+// RecoveryLevel (docs/06 §7): L0 normal, L1 recovery, L2 recovery-of-
+// recovery, L3 human escalation.
+const (
+	RecoveryLevelL1 int32 = 1
+	RecoveryLevelL2 int32 = 2
+	RecoveryLevelL3 int32 = 3
+)
+
+// ResumptionPath (docs/06 §4): direct checkpoint replay vs full
+// summarize-resume. The engine attempts direct replay first and falls
+// back on incompatibility.
+const (
+	ResumptionPathCheckpoint    = "checkpoint"
+	ResumptionPathSummarizeResume = "summarize_resume"
+)
+
+// PlanStatus for ContinuationPlan (docs/06 §8).
+const (
+	PlanPending  = "pending"
+	PlanApproved = "approved"
+	PlanRejected = "rejected"
+)
+
+// Bounded auto-relax thresholds (docs/06 §11): recovery may
+// automatically increase a Task's budget by up to 25% of the original
+// (with an audit event); beyond 150% of the original budget, human
+// approval is required.
+const (
+	BudgetRelaxAutoMaxFraction = 0.25 // +25% automatic
+	BudgetRelaxHumanThreshold  = 1.50 // >150% requires human approval
+)
+
+// RecoveryEventType — event kinds streamed via StreamRecoveryEvents
+// (docs/07 §3.6, docs/06 §11).
+const (
+	RecoveryEventTriggered      = "recovery.triggered"
+	RecoveryEventStepStarted    = "recovery.step.started"
+	RecoveryEventStepCompleted  = "recovery.step.completed"
+	RecoveryEventStepFailed     = "recovery.step.failed"
+	RecoveryEventPlanProduced   = "recovery.plan.produced"
+	RecoveryEventPlanApproved   = "recovery.plan.approved"
+	RecoveryEventPlanRejected   = "recovery.plan.rejected"
+	RecoveryEventEscalated      = "recovery.escalated"
+	RecoveryEventResumed        = "recovery.resumed"
+	RecoveryEventFailed         = "recovery.failed"
+	RecoveryEventCancelled     = "recovery.cancelled"
+	RecoveryEventBlocked        = "recovery.blocked"
+)
+
+// PolicyEventType — event kinds for the policy.evaluated event
+// (docs/08 §4.4).
+const (
+	PolicyEventEvaluated   = "policy.evaluated"
+	PolicyEventPublished   = "policy.published"
+	PolicyEventSuperseded  = "policy.superseded"
+)
