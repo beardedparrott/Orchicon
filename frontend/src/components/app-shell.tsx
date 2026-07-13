@@ -23,9 +23,9 @@ const NAV: NavItem[] = [
   { label: "Workflows", to: "/workflows", disabled: true },
   { label: "Policies", to: "/policies", disabled: true },
   { label: "Recovery", to: "/recovery", disabled: true },
-  { label: "Executions", to: "/executions", disabled: true },
+  { label: "Executions", to: "/executions" },
   { label: "Telemetry", to: "/telemetry", disabled: true },
-  { label: "Adapters", to: "/adapters", disabled: true },
+  { label: "Adapters", to: "/adapters" },
   { label: "Admin", to: "/admin", disabled: true },
 ];
 
