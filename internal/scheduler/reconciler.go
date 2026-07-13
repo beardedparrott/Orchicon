@@ -448,6 +448,43 @@ func (r *TaskReconciler) OnHealth(ctx context.Context, execID, healthState strin
 	_ = ttx.Commit(ctx)
 }
 
+// OnStall is called by the adapter bridge's progress monitor when a stall
+// signal trips (docs/06 §2: "stalled health state | no progress within
+// stall window"; docs/03 §5). The reason carries which signal fired:
+// stalled:no_progress | stalled:no_file_progress | stalled:repetition:<sig>.
+//
+// It updates the execution's health_state to stalled and triggers recovery
+// (opt-out, not opt-in — docs/06 §1; idempotent — §9: an active recovery
+// for the task short-circuits a duplicate trigger). This closes the
+// "worker stuck looping" gap: a worker that repeats the same tool calls,
+// makes no file changes, or makes no token progress is recovered rather
+// than running forever.
+func (r *TaskReconciler) OnStall(ctx context.Context, execID, reason string) {
+	r.log.Warn("execution stalled — triggering recovery",
+		"execution", execID, "reason", reason)
+	// Update health_state to stalled so the UI + timeline surface the
+	// detected stall.
+	r.OnHealth(ctx, execID, domain.HealthStalled)
+	if r.recovery == nil {
+		return
+	}
+	// Resolve the task + execution for the trigger (idempotent).
+	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		r.log.Error("on stall: begin tx", "execution", execID, "error", err)
+		return
+	}
+	exec, err := db.GetExecution(ctx, ttx.Tx, "tnt_dev", execID)
+	ttx.Rollback(ctx)
+	if err != nil {
+		r.log.Error("on stall: get execution", "execution", execID, "error", err)
+		return
+	}
+	if err := r.recovery.TriggerOnFailure(ctx, "tnt_dev", exec.TaskID, execID, reason); err != nil {
+		r.log.Error("on stall: trigger recovery", "execution", execID, "task", exec.TaskID, "error", err)
+	}
+}
+
 func (r *TaskReconciler) updateExecStatus(ctx context.Context, execID, status, health string) {
 	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {

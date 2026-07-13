@@ -27,11 +27,19 @@ type ExecutionManifest struct {
 
 // ExecutionCallbacks are the status callbacks the adapter bridge uses to
 // inform the TaskReconciler of execution lifecycle transitions
-// (docs/03 §6).
+// (docs/03 §6). OnStall is the stall-detection trigger (docs/06 §2
+// "stalled health state | no progress within stall window"): the adapter
+// bridge's progress monitor raises it when a worker is stuck looping
+// (repeated tool calls, no file changes, no token progress), and the
+// TaskReconciler uses it to trigger recovery (idempotent — docs/06 §9).
 type ExecutionCallbacks interface {
 	OnStarted(ctx context.Context, execID string)
 	OnResult(ctx context.Context, execID string, succeeded bool)
 	OnHealth(ctx context.Context, execID, healthState string)
+	// OnStall signals a detected stall (the reason carries which signal
+	// tripped: stalled:no_progress | stalled:no_file_progress |
+	// stalled:repetition:<sig>). The receiver triggers recovery.
+	OnStall(ctx context.Context, execID, reason string)
 }
 
 // AdapterBridge is the control-plane side of the adapter contract. It

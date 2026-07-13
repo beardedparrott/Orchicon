@@ -172,6 +172,19 @@ minimum (adapt to what the change touches):
    do not fall back to simulation and claim the slice works. Seed
    workers / executions used for verification must pin a free model in
    `model_ref` so verification is reproducible at no cost.
+   - **Stall + wall-clock guardrails** (docs/06 §2 triggers): the
+     opencode adapter bridge runs a per-execution progress monitor that
+     detects stuck-looping and triggers recovery (opt-out, idempotent).
+     Three stall signals, configurable via env:
+     `ORCHICON_STALL_NO_PROGRESS_WINDOW` (default 120s — no
+     step_finish/token progress), `ORCHICON_STALL_NO_FILE_DIFF_WINDOW`
+     (default 180s — no file modifications), `ORCHICON_STALL_REPETITION_COUNT`
+     (default 5 — same tool_call signature repeated within
+     `ORCHICON_STALL_REPETITION_WINDOW`, default 300s). The worker's
+     `budget_overrides.wall_clock_seconds` (default 3600) is the hard
+     per-execution timeout backstop (context deadline → subprocess
+     kill → recovery). Verification that exercises stall/timeout paths
+     must use tight env windows + a free model.
 
 If the change adds a new API RPC, also verify the Connect endpoint
 responds (e.g. via `curl` or a frontend smoke test). If it adds a new
