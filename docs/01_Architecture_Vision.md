@@ -2,7 +2,7 @@
 
 > **Version:** 0.1
 > **Status:** Direction & design intent
-> **Parent:** `Orchicon_Architecture_Design_Document_v0.1.md`
+> **Parent:** `00_Architecture_Design_Document.md`
 
 This document is the umbrella for the Orchicon design set. It fixes the
 technology direction and the system topology that the other design

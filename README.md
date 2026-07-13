@@ -15,6 +15,7 @@ All architecture and design documents live in [`docs/`](./docs):
 
 | # | Document | Concern |
 |---|---|---|
+| 00 | [Architecture Design Document](./docs/00_Architecture_Design_Document.md) | Original design brief — vision, principles, core concepts |
 | 01 | [Architecture Vision](./docs/01_Architecture_Vision.md) | Tech direction, system topology, design principles |
 | 02 | [Domain Model](./docs/02_Domain_Model.md) | Projects, Workers, Tasks, Workflows, Policies, Recovery |
 | 03 | [Scheduler & Runtime Design](./docs/03_Scheduler_and_Runtime_Design.md) | Reconciler architecture, dispatch flow, health monitoring |
@@ -26,7 +27,7 @@ All architecture and design documents live in [`docs/`](./docs):
 | 09 | [Database Schema](./docs/09_Database_Schema.md) | PostgreSQL, outbox, RLS, Atlas migrations |
 | 10 | [Frontend Architecture](./docs/10_Frontend_Architecture.md) | React/Vite, Connect-ES, visual workflow editor |
 
-The original design brief: [`Orchicon_Architecture_Design_Document_v0.1.md`](./Orchicon_Architecture_Design_Document_v0.1.md)
+The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Architecture_Design_Document.md)
 
 ## Technology Stack
 
