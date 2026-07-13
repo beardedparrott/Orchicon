@@ -24,7 +24,7 @@ const NAV: NavItem[] = [
   { label: "Policies", to: "/policies" },
   { label: "Recovery", to: "/recovery" },
   { label: "Executions", to: "/executions" },
-  { label: "Telemetry", to: "/telemetry", disabled: true },
+  { label: "Telemetry", to: "/telemetry" },
   { label: "Adapters", to: "/adapters" },
   { label: "Admin", to: "/admin", disabled: true },
 ];

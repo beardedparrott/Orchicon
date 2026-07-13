@@ -1,0 +1,117 @@
+// Orchicon TelemetryService (docs/07_API_Specification.md §3.9,
+// docs/08_Event_Bus_and_Telemetry_Model.md §5, docs/10 §11).
+//
+// Proxies tenant-scoped queries to SigNoz/ClickHouse so users explore
+// traces/metrics/logs without leaving the Orchicon shell (docs/10 §11:
+// seamless SigNoz embedding — same auth, same visual language, inside
+// the Orchicon shell). The proxy enforces tenant isolation: the
+// tenant_id filter is injected from the request context, never trusted
+// from the client (AGENTS.md tenant isolation).
+//
+// StreamTelemetry streams live telemetry updates (usage/cost counters
+// and execution summaries) to connected clients.
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "google/protobuf/timestamp.proto";
+import "orchicon/api/v1/telemetry.proto";
+import "orchicon/api/v1/ai_gateway.proto"; // UsageEvent
+
+service TelemetryService {
+  // QueryTraces returns traces matching the tenant-scoped query. Proxies
+  // to SigNoz/ClickHouse with the tenant_id attribute injected from the
+  // request context (docs/08 §5.1).
+  rpc QueryTraces(QueryTracesRequest) returns (QueryTracesResponse);
+
+  // QueryMetrics returns metric series matching the tenant-scoped query
+  // (docs/08 §5.2: orchicon_tokens_consumed, orchicon_cost_usd, etc.).
+  rpc QueryMetrics(QueryMetricsRequest) returns (QueryMetricsResponse);
+
+  // QueryLogs returns structured OTel log records matching the
+  // tenant-scoped query (docs/08 §5.3).
+  rpc QueryLogs(QueryLogsRequest) returns (QueryLogsResponse);
+
+  // StreamTelemetry is the server-stream RPC that fans out live telemetry
+  // updates (usage events, cost counters) to connected clients
+  // (docs/07 §4, docs/10 §4).
+  rpc StreamTelemetry(StreamTelemetryRequest) returns (stream StreamTelemetryResponse);
+
+  // GetDashboard returns an Orchicon-specific telemetry dashboard: a
+  // curated set of metrics + summaries built custom on the Orchicon
+  // domain model (docs/10 §11). Custom dashboards are domain-specific
+  // (cost, executions, recovery) — raw exploration uses the embedded
+  // SigNoz UI.
+  rpc GetDashboard(GetDashboardRequest) returns (GetDashboardResponse);
+}
+
+message QueryTracesRequest {
+  TelemetryQuery query = 1;
+}
+message QueryTracesResponse {
+  repeated Trace traces = 1;
+  string next_page_token = 2;
+  bool degraded = 3; // true when the SigNoz backend is unreachable
+}
+
+message QueryMetricsRequest {
+  TelemetryQuery query = 1;
+  repeated string metric_names = 2; // empty = all Orchicon metrics
+}
+message QueryMetricsResponse {
+  repeated MetricSeries series = 1;
+  bool degraded = 2;
+}
+
+message QueryLogsRequest {
+  TelemetryQuery query = 1;
+  string severity = 2; // optional severity filter
+}
+message QueryLogsResponse {
+  repeated LogRecord logs = 1;
+  string next_page_token = 2;
+  bool degraded = 3;
+}
+
+message StreamTelemetryRequest {
+  string tenant_id = 1;
+  string project_id = 2;   // optional scope
+  string execution_id = 3;  // optional scope
+  optional int64 from_sequence = 4; // resume after reconnect (docs/07 §4)
+  repeated string metric_names = 5;  // optional: limit to these metrics
+}
+
+message StreamTelemetryResponse {
+  oneof update {
+    MetricPoint metric = 1;     // a live metric sample
+    UsageEvent usage = 2;         // a usage/cost event (dual-write mirror)
+  }
+  int64 sequence = 3;
+}
+
+message GetDashboardRequest {
+  string tenant_id = 1;
+  string project_id = 2;  // optional scope
+  google.protobuf.Timestamp start = 3;
+  google.protobuf.Timestamp end = 4;
+}
+
+message GetDashboardResponse {
+  // Orchicon-specific dashboard panels (docs/10 §11). Built custom
+  // because they're domain-specific (cost, executions, recovery).
+  repeated MetricSeries panels = 1;
+  DashboardSummary summary = 2;
+}
+
+// DashboardSummary is the high-level roll-up shown at the top of the
+// Orchicon telemetry dashboard.
+message DashboardSummary {
+  int64 total_tokens = 1;
+  double total_cost_usd = 2;
+  int32 active_executions = 3;
+  int32 total_executions = 4;
+  int32 recoveries_triggered = 5;
+  double avg_dispatch_latency_ms = 6;
+  google.protobuf.Timestamp window_start = 7;
+  google.protobuf.Timestamp window_end = 8;
+}

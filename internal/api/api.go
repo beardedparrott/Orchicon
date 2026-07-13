@@ -11,6 +11,7 @@ import (
 
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	"github.com/beardedparrott/orchicon/internal/adapter"
+	"github.com/beardedparrott/orchicon/internal/aigateway"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/execution"
@@ -18,6 +19,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/policy"
 	"github.com/beardedparrott/orchicon/internal/project"
 	"github.com/beardedparrott/orchicon/internal/recovery"
+	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
 	"github.com/beardedparrott/orchicon/internal/worker"
 	"github.com/beardedparrott/orchicon/internal/workflow"
@@ -32,6 +34,7 @@ type Dependencies struct {
 	Subscriber    eventbus.Subscriber
 	PolicyEngine  *policy.Engine
 	RecoveryEngine *recovery.Engine
+	SigNozClient  *telemetry.SigNozClient
 }
 
 // Mount returns an http.Handler serving the Orchicon API. Generated
@@ -92,6 +95,18 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// human task completion).
 	recoverySvc := recovery.NewService(deps.Pool, deps.Log, deps.RecoveryEngine, deps.Subscriber)
 	mux.Handle(apiv1connect.NewRecoveryServiceHandler(recoverySvc))
+
+	// TelemetryService (docs/07 §3.9, docs/08 §5). Proxies tenant-scoped
+	// queries to SigNoz/ClickHouse so users explore traces/metrics/logs
+	// without leaving the Orchicon shell (docs/10 §11 seamless embedding).
+	telemetrySvc := telemetry.NewService(deps.Pool, deps.SigNozClient, deps.Subscriber)
+	mux.Handle(apiv1connect.NewTelemetryServiceHandler(telemetrySvc))
+
+	// AIGatewayService (docs/07 §3.10, docs/01 §2: embedded in the control
+	// plane binary). ListProviders, GetUsage, GetCost (drill-down roll-up:
+	// Tenant → Project → Task → Execution), StreamUsageEvents.
+	aiGatewaySvc := aigateway.NewService(deps.Pool, deps.Log, deps.Subscriber)
+	mux.Handle(apiv1connect.NewAIGatewayServiceHandler(aiGatewaySvc))
 
 	return middleware.ResolveTenant(mux)
 }

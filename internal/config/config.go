@@ -19,6 +19,7 @@ type Config struct {
 	PostgresDSN  string
 	NATSURL       string
 	OTelEndpoint  string
+	SigNozURL     string // SigNoz query-service root (UI + API) — docs/08 §5
 	BlobStoreDir  string
 	MigrateOnBoot bool
 
@@ -35,6 +36,7 @@ func Default() Config {
 		PostgresDSN:       env("ORCHICON_POSTGRES_DSN", "postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable"),
 		NATSURL:           env("ORCHICON_NATS_URL", "nats://localhost:4222"),
 		OTelEndpoint:      env("ORCHICON_OTEL_ENDPOINT", "localhost:4317"),
+		SigNozURL:         env("ORCHICON_SIGNOZ_URL", "http://localhost:3301"),
 		BlobStoreDir:      env("ORCHICON_BLOB_DIR", "./data/blobs"),
 		MigrateOnBoot:     envBool("ORCHICON_MIGRATE_ON_BOOT", true),
 		ReadHeaderTimeout: 10 * time.Second,

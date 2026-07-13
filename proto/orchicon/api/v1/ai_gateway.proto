@@ -1,0 +1,98 @@
+// Orchicon AI Gateway entity (docs/01_Architecture_Vision.md §2: AI Gateway
+// embedded in the control plane binary for v0.1; docs/07 §3.10;
+// docs/08 §5.2).
+//
+// The AI Gateway is the accounting + routing layer for LLM calls. In v0.1
+// the OpenCode runtime executes the actual LLM calls; the gateway records
+// usage + cost based on adapter telemetry (docs/04 §6.1 step_finish carries
+// tokens + cost). Usage is dual-written: Postgres (usage_records — source of
+// truth) + OTel metrics (orchicon_tokens_consumed, orchicon_cost_usd) →
+// ClickHouse via the OTel collector (docs/08 §1, §5.2).
+//
+// Cost attribution rolls up Tenant → Project → Task → Execution so the cost
+// explorer drills down from org-level spend to a single execution
+// (docs/10 §11).
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// UsageEvent is the live usage/cost event streamed from the AI Gateway
+// (docs/08 §5.2: orchicon_tokens_consumed, orchicon_cost_usd). Mirrors
+// the usage_records Postgres row — Postgres is source of truth,
+// telemetry is the derivative (docs/08 §1). Shared by
+// TelemetryService.StreamTelemetry and AIGatewayService.StreamUsageEvents.
+message UsageEvent {
+  string id = 1;
+  string tenant_id = 2;
+  string project_id = 3;
+  string task_id = 4;
+  string execution_id = 5;
+  string worker_id = 6;
+  string provider = 7;
+  string model = 8;
+  int64 prompt_tokens = 9;
+  int64 completion_tokens = 10;
+  int64 total_tokens = 11;
+  double cost_usd = 12;
+  google.protobuf.Timestamp occurred_at = 13;
+  string correlation_id = 14;
+}
+
+// AIProvider is a configured LLM provider known to the gateway.
+message AIProvider {
+  string id = 1;             // e.g. "anthropic", "openai", "local"
+  string name = 2;           // display name
+  bool enabled = 3;
+  repeated string models = 4; // model ids exposed by this provider
+}
+
+// UsageRecord is a single LLM usage sample recorded by the AI Gateway
+// (docs/08 §5.2). Source of truth in Postgres (usage_records table);
+// mirrored to ClickHouse as OTel metrics for fast telemetry queries.
+message UsageRecord {
+  string id = 1;
+  string tenant_id = 2;
+  string project_id = 3;
+  string task_id = 4;
+  string execution_id = 5;
+  string worker_id = 6;
+  string provider = 7;       // e.g. "anthropic"
+  string model = 8;          // e.g. "claude-sonnet-4"
+  int64 prompt_tokens = 9;
+  int64 completion_tokens = 10;
+  int64 total_tokens = 11;
+  double cost_usd = 12;      // computed from provider pricing
+  string correlation_id = 13;
+  google.protobuf.Timestamp occurred_at = 14;
+}
+
+// CostSummary is a roll-up of cost + tokens over a time window, grouped
+// at a drill-down level (docs/10 §11 cost explorer).
+message CostSummary {
+  // The drill-down level this summary aggregates at.
+  string group_by = 1;       // "tenant" | "project" | "task" | "execution" | "model"
+  string group_key = 2;      // the id/name of the group
+  string parent_key = 3;     // the parent group key (for drill-down)
+  int64 total_tokens = 4;
+  int64 prompt_tokens = 5;
+  int64 completion_tokens = 6;
+  double cost_usd = 7;
+  int32 execution_count = 8; // number of executions contributing
+  int32 record_count = 9;    // number of usage records
+  google.protobuf.Timestamp window_start = 10;
+  google.protobuf.Timestamp window_end = 11;
+  // Children for the next drill-down level (Tenant→Project→Task→Execution).
+  repeated CostSummary children = 12;
+}
+
+// UsageRollup is the roll-up granularity for cost queries.
+enum UsageRollup {
+  USAGE_ROLLUP_UNSPECIFIED = 0;
+  USAGE_ROLLUP_TENANT = 1;
+  USAGE_ROLLUP_PROJECT = 2;
+  USAGE_ROLLUP_TASK = 3;
+  USAGE_ROLLUP_EXECUTION = 4;
+  USAGE_ROLLUP_MODEL = 5;
+}

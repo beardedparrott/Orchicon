@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/api"
+	"github.com/beardedparrott/orchicon/internal/aigateway"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -97,12 +98,18 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	// through the default 6-step workflow (docs/06).
 	policyEngine := policy.New(pool, log)
 	recoveryEngine := recovery.New(pool, log)
+	// Phase 8: SigNoz proxy client (docs/08 §5). Proxies tenant-scoped
+	// queries to SigNoz/ClickHouse for the TelemetryService. Empty URL
+	// disables proxying (queries degrade gracefully — docs/08 §8).
+	signozClient := telemetry.NewSigNozClient(cfg.SigNozURL)
+	log.Info("signoz proxy configured", "url", cfg.SigNozURL)
 	deps := api.Dependencies{
 		Pool:           pool,
 		Log:            log,
 		Subscriber:     sub,
 		PolicyEngine:   policyEngine,
 		RecoveryEngine: recoveryEngine,
+		SigNozClient:   signozClient,
 	}
 	handler := api.Mount(mux, deps)
 
@@ -127,6 +134,29 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	// (docs/04 §6). If the binary is absent, the bridge runs in
 	// simulation mode for dev verification.
 	adapterBridge := opencode.New(log)
+	// Phase 8: wire the AI Gateway usage recorder into the adapter so
+	// step_finish token/cost telemetry is dual-written to Postgres
+	// (source of truth) + OTel metrics (ClickHouse) — docs/08 §5.2.
+	// The adapter calls the recorder via a closure to stay decoupled
+	// from the aigateway package (docs/04 §6.0: thin bridge).
+	usageRecorder := aigateway.NewUsageRecorder(pool, log)
+	adapterBridge.SetUsageRecorder(func(ctx context.Context, in opencode.UsageRecord) error {
+		_, err := usageRecorder.Record(ctx, aigateway.UsageInput{
+			TenantID:         in.TenantID,
+			ProjectID:        in.ProjectID,
+			TaskID:           in.TaskID,
+			ExecutionID:      in.ExecutionID,
+			WorkerID:         in.WorkerID,
+			Provider:         in.Provider,
+			Model:            in.Model,
+			PromptTokens:     in.PromptTokens,
+			CompletionTokens: in.CompletionTokens,
+			CostUSD:          in.CostUSD,
+			CorrelationID:    in.CorrelationID,
+			TraceID:          in.TraceID,
+		})
+		return err
+	})
 	taskRec := scheduler.NewTaskReconciler(pool, log, adapterBridge)
 	// Phase 7: the TaskReconciler triggers recovery when an execution
 	// fails (docs/06 §2). The RecoveryEngine satisfies the scheduler's

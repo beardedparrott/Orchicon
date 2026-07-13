@@ -25,6 +25,14 @@ export default defineConfig({
         target: "http://localhost:8080",
         changeOrigin: true,
       },
+      // SigNoz UI proxy (docs/10 §11): seamless embedding — the SigNoz
+      // iframe is served same-origin under /signoz so it shares the
+      // Orchicon shell's auth + visual language, not a separate tool.
+      "/signoz": {
+        target: "http://localhost:3301",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/signoz/, ""),
+      },
     },
   },
 });

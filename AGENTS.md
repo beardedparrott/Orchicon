@@ -316,7 +316,7 @@ platform, or `--uninstall` to test cleanup).
 | 5 | Scheduling + adapters | done | TaskReconciler (dependency resolution via recursive CTE, rule-based worker/adapter selection, dispatch flow with CAS status transitions); RuntimeAdapterService (orchicon.adapter.v1: Register/Heartbeat/Execute bistream) + public RuntimeAdapterService (ListAdapters, GetAdapterCapabilities); ExecutionService (Get/List/StreamExecutionEvents via NATS fan-out, Pause/Resume/Cancel/CheckpointNow, ApproveToolCall Tier 2 per-tool-call gating); OpenCode adapter bridge (CLI subprocess wrapper, stdout JSON → telemetry events, simulation mode for dev); Atlas migrations (runtime_adapters, worker_executions, checkpoints) with RLS; frontend execution live view (streaming telemetry, manual controls), tool-call approval dialog, adapter registry |
 | 6 | Workflows | done | WorkflowService (CreateWorkflow, UpdateWorkflowVersion, PublishWorkflow, DeprecateWorkflow, GetWorkflow, ListWorkflows, ListWorkflowVersions, StartWorkflow, AbortWorkflow, GetWorkflowRun, ListWorkflowRuns, GetWorkflowStepRuns, StreamWorkflowEvents, AcquireEditLock/ReleaseEditLock/GetEditLock) + WorkflowReconciler (step DAG progression, gate evaluation — Rego pass-through pending Phase 7, task-step→WorkItem handoff to TaskReconciler) + step types (task/decision/approval/parallel/recover); Atlas migrations (workflows, workflow_versions, workflow_runs, workflow_step_runs) with RLS; frontend full visual drag-and-drop React Flow editor (draggable Worker tiles, gate/decision/approval/parallel/recover step nodes, wire connections, inline property editing, undo/redo, client-side cycle-detection validation, edit lock banner) + workflow run view (live step-transition overlay on canvas, streaming event feed) + list + create form; manager scan pass (Reconcile with empty key) so both reconcilers discover work; TaskReconciler transitions WorkItem to succeeded/failed on execution result; dev adapter heartbeat renewal |
 | 7 | Recovery + Policy | done | PolicyService (CreatePolicy, PublishPolicy, SupersedePolicy, GetPolicy, ListPolicies, ListPolicyVersions, UpdatePolicyVersion, EvaluatePolicy dry-run, ExplainDecision by decision_id/trace_id, ListDecisions, GetDecision) + Rego Policy Engine (OPA v1: bundle loading from Postgres, narrowest-scope-first + first-definitive-decision-wins, Rego trace capture for ExplainDecision, CompileModule at publish, EvaluateGate at the dispatch decision point — wired into WorkflowReconciler gate, fail-open governance floor); RecoveryService (TriggerRecovery, CancelRecovery, GetRecovery, ListRecoveries, GetRecoveryStepRuns, StreamRecoveryEvents, ApproveContinuationPlan, RejectContinuationPlan, GetContinuationPlan, MarkTaskSucceeded) + RecoveryReconciler (default 6-step workflow: capture→summarize→preserve→review→plan→resume; checkpoint vs summarize-resume selection; bounded auto-relax 25%/150% thresholds; escalation L1→L2→L3; Reviewer/human task completion); TaskReconciler triggers recovery on execution failure (opt-out, idempotent); Atlas migrations (policies, policy_versions, policy_decisions, recovery_executions, recovery_step_runs, continuation_plans) with RLS; opencode adapter simulation mode now explicit opt-in (ORCHICON_SIMULATE_ADAPTER=1) — no silent fallback (real runtime calls with free model); frontend policy editor (Rego module + decision point/scope/effect + dry-run test pane + decision log) + rich recovery timeline (full narrative why/what/how/where/when per step, continuation-plan approval, MarkTaskSucceeded, live event feed) + lists + create form; verified end-to-end with real opencode dispatch on opencode/deepseek-v4-flash-free (recovery progressed to RESUMED) |
-| 8 | Telemetry + Cost | not started | OTel pipeline, SigNoz integration, cost attribution + frontend SigNoz embedding, cost explorer |
+| 8 | Telemetry + Cost | done | OTel pipeline finalized with `correlation_id` propagation (baggage + span attribute) across API→reconciler→adapter→AI Gateway (docs/08 §3, §5.1); middleware generates + echoes `x-orchicon-correlation-id`; TelemetryService (QueryTraces/Metrics/Logs proxy to SigNoz/ClickHouse with tenant-scoped filters injected from context, StreamTelemetry fans out usage events from NATS, GetDashboard custom Orchicon roll-up); AIGatewayService (ListProviders, GetUsage, GetCost with drill-down roll-up Tenant→Project→Task→Execution, StreamUsageEvents); usage_records dual-write (Postgres source of truth + OTel metrics `orchicon_tokens_consumed`/`orchicon_cost_usd` → ClickHouse) recorded by the opencode adapter on `step_finish`; Atlas migration (usage_records) with RLS; config `ORCHICON_SIGNOZ_URL`; frontend telemetry hub (tabbed: Overview dashboard + custom cost explorer with Tenant→Project→Task→Execution drill-down + embedded SigNoz traces/metrics/logs via same-origin `/signoz` proxy — seamless embedding inside the Orchicon shell) |
 | 9 | Auth + Webhooks + Polish | not started | OIDC, API keys, RBAC, webhooks, edit locks + frontend auth flow, end-to-end integration |
 
 ### Cross-cutting notes
@@ -429,3 +429,30 @@ platform, or `--uninstall` to test cleanup).
   `opencode/deepseek-v4-flash-free` + a triggered recovery progressed
   through all 6 steps to `RECOVERY_STATUS_RESUMED`, with the full timeline
   narrative (why/what/how/where/when per step) visible in the UI.
+- **Phase 8**: The OTel pipeline now propagates a `correlation_id` across
+  the whole user action (docs/08 §3, §5.1): the API middleware extracts
+  it from baggage or generates one, records it as a span attribute, and
+  echoes it back via the `x-orchicon-correlation-id` response header so
+  clients can join logs/telemetry to the originating request. Downstream
+  spans (reconciler, adapter, gateway) inherit it via the propagated
+  context — `telemetry.StartSpan` / `RecordCorrelation` are the helpers.
+  TelemetryService proxies tenant-scoped queries to SigNoz/ClickHouse
+  (docs/07 §3.9): the `tenant_id` filter is injected from the request
+  context, never trusted from the client (AGENTS.md tenant isolation).
+  When the SigNoz backend is unreachable, query methods return
+  `degraded=true` rather than erroring (docs/08 §8: telemetry loss never
+  blocks control flow). The frontend embeds the SigNoz UI same-origin
+  under `/signoz` (Vite proxy in dev) so it lives inside the Orchicon
+  shell — same auth, same visual language (docs/10 §11). The AI Gateway
+  (embedded in the control plane binary — docs/01 §2) records LLM usage
+  from the opencode adapter's `step_finish` events: the adapter calls a
+  `UsageRecorderFunc` (decoupled via a function type so the adapter has
+  no import dependency on the gateway) which performs the dual-write —
+  Postgres `usage_records` (source of truth, RLS) + OTel metrics
+  `orchicon_tokens_consumed` / `orchicon_cost_usd` → ClickHouse via the
+  OTel collector (docs/08 §5.2). Cost attribution rolls up
+  Tenant→Project→Task→Execution (GetCost with `UsageRollup` granularity).
+  Note: the zero-time window sentinel in the data-access layer uses
+  `<= 'epoch'::timestamptz` so Go's `time.Time{}` (year 1) is treated as
+  "no bound" — `'epoch'` alone did not match year 1 and silently excluded
+  all rows.

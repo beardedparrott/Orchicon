@@ -132,6 +132,16 @@ func Meter() otelmetric.Meter {
 func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := otel.GetTextMapPropagator().Extract(r.Context(), headerCarrier(r.Header))
+		// Phase 8: ensure a correlation_id propagates across the whole
+		// user action (API → reconciler → adapter → AI Gateway — docs/08
+		// §3, §5.1). Extract from baggage if present (injected by an
+		// upstream caller); otherwise generate one and inject into baggage
+		// so all downstream spans carry it.
+		correlationID := CorrelationIDFromContext(ctx)
+		if correlationID == "" {
+			correlationID = newCorrelationID()
+			ctx = WithCorrelationID(ctx, correlationID)
+		}
 		route := r.URL.Path
 		if route == "" {
 			route = "/"
@@ -140,9 +150,15 @@ func Middleware(next http.Handler) http.Handler {
 			trace.WithAttributes(
 				attribute.String("http.method", r.Method),
 				attribute.String("http.route", route),
+				attribute.String(CorrelationIDKey, correlationID),
 			),
 		)
 		defer span.End()
+
+		// Propagate the correlation_id back to the caller via the
+		// response header so clients can join logs/telemetry to the
+		// originating request (docs/08 §6).
+		w.Header().Set("x-orchicon-correlation-id", correlationID)
 
 		sw := &statusWriter{ResponseWriter: w, status: 200}
 		next.ServeHTTP(sw, r.WithContext(ctx))
