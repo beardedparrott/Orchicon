@@ -112,8 +112,10 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	// simulation mode for dev verification.
 	adapterBridge := opencode.New(log)
 	taskRec := scheduler.NewTaskReconciler(pool, log, adapterBridge)
+	workflowRec := scheduler.NewWorkflowReconciler(pool, log)
 	s.rcmgr = reconciler.NewManager(pool, log)
 	s.rcmgr.Register(taskRec)
+	s.rcmgr.Register(workflowRec)
 
 	// Seed an in-process OpenCode adapter registration so the
 	// TaskReconciler can find a ready adapter for dispatch (docs/04 §6.3:

@@ -57,11 +57,32 @@ func (r *TaskReconciler) Kind() string { return "task" }
 //
 // The reconciler is driven by the manager's work queue, which enqueues
 // ready tasks. When called with an empty key, it scans for ready tasks
-// (used by the poll loop when the queue is empty).
+// and dispatches them (docs/03 §4) — this is the scan pass the manager
+// invokes when the queue is empty, which lets workflow task steps (and
+// any other ready task) get dispatched without an explicit enqueue path.
 func (r *TaskReconciler) Reconcile(ctx context.Context, key string) reconciler.Result {
 	if key == "" {
-		// Scan pass: find ready tasks and let the manager enqueue them.
-		// This is a no-op here; the poll loop handles scanning.
+		// Scan pass: find ready tasks and dispatch each (docs/03 §4).
+		// Limited to a batch per tick so one scan doesn't monopolize the
+		// reconciler goroutine. v0.1: single dev tenant.
+		tenantID := "tnt_dev"
+		ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+		if err != nil {
+			return reconciler.Result{Error: err}
+		}
+		ready, err := db.ListReadyTasks(ctx, ttx.Tx, tenantID)
+		ttx.Rollback(ctx)
+		if err != nil {
+			return reconciler.Result{Error: fmt.Errorf("scan ready tasks: %w", err)}
+		}
+		for i, task := range ready {
+			if i >= 16 {
+				break
+			}
+			if err := r.reconcileOne(ctx, task.ID); err != nil {
+				r.log.Warn("scan: dispatch ready task failed", "task", task.ID, "error", err)
+			}
+		}
 		return reconciler.Result{}
 	}
 	if err := r.reconcileOne(ctx, key); err != nil {

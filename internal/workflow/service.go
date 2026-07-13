@@ -690,11 +690,12 @@ func (s *Service) GetEditLock(ctx context.Context, req *connect.Request[apiv1.Ge
 
 // --- helpers ---------------------------------------------------------------
 
-// stepWire is the JSON shape of a Step stored in workflow_versions.steps
+// StepWire is the JSON shape of a Step stored in workflow_versions.steps
 // (mirrors the proto Step message — docs/02 §2.4). Used to parse the
 // steps JSON when seeding step runs and when the reconciler progresses
-// the DAG.
-type stepWire struct {
+// the DAG. Exported so the WorkflowReconciler (internal/scheduler) can
+// parse the same shape without duplicating the schema.
+type StepWire struct {
 	ID            string   `json:"id"`
 	Name          string   `json:"name"`
 	Kind          string   `json:"kind"`
@@ -707,17 +708,23 @@ type stepWire struct {
 	PositionY     float64  `json:"position_y"`
 }
 
-// parseSteps decodes the steps JSON (an array of Step messages) into a
-// slice of stepWire. Returns an empty slice for empty/null input.
-func parseSteps(data []byte) ([]stepWire, error) {
+// ParseSteps decodes the steps JSON (an array of Step messages) into a
+// slice of StepWire. Returns an empty slice for empty/null input.
+// Exported for use by the WorkflowReconciler.
+func ParseSteps(data []byte) ([]StepWire, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
-	var steps []stepWire
+	var steps []StepWire
 	if err := json.Unmarshal(data, &steps); err != nil {
 		return nil, fmt.Errorf("unmarshal steps: %w", err)
 	}
 	return steps, nil
+}
+
+// parseSteps is the internal alias used by the service handler.
+func parseSteps(data []byte) ([]StepWire, error) {
+	return ParseSteps(data)
 }
 
 // enqueueWorkflowEvent builds a workflow event envelope, encodes it as

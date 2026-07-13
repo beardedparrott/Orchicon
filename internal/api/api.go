@@ -18,6 +18,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/project"
 	"github.com/beardedparrott/orchicon/internal/version"
 	"github.com/beardedparrott/orchicon/internal/worker"
+	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/beardedparrott/orchicon/internal/workitem"
 )
 
@@ -69,6 +70,12 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// approval (docs/05 §7.1).
 	execSvc := execution.New(deps.Pool, deps.Log, deps.Subscriber)
 	mux.Handle(apiv1connect.NewExecutionServiceHandler(execSvc))
+
+	// WorkflowService (docs/07 §3.4). Workflow CRUD + versioning
+	// lifecycle (publish/deprecate) + runs (start/abort) + streaming +
+	// edit locks for the visual Workflow editor.
+	workflowSvc := workflow.New(deps.Pool, deps.Log, deps.Subscriber)
+	mux.Handle(apiv1connect.NewWorkflowServiceHandler(workflowSvc))
 
 	return middleware.ResolveTenant(mux)
 }
