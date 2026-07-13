@@ -1,0 +1,102 @@
+// Orchicon WebhookService.
+//
+// Event-delivery subscriptions (docs/07 §3.11, docs/09 §3.9). The
+// dispatcher is a NATS consumer that POSTs matching events to
+// registered endpoints with HMAC signing + exponential backoff
+// retries; dead-lettered events are queryable and replayable.
+//
+// Subscriptions are tenant-scoped; the filter is an event-type glob
+// (e.g. "project.*" or "*" for all). The secret is used to HMAC-sign
+// the delivered payload so receivers can verify authenticity.
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "orchicon/api/v1/auth.proto";
+
+service WebhookService {
+  rpc CreateSubscription(CreateSubscriptionRequest) returns (CreateSubscriptionResponse);
+  rpc GetSubscription(GetSubscriptionRequest) returns (GetSubscriptionResponse);
+  rpc ListSubscriptions(ListSubscriptionsRequest) returns (ListSubscriptionsResponse);
+  rpc UpdateSubscription(UpdateSubscriptionRequest) returns (UpdateSubscriptionResponse);
+  rpc DeleteSubscription(DeleteSubscriptionRequest) returns (DeleteSubscriptionResponse);
+  rpc TestSubscription(TestSubscriptionRequest) returns (TestSubscriptionResponse);
+  rpc ListDeliveries(ListDeliveriesRequest) returns (ListDeliveriesResponse);
+  rpc ReplayDelivery(ReplayDeliveryRequest) returns (ReplayDeliveryResponse);
+  rpc StreamSubscriptionDeliveries(StreamSubscriptionDeliveriesRequest) returns (stream StreamSubscriptionDeliveriesResponse);
+}
+
+message CreateSubscriptionRequest {
+  string tenant_id = 1;
+  string name = 2;
+  string target_url = 3;
+  string event_filter = 4; // event-type glob, e.g. "project.*" or "*"
+  string scope = 5; // "tenant" | "project"
+  string scope_ref = 6;
+  string secret = 7; // HMAC secret; server stores a hint + full secret hash
+  int32 max_retries = 8;
+}
+message CreateSubscriptionResponse {
+  WebhookSubscription subscription = 1;
+}
+message GetSubscriptionRequest {
+  string id = 1;
+}
+message GetSubscriptionResponse {
+  WebhookSubscription subscription = 1;
+}
+message ListSubscriptionsRequest {
+  string tenant_id = 1;
+  string page_token = 2;
+  int32 page_size = 3;
+}
+message ListSubscriptionsResponse {
+  repeated WebhookSubscription subscriptions = 1;
+  string next_page_token = 2;
+}
+message UpdateSubscriptionRequest {
+  string id = 1;
+  optional string target_url = 2;
+  optional string event_filter = 3;
+  optional string status = 4; // "active" | "paused"
+  optional int32 max_retries = 5;
+}
+message UpdateSubscriptionResponse {
+  WebhookSubscription subscription = 1;
+}
+message DeleteSubscriptionRequest {
+  string id = 1;
+}
+message DeleteSubscriptionResponse {}
+message TestSubscriptionRequest {
+  string id = 1;
+}
+message TestSubscriptionResponse {
+  WebhookDelivery delivery = 1;
+}
+message ListDeliveriesRequest {
+  string tenant_id = 1;
+  string subscription_id = 2; // optional filter
+  string status = 3; // optional filter: delivered | retrying | dead_letter
+  string page_token = 4;
+  int32 page_size = 5;
+}
+message ListDeliveriesResponse {
+  repeated WebhookDelivery deliveries = 1;
+  string next_page_token = 2;
+}
+message ReplayDeliveryRequest {
+  string id = 1; // delivery id to re-enqueue
+}
+message ReplayDeliveryResponse {
+  WebhookDelivery delivery = 1;
+}
+message StreamSubscriptionDeliveriesRequest {
+  string tenant_id = 1;
+  optional string subscription_id = 2;
+  optional string from_sequence = 3;
+}
+message StreamSubscriptionDeliveriesResponse {
+  WebhookDelivery delivery = 1;
+  int64 sequence = 2;
+}

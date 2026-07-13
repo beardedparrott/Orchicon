@@ -1,0 +1,161 @@
+// Orchicon AuthService + WebhookService message types.
+//
+// Auth: API keys (hashed, scoped entitlements), identity info, RBAC
+// roles + role bindings, and audit (policy decisions projected from the
+// Policy Engine — docs/07 §3.5, §3.12). OIDC login is handled
+// out-of-band via HTTP endpoints (docs/07 §6.1); this service manages
+// issued tokens/keys and entitlements.
+//
+// Webhooks: event subscriptions (filter + target + retry + dead-letter),
+// delivery attempts (docs/07 §3.11, docs/09 §3.9). The dispatcher is a
+// NATS consumer that POSTs to registered endpoints with exponential
+// backoff; dead-lettered events are queryable and replayable.
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// ---------------------------------------------------------------------------
+// Identity & Tenancy (RBAC)
+// ---------------------------------------------------------------------------
+
+// Tenant is the root of multi-tenancy isolation (docs/09 §3.1).
+message Tenant {
+  string id = 1;
+  string slug = 2;
+  string name = 3;
+  string status = 4;
+  string budget_envelope = 5; // JSON
+  int32 version = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+// Identity is a user (OIDC subject) or service account within a tenant
+// (docs/09 §3.1). Identities are provisioned on first OIDC login or by
+// an admin for service accounts.
+message Identity {
+  string id = 1;
+  string tenant_id = 2;
+  string subject = 3; // OIDC subject (sub) for humans; synthetic for service accounts
+  string display_name = 4;
+  string status = 5;
+  string identity_type = 6; // "user" | "service"
+  int32 version = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+}
+
+// Role is a named bundle of entitlements (resource:action pairs), scoped
+// to a tenant and optionally to a project (docs/07 §6.2).
+message Role {
+  string id = 1;
+  string tenant_id = 2;
+  string name = 3;
+  string scope = 4; // "tenant" | "project"
+  string scope_ref = 5; // project id when scope=project
+  repeated string entitlements = 6; // e.g. ["project:create", "worker:publish"]
+  int32 version = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+}
+
+// RoleBinding attaches a Role to an Identity within a scope (docs/07 §6.2).
+message RoleBinding {
+  string id = 1;
+  string tenant_id = 2;
+  string identity_id = 3;
+  string role_id = 4;
+  string scope = 5; // "tenant" | "project"
+  string scope_ref = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+// ApiKey is a hashed, scoped machine credential (docs/07 §6.1). The
+// plaintext key is returned exactly once at creation; only the hash is
+// stored. Entitlements are derived from the key's scope + bound roles.
+message ApiKey {
+  string id = 1;
+  string tenant_id = 2;
+  string identity_id = 3;
+  string name = 4;
+  string prefix = 5; // first 8 chars of the plaintext key, for identification
+  repeated string scopes = 6; // narrowest entitlements granted to this key
+  string status = 7; // "active" | "revoked"
+  google.protobuf.Timestamp last_used_at = 8;
+  int32 version = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+}
+
+// ApiKeySecret is the one-time plaintext key returned only on
+// CreateApiKey / RotateApiKey. The server discards it after the
+// response; only the hash is persisted (AGENTS.md security standards).
+message ApiKeySecret {
+  string id = 1;
+  string key = 2; // full plaintext key — shown once
+}
+
+// Entitlement is a resource:action pair an identity may perform
+// (docs/07 §6.2). The RBAC middleware checks these per-call.
+message Entitlement {
+  string resource = 1; // e.g. "project", "worker", "*"
+  string action = 2;  // e.g. "create", "publish", "*"
+}
+
+// AuditEntry is a projected policy decision used by the admin audit
+// view (docs/07 §3.5 ExplainDecision, docs/09 §3.5 policy_decisions).
+message AuditEntry {
+  string id = 1;
+  string tenant_id = 2;
+  string decision_point = 3;
+  string effect = 4;
+  string actor_type = 5;
+  string actor_id = 6;
+  string target_type = 7;
+  string target_id = 8;
+  string trace_id = 9;
+  string error = 10;
+  google.protobuf.Timestamp occurred_at = 11;
+}
+
+// ---------------------------------------------------------------------------
+// Webhooks
+// ---------------------------------------------------------------------------
+
+// WebhookSubscription is an event-delivery target (docs/07 §3.11,
+// docs/09 §3.9). The dispatcher is a NATS consumer that POSTs matching
+// events to target_url with HMAC signing + exponential backoff retries;
+// events that exceed the retry budget are dead-lettered.
+message WebhookSubscription {
+  string id = 1;
+  string tenant_id = 2;
+  string name = 3;
+  string target_url = 4;
+  string event_filter = 5; // event-type glob, e.g. "project.*" or "*" (all)
+  string scope = 6; // "tenant" | "project"
+  string scope_ref = 7; // project id when scope=project
+  string secret_hint = 8; // first 6 chars of the HMAC secret, for identification
+  int32 max_retries = 9;
+  string status = 10; // "active" | "paused" | "deleted"
+  int32 version = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+}
+
+// WebhookDelivery is an attempt to deliver an event to a subscription
+// (docs/07 §3.11 StreamSubscriptionDeliveries). Dead-lettered events
+// (status=dead_letter) are replayable via ReplayDelivery.
+message WebhookDelivery {
+  string id = 1;
+  string tenant_id = 2;
+  string subscription_id = 3;
+  string event_id = 4;
+  string event_type = 5;
+  int32 attempt = 6;
+  int32 status_code = 7;
+  string status = 8; // "delivered" | "retrying" | "dead_letter"
+  string error = 9;
+  google.protobuf.Timestamp occurred_at = 10;
+}
