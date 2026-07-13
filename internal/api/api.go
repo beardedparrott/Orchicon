@@ -15,6 +15,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/middleware"
 	"github.com/beardedparrott/orchicon/internal/project"
 	"github.com/beardedparrott/orchicon/internal/version"
+	"github.com/beardedparrott/orchicon/internal/worker"
+	"github.com/beardedparrott/orchicon/internal/workitem"
 )
 
 // Dependencies bundles the resources the API layer needs. Constructed
@@ -44,6 +46,16 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// so no CORS headers are needed in dev (docs/10 §9).
 	projSvc := project.New(deps.Pool, deps.Log, deps.Subscriber)
 	mux.Handle(apiv1connect.NewProjectServiceHandler(projSvc))
+
+	// WorkerService (docs/07 §3.3). Worker CRUD + versioning lifecycle
+	// (publish/deprecate/retire) + edit locks for the visual editor.
+	workerSvc := worker.New(deps.Pool, deps.Log)
+	mux.Handle(apiv1connect.NewWorkerServiceHandler(workerSvc))
+
+	// WorkItemService (docs/07 §3.2). Work item CRUD + dependency DAG
+	// (recursive CTE cycle detection — docs/09 §11) + worker assignment.
+	workItemSvc := workitem.New(deps.Pool, deps.Log)
+	mux.Handle(apiv1connect.NewWorkItemServiceHandler(workItemSvc))
 
 	return middleware.ResolveTenant(mux)
 }
