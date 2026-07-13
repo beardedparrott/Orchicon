@@ -12,11 +12,14 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as WorkflowsRouteImport } from './routes/workflows'
 import { Route as WorkersRouteImport } from './routes/workers'
 import { Route as WorkItemsRouteImport } from './routes/work-items'
+import { Route as WebhooksRouteImport } from './routes/webhooks'
 import { Route as TelemetryRouteImport } from './routes/telemetry'
 import { Route as RecoveryRouteImport } from './routes/recovery'
 import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as PoliciesRouteImport } from './routes/policies'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as ExecutionsRouteImport } from './routes/executions'
+import { Route as AdminRouteImport } from './routes/admin'
 import { Route as AdaptersRouteImport } from './routes/adapters'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as WorkflowsNewRouteImport } from './routes/workflows.new'
@@ -32,6 +35,7 @@ import { Route as ProjectsIdRouteImport } from './routes/projects.$id'
 import { Route as PoliciesNewRouteImport } from './routes/policies.new'
 import { Route as PoliciesIdRouteImport } from './routes/policies.$id'
 import { Route as ExecutionsIdRouteImport } from './routes/executions.$id'
+import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
 import { Route as WorkflowsIdRunsRunIdRouteImport } from './routes/workflows.$id.runs.$runId'
 
 const WorkflowsRoute = WorkflowsRouteImport.update({
@@ -47,6 +51,11 @@ const WorkersRoute = WorkersRouteImport.update({
 const WorkItemsRoute = WorkItemsRouteImport.update({
   id: '/work-items',
   path: '/work-items',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const WebhooksRoute = WebhooksRouteImport.update({
+  id: '/webhooks',
+  path: '/webhooks',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TelemetryRoute = TelemetryRouteImport.update({
@@ -69,9 +78,19 @@ const PoliciesRoute = PoliciesRouteImport.update({
   path: '/policies',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ExecutionsRoute = ExecutionsRouteImport.update({
   id: '/executions',
   path: '/executions',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminRoute = AdminRouteImport.update({
+  id: '/admin',
+  path: '/admin',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AdaptersRoute = AdaptersRouteImport.update({
@@ -149,6 +168,11 @@ const ExecutionsIdRoute = ExecutionsIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => ExecutionsRoute,
 } as any)
+const AuthCallbackRoute = AuthCallbackRouteImport.update({
+  id: '/auth/callback',
+  path: '/auth/callback',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const WorkflowsIdRunsRunIdRoute = WorkflowsIdRunsRunIdRouteImport.update({
   id: '/runs/$runId',
   path: '/runs/$runId',
@@ -158,14 +182,18 @@ const WorkflowsIdRunsRunIdRoute = WorkflowsIdRunsRunIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/adapters': typeof AdaptersRoute
+  '/admin': typeof AdminRoute
   '/executions': typeof ExecutionsRouteWithChildren
+  '/login': typeof LoginRoute
   '/policies': typeof PoliciesRouteWithChildren
   '/projects': typeof ProjectsRouteWithChildren
   '/recovery': typeof RecoveryRouteWithChildren
   '/telemetry': typeof TelemetryRoute
+  '/webhooks': typeof WebhooksRoute
   '/work-items': typeof WorkItemsRouteWithChildren
   '/workers': typeof WorkersRouteWithChildren
   '/workflows': typeof WorkflowsRouteWithChildren
+  '/auth/callback': typeof AuthCallbackRoute
   '/executions/$id': typeof ExecutionsIdRoute
   '/policies/$id': typeof PoliciesIdRoute
   '/policies/new': typeof PoliciesNewRoute
@@ -184,14 +212,18 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/adapters': typeof AdaptersRoute
+  '/admin': typeof AdminRoute
   '/executions': typeof ExecutionsRouteWithChildren
+  '/login': typeof LoginRoute
   '/policies': typeof PoliciesRouteWithChildren
   '/projects': typeof ProjectsRouteWithChildren
   '/recovery': typeof RecoveryRouteWithChildren
   '/telemetry': typeof TelemetryRoute
+  '/webhooks': typeof WebhooksRoute
   '/work-items': typeof WorkItemsRouteWithChildren
   '/workers': typeof WorkersRouteWithChildren
   '/workflows': typeof WorkflowsRouteWithChildren
+  '/auth/callback': typeof AuthCallbackRoute
   '/executions/$id': typeof ExecutionsIdRoute
   '/policies/$id': typeof PoliciesIdRoute
   '/policies/new': typeof PoliciesNewRoute
@@ -211,14 +243,18 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/adapters': typeof AdaptersRoute
+  '/admin': typeof AdminRoute
   '/executions': typeof ExecutionsRouteWithChildren
+  '/login': typeof LoginRoute
   '/policies': typeof PoliciesRouteWithChildren
   '/projects': typeof ProjectsRouteWithChildren
   '/recovery': typeof RecoveryRouteWithChildren
   '/telemetry': typeof TelemetryRoute
+  '/webhooks': typeof WebhooksRoute
   '/work-items': typeof WorkItemsRouteWithChildren
   '/workers': typeof WorkersRouteWithChildren
   '/workflows': typeof WorkflowsRouteWithChildren
+  '/auth/callback': typeof AuthCallbackRoute
   '/executions/$id': typeof ExecutionsIdRoute
   '/policies/$id': typeof PoliciesIdRoute
   '/policies/new': typeof PoliciesNewRoute
@@ -239,14 +275,18 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/adapters'
+    | '/admin'
     | '/executions'
+    | '/login'
     | '/policies'
     | '/projects'
     | '/recovery'
     | '/telemetry'
+    | '/webhooks'
     | '/work-items'
     | '/workers'
     | '/workflows'
+    | '/auth/callback'
     | '/executions/$id'
     | '/policies/$id'
     | '/policies/new'
@@ -265,14 +305,18 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/adapters'
+    | '/admin'
     | '/executions'
+    | '/login'
     | '/policies'
     | '/projects'
     | '/recovery'
     | '/telemetry'
+    | '/webhooks'
     | '/work-items'
     | '/workers'
     | '/workflows'
+    | '/auth/callback'
     | '/executions/$id'
     | '/policies/$id'
     | '/policies/new'
@@ -291,14 +335,18 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/adapters'
+    | '/admin'
     | '/executions'
+    | '/login'
     | '/policies'
     | '/projects'
     | '/recovery'
     | '/telemetry'
+    | '/webhooks'
     | '/work-items'
     | '/workers'
     | '/workflows'
+    | '/auth/callback'
     | '/executions/$id'
     | '/policies/$id'
     | '/policies/new'
@@ -318,14 +366,18 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AdaptersRoute: typeof AdaptersRoute
+  AdminRoute: typeof AdminRoute
   ExecutionsRoute: typeof ExecutionsRouteWithChildren
+  LoginRoute: typeof LoginRoute
   PoliciesRoute: typeof PoliciesRouteWithChildren
   ProjectsRoute: typeof ProjectsRouteWithChildren
   RecoveryRoute: typeof RecoveryRouteWithChildren
   TelemetryRoute: typeof TelemetryRoute
+  WebhooksRoute: typeof WebhooksRoute
   WorkItemsRoute: typeof WorkItemsRouteWithChildren
   WorkersRoute: typeof WorkersRouteWithChildren
   WorkflowsRoute: typeof WorkflowsRouteWithChildren
+  AuthCallbackRoute: typeof AuthCallbackRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -349,6 +401,13 @@ declare module '@tanstack/react-router' {
       path: '/work-items'
       fullPath: '/work-items'
       preLoaderRoute: typeof WorkItemsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/webhooks': {
+      id: '/webhooks'
+      path: '/webhooks'
+      fullPath: '/webhooks'
+      preLoaderRoute: typeof WebhooksRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/telemetry': {
@@ -379,11 +438,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PoliciesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/executions': {
       id: '/executions'
       path: '/executions'
       fullPath: '/executions'
       preLoaderRoute: typeof ExecutionsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin': {
+      id: '/admin'
+      path: '/admin'
+      fullPath: '/admin'
+      preLoaderRoute: typeof AdminRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/adapters': {
@@ -490,6 +563,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/executions/$id'
       preLoaderRoute: typeof ExecutionsIdRouteImport
       parentRoute: typeof ExecutionsRoute
+    }
+    '/auth/callback': {
+      id: '/auth/callback'
+      path: '/auth/callback'
+      fullPath: '/auth/callback'
+      preLoaderRoute: typeof AuthCallbackRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/workflows/$id/runs/$runId': {
       id: '/workflows/$id/runs/$runId'
@@ -611,14 +691,18 @@ const WorkflowsRouteWithChildren = WorkflowsRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdaptersRoute: AdaptersRoute,
+  AdminRoute: AdminRoute,
   ExecutionsRoute: ExecutionsRouteWithChildren,
+  LoginRoute: LoginRoute,
   PoliciesRoute: PoliciesRouteWithChildren,
   ProjectsRoute: ProjectsRouteWithChildren,
   RecoveryRoute: RecoveryRouteWithChildren,
   TelemetryRoute: TelemetryRoute,
+  WebhooksRoute: WebhooksRoute,
   WorkItemsRoute: WorkItemsRouteWithChildren,
   WorkersRoute: WorkersRouteWithChildren,
   WorkflowsRoute: WorkflowsRouteWithChildren,
+  AuthCallbackRoute: AuthCallbackRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
