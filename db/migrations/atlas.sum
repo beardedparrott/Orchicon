@@ -1,4 +1,5 @@
-h1:uC1ypKVhR95p7DldLJi3f/rKZMTRnAFjB6o5BsRgZc8=
+h1:7Hys/O6Y/jUs9QAfyiEilHHC9lGHz/JoR06E6zVBWaI=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712223028_add_outbox.sql h1:tlrMIs8ABXFMszWNaYd7gxjn3p42rmqrZeoxOJ1Vqvg=
 20260713012808_workers_workitems.sql h1:3li9AejCZaj9bcZz8wKOw0GG7UER3Uz9jbSNKF74Zo8=
+20260713054640_scheduling_adapters.sql h1:y0/9A2LB+wbK3xUll+oV/NsfhCx2rHj1ESCbQcI8WVE=

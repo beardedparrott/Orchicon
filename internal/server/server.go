@@ -18,9 +18,12 @@ import (
 	"github.com/beardedparrott/orchicon/internal/api"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
+	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/outbox"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
+	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
 )
@@ -101,10 +104,21 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		s.relay = outbox.NewRelay(pool, pub, log)
 	}
 
-	// Reconciler framework (docs/03 §2). Concrete reconcilers arrive
-	// in later phases; the framework ships now: work queue, per-kind
-	// leadership via Postgres advisory locks, graceful shutdown.
+	// Reconciler framework (docs/03 §2). Phase 5 registers the
+	// TaskReconciler — the control loop that dispatches ready tasks to
+	// runtime adapters (docs/03 §4). The OpenCode adapter bridge is the
+	// CLI subprocess wrapper that drives the `opencode` binary
+	// (docs/04 §6). If the binary is absent, the bridge runs in
+	// simulation mode for dev verification.
+	adapterBridge := opencode.New(log)
+	taskRec := scheduler.NewTaskReconciler(pool, log, adapterBridge)
 	s.rcmgr = reconciler.NewManager(pool, log)
+	s.rcmgr.Register(taskRec)
+
+	// Seed an in-process OpenCode adapter registration so the
+	// TaskReconciler can find a ready adapter for dispatch (docs/04 §6.3:
+	// in-process adapter for dev only). Idempotent.
+	seedDevAdapter(context.Background(), pool, log)
 
 	return s, nil
 }
@@ -166,4 +180,57 @@ func (s *Server) shutdownOTel() {
 	if s.otel != nil {
 		s.otel.Shutdown(context.Background())
 	}
+}
+
+// seedDevAdapter registers an in-process OpenCode adapter so the
+// TaskReconciler can find a ready adapter for dispatch during local
+// development (docs/04 §6.3: "for local dev, an in-process adapter is
+// supported for tests only, never production"). Idempotent — re-runs
+// on every boot update the heartbeat timestamp.
+func seedDevAdapter(ctx context.Context, pool *db.Pool, log *slog.Logger) {
+	tenantID := "tnt_dev"
+	adapterID := "adp_opencode_dev"
+	capabilities := `{"model_providers":["anthropic","openai","local"],"tools":["file_edit","terminal","web_fetch","git"],"context":["file_index"],"telemetry":["tool_calls_streamed","file_diffs"],"execution":["checkpoint","pause_resume","cancellation"]}`
+
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		log.Warn("seed dev adapter: begin tx failed", "error", err)
+		return
+	}
+	defer ttx.Rollback(ctx)
+
+	// Check if adapter already exists.
+	_, err = db.GetAdapter(ctx, ttx.Tx, tenantID, adapterID)
+	if err == nil {
+		// Already registered — just heartbeat.
+		if err := db.HeartbeatAdapter(ctx, ttx.Tx, tenantID, adapterID, []byte(capabilities)); err != nil {
+			log.Warn("seed dev adapter: heartbeat failed", "error", err)
+			return
+		}
+		if err := ttx.Commit(ctx); err != nil {
+			log.Warn("seed dev adapter: commit failed", "error", err)
+		}
+		return
+	}
+
+	// Insert new adapter registration.
+	row := db.AdapterRow{
+		ID:                      adapterID,
+		TenantID:                tenantID,
+		Kind:                    "opencode",
+		Version:                 "0.1.0",
+		Endpoint:                "in-process",
+		Capabilities:            []byte(capabilities),
+		Status:                  domain.AdapterReady,
+		MaxConcurrentExecutions: 5,
+	}
+	if _, err := db.CreateAdapter(ctx, ttx.Tx, row); err != nil {
+		log.Warn("seed dev adapter: create failed", "error", err)
+		return
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		log.Warn("seed dev adapter: commit failed", "error", err)
+		return
+	}
+	log.Info("seeded dev opencode adapter", "id", adapterID)
 }

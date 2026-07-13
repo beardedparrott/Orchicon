@@ -12,6 +12,8 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as WorkersRouteImport } from './routes/workers'
 import { Route as WorkItemsRouteImport } from './routes/work-items'
 import { Route as ProjectsRouteImport } from './routes/projects'
+import { Route as ExecutionsRouteImport } from './routes/executions'
+import { Route as AdaptersRouteImport } from './routes/adapters'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as WorkersNewRouteImport } from './routes/workers.new'
 import { Route as WorkersIdRouteImport } from './routes/workers.$id'
@@ -20,6 +22,7 @@ import { Route as WorkItemsGraphRouteImport } from './routes/work-items.graph'
 import { Route as WorkItemsIdRouteImport } from './routes/work-items.$id'
 import { Route as ProjectsNewRouteImport } from './routes/projects.new'
 import { Route as ProjectsIdRouteImport } from './routes/projects.$id'
+import { Route as ExecutionsIdRouteImport } from './routes/executions.$id'
 
 const WorkersRoute = WorkersRouteImport.update({
   id: '/workers',
@@ -34,6 +37,16 @@ const WorkItemsRoute = WorkItemsRouteImport.update({
 const ProjectsRoute = ProjectsRouteImport.update({
   id: '/projects',
   path: '/projects',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ExecutionsRoute = ExecutionsRouteImport.update({
+  id: '/executions',
+  path: '/executions',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdaptersRoute = AdaptersRouteImport.update({
+  id: '/adapters',
+  path: '/adapters',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -76,12 +89,20 @@ const ProjectsIdRoute = ProjectsIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => ProjectsRoute,
 } as any)
+const ExecutionsIdRoute = ExecutionsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => ExecutionsRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/adapters': typeof AdaptersRoute
+  '/executions': typeof ExecutionsRouteWithChildren
   '/projects': typeof ProjectsRouteWithChildren
   '/work-items': typeof WorkItemsRouteWithChildren
   '/workers': typeof WorkersRouteWithChildren
+  '/executions/$id': typeof ExecutionsIdRoute
   '/projects/$id': typeof ProjectsIdRoute
   '/projects/new': typeof ProjectsNewRoute
   '/work-items/$id': typeof WorkItemsIdRoute
@@ -92,9 +113,12 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/adapters': typeof AdaptersRoute
+  '/executions': typeof ExecutionsRouteWithChildren
   '/projects': typeof ProjectsRouteWithChildren
   '/work-items': typeof WorkItemsRouteWithChildren
   '/workers': typeof WorkersRouteWithChildren
+  '/executions/$id': typeof ExecutionsIdRoute
   '/projects/$id': typeof ProjectsIdRoute
   '/projects/new': typeof ProjectsNewRoute
   '/work-items/$id': typeof WorkItemsIdRoute
@@ -106,9 +130,12 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/adapters': typeof AdaptersRoute
+  '/executions': typeof ExecutionsRouteWithChildren
   '/projects': typeof ProjectsRouteWithChildren
   '/work-items': typeof WorkItemsRouteWithChildren
   '/workers': typeof WorkersRouteWithChildren
+  '/executions/$id': typeof ExecutionsIdRoute
   '/projects/$id': typeof ProjectsIdRoute
   '/projects/new': typeof ProjectsNewRoute
   '/work-items/$id': typeof WorkItemsIdRoute
@@ -121,9 +148,12 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/adapters'
+    | '/executions'
     | '/projects'
     | '/work-items'
     | '/workers'
+    | '/executions/$id'
     | '/projects/$id'
     | '/projects/new'
     | '/work-items/$id'
@@ -134,9 +164,12 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/adapters'
+    | '/executions'
     | '/projects'
     | '/work-items'
     | '/workers'
+    | '/executions/$id'
     | '/projects/$id'
     | '/projects/new'
     | '/work-items/$id'
@@ -147,9 +180,12 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/adapters'
+    | '/executions'
     | '/projects'
     | '/work-items'
     | '/workers'
+    | '/executions/$id'
     | '/projects/$id'
     | '/projects/new'
     | '/work-items/$id'
@@ -161,6 +197,8 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AdaptersRoute: typeof AdaptersRoute
+  ExecutionsRoute: typeof ExecutionsRouteWithChildren
   ProjectsRoute: typeof ProjectsRouteWithChildren
   WorkItemsRoute: typeof WorkItemsRouteWithChildren
   WorkersRoute: typeof WorkersRouteWithChildren
@@ -187,6 +225,20 @@ declare module '@tanstack/react-router' {
       path: '/projects'
       fullPath: '/projects'
       preLoaderRoute: typeof ProjectsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/executions': {
+      id: '/executions'
+      path: '/executions'
+      fullPath: '/executions'
+      preLoaderRoute: typeof ExecutionsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/adapters': {
+      id: '/adapters'
+      path: '/adapters'
+      fullPath: '/adapters'
+      preLoaderRoute: typeof AdaptersRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -245,8 +297,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProjectsIdRouteImport
       parentRoute: typeof ProjectsRoute
     }
+    '/executions/$id': {
+      id: '/executions/$id'
+      path: '/$id'
+      fullPath: '/executions/$id'
+      preLoaderRoute: typeof ExecutionsIdRouteImport
+      parentRoute: typeof ExecutionsRoute
+    }
   }
 }
+
+interface ExecutionsRouteChildren {
+  ExecutionsIdRoute: typeof ExecutionsIdRoute
+}
+
+const ExecutionsRouteChildren: ExecutionsRouteChildren = {
+  ExecutionsIdRoute: ExecutionsIdRoute,
+}
+
+const ExecutionsRouteWithChildren = ExecutionsRoute._addFileChildren(
+  ExecutionsRouteChildren,
+)
 
 interface ProjectsRouteChildren {
   ProjectsIdRoute: typeof ProjectsIdRoute
@@ -293,6 +364,8 @@ const WorkersRouteWithChildren =
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AdaptersRoute: AdaptersRoute,
+  ExecutionsRoute: ExecutionsRouteWithChildren,
   ProjectsRoute: ProjectsRouteWithChildren,
   WorkItemsRoute: WorkItemsRouteWithChildren,
   WorkersRoute: WorkersRouteWithChildren,

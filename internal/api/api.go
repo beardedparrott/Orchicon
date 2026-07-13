@@ -10,8 +10,10 @@ import (
 	"net/http"
 
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
+	"github.com/beardedparrott/orchicon/internal/execution"
 	"github.com/beardedparrott/orchicon/internal/middleware"
 	"github.com/beardedparrott/orchicon/internal/project"
 	"github.com/beardedparrott/orchicon/internal/version"
@@ -56,6 +58,17 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// (recursive CTE cycle detection — docs/09 §11) + worker assignment.
 	workItemSvc := workitem.New(deps.Pool, deps.Log)
 	mux.Handle(apiv1connect.NewWorkItemServiceHandler(workItemSvc))
+
+	// RuntimeAdapterService (docs/07 §3.7). Public adapter registry:
+	// list registered adapters, inspect capabilities.
+	adapterSvc := adapter.New(deps.Pool, deps.Log)
+	mux.Handle(apiv1connect.NewRuntimeAdapterServiceHandler(adapterSvc))
+
+	// ExecutionService (docs/07 §3.8). Live streaming telemetry, manual
+	// control (pause/resume/cancel/checkpoint), Tier 2 per-tool-call
+	// approval (docs/05 §7.1).
+	execSvc := execution.New(deps.Pool, deps.Log, deps.Subscriber)
+	mux.Handle(apiv1connect.NewExecutionServiceHandler(execSvc))
 
 	return middleware.ResolveTenant(mux)
 }

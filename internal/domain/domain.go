@@ -107,3 +107,50 @@ const (
 const (
 	EditLockResourceWorker = "worker"
 )
+
+// AdapterStatus — runtime adapter registration lifecycle
+// (docs/04_Runtime_Adapter_SDK.md §2):
+// registered → ready → draining → expired
+const (
+	AdapterRegistered = "registered"
+	AdapterReady      = "ready"
+	AdapterDraining   = "draining"
+	AdapterExpired    = "expired"
+)
+
+// ExecutionStatus — WorkerExecution lifecycle
+// (docs/02_Domain_Model.md §2.7, docs/03 §6):
+// dispatching → running → healthy|stalled|unhealthy → terminating → terminated
+const (
+	ExecutionDispatching    = "dispatching"
+	ExecutionRunning        = "running"
+	ExecutionHealthy        = "healthy"
+	ExecutionStalled        = "stalled"
+	ExecutionUnhealthy      = "unhealthy"
+	ExecutionTerminating   = "terminating"
+	ExecutionTerminated     = "terminated"
+	ExecutionFailedToStart = "failed_to_start"
+)
+
+// HealthState — union of heartbeat freshness, progress rate, error rate,
+// context-window usage, runtime-reported health (docs/03 §5).
+const (
+	HealthHealthy     = "healthy"
+	HealthStalled     = "stalled"
+	HealthUnhealthy   = "unhealthy"
+	HealthTerminating = "terminating"
+)
+
+// ExecutionEventType — event kinds streamed via StreamExecutionEvents
+// (docs/04 §4, docs/07 §3.8).
+const (
+	ExecEventStarted          = "started"
+	ExecEventTelemetry        = "telemetry"
+	ExecEventToolCall         = "tool_call"
+	ExecEventCheckpoint       = "checkpoint"
+	ExecEventApprovalRequest  = "approval_request"
+	ExecEventHealth           = "health"
+	ExecEventResult           = "result"
+	ExecEventError            = "error"
+	ExecEventControl          = "control"
+)

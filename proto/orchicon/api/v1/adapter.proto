@@ -1,0 +1,46 @@
+// Orchicon RuntimeAdapterService — public API surface.
+//
+// The public-facing adapter registry: list registered adapters, inspect
+// capabilities (docs/07_API_Specification.md §3.7). The gRPC sidecar
+// contract (Register/Heartbeat/Execute) lives separately in
+// orchicon.adapter.v1 (docs/07 §10).
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// RuntimeAdapter is a registered adapter process offering execution
+// capabilities (docs/02_Domain_Model.md §2.8, docs/09 §3.7).
+message RuntimeAdapter {
+  string id = 1;
+  string tenant_id = 2;
+  string kind = 3; // e.g. "opencode"
+  string version = 4; // semver
+  string endpoint = 5;
+  string capabilities = 6; // JSON capability manifest
+  string status = 7; // registered | ready | draining | expired
+  int32 max_concurrent_executions = 8;
+  google.protobuf.Timestamp registered_at = 9;
+  google.protobuf.Timestamp last_heartbeat_at = 10;
+}
+
+message ListAdaptersRequest {
+  string tenant_id = 1;
+  optional string kind = 2;
+  string page_token = 3;
+  int32 page_size = 4;
+}
+
+message ListAdaptersResponse {
+  repeated RuntimeAdapter adapters = 1;
+  string next_page_token = 2;
+}
+
+message GetAdapterCapabilitiesRequest {
+  string id = 1;
+}
+
+message GetAdapterCapabilitiesResponse {
+  string capabilities = 1; // JSON capability manifest
+}
