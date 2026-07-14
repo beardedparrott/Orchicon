@@ -142,29 +142,22 @@ function NewWorkerPage() {
   });
 
   const onSubmit = async (values: CreateWorkerForm) => {
-    // eslint-disable-next-line no-console -- diagnostic; remove once buttons are confirmed working
-    console.log("[workers.new] onSubmit fired", values);
-    try {
-      const result = await createWorker.mutateAsync({
-        name: values.name,
-        slug: values.slug || undefined,
-        description: values.description || undefined,
-        purpose: values.purpose || undefined,
-        runtimeRef: values.runtimeRef,
-        modelRef: values.modelRef,
-        systemPrompt: values.systemPrompt || undefined,
-        contextSources: values.contextSources || undefined,
-        permissions: values.permissions || undefined,
-        gatedTools: values.gatedTools || undefined,
-        budgetOverrides: values.budgetOverrides || undefined,
-        concurrencyLimit: values.concurrencyLimit,
-        versionNote: values.versionNote || undefined,
-      });
-      navigate({ to: "/workers/$id", params: { id: result.worker.id } });
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error("[workers.new] create failed", e);
-    }
+    const result = await createWorker.mutateAsync({
+      name: values.name,
+      slug: values.slug || undefined,
+      description: values.description || undefined,
+      purpose: values.purpose || undefined,
+      runtimeRef: values.runtimeRef,
+      modelRef: values.modelRef,
+      systemPrompt: values.systemPrompt || undefined,
+      contextSources: values.contextSources || undefined,
+      permissions: values.permissions || undefined,
+      gatedTools: values.gatedTools || undefined,
+      budgetOverrides: values.budgetOverrides || undefined,
+      concurrencyLimit: values.concurrencyLimit,
+      versionNote: values.versionNote || undefined,
+    });
+    navigate({ to: "/workers/$id", params: { id: result.worker.id } });
   };
 
   return (
@@ -186,45 +179,7 @@ function NewWorkerPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form
-            onSubmit={handleSubmit(
-              (values) => {
-                // eslint-disable-next-line no-console -- diagnostic; remove once buttons are confirmed working
-                console.log("[workers.new] handleSubmit valid", values);
-                onSubmit(values);
-              },
-              (errs) => {
-                // eslint-disable-next-line no-console
-                console.warn("[workers.new] validation failed", errs);
-                const fields = Object.keys(errs);
-                if (fields.length > 0) {
-                  alert(
-                    `Form has ${fields.length} validation error(s):\n` +
-                      fields
-                        .map((f) => `• ${f}: ${(errs as Record<string, { message?: string }>)[f]?.message ?? "invalid"}`)
-                        .join("\n")
-                  );
-                }
-              }
-            )}
-            className="space-y-6"
-            noValidate
-          >
-            {Object.keys(errors).length > 0 && (
-              <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm">
-                <div className="font-medium text-destructive">
-                  Please fix the following before submitting:
-                </div>
-                <ul className="mt-1 list-disc pl-5 text-destructive/90">
-                  {Object.entries(errors).map(([field, err]) => (
-                    <li key={field}>
-                      <span className="font-medium">{field}</span>:{" "}
-                      {err?.message ?? "invalid"}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
+          <form onSubmit={handleSubmit(onSubmit)} className="space-y-6" noValidate>
             <div className="space-y-2">
               <Label htmlFor="name">Name</Label>
               <Input

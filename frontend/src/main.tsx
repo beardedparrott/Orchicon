@@ -51,24 +51,6 @@ const queryClient = new QueryClient({
 const root = document.getElementById("root");
 if (!root) throw new Error("#root not found");
 
-// --- TEMPORARY DIAGNOSTIC -------------------------------------------------
-// User report: every button on every page is non-functional. Add a
-// document-level click counter that shows up as a fixed-position badge
-// in the corner. This bypasses React entirely — if the counter
-// increments on click, the browser sees the click and the bug is
-// downstream (a parent element swallowing events, React not hydrating,
-// a handler that doesn't fire). If it stays at 0, something is
-// blocking the click before the document sees it (CSS overlay, a
-// modal, a Z-index issue).
-//
-// Also tracks and surfaces the last JS error so we can tell if React
-// crashed during hydration.
-//
-// This whole block is meant to be removed once the root cause is
-// found. See the accompanying comment in components/ui/click-counter.tsx.
-import "@/components/ui/click-counter";
-// --- END TEMPORARY DIAGNOSTIC ----------------------------------------------
-
 createRoot(root).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
