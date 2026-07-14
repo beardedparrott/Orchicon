@@ -395,7 +395,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
       projectId,
       runContext: "{}",
     });
-    navigate({ to: "/workflows_/$id/runs/$runId", params: { id: workflowId, runId: run.id } });
+    navigate({ to: "/workflows/$id/runs/$runId", params: { id: workflowId, runId: run.id } });
   };
 
   // keyboard shortcuts: undo/redo

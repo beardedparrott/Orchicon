@@ -62,7 +62,7 @@ function WorkersPage() {
       {workers && workers.length > 0 && (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {workers.map((w) => (
-            <Link key={w.id} to="/workers_/$id" params={{ id: w.id }}>
+            <Link key={w.id} to="/workers/$id" params={{ id: w.id }}>
               <Card className="transition-colors hover:bg-accent">
                 <CardHeader>
                   <CardTitle className="flex items-center justify-between">

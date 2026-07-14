@@ -207,7 +207,7 @@ function TreeNode({
         )}
         <KindBadge kind={item.kind} />
         <Link
-          to="/work-items_/$id"
+          to="/work-items/$id"
           params={{ id: item.id }}
           className="flex-1 truncate text-sm font-medium hover:underline"
         >
@@ -272,7 +272,7 @@ function KanbanBoard({ projectId }: { projectId: string }) {
             {colItems.map((item) => (
               <Link
                 key={item.id}
-                to="/work-items_/$id"
+                to="/work-items/$id"
                 params={{ id: item.id }}
               >
                 <Card className="transition-colors hover:bg-accent">

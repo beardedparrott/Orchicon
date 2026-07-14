@@ -52,7 +52,7 @@ function ExecutionsPage() {
           {executions.map((e) => (
             <Link
               key={e.id}
-              to="/executions_/$id"
+              to="/executions/$id"
               params={{ id: e.id }}
             >
               <Card className="transition-colors hover:bg-accent">

@@ -173,7 +173,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
         <div>
           <button
             className="text-xs text-muted-foreground hover:text-foreground"
-            onClick={() => navigate({ to: "/workflows_/$id", params: { id: workflowId } })}
+            onClick={() => navigate({ to: "/workflows/$id", params: { id: workflowId } })}
           >
             ← back to editor
           </button>

@@ -71,7 +71,7 @@ function NewProjectPage() {
       slug: values.slug || undefined,
       goals: values.goals || undefined,
     });
-    navigate({ to: "/projects_/$id", params: { id: project.id } });
+    navigate({ to: "/projects/$id", params: { id: project.id } });
   };
 
   return (

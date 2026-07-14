@@ -62,7 +62,7 @@ function WorkflowsPage() {
       {workflows && workflows.length > 0 && (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {workflows.map((w) => (
-            <Link key={w.id} to="/workflows_/$id" params={{ id: w.id }}>
+            <Link key={w.id} to="/workflows/$id" params={{ id: w.id }}>
               <Card className="transition-colors hover:bg-accent">
                 <CardHeader>
                   <CardTitle className="flex items-center justify-between">
