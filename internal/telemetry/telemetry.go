@@ -184,3 +184,16 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
 }
+
+// Flush delegates to the underlying writer if it implements
+// http.Flusher. Required for Connect server streams
+// (StreamProjectEvents etc.) — Connect checks for http.Flusher and
+// returns CodeInternal if the wrapped writer doesn't expose it.
+// The underlying net/http response writer does implement Flusher in
+// practice; the type-asserting no-op below handles test doubles and
+// any future writer that doesn't.
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
