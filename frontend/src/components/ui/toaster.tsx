@@ -7,6 +7,12 @@ import { useToastStore, type Toast } from "@/components/ui/toast";
 // Mounted once near the root (see main.tsx). Reads the toast store
 // directly so toasts are reactive without prop-drilling.
 
+const DEFAULT_DURATIONS: Record<NonNullable<Toast["kind"]>, number> = {
+  success: 4000,
+  error: 6000,
+  info: 4000,
+};
+
 export function Toaster() {
   const toasts = useToastStore((s) => s.toasts);
   const dismiss = useToastStore((s) => s.dismiss);
@@ -25,12 +31,15 @@ export function Toaster() {
 }
 
 function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }) {
-  // Auto-dismiss. duration=0 sticks.
+  // Auto-dismiss. duration=0 sticks; absent duration falls back to a
+  // per-kind default so raw push() calls (e.g. the global onError in
+  // main.tsx) auto-dismiss without the caller having to think about it.
+  const duration = toast.duration ?? DEFAULT_DURATIONS[toast.kind];
   useEffect(() => {
-    if (toast.duration <= 0) return;
-    const id = window.setTimeout(onDismiss, toast.duration);
+    if (duration <= 0) return;
+    const id = window.setTimeout(onDismiss, duration);
     return () => window.clearTimeout(id);
-  }, [toast.duration, onDismiss]);
+  }, [duration, onDismiss]);
 
   return (
     <div

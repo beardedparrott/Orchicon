@@ -12,8 +12,8 @@ export type Toast = {
   kind: ToastKind;
   title?: string;
   message: string;
-  /** milliseconds; 0 means "do not auto-dismiss" */
-  duration: number;
+  /** milliseconds; 0 means "do not auto-dismiss". Default: 4000 (or 6000 for errors). */
+  duration?: number;
 };
 
 type ToastState = {
