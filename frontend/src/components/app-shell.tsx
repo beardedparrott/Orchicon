@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 
 import { cn } from "@/lib/utils";
@@ -95,7 +96,7 @@ function TopBar() {
   return (
     <header className="flex h-14 items-center justify-between border-b px-6">
       <div className="text-sm text-muted-foreground">
-        Orchicon control plane · v0.1
+        Orchicon control plane · <TopBarVersion />
       </div>
       <div className="flex items-center gap-4 text-xs text-muted-foreground">
         <span>
@@ -116,4 +117,28 @@ function TopBar() {
       </div>
     </header>
   );
+}
+
+// TopBarVersion renders the control plane's version (fetched from
+// /versionz). Falls back to "dev" while the fetch is in flight or
+// failing — the label is non-essential, so we don't block render.
+function TopBarVersion() {
+  const [version, setVersion] = useState("dev");
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/versionz", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => {
+        if (cancelled) return;
+        const v = body && typeof body.version === "string" ? body.version : "";
+        if (v) setVersion(v);
+      })
+      .catch(() => {
+        /* leave "dev" */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return <>{version}</>;
 }
