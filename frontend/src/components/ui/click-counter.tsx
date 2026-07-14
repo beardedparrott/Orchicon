@@ -28,6 +28,10 @@ interface DiagState {
   lastError: string;
   lastEvent: string;
   preventDefaultCount: number;
+  pathname: string;
+  routeId: string;
+  outletChildCount: number;
+  navTransitions: number;
 }
 
 const diag: DiagState = {
@@ -36,6 +40,10 @@ const diag: DiagState = {
   lastError: "",
   lastEvent: "",
   preventDefaultCount: 0,
+  pathname: location.pathname,
+  routeId: "(unknown)",
+  outletChildCount: 0,
+  navTransitions: 0,
 };
 
 function describeTarget(t: EventTarget | null): string {
@@ -55,9 +63,6 @@ document.addEventListener(
     diag.count += 1;
     diag.lastTarget = describeTarget(e.target);
     diag.lastEvent = `click @ (${e.clientX},${e.clientY}) defaultPrevented=${e.defaultPrevented}`;
-    // Patch preventDefault so we can count click events that had
-    // their default suppressed (a tell that an ancestor swallowed
-    // the event with preventDefault).
     const origPrevent = e.preventDefault.bind(e);
     let pdCalled = false;
     e.preventDefault = function () {
@@ -84,6 +89,56 @@ window.addEventListener("unhandledrejection", (e) => {
   render();
 });
 
+// Watch the URL via popstate / pushState monkeypatch + intervals, so the
+// diagnostic badge always shows the current pathname and the rendered
+// Outlet's child count (a proxy for "did the new component actually
+// mount?"). popstate fires on history.back/forward; pushState/replaceState
+// don't fire any event so we patch them.
+function readPath() {
+  return location.pathname + location.search;
+}
+const _push = history.pushState.bind(history);
+const _replace = history.replaceState.bind(history);
+history.pushState = function (...args: Parameters<typeof _push>) {
+  const r = _push(...args);
+  diag.pathname = readPath();
+  diag.navTransitions += 1;
+  queueMicrotask(() => {
+    diag.pathname = readPath();
+    countOutlet();
+    render();
+  });
+  return r;
+};
+history.replaceState = function (...args: Parameters<typeof _replace>) {
+  const r = _replace(...args);
+  diag.pathname = readPath();
+  queueMicrotask(() => {
+    diag.pathname = readPath();
+    countOutlet();
+    render();
+  });
+  return r;
+};
+window.addEventListener("popstate", () => {
+  diag.pathname = readPath();
+  diag.navTransitions += 1;
+  queueMicrotask(() => {
+    diag.pathname = readPath();
+    countOutlet();
+    render();
+  });
+});
+
+// Count what's actually rendered in the Outlet's <main> tag. If this
+// stays 0 after a navigation, the route's component failed to mount.
+function countOutlet() {
+  const main = document.querySelector("main");
+  diag.outletChildCount = main ? main.children.length : 0;
+  const headings = main ? Array.from(main.querySelectorAll("h1, h2, h3")).slice(0, 3) : [];
+  diag.routeId = headings.map((h) => h.textContent?.trim().slice(0, 32) ?? "").join(" / ") || "(no h1/h2/h3 in main)";
+}
+
 const BADGE_ID = "__orchicon_click_diag__";
 function ensureBadge(): HTMLDivElement {
   let el = document.getElementById(BADGE_ID) as HTMLDivElement | null;
@@ -101,9 +156,9 @@ function ensureBadge(): HTMLDivElement {
     "border-radius:8px",
     "padding:8px 10px",
     "font:11px/1.4 ui-monospace,monospace",
-    "max-width:480px",
+    "max-width:560px",
     "white-space:pre-wrap",
-    "pointer-events:none", // never block the clicks it's measuring
+    "pointer-events:none",
     "opacity:0.95",
   ].join(";");
   el.setAttribute("data-diag", "orchicon-click-counter");
@@ -113,14 +168,29 @@ function ensureBadge(): HTMLDivElement {
 
 function render() {
   const el = ensureBadge();
-  const err = diag.lastError;
   el.textContent =
     `orchicon click diag\n` +
+    `url:    ${diag.pathname}  (transitions: ${diag.navTransitions})\n` +
     `clicks: ${diag.count}  (preventDefault’d: ${diag.preventDefaultCount})\n` +
     `last:   ${diag.lastEvent}\n` +
     `target: ${diag.lastTarget}\n` +
-    `error:  ${err || "(none)"}`;
+    `main children: ${diag.outletChildCount}  headings: ${diag.routeId}\n` +
+    `error:  ${diag.lastError || "(none)"}`;
 }
+
+// Initial sample
+queueMicrotask(() => {
+  countOutlet();
+  render();
+});
+// And keep sampling in case the Outlet updates without a navigation
+setInterval(() => {
+  if (location.pathname !== diag.pathname) {
+    diag.pathname = location.pathname;
+    countOutlet();
+    render();
+  }
+}, 500);
 
 ensureBadge();
 render();
