@@ -125,7 +125,10 @@ main() {
 
   # Download to a temp file
   local tmpdir; tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' EXIT
+  # Capture the tmpdir path into the trap at definition time (double-quoted
+  # expansion) so the cleanup still works after `main` returns and the
+  # function-local $tmpdir goes out of scope under `set -u`.
+  trap "rm -rf '${tmpdir}'" EXIT
   local archive="$tmpdir/$asset"
 
   info "downloading ${D}${url}${X}"
