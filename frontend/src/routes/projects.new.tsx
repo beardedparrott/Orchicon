@@ -66,12 +66,21 @@ function NewProjectPage() {
   });
 
   const onSubmit = async (values: CreateProjectForm) => {
-    const project = await createProject.mutateAsync({
-      name: values.name,
-      slug: values.slug || undefined,
-      goals: values.goals || undefined,
-    });
-    navigate({ to: "/projects/$id", params: { id: project.id } });
+    // eslint-disable-next-line no-console -- diagnostic; remove once buttons are confirmed working
+    console.log("[projects.new] onSubmit fired", values);
+    try {
+      const project = await createProject.mutateAsync({
+        name: values.name,
+        slug: values.slug || undefined,
+        goals: values.goals || undefined,
+      });
+      navigate({ to: "/projects/$id", params: { id: project.id } });
+    } catch (e) {
+      // The global onError in main.tsx already toasts, but log so the
+      // failure is visible in DevTools even if the toast is missed.
+      // eslint-disable-next-line no-console
+      console.error("[projects.new] create failed", e);
+    }
   };
 
   return (
@@ -93,7 +102,49 @@ function NewProjectPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <form
+            onSubmit={handleSubmit(
+              (values) => {
+                // eslint-disable-next-line no-console -- diagnostic; remove once buttons are confirmed working
+                console.log("[projects.new] handleSubmit valid", values);
+                onSubmit(values);
+              },
+              (errs) => {
+                // Validation failed. Surface the errors loudly so the
+                // user knows WHY nothing happened — Zod-rejected input
+                // produces no toast, no network call, and no other
+                // visible feedback by default.
+                // eslint-disable-next-line no-console
+                console.warn("[projects.new] validation failed", errs);
+                const fields = Object.keys(errs);
+                if (fields.length > 0) {
+                  alert(
+                    `Form has ${fields.length} validation error(s):\n` +
+                      fields
+                        .map((f) => `• ${f}: ${(errs as Record<string, { message?: string }>)[f]?.message ?? "invalid"}`)
+                        .join("\n")
+                  );
+                }
+              }
+            )}
+            className="space-y-4"
+            noValidate
+          >
+            {Object.keys(errors).length > 0 && (
+              <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm">
+                <div className="font-medium text-destructive">
+                  Please fix the following before submitting:
+                </div>
+                <ul className="mt-1 list-disc pl-5 text-destructive/90">
+                  {Object.entries(errors).map(([field, err]) => (
+                    <li key={field}>
+                      <span className="font-medium">{field}</span>:{" "}
+                      {err?.message ?? "invalid"}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <div className="space-y-2">
               <Label htmlFor="name">Name</Label>
               <Input
