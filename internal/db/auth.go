@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/oklog/ulid/v2"
 )
 
 // --- identities (extended in Phase 9) -------------------------------------
@@ -159,6 +160,26 @@ func ListTenants(ctx context.Context, p *Pool, pageSize int, afterID string) ([]
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// CreateTenant inserts a new tenant row. The id is server-assigned (a
+// ULID) and the version starts at 1. Returns the persisted row. The
+// tenants table has no tenant_id column so this is an admin-only path
+// (the API enforces auth:write / tenant:create entitlement).
+func CreateTenant(ctx context.Context, p *Pool, slug, name, budgetEnvelopeJSON string) (TenantRow, error) {
+	if budgetEnvelopeJSON == "" {
+		budgetEnvelopeJSON = "{}"
+	}
+	const q = `INSERT INTO tenants (id, slug, name, status, budget_envelope, version)
+		VALUES ($1, $2, $3, 'active', $4::jsonb, 1)
+		RETURNING id, slug, name, status, version, created_at, updated_at`
+	id := ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
+	row := p.QueryRow(ctx, q, id, slug, name, budgetEnvelopeJSON)
+	var r TenantRow
+	if err := row.Scan(&r.ID, &r.Slug, &r.Name, &r.Status, &r.Version, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		return TenantRow{}, fmt.Errorf("db: insert tenant: %w", err)
+	}
+	return r, nil
 }
 
 // --- roles -----------------------------------------------------------------

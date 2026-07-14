@@ -74,6 +74,9 @@ const (
 	AuthServiceListRoleBindingsProcedure = "/orchicon.api.v1.AuthService/ListRoleBindings"
 	// AuthServiceListTenantsProcedure is the fully-qualified name of the AuthService's ListTenants RPC.
 	AuthServiceListTenantsProcedure = "/orchicon.api.v1.AuthService/ListTenants"
+	// AuthServiceCreateTenantProcedure is the fully-qualified name of the AuthService's CreateTenant
+	// RPC.
+	AuthServiceCreateTenantProcedure = "/orchicon.api.v1.AuthService/CreateTenant"
 	// AuthServiceListAuditEntriesProcedure is the fully-qualified name of the AuthService's
 	// ListAuditEntries RPC.
 	AuthServiceListAuditEntriesProcedure = "/orchicon.api.v1.AuthService/ListAuditEntries"
@@ -99,6 +102,7 @@ type AuthServiceClient interface {
 	ListRoleBindings(context.Context, *connect.Request[v1.ListRoleBindingsRequest]) (*connect.Response[v1.ListRoleBindingsResponse], error)
 	// --- Tenants (admin) ---
 	ListTenants(context.Context, *connect.Request[v1.ListTenantsRequest]) (*connect.Response[v1.ListTenantsResponse], error)
+	CreateTenant(context.Context, *connect.Request[v1.CreateTenantRequest]) (*connect.Response[v1.CreateTenantResponse], error)
 	// --- Audit ---
 	ListAuditEntries(context.Context, *connect.Request[v1.ListAuditEntriesRequest]) (*connect.Response[v1.ListAuditEntriesResponse], error)
 }
@@ -198,6 +202,12 @@ func NewAuthServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(authServiceMethods.ByName("ListTenants")),
 			connect.WithClientOptions(opts...),
 		),
+		createTenant: connect.NewClient[v1.CreateTenantRequest, v1.CreateTenantResponse](
+			httpClient,
+			baseURL+AuthServiceCreateTenantProcedure,
+			connect.WithSchema(authServiceMethods.ByName("CreateTenant")),
+			connect.WithClientOptions(opts...),
+		),
 		listAuditEntries: connect.NewClient[v1.ListAuditEntriesRequest, v1.ListAuditEntriesResponse](
 			httpClient,
 			baseURL+AuthServiceListAuditEntriesProcedure,
@@ -223,6 +233,7 @@ type authServiceClient struct {
 	revokeRole       *connect.Client[v1.RevokeRoleRequest, v1.RevokeRoleResponse]
 	listRoleBindings *connect.Client[v1.ListRoleBindingsRequest, v1.ListRoleBindingsResponse]
 	listTenants      *connect.Client[v1.ListTenantsRequest, v1.ListTenantsResponse]
+	createTenant     *connect.Client[v1.CreateTenantRequest, v1.CreateTenantResponse]
 	listAuditEntries *connect.Client[v1.ListAuditEntriesRequest, v1.ListAuditEntriesResponse]
 }
 
@@ -296,6 +307,11 @@ func (c *authServiceClient) ListTenants(ctx context.Context, req *connect.Reques
 	return c.listTenants.CallUnary(ctx, req)
 }
 
+// CreateTenant calls orchicon.api.v1.AuthService.CreateTenant.
+func (c *authServiceClient) CreateTenant(ctx context.Context, req *connect.Request[v1.CreateTenantRequest]) (*connect.Response[v1.CreateTenantResponse], error) {
+	return c.createTenant.CallUnary(ctx, req)
+}
+
 // ListAuditEntries calls orchicon.api.v1.AuthService.ListAuditEntries.
 func (c *authServiceClient) ListAuditEntries(ctx context.Context, req *connect.Request[v1.ListAuditEntriesRequest]) (*connect.Response[v1.ListAuditEntriesResponse], error) {
 	return c.listAuditEntries.CallUnary(ctx, req)
@@ -321,6 +337,7 @@ type AuthServiceHandler interface {
 	ListRoleBindings(context.Context, *connect.Request[v1.ListRoleBindingsRequest]) (*connect.Response[v1.ListRoleBindingsResponse], error)
 	// --- Tenants (admin) ---
 	ListTenants(context.Context, *connect.Request[v1.ListTenantsRequest]) (*connect.Response[v1.ListTenantsResponse], error)
+	CreateTenant(context.Context, *connect.Request[v1.CreateTenantRequest]) (*connect.Response[v1.CreateTenantResponse], error)
 	// --- Audit ---
 	ListAuditEntries(context.Context, *connect.Request[v1.ListAuditEntriesRequest]) (*connect.Response[v1.ListAuditEntriesResponse], error)
 }
@@ -416,6 +433,12 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(authServiceMethods.ByName("ListTenants")),
 		connect.WithHandlerOptions(opts...),
 	)
+	authServiceCreateTenantHandler := connect.NewUnaryHandler(
+		AuthServiceCreateTenantProcedure,
+		svc.CreateTenant,
+		connect.WithSchema(authServiceMethods.ByName("CreateTenant")),
+		connect.WithHandlerOptions(opts...),
+	)
 	authServiceListAuditEntriesHandler := connect.NewUnaryHandler(
 		AuthServiceListAuditEntriesProcedure,
 		svc.ListAuditEntries,
@@ -452,6 +475,8 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 			authServiceListRoleBindingsHandler.ServeHTTP(w, r)
 		case AuthServiceListTenantsProcedure:
 			authServiceListTenantsHandler.ServeHTTP(w, r)
+		case AuthServiceCreateTenantProcedure:
+			authServiceCreateTenantHandler.ServeHTTP(w, r)
 		case AuthServiceListAuditEntriesProcedure:
 			authServiceListAuditEntriesHandler.ServeHTTP(w, r)
 		default:
@@ -517,6 +542,10 @@ func (UnimplementedAuthServiceHandler) ListRoleBindings(context.Context, *connec
 
 func (UnimplementedAuthServiceHandler) ListTenants(context.Context, *connect.Request[v1.ListTenantsRequest]) (*connect.Response[v1.ListTenantsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.ListTenants is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) CreateTenant(context.Context, *connect.Request[v1.CreateTenantRequest]) (*connect.Response[v1.CreateTenantResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.CreateTenant is not implemented"))
 }
 
 func (UnimplementedAuthServiceHandler) ListAuditEntries(context.Context, *connect.Request[v1.ListAuditEntriesRequest]) (*connect.Response[v1.ListAuditEntriesResponse], error) {

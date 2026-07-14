@@ -1492,6 +1492,116 @@ func (x *ListTenantsResponse) GetNextPageToken() string {
 	return ""
 }
 
+type CreateTenantRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required. Lowercase, kebab-case identifier (e.g. "acme"). Used in
+	// API paths and as the unique human-readable key; the id is server-
+	// assigned.
+	Slug string `protobuf:"bytes,1,opt,name=slug,proto3" json:"slug,omitempty"`
+	// Required. Display name (e.g. "Acme Corporation").
+	Name string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	// Optional. JSON-encoded budget envelope. Defaults to a permissive
+	// envelope if empty.
+	BudgetEnvelopeJson string `protobuf:"bytes,3,opt,name=budget_envelope_json,json=budgetEnvelopeJson,proto3" json:"budget_envelope_json,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *CreateTenantRequest) Reset() {
+	*x = CreateTenantRequest{}
+	mi := &file_orchicon_api_v1_auth_service_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateTenantRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateTenantRequest) ProtoMessage() {}
+
+func (x *CreateTenantRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_auth_service_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateTenantRequest.ProtoReflect.Descriptor instead.
+func (*CreateTenantRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_auth_service_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *CreateTenantRequest) GetSlug() string {
+	if x != nil {
+		return x.Slug
+	}
+	return ""
+}
+
+func (x *CreateTenantRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CreateTenantRequest) GetBudgetEnvelopeJson() string {
+	if x != nil {
+		return x.BudgetEnvelopeJson
+	}
+	return ""
+}
+
+type CreateTenantResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tenant        *Tenant                `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateTenantResponse) Reset() {
+	*x = CreateTenantResponse{}
+	mi := &file_orchicon_api_v1_auth_service_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateTenantResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateTenantResponse) ProtoMessage() {}
+
+func (x *CreateTenantResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_auth_service_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateTenantResponse.ProtoReflect.Descriptor instead.
+func (*CreateTenantResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_auth_service_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *CreateTenantResponse) GetTenant() *Tenant {
+	if x != nil {
+		return x.Tenant
+	}
+	return nil
+}
+
 type ListAuditEntriesRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
@@ -1505,7 +1615,7 @@ type ListAuditEntriesRequest struct {
 
 func (x *ListAuditEntriesRequest) Reset() {
 	*x = ListAuditEntriesRequest{}
-	mi := &file_orchicon_api_v1_auth_service_proto_msgTypes[28]
+	mi := &file_orchicon_api_v1_auth_service_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1517,7 +1627,7 @@ func (x *ListAuditEntriesRequest) String() string {
 func (*ListAuditEntriesRequest) ProtoMessage() {}
 
 func (x *ListAuditEntriesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_auth_service_proto_msgTypes[28]
+	mi := &file_orchicon_api_v1_auth_service_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1530,7 +1640,7 @@ func (x *ListAuditEntriesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAuditEntriesRequest.ProtoReflect.Descriptor instead.
 func (*ListAuditEntriesRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_auth_service_proto_rawDescGZIP(), []int{28}
+	return file_orchicon_api_v1_auth_service_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ListAuditEntriesRequest) GetTenantId() string {
@@ -1578,7 +1688,7 @@ type ListAuditEntriesResponse struct {
 
 func (x *ListAuditEntriesResponse) Reset() {
 	*x = ListAuditEntriesResponse{}
-	mi := &file_orchicon_api_v1_auth_service_proto_msgTypes[29]
+	mi := &file_orchicon_api_v1_auth_service_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1590,7 +1700,7 @@ func (x *ListAuditEntriesResponse) String() string {
 func (*ListAuditEntriesResponse) ProtoMessage() {}
 
 func (x *ListAuditEntriesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_auth_service_proto_msgTypes[29]
+	mi := &file_orchicon_api_v1_auth_service_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1603,7 +1713,7 @@ func (x *ListAuditEntriesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAuditEntriesResponse.ProtoReflect.Descriptor instead.
 func (*ListAuditEntriesResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_auth_service_proto_rawDescGZIP(), []int{29}
+	return file_orchicon_api_v1_auth_service_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ListAuditEntriesResponse) GetEntries() []*AuditEntry {
@@ -1721,7 +1831,13 @@ const file_orchicon_api_v1_auth_service_proto_rawDesc = "" +
 	"\tpage_size\x18\x02 \x01(\x05R\bpageSize\"p\n" +
 	"\x13ListTenantsResponse\x121\n" +
 	"\atenants\x18\x01 \x03(\v2\x17.orchicon.api.v1.TenantR\atenants\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xb4\x01\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"o\n" +
+	"\x13CreateTenantRequest\x12\x12\n" +
+	"\x04slug\x18\x01 \x01(\tR\x04slug\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x120\n" +
+	"\x14budget_envelope_json\x18\x03 \x01(\tR\x12budgetEnvelopeJson\"G\n" +
+	"\x14CreateTenantResponse\x12/\n" +
+	"\x06tenant\x18\x01 \x01(\v2\x17.orchicon.api.v1.TenantR\x06tenant\"\xb4\x01\n" +
 	"\x17ListAuditEntriesRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12%\n" +
 	"\x0edecision_point\x18\x02 \x01(\tR\rdecisionPoint\x12\x19\n" +
@@ -1731,8 +1847,7 @@ const file_orchicon_api_v1_auth_service_proto_rawDesc = "" +
 	"\tpage_size\x18\x05 \x01(\x05R\bpageSize\"y\n" +
 	"\x18ListAuditEntriesResponse\x125\n" +
 	"\aentries\x18\x01 \x03(\v2\x1b.orchicon.api.v1.AuditEntryR\aentries\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken2\xfd\n" +
-	"\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken2\xda\v\n" +
 	"\vAuthService\x12[\n" +
 	"\fCreateApiKey\x12$.orchicon.api.v1.CreateApiKeyRequest\x1a%.orchicon.api.v1.CreateApiKeyResponse\x12[\n" +
 	"\fRevokeApiKey\x12$.orchicon.api.v1.RevokeApiKeyRequest\x1a%.orchicon.api.v1.RevokeApiKeyResponse\x12[\n" +
@@ -1750,7 +1865,8 @@ const file_orchicon_api_v1_auth_service_proto_rawDesc = "" +
 	"\n" +
 	"RevokeRole\x12\".orchicon.api.v1.RevokeRoleRequest\x1a#.orchicon.api.v1.RevokeRoleResponse\x12g\n" +
 	"\x10ListRoleBindings\x12(.orchicon.api.v1.ListRoleBindingsRequest\x1a).orchicon.api.v1.ListRoleBindingsResponse\x12X\n" +
-	"\vListTenants\x12#.orchicon.api.v1.ListTenantsRequest\x1a$.orchicon.api.v1.ListTenantsResponse\x12g\n" +
+	"\vListTenants\x12#.orchicon.api.v1.ListTenantsRequest\x1a$.orchicon.api.v1.ListTenantsResponse\x12[\n" +
+	"\fCreateTenant\x12$.orchicon.api.v1.CreateTenantRequest\x1a%.orchicon.api.v1.CreateTenantResponse\x12g\n" +
 	"\x10ListAuditEntries\x12(.orchicon.api.v1.ListAuditEntriesRequest\x1a).orchicon.api.v1.ListAuditEntriesResponseB\xca\x01\n" +
 	"\x13com.orchicon.api.v1B\x10AuthServiceProtoP\x01ZCgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1;apiv1\xa2\x02\x03OAX\xaa\x02\x0fOrchicon.Api.V1\xca\x02\x0fOrchicon\\Api\\V1\xe2\x02\x1bOrchicon\\Api\\V1\\GPBMetadata\xea\x02\x11Orchicon::Api::V1b\x06proto3"
 
@@ -1766,7 +1882,7 @@ func file_orchicon_api_v1_auth_service_proto_rawDescGZIP() []byte {
 	return file_orchicon_api_v1_auth_service_proto_rawDescData
 }
 
-var file_orchicon_api_v1_auth_service_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
+var file_orchicon_api_v1_auth_service_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
 var file_orchicon_api_v1_auth_service_proto_goTypes = []any{
 	(*CreateApiKeyRequest)(nil),      // 0: orchicon.api.v1.CreateApiKeyRequest
 	(*CreateApiKeyResponse)(nil),     // 1: orchicon.api.v1.CreateApiKeyResponse
@@ -1796,69 +1912,74 @@ var file_orchicon_api_v1_auth_service_proto_goTypes = []any{
 	(*ListRoleBindingsResponse)(nil), // 25: orchicon.api.v1.ListRoleBindingsResponse
 	(*ListTenantsRequest)(nil),       // 26: orchicon.api.v1.ListTenantsRequest
 	(*ListTenantsResponse)(nil),      // 27: orchicon.api.v1.ListTenantsResponse
-	(*ListAuditEntriesRequest)(nil),  // 28: orchicon.api.v1.ListAuditEntriesRequest
-	(*ListAuditEntriesResponse)(nil), // 29: orchicon.api.v1.ListAuditEntriesResponse
-	(*ApiKey)(nil),                   // 30: orchicon.api.v1.ApiKey
-	(*ApiKeySecret)(nil),             // 31: orchicon.api.v1.ApiKeySecret
-	(*Identity)(nil),                 // 32: orchicon.api.v1.Identity
-	(*Entitlement)(nil),              // 33: orchicon.api.v1.Entitlement
-	(*Role)(nil),                     // 34: orchicon.api.v1.Role
-	(*RoleBinding)(nil),              // 35: orchicon.api.v1.RoleBinding
-	(*Tenant)(nil),                   // 36: orchicon.api.v1.Tenant
-	(*AuditEntry)(nil),               // 37: orchicon.api.v1.AuditEntry
+	(*CreateTenantRequest)(nil),      // 28: orchicon.api.v1.CreateTenantRequest
+	(*CreateTenantResponse)(nil),     // 29: orchicon.api.v1.CreateTenantResponse
+	(*ListAuditEntriesRequest)(nil),  // 30: orchicon.api.v1.ListAuditEntriesRequest
+	(*ListAuditEntriesResponse)(nil), // 31: orchicon.api.v1.ListAuditEntriesResponse
+	(*ApiKey)(nil),                   // 32: orchicon.api.v1.ApiKey
+	(*ApiKeySecret)(nil),             // 33: orchicon.api.v1.ApiKeySecret
+	(*Identity)(nil),                 // 34: orchicon.api.v1.Identity
+	(*Entitlement)(nil),              // 35: orchicon.api.v1.Entitlement
+	(*Role)(nil),                     // 36: orchicon.api.v1.Role
+	(*RoleBinding)(nil),              // 37: orchicon.api.v1.RoleBinding
+	(*Tenant)(nil),                   // 38: orchicon.api.v1.Tenant
+	(*AuditEntry)(nil),               // 39: orchicon.api.v1.AuditEntry
 }
 var file_orchicon_api_v1_auth_service_proto_depIdxs = []int32{
-	30, // 0: orchicon.api.v1.CreateApiKeyResponse.api_key:type_name -> orchicon.api.v1.ApiKey
-	31, // 1: orchicon.api.v1.CreateApiKeyResponse.secret:type_name -> orchicon.api.v1.ApiKeySecret
-	30, // 2: orchicon.api.v1.RevokeApiKeyResponse.api_key:type_name -> orchicon.api.v1.ApiKey
-	30, // 3: orchicon.api.v1.RotateApiKeyResponse.api_key:type_name -> orchicon.api.v1.ApiKey
-	31, // 4: orchicon.api.v1.RotateApiKeyResponse.secret:type_name -> orchicon.api.v1.ApiKeySecret
-	30, // 5: orchicon.api.v1.ListApiKeysResponse.api_keys:type_name -> orchicon.api.v1.ApiKey
-	30, // 6: orchicon.api.v1.GetApiKeyResponse.api_key:type_name -> orchicon.api.v1.ApiKey
-	32, // 7: orchicon.api.v1.GetIdentityResponse.identity:type_name -> orchicon.api.v1.Identity
-	32, // 8: orchicon.api.v1.ListIdentitiesResponse.identities:type_name -> orchicon.api.v1.Identity
-	33, // 9: orchicon.api.v1.ListEntitlementsResponse.entitlements:type_name -> orchicon.api.v1.Entitlement
-	34, // 10: orchicon.api.v1.CreateRoleResponse.role:type_name -> orchicon.api.v1.Role
-	34, // 11: orchicon.api.v1.ListRolesResponse.roles:type_name -> orchicon.api.v1.Role
-	35, // 12: orchicon.api.v1.AssignRoleResponse.binding:type_name -> orchicon.api.v1.RoleBinding
-	35, // 13: orchicon.api.v1.ListRoleBindingsResponse.bindings:type_name -> orchicon.api.v1.RoleBinding
-	36, // 14: orchicon.api.v1.ListTenantsResponse.tenants:type_name -> orchicon.api.v1.Tenant
-	37, // 15: orchicon.api.v1.ListAuditEntriesResponse.entries:type_name -> orchicon.api.v1.AuditEntry
-	0,  // 16: orchicon.api.v1.AuthService.CreateApiKey:input_type -> orchicon.api.v1.CreateApiKeyRequest
-	2,  // 17: orchicon.api.v1.AuthService.RevokeApiKey:input_type -> orchicon.api.v1.RevokeApiKeyRequest
-	4,  // 18: orchicon.api.v1.AuthService.RotateApiKey:input_type -> orchicon.api.v1.RotateApiKeyRequest
-	6,  // 19: orchicon.api.v1.AuthService.ListApiKeys:input_type -> orchicon.api.v1.ListApiKeysRequest
-	8,  // 20: orchicon.api.v1.AuthService.GetApiKey:input_type -> orchicon.api.v1.GetApiKeyRequest
-	10, // 21: orchicon.api.v1.AuthService.GetIdentity:input_type -> orchicon.api.v1.GetIdentityRequest
-	12, // 22: orchicon.api.v1.AuthService.ListIdentities:input_type -> orchicon.api.v1.ListIdentitiesRequest
-	14, // 23: orchicon.api.v1.AuthService.ListEntitlements:input_type -> orchicon.api.v1.ListEntitlementsRequest
-	16, // 24: orchicon.api.v1.AuthService.CreateRole:input_type -> orchicon.api.v1.CreateRoleRequest
-	18, // 25: orchicon.api.v1.AuthService.ListRoles:input_type -> orchicon.api.v1.ListRolesRequest
-	20, // 26: orchicon.api.v1.AuthService.AssignRole:input_type -> orchicon.api.v1.AssignRoleRequest
-	22, // 27: orchicon.api.v1.AuthService.RevokeRole:input_type -> orchicon.api.v1.RevokeRoleRequest
-	24, // 28: orchicon.api.v1.AuthService.ListRoleBindings:input_type -> orchicon.api.v1.ListRoleBindingsRequest
-	26, // 29: orchicon.api.v1.AuthService.ListTenants:input_type -> orchicon.api.v1.ListTenantsRequest
-	28, // 30: orchicon.api.v1.AuthService.ListAuditEntries:input_type -> orchicon.api.v1.ListAuditEntriesRequest
-	1,  // 31: orchicon.api.v1.AuthService.CreateApiKey:output_type -> orchicon.api.v1.CreateApiKeyResponse
-	3,  // 32: orchicon.api.v1.AuthService.RevokeApiKey:output_type -> orchicon.api.v1.RevokeApiKeyResponse
-	5,  // 33: orchicon.api.v1.AuthService.RotateApiKey:output_type -> orchicon.api.v1.RotateApiKeyResponse
-	7,  // 34: orchicon.api.v1.AuthService.ListApiKeys:output_type -> orchicon.api.v1.ListApiKeysResponse
-	9,  // 35: orchicon.api.v1.AuthService.GetApiKey:output_type -> orchicon.api.v1.GetApiKeyResponse
-	11, // 36: orchicon.api.v1.AuthService.GetIdentity:output_type -> orchicon.api.v1.GetIdentityResponse
-	13, // 37: orchicon.api.v1.AuthService.ListIdentities:output_type -> orchicon.api.v1.ListIdentitiesResponse
-	15, // 38: orchicon.api.v1.AuthService.ListEntitlements:output_type -> orchicon.api.v1.ListEntitlementsResponse
-	17, // 39: orchicon.api.v1.AuthService.CreateRole:output_type -> orchicon.api.v1.CreateRoleResponse
-	19, // 40: orchicon.api.v1.AuthService.ListRoles:output_type -> orchicon.api.v1.ListRolesResponse
-	21, // 41: orchicon.api.v1.AuthService.AssignRole:output_type -> orchicon.api.v1.AssignRoleResponse
-	23, // 42: orchicon.api.v1.AuthService.RevokeRole:output_type -> orchicon.api.v1.RevokeRoleResponse
-	25, // 43: orchicon.api.v1.AuthService.ListRoleBindings:output_type -> orchicon.api.v1.ListRoleBindingsResponse
-	27, // 44: orchicon.api.v1.AuthService.ListTenants:output_type -> orchicon.api.v1.ListTenantsResponse
-	29, // 45: orchicon.api.v1.AuthService.ListAuditEntries:output_type -> orchicon.api.v1.ListAuditEntriesResponse
-	31, // [31:46] is the sub-list for method output_type
-	16, // [16:31] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	32, // 0: orchicon.api.v1.CreateApiKeyResponse.api_key:type_name -> orchicon.api.v1.ApiKey
+	33, // 1: orchicon.api.v1.CreateApiKeyResponse.secret:type_name -> orchicon.api.v1.ApiKeySecret
+	32, // 2: orchicon.api.v1.RevokeApiKeyResponse.api_key:type_name -> orchicon.api.v1.ApiKey
+	32, // 3: orchicon.api.v1.RotateApiKeyResponse.api_key:type_name -> orchicon.api.v1.ApiKey
+	33, // 4: orchicon.api.v1.RotateApiKeyResponse.secret:type_name -> orchicon.api.v1.ApiKeySecret
+	32, // 5: orchicon.api.v1.ListApiKeysResponse.api_keys:type_name -> orchicon.api.v1.ApiKey
+	32, // 6: orchicon.api.v1.GetApiKeyResponse.api_key:type_name -> orchicon.api.v1.ApiKey
+	34, // 7: orchicon.api.v1.GetIdentityResponse.identity:type_name -> orchicon.api.v1.Identity
+	34, // 8: orchicon.api.v1.ListIdentitiesResponse.identities:type_name -> orchicon.api.v1.Identity
+	35, // 9: orchicon.api.v1.ListEntitlementsResponse.entitlements:type_name -> orchicon.api.v1.Entitlement
+	36, // 10: orchicon.api.v1.CreateRoleResponse.role:type_name -> orchicon.api.v1.Role
+	36, // 11: orchicon.api.v1.ListRolesResponse.roles:type_name -> orchicon.api.v1.Role
+	37, // 12: orchicon.api.v1.AssignRoleResponse.binding:type_name -> orchicon.api.v1.RoleBinding
+	37, // 13: orchicon.api.v1.ListRoleBindingsResponse.bindings:type_name -> orchicon.api.v1.RoleBinding
+	38, // 14: orchicon.api.v1.ListTenantsResponse.tenants:type_name -> orchicon.api.v1.Tenant
+	38, // 15: orchicon.api.v1.CreateTenantResponse.tenant:type_name -> orchicon.api.v1.Tenant
+	39, // 16: orchicon.api.v1.ListAuditEntriesResponse.entries:type_name -> orchicon.api.v1.AuditEntry
+	0,  // 17: orchicon.api.v1.AuthService.CreateApiKey:input_type -> orchicon.api.v1.CreateApiKeyRequest
+	2,  // 18: orchicon.api.v1.AuthService.RevokeApiKey:input_type -> orchicon.api.v1.RevokeApiKeyRequest
+	4,  // 19: orchicon.api.v1.AuthService.RotateApiKey:input_type -> orchicon.api.v1.RotateApiKeyRequest
+	6,  // 20: orchicon.api.v1.AuthService.ListApiKeys:input_type -> orchicon.api.v1.ListApiKeysRequest
+	8,  // 21: orchicon.api.v1.AuthService.GetApiKey:input_type -> orchicon.api.v1.GetApiKeyRequest
+	10, // 22: orchicon.api.v1.AuthService.GetIdentity:input_type -> orchicon.api.v1.GetIdentityRequest
+	12, // 23: orchicon.api.v1.AuthService.ListIdentities:input_type -> orchicon.api.v1.ListIdentitiesRequest
+	14, // 24: orchicon.api.v1.AuthService.ListEntitlements:input_type -> orchicon.api.v1.ListEntitlementsRequest
+	16, // 25: orchicon.api.v1.AuthService.CreateRole:input_type -> orchicon.api.v1.CreateRoleRequest
+	18, // 26: orchicon.api.v1.AuthService.ListRoles:input_type -> orchicon.api.v1.ListRolesRequest
+	20, // 27: orchicon.api.v1.AuthService.AssignRole:input_type -> orchicon.api.v1.AssignRoleRequest
+	22, // 28: orchicon.api.v1.AuthService.RevokeRole:input_type -> orchicon.api.v1.RevokeRoleRequest
+	24, // 29: orchicon.api.v1.AuthService.ListRoleBindings:input_type -> orchicon.api.v1.ListRoleBindingsRequest
+	26, // 30: orchicon.api.v1.AuthService.ListTenants:input_type -> orchicon.api.v1.ListTenantsRequest
+	28, // 31: orchicon.api.v1.AuthService.CreateTenant:input_type -> orchicon.api.v1.CreateTenantRequest
+	30, // 32: orchicon.api.v1.AuthService.ListAuditEntries:input_type -> orchicon.api.v1.ListAuditEntriesRequest
+	1,  // 33: orchicon.api.v1.AuthService.CreateApiKey:output_type -> orchicon.api.v1.CreateApiKeyResponse
+	3,  // 34: orchicon.api.v1.AuthService.RevokeApiKey:output_type -> orchicon.api.v1.RevokeApiKeyResponse
+	5,  // 35: orchicon.api.v1.AuthService.RotateApiKey:output_type -> orchicon.api.v1.RotateApiKeyResponse
+	7,  // 36: orchicon.api.v1.AuthService.ListApiKeys:output_type -> orchicon.api.v1.ListApiKeysResponse
+	9,  // 37: orchicon.api.v1.AuthService.GetApiKey:output_type -> orchicon.api.v1.GetApiKeyResponse
+	11, // 38: orchicon.api.v1.AuthService.GetIdentity:output_type -> orchicon.api.v1.GetIdentityResponse
+	13, // 39: orchicon.api.v1.AuthService.ListIdentities:output_type -> orchicon.api.v1.ListIdentitiesResponse
+	15, // 40: orchicon.api.v1.AuthService.ListEntitlements:output_type -> orchicon.api.v1.ListEntitlementsResponse
+	17, // 41: orchicon.api.v1.AuthService.CreateRole:output_type -> orchicon.api.v1.CreateRoleResponse
+	19, // 42: orchicon.api.v1.AuthService.ListRoles:output_type -> orchicon.api.v1.ListRolesResponse
+	21, // 43: orchicon.api.v1.AuthService.AssignRole:output_type -> orchicon.api.v1.AssignRoleResponse
+	23, // 44: orchicon.api.v1.AuthService.RevokeRole:output_type -> orchicon.api.v1.RevokeRoleResponse
+	25, // 45: orchicon.api.v1.AuthService.ListRoleBindings:output_type -> orchicon.api.v1.ListRoleBindingsResponse
+	27, // 46: orchicon.api.v1.AuthService.ListTenants:output_type -> orchicon.api.v1.ListTenantsResponse
+	29, // 47: orchicon.api.v1.AuthService.CreateTenant:output_type -> orchicon.api.v1.CreateTenantResponse
+	31, // 48: orchicon.api.v1.AuthService.ListAuditEntries:output_type -> orchicon.api.v1.ListAuditEntriesResponse
+	33, // [33:49] is the sub-list for method output_type
+	17, // [17:33] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_auth_service_proto_init() }
@@ -1873,7 +1994,7 @@ func file_orchicon_api_v1_auth_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_auth_service_proto_rawDesc), len(file_orchicon_api_v1_auth_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   30,
+			NumMessages:   32,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

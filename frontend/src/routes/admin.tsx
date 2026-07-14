@@ -3,6 +3,7 @@ import { createRoute } from "@tanstack/react-router";
 
 import {
   useListTenants,
+  useCreateTenant,
   useListIdentities,
   useListRoles,
   useListApiKeys,
@@ -13,6 +14,7 @@ import {
   useRevokeApiKey,
   useRotateApiKey,
 } from "@/api/auth";
+import { useToast } from "@/components/ui/toast";
 import { useIsAdmin } from "@/auth/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -74,30 +76,102 @@ function AdminPage() {
 
 function TenantsTab() {
   const { data, isLoading, error } = useListTenants();
-  if (isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>;
-  if (error) return <p className="text-sm text-destructive">{String(error)}</p>;
+  const create = useCreateTenant();
+  const toast = useToast();
+  const [slug, setSlug] = useState("");
+  const [name, setName] = useState("");
+
+  async function handleCreate() {
+    const trimmedSlug = slug.trim();
+    const trimmedName = name.trim();
+    if (!trimmedSlug || !trimmedName) return;
+    try {
+      const t = await create.mutateAsync({
+        slug: trimmedSlug,
+        name: trimmedName,
+      });
+      toast.success(`Tenant "${t?.name ?? trimmedName}" created.`, {
+        title: `Slug: ${t?.slug ?? trimmedSlug}`,
+      });
+      setSlug("");
+      setName("");
+    } catch {
+      // global onError already toasted the error
+    }
+  }
+
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b text-left text-muted-foreground">
-            <th className="py-2 pr-4">ID</th>
-            <th className="py-2 pr-4">Slug</th>
-            <th className="py-2 pr-4">Name</th>
-            <th className="py-2 pr-4">Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {data?.map((t) => (
-            <tr key={t.id} className="border-b">
-              <td className="py-2 pr-4 font-mono text-xs">{t.id}</td>
-              <td className="py-2 pr-4 font-mono text-xs">{t.slug}</td>
-              <td className="py-2 pr-4">{t.name}</td>
-              <td className="py-2 pr-4">{t.status}</td>
+    <div className="space-y-6">
+      <div className="space-y-2">
+        <h3 className="text-sm font-semibold">Create tenant</h3>
+        <div className="grid gap-2 md:grid-cols-[200px_1fr_auto]">
+          <Input
+            placeholder="acme"
+            value={slug}
+            onChange={(e) => setSlug(e.target.value)}
+            disabled={create.isPending}
+          />
+          <Input
+            placeholder="Acme Corporation"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            disabled={create.isPending}
+          />
+          <Button
+            onClick={handleCreate}
+            disabled={!slug.trim() || !name.trim() || create.isPending}
+          >
+            {create.isPending ? "Creating…" : "Create"}
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Slug must match <code className="font-mono">^[a-z0-9]+(?:-[a-z0-9]+)*$</code> and
+          is used as the unique identifier (e.g. <code className="font-mono">acme</code>).
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b text-left text-muted-foreground">
+              <th className="py-2 pr-4">ID</th>
+              <th className="py-2 pr-4">Slug</th>
+              <th className="py-2 pr-4">Name</th>
+              <th className="py-2 pr-4">Status</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {isLoading && (
+              <tr>
+                <td colSpan={4} className="py-3 text-muted-foreground">
+                  Loading…
+                </td>
+              </tr>
+            )}
+            {error && !isLoading && (
+              <tr>
+                <td colSpan={4} className="py-3 text-destructive">
+                  Failed to load: {String(error)}
+                </td>
+              </tr>
+            )}
+            {data && data.length === 0 && !isLoading && (
+              <tr>
+                <td colSpan={4} className="py-3 text-muted-foreground">
+                  No tenants yet.
+                </td>
+              </tr>
+            )}
+            {data?.map((t) => (
+              <tr key={t.id} className="border-b">
+                <td className="py-2 pr-4 font-mono text-xs">{t.id}</td>
+                <td className="py-2 pr-4 font-mono text-xs">{t.slug}</td>
+                <td className="py-2 pr-4">{t.name}</td>
+                <td className="py-2 pr-4">{t.status}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -138,10 +212,37 @@ function RolesTab() {
   const { data } = useListRoles();
   const createRole = useCreateRole();
   const assignRole = useAssignRole();
+  const toast = useToast();
   const [name, setName] = useState("");
   const [ents, setEnts] = useState("project:create,project:write");
   const [identityId, setIdentityId] = useState("");
   const [roleId, setRoleId] = useState("");
+
+  async function handleCreateRole() {
+    try {
+      const r = await createRole.mutateAsync({
+        name,
+        scope: "tenant",
+        entitlements: ents.split(",").map((s) => s.trim()).filter(Boolean),
+      });
+      toast.success(`Role "${r?.name ?? name}" created.`);
+      setName("");
+    } catch {
+      /* error already toasted by global handler */
+    }
+  }
+
+  async function handleAssignRole() {
+    if (!identityId || !roleId) return;
+    try {
+      await assignRole.mutateAsync({ identityId, roleId, scope: "tenant" });
+      toast.success("Role assigned.");
+      setIdentityId("");
+      setRoleId("");
+    } catch {
+      /* error already toasted */
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -156,16 +257,10 @@ function RolesTab() {
             onChange={(e) => setEnts(e.target.value)}
           />
           <Button
-            onClick={() =>
-              createRole.mutate({
-                name,
-                scope: "tenant",
-                entitlements: ents.split(",").map((s) => s.trim()).filter(Boolean),
-              })
-            }
+            onClick={handleCreateRole}
             disabled={!name || createRole.isPending}
           >
-            Create
+            {createRole.isPending ? "Creating…" : "Create"}
           </Button>
         </div>
       </div>
@@ -199,10 +294,10 @@ function RolesTab() {
           <Input placeholder="identity id" value={identityId} onChange={(e) => setIdentityId(e.target.value)} />
           <Input placeholder="role id" value={roleId} onChange={(e) => setRoleId(e.target.value)} />
           <Button
-            onClick={() => assignRole.mutate({ identityId, roleId, scope: "tenant" })}
+            onClick={handleAssignRole}
             disabled={!identityId || !roleId || assignRole.isPending}
           >
-            Assign
+            {assignRole.isPending ? "Assigning…" : "Assign"}
           </Button>
         </div>
       </div>
@@ -215,10 +310,48 @@ function ApiKeysTab() {
   const create = useCreateApiKey();
   const revoke = useRevokeApiKey();
   const rotate = useRotateApiKey();
+  const toast = useToast();
   const [identityId, setIdentityId] = useState("");
   const [keyName, setKeyName] = useState("");
   const [scopes, setScopes] = useState("project:read,project:write");
   const [secret, setSecret] = useState("");
+
+  async function handleCreate() {
+    if (!identityId || !keyName) return;
+    try {
+      const res = await create.mutateAsync({
+        identityId,
+        name: keyName,
+        scopes: scopes.split(",").map((s) => s.trim()).filter(Boolean),
+      });
+      toast.success(`API key "${keyName}" created.`);
+      setSecret(res.secret?.key ?? "");
+      setKeyName("");
+    } catch {
+      /* error already toasted */
+    }
+  }
+
+  async function handleRotate(id: string, name: string) {
+    try {
+      const res = await rotate.mutateAsync(id);
+      toast.success(`Key "${name}" rotated.`);
+      if (res?.secret?.key) {
+        setSecret(res.secret.key);
+      }
+    } catch {
+      /* error already toasted */
+    }
+  }
+
+  async function handleRevoke(id: string, name: string) {
+    try {
+      await revoke.mutateAsync(id);
+      toast.success(`Key "${name}" revoked.`);
+    } catch {
+      /* error already toasted */
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -230,17 +363,10 @@ function ApiKeysTab() {
           <Input placeholder="scopes" value={scopes} onChange={(e) => setScopes(e.target.value)} />
         </div>
         <Button
-          onClick={async () => {
-            const res = await create.mutateAsync({
-              identityId,
-              name: keyName,
-              scopes: scopes.split(",").map((s) => s.trim()).filter(Boolean),
-            });
-            setSecret(res.secret?.key ?? "");
-          }}
+          onClick={handleCreate}
           disabled={!identityId || !keyName || create.isPending}
         >
-          Create
+          {create.isPending ? "Creating…" : "Create"}
         </Button>
         {secret && (
           <div className="rounded-md bg-yellow-50 border border-yellow-200 p-3 text-xs">
@@ -276,7 +402,7 @@ function ApiKeysTab() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => rotate.mutate(k.id)}
+                    onClick={() => handleRotate(k.id, k.name)}
                     disabled={rotate.isPending}
                   >
                     Rotate
@@ -284,7 +410,7 @@ function ApiKeysTab() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => revoke.mutate(k.id)}
+                    onClick={() => handleRevoke(k.id, k.name)}
                     disabled={revoke.isPending || k.status === "revoked"}
                   >
                     Revoke

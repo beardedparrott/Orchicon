@@ -32,6 +32,7 @@ service AuthService {
 
   // --- Tenants (admin) ---
   rpc ListTenants(ListTenantsRequest) returns (ListTenantsResponse);
+  rpc CreateTenant(CreateTenantRequest) returns (CreateTenantResponse);
 
   // --- Audit ---
   rpc ListAuditEntries(ListAuditEntriesRequest) returns (ListAuditEntriesResponse);
@@ -167,6 +168,20 @@ message ListTenantsRequest {
 message ListTenantsResponse {
   repeated Tenant tenants = 1;
   string next_page_token = 2;
+}
+message CreateTenantRequest {
+  // Required. Lowercase, kebab-case identifier (e.g. "acme"). Used in
+  // API paths and as the unique human-readable key; the id is server-
+  // assigned.
+  string slug = 1;
+  // Required. Display name (e.g. "Acme Corporation").
+  string name = 2;
+  // Optional. JSON-encoded budget envelope. Defaults to a permissive
+  // envelope if empty.
+  string budget_envelope_json = 3;
+}
+message CreateTenantResponse {
+  Tenant tenant = 1;
 }
 
 // ---------------------------------------------------------------------------

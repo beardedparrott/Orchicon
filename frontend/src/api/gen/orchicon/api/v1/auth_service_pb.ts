@@ -1241,6 +1241,101 @@ export class ListTenantsResponse extends Message<ListTenantsResponse> {
 }
 
 /**
+ * @generated from message orchicon.api.v1.CreateTenantRequest
+ */
+export class CreateTenantRequest extends Message<CreateTenantRequest> {
+  /**
+   * Required. Lowercase, kebab-case identifier (e.g. "acme"). Used in
+   * API paths and as the unique human-readable key; the id is server-
+   * assigned.
+   *
+   * @generated from field: string slug = 1;
+   */
+  slug = "";
+
+  /**
+   * Required. Display name (e.g. "Acme Corporation").
+   *
+   * @generated from field: string name = 2;
+   */
+  name = "";
+
+  /**
+   * Optional. JSON-encoded budget envelope. Defaults to a permissive
+   * envelope if empty.
+   *
+   * @generated from field: string budget_envelope_json = 3;
+   */
+  budgetEnvelopeJson = "";
+
+  constructor(data?: PartialMessage<CreateTenantRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.CreateTenantRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "slug", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "budget_envelope_json", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateTenantRequest {
+    return new CreateTenantRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateTenantRequest {
+    return new CreateTenantRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateTenantRequest {
+    return new CreateTenantRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateTenantRequest | PlainMessage<CreateTenantRequest> | undefined, b: CreateTenantRequest | PlainMessage<CreateTenantRequest> | undefined): boolean {
+    return proto3.util.equals(CreateTenantRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.CreateTenantResponse
+ */
+export class CreateTenantResponse extends Message<CreateTenantResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.Tenant tenant = 1;
+   */
+  tenant?: Tenant;
+
+  constructor(data?: PartialMessage<CreateTenantResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.CreateTenantResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "tenant", kind: "message", T: Tenant },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateTenantResponse {
+    return new CreateTenantResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateTenantResponse {
+    return new CreateTenantResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateTenantResponse {
+    return new CreateTenantResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateTenantResponse | PlainMessage<CreateTenantResponse> | undefined, b: CreateTenantResponse | PlainMessage<CreateTenantResponse> | undefined): boolean {
+    return proto3.util.equals(CreateTenantResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.ListAuditEntriesRequest
  */
 export class ListAuditEntriesRequest extends Message<ListAuditEntriesRequest> {
