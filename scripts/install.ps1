@@ -8,6 +8,7 @@
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Version v0.2.0
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -InstallDir "C:\bin"
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Uninstall
+#   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Clean
 #
 # For Linux/macOS, see scripts/install.sh or:
 #   curl -fsSL https://orchicon.dev/install | bash
@@ -17,6 +18,7 @@ param(
     [string]$Version = "",
     [string]$InstallDir = "",
     [switch]$Uninstall,
+    [switch]$Clean,
     [switch]$DryRun,
     [switch]$Help
 )
@@ -36,6 +38,10 @@ Options:
   -Version <tag>      Install a specific version (e.g. v0.2.0). Default: latest.
   -InstallDir <dir>   Installation directory (default: `$HOME\.local\bin).
   -Uninstall          Remove Orchicon from the install directory.
+  -Clean              Stop and destroy dev containers, then remove the Orchicon
+                      binary. All user data is preserved (Postgres, NATS,
+                      ClickHouse volumes + BlobStore files + runtime state).
+                      Use before upgrading to a new version.
   -DryRun             Print what would happen without making changes.
   -Help               Show this help.
 "@
@@ -62,6 +68,59 @@ if ($Uninstall) {
     } else {
         Write-Warn "orchicon not found in $InstallDir — nothing to remove"
     }
+    exit 0
+}
+
+# --- Clean ---
+if ($Clean) {
+    Write-Host ""
+    Write-Host "Orchicon — clean" -ForegroundColor White
+    Write-Host ""
+
+    $bin = Join-Path $InstallDir "orchicon.exe"
+
+    # 1. Stop dev stack via the binary (if available).
+    if (Test-Path $bin) {
+        Write-Info "stopping dev stack via '$bin dev stop'…"
+        if (-not $DryRun) {
+            & $bin dev stop 2>$null | Out-Null
+        }
+    } else {
+        # Fall back to docker compose if the binary is gone.
+        $docker = Get-Command "docker" -ErrorAction SilentlyContinue
+        if ($null -ne $docker) {
+            Write-Info "stopping orchicon containers via docker compose…"
+            if (-not $DryRun) {
+                docker compose -p orchicon down 2>$null | Out-Null
+            }
+        }
+    }
+
+    # 2. Remove the binary.
+    if (Test-Path $bin) {
+        Write-Info "removing $bin"
+        if (-not $DryRun) { Remove-Item $bin -Force }
+        Write-Ok "binary removed"
+    } else {
+        Write-Warn "orchicon not found in $InstallDir — nothing to remove"
+    }
+
+    # 3. Summary.
+    Write-Host ""
+    Write-Host "Infrastructure cleaned — all user data preserved" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Data preserved:" -ForegroundColor White
+    Write-Host "  • Postgres database (Docker volume)" -ForegroundColor DarkGray
+    Write-Host "  • NATS JetStream messages (Docker volume)" -ForegroundColor DarkGray
+    Write-Host "  • ClickHouse / SigNoz / ZooKeeper (Docker volumes)" -ForegroundColor DarkGray
+    Write-Host "  • BlobStore files (data\blobs)" -ForegroundColor DarkGray
+    Write-Host "  • Runtime state (.dev)" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "Containers destroyed, binary removed." -ForegroundColor White
+    Write-Host "Re-run the installer to get the latest version:" -ForegroundColor DarkGray
+    Write-Host "  irm https://orchicon.dev/install.ps1 | iex" -ForegroundColor DarkGray
+    Write-Host ""
+
     exit 0
 }
 
