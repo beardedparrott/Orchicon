@@ -45,7 +45,7 @@ function WorkItemsPage() {
           {activeProjectId && (
             <Button asChild>
               <Link
-                to="/work-items_/new"
+                to="/work-items/new"
                 search={{ projectId: activeProjectId, parentId: "" }}
               >
                 New Work Item
@@ -99,7 +99,7 @@ function WorkItemsPage() {
         {activeProjectId && (
           <Button variant="outline" asChild>
             <Link
-              to="/work-items_/graph"
+              to="/work-items/graph"
               search={{ projectId: activeProjectId }}
             >
               Dependency Graph

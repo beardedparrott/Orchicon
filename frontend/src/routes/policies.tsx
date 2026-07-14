@@ -33,7 +33,7 @@ function PoliciesPage() {
           </p>
         </div>
         <Button asChild>
-          <Link to="/policies_/new">New Policy</Link>
+          <Link to="/policies/new">New Policy</Link>
         </Button>
       </div>
 

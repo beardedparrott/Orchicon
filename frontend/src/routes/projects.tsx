@@ -34,7 +34,7 @@ function ProjectsPage() {
           </p>
         </div>
         <Button asChild>
-          <Link to="/projects_/new">New Project</Link>
+          <Link to="/projects/new">New Project</Link>
         </Button>
       </div>
 

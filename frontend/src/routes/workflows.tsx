@@ -36,7 +36,7 @@ function WorkflowsPage() {
           </p>
         </div>
         <Button asChild>
-          <Link to="/workflows_/new">New Workflow</Link>
+          <Link to="/workflows/new">New Workflow</Link>
         </Button>
       </div>
 

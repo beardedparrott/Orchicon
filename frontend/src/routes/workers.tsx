@@ -36,7 +36,7 @@ function WorkersPage() {
           </p>
         </div>
         <Button asChild>
-          <Link to="/workers_/new">New Worker</Link>
+          <Link to="/workers/new">New Worker</Link>
         </Button>
       </div>
 
