@@ -10,7 +10,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AssignRoleRequest, AssignRoleResponse, CreateApiKeyRequest, CreateApiKeyResponse, CreateRoleRequest, CreateRoleResponse, GetApiKeyRequest, GetApiKeyResponse, GetIdentityRequest, GetIdentityResponse, ListApiKeysRequest, ListApiKeysResponse, ListAuditEntriesRequest, ListAuditEntriesResponse, ListEntitlementsRequest, ListEntitlementsResponse, ListIdentitiesRequest, ListIdentitiesResponse, ListRoleBindingsRequest, ListRoleBindingsResponse, ListRolesRequest, ListRolesResponse, ListTenantsRequest, ListTenantsResponse, RevokeApiKeyRequest, RevokeApiKeyResponse, RevokeRoleRequest, RevokeRoleResponse, RotateApiKeyRequest, RotateApiKeyResponse } from "./auth_service_pb.js";
+import { AssignRoleRequest, AssignRoleResponse, CreateApiKeyRequest, CreateApiKeyResponse, CreateRoleRequest, CreateRoleResponse, CreateTenantRequest, CreateTenantResponse, GetApiKeyRequest, GetApiKeyResponse, GetIdentityRequest, GetIdentityResponse, ListApiKeysRequest, ListApiKeysResponse, ListAuditEntriesRequest, ListAuditEntriesResponse, ListEntitlementsRequest, ListEntitlementsResponse, ListIdentitiesRequest, ListIdentitiesResponse, ListRoleBindingsRequest, ListRoleBindingsResponse, ListRolesRequest, ListRolesResponse, ListTenantsRequest, ListTenantsResponse, RevokeApiKeyRequest, RevokeApiKeyResponse, RevokeRoleRequest, RevokeRoleResponse, RotateApiKeyRequest, RotateApiKeyResponse } from "./auth_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -151,6 +151,15 @@ export const AuthService = {
       name: "ListTenants",
       I: ListTenantsRequest,
       O: ListTenantsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc orchicon.api.v1.AuthService.CreateTenant
+     */
+    createTenant: {
+      name: "CreateTenant",
+      I: CreateTenantRequest,
+      O: CreateTenantResponse,
       kind: MethodKind.Unary,
     },
     /**

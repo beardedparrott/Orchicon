@@ -19,6 +19,18 @@ export function useListTenants() {
   });
 }
 
+export function useCreateTenant() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      slug: string;
+      name: string;
+      budgetEnvelopeJson?: string;
+    }) => (await authClient.createTenant(input)).tenant,
+    onSuccess: () => qc.invalidateQueries({ queryKey: authKeys.tenants() }),
+  });
+}
+
 export function useListIdentities() {
   return useQuery({
     queryKey: authKeys.identities(),

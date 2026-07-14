@@ -361,7 +361,13 @@ func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 		log.Warn("frontend embed unavailable, serving API only", "error", err)
 		return apiHandler
 	}
-	fileServer := http.FileServer(http.FS(spaFS))
+	// http.FileServer uses r.URL.Path verbatim when opening files from the
+	// FS, and embed.FS rejects paths with a leading slash. StripPrefix
+	// rewrites the path in the request so FileServer sees "assets/…"
+	// instead of "/assets/…"; without this every asset path falls
+	// through to the SPA index.html and the browser parses HTML as JS
+	// (a blank page).
+	fileServer := http.StripPrefix("/", http.FileServer(http.FS(spaFS)))
 	indexHTML, _ := fs.ReadFile(spaFS, "index.html")
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -378,11 +384,11 @@ func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 			return
 		}
 
-		// Try to serve the file from the embedded FS. r.URL.Path has a
-		// leading slash ("/assets/index-…js"), but embed.FS uses
-		// slash-less paths; strip it before Open so we don't fall
-		// through to the index.html branch and serve HTML to the
-		// browser in place of a JS bundle (which renders a blank page).
+		// Try to serve the file from the embedded FS. The check itself
+		// uses the slash-less path (embed.FS rejects leading slashes)
+		// so we don't fall through to the index.html branch; the actual
+		// fileServer (above) is wrapped in http.StripPrefix so it also
+		// sees a slash-less path internally.
 		cleanPath := strings.TrimPrefix(path, "/")
 		f, err := spaFS.Open(cleanPath)
 		if err == nil {

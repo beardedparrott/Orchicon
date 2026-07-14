@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
@@ -459,6 +460,48 @@ func (s *Service) ListTenants(ctx context.Context, req *connect.Request[apiv1.Li
 	return connect.NewResponse(resp), nil
 }
 
+// CreateTenant provisions a new tenant. Admin-only path (the RBAC
+// interceptor enforces auth:write + tenant:create before this is
+// reached). Slug is validated server-side; the same regex the project
+// service uses ([a-z0-9]+(?:-[a-z0-9]+)*) so URLs and identifiers
+// stay consistent across the codebase.
+func (s *Service) CreateTenant(ctx context.Context, req *connect.Request[apiv1.CreateTenantRequest]) (*connect.Response[apiv1.CreateTenantResponse], error) {
+	msg := req.Msg
+	slug := strings.TrimSpace(msg.Slug)
+	if slug == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("slug must not be empty"))
+	}
+	if !slugRE.MatchString(slug) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("slug must match ^[a-z0-9]+(?:-[a-z0-9]+)*$"))
+	}
+	if len(slug) > 63 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("slug too long"))
+	}
+	name := strings.TrimSpace(msg.Name)
+	if name == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("name must not be empty"))
+	}
+	if utf8.RuneCountInString(name) > 200 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("name too long"))
+	}
+	// budget_envelope_json: optional, but if supplied must be valid JSON
+	// so we don't store garbage in a jsonb column.
+	budget := strings.TrimSpace(msg.BudgetEnvelopeJson)
+	if budget != "" && !json.Valid([]byte(budget)) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("budget_envelope_json is not valid JSON"))
+	}
+	row, err := db.CreateTenant(ctx, s.pool, slug, name, budget)
+	if err != nil {
+		// Most likely a unique-constraint violation on slug.
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("tenant slug %q already in use", slug))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	s.log.Info("tenant created", "id", row.ID, "slug", row.Slug, "name", row.Name)
+	return connect.NewResponse(&apiv1.CreateTenantResponse{Tenant: tenantRowToProto(row)}), nil
+}
+
 // --- Audit -----------------------------------------------------------------
 
 // ListAuditEntries returns a page of policy decisions (the audit view).
@@ -639,3 +682,10 @@ func nullableStr(s string) string { return s }
 // pgx import retained for future direct queries.
 var _ = pgx.ErrNoRows
 var _ = json.Valid
+
+// slugRE defines the canonical slug character set: lowercase
+// alphanumerics and hyphens, must start and end alphanumeric. Mirrors
+// the project service's slug regex so tenant and project slugs follow
+// the same rules (a tenant's slug becomes the path prefix for the
+// projects, workers, etc. nested under it).
+var slugRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
