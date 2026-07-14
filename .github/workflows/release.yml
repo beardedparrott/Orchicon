@@ -70,8 +70,9 @@ jobs:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
           CGO_ENABLED: 0
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
-          VERSION="${GITHUB_REF_NAME:-${{ inputs.version }}}"
+          VERSION="${ORCHICON_VERSION}"
           LDFLAGS="-X github.com/beardedparrott/orchicon/internal/version.gitCommit=$(git rev-parse --short HEAD) \
                    -X github.com/beardedparrott/orchicon/internal/version.gitTag=${VERSION} \
                    -X github.com/beardedparrott/orchicon/internal/version.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -80,8 +81,10 @@ jobs:
           go build -ldflags "$LDFLAGS" -o "orchicon${EXT}" ./cmd/orchicon
 
       - name: Package
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
-          VERSION="${GITHUB_REF_NAME:-${{ inputs.version }}}"
+          VERSION="${ORCHICON_VERSION}"
           VERSION_NUM="${VERSION#v}"
           EXT=""
           [ "${{ matrix.os }}" = "windows" ] && EXT=".exe"
