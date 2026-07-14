@@ -45,7 +45,7 @@ function WorkItemsPage() {
           {activeProjectId && (
             <Button asChild>
               <Link
-                to="/work-items/new"
+                to="/work-items_/new"
                 search={{ projectId: activeProjectId, parentId: "" }}
               >
                 New Work Item
@@ -99,7 +99,7 @@ function WorkItemsPage() {
         {activeProjectId && (
           <Button variant="outline" asChild>
             <Link
-              to="/work-items/graph"
+              to="/work-items_/graph"
               search={{ projectId: activeProjectId }}
             >
               Dependency Graph
@@ -207,7 +207,7 @@ function TreeNode({
         )}
         <KindBadge kind={item.kind} />
         <Link
-          to="/work-items/$id"
+          to="/work-items_/$id"
           params={{ id: item.id }}
           className="flex-1 truncate text-sm font-medium hover:underline"
         >
@@ -272,7 +272,7 @@ function KanbanBoard({ projectId }: { projectId: string }) {
             {colItems.map((item) => (
               <Link
                 key={item.id}
-                to="/work-items/$id"
+                to="/work-items_/$id"
                 params={{ id: item.id }}
               >
                 <Card className="transition-colors hover:bg-accent">

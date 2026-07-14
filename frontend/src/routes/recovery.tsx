@@ -55,7 +55,7 @@ function RecoveryPage() {
       {recoveries && recoveries.length > 0 && (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {recoveries.map((r) => (
-            <Link key={r.id} to="/recovery/$id" params={{ id: r.id }}>
+            <Link key={r.id} to="/recovery_/$id" params={{ id: r.id }}>
               <Card className="transition-colors hover:bg-accent">
                 <CardHeader>
                   <CardTitle className="flex items-center justify-between">

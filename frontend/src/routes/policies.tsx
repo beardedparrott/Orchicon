@@ -33,7 +33,7 @@ function PoliciesPage() {
           </p>
         </div>
         <Button asChild>
-          <Link to="/policies/new">New Policy</Link>
+          <Link to="/policies_/new">New Policy</Link>
         </Button>
       </div>
 
@@ -60,7 +60,7 @@ function PoliciesPage() {
       {policies && policies.length > 0 && (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {policies.map((p) => (
-            <Link key={p.id} to="/policies/$id" params={{ id: p.id }}>
+            <Link key={p.id} to="/policies_/$id" params={{ id: p.id }}>
               <Card className="transition-colors hover:bg-accent">
                 <CardHeader>
                   <CardTitle className="flex items-center justify-between">
