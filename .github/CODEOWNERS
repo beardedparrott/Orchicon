@@ -1,0 +1,13 @@
+# CODEOWNERS — required reviewers for beardedparrott/Orchicon
+#
+# The user listed as the owner of a path must approve any PR that
+# touches it. Combined with "require code owner reviews" on main, this
+# is the gate: external contributors can open PRs but cannot merge
+# without an approval from a code owner.
+#
+# @beardedparrott is the sole maintainer; admins (the same person)
+# can bypass via the "Include administrators: OFF" branch protection
+# setting, so solo merges still work.
+
+# Default: owner owns everything.
+* @beardedparrott
