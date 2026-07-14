@@ -92,7 +92,7 @@ function NewPolicyPage() {
       query: values.query ?? "",
       versionNote: values.versionNote ?? "",
     });
-    navigate({ to: "/policies/$id", params: { id: result.policy.id } });
+    navigate({ to: "/policies_/$id", params: { id: result.policy.id } });
   };
 
   return (

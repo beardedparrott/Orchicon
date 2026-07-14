@@ -63,7 +63,7 @@ function NewWorkflowPage() {
       recoveryPolicyRef: values.recoveryPolicyRef ?? "",
       versionNote: values.versionNote ?? "",
     });
-    navigate({ to: "/workflows/$id", params: { id: res.workflow.id } });
+    navigate({ to: "/workflows_/$id", params: { id: res.workflow.id } });
   };
 
   return (

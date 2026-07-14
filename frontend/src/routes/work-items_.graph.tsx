@@ -28,7 +28,7 @@ export const Route = createRoute({
 });
 
 function DependencyGraphPage() {
-  const search = useSearch({ from: "/work-items/graph" });
+  const search = useSearch({ from: "/work-items_/graph" });
   const { data: graph, isLoading, error } = useGetDependencyGraph(
     search.projectId,
   );

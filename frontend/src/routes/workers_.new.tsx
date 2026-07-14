@@ -157,7 +157,7 @@ function NewWorkerPage() {
       concurrencyLimit: values.concurrencyLimit,
       versionNote: values.versionNote || undefined,
     });
-    navigate({ to: "/workers/$id", params: { id: result.worker.id } });
+    navigate({ to: "/workers_/$id", params: { id: result.worker.id } });
   };
 
   return (

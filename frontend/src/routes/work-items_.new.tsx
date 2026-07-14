@@ -60,7 +60,7 @@ const KIND_TO_PROTO: Record<string, number> = {
 
 function NewWorkItemPage() {
   const navigate = useNavigate();
-  const search = useSearch({ from: "/work-items/new" });
+  const search = useSearch({ from: "/work-items_/new" });
   const projectId = search.projectId;
   const parentId = search.parentId || "";
   const createWorkItem = useCreateWorkItem();
