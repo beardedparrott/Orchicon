@@ -16,10 +16,12 @@
 
 ### Branching
 
-- **Every major change gets a branch.** No commits directly to `main`.
+- **Every change gets a branch.** No commits directly to `main`.
 - Branch naming: `<type>/<short-description>` (e.g. `feat/project-crud`,
   `fix/outbox-relay-dedup`, `chore/docker-compose-setup`).
 - Types: `feat`, `fix`, `chore`, `refactor`, `docs`, `test`.
+- **Create the branch before starting work**, not after. The PR
+  should be opened by the agent for review — do not wait to be asked.
 
 ### Committing
 
@@ -33,7 +35,7 @@
 
 ### Pull Requests
 
-- When a major change is complete, push the branch and create a PR.
+- When work on a change is complete, push the branch and create a PR.
 - PR title: same format as branch name (`feat: project CRUD service`).
 - PR description should reference the design doc(s) it implements.
 - After pushing, use `gh pr create` to open the PR.

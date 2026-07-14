@@ -7,6 +7,7 @@
 #   curl -fsSL https://orchicon.dev/install | bash -s -- --version v0.2.0
 #   curl -fsSL https://orchicon.dev/install | bash -s -- --install-dir /usr/local/bin
 #   curl -fsSL https://orchicon.dev/install | bash -s -- --uninstall
+#   curl -fsSL https://orchicon.dev/install | bash -s -- --clean
 #
 # This script downloads the latest (or specified) Orchicon release binary
 # from GitHub and installs it to the chosen directory. It detects OS and
@@ -24,6 +25,7 @@ GITHUB_REPO="Orchicon"
 INSTALL_DIR="${ORCHICON_INSTALL_DIR:-${HOME}/.local/bin}"
 VERSION=""
 UNINSTALL=false
+CLEAN=false
 DRY_RUN=false
 
 # --- Colors -----------------------------------------------------------------
@@ -45,6 +47,7 @@ while [ $# -gt 0 ]; do
     --version|-v)      VERSION="$2"; shift 2 ;;
     --install-dir|-d)  INSTALL_DIR="$2"; shift 2 ;;
     --uninstall)       UNINSTALL=true; shift ;;
+    --clean)           CLEAN=true; shift ;;
     --dry-run)         DRY_RUN=true; shift ;;
     --help|-h)
       cat <<EOF
@@ -56,6 +59,10 @@ Options:
   --version <tag>      Install a specific version (e.g. v0.2.0). Default: latest.
   --install-dir <dir>  Installation directory (default: ~/.local/bin).
   --uninstall          Remove Orchicon from the install directory.
+  --clean              Stop and destroy dev containers, then remove the Orchicon
+                       binary. All user data is preserved (Postgres, NATS,
+                       ClickHouse volumes + BlobStore files + runtime state).
+                       Use before upgrading to a new version.
   --dry-run            Print what would happen without making changes.
   -h, --help           Show this help.
 EOF
@@ -97,6 +104,64 @@ do_uninstall() {
   else
     warn "orchicon not found in $INSTALL_DIR — nothing to remove"
   fi
+  exit 0
+}
+
+# --- Clean ------------------------------------------------------------------
+#
+# Stop dev containers and remove the binary while preserving all user data
+# (Postgres, NATS, ClickHouse volumes + BlobStore files + runtime state).
+# This is meant for version upgrades: clean stops the old stack, then the
+# installer installs the new version.
+#
+do_clean() {
+  echo ""
+  echo -e "${B}Orchicon — clean${X}"
+  echo ""
+
+  local bin="$INSTALL_DIR/orchicon"
+
+  # 1. Stop dev stack via the binary (if available).
+  if [ -f "$bin" ]; then
+    info "stopping dev stack via '${bin} dev stop'…"
+    if [ "$DRY_RUN" = false ]; then
+      "$bin" dev stop 2>/dev/null || warn "dev stop failed (ignoring)"
+    else
+      echo -e "  ${D}(would run: ${bin} dev stop)${X}"
+    fi
+  else
+    # Fall back to docker compose if the binary is gone.
+    if command -v docker >/dev/null 2>&1; then
+      info "stopping orchicon containers via docker compose…"
+      $DRY_RUN || docker compose -p orchicon down 2>/dev/null || true
+    fi
+  fi
+
+  # 2. Remove the binary.
+  if [ -f "$bin" ]; then
+    info "removing $bin"
+    $DRY_RUN || rm -f "$bin"
+    ok "binary removed"
+  else
+    warn "orchicon not found in $INSTALL_DIR — nothing to remove"
+  fi
+
+  # 3. Summary.
+  echo ""
+  echo -e "${G}Infrastructure cleaned — all user data preserved${X}"
+  echo ""
+  echo -e "${B}Data preserved:${X}"
+  echo -e "  ${D}• Postgres database (Docker volume)${X}"
+  echo -e "  ${D}• NATS JetStream messages (Docker volume)${X}"
+  echo -e "  ${D}• ClickHouse / SigNoz / ZooKeeper (Docker volumes)${X}"
+  echo -e "  ${D}• BlobStore files (./data/blobs)${X}"
+  echo -e "  ${D}• Runtime state (.dev/)${X}"
+  echo ""
+  echo -e "${B}Containers destroyed, binary removed.${X}"
+  echo -e "  Re-run the installer to get the latest version:"
+  echo -e "  ${D}curl -fsSL https://orchicon.dev/install | bash${X}"
+  echo ""
+
   exit 0
 }
 
@@ -196,6 +261,8 @@ main() {
 # --- Run --------------------------------------------------------------------
 if [ "$UNINSTALL" = true ]; then
   do_uninstall
+elif [ "$CLEAN" = true ]; then
+  do_clean
 else
   main
 fi
