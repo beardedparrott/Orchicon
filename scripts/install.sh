@@ -147,7 +147,14 @@ main() {
   local bin="$INSTALL_DIR/orchicon"
   info "installing to ${B}${bin}${X}"
   if [ "$DRY_RUN" = false ]; then
-    mv "$tmpdir/orchicon" "$bin"
+    # The release archives may wrap the binary in a top-level
+    # version-os-arch/ directory (e.g. orchicon_0.1.0_linux_amd64/orchicon),
+    # not lay it flat at $tmpdir/orchicon. Find by name + executable bit
+    # so the installer works regardless of archive layout.
+    local extracted_binary
+    extracted_binary="$(find "$tmpdir" -type f -name orchicon -perm -u+x 2>/dev/null | head -1)"
+    [ -n "$extracted_binary" ] || die "could not find orchicon binary in archive"
+    mv "$extracted_binary" "$bin"
     chmod +x "$bin"
   fi
 

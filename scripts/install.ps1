@@ -104,7 +104,13 @@ Write-Info "installing to $bin"
 
 if (-not $DryRun) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    Move-Item -Path (Join-Path $tmpdir "orchicon.exe") -Destination $bin -Force
+    # The release archives may wrap the binary in a top-level
+    # version-os-arch/ directory (e.g. orchicon_0.1.0_windows_amd64/orchicon.exe),
+    # not lay it flat at $tmpdir\orchicon.exe. Find by name so the
+    # installer works regardless of archive layout.
+    $extracted = Get-ChildItem -Path $tmpdir -Recurse -Filter "orchicon.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $extracted) { Write-Err "could not find orchicon.exe in archive"; exit 1 }
+    Move-Item -Path $extracted.FullName -Destination $bin -Force
 }
 
 # --- Cleanup ---
