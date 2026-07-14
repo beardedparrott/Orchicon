@@ -39,6 +39,10 @@
 - PR title: same format as branch name (`feat: project CRUD service`).
 - PR description should reference the design doc(s) it implements.
 - After pushing, use `gh pr create` to open the PR.
+- **All PRs must carry the `release` label** during early development.
+  The `auto-release.yml` workflow creates a GitHub release automatically
+  when a labeled PR is merged to main (bumps the patch version). Remove
+  this requirement when a more selective release cadence is desired.
 - Do not merge your own PR without review unless explicitly told to.
 
 ### Sync
