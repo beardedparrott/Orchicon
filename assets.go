@@ -12,11 +12,20 @@ package assets
 
 import "embed"
 
-// ComposeYAML is the embedded Docker Compose stack
-// (deploy/compose/docker-compose.yml).
+// ComposeFS embeds the entire Docker Compose stack directory
+// (deploy/compose/) — the YAML, the Postgres init SQL, the ClickHouse
+// cluster config, the OTel collector config, and the SigNoz config.
 //
-//go:embed deploy/compose/docker-compose.yml
-var ComposeYAML string
+// The compose file uses relative mounts (e.g.
+// ./clickhouse-cluster.xml:/etc/clickhouse-server/config.d/cluster.xml),
+// so the binary extracts this FS into a temp directory and runs
+// `docker compose` from there. If only the YAML were embedded, the
+// side-file mounts would silently fail (Docker creates an empty
+// directory at the destination, ClickHouse never sees the cluster
+// definition, the schema migrator 404s). See cmd/orchicon/dev.go.
+//
+//go:embed all:deploy/compose
+var ComposeFS embed.FS
 
 // MigrationsFS embeds the Atlas migration SQL files (db/migrations/*.sql).
 // The migration runner reads these and applies them in order.

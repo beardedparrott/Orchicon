@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -177,11 +178,9 @@ func devStatus(log *slog.Logger) int {
 
 	// Docker Compose services.
 	fmt.Println("Docker Compose services:")
-	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", "-", "ps", "--format", "table {{.Name}}\t{{.Service}}\t{{.Status}}")
-	cmd.Stdin = strings.NewReader(assets.ComposeYAML)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	_ = cmd.Run()
+	if err := runComposeFromTemp(ctx, log, "ps", "--format", "table {{.Name}}\t{{.Service}}\t{{.Status}}"); err != nil {
+		log.Warn("compose ps failed", "error", err)
+	}
 
 	// Endpoint probes.
 	fmt.Println()
@@ -205,23 +204,91 @@ func devStatus(log *slog.Logger) int {
 
 // --- Compose helpers --------------------------------------------------------
 
-// composeUp writes the embedded compose file to a temp file and runs
-// `docker compose up -d`.
-func composeUp(ctx context.Context, log *slog.Logger) error {
-	tmp, err := os.CreateTemp("", "orchicon-compose-*.yml")
+// extractComposeDir writes the embedded deploy/compose/ directory to a
+// fresh temp directory and returns its path. The docker-compose.yml uses
+// relative mounts (e.g. ./clickhouse-cluster.xml:/etc/...) so docker
+// compose must run from a directory that contains all the side files;
+// extracting the whole tree (not just the YAML) is what makes those
+// mounts land correctly. See assets.go for why.
+//
+// The embed.FS root is the repo root, so the embedded paths start with
+// "deploy/compose/" — we strip that prefix when laying files out so the
+// docker-compose.yml lands at the top of the temp dir.
+//
+// Caller is responsible for os.RemoveAll on the returned dir when done.
+func extractComposeDir() (string, error) {
+	dir, err := os.MkdirTemp("", "orchicon-compose-*")
 	if err != nil {
-		return fmt.Errorf("create temp compose file: %w", err)
+		return "", fmt.Errorf("create temp compose dir: %w", err)
 	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(assets.ComposeYAML); err != nil {
-		return fmt.Errorf("write compose file: %w", err)
+	const prefix = "deploy/compose/"
+	err = fs.WalkDir(assets.ComposeFS, ".", func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !strings.HasPrefix(path, prefix) {
+			// Not under deploy/compose/ (e.g. the repo root, the deploy
+			// directory itself). Skip — we only want the compose tree.
+			return nil
+		}
+		rel := strings.TrimPrefix(path, prefix)
+		if rel == "" || d.IsDir() {
+			// The "deploy/compose" directory itself, or an empty path.
+			// Either way nothing to write.
+			return nil
+		}
+		target := filepath.Join(dir, rel)
+		data, err := assets.ComposeFS.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read embedded %s: %w", path, err)
+		}
+		// Read-only files like *.sql / *.xml / *.yaml are fine with 0o644.
+		return os.WriteFile(target, data, 0o644)
+	})
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return "", err
 	}
-	tmp.Close()
+	return dir, nil
+}
 
-	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", tmp.Name(), "up", "-d")
+// runComposeFromTemp extracts the embedded compose tree, runs `docker
+// compose` with the given sub-args from that directory, and removes the
+// temp dir on return. Used by composeUp / composeDown / composeStatus.
+//
+// The project name is pinned to "orchicon" (`-p orchicon`) so successive
+// `orchicon dev start` invocations target the same containers (and
+// `orchicon dev stop` cleanly tears them down) regardless of the
+// per-invocation temp dir the compose YAML lives in. Without this,
+// each start picks a fresh project name and the next start collides
+// on the hardcoded container names in docker-compose.yml.
+func runComposeFromTemp(ctx context.Context, log *slog.Logger, args ...string) error {
+	dir, err := extractComposeDir()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if rmErr := os.RemoveAll(dir); rmErr != nil {
+			log.Warn("remove temp compose dir", "dir", dir, "error", rmErr)
+		}
+	}()
+
+	fullArgs := append([]string{
+		"compose",
+		"-p", "orchicon",
+		"-f", filepath.Join(dir, "docker-compose.yml"),
+	}, args...)
+	cmd := exec.CommandContext(ctx, "docker", fullArgs...)
+	cmd.Dir = dir // run from the dir so relative mounts resolve
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	return cmd.Run()
+}
+
+// composeUp extracts the embedded compose tree to a temp dir and runs
+// `docker compose up -d` from there. The dir is removed on return.
+func composeUp(ctx context.Context, log *slog.Logger) error {
+	if err := runComposeFromTemp(ctx, log, "up", "-d"); err != nil {
 		return fmt.Errorf("docker compose up: %w", err)
 	}
 	return nil
@@ -229,20 +296,10 @@ func composeUp(ctx context.Context, log *slog.Logger) error {
 
 // composeDown runs `docker compose down` with the embedded compose file.
 func composeDown(ctx context.Context, log *slog.Logger) error {
-	tmp, err := os.CreateTemp("", "orchicon-compose-*.yml")
-	if err != nil {
-		return fmt.Errorf("create temp compose file: %w", err)
+	if err := runComposeFromTemp(ctx, log, "down"); err != nil {
+		return fmt.Errorf("docker compose down: %w", err)
 	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(assets.ComposeYAML); err != nil {
-		return fmt.Errorf("write compose file: %w", err)
-	}
-	tmp.Close()
-
-	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", tmp.Name(), "down")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return nil
 }
 
 // waitForContainer polls `docker inspect` for the container's health
