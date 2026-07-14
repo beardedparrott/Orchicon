@@ -378,8 +378,13 @@ func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 			return
 		}
 
-		// Try to serve the file from the embedded FS.
-		f, err := spaFS.Open(path)
+		// Try to serve the file from the embedded FS. r.URL.Path has a
+		// leading slash ("/assets/index-…js"), but embed.FS uses
+		// slash-less paths; strip it before Open so we don't fall
+		// through to the index.html branch and serve HTML to the
+		// browser in place of a JS bundle (which renders a blank page).
+		cleanPath := strings.TrimPrefix(path, "/")
+		f, err := spaFS.Open(cleanPath)
 		if err == nil {
 			f.Close()
 			fileServer.ServeHTTP(w, r)
