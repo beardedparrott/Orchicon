@@ -1,11 +1,10 @@
 # wrangler.toml — CloudFlare Pages build config for orchicon.dev
 #
-# This file tells CloudFlare Pages how to build the static site.
-# Source of truth: site/ (HTML + CSS). The build command copies the
-# canonical install scripts from scripts/ into the deployed bundle, so
-# `curl -fsSL https://orchicon.dev/install | bash` and
-# `irm https://orchicon.dev/install.ps1 | iex` serve the same content
-# as the repo's scripts/install.sh and scripts/install.ps1.
+# Pages project metadata. Pages projects do NOT support a [build]
+# section in wrangler.toml (that's a Workers-only field) — the build
+# command and other build settings live in the CloudFlare dashboard.
+# This file documents the deploy-time contract: project name, build
+# output directory, and compatibility date.
 #
 # Configure the GitHub integration in the CloudFlare dashboard
 # (Workers & Pages → orchicon-site → Settings → Builds):
@@ -20,6 +19,3 @@
 name = "orchicon-site"
 compatibility_date = "2024-09-23"
 pages_build_output_dir = "site"
-
-[build]
-command = "bash scripts/build-site.sh"

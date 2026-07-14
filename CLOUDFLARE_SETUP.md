@@ -65,10 +65,12 @@ In **Build settings**:
 | Root directory (advanced) | *(leave blank — repo root)* |
 | Environment variables | none |
 
-These mirror `wrangler.toml`. If you change them in the dashboard,
-keep `wrangler.toml` in sync (and vice versa) — they are the two
-sources of build config; treat the file as the source of truth for
-anyone reading the repo.
+These are configured in the CloudFlare dashboard (Pages projects do
+**not** support a `[build]` section in `wrangler.toml` — that's a
+Workers-only field). The repo's `wrangler.toml` documents the parts
+that *are* file-driven (`name`, `pages_build_output_dir`,
+`compatibility_date`); keep the dashboard values aligned with
+`scripts/build-site.sh`.
 
 Click **Save and Deploy**. The first build will run; it should
 succeed and produce a `*.pages.dev` URL.
