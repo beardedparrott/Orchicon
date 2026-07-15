@@ -606,3 +606,30 @@ platform, or `--uninstall` to test cleanup).
   for editing draft versions and forking from published. Worker detail page now
   has inline editing for draft versions and "New version" button for published
   workers (removed spurious edit lock). Build verified: `go build ./...`, `npm run build` pass cleanly.
+- **Workflow editor drag fix + palette revamp**: The drag-and-drop bug
+  (effectAllowed=`move` mismatched dropEffect=`copy`, no dragenter handler,
+  no fall-back for `screenToFlowPosition` returning a NaN/zero) is fixed:
+  the palette now sets `effectAllowed="copyMove"`, the wrapper exposes
+  `dragenter`/`dragleave` (counter-pattern) so the drop-zone engages
+  visually, and the drop handler is defensive against partial state.
+  Palette split into four collapsible sections — Workers (published),
+  Work items (project-scoped, ready first), Policies (published), and
+  Step primitives (decision/approval/parallel/recover) — each with a
+  Lucide icon, color-coded accent (sky/emerald/amber/violet/rose/yellow)
+  that adapts to the 20-theme system (`dark:bg-*` variants), and a
+  hover tooltip with description + example. Drag image is a hidden
+  clone of the tile for a custom cursor preview. The drop zone shows
+  a "Drop to add step" overlay + border highlight + "Drag a tile from
+  the palette to begin." empty-state hint. New `Tooltip` UI primitive
+  (Radix) + `EditLockBanner` + `StepNode` + `Palette` + `PropertiesPanel`
+  components live under `frontend/src/components/workflow-editor/`. Drag
+  a Work Item to create a task step with the work item's title/desc/AC
+  pre-populated and `config.work_item_id` linked (zero-backend-cost
+  reference); drag a Policy to set `gate_policy_ref` on the new step.
+  Step node card now shows the kind icon, name, ref, and a gate badge.
+  Properties panel has per-kind fields (worker ULID/version only on
+  task steps), policy autocomplete, and a "linked work item" hint when
+  the config carries `work_item_id`. Validation: task steps can be
+  satisfied by either a worker ref OR a work item reference. New
+  keyboard shortcut: `Del`/`Backspace` removes the selected step.
+  Build verified: `go build ./...`, `npm run build` pass cleanly.

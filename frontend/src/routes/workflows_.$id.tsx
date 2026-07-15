@@ -3,10 +3,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ReactFlow, {
   Background,
   Controls,
-  Handle,
   MarkerType,
   MiniMap,
-  Position,
+  ReactFlowProvider,
   addEdge,
   useEdgesState,
   useNodesState,
@@ -16,7 +15,6 @@ import ReactFlow, {
   type Node,
   type NodeChange,
   type EdgeChange,
-  ReactFlowProvider,
 } from "reactflow";
 
 import {
@@ -25,34 +23,48 @@ import {
   useDeprecateWorkflow,
   useGetWorkflow,
   useGetWorkflowEditLock,
+  useListWorkflowRuns,
   useListWorkflowVersions,
   usePublishWorkflow,
   useReleaseWorkflowEditLock,
-  useUpdateWorkflowVersion,
-  useListWorkflowRuns,
   useStartWorkflow,
+  useUpdateWorkflowVersion,
 } from "@/api/workflows";
-import { useListWorkers } from "@/api/workers";
-import { useListProjects } from "@/api/projects";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+  EditLockBanner,
+  RunStatusBadge,
+  VersionStatusBadge,
+} from "@/components/workflow-editor/EditLockBanner";
+import { Palette } from "@/components/workflow-editor/Palette";
+import { PropertiesPanel } from "@/components/workflow-editor/PropertiesPanel";
+import { StepNode } from "@/components/workflow-editor/StepNode";
+import { canvasToSteps, stepsToCanvas } from "@/components/workflow-editor/canvas";
+import {
+  PALETTE_MIME,
+  type PaletteDropPayload,
+  type StepData,
+} from "@/components/workflow-editor/stepKinds";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 
 import "reactflow/dist/style.css";
 
 // Workflow visual editor (docs/10 §5, §5.1, §11: "full visual drag-and-drop
-// editor in v0.1"). A React Flow canvas where users drag Workers onto the
-// canvas, wire steps together visually, and edit properties inline.
+// editor in v0.1"). A React Flow canvas where users drag Workers,
+// WorkItems, Policies, and step primitives onto the canvas, wire steps
+// together visually, and edit properties inline.
+//
+// Drag-and-drop (docs/10 §5.1):
+//   - Palette tiles use `application/x-orchicon-workflow-step` as the
+//     dataTransfer mime key with effectAllowed=copyMove so the browser
+//     accepts the drop on any dropEffect the canvas sets.
+//   - The drop handler lives on a wrapper div containing ReactFlow
+//     because ReactFlow 11.11.x has no native onDrop prop. The wrapper
+//     has explicit dragenter/dragover/dragleave handlers so a visible
+//     drop-zone highlight engages while dragging.
 //
 // Includes: drag-and-drop, canvas state management, inline property
 // editing, undo/redo, and validation. The editor edits the draft
@@ -77,38 +89,12 @@ function WorkflowEditorPage() {
   );
 }
 
-// --- step shape (mirrors proto Step / backend workflow.StepWire) ---
-interface StepData {
-  kind: number; // StepKind enum (1=task,2=decision,3=approval,4=parallel,5=recover)
-  name: string;
-  ref: string; // worker_id for task steps
-  workerVersion: number;
-  gatePolicyRef: string;
-  config: string; // JSON
-}
-
-const STEP_KIND_LABELS: Record<number, string> = {
-  1: "task",
-  2: "decision",
-  3: "approval",
-  4: "parallel",
-  5: "recover",
-};
-
-const STEP_KIND_COLORS: Record<number, string> = {
-  1: "border-blue-400 bg-blue-50",
-  2: "border-amber-400 bg-amber-50",
-  3: "border-yellow-500 bg-yellow-50",
-  4: "border-purple-400 bg-purple-50",
-  5: "border-red-400 bg-red-50",
-};
+const NODE_TYPES = { step: StepNode };
 
 function EditorInner({ workflowId }: { workflowId: string }) {
   const navigate = useNavigate();
   const { data, isLoading, error } = useGetWorkflow(workflowId);
   const { data: versions } = useListWorkflowVersions(workflowId);
-  const { data: workers } = useListWorkers();
-  const { data: projects } = useListProjects();
   const { data: runs } = useListWorkflowRuns(workflowId);
   const { data: editLock } = useGetWorkflowEditLock(workflowId);
   const acquireLock = useAcquireWorkflowEditLock();
@@ -119,17 +105,20 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const startWorkflow = useStartWorkflow();
   const deleteMutation = useDeleteWorkflow();
 
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState(
+    [] as Node<StepData>[],
+  );
+  const [edges, setEdges, onEdgesChange] = useEdgesState([] as Edge[]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
+  const [dropActive, setDropActive] = useState(false);
 
   // --- undo/redo history ---
-  const history = useRef<{ nodes: Node[]; edges: Edge[] }[]>([]);
+  const history = useRef<{ nodes: Node<StepData>[]; edges: Edge[] }[]>([]);
   const histPtr = useRef(-1);
   const pushHistory = useCallback(
-    (n: Node[], e: Edge[]) => {
+    (n: Node<StepData>[], e: Edge[]) => {
       // Truncate any redo tail.
       history.current = history.current.slice(0, histPtr.current + 1);
       history.current.push({ nodes: n, edges: e });
@@ -209,14 +198,22 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
       onNodesChange(changes);
-      // Mark dirty on position-finalize or removal.
       if (changes.some((c) => c.type === "remove")) {
         const removed = changes
           .filter((c) => c.type === "remove")
           .map((c) => (c as { id: string }).id);
-        setEdges((prev) => prev.filter((ed) => !removed.includes(ed.source) && !removed.includes(ed.target)));
+        setEdges((prev) =>
+          prev.filter(
+            (ed) => !removed.includes(ed.source) && !removed.includes(ed.target),
+          ),
+        );
         if (selectedId && removed.includes(selectedId)) setSelectedId(null);
-        pushHistory(nodes.filter((n) => !removed.includes(n.id)), edges.filter((ed) => !removed.includes(ed.source) && !removed.includes(ed.target)));
+        pushHistory(
+          nodes.filter((n) => !removed.includes(n.id)),
+          edges.filter(
+            (ed) => !removed.includes(ed.source) && !removed.includes(ed.target),
+          ),
+        );
         setDirty(true);
       }
     },
@@ -228,10 +225,15 @@ function EditorInner({ workflowId }: { workflowId: string }) {
       onEdgesChange(changes);
       if (changes.some((c) => c.type === "remove")) {
         setDirty(true);
-        pushHistory(nodes, edges.filter((ed) => !changes.some((c) => c.type === "remove" && c.id === ed.id)));
+        pushHistory(
+          nodes,
+          edges.filter(
+            (ed) => !changes.some((c) => c.type === "remove" && c.id === ed.id),
+          ),
+        );
       }
     },
-    [onEdgesChange, pushHistory, nodes, edges],
+    [onNodesChange, pushHistory, nodes, edges],
   );
 
   const onConnect = useCallback(
@@ -250,43 +252,94 @@ function EditorInner({ workflowId }: { workflowId: string }) {
         ),
       );
       setDirty(true);
-      // push history after state flush
       setTimeout(
-        () => pushHistory(nodes, [...edges, { id: `e-${conn.source}-${conn.target}`, source: conn.source!, target: conn.target!, markerEnd: { type: MarkerType.ArrowClosed } }]),
+        () =>
+          pushHistory(nodes, [
+            ...edges,
+            {
+              id: `e-${conn.source}-${conn.target}`,
+              source: conn.source!,
+              target: conn.target!,
+              markerEnd: { type: MarkerType.ArrowClosed },
+            },
+          ]),
         0,
       );
     },
     [setEdges, pushHistory, nodes, edges],
   );
 
-  // --- drag-and-drop from palette (docs/10 §5.1: WorkerCard draggable) ---
+  // --- drag-and-drop from palette ---
   const rf = useReactFlow();
-  const wrapperRef = useRef<HTMLDivElement>(null);
+  const dragCounter = useRef(0);
 
+  const onDragEnter = useCallback((e: React.DragEvent) => {
+    // dragenter/leave fire for every child element entered; the counter
+    // is the standard pattern to detect a stable "over the drop zone"
+    // state without flicker.
+    if (e.dataTransfer.types.includes(PALETTE_MIME)) {
+      dragCounter.current += 1;
+      e.preventDefault();
+      setDropActive(true);
+    }
+  }, []);
+  const onDragLeave = useCallback((e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes(PALETTE_MIME)) {
+      dragCounter.current = Math.max(0, dragCounter.current - 1);
+      if (dragCounter.current === 0) setDropActive(false);
+    }
+  }, []);
+  const onDragOver = useCallback((e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes(PALETTE_MIME)) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    }
+  }, []);
   const onDrop = useCallback(
     (event: React.DragEvent) => {
       event.preventDefault();
-      const payload = event.dataTransfer.getData("application/x-workflow-step");
+      dragCounter.current = 0;
+      setDropActive(false);
+      const payload = event.dataTransfer.getData(PALETTE_MIME);
       if (!payload) return;
-      const { kind, ref, name } = JSON.parse(payload) as {
-        kind: number;
-        ref?: string;
-        name?: string;
-      };
-      const position = rf.screenToFlowPosition({
+      let parsed: PaletteDropPayload;
+      try {
+        parsed = JSON.parse(payload) as PaletteDropPayload;
+      } catch {
+        return;
+      }
+      const { kind, name, ref, workerId, workItemId, policyId } = parsed;
+      // screenToFlowPosition falls back to clientX/clientY if the
+      // viewport is not yet initialized (the function returns the input
+      // unchanged when its internal domNode ref is null). Guard the
+      // values anyway so we never place a node at NaN.
+      const raw = rf.screenToFlowPosition({
         x: event.clientX,
         y: event.clientY,
       });
+      const position = {
+        x: Number.isFinite(raw?.x) ? raw.x : 100,
+        y: Number.isFinite(raw?.y) ? raw.y : 100,
+      };
       const id = `step-${Math.random().toString(36).slice(2, 10)}`;
+      const config = workItemId
+        ? JSON.stringify({
+            work_item_id: workItemId,
+            // Pre-populate the step with the work item's metadata so the
+            // properties panel has useful defaults even before the next
+            // server round-trip.
+            work_item_title: name,
+          })
+        : "{}";
       const data: StepData = {
         kind,
-        name: name ?? `${STEP_KIND_LABELS[kind] ?? "step"}-${id.slice(5, 9)}`,
+        name: name ?? `step-${id.slice(5, 9)}`,
         ref: ref ?? "",
-        workerVersion: 0,
-        gatePolicyRef: "",
-        config: "{}",
+        workerVersion: workerId ? 0 : 0,
+        gatePolicyRef: policyId ?? "",
+        config,
       };
-      const node: Node = {
+      const node: Node<StepData> = {
         id,
         type: "step",
         position,
@@ -315,11 +368,12 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   // --- validation (docs/10 §11: validation is part of the editor) ---
   const validate = useCallback((): string[] => {
     const errs: string[] = [];
-    // Each task step must reference a worker.
     for (const n of nodes) {
-      const d = n.data as StepData;
-      if (d.kind === 1 && !d.ref) {
-        errs.push(`Step "${d.name}" is a task but has no Worker reference.`);
+      const d = n.data;
+      if (d.kind === 1 && !d.ref && !/work_item_id/.test(d.config || "")) {
+        errs.push(
+          `Step "${d.name || n.id}" is a task but has no Worker or work item reference.`,
+        );
       }
       if (!d.name) {
         errs.push(`Step ${n.id} has no name.`);
@@ -330,7 +384,6 @@ function EditorInner({ workflowId }: { workflowId: string }) {
     const adj = new Map<string, string[]>();
     for (const n of nodes) adj.set(n.id, []);
     for (const e of edges) {
-      // target depends on source → traverse source→target
       adj.get(e.source)?.push(e.target);
     }
     const color = new Map<string, number>(); // 0=white,1=gray,2=black
@@ -350,7 +403,6 @@ function EditorInner({ workflowId }: { workflowId: string }) {
         break;
       }
     }
-    // Duplicate step ids.
     const ids = new Set<string>();
     for (const n of nodes) {
       if (ids.has(n.id)) errs.push(`Duplicate step id: ${n.id}`);
@@ -379,7 +431,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
 
   const handlePublish = async () => {
     if (dirty) {
-      if (!confirm("You have unsaved changes. Save and publish?")) return;
+      if (!window.confirm("You have unsaved changes. Save and publish?")) return;
       await handleSave();
     }
     await publishWorkflow.mutateAsync(workflowId);
@@ -387,9 +439,11 @@ function EditorInner({ workflowId }: { workflowId: string }) {
 
   const handleStart = async () => {
     if (!data?.workflow) return;
-    const projectId = data.workflow.projectId || projects?.[0]?.id || "";
+    const projectId = data.workflow.projectId;
     if (!projectId) {
-      alert("This workflow is a tenant template. Start it from a project context, or assign a project.");
+      window.alert(
+        "This workflow is a tenant template. Start it from a project context, or assign a project.",
+      );
       return;
     }
     const run = await startWorkflow.mutateAsync({
@@ -397,12 +451,22 @@ function EditorInner({ workflowId }: { workflowId: string }) {
       projectId,
       runContext: "{}",
     });
-    navigate({ to: "/workflows/$id/runs/$runId", params: { id: workflowId, runId: run.id } });
+    navigate({
+      to: "/workflows/$id/runs/$runId",
+      params: { id: workflowId, runId: run.id },
+    });
   };
 
-  // keyboard shortcuts: undo/redo
+  // keyboard shortcuts: undo/redo + delete selected
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const inField =
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable);
+      if (inField) return;
       if ((e.metaKey || e.ctrlKey) && e.key === "z" && !e.shiftKey) {
         e.preventDefault();
         undo();
@@ -412,11 +476,19 @@ function EditorInner({ workflowId }: { workflowId: string }) {
       ) {
         e.preventDefault();
         redo();
+      } else if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
+        e.preventDefault();
+        setNodes((nds) => nds.filter((n) => n.id !== selectedId));
+        setEdges((eds) =>
+          eds.filter((ed) => ed.source !== selectedId && ed.target !== selectedId),
+        );
+        setSelectedId(null);
+        setDirty(true);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [undo, redo]);
+  }, [undo, redo, selectedId, setNodes, setEdges]);
 
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
@@ -434,589 +506,246 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const isDraft = wf.status === 1;
   const isPublished = wf.status === 2;
   const isDeprecated = wf.status === 3;
+  const projectId = wf.projectId;
 
   return (
-    <div className="flex flex-col gap-4">
-      {/* header + actions */}
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{wf.name}</h1>
-          <p className="text-xs text-muted-foreground">
-            {wf.projectId ? `project: ${wf.projectId.slice(0, 12)}…` : "tenant template"} ·
-            {" "}v{wf.currentVersion || "—"} · status:{" "}
-            {WORKFLOW_STATUS_LABELS[wf.status]}
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            onClick={undo}
-            disabled={readOnly || histPtr.current <= 0}
-            title="Undo (Ctrl+Z)"
-          >
-            Undo
-          </Button>
-          <Button
-            variant="outline"
-            onClick={redo}
-            disabled={
-              readOnly ||
-              histPtr.current >= history.current.length - 1
-            }
-            title="Redo (Ctrl+Shift+Z)"
-          >
-            Redo
-          </Button>
-          <Button
-            variant="outline"
-            onClick={handleSave}
-            disabled={readOnly || !isDraft || !dirty || updateVersion.isPending}
-          >
-            {updateVersion.isPending ? "Saving…" : "Save draft"}
-          </Button>
-          {isDraft && (
-            <Button
-              onClick={handlePublish}
-              disabled={readOnly || publishWorkflow.isPending || validationErrors.length > 0}
-              title={validationErrors.length > 0 ? "Resolve validation errors first" : "Publish (immutable)"}
-            >
-              {publishWorkflow.isPending ? "Publishing…" : "Publish"}
-            </Button>
-          )}
-          {isPublished && (
+    <TooltipProvider delayDuration={250}>
+      <div className="flex flex-col gap-4">
+        {/* header + actions */}
+        <div className="flex items-start justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">{wf.name}</h1>
+            <p className="text-xs text-muted-foreground">
+              {projectId ? `project: ${projectId.slice(0, 12)}…` : "tenant template"} ·
+              {" "}v{wf.currentVersion || "—"} · status:{" "}
+              {WORKFLOW_STATUS_LABELS[wf.status]}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
-              onClick={() => deprecateWorkflow.mutateAsync(workflowId)}
-              disabled={deprecateWorkflow.isPending}
+              onClick={undo}
+              disabled={readOnly || histPtr.current <= 0}
+              title="Undo (Ctrl+Z)"
             >
-              Deprecate
+              Undo
             </Button>
-          )}
-          {(isPublished || isDeprecated) && (
-            <Button onClick={handleStart} disabled={startWorkflow.isPending}>
-              {startWorkflow.isPending ? "Starting…" : "Start run"}
-            </Button>
-          )}
-          <Button
-            variant="destructive"
-            onClick={() => {
-              if (window.confirm("Permanently delete this workflow and all its versions and runs? This cannot be undone.")) {
-                deleteMutation.mutate(workflowId, {
-                  onSuccess: () => navigate({ to: "/workflows" }),
-                });
+            <Button
+              variant="outline"
+              onClick={redo}
+              disabled={
+                readOnly ||
+                histPtr.current >= history.current.length - 1
               }
-            }}
-            disabled={deleteMutation.isPending}
-          >
-            {deleteMutation.isPending ? "Deleting…" : "Delete"}
-          </Button>
-        </div>
-      </div>
-
-      {/* edit lock banner */}
-      <EditLockBanner
-        lockAcquired={lockAcquired}
-        lockHeldByOther={lockHeldByOther}
-        heldBy={editLock?.heldBy ?? ""}
-      />
-
-      {/* validation errors */}
-      {validationErrors.length > 0 && (
-        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
-          <p className="font-medium">Validation:</p>
-          <ul className="ml-4 list-disc">
-            {validationErrors.map((e, i) => (
-              <li key={i}>{e}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* main editor layout: palette | canvas | properties */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[200px_1fr_300px]">
-        {/* palette */}
-        <Palette workers={workers ?? []} readOnly={readOnly} />
-
-        {/* canvas */}
-        <div
-          ref={wrapperRef}
-          className="h-[600px] rounded-lg border bg-card"
-          onDrop={onDrop}
-          onDragOver={(e) => {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = "copy";
-          }}
-        >
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={handleNodesChange}
-            onEdgesChange={handleEdgesChange}
-            onConnect={onConnect}
-            onNodeClick={(_, n) => setSelectedId(n.id)}
-            onPaneClick={() => setSelectedId(null)}
-            nodeTypes={{ step: StepNode }}
-            fitView
-            minZoom={0.2}
-            maxZoom={2}
-            nodesConnectable={!readOnly}
-            nodesDraggable={!readOnly}
-            elementsSelectable
-          >
-            <Background />
-            <Controls showInteractive={!readOnly} />
-            <MiniMap />
-          </ReactFlow>
-        </div>
-
-        {/* properties panel */}
-        <PropertiesPanel
-          node={selectedNode}
-          onChange={updateSelected}
-          readOnly={readOnly}
-        />
-      </div>
-
-      {/* version history + runs */}
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Versions</CardTitle>
-            <CardDescription>
-              All versions, newest first. A published version is immutable.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {(versions ?? []).length === 0 && (
-              <p className="text-sm text-muted-foreground">No versions yet.</p>
-            )}
-            <div className="space-y-2">
-              {(versions ?? []).map((v) => (
-                <div
-                  key={v.id}
-                  className="flex items-center gap-3 rounded-md border p-2 text-sm"
-                >
-                  <span className="font-mono text-xs font-medium">v{v.version}</span>
-                  <VersionStatusBadge status={v.status} />
-                  {v.publishedAt && (
-                    <span className="text-xs text-muted-foreground">
-                      {new Date(Number(v.publishedAt.seconds) * 1000).toLocaleString()}
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Runs</CardTitle>
-            <CardDescription>
-              Recent runs. Click to view live step transitions.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {(runs ?? []).length === 0 && (
-              <p className="text-sm text-muted-foreground">No runs yet.</p>
-            )}
-            <div className="space-y-2">
-              {(runs ?? []).map((r) => (
-                <button
-                  key={r.id}
-                  className="flex w-full items-center gap-3 rounded-md border p-2 text-left text-sm hover:bg-accent"
-                  onClick={() =>
-                    navigate({
-                      to: "/workflows/$id/runs/$runId",
-                      params: { id: workflowId, runId: r.id },
-                    })
-                  }
-                >
-                  <RunStatusBadge status={r.status} />
-                  <span className="font-mono text-xs">{r.id.slice(0, 12)}…</span>
-                </button>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    </div>
-  );
-}
-
-// --- Step node (custom React Flow node) ---
-function StepNode({ data, selected }: { data: StepData; selected?: boolean }) {
-  const kind = data.kind;
-  return (
-    <div
-      className={cn(
-        "min-w-[140px] rounded-md border px-3 py-2 text-center shadow-sm",
-        STEP_KIND_COLORS[kind] ?? "border-gray-300 bg-white",
-        selected && "ring-2 ring-blue-500",
-      )}
-    >
-      <Handle type="target" position={Position.Left} />
-      <div className="text-[10px] font-medium uppercase text-muted-foreground">
-        {STEP_KIND_LABELS[kind] ?? "step"}
-      </div>
-      <div className="truncate text-sm font-semibold">{data.name}</div>
-      {data.ref && (
-        <div className="truncate text-[10px] font-mono text-muted-foreground">
-          {data.ref.slice(0, 18)}
-        </div>
-      )}
-      <Handle type="source" position={Position.Right} />
-    </div>
-  );
-}
-
-// --- Palette (draggable tiles) ---
-function Palette({
-  workers,
-  readOnly,
-}: {
-  workers: import("@/api/gen/orchicon/api/v1/worker_pb").Worker[];
-  readOnly: boolean;
-}) {
-  const published = workers.filter((w) => w.status === 2);
-  const stepKinds = [
-    { kind: 2, label: "Decision", desc: "branch" },
-    { kind: 3, label: "Approval", desc: "gate" },
-    { kind: 4, label: "Parallel", desc: "fan-out" },
-    { kind: 5, label: "Recover", desc: "recovery" },
-  ];
-  return (
-    <div className="space-y-3">
-      <div>
-        <h3 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-          Workers (drag onto canvas)
-        </h3>
-        <div className="space-y-2">
-          {published.length === 0 && (
-            <p className="text-xs text-muted-foreground">
-              No published workers. Publish a worker first.
-            </p>
-          )}
-          {published.map((w) => (
-            <div
-              key={w.id}
-              draggable={!readOnly}
-              onDragStart={(e) => {
-                e.dataTransfer.setData(
-                  "application/x-workflow-step",
-                  JSON.stringify({ kind: 1, ref: w.id, name: w.name }),
-                );
-                e.dataTransfer.effectAllowed = "move";
-              }}
-              className="cursor-grab rounded-md border border-blue-300 bg-blue-50 p-2 text-xs hover:bg-blue-100"
+              title="Redo (Ctrl+Shift+Z)"
             >
-              <div className="font-medium">{w.name}</div>
-              <div className="text-[10px] font-mono text-muted-foreground">
-                {w.slug}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-      <div>
-        <h3 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-          Step nodes
-        </h3>
-        <div className="space-y-2">
-          {stepKinds.map((s) => (
-            <div
-              key={s.kind}
-              draggable={!readOnly}
-              onDragStart={(e) => {
-                e.dataTransfer.setData(
-                  "application/x-workflow-step",
-                  JSON.stringify({ kind: s.kind }),
-                );
-                e.dataTransfer.effectAllowed = "move";
-              }}
-              className={cn(
-                "cursor-grab rounded-md border p-2 text-xs hover:opacity-80",
-                STEP_KIND_COLORS[s.kind] ?? "border-gray-300 bg-white",
-              )}
+              Redo
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleSave}
+              disabled={readOnly || !isDraft || !dirty || updateVersion.isPending}
             >
-              <div className="font-medium">{s.label}</div>
-              <div className="text-[10px] text-muted-foreground">{s.desc}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-      <p className="text-[10px] text-muted-foreground">
-        Draw an edge from A to B to make B depend on A (A runs first).
-      </p>
-    </div>
-  );
-}
-
-// --- Properties panel (inline editing) ---
-function PropertiesPanel({
-  node,
-  onChange,
-  readOnly,
-}: {
-  node: Node | null;
-  onChange: (patch: Partial<StepData>) => void;
-  readOnly: boolean;
-}) {
-  if (!node) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Properties</CardTitle>
-          <CardDescription>
-            Select a step to edit its properties. Drag Workers and step
-            nodes from the palette onto the canvas.
-          </CardDescription>
-        </CardHeader>
-      </Card>
-    );
-  }
-  const d = node.data as StepData;
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">
-          {STEP_KIND_LABELS[d.kind] ?? "step"} properties
-        </CardTitle>
-        <CardDescription className="font-mono text-xs">{node.id}</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="space-y-1">
-          <Label htmlFor="step-name">Name</Label>
-          <Input
-            id="step-name"
-            value={d.name}
-            disabled={readOnly}
-            onChange={(e) => onChange({ name: e.target.value })}
-          />
-        </div>
-        {d.kind === 1 && (
-          <>
-            <div className="space-y-1">
-              <Label htmlFor="step-ref">Worker ID</Label>
-              <Input
-                id="step-ref"
-                value={d.ref}
-                disabled={readOnly}
-                placeholder="worker ULID"
-                onChange={(e) => onChange({ ref: e.target.value })}
-              />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="step-wv">Worker version (0 = latest)</Label>
-              <Input
-                id="step-wv"
-                type="number"
-                value={d.workerVersion}
-                disabled={readOnly}
-                onChange={(e) =>
-                  onChange({ workerVersion: Number(e.target.value) })
+              {updateVersion.isPending ? "Saving…" : "Save draft"}
+            </Button>
+            {isDraft && (
+              <Button
+                onClick={handlePublish}
+                disabled={
+                  readOnly || publishWorkflow.isPending || validationErrors.length > 0
                 }
-              />
-            </div>
-          </>
+                title={
+                  validationErrors.length > 0
+                    ? "Resolve validation errors first"
+                    : "Publish (immutable)"
+                }
+              >
+                {publishWorkflow.isPending ? "Publishing…" : "Publish"}
+              </Button>
+            )}
+            {isPublished && (
+              <Button
+                variant="outline"
+                onClick={() => deprecateWorkflow.mutateAsync(workflowId)}
+                disabled={deprecateWorkflow.isPending}
+              >
+                Deprecate
+              </Button>
+            )}
+            {(isPublished || isDeprecated) && (
+              <Button onClick={handleStart} disabled={startWorkflow.isPending}>
+                {startWorkflow.isPending ? "Starting…" : "Start run"}
+              </Button>
+            )}
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (
+                  window.confirm(
+                    "Permanently delete this workflow and all its versions and runs? This cannot be undone.",
+                  )
+                ) {
+                  deleteMutation.mutate(workflowId, {
+                    onSuccess: () => navigate({ to: "/workflows" }),
+                  });
+                }
+              }}
+              disabled={deleteMutation.isPending}
+            >
+              {deleteMutation.isPending ? "Deleting…" : "Delete"}
+            </Button>
+          </div>
+        </div>
+
+        {/* edit lock banner */}
+        <EditLockBanner
+          lockAcquired={lockAcquired}
+          lockHeldByOther={lockHeldByOther}
+          heldBy={editLock?.heldBy ?? ""}
+        />
+
+        {/* validation errors */}
+        {validationErrors.length > 0 && (
+          <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+            <p className="font-medium">Validation:</p>
+            <ul className="ml-4 list-disc">
+              {validationErrors.map((e, i) => (
+                <li key={i}>{e}</li>
+              ))}
+            </ul>
+          </div>
         )}
-        <div className="space-y-1">
-          <Label htmlFor="step-gate">Gate policy ref (optional)</Label>
-          <Input
-            id="step-gate"
-            value={d.gatePolicyRef}
-            disabled={readOnly}
-            placeholder="evaluated before the step runs"
-            onChange={(e) => onChange({ gatePolicyRef: e.target.value })}
+
+        {/* main editor layout: palette | canvas | properties */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[240px_1fr_300px]">
+          <Palette projectId={projectId} readOnly={readOnly} />
+
+          {/* canvas */}
+          <div
+            className={cn(
+              "relative h-[640px] rounded-lg border bg-card transition-colors",
+              dropActive &&
+                "border-primary bg-primary/5 ring-2 ring-primary/30 ring-offset-1",
+            )}
+            onDragEnter={onDragEnter}
+            onDragOver={onDragOver}
+            onDragLeave={onDragLeave}
+            onDrop={onDrop}
+          >
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              onNodesChange={handleNodesChange}
+              onEdgesChange={handleEdgesChange}
+              onConnect={onConnect}
+              onNodeClick={(_, n) => setSelectedId(n.id)}
+              onPaneClick={() => setSelectedId(null)}
+              nodeTypes={NODE_TYPES}
+              fitView
+              minZoom={0.2}
+              maxZoom={2}
+              nodesConnectable={!readOnly}
+              nodesDraggable={!readOnly}
+              elementsSelectable
+              proOptions={{ hideAttribution: true }}
+            >
+              <Background gap={20} size={1} />
+              <Controls showInteractive={!readOnly} />
+              <MiniMap
+                pannable
+                zoomable
+                className="!bg-background/80 !border-border"
+              />
+            </ReactFlow>
+            {dropActive && (
+              <div
+                className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center"
+                aria-hidden
+              >
+                <div className="rounded-md border-2 border-dashed border-primary bg-primary/10 px-6 py-3 text-sm font-medium text-primary shadow-sm">
+                  Drop to add step
+                </div>
+              </div>
+            )}
+            {nodes.length === 0 && !dropActive && (
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
+                Drag a tile from the palette to begin.
+              </div>
+            )}
+          </div>
+
+          <PropertiesPanel
+            node={selectedNode}
+            onChange={updateSelected}
+            readOnly={readOnly}
           />
         </div>
-        <div className="space-y-1">
-          <Label htmlFor="step-config">Config (JSON)</Label>
-          <Textarea
-            id="step-config"
-            value={d.config}
-            disabled={readOnly}
-            rows={4}
-            className="font-mono text-xs"
-            onChange={(e) => onChange({ config: e.target.value })}
-          />
+
+        {/* version history + runs */}
+        <div className="grid gap-4 md:grid-cols-2">
+          <Card>
+            <CardHeader>
+              <CardTitle>Versions</CardTitle>
+              <CardDescription>
+                All versions, newest first. A published version is immutable.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {(versions ?? []).length === 0 && (
+                <p className="text-sm text-muted-foreground">No versions yet.</p>
+              )}
+              <div className="space-y-2">
+                {(versions ?? []).map((v) => (
+                  <div
+                    key={v.id}
+                    className="flex items-center gap-3 rounded-md border p-2 text-sm"
+                  >
+                    <span className="font-mono text-xs font-medium">v{v.version}</span>
+                    <VersionStatusBadge status={v.status} />
+                    {v.publishedAt && (
+                      <span className="text-xs text-muted-foreground">
+                        {new Date(Number(v.publishedAt.seconds) * 1000).toLocaleString()}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Runs</CardTitle>
+              <CardDescription>
+                Recent runs. Click to view live step transitions.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {(runs ?? []).length === 0 && (
+                <p className="text-sm text-muted-foreground">No runs yet.</p>
+              )}
+              <div className="space-y-2">
+                {(runs ?? []).map((r) => (
+                  <button
+                    key={r.id}
+                    className="flex w-full items-center gap-3 rounded-md border p-2 text-left text-sm hover:bg-accent"
+                    onClick={() =>
+                      navigate({
+                        to: "/workflows/$id/runs/$runId",
+                        params: { id: workflowId, runId: r.id },
+                      })
+                    }
+                  >
+                    <RunStatusBadge status={r.status} />
+                    <span className="font-mono text-xs">{r.id.slice(0, 12)}…</span>
+                  </button>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
         </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-// --- Edit lock banner (docs/07 §3.3) ---
-function EditLockBanner({
-  lockAcquired,
-  lockHeldByOther,
-  heldBy,
-}: {
-  lockAcquired: boolean;
-  lockHeldByOther: boolean;
-  heldBy: string;
-}) {
-  if (lockAcquired) {
-    return (
-      <div className="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-800">
-        ● Edit lock acquired — you can edit this workflow. Save persists
-        the draft; Publish makes it immutable.
       </div>
-    );
-  }
-  if (lockHeldByOther) {
-    return (
-      <div className="rounded-md border border-yellow-200 bg-yellow-50 p-3 text-sm text-yellow-800">
-        ⏳ Currently being edited by{" "}
-        <span className="font-mono">{heldBy}</span> — viewing read-only.
-        The lock expires automatically on disconnect.
-      </div>
-    );
-  }
-  return null;
-}
-
-// --- canvas ↔ steps serialization ---
-
-// stepsToStepWires converts the canvas (nodes + edges) into the StepWire
-// shape stored in workflow_versions.steps.
-interface StepWire {
-  id: string;
-  name: string;
-  kind: string;
-  ref: string;
-  worker_version: number;
-  depends_on: string[];
-  gate_policy_ref: string;
-  config: string;
-  position_x: number;
-  position_y: number;
-}
-
-function kindNumToString(k: number): string {
-  return STEP_KIND_LABELS[k] ?? "task";
-}
-
-function canvasToSteps(nodes: Node[], edges: Edge[]): StepWire[] {
-  // depends_on: for each node, the set of source ids of incoming edges
-  // (edges where target == node id). Edge source→target means target
-  // depends on source.
-  const depsByNode = new Map<string, string[]>();
-  for (const n of nodes) depsByNode.set(n.id, []);
-  for (const e of edges) {
-    if (e.source === e.target) continue;
-    depsByNode.get(e.target)?.push(e.source);
-  }
-  return nodes.map((n) => {
-    const d = n.data as StepData;
-    return {
-      id: n.id,
-      name: d.name,
-      kind: kindNumToString(d.kind),
-      ref: d.ref,
-      worker_version: d.workerVersion,
-      depends_on: depsByNode.get(n.id) ?? [],
-      gate_policy_ref: d.gatePolicyRef,
-      config: d.config,
-      position_x: n.position.x,
-      position_y: n.position.y,
-    };
-  });
-}
-
-function stepsToCanvas(stepsJson: string): { nodes: Node[]; edges: Edge[] } {
-  let steps: StepWire[] = [];
-  try {
-    steps = JSON.parse(stepsJson || "[]");
-  } catch {
-    steps = [];
-  }
-  const kindStrToNum: Record<string, number> = {
-    task: 1,
-    decision: 2,
-    approval: 3,
-    parallel: 4,
-    recover: 5,
-  };
-  const nodes: Node[] = steps.map((s) => ({
-    id: s.id,
-    type: "step",
-    position: { x: s.position_x, y: s.position_y },
-    data: {
-      kind: kindStrToNum[s.kind] ?? 1,
-      name: s.name,
-      ref: s.ref,
-      workerVersion: s.worker_version,
-      gatePolicyRef: s.gate_policy_ref,
-      config: s.config,
-    } as StepData,
-  }));
-  const edges: Edge[] = [];
-  for (const s of steps) {
-    for (const dep of s.depends_on ?? []) {
-      // dep is a dependency of s → edge dep→s.
-      edges.push({
-        id: `e-${dep}-${s.id}`,
-        source: dep,
-        target: s.id,
-        markerEnd: { type: MarkerType.ArrowClosed },
-      });
-    }
-  }
-  return { nodes, edges };
-}
-
-// --- small badges ---
-
-function VersionStatusBadge({ status }: { status: number }) {
-  const labels: Record<number, string> = {
-    1: "draft",
-    2: "published",
-    3: "deprecated",
-  };
-  const styles: Record<number, string> = {
-    1: "bg-blue-100 text-blue-800",
-    2: "bg-green-100 text-green-800",
-    3: "bg-yellow-100 text-yellow-800",
-  };
-  return (
-    <span
-      className={cn(
-        "rounded-full px-2 py-0.5 text-xs font-medium",
-        styles[status] ?? "bg-muted text-muted-foreground",
-      )}
-    >
-      {labels[status] ?? "unknown"}
-    </span>
-  );
-}
-
-function RunStatusBadge({ status }: { status: number }) {
-  const labels: Record<number, string> = {
-    1: "pending",
-    2: "running",
-    3: "completed",
-    4: "failed",
-    5: "aborted",
-    6: "paused",
-  };
-  const styles: Record<number, string> = {
-    1: "bg-gray-200 text-gray-700",
-    2: "bg-blue-100 text-blue-800",
-    3: "bg-green-100 text-green-800",
-    4: "bg-red-100 text-red-800",
-    5: "bg-gray-300 text-gray-700",
-    6: "bg-yellow-100 text-yellow-800",
-  };
-  return (
-    <span
-      className={cn(
-        "rounded-full px-2 py-0.5 text-xs font-medium",
-        styles[status] ?? "bg-muted text-muted-foreground",
-      )}
-    >
-      {labels[status] ?? "unknown"}
-    </span>
+    </TooltipProvider>
   );
 }
 
