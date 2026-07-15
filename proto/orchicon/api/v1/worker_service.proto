@@ -42,6 +42,15 @@ service WorkerService {
   // ListWorkerVersions returns all versions of a Worker, newest first.
   rpc ListWorkerVersions(ListWorkerVersionsRequest) returns (ListWorkerVersionsResponse);
 
+  // UpdateWorkerVersion updates the mutable fields of a draft WorkerVersion.
+  // Only draft versions can be updated; published versions are immutable.
+  rpc UpdateWorkerVersion(UpdateWorkerVersionRequest) returns (UpdateWorkerVersionResponse);
+
+  // CreateWorkerVersion creates a new draft version from the latest
+  // published version of a Worker. The new version starts as a draft with
+  // all fields copied from the source version.
+  rpc CreateWorkerVersion(CreateWorkerVersionRequest) returns (CreateWorkerVersionResponse);
+
   // AcquireEditLock acquires an exclusive edit lock on a Worker for the
   // visual editor (docs/07 §3.3). Prevents concurrent edits; expires
   // automatically on TTL.
@@ -143,6 +152,49 @@ message ListWorkerVersionsRequest {
 
 message ListWorkerVersionsResponse {
   repeated WorkerVersion versions = 1;
+}
+
+message UpdateWorkerVersionRequest {
+  string worker_id = 1;
+  string version_id = 2;
+  // Fields to update (only draft versions):
+  optional string runtime_ref = 6;
+  optional string model_ref = 7;
+  optional string system_prompt = 8;
+  optional string context_sources = 9;
+  optional string permissions = 10;
+  optional string gated_tools = 11;
+  optional string budget_overrides = 12;
+  optional string execution_policy_ref = 13;
+  optional int32 concurrency_limit = 14;
+  optional string recovery_workflow_ref = 15;
+  optional string labels = 16;
+  optional string version_note = 17;
+}
+
+message UpdateWorkerVersionResponse {
+  WorkerVersion version = 1;
+}
+
+message CreateWorkerVersionRequest {
+  string worker_id = 1;
+  // Optional fields to override from the source version.
+  optional string runtime_ref = 6;
+  optional string model_ref = 7;
+  optional string system_prompt = 8;
+  optional string context_sources = 9;
+  optional string permissions = 10;
+  optional string gated_tools = 11;
+  optional string budget_overrides = 12;
+  optional string execution_policy_ref = 13;
+  optional int32 concurrency_limit = 14;
+  optional string recovery_workflow_ref = 15;
+  optional string labels = 16;
+  optional string version_note = 17;
+}
+
+message CreateWorkerVersionResponse {
+  WorkerVersion version = 1;
 }
 
 message AcquireEditLockRequest {

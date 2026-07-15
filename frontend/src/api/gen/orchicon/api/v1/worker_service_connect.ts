@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AcquireEditLockRequest, AcquireEditLockResponse, CreateWorkerRequest, CreateWorkerResponse, DeleteWorkerRequest, DeleteWorkerResponse, DeprecateWorkerRequest, DeprecateWorkerResponse, GetEditLockRequest, GetEditLockResponse, GetWorkerRequest, GetWorkerResponse, ListWorkersRequest, ListWorkersResponse, ListWorkerVersionsRequest, ListWorkerVersionsResponse, PublishWorkerVersionRequest, PublishWorkerVersionResponse, ReleaseEditLockRequest, ReleaseEditLockResponse, RetireWorkerRequest, RetireWorkerResponse } from "./worker_service_pb.js";
+import { AcquireEditLockRequest, AcquireEditLockResponse, CreateWorkerRequest, CreateWorkerResponse, CreateWorkerVersionRequest, CreateWorkerVersionResponse, DeleteWorkerRequest, DeleteWorkerResponse, DeprecateWorkerRequest, DeprecateWorkerResponse, GetEditLockRequest, GetEditLockResponse, GetWorkerRequest, GetWorkerResponse, ListWorkersRequest, ListWorkersResponse, ListWorkerVersionsRequest, ListWorkerVersionsResponse, PublishWorkerVersionRequest, PublishWorkerVersionResponse, ReleaseEditLockRequest, ReleaseEditLockResponse, RetireWorkerRequest, RetireWorkerResponse, UpdateWorkerVersionRequest, UpdateWorkerVersionResponse } from "./worker_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -112,6 +112,31 @@ export const WorkerService = {
       name: "ListWorkerVersions",
       I: ListWorkerVersionsRequest,
       O: ListWorkerVersionsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * UpdateWorkerVersion updates the mutable fields of a draft WorkerVersion.
+     * Only draft versions can be updated; published versions are immutable.
+     *
+     * @generated from rpc orchicon.api.v1.WorkerService.UpdateWorkerVersion
+     */
+    updateWorkerVersion: {
+      name: "UpdateWorkerVersion",
+      I: UpdateWorkerVersionRequest,
+      O: UpdateWorkerVersionResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * CreateWorkerVersion creates a new draft version from the latest
+     * published version of a Worker. The new version starts as a draft with
+     * all fields copied from the source version.
+     *
+     * @generated from rpc orchicon.api.v1.WorkerService.CreateWorkerVersion
+     */
+    createWorkerVersion: {
+      name: "CreateWorkerVersion",
+      I: CreateWorkerVersionRequest,
+      O: CreateWorkerVersionResponse,
       kind: MethodKind.Unary,
     },
     /**

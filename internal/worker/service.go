@@ -431,6 +431,191 @@ func (s *Service) ListWorkerVersions(ctx context.Context, req *connect.Request[a
 	return connect.NewResponse(resp), nil
 }
 
+// UpdateWorkerVersion updates the mutable fields of a draft WorkerVersion.
+// Only versions with status='draft' may be updated; published versions are
+// immutable. The service reads the current version first, then applies
+// only the fields set in the request, then writes back the merged row.
+func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[apiv1.UpdateWorkerVersionRequest]) (*connect.Response[apiv1.UpdateWorkerVersionResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	msg := req.Msg
+	if msg.WorkerId == "" || msg.VersionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("worker_id and version_id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	// Fetch the existing version to confirm it exists and is draft.
+	current, err := db.GetWorkerVersionByID(ctx, ttx.Tx, tenantID, msg.WorkerId, msg.VersionId)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if current.Status != domain.WorkerVersionDraft {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("version %s status is %q, must be 'draft' to update", msg.VersionId, current.Status))
+	}
+
+	// Build merged row: apply only non-nil proto fields over current.
+	merged := current
+	if msg.RuntimeRef != nil {
+		merged.RuntimeRef = *msg.RuntimeRef
+	}
+	if msg.ModelRef != nil {
+		merged.ModelRef = *msg.ModelRef
+	}
+	if msg.SystemPrompt != nil {
+		merged.SystemPrompt = *msg.SystemPrompt
+	}
+	if msg.ContextSources != nil {
+		merged.ContextSources = []byte(*msg.ContextSources)
+	}
+	if msg.Permissions != nil {
+		merged.Permissions = []byte(*msg.Permissions)
+	}
+	if msg.GatedTools != nil {
+		merged.GatedTools = []byte(*msg.GatedTools)
+	}
+	if msg.BudgetOverrides != nil {
+		merged.BudgetOverrides = []byte(*msg.BudgetOverrides)
+	}
+	if msg.ExecutionPolicyRef != nil {
+		merged.ExecutionPolicyRef = *msg.ExecutionPolicyRef
+	}
+	if msg.ConcurrencyLimit != nil {
+		merged.ConcurrencyLimit = int(*msg.ConcurrencyLimit)
+	}
+	if msg.RecoveryWorkflowRef != nil {
+		merged.RecoveryWorkflowRef = *msg.RecoveryWorkflowRef
+	}
+	if msg.Labels != nil {
+		merged.Labels = []byte(*msg.Labels)
+	}
+	if msg.VersionNote != nil {
+		merged.VersionNote = *msg.VersionNote
+	}
+
+	updated, err := db.UpdateDraftVersion(ctx, ttx.Tx, merged)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("worker version updated", "worker_id", msg.WorkerId, "version_id", msg.VersionId, "version", updated.Version)
+	return connect.NewResponse(&apiv1.UpdateWorkerVersionResponse{
+		Version: versionRowToProto(updated),
+	}), nil
+}
+
+// CreateWorkerVersion creates a new draft version for a Worker, copying
+// fields from the latest published version. The new version starts as a
+// draft. Optional fields in the request override the source values.
+func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[apiv1.CreateWorkerVersionRequest]) (*connect.Response[apiv1.CreateWorkerVersionResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	msg := req.Msg
+	if msg.WorkerId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("worker_id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	// Fetch the worker to confirm it exists.
+	if _, err := db.GetWorker(ctx, ttx.Tx, tenantID, msg.WorkerId); err != nil {
+		return nil, mapDBError(err)
+	}
+
+	// Get the latest published version as the source template.
+	source, err := db.GetLatestWorkerVersion(ctx, ttx.Tx, tenantID, msg.WorkerId, true)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+
+	// Compute the next version number.
+	nextVer, err := db.NextWorkerVersionNumber(ctx, ttx.Tx, tenantID, msg.WorkerId)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	// Build the new draft row, applying any request overrides.
+	newVer := db.WorkerVersionRow{
+		ID:                  db.NewID(),
+		TenantID:            tenantID,
+		WorkerID:            msg.WorkerId,
+		Version:             nextVer,
+		Status:              domain.WorkerVersionDraft,
+		RuntimeRef:          source.RuntimeRef,
+		ModelRef:            source.ModelRef,
+		SystemPrompt:        source.SystemPrompt,
+		ContextSources:      source.ContextSources,
+		Permissions:         source.Permissions,
+		GatedTools:          source.GatedTools,
+		BudgetOverrides:     source.BudgetOverrides,
+		ExecutionPolicyRef:  source.ExecutionPolicyRef,
+		ConcurrencyLimit:    source.ConcurrencyLimit,
+		RecoveryWorkflowRef: source.RecoveryWorkflowRef,
+		Labels:              source.Labels,
+	}
+	if msg.RuntimeRef != nil {
+		newVer.RuntimeRef = *msg.RuntimeRef
+	}
+	if msg.ModelRef != nil {
+		newVer.ModelRef = *msg.ModelRef
+	}
+	if msg.SystemPrompt != nil {
+		newVer.SystemPrompt = *msg.SystemPrompt
+	}
+	if msg.ContextSources != nil {
+		newVer.ContextSources = []byte(*msg.ContextSources)
+	}
+	if msg.Permissions != nil {
+		newVer.Permissions = []byte(*msg.Permissions)
+	}
+	if msg.GatedTools != nil {
+		newVer.GatedTools = []byte(*msg.GatedTools)
+	}
+	if msg.BudgetOverrides != nil {
+		newVer.BudgetOverrides = []byte(*msg.BudgetOverrides)
+	}
+	if msg.ExecutionPolicyRef != nil {
+		newVer.ExecutionPolicyRef = *msg.ExecutionPolicyRef
+	}
+	if msg.ConcurrencyLimit != nil {
+		newVer.ConcurrencyLimit = int(*msg.ConcurrencyLimit)
+	}
+	if msg.RecoveryWorkflowRef != nil {
+		newVer.RecoveryWorkflowRef = *msg.RecoveryWorkflowRef
+	}
+	if msg.Labels != nil {
+		newVer.Labels = []byte(*msg.Labels)
+	}
+	if msg.VersionNote != nil {
+		newVer.VersionNote = *msg.VersionNote
+	}
+
+	created, err := db.CreateWorkerVersion(ctx, ttx.Tx, newVer)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create worker version: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("worker version created", "worker_id", msg.WorkerId, "version", nextVer)
+	return connect.NewResponse(&apiv1.CreateWorkerVersionResponse{
+		Version: versionRowToProto(created),
+	}), nil
+}
+
 // AcquireEditLock acquires an exclusive edit lock on a Worker for the
 // visual editor (docs/07 §3.3). Returns acquired=false if already held
 // by another actor.
