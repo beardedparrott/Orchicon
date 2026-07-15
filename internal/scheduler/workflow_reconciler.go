@@ -219,7 +219,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			}
 			continue
 		}
-		if err := r.dispatchStep(ctx, ttx.Tx, tenantID, run, step, sr, runByID); err != nil {
+		if err := r.dispatchStep(ctx, ttx.Tx, tenantID, run, step, sr, runByID, steps); err != nil {
 			return err
 		}
 		progressed = true
@@ -364,15 +364,85 @@ func (r *WorkflowReconciler) evaluateGate(ctx context.Context, step workflow.Ste
 	return allowed
 }
 
-// dispatchStep dispatches a ready step by kind (docs/02 §2.4).
-func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, step workflow.StepWire, sr db.WorkflowStepRunRow, runs map[string]db.WorkflowStepRunRow) error {
+// dispatchStep dispatches a ready step by kind (docs/02 §2.4, docs/10 §5.1).
+//
+// The PR A model: the canvas holds three first-class node types —
+// PROJECT (entry, sets the project context), WORK_ITEM (a passive
+// marker that holds a work item's metadata as context for downstream
+// workers), and TASK (a worker that processes the work item(s)
+// connected to its input edge). Decision/Approval/Parallel/Recover
+// remain for advanced control flow but are not required for the simple
+// Work Item → Worker chain.
+//
+// TASK semantics under PR A:
+//   - Find upstream WORK_ITEM steps in step.DependsOn.
+//   - For each, load the referenced work item, set its
+//     assigned_worker_ref to this step's worker, and dispatch it via
+//     the existing TaskReconciler path (which keys on
+//     assigned_worker_ref — docs/03 §8 invariant #1).
+//   - The step run tracks the primary work item id under
+//     _work_item_id in result JSON so pollTaskStep can poll.
+func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, step workflow.StepWire, sr db.WorkflowStepRunRow, runs map[string]db.WorkflowStepRunRow, allSteps []workflow.StepWire) error {
 	now := time.Now().UTC()
 	switch step.Kind {
+	case domain.StepKindProject:
+		// Project marker step. The author dragged a project onto the
+		// canvas and its id lives in config.project_id. On the first
+		// dispatch we write it onto the workflow so downstream work
+		// items land in the right project. Idempotent — repeated
+		// dispatches (re-reconcile) just no-op.
+		pid := readConfigProjectID(step.Config)
+		if pid == "" {
+			return r.failStep(ctx, tx, tenantID, run, sr, runs,
+				fmt.Errorf("project step %q has no config.project_id", step.Name))
+		}
+		if run.ProjectID != pid {
+			updated, err := db.UpdateWorkflowRun(ctx, tx, tenantID, run.ID, run.Version, db.UpdateWorkflowRunFields{
+				ProjectID: &pid,
+			})
+			if err != nil {
+				return fmt.Errorf("set workflow project_id: %w", err)
+			}
+			run = updated
+			r.log.Info("workflow project bound", "run", run.ID, "project", pid)
+		}
+		return r.succeedStep(ctx, tx, tenantID, run, sr, runs, now, "project bound")
+
+	case domain.StepKindWorkItem:
+		// Work item marker step. The author dragged a work item onto
+		// the canvas and its id lives in config.work_item_id. The
+		// marker is a passive anchor — we verify the work item exists
+		// and is reachable, then succeed immediately so downstream
+		// workers can pick it up.
+		wid := readConfigWorkItemID(step.Config)
+		if wid == "" {
+			return r.failStep(ctx, tx, tenantID, run, sr, runs,
+				fmt.Errorf("work_item step %q has no config.work_item_id", step.Name))
+		}
+		if _, err := db.GetWorkItem(ctx, tx, tenantID, wid); err != nil {
+			if err == db.ErrNotFound {
+				return r.failStep(ctx, tx, tenantID, run, sr, runs,
+					fmt.Errorf("work item %s not found", wid))
+			}
+			return fmt.Errorf("load work item: %w", err)
+		}
+		return r.succeedStep(ctx, tx, tenantID, run, sr, runs, now, "work_item marker")
+
 	case domain.StepKindTask:
-		// Create a WorkItem (kind=task) with the step's Worker ref and
-		// hand it to the TaskReconciler for dispatch. Only the
-		// TaskReconciler creates WorkerExecutions (docs/03 §8 invariant
-		// #1). The step run polls the WorkItem to completion.
+		// Worker node. Look upstream for WORK_ITEM steps in
+		// step.DependsOn; the first one with a work_item_id is the
+		// input to dispatch. (Multi-input fan-in: dispatch all in
+		// series, track the last one on the step run — the previous
+		// ones still complete on their own assigned worker.)
+		upstream := upstreamWorkItemIDs(step, allSteps)
+		if len(upstream) == 0 {
+			return r.failStep(ctx, tx, tenantID, run, sr, runs,
+				fmt.Errorf("worker step %q has no upstream work_item", step.Name))
+		}
+		if step.Ref == "" {
+			return r.failStep(ctx, tx, tenantID, run, sr, runs,
+				fmt.Errorf("worker step %q has no worker ref", step.Name))
+		}
 		workerRef, err := json.Marshal(map[string]any{
 			"worker_id": step.Ref,
 			"version":   step.WorkerVersion,
@@ -380,32 +450,32 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		if err != nil {
 			return fmt.Errorf("marshal worker ref: %w", err)
 		}
-		result, _ := json.Marshal(map[string]string{"_workflow_step_run_id": sr.ID, "_workflow_run_id": run.ID})
-		workItem := db.WorkItemRow{
-			ID:                db.NewID(),
-			TenantID:          tenantID,
-			ProjectID:         run.ProjectID,
-			Kind:              domain.WorkItemKindTask,
-			Title:             fmt.Sprintf("Workflow %s step %s", run.WorkflowID, step.Name),
-			Status:            domain.WorkItemReady,
-			AssignedWorkerRef: workerRef,
-			Priority:          0,
-			Budgets:           []byte("{}"),
-			Results:           result,
-		}
-		// workflow_id links the WorkItem back to the workflow for
-		// traceability (docs/02 §2.2). The reconciler polls via the
-		// _workflow_step_run_id stored in results.
 		wfID := run.WorkflowID
-		workItem.WorkflowID = &wfID
-		if _, err := db.CreateWorkItem(ctx, tx, workItem); err != nil {
-			return fmt.Errorf("create task work item: %w", err)
+		var primaryWID string
+		for _, wid := range upstream {
+			wi, err := db.GetWorkItem(ctx, tx, tenantID, wid)
+			if err != nil {
+				if err == db.ErrNotFound {
+					return r.failStep(ctx, tx, tenantID, run, sr, runs,
+						fmt.Errorf("work item %s not found", wid))
+				}
+				return fmt.Errorf("load work item: %w", err)
+			}
+			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, wi.ID, wi.Version, db.UpdateWorkItemFields{
+				AssignedWorkerRef: &workerRef,
+				WorkflowID:        &wfID,
+				Status:            strPtr(domain.WorkItemReady),
+			}); err != nil {
+				return fmt.Errorf("assign worker to work item: %w", err)
+			}
+			primaryWID = wid
 		}
-		// Record the work_item_id on the step run so we can poll it.
-		stepResult, _ := json.Marshal(map[string]string{"_work_item_id": workItem.ID})
+		// Record the primary work item id on the step run so
+		// pollTaskStep can poll it.
+		stepResult, _ := json.Marshal(map[string]string{"_work_item_id": primaryWID})
 		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-			Status: strPtr(domain.StepRunRunning),
-			Result: &stepResult,
+			Status:    strPtr(domain.StepRunRunning),
+			Result:    &stepResult,
 			StartedAt: &now,
 		})
 		if err != nil {
@@ -415,7 +485,9 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepStarted, run, updated); err != nil {
 			return fmt.Errorf("enqueue step_started: %w", err)
 		}
-		r.log.Info("workflow task step dispatched", "run", run.ID, "step", step.ID, "work_item", workItem.ID, "worker", step.Ref)
+		r.log.Info("workflow worker dispatched",
+			"run", run.ID, "step", step.ID,
+			"work_items", upstream, "worker", step.Ref)
 
 	case domain.StepKindDecision:
 		// v0.1: default branch (true). Branch-condition evaluation from
@@ -498,6 +570,96 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		}
 	}
 	return nil
+}
+
+// succeedStep marks a passive step (project, work_item) as succeeded and
+// emits the success event. Used by dispatchStep for non-dispatching kinds.
+func (r *WorkflowReconciler) succeedStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, runs map[string]db.WorkflowStepRunRow, now time.Time, _ string) error {
+	updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+		Status:    strPtr(domain.StepRunSucceeded),
+		StartedAt: &now,
+		EndedAt:   &now,
+	})
+	if err != nil {
+		return fmt.Errorf("mark step succeeded: %w", err)
+	}
+	runs[sr.StepID] = updated
+	return r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated)
+}
+
+// failStep marks a step as failed with the given reason and emits the
+// failed event. Used by dispatchStep for missing-binding failures.
+func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, runs map[string]db.WorkflowStepRunRow, reason error) error {
+	now := time.Now().UTC()
+	msg := reason.Error()
+	result, _ := json.Marshal(map[string]string{"error": msg})
+	updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+		Status:  strPtr(domain.StepRunFailed),
+		Result:  &result,
+		EndedAt: &now,
+	})
+	if err != nil {
+		return fmt.Errorf("mark step failed: %w", err)
+	}
+	runs[sr.StepID] = updated
+	if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepFailed, run, updated); err != nil {
+		return fmt.Errorf("enqueue step_failed: %w", err)
+	}
+	return reason
+}
+
+// readConfigWorkItemID extracts work_item_id from a step's config JSON.
+// Returns "" for empty / malformed / missing config.
+func readConfigWorkItemID(config string) string {
+	if config == "" {
+		return ""
+	}
+	var parsed struct {
+		WorkItemID string `json:"work_item_id"`
+	}
+	if err := json.Unmarshal([]byte(config), &parsed); err != nil {
+		return ""
+	}
+	return parsed.WorkItemID
+}
+
+// readConfigProjectID extracts project_id from a step's config JSON.
+// Returns "" for empty / malformed / missing config.
+func readConfigProjectID(config string) string {
+	if config == "" {
+		return ""
+	}
+	var parsed struct {
+		ProjectID string `json:"project_id"`
+	}
+	if err := json.Unmarshal([]byte(config), &parsed); err != nil {
+		return ""
+	}
+	return parsed.ProjectID
+}
+
+// upstreamWorkItemIDs walks step.DependsOn looking for WORK_ITEM steps
+// and returns the work_item_ids they reference. Order matches
+// step.DependsOn so callers can pick a deterministic primary input.
+func upstreamWorkItemIDs(step workflow.StepWire, allSteps []workflow.StepWire) []string {
+	byID := make(map[string]workflow.StepWire, len(allSteps))
+	for _, s := range allSteps {
+		byID[s.ID] = s
+	}
+	var ids []string
+	for _, dep := range step.DependsOn {
+		ds, ok := byID[dep]
+		if !ok {
+			continue
+		}
+		if ds.Kind != domain.StepKindWorkItem {
+			continue
+		}
+		if wid := readConfigWorkItemID(ds.Config); wid != "" {
+			ids = append(ids, wid)
+		}
+	}
+	return ids
 }
 
 // pollTaskStep checks the WorkItem linked to a running task step. Returns

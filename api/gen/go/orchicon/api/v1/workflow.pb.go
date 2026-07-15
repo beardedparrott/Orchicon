@@ -146,12 +146,20 @@ func (WorkflowVersionStatus) EnumDescriptor() ([]byte, []int) {
 	return file_orchicon_api_v1_workflow_proto_rawDescGZIP(), []int{1}
 }
 
-// StepKind enumerates the five step types (docs/02 §2.4):
-//   - task: dispatches a Worker (creates a WorkerExecution)
-//   - decision: branches based on a prior step's result
-//   - approval: blocks until a human approves (gate)
-//   - parallel: fans out to multiple sub-steps, joins on completion
-//   - recover: invokes a recovery workflow
+// StepKind enumerates the step types a workflow author can place on the
+// canvas (docs/02 §2.4, docs/10 §5.1):
+//   - task: a worker node. Processes the work item(s) connected to its
+//     input edge and captures the output summary at its output edge.
+//   - decision: branches based on a prior step's result (reserved).
+//   - approval: blocks until a human approves (gate).
+//   - parallel: fans out to multiple sub-steps, joins on completion.
+//   - recover: invokes a recovery workflow.
+//   - work_item: a passive marker for a work item. Holds the work
+//     item's metadata as context for the downstream worker. Does not
+//     dispatch by itself.
+//   - project: a passive marker for the project that scopes the
+//     downstream work items. Sets the workflow's project_id on the
+//     first reconcile pass.
 type StepKind int32
 
 const (
@@ -161,6 +169,8 @@ const (
 	StepKind_STEP_KIND_APPROVAL    StepKind = 3
 	StepKind_STEP_KIND_PARALLEL    StepKind = 4
 	StepKind_STEP_KIND_RECOVER     StepKind = 5
+	StepKind_STEP_KIND_WORK_ITEM   StepKind = 6
+	StepKind_STEP_KIND_PROJECT     StepKind = 7
 )
 
 // Enum value maps for StepKind.
@@ -172,6 +182,8 @@ var (
 		3: "STEP_KIND_APPROVAL",
 		4: "STEP_KIND_PARALLEL",
 		5: "STEP_KIND_RECOVER",
+		6: "STEP_KIND_WORK_ITEM",
+		7: "STEP_KIND_PROJECT",
 	}
 	StepKind_value = map[string]int32{
 		"STEP_KIND_UNSPECIFIED": 0,
@@ -180,6 +192,8 @@ var (
 		"STEP_KIND_APPROVAL":    3,
 		"STEP_KIND_PARALLEL":    4,
 		"STEP_KIND_RECOVER":     5,
+		"STEP_KIND_WORK_ITEM":   6,
+		"STEP_KIND_PROJECT":     7,
 	}
 )
 
@@ -1252,14 +1266,16 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"#WORKFLOW_VERSION_STATUS_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dWORKFLOW_VERSION_STATUS_DRAFT\x10\x01\x12%\n" +
 	"!WORKFLOW_VERSION_STATUS_PUBLISHED\x10\x02\x12&\n" +
-	"\"WORKFLOW_VERSION_STATUS_DEPRECATED\x10\x03*\x98\x01\n" +
+	"\"WORKFLOW_VERSION_STATUS_DEPRECATED\x10\x03*\xc8\x01\n" +
 	"\bStepKind\x12\x19\n" +
 	"\x15STEP_KIND_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eSTEP_KIND_TASK\x10\x01\x12\x16\n" +
 	"\x12STEP_KIND_DECISION\x10\x02\x12\x16\n" +
 	"\x12STEP_KIND_APPROVAL\x10\x03\x12\x16\n" +
 	"\x12STEP_KIND_PARALLEL\x10\x04\x12\x15\n" +
-	"\x11STEP_KIND_RECOVER\x10\x05*\xfe\x01\n" +
+	"\x11STEP_KIND_RECOVER\x10\x05\x12\x17\n" +
+	"\x13STEP_KIND_WORK_ITEM\x10\x06\x12\x15\n" +
+	"\x11STEP_KIND_PROJECT\x10\a*\xfe\x01\n" +
 	"\x11WorkflowRunStatus\x12#\n" +
 	"\x1fWORKFLOW_RUN_STATUS_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bWORKFLOW_RUN_STATUS_PENDING\x10\x01\x12\x1f\n" +

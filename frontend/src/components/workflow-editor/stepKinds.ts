@@ -1,10 +1,17 @@
 // Step kinds + step payload types shared by the workflow editor and the
-// workflow run view. The five kinds mirror docs/02 §2.4:
-//   1 task      — dispatches a Worker via the TaskReconciler
+// workflow run view. The seven kinds mirror docs/02 §2.4 and the PR A
+// "work item as the unit" model:
+//   1 task      — a worker node. Processes the work item(s) connected
+//                 to its input edge; captures the output summary at
+//                 its output edge.
 //   2 decision  — evaluates a Rego query, routes the next step
 //   3 approval  — blocks until a human approves
 //   4 parallel  — fan-out: all downstream branches run concurrently
 //   5 recover   — on failure, triggers the recovery workflow engine
+//   6 work_item — a passive marker for a work item. Holds the work
+//                 item's metadata as context for the downstream worker.
+//   7 project   — a passive marker for the project that scopes the
+//                 downstream work items. Sets workflow.project_id.
 //
 // StepData is the shape stored on every React Flow node in the editor's
 // canvas. It is serialized into StepWire (workflow_versions.steps JSON)
@@ -28,6 +35,8 @@ export const STEP_KIND = {
   APPROVAL: 3,
   PARALLEL: 4,
   RECOVER: 5,
+  WORK_ITEM: 6,
+  PROJECT: 7,
 } as const;
 
 export const STEP_KIND_LABELS: Record<number, string> = {
@@ -36,6 +45,8 @@ export const STEP_KIND_LABELS: Record<number, string> = {
   3: "approval",
   4: "parallel",
   5: "recover",
+  6: "work_item",
+  7: "project",
 };
 
 export const STEP_KIND_TO_ENUM: Record<number, StepKind> = {
@@ -44,6 +55,8 @@ export const STEP_KIND_TO_ENUM: Record<number, StepKind> = {
   3: StepKind.APPROVAL,
   4: StepKind.PARALLEL,
   5: StepKind.RECOVER,
+  6: StepKind.WORK_ITEM,
+  7: StepKind.PROJECT,
 };
 
 // `kindStrToNum` parses a StepWire.kind back into the numeric enum used
@@ -54,6 +67,8 @@ export const STR_TO_KIND: Record<string, number> = {
   approval: 3,
   parallel: 4,
   recover: 5,
+  work_item: 6,
+  project: 7,
 };
 
 export const KIND_TO_STR = (k: number): string => STEP_KIND_LABELS[k] ?? "task";
@@ -62,15 +77,18 @@ export const KIND_TO_STR = (k: number): string => STEP_KIND_LABELS[k] ?? "task";
 // palette uses them and the StepNode uses them so a single import is
 // memoized at module scope.
 export const STEP_KIND_ICONS: Record<number, LucideIcon> = {
-  1: Bot,
-  2: GitBranch,
-  3: ShieldCheck,
-  4: GitFork,
-  5: LifeBuoy,
+  1: Bot, // task / worker
+  2: GitBranch, // decision
+  3: ShieldCheck, // approval
+  4: GitFork, // parallel
+  5: LifeBuoy, // recover
+  6: FileText, // work item
+  7: FileText, // project (same icon family as work item; palette labels distinguish)
 };
 
 export const WORKER_ICON: LucideIcon = Bot;
 export const WORKITEM_ICON: LucideIcon = FileText;
+export const PROJECT_ICON: LucideIcon = FileText;
 export const POLICY_ICON: LucideIcon = ShieldCheck;
 
 // StepData is the per-node payload kept in React Flow's nodes state.
@@ -105,16 +123,17 @@ export interface StepWire {
 // dragstart. The editor's onDrop reads it back, converts to a StepData
 // node, and adds it to the canvas.
 //
-// Exactly one of `workerId`, `workItemId`, or `policyId` is set, in
-// addition to `kind`. `kind` is the StepKind enum value (1-5) — task
-// steps are created from worker and work item drops; the step primitive
-// tiles (decision/approval/parallel/recover) leave the ref fields empty.
+// Exactly one of `workerId`, `workItemId`, `projectId`, or `policyId`
+// is set, in addition to `kind`. `kind` is the StepKind enum value
+// (1-7). The step primitives (decision/approval/parallel/recover) leave
+// the ref fields empty.
 export interface PaletteDropPayload {
   kind: number;
   name?: string;
   ref?: string;
   workerId?: string;
   workItemId?: string;
+  projectId?: string;
   policyId?: string;
 }
 
