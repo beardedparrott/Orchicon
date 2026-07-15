@@ -2,7 +2,7 @@ import { useMemo } from "react";
 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { MCPPicker } from "@/components/MCPPicker";
+import { MCPPicker, type MCPConfig } from "@/components/MCPPicker";
 
 // --- Shared types ---
 
@@ -25,7 +25,7 @@ const AVAILABLE_TOOLS = [
 
 interface PermissionsData {
   tools: string[];
-  mcp_servers: string[];
+  mcp_servers: MCPConfig[];
   model_providers: string[];
   context: string[];
   network: string[];
@@ -35,9 +35,15 @@ interface PermissionsData {
 function parsePermissions(raw: string): PermissionsData {
   try {
     const p = JSON.parse(raw);
+    const mcpRaw = Array.isArray(p.mcp_servers) ? p.mcp_servers : [];
+    const mcp_servers: MCPConfig[] = mcpRaw.map((m: unknown) => {
+      if (typeof m === "string") return { id: m, command: "" };
+      const o = m as Record<string, unknown>;
+      return { id: String(o.id ?? ""), command: String(o.command ?? "") };
+    });
     return {
       tools: Array.isArray(p.tools) ? p.tools : [],
-      mcp_servers: Array.isArray(p.mcp_servers) ? p.mcp_servers : [],
+      mcp_servers,
       model_providers: Array.isArray(p.model_providers) ? p.model_providers : [],
       context: Array.isArray(p.context) ? p.context : [],
       network: Array.isArray(p.network) ? p.network : [],
@@ -103,9 +109,9 @@ export function PermissionsSection({ value, onChange }: SectionProps) {
         </p>
         <MCPPicker
           value={data.mcp_servers}
-          onChange={(ids) =>
+          onChange={(configs) =>
             update((d) => {
-              d.mcp_servers = ids;
+              d.mcp_servers = configs;
               return d;
             })
           }
