@@ -327,6 +327,94 @@ func (x *PauseProjectResponse) GetProject() *Project {
 	return nil
 }
 
+type ActivateProjectRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ActivateProjectRequest) Reset() {
+	*x = ActivateProjectRequest{}
+	mi := &file_orchicon_api_v1_project_service_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ActivateProjectRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ActivateProjectRequest) ProtoMessage() {}
+
+func (x *ActivateProjectRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_project_service_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ActivateProjectRequest.ProtoReflect.Descriptor instead.
+func (*ActivateProjectRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_project_service_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ActivateProjectRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+type ActivateProjectResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Project       *Project               `protobuf:"bytes,1,opt,name=project,proto3" json:"project,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ActivateProjectResponse) Reset() {
+	*x = ActivateProjectResponse{}
+	mi := &file_orchicon_api_v1_project_service_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ActivateProjectResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ActivateProjectResponse) ProtoMessage() {}
+
+func (x *ActivateProjectResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_project_service_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ActivateProjectResponse.ProtoReflect.Descriptor instead.
+func (*ActivateProjectResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_project_service_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ActivateProjectResponse) GetProject() *Project {
+	if x != nil {
+		return x.Project
+	}
+	return nil
+}
+
 type StreamProjectEventsRequest struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	TenantId  string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
@@ -339,7 +427,7 @@ type StreamProjectEventsRequest struct {
 
 func (x *StreamProjectEventsRequest) Reset() {
 	*x = StreamProjectEventsRequest{}
-	mi := &file_orchicon_api_v1_project_service_proto_msgTypes[7]
+	mi := &file_orchicon_api_v1_project_service_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -351,7 +439,7 @@ func (x *StreamProjectEventsRequest) String() string {
 func (*StreamProjectEventsRequest) ProtoMessage() {}
 
 func (x *StreamProjectEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_project_service_proto_msgTypes[7]
+	mi := &file_orchicon_api_v1_project_service_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -364,7 +452,7 @@ func (x *StreamProjectEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamProjectEventsRequest.ProtoReflect.Descriptor instead.
 func (*StreamProjectEventsRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_project_service_proto_rawDescGZIP(), []int{7}
+	return file_orchicon_api_v1_project_service_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *StreamProjectEventsRequest) GetTenantId() string {
@@ -398,7 +486,7 @@ type StreamProjectEventsResponse struct {
 
 func (x *StreamProjectEventsResponse) Reset() {
 	*x = StreamProjectEventsResponse{}
-	mi := &file_orchicon_api_v1_project_service_proto_msgTypes[8]
+	mi := &file_orchicon_api_v1_project_service_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -410,7 +498,7 @@ func (x *StreamProjectEventsResponse) String() string {
 func (*StreamProjectEventsResponse) ProtoMessage() {}
 
 func (x *StreamProjectEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_project_service_proto_msgTypes[8]
+	mi := &file_orchicon_api_v1_project_service_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -423,7 +511,7 @@ func (x *StreamProjectEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamProjectEventsResponse.ProtoReflect.Descriptor instead.
 func (*StreamProjectEventsResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_project_service_proto_rawDescGZIP(), []int{8}
+	return file_orchicon_api_v1_project_service_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *StreamProjectEventsResponse) GetEvent() *ProjectEvent {
@@ -457,6 +545,10 @@ const file_orchicon_api_v1_project_service_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x17\n" +
 	"\x15DeleteProjectResponse\"J\n" +
 	"\x14PauseProjectResponse\x122\n" +
+	"\aproject\x18\x01 \x01(\v2\x18.orchicon.api.v1.ProjectR\aproject\"(\n" +
+	"\x16ActivateProjectRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"M\n" +
+	"\x17ActivateProjectResponse\x122\n" +
 	"\aproject\x18\x01 \x01(\v2\x18.orchicon.api.v1.ProjectR\aproject\"\xa8\x01\n" +
 	"\x1aStreamProjectEventsRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\"\n" +
@@ -467,7 +559,7 @@ const file_orchicon_api_v1_project_service_proto_rawDesc = "" +
 	"\x0e_from_sequence\"n\n" +
 	"\x1bStreamProjectEventsResponse\x123\n" +
 	"\x05event\x18\x01 \x01(\v2\x1d.orchicon.api.v1.ProjectEventR\x05event\x12\x1a\n" +
-	"\bsequence\x18\x02 \x01(\x03R\bsequence2\x98\x06\n" +
+	"\bsequence\x18\x02 \x01(\x03R\bsequence2\xfe\x06\n" +
 	"\x0eProjectService\x12^\n" +
 	"\rCreateProject\x12%.orchicon.api.v1.CreateProjectRequest\x1a&.orchicon.api.v1.CreateProjectResponse\x12U\n" +
 	"\n" +
@@ -476,7 +568,8 @@ const file_orchicon_api_v1_project_service_proto_rawDesc = "" +
 	"\rUpdateProject\x12%.orchicon.api.v1.UpdateProjectRequest\x1a&.orchicon.api.v1.UpdateProjectResponse\x12a\n" +
 	"\x0eArchiveProject\x12&.orchicon.api.v1.ArchiveProjectRequest\x1a'.orchicon.api.v1.ArchiveProjectResponse\x12^\n" +
 	"\rDeleteProject\x12%.orchicon.api.v1.DeleteProjectRequest\x1a&.orchicon.api.v1.DeleteProjectResponse\x12[\n" +
-	"\fPauseProject\x12$.orchicon.api.v1.PauseProjectRequest\x1a%.orchicon.api.v1.PauseProjectResponse\x12r\n" +
+	"\fPauseProject\x12$.orchicon.api.v1.PauseProjectRequest\x1a%.orchicon.api.v1.PauseProjectResponse\x12d\n" +
+	"\x0fActivateProject\x12'.orchicon.api.v1.ActivateProjectRequest\x1a(.orchicon.api.v1.ActivateProjectResponse\x12r\n" +
 	"\x13StreamProjectEvents\x12+.orchicon.api.v1.StreamProjectEventsRequest\x1a,.orchicon.api.v1.StreamProjectEventsResponse0\x01B\xcd\x01\n" +
 	"\x13com.orchicon.api.v1B\x13ProjectServiceProtoP\x01ZCgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1;apiv1\xa2\x02\x03OAX\xaa\x02\x0fOrchicon.Api.V1\xca\x02\x0fOrchicon\\Api\\V1\xe2\x02\x1bOrchicon\\Api\\V1\\GPBMetadata\xea\x02\x11Orchicon::Api::V1b\x06proto3"
 
@@ -492,7 +585,7 @@ func file_orchicon_api_v1_project_service_proto_rawDescGZIP() []byte {
 	return file_orchicon_api_v1_project_service_proto_rawDescData
 }
 
-var file_orchicon_api_v1_project_service_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_orchicon_api_v1_project_service_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_orchicon_api_v1_project_service_proto_goTypes = []any{
 	(*CreateProjectResponse)(nil),       // 0: orchicon.api.v1.CreateProjectResponse
 	(*GetProjectResponse)(nil),          // 1: orchicon.api.v1.GetProjectResponse
@@ -501,46 +594,51 @@ var file_orchicon_api_v1_project_service_proto_goTypes = []any{
 	(*DeleteProjectRequest)(nil),        // 4: orchicon.api.v1.DeleteProjectRequest
 	(*DeleteProjectResponse)(nil),       // 5: orchicon.api.v1.DeleteProjectResponse
 	(*PauseProjectResponse)(nil),        // 6: orchicon.api.v1.PauseProjectResponse
-	(*StreamProjectEventsRequest)(nil),  // 7: orchicon.api.v1.StreamProjectEventsRequest
-	(*StreamProjectEventsResponse)(nil), // 8: orchicon.api.v1.StreamProjectEventsResponse
-	(*Project)(nil),                     // 9: orchicon.api.v1.Project
-	(*ProjectEvent)(nil),                // 10: orchicon.api.v1.ProjectEvent
-	(*CreateProjectRequest)(nil),        // 11: orchicon.api.v1.CreateProjectRequest
-	(*GetProjectRequest)(nil),           // 12: orchicon.api.v1.GetProjectRequest
-	(*ListProjectsRequest)(nil),         // 13: orchicon.api.v1.ListProjectsRequest
-	(*UpdateProjectRequest)(nil),        // 14: orchicon.api.v1.UpdateProjectRequest
-	(*ArchiveProjectRequest)(nil),       // 15: orchicon.api.v1.ArchiveProjectRequest
-	(*PauseProjectRequest)(nil),         // 16: orchicon.api.v1.PauseProjectRequest
-	(*ListProjectsResponse)(nil),        // 17: orchicon.api.v1.ListProjectsResponse
+	(*ActivateProjectRequest)(nil),      // 7: orchicon.api.v1.ActivateProjectRequest
+	(*ActivateProjectResponse)(nil),     // 8: orchicon.api.v1.ActivateProjectResponse
+	(*StreamProjectEventsRequest)(nil),  // 9: orchicon.api.v1.StreamProjectEventsRequest
+	(*StreamProjectEventsResponse)(nil), // 10: orchicon.api.v1.StreamProjectEventsResponse
+	(*Project)(nil),                     // 11: orchicon.api.v1.Project
+	(*ProjectEvent)(nil),                // 12: orchicon.api.v1.ProjectEvent
+	(*CreateProjectRequest)(nil),        // 13: orchicon.api.v1.CreateProjectRequest
+	(*GetProjectRequest)(nil),           // 14: orchicon.api.v1.GetProjectRequest
+	(*ListProjectsRequest)(nil),         // 15: orchicon.api.v1.ListProjectsRequest
+	(*UpdateProjectRequest)(nil),        // 16: orchicon.api.v1.UpdateProjectRequest
+	(*ArchiveProjectRequest)(nil),       // 17: orchicon.api.v1.ArchiveProjectRequest
+	(*PauseProjectRequest)(nil),         // 18: orchicon.api.v1.PauseProjectRequest
+	(*ListProjectsResponse)(nil),        // 19: orchicon.api.v1.ListProjectsResponse
 }
 var file_orchicon_api_v1_project_service_proto_depIdxs = []int32{
-	9,  // 0: orchicon.api.v1.CreateProjectResponse.project:type_name -> orchicon.api.v1.Project
-	9,  // 1: orchicon.api.v1.GetProjectResponse.project:type_name -> orchicon.api.v1.Project
-	9,  // 2: orchicon.api.v1.UpdateProjectResponse.project:type_name -> orchicon.api.v1.Project
-	9,  // 3: orchicon.api.v1.ArchiveProjectResponse.project:type_name -> orchicon.api.v1.Project
-	9,  // 4: orchicon.api.v1.PauseProjectResponse.project:type_name -> orchicon.api.v1.Project
-	10, // 5: orchicon.api.v1.StreamProjectEventsResponse.event:type_name -> orchicon.api.v1.ProjectEvent
-	11, // 6: orchicon.api.v1.ProjectService.CreateProject:input_type -> orchicon.api.v1.CreateProjectRequest
-	12, // 7: orchicon.api.v1.ProjectService.GetProject:input_type -> orchicon.api.v1.GetProjectRequest
-	13, // 8: orchicon.api.v1.ProjectService.ListProjects:input_type -> orchicon.api.v1.ListProjectsRequest
-	14, // 9: orchicon.api.v1.ProjectService.UpdateProject:input_type -> orchicon.api.v1.UpdateProjectRequest
-	15, // 10: orchicon.api.v1.ProjectService.ArchiveProject:input_type -> orchicon.api.v1.ArchiveProjectRequest
-	4,  // 11: orchicon.api.v1.ProjectService.DeleteProject:input_type -> orchicon.api.v1.DeleteProjectRequest
-	16, // 12: orchicon.api.v1.ProjectService.PauseProject:input_type -> orchicon.api.v1.PauseProjectRequest
-	7,  // 13: orchicon.api.v1.ProjectService.StreamProjectEvents:input_type -> orchicon.api.v1.StreamProjectEventsRequest
-	0,  // 14: orchicon.api.v1.ProjectService.CreateProject:output_type -> orchicon.api.v1.CreateProjectResponse
-	1,  // 15: orchicon.api.v1.ProjectService.GetProject:output_type -> orchicon.api.v1.GetProjectResponse
-	17, // 16: orchicon.api.v1.ProjectService.ListProjects:output_type -> orchicon.api.v1.ListProjectsResponse
-	2,  // 17: orchicon.api.v1.ProjectService.UpdateProject:output_type -> orchicon.api.v1.UpdateProjectResponse
-	3,  // 18: orchicon.api.v1.ProjectService.ArchiveProject:output_type -> orchicon.api.v1.ArchiveProjectResponse
-	5,  // 19: orchicon.api.v1.ProjectService.DeleteProject:output_type -> orchicon.api.v1.DeleteProjectResponse
-	6,  // 20: orchicon.api.v1.ProjectService.PauseProject:output_type -> orchicon.api.v1.PauseProjectResponse
-	8,  // 21: orchicon.api.v1.ProjectService.StreamProjectEvents:output_type -> orchicon.api.v1.StreamProjectEventsResponse
-	14, // [14:22] is the sub-list for method output_type
-	6,  // [6:14] is the sub-list for method input_type
-	6,  // [6:6] is the sub-list for extension type_name
-	6,  // [6:6] is the sub-list for extension extendee
-	0,  // [0:6] is the sub-list for field type_name
+	11, // 0: orchicon.api.v1.CreateProjectResponse.project:type_name -> orchicon.api.v1.Project
+	11, // 1: orchicon.api.v1.GetProjectResponse.project:type_name -> orchicon.api.v1.Project
+	11, // 2: orchicon.api.v1.UpdateProjectResponse.project:type_name -> orchicon.api.v1.Project
+	11, // 3: orchicon.api.v1.ArchiveProjectResponse.project:type_name -> orchicon.api.v1.Project
+	11, // 4: orchicon.api.v1.PauseProjectResponse.project:type_name -> orchicon.api.v1.Project
+	11, // 5: orchicon.api.v1.ActivateProjectResponse.project:type_name -> orchicon.api.v1.Project
+	12, // 6: orchicon.api.v1.StreamProjectEventsResponse.event:type_name -> orchicon.api.v1.ProjectEvent
+	13, // 7: orchicon.api.v1.ProjectService.CreateProject:input_type -> orchicon.api.v1.CreateProjectRequest
+	14, // 8: orchicon.api.v1.ProjectService.GetProject:input_type -> orchicon.api.v1.GetProjectRequest
+	15, // 9: orchicon.api.v1.ProjectService.ListProjects:input_type -> orchicon.api.v1.ListProjectsRequest
+	16, // 10: orchicon.api.v1.ProjectService.UpdateProject:input_type -> orchicon.api.v1.UpdateProjectRequest
+	17, // 11: orchicon.api.v1.ProjectService.ArchiveProject:input_type -> orchicon.api.v1.ArchiveProjectRequest
+	4,  // 12: orchicon.api.v1.ProjectService.DeleteProject:input_type -> orchicon.api.v1.DeleteProjectRequest
+	18, // 13: orchicon.api.v1.ProjectService.PauseProject:input_type -> orchicon.api.v1.PauseProjectRequest
+	7,  // 14: orchicon.api.v1.ProjectService.ActivateProject:input_type -> orchicon.api.v1.ActivateProjectRequest
+	9,  // 15: orchicon.api.v1.ProjectService.StreamProjectEvents:input_type -> orchicon.api.v1.StreamProjectEventsRequest
+	0,  // 16: orchicon.api.v1.ProjectService.CreateProject:output_type -> orchicon.api.v1.CreateProjectResponse
+	1,  // 17: orchicon.api.v1.ProjectService.GetProject:output_type -> orchicon.api.v1.GetProjectResponse
+	19, // 18: orchicon.api.v1.ProjectService.ListProjects:output_type -> orchicon.api.v1.ListProjectsResponse
+	2,  // 19: orchicon.api.v1.ProjectService.UpdateProject:output_type -> orchicon.api.v1.UpdateProjectResponse
+	3,  // 20: orchicon.api.v1.ProjectService.ArchiveProject:output_type -> orchicon.api.v1.ArchiveProjectResponse
+	5,  // 21: orchicon.api.v1.ProjectService.DeleteProject:output_type -> orchicon.api.v1.DeleteProjectResponse
+	6,  // 22: orchicon.api.v1.ProjectService.PauseProject:output_type -> orchicon.api.v1.PauseProjectResponse
+	8,  // 23: orchicon.api.v1.ProjectService.ActivateProject:output_type -> orchicon.api.v1.ActivateProjectResponse
+	10, // 24: orchicon.api.v1.ProjectService.StreamProjectEvents:output_type -> orchicon.api.v1.StreamProjectEventsResponse
+	16, // [16:25] is the sub-list for method output_type
+	7,  // [7:16] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_project_service_proto_init() }
@@ -549,14 +647,14 @@ func file_orchicon_api_v1_project_service_proto_init() {
 		return
 	}
 	file_orchicon_api_v1_project_proto_init()
-	file_orchicon_api_v1_project_service_proto_msgTypes[7].OneofWrappers = []any{}
+	file_orchicon_api_v1_project_service_proto_msgTypes[9].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_project_service_proto_rawDesc), len(file_orchicon_api_v1_project_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

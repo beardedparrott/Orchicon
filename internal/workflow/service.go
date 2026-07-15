@@ -94,6 +94,13 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *connect.Request[apiv1
 	}
 	defer ttx.Rollback(ctx)
 
+	// Only active projects may host workflows (docs/02 §2.1).
+	if msg.ProjectId != "" {
+		if err := db.RequireProjectActive(ctx, ttx.Tx, tenantID, msg.ProjectId); err != nil {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("project not active: %w", err))
+		}
+	}
+
 	workflowRow := db.WorkflowRow{
 		ID:             workflowID,
 		TenantID:       tenantID,

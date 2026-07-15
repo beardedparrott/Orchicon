@@ -4,6 +4,7 @@ import { useForm } from "react-hook-form";
 import { useQueryClient } from "@tanstack/react-query";
 
 import {
+  useActivateProject,
   useArchiveProject,
   useDeleteProject,
   useGetProject,
@@ -37,6 +38,7 @@ function ProjectDetailPage() {
   const archiveProject = useArchiveProject();
   const deleteMutation = useDeleteProject();
   const updateProject = useUpdateProject();
+  const activateProject = useActivateProject();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
@@ -139,6 +141,14 @@ function ProjectDetailPage() {
           {!editing && (
             <Button variant="outline" onClick={() => setEditing(true)}>
               Edit
+            </Button>
+          )}
+          {project.status === 1 && (
+            <Button
+              onClick={() => activateProject.mutateAsync(id)}
+              disabled={activateProject.isPending}
+            >
+              {activateProject.isPending ? "Activating…" : "Activate"}
             </Button>
           )}
           {project.status !== 4 && (

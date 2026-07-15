@@ -60,6 +60,9 @@ const (
 	// ProjectServicePauseProjectProcedure is the fully-qualified name of the ProjectService's
 	// PauseProject RPC.
 	ProjectServicePauseProjectProcedure = "/orchicon.api.v1.ProjectService/PauseProject"
+	// ProjectServiceActivateProjectProcedure is the fully-qualified name of the ProjectService's
+	// ActivateProject RPC.
+	ProjectServiceActivateProjectProcedure = "/orchicon.api.v1.ProjectService/ActivateProject"
 	// ProjectServiceStreamProjectEventsProcedure is the fully-qualified name of the ProjectService's
 	// StreamProjectEvents RPC.
 	ProjectServiceStreamProjectEventsProcedure = "/orchicon.api.v1.ProjectService/StreamProjectEvents"
@@ -74,6 +77,7 @@ type ProjectServiceClient interface {
 	ArchiveProject(context.Context, *connect.Request[v1.ArchiveProjectRequest]) (*connect.Response[v1.ArchiveProjectResponse], error)
 	DeleteProject(context.Context, *connect.Request[v1.DeleteProjectRequest]) (*connect.Response[v1.DeleteProjectResponse], error)
 	PauseProject(context.Context, *connect.Request[v1.PauseProjectRequest]) (*connect.Response[v1.PauseProjectResponse], error)
+	ActivateProject(context.Context, *connect.Request[v1.ActivateProjectRequest]) (*connect.Response[v1.ActivateProjectResponse], error)
 	StreamProjectEvents(context.Context, *connect.Request[v1.StreamProjectEventsRequest]) (*connect.ServerStreamForClient[v1.StreamProjectEventsResponse], error)
 }
 
@@ -130,6 +134,12 @@ func NewProjectServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(projectServiceMethods.ByName("PauseProject")),
 			connect.WithClientOptions(opts...),
 		),
+		activateProject: connect.NewClient[v1.ActivateProjectRequest, v1.ActivateProjectResponse](
+			httpClient,
+			baseURL+ProjectServiceActivateProjectProcedure,
+			connect.WithSchema(projectServiceMethods.ByName("ActivateProject")),
+			connect.WithClientOptions(opts...),
+		),
 		streamProjectEvents: connect.NewClient[v1.StreamProjectEventsRequest, v1.StreamProjectEventsResponse](
 			httpClient,
 			baseURL+ProjectServiceStreamProjectEventsProcedure,
@@ -148,6 +158,7 @@ type projectServiceClient struct {
 	archiveProject      *connect.Client[v1.ArchiveProjectRequest, v1.ArchiveProjectResponse]
 	deleteProject       *connect.Client[v1.DeleteProjectRequest, v1.DeleteProjectResponse]
 	pauseProject        *connect.Client[v1.PauseProjectRequest, v1.PauseProjectResponse]
+	activateProject     *connect.Client[v1.ActivateProjectRequest, v1.ActivateProjectResponse]
 	streamProjectEvents *connect.Client[v1.StreamProjectEventsRequest, v1.StreamProjectEventsResponse]
 }
 
@@ -186,6 +197,11 @@ func (c *projectServiceClient) PauseProject(ctx context.Context, req *connect.Re
 	return c.pauseProject.CallUnary(ctx, req)
 }
 
+// ActivateProject calls orchicon.api.v1.ProjectService.ActivateProject.
+func (c *projectServiceClient) ActivateProject(ctx context.Context, req *connect.Request[v1.ActivateProjectRequest]) (*connect.Response[v1.ActivateProjectResponse], error) {
+	return c.activateProject.CallUnary(ctx, req)
+}
+
 // StreamProjectEvents calls orchicon.api.v1.ProjectService.StreamProjectEvents.
 func (c *projectServiceClient) StreamProjectEvents(ctx context.Context, req *connect.Request[v1.StreamProjectEventsRequest]) (*connect.ServerStreamForClient[v1.StreamProjectEventsResponse], error) {
 	return c.streamProjectEvents.CallServerStream(ctx, req)
@@ -200,6 +216,7 @@ type ProjectServiceHandler interface {
 	ArchiveProject(context.Context, *connect.Request[v1.ArchiveProjectRequest]) (*connect.Response[v1.ArchiveProjectResponse], error)
 	DeleteProject(context.Context, *connect.Request[v1.DeleteProjectRequest]) (*connect.Response[v1.DeleteProjectResponse], error)
 	PauseProject(context.Context, *connect.Request[v1.PauseProjectRequest]) (*connect.Response[v1.PauseProjectResponse], error)
+	ActivateProject(context.Context, *connect.Request[v1.ActivateProjectRequest]) (*connect.Response[v1.ActivateProjectResponse], error)
 	StreamProjectEvents(context.Context, *connect.Request[v1.StreamProjectEventsRequest], *connect.ServerStream[v1.StreamProjectEventsResponse]) error
 }
 
@@ -252,6 +269,12 @@ func NewProjectServiceHandler(svc ProjectServiceHandler, opts ...connect.Handler
 		connect.WithSchema(projectServiceMethods.ByName("PauseProject")),
 		connect.WithHandlerOptions(opts...),
 	)
+	projectServiceActivateProjectHandler := connect.NewUnaryHandler(
+		ProjectServiceActivateProjectProcedure,
+		svc.ActivateProject,
+		connect.WithSchema(projectServiceMethods.ByName("ActivateProject")),
+		connect.WithHandlerOptions(opts...),
+	)
 	projectServiceStreamProjectEventsHandler := connect.NewServerStreamHandler(
 		ProjectServiceStreamProjectEventsProcedure,
 		svc.StreamProjectEvents,
@@ -274,6 +297,8 @@ func NewProjectServiceHandler(svc ProjectServiceHandler, opts ...connect.Handler
 			projectServiceDeleteProjectHandler.ServeHTTP(w, r)
 		case ProjectServicePauseProjectProcedure:
 			projectServicePauseProjectHandler.ServeHTTP(w, r)
+		case ProjectServiceActivateProjectProcedure:
+			projectServiceActivateProjectHandler.ServeHTTP(w, r)
 		case ProjectServiceStreamProjectEventsProcedure:
 			projectServiceStreamProjectEventsHandler.ServeHTTP(w, r)
 		default:
@@ -311,6 +336,10 @@ func (UnimplementedProjectServiceHandler) DeleteProject(context.Context, *connec
 
 func (UnimplementedProjectServiceHandler) PauseProject(context.Context, *connect.Request[v1.PauseProjectRequest]) (*connect.Response[v1.PauseProjectResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.ProjectService.PauseProject is not implemented"))
+}
+
+func (UnimplementedProjectServiceHandler) ActivateProject(context.Context, *connect.Request[v1.ActivateProjectRequest]) (*connect.Response[v1.ActivateProjectResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.ProjectService.ActivateProject is not implemented"))
 }
 
 func (UnimplementedProjectServiceHandler) StreamProjectEvents(context.Context, *connect.Request[v1.StreamProjectEventsRequest], *connect.ServerStream[v1.StreamProjectEventsResponse]) error {

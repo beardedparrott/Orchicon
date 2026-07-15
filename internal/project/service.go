@@ -319,6 +319,53 @@ func (s *Service) PauseProject(ctx context.Context, req *connect.Request[apiv1.P
 	return connect.NewResponse(&apiv1.PauseProjectResponse{Project: rowToProto(p)}), nil
 }
 
+// ActivateProject transitions a drafting project to active status.
+// CAS on version to prevent lost updates.
+func (s *Service) ActivateProject(ctx context.Context, req *connect.Request[apiv1.ActivateProjectRequest]) (*connect.Response[apiv1.ActivateProjectResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetProject(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	const q = `UPDATE projects SET status = 'active', updated_at = now(), version = version + 1
+		WHERE tenant_id = $1 AND id = $2 AND version = $3 AND status = 'drafting'
+		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at`
+	var p db.ProjectRow
+	err = ttx.Tx.QueryRow(ctx, q, tenantID, req.Msg.Id, current.Version).Scan(
+		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
+		&p.Version, &p.CreatedAt, &p.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Either the version was stale or the project is not drafting.
+		if current.Status != domain.ProjectDrafting {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("project status is %q, must be 'drafting' to activate", current.Status))
+		}
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("project not found"))
+	}
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("activate project: %w", err))
+	}
+	if err := enqueueProjectEvent(ctx, ttx.Tx, "project.activated", p); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("project activated", "id", p.ID)
+	return connect.NewResponse(&apiv1.ActivateProjectResponse{Project: rowToProto(p)}), nil
+}
+
 // StreamProjectEvents is the server-stream RPC that fans out project
 // events from NATS to connected clients (docs/07 §4, docs/10 §4). It
 // subscribes to the orchicon.events.project.* subject filter and streams

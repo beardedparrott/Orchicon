@@ -272,3 +272,22 @@ func ArchiveProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 	}
 	return p, nil
 }
+
+// RequireProjectActive checks that the project with the given ID exists
+// and has status='active'. Returns ErrNotFound if the project doesn't
+// exist, or a descriptive error if it's in another state.
+func RequireProjectActive(ctx context.Context, tx pgx.Tx, tenantID, projectID string) error {
+	const q = `SELECT status FROM projects WHERE id = $1 AND tenant_id = $2`
+	var status string
+	err := tx.QueryRow(ctx, q, projectID, tenantID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("db: check project active: %w", err)
+	}
+	if status != "active" {
+		return fmt.Errorf("project is %q, must be active", status)
+	}
+	return nil
+}
