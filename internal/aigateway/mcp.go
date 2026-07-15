@@ -1,13 +1,11 @@
 package aigateway
 
 import (
-	"bufio"
-	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os/exec"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -16,7 +14,7 @@ import (
 )
 
 // MCPDiscoverer discovers MCP servers configured in opencode by shelling
-// out to `opencode mcp list`. Caches results with a TTL.
+// out to `opencode debug config`. Caches results with a TTL.
 type MCPDiscoverer struct {
 	log    *slog.Logger
 	binary string
@@ -67,105 +65,86 @@ func (d *MCPDiscoverer) ListMCPs(ctx context.Context) ([]*apiv1.OpenCodeMCP, err
 	return servers, nil
 }
 
-// fetchMCPs shells out to `opencode mcp list` and parses the output.
-//
-// The output format (ANSI-stripped) is:
-//
-//	┌  MCP Servers
-//	│
-//	●  ✓ godot connected
-//	│      npx -y @coding-solo/godot-mcp
-//	│
-//	●  ✓ context7 connected
-//	│      https://mcp.context7.com/mcp
-//	│
-//	└  3 server(s)
+// resolvedConfig is the shape of the JSON returned by `opencode debug config`.
+type resolvedConfig struct {
+	MCP map[string]mcpEntry `json:"mcp"`
+}
+
+type mcpEntry struct {
+	Type    string   `json:"type"`
+	URL     string   `json:"url,omitempty"`
+	Command any      `json:"command,omitempty"`
+	Enabled *bool    `json:"enabled,omitempty"`
+}
+
+// fetchMCPs shells out to `opencode debug config` and reads the resolved
+// config JSON, which includes the full (merged) MCP server list.
 func (d *MCPDiscoverer) fetchMCPs(ctx context.Context) ([]*apiv1.OpenCodeMCP, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, d.binary, "mcp", "list")
+	cmd := exec.CommandContext(ctx, d.binary, "debug", "config")
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("opencode mcp list: %w", err)
+		return nil, fmt.Errorf("opencode debug config: %w", err)
 	}
-	return parseMCPListOutput(out)
-}
 
-// serverLine matches the MCP server status line.
-// Example: "●  ✓ godot connected"
-var serverLine = regexp.MustCompile(`●\s+[✓✗]\s+(\S+)\s+(\S+)`)
+	var cfg resolvedConfig
+	if err := json.Unmarshal(out, &cfg); err != nil {
+		return nil, fmt.Errorf("parse opencode config: %w", err)
+	}
 
-func parseMCPListOutput(data []byte) ([]*apiv1.OpenCodeMCP, error) {
-	scanner := bufio.NewScanner(bytes.NewReader(data))
 	var servers []*apiv1.OpenCodeMCP
-	var current *apiv1.OpenCodeMCP
-	expectCommand := false
-
-	for scanner.Scan() {
-		raw := scanner.Text()
-		line := stripANSI(raw)
-
-		if expectCommand {
-			// The command line follows with indentation: "│      <command>"
-			trimmed := strings.TrimSpace(line)
-			trimmed = strings.TrimPrefix(trimmed, "│")
-			trimmed = strings.TrimSpace(trimmed)
-			if trimmed != "" && current != nil {
-				current.Command = trimmed
-			}
-			expectCommand = false
+	for name, entry := range cfg.MCP {
+		enabled := true
+		if entry.Enabled != nil {
+			enabled = *entry.Enabled
+		}
+		if !enabled {
 			continue
 		}
 
-		if matches := serverLine.FindStringSubmatch(line); len(matches) >= 3 {
-			current = &apiv1.OpenCodeMCP{
-				Id:     matches[1],
-				Status: matches[2],
+		cmdStr := ""
+		switch v := entry.Command.(type) {
+		case string:
+			cmdStr = v
+		case []any:
+			parts := make([]string, 0, len(v))
+			for _, p := range v {
+				if s, ok := p.(string); ok {
+					parts = append(parts, s)
+				}
 			}
-			servers = append(servers, current)
-			expectCommand = true
+			cmdStr = strings.Join(parts, " ")
 		}
-	}
+		if cmdStr == "" {
+			cmdStr = entry.URL
+		}
 
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan MCP list output: %w", err)
+		servers = append(servers, &apiv1.OpenCodeMCP{
+			Id:      name,
+			Command: cmdStr,
+			Status:  "configured",
+		})
 	}
 
 	return servers, nil
 }
 
-// stripANSI removes ANSI escape sequences from a string.
-func stripANSI(s string) string {
-	var buf bytes.Buffer
-	in := false
-	for _, ch := range s {
-		if ch == '\x1b' {
-			in = true
-			continue
-		}
-		if in {
-			if ch == 'm' || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') {
-				in = false
-			}
-			continue
-		}
-		buf.WriteRune(ch)
-	}
-	return buf.String()
-}
-
-// MockMCPDiscoverer returns a discoverer with a hardcoded server list.
+// MockMCPDiscoverer returns a discoverer with a hardcoded server list
+// matching opencode's built-in MCP servers.
 func MockMCPDiscoverer(log *slog.Logger) *MCPDiscoverer {
 	d := &MCPDiscoverer{
-		log: log.With("component", "mcp_discoverer"),
+		log:    log.With("component", "mcp_discoverer"),
 		binary: "",
-		ttl: 24 * time.Hour,
+		ttl:    24 * time.Hour,
 	}
 	d.cache = []*apiv1.OpenCodeMCP{
-		{Id: "filesystem", Command: "npx -y @modelcontextprotocol/server-filesystem", Status: "connected"},
-		{Id: "github", Command: "npx -y @modelcontextprotocol/server-github", Status: "connected"},
-		{Id: "postgres", Command: "npx -y @modelcontextprotocol/server-postgres", Status: "connected"},
+		{Id: "filesystem", Command: "npx -y @modelcontextprotocol/server-filesystem", Status: "configured"},
+		{Id: "github", Command: "npx -y @modelcontextprotocol/server-github", Status: "configured"},
+		{Id: "context7", Command: "https://mcp.context7.com/mcp", Status: "configured"},
+		{Id: "gh_grep", Command: "https://mcp.grep.app", Status: "configured"},
+		{Id: "postgres", Command: "npx -y @modelcontextprotocol/server-postgres", Status: "configured"},
 	}
 	d.cached = time.Now()
 	return d
