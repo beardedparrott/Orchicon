@@ -133,12 +133,20 @@ enum WorkflowVersionStatus {
   WORKFLOW_VERSION_STATUS_DEPRECATED = 3;
 }
 
-// StepKind enumerates the five step types (docs/02 §2.4):
-//   - task: dispatches a Worker (creates a WorkerExecution)
-//   - decision: branches based on a prior step's result
-//   - approval: blocks until a human approves (gate)
-//   - parallel: fans out to multiple sub-steps, joins on completion
-//   - recover: invokes a recovery workflow
+// StepKind enumerates the step types a workflow author can place on the
+// canvas (docs/02 §2.4, docs/10 §5.1):
+//   - task: a worker node. Processes the work item(s) connected to its
+//     input edge and captures the output summary at its output edge.
+//   - decision: branches based on a prior step's result (reserved).
+//   - approval: blocks until a human approves (gate).
+//   - parallel: fans out to multiple sub-steps, joins on completion.
+//   - recover: invokes a recovery workflow.
+//   - work_item: a passive marker for a work item. Holds the work
+//     item's metadata as context for the downstream worker. Does not
+//     dispatch by itself.
+//   - project: a passive marker for the project that scopes the
+//     downstream work items. Sets the workflow's project_id on the
+//     first reconcile pass.
 enum StepKind {
   STEP_KIND_UNSPECIFIED = 0;
   STEP_KIND_TASK = 1;
@@ -146,6 +154,8 @@ enum StepKind {
   STEP_KIND_APPROVAL = 3;
   STEP_KIND_PARALLEL = 4;
   STEP_KIND_RECOVER = 5;
+  STEP_KIND_WORK_ITEM = 6;
+  STEP_KIND_PROJECT = 7;
 }
 
 // WorkflowRun lifecycle states (docs/02 §2.4, docs/03 §2):

@@ -187,6 +187,9 @@ type UpdateWorkItemFields struct {
 	ContextWindow      *int
 	AssignedWorkerRef  *[]byte
 	ProjectID          *string
+	// WorkflowID links a work item to the workflow it's part of (set
+	// when a TASK step dispatches it). Nullable; empty string clears.
+	WorkflowID *string
 }
 
 // UpdateWorkItem applies a partial update with optimistic concurrency.
@@ -239,6 +242,11 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 	if f.ProjectID != nil {
 		q += fmt.Sprintf(`, project_id = $%d`, setIdx)
 		args = append(args, *f.ProjectID)
+		setIdx++
+	}
+	if f.WorkflowID != nil {
+		q += fmt.Sprintf(`, workflow_id = $%d`, setIdx)
+		args = append(args, *f.WorkflowID)
 		setIdx++
 	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`

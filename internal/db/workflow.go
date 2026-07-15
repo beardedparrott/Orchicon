@@ -526,6 +526,9 @@ type UpdateWorkflowRunFields struct {
 	RunContext  *[]byte
 	StartedAt   *time.Time
 	EndedAt     *time.Time
+	// ProjectID lets a workflow step bind the run to a project on the
+	// first dispatch (PROJECT kind steps write this; idempotent).
+	ProjectID *string
 }
 
 // UpdateWorkflowRun applies a partial update with optimistic concurrency.
@@ -556,6 +559,11 @@ func UpdateWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string, expe
 	if f.EndedAt != nil {
 		q += fmt.Sprintf(`, ended_at = $%d`, setIdx)
 		args = append(args, *f.EndedAt)
+		setIdx++
+	}
+	if f.ProjectID != nil {
+		q += fmt.Sprintf(`, project_id = $%d`, setIdx)
+		args = append(args, *f.ProjectID)
 		setIdx++
 	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`

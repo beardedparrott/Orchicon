@@ -36,6 +36,7 @@ export function PropertiesPanel({
   if (!node) return <EmptyProperties />;
   const d = node.data;
   const Icon = STEP_KIND_ICONS[d.kind] ?? STEP_KIND_ICONS[1];
+  const cfg = parseConfig(d.config);
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -58,7 +59,7 @@ export function PropertiesPanel({
         </Field>
         {d.kind === 1 && (
           <>
-            <Field label="Worker ULID" hint="The worker that runs this task.">
+            <Field label="Worker ULID" hint="The worker that processes the upstream work item.">
               <Input
                 value={d.ref}
                 disabled={readOnly}
@@ -76,11 +77,43 @@ export function PropertiesPanel({
             </Field>
           </>
         )}
+        {d.kind === 6 && (
+          <Field
+            label="Work item ID"
+            hint="The work item that flows through this step. Drag the work item onto the canvas to bind."
+          >
+            <Input
+              value={typeof cfg.work_item_id === "string" ? cfg.work_item_id : ""}
+              disabled={readOnly}
+              placeholder="01H…"
+              onChange={(e) => {
+                const next = { ...cfg, work_item_id: e.target.value };
+                onChange({ config: JSON.stringify(next) });
+              }}
+            />
+          </Field>
+        )}
+        {d.kind === 7 && (
+          <Field
+            label="Project ID"
+            hint="The workflow run is bound to this project on first dispatch."
+          >
+            <Input
+              value={typeof cfg.project_id === "string" ? cfg.project_id : d.ref}
+              disabled={readOnly}
+              placeholder="01H…"
+              onChange={(e) => {
+                const next = { ...cfg, project_id: e.target.value };
+                onChange({ config: JSON.stringify(next) });
+              }}
+            />
+          </Field>
+        )}
         <Field
           label="Gate policy"
           hint={
             d.kind === 1
-              ? "Evaluated before the task runs. Empty = no gate."
+              ? "Evaluated before the worker runs. Empty = no gate."
               : "Decision steps branch on the policy's allow/deny result."
           }
         >
@@ -92,7 +125,7 @@ export function PropertiesPanel({
         </Field>
         <Field
           label="Config (JSON)"
-          hint="Step-specific config (e.g. { work_item_id: '…' } for a work item reference)."
+          hint="Step-specific config (work_item_id / project_id / policy_id are auto-set by drags above)."
         >
           <Textarea
             value={d.config}
@@ -102,16 +135,6 @@ export function PropertiesPanel({
             onChange={(e) => onChange({ config: e.target.value })}
           />
         </Field>
-        {(() => {
-          const workItemId = readWorkItemId(d.config);
-          if (!workItemId) return null;
-          return (
-            <div className="rounded-md border border-dashed bg-muted/50 p-2 text-xs">
-              <div className="font-medium text-muted-foreground">Linked work item</div>
-              <div className="mt-0.5 font-mono text-[10px] opacity-80">{workItemId}</div>
-            </div>
-          );
-        })()}
       </CardContent>
     </Card>
   );
@@ -238,13 +261,16 @@ function EmptyProperties() {
   );
 }
 
-// readWorkItemId parses the work_item_id out of a step's config JSON.
-// Returns empty string if not set. Defensive against malformed JSON.
-function readWorkItemId(config: string): string {
+// parseConfig defensively reads a step's config JSON. Returns {} for
+// empty / malformed input. Used by the PropertiesPanel to render the
+// per-kind inputs (work_item_id, project_id) without re-parsing JSON.
+function parseConfig(config: string): Record<string, unknown> {
+  if (!config) return {};
   try {
-    const parsed = JSON.parse(config || "{}");
-    return typeof parsed.work_item_id === "string" ? parsed.work_item_id : "";
+    const parsed = JSON.parse(config);
+    if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
   } catch {
-    return "";
+    /* fall through */
   }
+  return {};
 }

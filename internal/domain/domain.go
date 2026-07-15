@@ -137,17 +137,31 @@ const (
 )
 
 // StepKind — the five step types (docs/02 §2.4):
-//   - task: dispatches a Worker (creates a WorkerExecution)
-//   - decision: branches based on a prior step's result
-//   - approval: blocks until a human approves (gate)
-//   - parallel: fans out to multiple sub-steps, joins on completion
-//   - recover: invokes a recovery workflow
+// StepKind enumerates the step types a workflow author can place on the
+// canvas (docs/02 §2.4, docs/10 §5.1). Stored as a string in StepWire
+// (workflow_versions.steps JSON) so the wire format is stable across
+// proto renumbering.
+//
+//   - task: a worker node. Processes the work item(s) connected to its
+//     input edge and captures the output summary at its output edge.
+//   - decision: branches based on a prior step's result (reserved).
+//   - approval: blocks until a human approves (gate).
+//   - parallel: fans out to multiple sub-steps, joins on completion.
+//   - recover: invokes a recovery workflow.
+//   - work_item: a passive marker for a work item. Holds the work
+//     item's metadata as context for the downstream worker. Does not
+//     dispatch by itself.
+//   - project: a passive marker for the project that scopes the
+//     downstream work items. Sets the workflow's project_id on the
+//     first reconcile pass.
 const (
-	StepKindTask      = "task"
-	StepKindDecision  = "decision"
-	StepKindApproval  = "approval"
-	StepKindParallel  = "parallel"
-	StepKindRecover   = "recover"
+	StepKindTask     = "task"
+	StepKindDecision = "decision"
+	StepKindApproval = "approval"
+	StepKindParallel = "parallel"
+	StepKindRecover  = "recover"
+	StepKindWorkItem = "work_item"
+	StepKindProject  = "project"
 )
 
 // StepRun lifecycle states (docs/03 §2, docs/09 §3.4):

@@ -93,12 +93,20 @@ proto3.util.setEnumType(WorkflowVersionStatus, "orchicon.api.v1.WorkflowVersionS
 ]);
 
 /**
- * StepKind enumerates the five step types (docs/02 §2.4):
- *   - task: dispatches a Worker (creates a WorkerExecution)
- *   - decision: branches based on a prior step's result
- *   - approval: blocks until a human approves (gate)
- *   - parallel: fans out to multiple sub-steps, joins on completion
- *   - recover: invokes a recovery workflow
+ * StepKind enumerates the step types a workflow author can place on the
+ * canvas (docs/02 §2.4, docs/10 §5.1):
+ *   - task: a worker node. Processes the work item(s) connected to its
+ *     input edge and captures the output summary at its output edge.
+ *   - decision: branches based on a prior step's result (reserved).
+ *   - approval: blocks until a human approves (gate).
+ *   - parallel: fans out to multiple sub-steps, joins on completion.
+ *   - recover: invokes a recovery workflow.
+ *   - work_item: a passive marker for a work item. Holds the work
+ *     item's metadata as context for the downstream worker. Does not
+ *     dispatch by itself.
+ *   - project: a passive marker for the project that scopes the
+ *     downstream work items. Sets the workflow's project_id on the
+ *     first reconcile pass.
  *
  * @generated from enum orchicon.api.v1.StepKind
  */
@@ -132,6 +140,16 @@ export enum StepKind {
    * @generated from enum value: STEP_KIND_RECOVER = 5;
    */
   RECOVER = 5,
+
+  /**
+   * @generated from enum value: STEP_KIND_WORK_ITEM = 6;
+   */
+  WORK_ITEM = 6,
+
+  /**
+   * @generated from enum value: STEP_KIND_PROJECT = 7;
+   */
+  PROJECT = 7,
 }
 // Retrieve enum metadata with: proto3.getEnumType(StepKind)
 proto3.util.setEnumType(StepKind, "orchicon.api.v1.StepKind", [
@@ -141,6 +159,8 @@ proto3.util.setEnumType(StepKind, "orchicon.api.v1.StepKind", [
   { no: 3, name: "STEP_KIND_APPROVAL" },
   { no: 4, name: "STEP_KIND_PARALLEL" },
   { no: 5, name: "STEP_KIND_RECOVER" },
+  { no: 6, name: "STEP_KIND_WORK_ITEM" },
+  { no: 7, name: "STEP_KIND_PROJECT" },
 ]);
 
 /**

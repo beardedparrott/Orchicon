@@ -322,15 +322,24 @@ function EditorInner({ workflowId }: { workflowId: string }) {
         y: Number.isFinite(raw?.y) ? raw.y : 100,
       };
       const id = `step-${Math.random().toString(36).slice(2, 10)}`;
-      const config = workItemId
-        ? JSON.stringify({
-            work_item_id: workItemId,
-            // Pre-populate the step with the work item's metadata so the
-            // properties panel has useful defaults even before the next
-            // server round-trip.
-            work_item_title: name,
-          })
-        : "{}";
+      // Build the per-kind config JSON. The WorkflowReconciler reads
+      // work_item_id (WORK_ITEM steps) and project_id (PROJECT steps)
+      // out of config; the rest is preserved as editor-only hints.
+      let configObj: Record<string, unknown> = {};
+      if (workItemId) {
+        configObj.work_item_id = workItemId;
+        if (name) configObj.work_item_title = name;
+      }
+      if (policyId) {
+        configObj.policy_id = policyId;
+      }
+      // PROJECT steps also carry the project id in the ref so the
+      // node card shows a short label, and in config.project_id for
+      // the reconciler to pick up.
+      if (kind === 7 && ref) {
+        configObj.project_id = ref;
+      }
+      const config = JSON.stringify(configObj);
       const data: StepData = {
         kind,
         name: name ?? `step-${id.slice(5, 9)}`,
@@ -366,13 +375,31 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   };
 
   // --- validation (docs/10 §11: validation is part of the editor) ---
+  // Per-kind required bindings:
+  //   task (1)      → worker ref OR a work_item_id in config (the latter
+  //                   from an upstream WORK_ITEM step; this validation
+  //                   checks the local ref which is the direct binding)
+  //   work_item (6) → config.work_item_id
+  //   project (7)   → config.project_id (or ref carrying the project id)
+  //   decision/approval/parallel/recover → no required binding
   const validate = useCallback((): string[] => {
     const errs: string[] = [];
     for (const n of nodes) {
       const d = n.data;
-      if (d.kind === 1 && !d.ref && !/work_item_id/.test(d.config || "")) {
+      const cfg = parseConfig(d.config);
+      if (d.kind === 1 && !d.ref) {
         errs.push(
-          `Step "${d.name || n.id}" is a task but has no Worker or work item reference.`,
+          `Step "${d.name || n.id}" is a worker but has no Worker reference.`,
+        );
+      }
+      if (d.kind === 6 && !cfg.work_item_id) {
+        errs.push(
+          `Step "${d.name || n.id}" is a work item but has no work_item_id.`,
+        );
+      }
+      if (d.kind === 7 && !cfg.project_id && !d.ref) {
+        errs.push(
+          `Step "${d.name || n.id}" is a project but has no project_id.`,
         );
       }
       if (!d.name) {
@@ -754,3 +781,17 @@ const WORKFLOW_STATUS_LABELS: Record<number, string> = {
   2: "published",
   3: "deprecated",
 };
+
+// parseConfig defensively reads a step's config JSON. Returns {} for
+// empty / malformed input. Used by the validator and the properties
+// panel to extract work_item_id / project_id without re-parsing JSON.
+function parseConfig(config: string): Record<string, unknown> {
+  if (!config) return {};
+  try {
+    const parsed = JSON.parse(config);
+    if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
+  } catch {
+    /* fall through */
+  }
+  return {};
+}

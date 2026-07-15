@@ -1,17 +1,20 @@
 // Palette — the left column of the workflow editor.
 //
-// Four sections (each collapsible), each tile is a draggable card. The
-// dataTransfer payload is a PaletteDropPayload (see stepKinds.ts) and
-// the editor's onDrop converts it into a StepData node.
+// PR A model: the canvas shows three first-class node types. Each
+// section of the palette drops a different kind onto the canvas:
 //
-// Sections:
-//   1. Workers    — published workers → task step (kind=1) with ref
-//   2. Work items — recent project work items → task step (kind=1) with
-//                   config.work_item_id; title/desc/AC pre-populate the
-//                   step's metadata
-//   3. Policies   — published policies → any step kind, with
-//                   gate_policy_ref set
-//   4. Primitives — Decision / Approval / Parallel / Recover
+//   1. Projects    — drag a Project → PROJECT step. Sets the
+//                    workflow's project_id on first dispatch.
+//   2. Work items  — drag a work item → WORK_ITEM step. A passive
+//                    marker; the connected worker step downstream
+//                    will pick it up.
+//   3. Workers     — drag a published Worker → TASK step. The worker
+//                    that processes the upstream work item.
+//   4. Policies    — drag a published Policy → attaches as
+//                    gate_policy_ref on an existing step (or as the
+//                    gate of a new step).
+//   5. Primitives  — Decision / Approval / Parallel / Recover
+//                    (control flow, unchanged).
 //
 // All tile text is rendered through the shared tooltip helper so users
 // see a one-liner + example on hover (docs/10 §11 — discoverability).
@@ -20,12 +23,15 @@ import { useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
+  FileText,
+  Folder,
   Info,
   Search,
   Workflow as WorkflowIcon,
   X,
   type LucideIcon,
 } from "lucide-react";
+
 
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -41,6 +47,7 @@ import { WorkItemStatus } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import {
   PALETTE_MIME,
   POLICY_ICON,
+  PROJECT_ICON,
   STEP_KIND,
   STEP_KIND_ICONS,
   STEP_KIND_LABELS,
@@ -53,32 +60,36 @@ import {
 // example payload. The tooltip is the "what does this do" entry-point
 // for first-time users.
 const STEP_KIND_DESCRIPTIONS: Record<number, { summary: string; example: string }> = {
-  1: {
-    summary: "Runs a Worker on the task.",
+  [STEP_KIND.TASK]: {
+    summary: "A worker that processes the upstream work item.",
     example: "Ref: worker ULID, version (0 = latest)",
   },
-  2: {
+  [STEP_KIND.DECISION]: {
     summary: "Branches based on a Rego policy.",
     example: "Wire the chosen branch downstream.",
   },
-  3: {
+  [STEP_KIND.APPROVAL]: {
     summary: "Blocks until a human approves.",
     example: "Resolution: approve / deny / comment.",
   },
-  4: {
+  [STEP_KIND.PARALLEL]: {
     summary: "Fans out to every downstream step.",
     example: "All children run in parallel.",
   },
-  5: {
+  [STEP_KIND.RECOVER]: {
     summary: "Triggers recovery on upstream failure.",
     example: "Summarize + retry or escalate.",
   },
+  [STEP_KIND.WORK_ITEM]: {
+    summary: "A passive marker for a work item.",
+    example: "The connected worker step processes this work item.",
+  },
+  [STEP_KIND.PROJECT]: {
+    summary: "Binds the run to a project on first dispatch.",
+    example: "Downstream work items land in this project.",
+  },
 };
 
-const WORKER_DESCRIPTION =
-  "Creates a task step that dispatches this worker. Drag it onto the canvas to add it as a runnable step.";
-const WORKITEM_DESCRIPTION =
-  "Creates a task step pre-populated from this work item's title, description, and acceptance criteria. The work item ID is linked so the runtime can pull the latest metadata.";
 const POLICY_DESCRIPTION =
   "Adds this policy as the gate for a step. Drag it onto an existing step to attach it, or onto the canvas to add a new step with this gate.";
 
@@ -108,43 +119,59 @@ export function Palette({
   }, [workItems, allWorkItems]);
   const policyList = (policies ?? []).filter((p) => p.status === PolicyStatus.PUBLISHED).slice(0, 12);
 
-  const projectName = (projects ?? []).find((p) => p.id === projectId)?.name ?? "—";
-
   const [search, setSearch] = useState("");
   const filter = (s: string) =>
     search.trim() ? s.toLowerCase().includes(search.trim().toLowerCase()) : true;
+
+  // Only show the project's project tile in the Projects section; if the
+  // workflow is a tenant template, surface a hint that the user should
+  // pick a project.
+  const projectList = (projects ?? []).filter((p) =>
+    projectId ? p.id === projectId : true,
+  );
 
   return (
     <div className="space-y-3">
       <PaletteSearch value={search} onChange={setSearch} />
       <Section
-        title="Workers"
-        icon={WORKER_ICON}
-        subtitle="Tasks that run a worker"
-        empty={published.length === 0 ? "No published workers yet." : undefined}
+        title="Projects"
+        icon={PROJECT_ICON}
+        subtitle="Bind the run to a project"
+        empty={
+          projectList.length === 0
+            ? "No projects available — create one first."
+            : undefined
+        }
       >
-        {published.filter((w) => filter(w.name) || filter(w.slug)).map((w) => (
-          <DraggableTile
-            key={w.id}
-            label={w.name}
-            sublabel={w.slug}
-            icon={WORKER_ICON}
-            kindAccent="sky"
-            payload={{
-              kind: STEP_KIND.TASK,
-              name: w.name,
-              ref: w.id,
-              workerId: w.id,
-            }}
-            description={WORKER_DESCRIPTION}
-            readOnly={readOnly}
-          />
-        ))}
+        {projectList
+          .filter((p) => filter(p.name) || filter(p.slug))
+          .map((p) => (
+            <DraggableTile
+              key={p.id}
+              label={p.name}
+              sublabel={p.slug}
+              icon={Folder}
+              kindAccent="indigo"
+              payload={{
+                kind: STEP_KIND.PROJECT,
+                name: p.name,
+                ref: p.id,
+                projectId: p.id,
+              }}
+              description={STEP_KIND_DESCRIPTIONS[STEP_KIND.PROJECT].summary}
+              example={`project_id: ${p.id.slice(0, 12)}…`}
+              readOnly={readOnly}
+            />
+          ))}
       </Section>
       <Section
         title="Work items"
         icon={WORKITEM_ICON}
-        subtitle={`From project: ${projectName}`}
+        subtitle={
+          projectId
+            ? "Reference a work item on the canvas"
+            : "Pick a project first"
+        }
         empty={
           !projectId
             ? "Tenant-template workflow — assign a project to see its work items."
@@ -160,22 +187,48 @@ export function Palette({
               key={w.id}
               label={w.title}
               sublabel={`${KIND_LABEL[w.kind] ?? "task"} · ${STATUS_LABEL[w.status] ?? "—"}`}
-              icon={WORKITEM_ICON}
+              icon={FileText}
               kindAccent="emerald"
               payload={{
-                kind: STEP_KIND.TASK,
+                kind: STEP_KIND.WORK_ITEM,
                 name: w.title,
                 workItemId: w.id,
               }}
-              description={WORKITEM_DESCRIPTION}
+              description={STEP_KIND_DESCRIPTIONS[STEP_KIND.WORK_ITEM].summary}
+              example={`work_item_id: ${w.id.slice(0, 12)}…`}
               readOnly={readOnly}
             />
           ))}
       </Section>
       <Section
+        title="Workers"
+        icon={WORKER_ICON}
+        subtitle="The actor that processes the work item"
+        empty={published.length === 0 ? "No published workers yet." : undefined}
+      >
+        {published.filter((w) => filter(w.name) || filter(w.slug)).map((w) => (
+          <DraggableTile
+            key={w.id}
+            label={w.name}
+            sublabel={w.slug}
+            icon={WORKER_ICON}
+            kindAccent="sky"
+            payload={{
+              kind: STEP_KIND.TASK,
+              name: w.name,
+              ref: w.id,
+              workerId: w.id,
+            }}
+            description={STEP_KIND_DESCRIPTIONS[STEP_KIND.TASK].summary}
+            example={`worker_id: ${w.id.slice(0, 12)}…`}
+            readOnly={readOnly}
+          />
+        ))}
+      </Section>
+      <Section
         title="Policies"
         icon={POLICY_ICON}
-        subtitle="Rego gate rules"
+        subtitle="Rego gate rules (attach to a step)"
         empty={policyList.length === 0 ? "No published policies." : undefined}
       >
         {policyList.filter((p) => filter(p.name)).map((p) => (
@@ -333,12 +386,8 @@ function DraggableTile({
   const setData = (e: React.DragEvent) => {
     e.dataTransfer.setData(PALETTE_MIME, JSON.stringify(payload));
     e.dataTransfer.setData("text/plain", label);
-    // `copyMove` permits both copy and move effectAllowed so any
-    // dropEffect the canvas uses is accepted by the browser.
     e.dataTransfer.effectAllowed = "copyMove";
     if (ref.current) {
-      // Use a hidden clone as the drag image so the cursor preview
-      // matches the tile's appearance rather than the OS default.
       const ghost = ref.current.cloneNode(true) as HTMLElement;
       ghost.style.position = "absolute";
       ghost.style.top = "-1000px";
@@ -347,7 +396,6 @@ function DraggableTile({
       ghost.style.opacity = "0.85";
       document.body.appendChild(ghost);
       e.dataTransfer.setDragImage(ghost, 12, 12);
-      // Detach after the browser has snapshotted the drag image.
       setTimeout(() => ghost.remove(), 0);
     }
   };
@@ -422,6 +470,7 @@ const ACCENT_BORDER: Record<string, string> = {
   rose: "border-rose-300/70 dark:border-rose-800/60",
   yellow: "border-yellow-300/70 dark:border-yellow-800/60",
   violet: "border-violet-300/70 dark:border-violet-800/60",
+  indigo: "border-indigo-300/70 dark:border-indigo-800/60",
 };
 
 const ACCENT_BG: Record<string, string> = {
@@ -431,14 +480,17 @@ const ACCENT_BG: Record<string, string> = {
   rose: "bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300",
   yellow: "bg-yellow-100 text-yellow-700 dark:bg-yellow-950/60 dark:text-yellow-300",
   violet: "bg-violet-100 text-violet-700 dark:bg-violet-950/60 dark:text-violet-300",
+  indigo: "bg-indigo-100 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300",
 };
 
 const KIND_ACCENT: Record<number, string> = {
-  1: "sky", // task
-  2: "amber", // decision
-  3: "yellow", // approval
-  4: "violet", // parallel
-  5: "rose", // recover
+  [STEP_KIND.TASK]: "sky",
+  [STEP_KIND.DECISION]: "amber",
+  [STEP_KIND.APPROVAL]: "yellow",
+  [STEP_KIND.PARALLEL]: "violet",
+  [STEP_KIND.RECOVER]: "rose",
+  [STEP_KIND.WORK_ITEM]: "emerald",
+  [STEP_KIND.PROJECT]: "indigo",
 };
 
 const KIND_LABEL: Record<number, string> = {
