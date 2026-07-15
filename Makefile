@@ -80,21 +80,28 @@ rls-check: ## CI gate: every tenant_id table must have the RLS policy (docs/09 Â
 	scripts/check-rls.sh "$(DB_URL)"
 
 # --- Docker Compose dev stack ----------------------------------------------
-.PHONY: up down logs ps nuke
-up: ## Start the local dev stack (Postgres, NATS, SigNoz, OTel)
-	$(COMPOSE) -f $(COMPOSE_FILE) up -d
+.PHONY: up up-telemetry down logs ps nuke
+
+COMPOSE_PROFILE :=
+COMPOSE_ARGS    := -f $(COMPOSE_FILE)
+
+up: ## Start the core dev stack (Postgres + NATS). Telemetry not included.
+	$(COMPOSE) $(COMPOSE_ARGS) up -d
+
+up-telemetry: ## Start the full dev stack including telemetry (ClickHouse, OTel, SigNoz)
+	$(COMPOSE) --profile telemetry $(COMPOSE_ARGS) up -d
 
 down: ## Stop the local dev stack
-	$(COMPOSE) -f $(COMPOSE_FILE) down
+	$(COMPOSE) $(COMPOSE_ARGS) down
 
 logs: ## Tail dev-stack logs
-	$(COMPOSE) -f $(COMPOSE_FILE) logs -f --tail=100
+	$(COMPOSE) $(COMPOSE_ARGS) logs -f --tail=100
 
 ps: ## Show dev-stack status
-	$(COMPOSE) -f $(COMPOSE_FILE) ps
+	$(COMPOSE) $(COMPOSE_ARGS) ps
 
 nuke: ## Stop and DELETE all dev-stack data volumes
-	$(COMPOSE) -f $(COMPOSE_FILE) down -v
+	$(COMPOSE) $(COMPOSE_ARGS) down -v
 
 # --- Frontend --------------------------------------------------------------
 .PHONY: fe-install fe-dev fe-build fe-lint

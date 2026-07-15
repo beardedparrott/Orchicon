@@ -152,7 +152,7 @@ do_clean() {
   echo -e "${B}Data preserved:${X}"
   echo -e "  ${D}• Postgres database (Docker volume)${X}"
   echo -e "  ${D}• NATS JetStream messages (Docker volume)${X}"
-  echo -e "  ${D}• ClickHouse / SigNoz / ZooKeeper (Docker volumes)${X}"
+  echo -e "  ${D}• ClickHouse / SigNoz (Docker volumes)${X}"
   echo -e "  ${D}• BlobStore files (./data/blobs)${X}"
   echo -e "  ${D}• Runtime state (.dev/)${X}"
   echo ""

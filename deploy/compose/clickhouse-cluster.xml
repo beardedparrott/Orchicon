@@ -1,17 +1,36 @@
 <!-- ClickHouse cluster config for single-node SigNoz dev setup.
-     SigNoz's schema migrator and query-service expect a cluster named
-     "cluster"; this maps it to the local single-node instance.
-     ZooKeeper is configured for ReplicatedMergeTree tables. -->
+     Uses the built-in ClickHouse Keeper (embedded RAFT-based
+     coordination) instead of a separate ZooKeeper container.
+     The keeper replaces the external ZooKeeper dependency —
+     SigNoz's ReplicatedMergeTree tables use it for metadata.
+
+     SigNoz's schema migrator and query-service expect a cluster
+     named "cluster"; this maps it to the local single-node
+     instance. -->
 <clickhouse>
-    <zookeeper>
-        <node>
-            <host>zookeeper</host>
-            <port>2181</port>
-        </node>
-    </zookeeper>
+    <keeper_server>
+        <tcp_port>9181</tcp_port>
+        <server_id>1</server_id>
+        <log_storage_path>/var/lib/clickhouse/coordination/log</log_storage_path>
+        <snapshot_storage_path>/var/lib/clickhouse/coordination/snapshots</snapshot_storage_path>
+        <coordination_settings>
+            <operation_timeout_ms>10000</operation_timeout_ms>
+            <session_timeout_ms>30000</session_timeout_ms>
+            <raft_logs_level>error</raft_logs_level>
+        </coordination_settings>
+        <raft_configuration>
+            <server>
+                <id>1</id>
+                <hostname>localhost</hostname>
+                <port>9444</port>
+            </server>
+        </raft_configuration>
+    </keeper_server>
+
     <remote_servers>
         <cluster>
             <shard>
+                <internal_replication>true</internal_replication>
                 <replica>
                     <host>localhost</host>
                     <port>9000</port>

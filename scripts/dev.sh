@@ -29,7 +29,10 @@ COMPOSE_FILE="deploy/compose/docker-compose.yml"
 DEV_DIR=".dev"
 PID_DIR="$DEV_DIR/pids"
 LOG_DIR="$DEV_DIR/logs"
-COMPOSE="docker compose -f $COMPOSE_FILE"
+# Default: start the full stack including telemetry. For a lighter dev
+# loop that only starts Postgres + NATS, use `make up` instead (Docker
+# Compose profile separates telemetry into --profile telemetry).
+COMPOSE="docker compose --profile telemetry -f $COMPOSE_FILE"
 DB_URL="${ORCHICON_POSTGRES_DSN:-postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable}"
 
 # --- Binary delegation ------------------------------------------------------
