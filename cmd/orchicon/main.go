@@ -34,12 +34,24 @@ func main() {
 		switch os.Args[1] {
 		case "dev":
 			os.Exit(runDev(os.Args[2:]))
+		case "start":
+			os.Exit(runDev([]string{"start"}))
+		case "stop":
+			os.Exit(runDev([]string{"stop"}))
+		case "status":
+			os.Exit(runDev([]string{"status"}))
+		case "restart":
+			os.Exit(runDev([]string{"restart"}))
 		case "version", "--version", "-v":
 			fmt.Println(version.Current().String())
 			return
 		case "--help", "-h":
 			printHelp()
 			return
+		default:
+			fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", os.Args[1])
+			printHelp()
+			os.Exit(1)
 		}
 	}
 
@@ -74,9 +86,14 @@ Usage:
   orchicon dev start    Start the full dev stack (compose → migrate → serve)
   orchicon dev stop     Stop the dev stack
   orchicon dev status   Show what's running
+
+Short aliases:
+  orchicon start        Same as "orchicon dev start"
+  orchicon stop         Same as "orchicon dev stop"
+
   orchicon version      Print version info
 
 The binary embeds the Docker Compose stack, migrations, and the frontend
-bundle, so `+"`orchicon dev start`"+` is the complete one-command experience.
+bundle, so `+"`orchicon start`"+` is the complete one-command experience.
 `, version.Current().Tag)
 }
