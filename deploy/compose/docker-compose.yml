@@ -1,4 +1,4 @@
-# Orchicon local development stack — 2 containers by default.
+# Orchicon local development stack.
 #
 # Per docs/01_Architecture_Vision.md §3, the local-dev deployment runs
 # the control plane plus all dependencies on one machine:
@@ -7,32 +7,22 @@
 #   - OTel collector → SigNoz/ClickHouse (fully separated telemetry
 #     plane, docs/01 §3, docs/08 §5)
 #
-# Default profile (no flag): postgres + nats.
-# Telemetry profile: clickhouse + schema migrator + otel-collector + signoz.
-#
-# The telemetry stack is opt-in via a Docker Compose profile so that
-# the common dev loop (editing API handlers, reconcilers, UI) does not
-# need to start the full SigNoz/ClickHouse stack. The control plane
-# gracefully degrades when telemetry is absent (docs/08 §8).
-#
-# Start with telemetry:  make up-telemetry
-#   (or: docker compose --profile telemetry -f deploy/compose/docker-compose.yml up -d)
-#
-# Containers eliminated from the standard SigNoz stack:
-#   - ZooKeeper: ClickHouse's built-in Keeper (embedded RAFT-based
-#     coordination) replaces the separate ZooKeeper container.
+# Key optimizations vs the standard SigNoz stack:
+#   - ZooKeeper eliminated: ClickHouse's built-in Keeper (embedded
+#     RAFT-based coordination) replaces the separate ZooKeeper
+#     container, cutting container count from 7 to 6.
 #   - Depends_on chains relaxed: the schema migrator, OTel collector,
-#     and SigNoz query-service all start asynchronously so the stack
-#     becomes available faster — no container waits on the schema
-#     migrator completing before starting.
+#     and SigNoz query-service all start asynchronously — no container
+#     waits on the schema migrator completing before starting. The
+#     control plane's OTel gRPC connection is non-blocking, so the
+#     app becomes usable before telemetry is fully ready.
 #
-# Start:      make up         (postgres + nats only)
+# Start:      make up
 # Stop:       make down
 # Reset:      make nuke
 #
 # The control plane itself runs from source (`make run`) and connects
-# to these services. SigNoz UI (when telemetry profile active):
-# http://localhost:3301
+# to these services. SigNoz UI: http://localhost:3301
 #
 # NOTE: SigNoz's internal API uses :8081 here to avoid clashing with
 # the Orchicon control plane on :8080.
@@ -81,11 +71,7 @@ services:
   # Uses its built-in ClickHouse Keeper (embedded RAFT coordination)
   # instead of a separate ZooKeeper container, reducing the stack by
   # one container and avoiding the ZooKeeper startup delay.
-  #
-  # Part of the "telemetry" profile — not started by default.
-  # Start with: docker compose --profile telemetry up -d
   clickhouse:
-    profiles: ["telemetry"]
     image: clickhouse/clickhouse-server:25.8
     container_name: orchicon-clickhouse
     environment:
@@ -120,7 +106,6 @@ services:
   # --cluster-name "cluster" matches what 00-cluster.xml defines in
   # ClickHouse, so DDL with ON CLUSTER 'cluster' resolves correctly.
   signoz-schema-migrator:
-    profiles: ["telemetry"]
     image: signoz/signoz-schema-migrator:latest
     container_name: orchicon-signoz-schema-migrator
     command: ["--dev", "sync", "--dsn=tcp://signoz:signoz@clickhouse:9000", "--up="]
@@ -135,10 +120,9 @@ services:
   #
   # The schema migrator is NOT in the depends_on chain — the collector
   # has retry_on_failure enabled and will reconnect once the schema is
-  # ready. This lets telemetry infra start asynchronously while the
-  # rest of the stack boots.
+  # ready. This lets the stack start asynchronously instead of waiting
+  # on schema creation.
   otel-collector:
-    profiles: ["telemetry"]
     image: signoz/signoz-otel-collector:latest
     container_name: orchicon-otel-collector
     command: ["--config=/etc/otel-collector-config.yaml"]
@@ -167,7 +151,6 @@ services:
   # No hard depends_on on otel-collector — SigNoz will retry until
   # the collector is healthy and the schema is ready.
   signoz:
-    profiles: ["telemetry"]
     image: signoz/signoz:latest
     container_name: orchicon-signoz
     command: ["--config=/root/config.yaml", "-DSTORAGE=clickhouse"]

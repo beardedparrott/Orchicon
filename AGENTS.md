@@ -160,15 +160,14 @@ minimum (adapt to what the change touches):
 
 1. **`make ci` passes end-to-end** — buf lint, codegen, go vet/test,
    RLS gate. This is the authoritative CI gate.
-2. **Dev stack starts healthy** — `make up` then `make ps` shows all
-   containers `healthy` (not just `running`). When the change touches
-   Docker or infrastructure:
-   - Also run `make up-telemetry` to verify the telemetry profile works.
-   - Check that ZooKeeper is NOT listed in `make ps` output.
-   - Verify the container count matches expectations (e.g. 2 for
-     `make up`, 6 for `make up-telemetry`).
-   - Run `make nuke` then `make up-telemetry` from a clean slate to
-     verify the full startup sequence works end-to-end.
+ 2. **Dev stack starts healthy** — `make up` then `make ps` shows all
+    containers `healthy` (not just `running`). When the change touches
+    Docker or infrastructure:
+    - Check that ZooKeeper is NOT listed in `make ps` output.
+    - Verify all 6 containers (postgres, nats, clickhouse,
+      signoz-schema-migrator, otel-collector, signoz) show up.
+    - Run `make nuke` then `make up` from a clean slate to verify the
+      full startup sequence works end-to-end.
 3. **Migrations apply cleanly** — `make migrate` against the compose
    Postgres; `make rls-check` passes.
 4. **Control plane boots and serves** — `make build && make run`, then
@@ -208,7 +207,7 @@ minimum (adapt to what the change touches):
 When a change modifies `deploy/compose/docker-compose.yml`, configs in
 `deploy/compose/`, or the telemetry setup in `internal/telemetry/`:
 
-- **Full reset test**: Run `make nuke` then `make up-telemetry` and
+- **Full reset test**: Run `make nuke` then `make up` and
   wait for all containers to show `healthy`. This is the only reliable
   way to catch dependency ordering bugs, config regressions, and
   incorrect `depends_on` chains.
@@ -227,10 +226,9 @@ When a change modifies `deploy/compose/docker-compose.yml`, configs in
   Check the control plane logs for `"otel pipeline initialized"` — it
   should appear within milliseconds of process start, not after 10-20s.
 
-- **Profile isolation**: `make up` must start exactly 2 containers
-  (postgres + nats). `make up-telemetry` must start 6 containers
-  (adding clickhouse + signoz-schema-migrator + otel-collector +
-  signoz). Verify with `docker compose ps` in each state.
+- **Profile isolation**: `make up` must start exactly 6 containers
+  (postgres, nats, clickhouse, signoz-schema-migrator, otel-collector,
+  signoz). The stack must not contain a `zookeeper` service.
 
 If the change adds a new API RPC, also verify the Connect endpoint
 responds (e.g. via `curl` or a frontend smoke test). If it adds a new
@@ -366,7 +364,7 @@ platform, or `--uninstall` to test cleanup).
 | 9 | Auth + Webhooks + Polish | done | OIDC auth (dev IdP HS256 tokens + production code-flow via coreos/go-oidc) + token refresh (HttpOnly cookie); API keys hashed at rest (SHA-256) with least-privilege scoped entitlements + rotation; RBAC middleware (per-RPC Connect interceptor mapping procedures to resource:action entitlements, admin bypass); AuthService + WebhookService protos; Atlas migrations (roles, role_bindings, api_keys, event_subscriptions, webhook_deliveries + identity_type column) with RLS; WebhookService Connect handler (create/get/list/update/delete/test subscriptions, list deliveries, replay dead-letter, stream) + NATS consumer dispatcher (HTTP POST + HMAC signing + exponential backoff + dead-letter); BlobStore abstraction (local filesystem — production-viable: content-addressed + atomic writes + path-traversal-safe; S3-compatible); deployment-mode validation (local/production — production enforces real OIDC + signing key); frontend auth flow (in-memory access token + refresh-on-401 interceptor, /login dev+OIDC, /auth/callback, session bootstrap, RBAC-gated nav + RequireEntitlement); admin views (tabbed: tenants, identities, roles, API keys w/ one-time plaintext + rotate/revoke, audit); webhook subscription management + deliveries; verified end-to-end: dev-login → session → authed RPCs → scoped API key denied project:write (403) → webhook CRUD → token refresh |
 
 - **Theme system**: The frontend now ships 20 themes (10 light + 10 dark) with a data-attribute-driven CSS variable system (`[data-theme="..."].dark`). Dark backgrounds use 7-10% lightness (not 3.9% pitch black). A `ThemeProvider` reads from a Zustand store persisted to `localStorage`. The topbar has a sun/moon toggle button + palette icon linking to `/preferences`, which shows all 20 themes as visual cards with color swatches.
-- **Infra consolidation**: The Docker Compose stack dropped from 7 to 6 containers by replacing the separate ZooKeeper container with ClickHouse's built-in Keeper (embedded RAFT-based coordination — enabled via `<keeper_server>` in `clickhouse-cluster.xml`). The `depends_on` chain was relaxed: the schema migrator, OTel collector, and SigNoz query-service all start asynchronously instead of blocking sequentially. The control plane's OTel gRPC connection now uses `grpc.NewClient` (non-blocking dial) instead of the blocking `WithEndpoint`, eliminating the 20-second startup delay when the OTel collector is still initializing. These changes cut container-to-healthy time significantly and let the app become usable before telemetry is fully ready.
+- **Infra consolidation**: The Docker Compose stack dropped from 7 to 6 containers by replacing the separate ZooKeeper container with ClickHouse's built-in Keeper (embedded RAFT-based coordination — enabled via `<keeper_server>` in `clickhouse-cluster.xml`). The `depends_on` chain was relaxed: the schema migrator, OTel collector, and SigNoz query-service all start asynchronously instead of blocking sequentially. The control plane's OTel gRPC connection now uses `grpc.NewClient` (non-blocking dial) instead of the blocking `WithEndpoint`, eliminating the 20-second startup delay when the OTel collector is still initializing. These changes cut container-to-healthy time and let the app become usable before telemetry is fully ready.
 
 ### Cross-cutting notes
 
