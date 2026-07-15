@@ -588,4 +588,10 @@ platform, or `--uninstall` to test cleanup).
   RPC drives model discovery; the `ModelDiscoverer` caches results with a 5-minute
   TTL and falls back to a mock list when opencode is absent. Backend proto extended
   with `OpenCodeModel`/`ModelCost`/`ModelLimits`/`ModelCapabilities` messages.
-  Build verified: `go build ./...`, `go vet ./...`, `npm run build` pass cleanly.
+  `<MCPPicker>` stores `MCPConfig[]` objects (id + command) instead of plain IDs;
+  discovered from `opencode debug config` (resolved JSON) with well-known MCPs
+  (context7, gh_grep, filesystem, github, postgres, slack, playwright, memory)
+  merged via `mergeMCPs`. New `UpdateWorkerVersion`/`CreateWorkerVersion` RPCs
+  for editing draft versions and forking from published. Worker detail page now
+  has inline editing for draft versions and "New version" button for published
+  workers (removed spurious edit lock). Build verified: `go build ./...`, `npm run build` pass cleanly.

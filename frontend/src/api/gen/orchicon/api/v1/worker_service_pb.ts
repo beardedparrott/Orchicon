@@ -796,6 +796,308 @@ export class ListWorkerVersionsResponse extends Message<ListWorkerVersionsRespon
 }
 
 /**
+ * @generated from message orchicon.api.v1.UpdateWorkerVersionRequest
+ */
+export class UpdateWorkerVersionRequest extends Message<UpdateWorkerVersionRequest> {
+  /**
+   * @generated from field: string worker_id = 1;
+   */
+  workerId = "";
+
+  /**
+   * @generated from field: string version_id = 2;
+   */
+  versionId = "";
+
+  /**
+   * Fields to update (only draft versions):
+   *
+   * @generated from field: optional string runtime_ref = 6;
+   */
+  runtimeRef?: string;
+
+  /**
+   * @generated from field: optional string model_ref = 7;
+   */
+  modelRef?: string;
+
+  /**
+   * @generated from field: optional string system_prompt = 8;
+   */
+  systemPrompt?: string;
+
+  /**
+   * @generated from field: optional string context_sources = 9;
+   */
+  contextSources?: string;
+
+  /**
+   * @generated from field: optional string permissions = 10;
+   */
+  permissions?: string;
+
+  /**
+   * @generated from field: optional string gated_tools = 11;
+   */
+  gatedTools?: string;
+
+  /**
+   * @generated from field: optional string budget_overrides = 12;
+   */
+  budgetOverrides?: string;
+
+  /**
+   * @generated from field: optional string execution_policy_ref = 13;
+   */
+  executionPolicyRef?: string;
+
+  /**
+   * @generated from field: optional int32 concurrency_limit = 14;
+   */
+  concurrencyLimit?: number;
+
+  /**
+   * @generated from field: optional string recovery_workflow_ref = 15;
+   */
+  recoveryWorkflowRef?: string;
+
+  /**
+   * @generated from field: optional string labels = 16;
+   */
+  labels?: string;
+
+  /**
+   * @generated from field: optional string version_note = 17;
+   */
+  versionNote?: string;
+
+  constructor(data?: PartialMessage<UpdateWorkerVersionRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.UpdateWorkerVersionRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "worker_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "version_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "runtime_ref", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 7, name: "model_ref", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 8, name: "system_prompt", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 9, name: "context_sources", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 10, name: "permissions", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 11, name: "gated_tools", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 12, name: "budget_overrides", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 13, name: "execution_policy_ref", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 14, name: "concurrency_limit", kind: "scalar", T: 5 /* ScalarType.INT32 */, opt: true },
+    { no: 15, name: "recovery_workflow_ref", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 16, name: "labels", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 17, name: "version_note", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkerVersionRequest {
+    return new UpdateWorkerVersionRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UpdateWorkerVersionRequest {
+    return new UpdateWorkerVersionRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UpdateWorkerVersionRequest {
+    return new UpdateWorkerVersionRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: UpdateWorkerVersionRequest | PlainMessage<UpdateWorkerVersionRequest> | undefined, b: UpdateWorkerVersionRequest | PlainMessage<UpdateWorkerVersionRequest> | undefined): boolean {
+    return proto3.util.equals(UpdateWorkerVersionRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.UpdateWorkerVersionResponse
+ */
+export class UpdateWorkerVersionResponse extends Message<UpdateWorkerVersionResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.WorkerVersion version = 1;
+   */
+  version?: WorkerVersion;
+
+  constructor(data?: PartialMessage<UpdateWorkerVersionResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.UpdateWorkerVersionResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "version", kind: "message", T: WorkerVersion },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkerVersionResponse {
+    return new UpdateWorkerVersionResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UpdateWorkerVersionResponse {
+    return new UpdateWorkerVersionResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UpdateWorkerVersionResponse {
+    return new UpdateWorkerVersionResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: UpdateWorkerVersionResponse | PlainMessage<UpdateWorkerVersionResponse> | undefined, b: UpdateWorkerVersionResponse | PlainMessage<UpdateWorkerVersionResponse> | undefined): boolean {
+    return proto3.util.equals(UpdateWorkerVersionResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.CreateWorkerVersionRequest
+ */
+export class CreateWorkerVersionRequest extends Message<CreateWorkerVersionRequest> {
+  /**
+   * @generated from field: string worker_id = 1;
+   */
+  workerId = "";
+
+  /**
+   * Optional fields to override from the source version.
+   *
+   * @generated from field: optional string runtime_ref = 6;
+   */
+  runtimeRef?: string;
+
+  /**
+   * @generated from field: optional string model_ref = 7;
+   */
+  modelRef?: string;
+
+  /**
+   * @generated from field: optional string system_prompt = 8;
+   */
+  systemPrompt?: string;
+
+  /**
+   * @generated from field: optional string context_sources = 9;
+   */
+  contextSources?: string;
+
+  /**
+   * @generated from field: optional string permissions = 10;
+   */
+  permissions?: string;
+
+  /**
+   * @generated from field: optional string gated_tools = 11;
+   */
+  gatedTools?: string;
+
+  /**
+   * @generated from field: optional string budget_overrides = 12;
+   */
+  budgetOverrides?: string;
+
+  /**
+   * @generated from field: optional string execution_policy_ref = 13;
+   */
+  executionPolicyRef?: string;
+
+  /**
+   * @generated from field: optional int32 concurrency_limit = 14;
+   */
+  concurrencyLimit?: number;
+
+  /**
+   * @generated from field: optional string recovery_workflow_ref = 15;
+   */
+  recoveryWorkflowRef?: string;
+
+  /**
+   * @generated from field: optional string labels = 16;
+   */
+  labels?: string;
+
+  /**
+   * @generated from field: optional string version_note = 17;
+   */
+  versionNote?: string;
+
+  constructor(data?: PartialMessage<CreateWorkerVersionRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.CreateWorkerVersionRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "worker_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "runtime_ref", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 7, name: "model_ref", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 8, name: "system_prompt", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 9, name: "context_sources", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 10, name: "permissions", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 11, name: "gated_tools", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 12, name: "budget_overrides", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 13, name: "execution_policy_ref", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 14, name: "concurrency_limit", kind: "scalar", T: 5 /* ScalarType.INT32 */, opt: true },
+    { no: 15, name: "recovery_workflow_ref", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 16, name: "labels", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 17, name: "version_note", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkerVersionRequest {
+    return new CreateWorkerVersionRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateWorkerVersionRequest {
+    return new CreateWorkerVersionRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateWorkerVersionRequest {
+    return new CreateWorkerVersionRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateWorkerVersionRequest | PlainMessage<CreateWorkerVersionRequest> | undefined, b: CreateWorkerVersionRequest | PlainMessage<CreateWorkerVersionRequest> | undefined): boolean {
+    return proto3.util.equals(CreateWorkerVersionRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.CreateWorkerVersionResponse
+ */
+export class CreateWorkerVersionResponse extends Message<CreateWorkerVersionResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.WorkerVersion version = 1;
+   */
+  version?: WorkerVersion;
+
+  constructor(data?: PartialMessage<CreateWorkerVersionResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.CreateWorkerVersionResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "version", kind: "message", T: WorkerVersion },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkerVersionResponse {
+    return new CreateWorkerVersionResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateWorkerVersionResponse {
+    return new CreateWorkerVersionResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateWorkerVersionResponse {
+    return new CreateWorkerVersionResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateWorkerVersionResponse | PlainMessage<CreateWorkerVersionResponse> | undefined, b: CreateWorkerVersionResponse | PlainMessage<CreateWorkerVersionResponse> | undefined): boolean {
+    return proto3.util.equals(CreateWorkerVersionResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.AcquireEditLockRequest
  */
 export class AcquireEditLockRequest extends Message<AcquireEditLockRequest> {

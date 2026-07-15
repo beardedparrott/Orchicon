@@ -11,7 +11,7 @@ import { workerClient } from "@/api/clients";
 import type { Worker } from "@/api/gen/orchicon/api/v1/worker_pb";
 import type { WorkerVersion } from "@/api/gen/orchicon/api/v1/worker_pb";
 import type { WorkerStatus } from "@/api/gen/orchicon/api/v1/worker_pb";
-import type { CreateWorkerRequest } from "@/api/gen/orchicon/api/v1/worker_service_pb";
+import type { CreateWorkerRequest, UpdateWorkerVersionRequest, CreateWorkerVersionRequest } from "@/api/gen/orchicon/api/v1/worker_service_pb";
 
 // Query keys are centralized so invalidation is type-safe and
 // refactor-proof.
@@ -180,6 +180,35 @@ export function useGetEditLock(workerId: string) {
     enabled: !!workerId,
     // Poll every 10s so other users' lock releases are detected.
     refetchInterval: 10_000,
+  });
+}
+
+// useUpdateWorkerVersion updates the mutable fields of a draft WorkerVersion.
+export function useUpdateWorkerVersion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: PartialMessage<UpdateWorkerVersionRequest>) => {
+      const res = await workerClient.updateWorkerVersion(input);
+      return res.version as WorkerVersion;
+    },
+    onSuccess: (version) => {
+      qc.invalidateQueries({ queryKey: workerKeys.versions(version.workerId) });
+    },
+  });
+}
+
+// useCreateWorkerVersion creates a new draft version from the latest
+// published version of a Worker.
+export function useCreateWorkerVersion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: PartialMessage<CreateWorkerVersionRequest>) => {
+      const res = await workerClient.createWorkerVersion(input);
+      return res.version as WorkerVersion;
+    },
+    onSuccess: (version) => {
+      qc.invalidateQueries({ queryKey: workerKeys.versions(version.workerId) });
+    },
   });
 }
 

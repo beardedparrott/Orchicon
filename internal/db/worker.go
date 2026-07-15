@@ -383,6 +383,76 @@ func DeleteWorker(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
 	return nil
 }
 
+// GetWorkerVersionByID fetches a single worker version by its ID within
+// the given tenant scope.
+func GetWorkerVersionByID(ctx context.Context, tx pgx.Tx, tenantID, workerID, versionID string) (WorkerVersionRow, error) {
+	const q = `SELECT id, tenant_id, worker_id, version, version_note, status,
+		runtime_ref, model_ref, system_prompt, context_sources, permissions,
+		gated_tools, budget_overrides, execution_policy_ref, concurrency_limit,
+		recovery_workflow_ref, labels, published_at, created_at
+		FROM worker_versions
+		WHERE id = $1 AND worker_id = $2 AND tenant_id = $3`
+	var v WorkerVersionRow
+	err := tx.QueryRow(ctx, q, versionID, workerID, tenantID).Scan(
+		&v.ID, &v.TenantID, &v.WorkerID, &v.Version, &v.VersionNote, &v.Status,
+		&v.RuntimeRef, &v.ModelRef, &v.SystemPrompt, &v.ContextSources, &v.Permissions,
+		&v.GatedTools, &v.BudgetOverrides, &v.ExecutionPolicyRef, &v.ConcurrencyLimit,
+		&v.RecoveryWorkflowRef, &v.Labels, &v.PublishedAt, &v.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return WorkerVersionRow{}, ErrNotFound
+	}
+	if err != nil {
+		return WorkerVersionRow{}, fmt.Errorf("db: get worker version by id: %w", err)
+	}
+	return v, nil
+}
+
+// UpdateDraftVersion overwrites all mutable fields of a draft
+// WorkerVersion row. Only versions with status='draft' may be updated.
+// The caller is responsible for merging request fields into a full
+// WorkerVersionRow before calling (the service layer reads the current,
+// applies overrides, and passes the merged row here).
+func UpdateDraftVersion(ctx context.Context, tx pgx.Tx, v WorkerVersionRow) (WorkerVersionRow, error) {
+	const q = `UPDATE worker_versions
+		SET runtime_ref = $4,
+		    model_ref = $5,
+		    system_prompt = $6,
+		    context_sources = $7,
+		    permissions = $8,
+		    gated_tools = $9,
+		    budget_overrides = $10,
+		    execution_policy_ref = $11,
+		    concurrency_limit = $12,
+		    recovery_workflow_ref = $13,
+		    labels = $14,
+		    version_note = $15
+		WHERE id = $1 AND tenant_id = $2 AND status = 'draft'
+		RETURNING id, tenant_id, worker_id, version, version_note, status,
+			runtime_ref, model_ref, system_prompt, context_sources, permissions,
+			gated_tools, budget_overrides, execution_policy_ref, concurrency_limit,
+			recovery_workflow_ref, labels, published_at, created_at`
+	var row WorkerVersionRow
+	err := tx.QueryRow(ctx, q,
+		v.ID, v.TenantID,
+		v.RuntimeRef, v.ModelRef, v.SystemPrompt, v.ContextSources, v.Permissions,
+		v.GatedTools, v.BudgetOverrides, v.ExecutionPolicyRef, v.ConcurrencyLimit,
+		v.RecoveryWorkflowRef, v.Labels, v.VersionNote,
+	).Scan(
+		&row.ID, &row.TenantID, &row.WorkerID, &row.Version, &row.VersionNote, &row.Status,
+		&row.RuntimeRef, &row.ModelRef, &row.SystemPrompt, &row.ContextSources, &row.Permissions,
+		&row.GatedTools, &row.BudgetOverrides, &row.ExecutionPolicyRef, &row.ConcurrencyLimit,
+		&row.RecoveryWorkflowRef, &row.Labels, &row.PublishedAt, &row.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return WorkerVersionRow{}, ErrNotFound
+	}
+	if err != nil {
+		return WorkerVersionRow{}, fmt.Errorf("db: update draft version: %w", err)
+	}
+	return row, nil
+}
+
 // NextWorkerVersionNumber returns the next version number for a worker
 // (max existing version + 1, or 1 if no versions exist).
 func NextWorkerVersionNumber(ctx context.Context, tx pgx.Tx, tenantID, workerID string) (int, error) {

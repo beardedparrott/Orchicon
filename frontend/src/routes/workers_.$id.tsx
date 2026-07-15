@@ -1,16 +1,16 @@
 import { createRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useForm } from "react-hook-form";
 
 import {
+  useCreateWorkerVersion,
   useDeleteWorker,
   useDeprecateWorker,
-  useGetEditLock,
   useGetWorker,
   useListWorkerVersions,
   usePublishWorkerVersion,
-  useAcquireEditLock,
-  useReleaseEditLock,
   useRetireWorker,
+  useUpdateWorkerVersion,
 } from "@/api/workers";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,56 +20,95 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { ModelPicker } from "@/components/ModelPicker";
+import {
+  BudgetSection,
+  ContextSourcesSection,
+  GatedToolsSection,
+  PermissionsSection,
+} from "@/components/WorkerFormSections";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 
-// Worker detail (docs/10 §5, docs/05 §4, §5). Shows the worker header,
-// latest version, version history, and lifecycle controls (publish,
-// deprecate, retire). Edit locks prevent concurrent edits in the visual
-// editor (docs/07 §3.3) — the lock is acquired on first interaction and
-// released on unmount.
+// Worker detail page: read-only for published/deprecated/retired workers;
+// editable for draft workers. Published workers get a "New version" button
+// that creates a draft fork. No edit lock — this is not the visual editor
+// canvas (docs/07 §3.3).
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/workers/$id",
   component: WorkerDetailPage,
 });
 
+const DEFAULT_PERMISSIONS = `{
+  "allow_all_tools": false,
+  "allow_read": true,
+  "allow_write": false,
+  "model_providers": []
+}`;
+
+const DEFAULT_BUDGETS = `{
+  "max_prompt_tokens": 0,
+  "max_completion_tokens": 0,
+  "max_cost_usd": 0
+}`;
+
+// Fields on UpdateWorkerVersionRequest — only version-level fields,
+// not worker header fields (name, slug, description, purpose).
+interface EditFormData {
+  runtimeRef: string;
+  modelRef: string;
+  systemPrompt: string;
+  permissions: string;
+  gatedTools: string;
+  budgetOverrides: string;
+  contextSources: string;
+  versionNote: string;
+}
+
 function WorkerDetailPage() {
   const { id } = Route.useParams();
   const { data, isLoading, error } = useGetWorker(id);
   const { data: versions } = useListWorkerVersions(id);
-  const { data: editLock } = useGetEditLock(id);
   const publishVersion = usePublishWorkerVersion();
   const deprecateWorker = useDeprecateWorker();
   const retireWorker = useRetireWorker();
-  const acquireLock = useAcquireEditLock();
-  const releaseLock = useReleaseEditLock();
+  const updateVersion = useUpdateWorkerVersion();
+  const createVersion = useCreateWorkerVersion();
   const navigate = useNavigate();
   const deleteMutation = useDeleteWorker();
 
-  // Edit lock lifecycle (docs/07 §3.3). Acquire when the user enters the
-  // editor; release on unmount. A TTL expires it automatically if the
-  // tab is closed without cleanup.
-  const [lockActor] = useState(() => `user-${Math.random().toString(36).slice(2, 8)}`);
-  const [lockAcquired, setLockAcquired] = useState(false);
+  const { data: latestData } = useGetWorker(id);
+  const latestVersion = latestData?.latestVersion;
+  const [editing, setEditing] = useState(false);
 
-  // Attempt to acquire the lock once on mount.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const res = await acquireLock.mutateAsync({
-        workerId: id,
-        actor: lockActor,
-      });
-      if (!cancelled) setLockAcquired(res.acquired);
-    })();
-    return () => {
-      cancelled = true;
-      // Release the lock on unmount (best-effort).
-      releaseLock.mutate({ workerId: id, actor: lockActor });
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  const { register, handleSubmit, setValue, watch, formState: { errors } } = useForm<EditFormData>({
+    defaultValues: {
+      runtimeRef: "",
+      modelRef: "",
+      systemPrompt: "",
+      permissions: DEFAULT_PERMISSIONS,
+      gatedTools: "[]",
+      budgetOverrides: DEFAULT_BUDGETS,
+      contextSources: "[]",
+      versionNote: "",
+    },
+    values: latestVersion
+      ? {
+          runtimeRef: latestVersion.runtimeRef ?? "",
+          modelRef: latestVersion.modelRef ?? "",
+          systemPrompt: latestVersion.systemPrompt ?? "",
+          permissions: latestVersion.permissions || DEFAULT_PERMISSIONS,
+          gatedTools: latestVersion.gatedTools || "[]",
+          budgetOverrides: latestVersion.budgetOverrides || DEFAULT_BUDGETS,
+          contextSources: latestVersion.contextSources || "[]",
+          versionNote: latestVersion.versionNote ?? "",
+        }
+      : undefined,
+  });
 
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
@@ -85,15 +124,20 @@ function WorkerDetailPage() {
     return null;
   }
 
-  const { worker, latestVersion } = data;
+  const { worker } = data;
   const isDraft = worker.status === 1;
   const isPublished = worker.status === 2;
   const isDeprecated = worker.status === 3;
-  const lockHeldByOther =
-    editLock && editLock.heldBy && editLock.heldBy !== lockActor;
+  const isRetired = worker.status === 4;
+
+  const draftVersion = isDraft
+    ? versions?.find((v) => v.status === 1)
+    : undefined;
+  const isEditingEnabled = isDraft && editing && draftVersion;
 
   return (
     <div className="space-y-6">
+      {/* Header + lifecycle actions */}
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">
@@ -104,22 +148,42 @@ function WorkerDetailPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          {isDraft && (
+          {isDraft && latestVersion && !editing && (
+            <Button onClick={() => setEditing(true)}>Edit</Button>
+          )}
+          {isDraft && latestVersion && (
             <Button
               onClick={() => publishVersion.mutateAsync(id)}
               disabled={publishVersion.isPending}
             >
-              {publishVersion.isPending ? "Publishing…" : "Publish v" + (worker.currentVersion + 1)}
+              {publishVersion.isPending
+                ? "Publishing…"
+                : "Publish v" + (worker.currentVersion + 1)}
             </Button>
           )}
           {isPublished && (
-            <Button
-              variant="outline"
-              onClick={() => deprecateWorker.mutateAsync(id)}
-              disabled={deprecateWorker.isPending}
-            >
-              {deprecateWorker.isPending ? "Deprecating…" : "Deprecate"}
-            </Button>
+            <>
+              <Button
+                onClick={() =>
+                  createVersion.mutate(
+                    { workerId: id },
+                    {
+                      onSuccess: () => setEditing(true),
+                    },
+                  )
+                }
+                disabled={createVersion.isPending}
+              >
+                {createVersion.isPending ? "Creating…" : "New version"}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => deprecateWorker.mutateAsync(id)}
+                disabled={deprecateWorker.isPending}
+              >
+                {deprecateWorker.isPending ? "Deprecating…" : "Deprecate"}
+              </Button>
+            </>
           )}
           {isDeprecated && (
             <Button
@@ -130,28 +194,30 @@ function WorkerDetailPage() {
               {retireWorker.isPending ? "Retiring…" : "Retire"}
             </Button>
           )}
-          <Button
-            variant="destructive"
-            onClick={() => {
-              if (window.confirm("Permanently delete this worker and all its versions? This cannot be undone.")) {
-                deleteMutation.mutate(id, { onSuccess: () => navigate({ to: "/workers" }) });
-              }
-            }}
-            disabled={deleteMutation.isPending}
-          >
-            {deleteMutation.isPending ? "Deleting…" : "Delete"}
-          </Button>
+          {(isDeprecated || isRetired) && (
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (
+                  window.confirm(
+                    "Permanently delete this worker and all its versions? This cannot be undone.",
+                  )
+                ) {
+                  deleteMutation.mutate(id, {
+                    onSuccess: () => navigate({ to: "/workers" }),
+                  });
+                }
+              }}
+              disabled={deleteMutation.isPending}
+            >
+              {deleteMutation.isPending ? "Deleting…" : "Delete"}
+            </Button>
+          )}
         </div>
       </div>
 
-      {/* Edit lock indicator (docs/07 §3.3) */}
-      <EditLockBanner
-        lockHeldByOther={!!lockHeldByOther}
-        heldBy={editLock?.heldBy ?? ""}
-        lockAcquired={lockAcquired}
-      />
-
-      <div className="grid gap-4 md:grid-cols-4">
+      {/* Status cards */}
+      <div className="grid gap-4 md:grid-cols-5">
         <Card>
           <CardHeader>
             <CardDescription>Status</CardDescription>
@@ -184,14 +250,149 @@ function WorkerDetailPage() {
             </CardTitle>
           </CardHeader>
         </Card>
-      </div>
-
-      {latestVersion && (
         <Card>
           <CardHeader>
-            <CardTitle>Latest version (v{latestVersion.version})</CardTitle>
+            <CardDescription>Purpose</CardDescription>
+            <CardTitle className="text-sm font-normal leading-snug">
+              {worker.purpose || "—"}
+            </CardTitle>
+          </CardHeader>
+        </Card>
+      </div>
+
+      {/* Inline editor for draft versions */}
+      {isEditingEnabled && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Edit draft v{draftVersion.version}</CardTitle>
             <CardDescription>
-              {latestVersion.versionNote || "No version note"}
+              Changes are saved immediately. JSON fields use structured
+              controls — select options with descriptions instead of editing
+              raw JSON.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <form
+              onSubmit={handleSubmit((formData) => {
+                updateVersion.mutate(
+                  {
+                    workerId: id,
+                    versionId: draftVersion.id,
+                    runtimeRef: formData.runtimeRef,
+                    modelRef: formData.modelRef,
+                    systemPrompt: formData.systemPrompt,
+                    permissions: formData.permissions,
+                    gatedTools: formData.gatedTools,
+                    budgetOverrides: formData.budgetOverrides,
+                    contextSources: formData.contextSources,
+                    versionNote: formData.versionNote,
+                  },
+                  {
+                    onSuccess: () => setEditing(false),
+                  },
+                );
+              })}
+              className="space-y-6"
+            >
+              <div className="space-y-2">
+                <Label htmlFor="versionNote">Version note</Label>
+                <Input id="versionNote" {...register("versionNote")} />
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="runtimeRef">Runtime</Label>
+                  <Input id="runtimeRef" {...register("runtimeRef")} />
+                </div>
+                <div className="space-y-2">
+                  <ModelPicker
+                    value={watch("modelRef")}
+                    onChange={(val) => setValue("modelRef", val)}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="systemPrompt">System prompt</Label>
+                <Textarea
+                  id="systemPrompt"
+                  className="min-h-[120px] font-mono text-xs"
+                  {...register("systemPrompt")}
+                />
+              </div>
+
+              <div className="space-y-2 rounded-lg border p-4">
+                <Label>Permissions</Label>
+                <PermissionsSection
+                  value={watch("permissions")}
+                  onChange={(v) => setValue("permissions", v)}
+                />
+              </div>
+
+              <div className="space-y-2 rounded-lg border p-4">
+                <Label>Gated tools (Tier 2 — per-call approval)</Label>
+                <GatedToolsSection
+                  value={watch("gatedTools")}
+                  onChange={(v) => setValue("gatedTools", v)}
+                />
+              </div>
+
+              <div className="space-y-2 rounded-lg border p-4">
+                <Label>Budget overrides</Label>
+                <BudgetSection
+                  value={watch("budgetOverrides")}
+                  onChange={(v) => setValue("budgetOverrides", v)}
+                />
+              </div>
+
+              <div className="space-y-2 rounded-lg border p-4">
+                <Label>Context sources</Label>
+                <ContextSourcesSection
+                  value={watch("contextSources")}
+                  onChange={(v) => setValue("contextSources", v)}
+                />
+              </div>
+
+              {errors.permissions && (
+                <p className="text-xs text-destructive">
+                  {errors.permissions.message}
+                </p>
+              )}
+              {errors.gatedTools && (
+                <p className="text-xs text-destructive">
+                  {errors.gatedTools.message}
+                </p>
+              )}
+
+              <div className="flex gap-2">
+                <Button type="submit" disabled={updateVersion.isPending}>
+                  {updateVersion.isPending ? "Saving…" : "Save changes"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setEditing(false)}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Read-only version detail (shown when not editing) */}
+      {!isEditingEnabled && latestVersion && (
+        <Card>
+          <CardHeader>
+            <CardTitle>
+              Version v{latestVersion.version}
+              {latestVersion.versionNote
+                ? ` — ${latestVersion.versionNote}`
+                : ""}
+            </CardTitle>
+            <CardDescription>
+              {versionStatusLabel(latestVersion.status)}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -206,23 +407,37 @@ function WorkerDetailPage() {
               </div>
             )}
             <div className="grid gap-4 md:grid-cols-2">
-              <JsonField label="Permissions" value={latestVersion.permissions} />
-              <JsonField label="Gated tools" value={latestVersion.gatedTools} />
-              <JsonField label="Budget overrides" value={latestVersion.budgetOverrides} />
-              <JsonField label="Context sources" value={latestVersion.contextSources} />
+              <JsonField
+                label="Permissions"
+                value={latestVersion.permissions}
+              />
+              <JsonField
+                label="Gated tools"
+                value={latestVersion.gatedTools}
+              />
+              <JsonField
+                label="Budget overrides"
+                value={latestVersion.budgetOverrides}
+              />
+              <JsonField
+                label="Context sources"
+                value={latestVersion.contextSources}
+              />
             </div>
             <div className="grid gap-4 md:grid-cols-2">
               <div>
                 <h4 className="text-xs font-medium uppercase text-muted-foreground">
                   Concurrency limit
                 </h4>
-                <p className="mt-1 text-sm">{latestVersion.concurrencyLimit}</p>
+                <p className="mt-1 text-sm">
+                  {latestVersion.concurrencyLimit}
+                </p>
               </div>
               <div>
                 <h4 className="text-xs font-medium uppercase text-muted-foreground">
                   Execution policy ref
                 </h4>
-                <p className="mt-1 text-sm font-mono text-xs">
+                <p className="mt-1 font-mono text-xs">
                   {latestVersion.executionPolicyRef || "—"}
                 </p>
               </div>
@@ -231,13 +446,13 @@ function WorkerDetailPage() {
         </Card>
       )}
 
-      {/* Version history (docs/05 §5) */}
+      {/* Version history */}
       <Card>
         <CardHeader>
           <CardTitle>Version history</CardTitle>
           <CardDescription>
-            All versions of this worker, newest first. A published version
-            is immutable; changes create a new version.
+            All versions of this worker, newest first. A published version is
+            immutable; changes create a new version.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -284,37 +499,6 @@ function WorkerDetailPage() {
   );
 }
 
-// EditLockBanner shows the edit lock state (docs/07 §3.3). If another
-// user holds the lock, the editor is read-only. If this client holds
-// the lock, editing is enabled. Lock expires automatically on TTL.
-function EditLockBanner({
-  lockHeldByOther,
-  heldBy,
-  lockAcquired,
-}: {
-  lockHeldByOther: boolean;
-  heldBy: string;
-  lockAcquired: boolean;
-}) {
-  if (lockAcquired) {
-    return (
-      <div className="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-800">
-        ● Edit lock acquired — you can edit this worker.
-      </div>
-    );
-  }
-  if (lockHeldByOther) {
-    return (
-      <div className="rounded-md border border-yellow-200 bg-yellow-50 p-3 text-sm text-yellow-800">
-        ⏳ Currently being edited by{" "}
-        <span className="font-mono">{heldBy}</span> — viewing read-only. The
-        lock expires automatically on disconnect.
-      </div>
-    );
-  }
-  return null;
-}
-
 function VersionStatusBadge({ status }: { status: number }) {
   const labels: Record<number, string> = {
     1: "draft",
@@ -357,6 +541,15 @@ function statusLabel(status: number): string {
     2: "published",
     3: "deprecated",
     4: "retired",
+  };
+  return labels[status] ?? "unknown";
+}
+
+function versionStatusLabel(status: number): string {
+  const labels: Record<number, string> = {
+    1: "Draft — editable, not yet published",
+    2: "Published — immutable snapshot",
+    3: "Deprecated — no new bindings",
   };
   return labels[status] ?? "unknown";
 }

@@ -64,6 +64,12 @@ const (
 	// WorkerServiceListWorkerVersionsProcedure is the fully-qualified name of the WorkerService's
 	// ListWorkerVersions RPC.
 	WorkerServiceListWorkerVersionsProcedure = "/orchicon.api.v1.WorkerService/ListWorkerVersions"
+	// WorkerServiceUpdateWorkerVersionProcedure is the fully-qualified name of the WorkerService's
+	// UpdateWorkerVersion RPC.
+	WorkerServiceUpdateWorkerVersionProcedure = "/orchicon.api.v1.WorkerService/UpdateWorkerVersion"
+	// WorkerServiceCreateWorkerVersionProcedure is the fully-qualified name of the WorkerService's
+	// CreateWorkerVersion RPC.
+	WorkerServiceCreateWorkerVersionProcedure = "/orchicon.api.v1.WorkerService/CreateWorkerVersion"
 	// WorkerServiceAcquireEditLockProcedure is the fully-qualified name of the WorkerService's
 	// AcquireEditLock RPC.
 	WorkerServiceAcquireEditLockProcedure = "/orchicon.api.v1.WorkerService/AcquireEditLock"
@@ -99,6 +105,13 @@ type WorkerServiceClient interface {
 	ListWorkers(context.Context, *connect.Request[v1.ListWorkersRequest]) (*connect.Response[v1.ListWorkersResponse], error)
 	// ListWorkerVersions returns all versions of a Worker, newest first.
 	ListWorkerVersions(context.Context, *connect.Request[v1.ListWorkerVersionsRequest]) (*connect.Response[v1.ListWorkerVersionsResponse], error)
+	// UpdateWorkerVersion updates the mutable fields of a draft WorkerVersion.
+	// Only draft versions can be updated; published versions are immutable.
+	UpdateWorkerVersion(context.Context, *connect.Request[v1.UpdateWorkerVersionRequest]) (*connect.Response[v1.UpdateWorkerVersionResponse], error)
+	// CreateWorkerVersion creates a new draft version from the latest
+	// published version of a Worker. The new version starts as a draft with
+	// all fields copied from the source version.
+	CreateWorkerVersion(context.Context, *connect.Request[v1.CreateWorkerVersionRequest]) (*connect.Response[v1.CreateWorkerVersionResponse], error)
 	// AcquireEditLock acquires an exclusive edit lock on a Worker for the
 	// visual editor (docs/07 §3.3). Prevents concurrent edits; expires
 	// automatically on TTL.
@@ -168,6 +181,18 @@ func NewWorkerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(workerServiceMethods.ByName("ListWorkerVersions")),
 			connect.WithClientOptions(opts...),
 		),
+		updateWorkerVersion: connect.NewClient[v1.UpdateWorkerVersionRequest, v1.UpdateWorkerVersionResponse](
+			httpClient,
+			baseURL+WorkerServiceUpdateWorkerVersionProcedure,
+			connect.WithSchema(workerServiceMethods.ByName("UpdateWorkerVersion")),
+			connect.WithClientOptions(opts...),
+		),
+		createWorkerVersion: connect.NewClient[v1.CreateWorkerVersionRequest, v1.CreateWorkerVersionResponse](
+			httpClient,
+			baseURL+WorkerServiceCreateWorkerVersionProcedure,
+			connect.WithSchema(workerServiceMethods.ByName("CreateWorkerVersion")),
+			connect.WithClientOptions(opts...),
+		),
 		acquireEditLock: connect.NewClient[v1.AcquireEditLockRequest, v1.AcquireEditLockResponse](
 			httpClient,
 			baseURL+WorkerServiceAcquireEditLockProcedure,
@@ -199,6 +224,8 @@ type workerServiceClient struct {
 	getWorker            *connect.Client[v1.GetWorkerRequest, v1.GetWorkerResponse]
 	listWorkers          *connect.Client[v1.ListWorkersRequest, v1.ListWorkersResponse]
 	listWorkerVersions   *connect.Client[v1.ListWorkerVersionsRequest, v1.ListWorkerVersionsResponse]
+	updateWorkerVersion  *connect.Client[v1.UpdateWorkerVersionRequest, v1.UpdateWorkerVersionResponse]
+	createWorkerVersion  *connect.Client[v1.CreateWorkerVersionRequest, v1.CreateWorkerVersionResponse]
 	acquireEditLock      *connect.Client[v1.AcquireEditLockRequest, v1.AcquireEditLockResponse]
 	releaseEditLock      *connect.Client[v1.ReleaseEditLockRequest, v1.ReleaseEditLockResponse]
 	getEditLock          *connect.Client[v1.GetEditLockRequest, v1.GetEditLockResponse]
@@ -244,6 +271,16 @@ func (c *workerServiceClient) ListWorkerVersions(ctx context.Context, req *conne
 	return c.listWorkerVersions.CallUnary(ctx, req)
 }
 
+// UpdateWorkerVersion calls orchicon.api.v1.WorkerService.UpdateWorkerVersion.
+func (c *workerServiceClient) UpdateWorkerVersion(ctx context.Context, req *connect.Request[v1.UpdateWorkerVersionRequest]) (*connect.Response[v1.UpdateWorkerVersionResponse], error) {
+	return c.updateWorkerVersion.CallUnary(ctx, req)
+}
+
+// CreateWorkerVersion calls orchicon.api.v1.WorkerService.CreateWorkerVersion.
+func (c *workerServiceClient) CreateWorkerVersion(ctx context.Context, req *connect.Request[v1.CreateWorkerVersionRequest]) (*connect.Response[v1.CreateWorkerVersionResponse], error) {
+	return c.createWorkerVersion.CallUnary(ctx, req)
+}
+
 // AcquireEditLock calls orchicon.api.v1.WorkerService.AcquireEditLock.
 func (c *workerServiceClient) AcquireEditLock(ctx context.Context, req *connect.Request[v1.AcquireEditLockRequest]) (*connect.Response[v1.AcquireEditLockResponse], error) {
 	return c.acquireEditLock.CallUnary(ctx, req)
@@ -283,6 +320,13 @@ type WorkerServiceHandler interface {
 	ListWorkers(context.Context, *connect.Request[v1.ListWorkersRequest]) (*connect.Response[v1.ListWorkersResponse], error)
 	// ListWorkerVersions returns all versions of a Worker, newest first.
 	ListWorkerVersions(context.Context, *connect.Request[v1.ListWorkerVersionsRequest]) (*connect.Response[v1.ListWorkerVersionsResponse], error)
+	// UpdateWorkerVersion updates the mutable fields of a draft WorkerVersion.
+	// Only draft versions can be updated; published versions are immutable.
+	UpdateWorkerVersion(context.Context, *connect.Request[v1.UpdateWorkerVersionRequest]) (*connect.Response[v1.UpdateWorkerVersionResponse], error)
+	// CreateWorkerVersion creates a new draft version from the latest
+	// published version of a Worker. The new version starts as a draft with
+	// all fields copied from the source version.
+	CreateWorkerVersion(context.Context, *connect.Request[v1.CreateWorkerVersionRequest]) (*connect.Response[v1.CreateWorkerVersionResponse], error)
 	// AcquireEditLock acquires an exclusive edit lock on a Worker for the
 	// visual editor (docs/07 §3.3). Prevents concurrent edits; expires
 	// automatically on TTL.
@@ -348,6 +392,18 @@ func NewWorkerServiceHandler(svc WorkerServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(workerServiceMethods.ByName("ListWorkerVersions")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workerServiceUpdateWorkerVersionHandler := connect.NewUnaryHandler(
+		WorkerServiceUpdateWorkerVersionProcedure,
+		svc.UpdateWorkerVersion,
+		connect.WithSchema(workerServiceMethods.ByName("UpdateWorkerVersion")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workerServiceCreateWorkerVersionHandler := connect.NewUnaryHandler(
+		WorkerServiceCreateWorkerVersionProcedure,
+		svc.CreateWorkerVersion,
+		connect.WithSchema(workerServiceMethods.ByName("CreateWorkerVersion")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workerServiceAcquireEditLockHandler := connect.NewUnaryHandler(
 		WorkerServiceAcquireEditLockProcedure,
 		svc.AcquireEditLock,
@@ -384,6 +440,10 @@ func NewWorkerServiceHandler(svc WorkerServiceHandler, opts ...connect.HandlerOp
 			workerServiceListWorkersHandler.ServeHTTP(w, r)
 		case WorkerServiceListWorkerVersionsProcedure:
 			workerServiceListWorkerVersionsHandler.ServeHTTP(w, r)
+		case WorkerServiceUpdateWorkerVersionProcedure:
+			workerServiceUpdateWorkerVersionHandler.ServeHTTP(w, r)
+		case WorkerServiceCreateWorkerVersionProcedure:
+			workerServiceCreateWorkerVersionHandler.ServeHTTP(w, r)
 		case WorkerServiceAcquireEditLockProcedure:
 			workerServiceAcquireEditLockHandler.ServeHTTP(w, r)
 		case WorkerServiceReleaseEditLockProcedure:
@@ -429,6 +489,14 @@ func (UnimplementedWorkerServiceHandler) ListWorkers(context.Context, *connect.R
 
 func (UnimplementedWorkerServiceHandler) ListWorkerVersions(context.Context, *connect.Request[v1.ListWorkerVersionsRequest]) (*connect.Response[v1.ListWorkerVersionsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkerService.ListWorkerVersions is not implemented"))
+}
+
+func (UnimplementedWorkerServiceHandler) UpdateWorkerVersion(context.Context, *connect.Request[v1.UpdateWorkerVersionRequest]) (*connect.Response[v1.UpdateWorkerVersionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkerService.UpdateWorkerVersion is not implemented"))
+}
+
+func (UnimplementedWorkerServiceHandler) CreateWorkerVersion(context.Context, *connect.Request[v1.CreateWorkerVersionRequest]) (*connect.Response[v1.CreateWorkerVersionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkerService.CreateWorkerVersion is not implemented"))
 }
 
 func (UnimplementedWorkerServiceHandler) AcquireEditLock(context.Context, *connect.Request[v1.AcquireEditLockRequest]) (*connect.Response[v1.AcquireEditLockResponse], error) {
