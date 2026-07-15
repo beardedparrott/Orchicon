@@ -1,10 +1,12 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createRoute, useNavigate, useSearch } from "@tanstack/react-router";
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { useCreateWorkItem } from "@/api/workItems";
 import { useListWorkItems } from "@/api/workItems";
+import { useListProjects } from "@/api/projects";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -61,12 +63,13 @@ const KIND_TO_PROTO: Record<string, number> = {
 function NewWorkItemPage() {
   const navigate = useNavigate();
   const search = useSearch({ from: "/work-items_/new" });
-  const projectId = search.projectId;
+  const [selectedProjectId, setSelectedProjectId] = useState(search.projectId || "");
   const parentId = search.parentId || "";
   const createWorkItem = useCreateWorkItem();
+  const { data: projects } = useListProjects();
 
-  // Fetch sibling items to show context for parent selection.
-  const { data: projectItems } = useListWorkItems(projectId);
+  // Fetch sibling items for parent selection.
+  const { data: projectItems } = useListWorkItems(selectedProjectId);
 
   // Determine the default kind based on the parent (if any).
   const parentItem = projectItems?.find((i) => i.id === parentId);
@@ -109,7 +112,7 @@ function NewWorkItemPage() {
 
   const onSubmit = async (values: CreateWorkItemForm) => {
     const workItem = await createWorkItem.mutateAsync({
-      projectId,
+      projectId: selectedProjectId,
       parentId: values.parentId || undefined,
       kind: KIND_TO_PROTO[values.kind],
       title: values.title,
@@ -143,6 +146,26 @@ function NewWorkItemPage() {
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="project">Project</Label>
+              <select
+                id="project"
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                value={selectedProjectId}
+                onChange={(e) => setSelectedProjectId(e.target.value)}
+              >
+                <option value="">— Select project —</option>
+                {(projects ?? []).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              {!selectedProjectId && (
+                <p className="text-xs text-destructive">A project is required.</p>
+              )}
+            </div>
+
             <div className="space-y-2">
               <Label htmlFor="title">Title</Label>
               <Input
@@ -261,7 +284,7 @@ function NewWorkItemPage() {
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={isSubmitting}>
+              <Button type="submit" disabled={isSubmitting || !selectedProjectId}>
                 {isSubmitting ? "Creating…" : "Create Work Item"}
               </Button>
             </div>
