@@ -33,12 +33,13 @@ import (
 // Service implements the AIGatewayService Connect handler
 // (apiv1connect.AIGatewayServiceHandler).
 type Service struct {
-	pool       *db.Pool
-	log        *slog.Logger
-	subscriber eventbus.Subscriber
-	metrics    *usageMetrics
-	providers  []*apiv1.AIProvider
-	discoverer *ModelDiscoverer
+	pool        *db.Pool
+	log         *slog.Logger
+	subscriber  eventbus.Subscriber
+	metrics     *usageMetrics
+	providers   []*apiv1.AIProvider
+	discoverer  *ModelDiscoverer
+	mcpDiscoverer *MCPDiscoverer
 	apiv1connect.UnimplementedAIGatewayServiceHandler
 }
 
@@ -49,14 +50,16 @@ var _ apiv1connect.AIGatewayServiceHandler = (*Service)(nil)
 // the OpenCode runtime executes the actual LLM calls; the gateway
 // records usage + cost from adapter telemetry.
 // If discoverer is nil, ListOpenCodeModels returns Unimplemented.
-func NewService(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber, discoverer *ModelDiscoverer) *Service {
+// If mcpDiscoverer is nil, ListOpenCodeMCPs returns Unimplemented.
+func NewService(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber, discoverer *ModelDiscoverer, mcpDiscoverer *MCPDiscoverer) *Service {
 	return &Service{
-		pool:       pool,
-		log:        log,
-		subscriber: sub,
-		metrics:    newUsageMetrics(log),
-		providers:  defaultProviders(),
-		discoverer: discoverer,
+		pool:          pool,
+		log:           log,
+		subscriber:    sub,
+		metrics:       newUsageMetrics(log),
+		providers:     defaultProviders(),
+		discoverer:    discoverer,
+		mcpDiscoverer: mcpDiscoverer,
 	}
 }
 
@@ -81,6 +84,19 @@ func (s *Service) ListOpenCodeModels(ctx context.Context, req *connect.Request[a
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list opencode models: %w", err))
 	}
 	return connect.NewResponse(&apiv1.ListOpenCodeModelsResponse{Models: models}), nil
+}
+
+// ListOpenCodeMCPs enumerates MCP servers configured in opencode
+// by shelling out to `opencode mcp list`.
+func (s *Service) ListOpenCodeMCPs(ctx context.Context, req *connect.Request[apiv1.ListOpenCodeMCPsRequest]) (*connect.Response[apiv1.ListOpenCodeMCPsResponse], error) {
+	if s.mcpDiscoverer == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("MCP discovery is not configured"))
+	}
+	servers, err := s.mcpDiscoverer.ListMCPs(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list opencode MCPs: %w", err))
+	}
+	return connect.NewResponse(&apiv1.ListOpenCodeMCPsResponse{Servers: servers}), nil
 }
 
 // GetUsage returns usage records matching the tenant-scoped filter. The

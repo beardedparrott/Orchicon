@@ -2,6 +2,7 @@ import { useMemo } from "react";
 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { MCPPicker } from "@/components/MCPPicker";
 
 // --- Shared types ---
 
@@ -97,22 +98,17 @@ export function PermissionsSection({ value, onChange }: SectionProps) {
 
       <div className="space-y-1">
         <Label className="text-xs">MCP servers</Label>
-        <p className="text-xs text-muted-foreground">
-          Comma-separated MCP server IDs the worker may use
+        <p className="text-xs text-muted-foreground mb-1">
+          MCP servers the worker may use. Searchable list pulled from opencode.
         </p>
-        <Input
-          value={data.mcp_servers.join(", ")}
-          onChange={(e) =>
+        <MCPPicker
+          value={data.mcp_servers}
+          onChange={(ids) =>
             update((d) => {
-              d.mcp_servers = e.target.value
-                .split(",")
-                .map((s) => s.trim())
-                .filter(Boolean);
+              d.mcp_servers = ids;
               return d;
             })
           }
-          placeholder="filesystem, github, postgres"
-          className="font-mono text-xs"
         />
       </div>
 

@@ -14,7 +14,7 @@
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3, protoInt64, Timestamp } from "@bufbuild/protobuf";
-import { AIProvider, CostSummary, OpenCodeModel, UsageEvent, UsageRecord, UsageRollup } from "./ai_gateway_pb.js";
+import { AIProvider, CostSummary, OpenCodeMCP, OpenCodeModel, UsageEvent, UsageRecord, UsageRollup } from "./ai_gateway_pb.js";
 
 /**
  * @generated from message orchicon.api.v1.ListOpenCodeModelsRequest
@@ -89,6 +89,76 @@ export class ListOpenCodeModelsResponse extends Message<ListOpenCodeModelsRespon
 
   static equals(a: ListOpenCodeModelsResponse | PlainMessage<ListOpenCodeModelsResponse> | undefined, b: ListOpenCodeModelsResponse | PlainMessage<ListOpenCodeModelsResponse> | undefined): boolean {
     return proto3.util.equals(ListOpenCodeModelsResponse, a, b);
+  }
+}
+
+/**
+ * No filters — all configured MCP servers are returned.
+ *
+ * @generated from message orchicon.api.v1.ListOpenCodeMCPsRequest
+ */
+export class ListOpenCodeMCPsRequest extends Message<ListOpenCodeMCPsRequest> {
+  constructor(data?: PartialMessage<ListOpenCodeMCPsRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListOpenCodeMCPsRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListOpenCodeMCPsRequest {
+    return new ListOpenCodeMCPsRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListOpenCodeMCPsRequest {
+    return new ListOpenCodeMCPsRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListOpenCodeMCPsRequest {
+    return new ListOpenCodeMCPsRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListOpenCodeMCPsRequest | PlainMessage<ListOpenCodeMCPsRequest> | undefined, b: ListOpenCodeMCPsRequest | PlainMessage<ListOpenCodeMCPsRequest> | undefined): boolean {
+    return proto3.util.equals(ListOpenCodeMCPsRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ListOpenCodeMCPsResponse
+ */
+export class ListOpenCodeMCPsResponse extends Message<ListOpenCodeMCPsResponse> {
+  /**
+   * @generated from field: repeated orchicon.api.v1.OpenCodeMCP servers = 1;
+   */
+  servers: OpenCodeMCP[] = [];
+
+  constructor(data?: PartialMessage<ListOpenCodeMCPsResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListOpenCodeMCPsResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "servers", kind: "message", T: OpenCodeMCP, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListOpenCodeMCPsResponse {
+    return new ListOpenCodeMCPsResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListOpenCodeMCPsResponse {
+    return new ListOpenCodeMCPsResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListOpenCodeMCPsResponse {
+    return new ListOpenCodeMCPsResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListOpenCodeMCPsResponse | PlainMessage<ListOpenCodeMCPsResponse> | undefined, b: ListOpenCodeMCPsResponse | PlainMessage<ListOpenCodeMCPsResponse> | undefined): boolean {
+    return proto3.util.equals(ListOpenCodeMCPsResponse, a, b);
   }
 }
 

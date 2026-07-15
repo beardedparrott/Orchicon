@@ -12,7 +12,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { GetCostRequest, GetCostResponse, GetUsageRequest, GetUsageResponse, ListOpenCodeModelsRequest, ListOpenCodeModelsResponse, ListProvidersRequest, ListProvidersResponse, StreamUsageEventsRequest, StreamUsageEventsResponse } from "./ai_gateway_service_pb.js";
+import { GetCostRequest, GetCostResponse, GetUsageRequest, GetUsageResponse, ListOpenCodeMCPsRequest, ListOpenCodeMCPsResponse, ListOpenCodeModelsRequest, ListOpenCodeModelsResponse, ListProvidersRequest, ListProvidersResponse, StreamUsageEventsRequest, StreamUsageEventsResponse } from "./ai_gateway_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -46,6 +46,19 @@ export const AIGatewayService = {
       name: "ListOpenCodeModels",
       I: ListOpenCodeModelsRequest,
       O: ListOpenCodeModelsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ListOpenCodeMCPs enumerates MCP servers configured in opencode
+     * by shelling out to `opencode mcp list`. Returns server name, status,
+     * and connection command/URL.
+     *
+     * @generated from rpc orchicon.api.v1.AIGatewayService.ListOpenCodeMCPs
+     */
+    listOpenCodeMCPs: {
+      name: "ListOpenCodeMCPs",
+      I: ListOpenCodeMCPsRequest,
+      O: ListOpenCodeMCPsResponse,
       kind: MethodKind.Unary,
     },
     /**

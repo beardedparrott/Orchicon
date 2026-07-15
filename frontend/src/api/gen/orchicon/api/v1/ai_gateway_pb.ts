@@ -832,3 +832,64 @@ export class ModelCapabilities extends Message<ModelCapabilities> {
   }
 }
 
+/**
+ * OpenCodeMCP is an MCP (Model Context Protocol) server discovered from
+ * the `opencode mcp list` CLI output (docs/04 §6). The control plane
+ * shells out to list configured MCP servers with their status and
+ * connection details, similar to how OpenChamber surfaces available
+ * MCP servers from the opencode config.
+ *
+ * @generated from message orchicon.api.v1.OpenCodeMCP
+ */
+export class OpenCodeMCP extends Message<OpenCodeMCP> {
+  /**
+   * server name, e.g. "godot", "context7"
+   *
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * the command/URL used to connect
+   *
+   * @generated from field: string command = 2;
+   */
+  command = "";
+
+  /**
+   * "connected", "disconnected", "error"
+   *
+   * @generated from field: string status = 3;
+   */
+  status = "";
+
+  constructor(data?: PartialMessage<OpenCodeMCP>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.OpenCodeMCP";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "command", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): OpenCodeMCP {
+    return new OpenCodeMCP().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): OpenCodeMCP {
+    return new OpenCodeMCP().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): OpenCodeMCP {
+    return new OpenCodeMCP().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: OpenCodeMCP | PlainMessage<OpenCodeMCP> | undefined, b: OpenCodeMCP | PlainMessage<OpenCodeMCP> | undefined): boolean {
+    return proto3.util.equals(OpenCodeMCP, a, b);
+  }
+}
+
