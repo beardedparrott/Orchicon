@@ -80,6 +80,11 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	}
 	defer ttx.Rollback(ctx)
 
+	// Only active projects may host work items (docs/02 §2.1).
+	if err := db.RequireProjectActive(ctx, ttx.Tx, tenantID, msg.ProjectId); err != nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("project not active: %w", err))
+	}
+
 	// Enforce hierarchy depth: a subtask's parent must be a task, etc.
 	if parentID != nil {
 		parent, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, *parentID)

@@ -586,6 +586,10 @@ platform, or `--uninstall` to test cleanup).
   filter). Name length limit raised globally from 200 to 500 characters across
   projects, workers, workflows, policies (backend validation + frontend Zod
   schemas). Build verified: `go build ./...`, `npm run build` pass cleanly.
+- **Project lifecycle**: New `ActivateProject` RPC transitions drafting→active.
+  Work items and workflows now reject creation under non-active projects
+  (db.RequireProjectActive guard). Frontend has an Activate button on the
+  project detail page when status is drafting.
 - **Worker form revamp**: The worker create form replaces raw JSON textareas with
   structured form controls. `modelRef` is now a searchable `<ModelPicker>` that
   shells out to `opencode models --verbose` (like OpenChamber) and displays model

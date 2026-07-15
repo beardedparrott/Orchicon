@@ -57,6 +57,21 @@ export function useUpdateProject() {
   });
 }
 
+// useActivateProject transitions a drafting project to active status.
+export function useActivateProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const res = await projectClient.activateProject({ id });
+      return res.project as Project;
+    },
+    onSuccess: (project) => {
+      qc.invalidateQueries({ queryKey: projectKeys.list() });
+      qc.invalidateQueries({ queryKey: projectKeys.detail(project.id) });
+    },
+  });
+}
+
 // useGetProject fetches a single project by id.
 export function useGetProject(id: string) {
   return useQuery({

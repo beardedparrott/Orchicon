@@ -267,6 +267,80 @@ export class PauseProjectResponse extends Message<PauseProjectResponse> {
 }
 
 /**
+ * @generated from message orchicon.api.v1.ActivateProjectRequest
+ */
+export class ActivateProjectRequest extends Message<ActivateProjectRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  constructor(data?: PartialMessage<ActivateProjectRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ActivateProjectRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ActivateProjectRequest {
+    return new ActivateProjectRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ActivateProjectRequest {
+    return new ActivateProjectRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ActivateProjectRequest {
+    return new ActivateProjectRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ActivateProjectRequest | PlainMessage<ActivateProjectRequest> | undefined, b: ActivateProjectRequest | PlainMessage<ActivateProjectRequest> | undefined): boolean {
+    return proto3.util.equals(ActivateProjectRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ActivateProjectResponse
+ */
+export class ActivateProjectResponse extends Message<ActivateProjectResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.Project project = 1;
+   */
+  project?: Project;
+
+  constructor(data?: PartialMessage<ActivateProjectResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ActivateProjectResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "project", kind: "message", T: Project },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ActivateProjectResponse {
+    return new ActivateProjectResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ActivateProjectResponse {
+    return new ActivateProjectResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ActivateProjectResponse {
+    return new ActivateProjectResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ActivateProjectResponse | PlainMessage<ActivateProjectResponse> | undefined, b: ActivateProjectResponse | PlainMessage<ActivateProjectResponse> | undefined): boolean {
+    return proto3.util.equals(ActivateProjectResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.StreamProjectEventsRequest
  */
 export class StreamProjectEventsRequest extends Message<StreamProjectEventsRequest> {
