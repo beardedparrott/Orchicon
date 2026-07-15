@@ -12,6 +12,18 @@ package orchicon.api.v1;
 
 import "google/protobuf/timestamp.proto";
 
+// GoalField is a single key-value pair describing a project goal.
+message GoalField {
+  string key = 1;
+  string value = 2;
+}
+
+// GoalFields is a wrapper so UpdateProjectRequest can distinguish
+// "don't update" from "clear goals" via optional.
+message GoalFields {
+  repeated GoalField fields = 1;
+}
+
 // Project is the persistent source of work. All schedulable entities
 // belong to a Project (docs/02_Domain_Model.md §2.1).
 message Project {
@@ -41,7 +53,7 @@ message CreateProjectRequest {
   string tenant_id = 1;
   string name = 2;
   string slug = 3;
-  string goals = 4; // JSON
+  repeated GoalField goals = 4; // converted to JSON by the server
   string request_id = 5; // idempotency key (docs/07 §5.5)
 }
 
@@ -63,7 +75,7 @@ message ListProjectsResponse {
 message UpdateProjectRequest {
   string id = 1;
   optional string name = 2;
-  optional string goals = 3;
+  optional GoalFields goals = 3; // converted to JSON by the server; empty fields clears goals
   // FieldMask support added as the schema grows (docs/07 §5.4).
   string request_id = 4;
 }

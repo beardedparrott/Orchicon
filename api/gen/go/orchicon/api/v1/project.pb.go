@@ -90,6 +90,105 @@ func (ProjectStatus) EnumDescriptor() ([]byte, []int) {
 	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{0}
 }
 
+// GoalField is a single key-value pair describing a project goal.
+type GoalField struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Value         string                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GoalField) Reset() {
+	*x = GoalField{}
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GoalField) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GoalField) ProtoMessage() {}
+
+func (x *GoalField) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GoalField.ProtoReflect.Descriptor instead.
+func (*GoalField) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *GoalField) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *GoalField) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
+// GoalFields is a wrapper so UpdateProjectRequest can distinguish
+// "don't update" from "clear goals" via optional.
+type GoalFields struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Fields        []*GoalField           `protobuf:"bytes,1,rep,name=fields,proto3" json:"fields,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GoalFields) Reset() {
+	*x = GoalFields{}
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GoalFields) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GoalFields) ProtoMessage() {}
+
+func (x *GoalFields) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GoalFields.ProtoReflect.Descriptor instead.
+func (*GoalFields) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *GoalFields) GetFields() []*GoalField {
+	if x != nil {
+		return x.Fields
+	}
+	return nil
+}
+
 // Project is the persistent source of work. All schedulable entities
 // belong to a Project (docs/02_Domain_Model.md §2.1).
 type Project struct {
@@ -109,7 +208,7 @@ type Project struct {
 
 func (x *Project) Reset() {
 	*x = Project{}
-	mi := &file_orchicon_api_v1_project_proto_msgTypes[0]
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -121,7 +220,7 @@ func (x *Project) String() string {
 func (*Project) ProtoMessage() {}
 
 func (x *Project) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_project_proto_msgTypes[0]
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -134,7 +233,7 @@ func (x *Project) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Project.ProtoReflect.Descriptor instead.
 func (*Project) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{0}
+	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *Project) GetId() string {
@@ -206,7 +305,7 @@ type CreateProjectRequest struct {
 	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
 	Slug          string                 `protobuf:"bytes,3,opt,name=slug,proto3" json:"slug,omitempty"`
-	Goals         string                 `protobuf:"bytes,4,opt,name=goals,proto3" json:"goals,omitempty"`                          // JSON
+	Goals         []*GoalField           `protobuf:"bytes,4,rep,name=goals,proto3" json:"goals,omitempty"`                          // converted to JSON by the server
 	RequestId     string                 `protobuf:"bytes,5,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"` // idempotency key (docs/07 §5.5)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -214,7 +313,7 @@ type CreateProjectRequest struct {
 
 func (x *CreateProjectRequest) Reset() {
 	*x = CreateProjectRequest{}
-	mi := &file_orchicon_api_v1_project_proto_msgTypes[1]
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -226,7 +325,7 @@ func (x *CreateProjectRequest) String() string {
 func (*CreateProjectRequest) ProtoMessage() {}
 
 func (x *CreateProjectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_project_proto_msgTypes[1]
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -239,7 +338,7 @@ func (x *CreateProjectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateProjectRequest.ProtoReflect.Descriptor instead.
 func (*CreateProjectRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{1}
+	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *CreateProjectRequest) GetTenantId() string {
@@ -263,11 +362,11 @@ func (x *CreateProjectRequest) GetSlug() string {
 	return ""
 }
 
-func (x *CreateProjectRequest) GetGoals() string {
+func (x *CreateProjectRequest) GetGoals() []*GoalField {
 	if x != nil {
 		return x.Goals
 	}
-	return ""
+	return nil
 }
 
 func (x *CreateProjectRequest) GetRequestId() string {
@@ -286,7 +385,7 @@ type GetProjectRequest struct {
 
 func (x *GetProjectRequest) Reset() {
 	*x = GetProjectRequest{}
-	mi := &file_orchicon_api_v1_project_proto_msgTypes[2]
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -298,7 +397,7 @@ func (x *GetProjectRequest) String() string {
 func (*GetProjectRequest) ProtoMessage() {}
 
 func (x *GetProjectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_project_proto_msgTypes[2]
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -311,7 +410,7 @@ func (x *GetProjectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProjectRequest.ProtoReflect.Descriptor instead.
 func (*GetProjectRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{2}
+	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *GetProjectRequest) GetId() string {
@@ -332,7 +431,7 @@ type ListProjectsRequest struct {
 
 func (x *ListProjectsRequest) Reset() {
 	*x = ListProjectsRequest{}
-	mi := &file_orchicon_api_v1_project_proto_msgTypes[3]
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -344,7 +443,7 @@ func (x *ListProjectsRequest) String() string {
 func (*ListProjectsRequest) ProtoMessage() {}
 
 func (x *ListProjectsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_project_proto_msgTypes[3]
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -357,7 +456,7 @@ func (x *ListProjectsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProjectsRequest.ProtoReflect.Descriptor instead.
 func (*ListProjectsRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{3}
+	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ListProjectsRequest) GetTenantId() string {
@@ -391,7 +490,7 @@ type ListProjectsResponse struct {
 
 func (x *ListProjectsResponse) Reset() {
 	*x = ListProjectsResponse{}
-	mi := &file_orchicon_api_v1_project_proto_msgTypes[4]
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -403,7 +502,7 @@ func (x *ListProjectsResponse) String() string {
 func (*ListProjectsResponse) ProtoMessage() {}
 
 func (x *ListProjectsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_project_proto_msgTypes[4]
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -416,7 +515,7 @@ func (x *ListProjectsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProjectsResponse.ProtoReflect.Descriptor instead.
 func (*ListProjectsResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{4}
+	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ListProjectsResponse) GetProjects() []*Project {
@@ -437,7 +536,7 @@ type UpdateProjectRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Name  *string                `protobuf:"bytes,2,opt,name=name,proto3,oneof" json:"name,omitempty"`
-	Goals *string                `protobuf:"bytes,3,opt,name=goals,proto3,oneof" json:"goals,omitempty"`
+	Goals *GoalFields            `protobuf:"bytes,3,opt,name=goals,proto3,oneof" json:"goals,omitempty"` // converted to JSON by the server; empty fields clears goals
 	// FieldMask support added as the schema grows (docs/07 §5.4).
 	RequestId     string `protobuf:"bytes,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -446,7 +545,7 @@ type UpdateProjectRequest struct {
 
 func (x *UpdateProjectRequest) Reset() {
 	*x = UpdateProjectRequest{}
-	mi := &file_orchicon_api_v1_project_proto_msgTypes[5]
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -458,7 +557,7 @@ func (x *UpdateProjectRequest) String() string {
 func (*UpdateProjectRequest) ProtoMessage() {}
 
 func (x *UpdateProjectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_project_proto_msgTypes[5]
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -471,7 +570,7 @@ func (x *UpdateProjectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateProjectRequest.ProtoReflect.Descriptor instead.
 func (*UpdateProjectRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{5}
+	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *UpdateProjectRequest) GetId() string {
@@ -488,11 +587,11 @@ func (x *UpdateProjectRequest) GetName() string {
 	return ""
 }
 
-func (x *UpdateProjectRequest) GetGoals() string {
-	if x != nil && x.Goals != nil {
-		return *x.Goals
+func (x *UpdateProjectRequest) GetGoals() *GoalFields {
+	if x != nil {
+		return x.Goals
 	}
-	return ""
+	return nil
 }
 
 func (x *UpdateProjectRequest) GetRequestId() string {
@@ -511,7 +610,7 @@ type ArchiveProjectRequest struct {
 
 func (x *ArchiveProjectRequest) Reset() {
 	*x = ArchiveProjectRequest{}
-	mi := &file_orchicon_api_v1_project_proto_msgTypes[6]
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -523,7 +622,7 @@ func (x *ArchiveProjectRequest) String() string {
 func (*ArchiveProjectRequest) ProtoMessage() {}
 
 func (x *ArchiveProjectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_project_proto_msgTypes[6]
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -536,7 +635,7 @@ func (x *ArchiveProjectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArchiveProjectRequest.ProtoReflect.Descriptor instead.
 func (*ArchiveProjectRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{6}
+	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ArchiveProjectRequest) GetId() string {
@@ -555,7 +654,7 @@ type PauseProjectRequest struct {
 
 func (x *PauseProjectRequest) Reset() {
 	*x = PauseProjectRequest{}
-	mi := &file_orchicon_api_v1_project_proto_msgTypes[7]
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -567,7 +666,7 @@ func (x *PauseProjectRequest) String() string {
 func (*PauseProjectRequest) ProtoMessage() {}
 
 func (x *PauseProjectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_project_proto_msgTypes[7]
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -580,7 +679,7 @@ func (x *PauseProjectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseProjectRequest.ProtoReflect.Descriptor instead.
 func (*PauseProjectRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{7}
+	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *PauseProjectRequest) GetId() string {
@@ -606,7 +705,7 @@ type ProjectEvent struct {
 
 func (x *ProjectEvent) Reset() {
 	*x = ProjectEvent{}
-	mi := &file_orchicon_api_v1_project_proto_msgTypes[8]
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -618,7 +717,7 @@ func (x *ProjectEvent) String() string {
 func (*ProjectEvent) ProtoMessage() {}
 
 func (x *ProjectEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_project_proto_msgTypes[8]
+	mi := &file_orchicon_api_v1_project_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -631,7 +730,7 @@ func (x *ProjectEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectEvent.ProtoReflect.Descriptor instead.
 func (*ProjectEvent) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{8}
+	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ProjectEvent) GetEventId() string {
@@ -680,7 +779,13 @@ var File_orchicon_api_v1_project_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\n" +
-	"\x1dorchicon/api/v1/project.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xbc\x02\n" +
+	"\x1dorchicon/api/v1/project.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"3\n" +
+	"\tGoalField\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value\"@\n" +
+	"\n" +
+	"GoalFields\x122\n" +
+	"\x06fields\x18\x01 \x03(\v2\x1a.orchicon.api.v1.GoalFieldR\x06fields\"\xbc\x02\n" +
 	"\aProject\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x12\n" +
@@ -692,12 +797,12 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\x90\x01\n" +
+	"updated_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xac\x01\n" +
 	"\x14CreateProjectRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
-	"\x04slug\x18\x03 \x01(\tR\x04slug\x12\x14\n" +
-	"\x05goals\x18\x04 \x01(\tR\x05goals\x12\x1d\n" +
+	"\x04slug\x18\x03 \x01(\tR\x04slug\x120\n" +
+	"\x05goals\x18\x04 \x03(\v2\x1a.orchicon.api.v1.GoalFieldR\x05goals\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x05 \x01(\tR\trequestId\"#\n" +
 	"\x11GetProjectRequest\x12\x0e\n" +
@@ -709,11 +814,11 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\tpage_size\x18\x03 \x01(\x05R\bpageSize\"t\n" +
 	"\x14ListProjectsResponse\x124\n" +
 	"\bprojects\x18\x01 \x03(\v2\x18.orchicon.api.v1.ProjectR\bprojects\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\x8c\x01\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xa9\x01\n" +
 	"\x14UpdateProjectRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
-	"\x04name\x18\x02 \x01(\tH\x00R\x04name\x88\x01\x01\x12\x19\n" +
-	"\x05goals\x18\x03 \x01(\tH\x01R\x05goals\x88\x01\x01\x12\x1d\n" +
+	"\x04name\x18\x02 \x01(\tH\x00R\x04name\x88\x01\x01\x126\n" +
+	"\x05goals\x18\x03 \x01(\v2\x1b.orchicon.api.v1.GoalFieldsH\x01R\x05goals\x88\x01\x01\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x04 \x01(\tR\trequestIdB\a\n" +
 	"\x05_nameB\b\n" +
@@ -754,31 +859,36 @@ func file_orchicon_api_v1_project_proto_rawDescGZIP() []byte {
 }
 
 var file_orchicon_api_v1_project_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_orchicon_api_v1_project_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_orchicon_api_v1_project_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_orchicon_api_v1_project_proto_goTypes = []any{
 	(ProjectStatus)(0),            // 0: orchicon.api.v1.ProjectStatus
-	(*Project)(nil),               // 1: orchicon.api.v1.Project
-	(*CreateProjectRequest)(nil),  // 2: orchicon.api.v1.CreateProjectRequest
-	(*GetProjectRequest)(nil),     // 3: orchicon.api.v1.GetProjectRequest
-	(*ListProjectsRequest)(nil),   // 4: orchicon.api.v1.ListProjectsRequest
-	(*ListProjectsResponse)(nil),  // 5: orchicon.api.v1.ListProjectsResponse
-	(*UpdateProjectRequest)(nil),  // 6: orchicon.api.v1.UpdateProjectRequest
-	(*ArchiveProjectRequest)(nil), // 7: orchicon.api.v1.ArchiveProjectRequest
-	(*PauseProjectRequest)(nil),   // 8: orchicon.api.v1.PauseProjectRequest
-	(*ProjectEvent)(nil),          // 9: orchicon.api.v1.ProjectEvent
-	(*timestamppb.Timestamp)(nil), // 10: google.protobuf.Timestamp
+	(*GoalField)(nil),             // 1: orchicon.api.v1.GoalField
+	(*GoalFields)(nil),            // 2: orchicon.api.v1.GoalFields
+	(*Project)(nil),               // 3: orchicon.api.v1.Project
+	(*CreateProjectRequest)(nil),  // 4: orchicon.api.v1.CreateProjectRequest
+	(*GetProjectRequest)(nil),     // 5: orchicon.api.v1.GetProjectRequest
+	(*ListProjectsRequest)(nil),   // 6: orchicon.api.v1.ListProjectsRequest
+	(*ListProjectsResponse)(nil),  // 7: orchicon.api.v1.ListProjectsResponse
+	(*UpdateProjectRequest)(nil),  // 8: orchicon.api.v1.UpdateProjectRequest
+	(*ArchiveProjectRequest)(nil), // 9: orchicon.api.v1.ArchiveProjectRequest
+	(*PauseProjectRequest)(nil),   // 10: orchicon.api.v1.PauseProjectRequest
+	(*ProjectEvent)(nil),          // 11: orchicon.api.v1.ProjectEvent
+	(*timestamppb.Timestamp)(nil), // 12: google.protobuf.Timestamp
 }
 var file_orchicon_api_v1_project_proto_depIdxs = []int32{
-	0,  // 0: orchicon.api.v1.Project.status:type_name -> orchicon.api.v1.ProjectStatus
-	10, // 1: orchicon.api.v1.Project.created_at:type_name -> google.protobuf.Timestamp
-	10, // 2: orchicon.api.v1.Project.updated_at:type_name -> google.protobuf.Timestamp
-	1,  // 3: orchicon.api.v1.ListProjectsResponse.projects:type_name -> orchicon.api.v1.Project
-	10, // 4: orchicon.api.v1.ProjectEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	5,  // [5:5] is the sub-list for method output_type
-	5,  // [5:5] is the sub-list for method input_type
-	5,  // [5:5] is the sub-list for extension type_name
-	5,  // [5:5] is the sub-list for extension extendee
-	0,  // [0:5] is the sub-list for field type_name
+	1,  // 0: orchicon.api.v1.GoalFields.fields:type_name -> orchicon.api.v1.GoalField
+	0,  // 1: orchicon.api.v1.Project.status:type_name -> orchicon.api.v1.ProjectStatus
+	12, // 2: orchicon.api.v1.Project.created_at:type_name -> google.protobuf.Timestamp
+	12, // 3: orchicon.api.v1.Project.updated_at:type_name -> google.protobuf.Timestamp
+	1,  // 4: orchicon.api.v1.CreateProjectRequest.goals:type_name -> orchicon.api.v1.GoalField
+	3,  // 5: orchicon.api.v1.ListProjectsResponse.projects:type_name -> orchicon.api.v1.Project
+	2,  // 6: orchicon.api.v1.UpdateProjectRequest.goals:type_name -> orchicon.api.v1.GoalFields
+	12, // 7: orchicon.api.v1.ProjectEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	8,  // [8:8] is the sub-list for method output_type
+	8,  // [8:8] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_project_proto_init() }
@@ -786,14 +896,14 @@ func file_orchicon_api_v1_project_proto_init() {
 	if File_orchicon_api_v1_project_proto != nil {
 		return
 	}
-	file_orchicon_api_v1_project_proto_msgTypes[5].OneofWrappers = []any{}
+	file_orchicon_api_v1_project_proto_msgTypes[7].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_project_proto_rawDesc), len(file_orchicon_api_v1_project_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   9,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

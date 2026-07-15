@@ -53,7 +53,7 @@ func (s *Service) CreateProject(ctx context.Context, req *connect.Request[apiv1.
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	goals, err := validateGoals(msg.Goals)
+	goals, err := convertGoalsToJSON(msg.Goals)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -161,7 +161,7 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 		fields.Name = &name
 	}
 	if msg.Goals != nil {
-		goals, err := validateGoals(*msg.Goals)
+		goals, err := convertGoalsToJSON(msg.Goals.Fields)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}

@@ -1,9 +1,10 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createRoute, useNavigate } from "@tanstack/react-router";
-import { useForm } from "react-hook-form";
+import { useFieldArray, useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { useCreateProject } from "@/api/projects";
+import { GoalField } from "@/api/gen/orchicon/api/v1/project_pb";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -14,15 +15,8 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { Route as rootRoute } from "@/routes/__root";
 
-// Create project form (docs/10 §5, §2: React Hook Form + Zod).
-//
-// Zod validation mirrors the server-side rules (internal/project/validate.go)
-// so the form rejects invalid input before round-tripping: name is
-// required and bounded, slug is optional and slug-regex-constrained, and
-// goals must be valid JSON if provided.
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/projects/new",
@@ -30,6 +24,14 @@ export const Route = createRoute({
 });
 
 const slugRegex = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+const goalFieldSchema = z.object({
+  key: z
+    .string()
+    .min(1, "Goal key is required")
+    .max(100, "Goal key must be at most 100 characters"),
+  value: z.string().max(10000, "Goal value is too long"),
+});
 
 const createProjectSchema = z.object({
   name: z
@@ -42,34 +44,37 @@ const createProjectSchema = z.object({
     .regex(slugRegex, "Slug must be lowercase alphanumeric with hyphens")
     .optional()
     .or(z.literal("")),
-  goals: z
-    .string()
-    .max(1_048_576, "Goals document is too large")
-    .refine((v) => v === "" || v === undefined || isValidJson(v), {
-      message: "Goals must be valid JSON",
-    })
-    .optional(),
+  goals: z.array(goalFieldSchema).default([]),
 });
 
-type CreateProjectForm = z.infer<typeof createProjectSchema>;
+type CreateProjectForm = z.input<typeof createProjectSchema>;
 
 function NewProjectPage() {
   const navigate = useNavigate();
   const createProject = useCreateProject();
   const {
     register,
+    control,
     handleSubmit,
     formState: { errors, isSubmitting },
-  } = useForm<CreateProjectForm>({
+  } = useForm({
     resolver: zodResolver(createProjectSchema),
-    defaultValues: { name: "", slug: "", goals: "" },
+    defaultValues: { name: "", slug: "", goals: [{ key: "", value: "" }] },
+  });
+
+  const { fields, append, remove } = useFieldArray({
+    control,
+    name: "goals",
   });
 
   const onSubmit = async (values: CreateProjectForm) => {
+    const goals = (values.goals ?? [])
+      .filter((g) => g.key.trim() !== "")
+      .map((g) => new GoalField(g));
     const project = await createProject.mutateAsync({
       name: values.name,
       slug: values.slug || undefined,
-      goals: values.goals || undefined,
+      goals: goals.length > 0 ? goals : undefined,
     });
     navigate({ to: "/projects/$id", params: { id: project.id } });
   };
@@ -127,18 +132,58 @@ function NewProjectPage() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="goals">Goals (optional JSON)</Label>
-              <Textarea
-                id="goals"
-                placeholder='{"summary": "Build and ship the MVP"}'
-                rows={5}
-                {...register("goals")}
-              />
-              {errors.goals && (
-                <p className="text-xs text-destructive">
-                  {errors.goals.message}
-                </p>
-              )}
+              <Label>Goals</Label>
+              <p className="text-xs text-muted-foreground">
+                Key-value pairs describing the project's objectives.
+              </p>
+              <div className="space-y-2">
+                {fields.map((field, index) => (
+                  <div key={field.id} className="flex items-start gap-2">
+                    <div className="flex-1 space-y-1">
+                      <Input
+                        placeholder="Key (e.g. objective)"
+                        {...register(`goals.${index}.key`)}
+                      />
+                      {errors.goals?.[index]?.key && (
+                        <p className="text-xs text-destructive">
+                          {errors.goals[index]!.key!.message}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex-1 space-y-1">
+                      <Input
+                        placeholder="Value (e.g. Build and ship the MVP)"
+                        {...register(`goals.${index}.value`)}
+                      />
+                      {errors.goals?.[index]?.value && (
+                        <p className="text-xs text-destructive">
+                          {errors.goals[index]!.value!.message}
+                        </p>
+                      )}
+                    </div>
+                    {fields.length > 1 && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="mt-0 shrink-0"
+                        onClick={() => remove(index)}
+                      >
+                        ×
+                      </Button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-2"
+                onClick={() => append({ key: "", value: "" })}
+              >
+                + Add goal
+              </Button>
             </div>
 
             {createProject.error && (
@@ -164,13 +209,4 @@ function NewProjectPage() {
       </Card>
     </div>
   );
-}
-
-function isValidJson(s: string): boolean {
-  try {
-    JSON.parse(s);
-    return true;
-  } catch {
-    return false;
-  }
 }

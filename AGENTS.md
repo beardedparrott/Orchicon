@@ -237,6 +237,13 @@ table, verify the RLS gate still passes after migration.
 **Do not claim "done" without having run the thing.** State what was
 verified and what was not in the commit message or PR description.
 
+**Testing preference**: The canonical test is to build a release binary
+(`make build`) and install it like a user would. Do not rely on
+`go run` / `npx vite` for final verification unless the change is
+frontend-only and cannot be tested from a release bundle. If the change
+touches both layers, cut a release artifact and verify end-to-end from
+there.
+
 ### Token discipline
 
 The project's model spend is rising. Be economical:

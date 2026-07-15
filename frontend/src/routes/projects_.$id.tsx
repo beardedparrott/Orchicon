@@ -113,13 +113,20 @@ function ProjectDetailPage() {
           <CardHeader>
             <CardTitle>Goals</CardTitle>
             <CardDescription>
-              JSON document describing the project's objectives.
+              Key-value pairs describing the project's objectives.
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <pre className="overflow-auto rounded-md bg-muted p-4 text-xs">
-              {formatJson(project.goals)}
-            </pre>
+            <div className="divide-y rounded-md border">
+              {parseGoals(project.goals).map(([key, value], i) => (
+                <div key={i} className="flex gap-4 px-4 py-3 text-sm">
+                  <span className="w-1/3 font-medium text-muted-foreground">
+                    {key}
+                  </span>
+                  <span className="flex-1">{value}</span>
+                </div>
+              ))}
+            </div>
           </CardContent>
         </Card>
       )}
@@ -220,18 +227,18 @@ function statusLabel(status: number): string {
   return labels[status] ?? "unknown";
 }
 
-function formatJson(s: string): string {
+function parseGoals(s: string): [string, string][] {
   try {
-    return JSON.stringify(JSON.parse(s), null, 2);
+    const m = JSON.parse(s);
+    return Object.entries(m) as [string, string][];
   } catch {
-    return s;
+    return [];
   }
 }
 
 function formatPayload(data: Uint8Array): string {
   try {
-    const text = new TextDecoder().decode(data);
-    return formatJson(text);
+    return JSON.stringify(JSON.parse(new TextDecoder().decode(data)), null, 2);
   } catch {
     return `${data.length} bytes`;
   }

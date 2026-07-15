@@ -8,7 +8,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { projectClient } from "@/api/clients";
-import type { Project } from "@/api/gen/orchicon/api/v1/project_pb";
+import type { GoalField, Project } from "@/api/gen/orchicon/api/v1/project_pb";
 
 // Query keys are centralized so invalidation is type-safe and
 // refactor-proof. New project-scoped queries extend this tree.
@@ -46,7 +46,7 @@ export function useGetProject(id: string) {
 export function useCreateProject() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { name: string; slug?: string; goals?: string }) => {
+    mutationFn: async (input: { name: string; slug?: string; goals?: GoalField[] }) => {
       const res = await projectClient.createProject(input);
       return res.project as Project;
     },
