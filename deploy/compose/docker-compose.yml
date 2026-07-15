@@ -7,7 +7,17 @@
 #   - OTel collector → SigNoz/ClickHouse (fully separated telemetry
 #     plane, docs/01 §3, docs/08 §5)
 #
-# Start:      make up      (or: docker compose -f deploy/compose/docker-compose.yml up -d)
+# Key optimizations vs the standard SigNoz stack:
+#   - ZooKeeper eliminated: ClickHouse's built-in Keeper (embedded
+#     RAFT-based coordination) replaces the separate ZooKeeper
+#     container, cutting container count from 7 to 6.
+#   - Depends_on chains relaxed: the schema migrator, OTel collector,
+#     and SigNoz query-service all start asynchronously — no container
+#     waits on the schema migrator completing before starting. The
+#     control plane's OTel gRPC connection is non-blocking, so the
+#     app becomes usable before telemetry is fully ready.
+#
+# Start:      make up
 # Stop:       make down
 # Reset:      make nuke
 #
@@ -57,26 +67,10 @@ services:
       retries: 20
     restart: unless-stopped
 
-  # ZooKeeper — required by ClickHouse for ReplicatedMergeTree tables
-  # used by SigNoz's schema. Single-node for local dev.
-  zookeeper:
-    image: zookeeper:3.7
-    container_name: orchicon-zookeeper
-    environment:
-      ALLOW_ANONYMOUS_LOGIN: "yes"
-    ports:
-      - "2181:2181"
-    volumes:
-      - zookeeper-data:/data
-      - zookeeper-datalog:/datalog
-    healthcheck:
-      test: ["CMD-SHELL", "echo srvr | nc -w 2 localhost 2181 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
-
   # ClickHouse is the storage backend for SigNoz (telemetry plane).
+  # Uses its built-in ClickHouse Keeper (embedded RAFT coordination)
+  # instead of a separate ZooKeeper container, reducing the stack by
+  # one container and avoiding the ZooKeeper startup delay.
   clickhouse:
     image: clickhouse/clickhouse-server:25.8
     container_name: orchicon-clickhouse
@@ -99,9 +93,6 @@ services:
       nofile:
         soft: 262144
         hard: 262144
-    depends_on:
-      zookeeper:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
       interval: 5s
@@ -126,6 +117,11 @@ services:
   # OTel collector receives OTLP from the control plane (and frontend)
   # and exports to ClickHouse. This is the boundary of the telemetry
   # plane (docs/08 §5). Control plane connects OTLP gRPC to :4317.
+  #
+  # The schema migrator is NOT in the depends_on chain — the collector
+  # has retry_on_failure enabled and will reconnect once the schema is
+  # ready. This lets the stack start asynchronously instead of waiting
+  # on schema creation.
   otel-collector:
     image: signoz/signoz-otel-collector:latest
     container_name: orchicon-otel-collector
@@ -140,8 +136,6 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
-      signoz-schema-migrator:
-        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/13133' || exit 1"]
       interval: 10s
@@ -153,6 +147,9 @@ services:
   # the SigNoz UI (bundled frontend) on :3301 and the API on :8080.
   # The API is mapped to host :8081 to avoid clashing with the
   # Orchicon control plane on :8080.
+  #
+  # No hard depends_on on otel-collector — SigNoz will retry until
+  # the collector is healthy and the schema is ready.
   signoz:
     image: signoz/signoz:latest
     container_name: orchicon-signoz
@@ -169,8 +166,6 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
-      otel-collector:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/api/v1/health"]
       interval: 10s
@@ -181,7 +176,5 @@ services:
 volumes:
   postgres-data:
   nats-data:
-  zookeeper-data:
-  zookeeper-datalog:
   clickhouse-data:
   signoz-data:

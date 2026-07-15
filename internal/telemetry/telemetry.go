@@ -6,6 +6,10 @@
 // The pipeline is best-effort: if the collector is unreachable,
 // telemetry is dropped with bounded in-process buffering and control
 // flow is not blocked (docs/08 §8 invariant #5).
+//
+// The gRPC connection to the collector is non-blocking (grpc.NewClient
+// dials in the background), so the control plane starts immediately
+// without waiting for the telemetry stack to be healthy.
 package telemetry
 
 import (
@@ -28,12 +32,15 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 // Shutdowner holds the cleanup functions for the OTel pipeline.
 type Shutdowner struct {
 	tracerShutdown func(context.Context) error
 	meterShutdown  func(context.Context) error
+	conn           *grpc.ClientConn
 	log            *slog.Logger
 }
 
@@ -52,12 +59,20 @@ func (s *Shutdowner) Shutdown(ctx context.Context) {
 			s.log.Warn("meter shutdown failed", "error", err)
 		}
 	}
+	if s.conn != nil {
+		s.conn.Close()
+	}
 }
 
 // Setup initializes the global OTel tracer and meter, exporting via OTLP
 // gRPC to the collector at cfg.OTelEndpoint. It returns a Shutdowner for
 // graceful cleanup. If the exporter cannot be created, telemetry is
 // disabled but the process continues (docs/08 §8).
+//
+// The gRPC connection is non-blocking — grpc.NewClient dials in the
+// background, so the control plane is not blocked waiting for the OTel
+// collector to be reachable at startup (prevents the 20s startup delay
+// when the telemetry stack is still initializing).
 func Setup(ctx context.Context, cfg config.Config, log *slog.Logger) (*Shutdowner, error) {
 	res, err := resource.Merge(resource.Default(), resource.NewWithAttributes(
 		semconv.SchemaURL,
@@ -70,13 +85,26 @@ func Setup(ctx context.Context, cfg config.Config, log *slog.Logger) (*Shutdowne
 	endpoint := cfg.OTelEndpoint
 	shutdown := &Shutdowner{log: log}
 
-	// Trace exporter.
+	// Shared non-blocking gRPC connection. grpc.NewClient returns
+	// immediately and connects in the background — the exporter will
+	// queue spans until the connection is established, then flush them.
+	// This eliminates the 10s+10s blocking dial at startup when the
+	// OTel collector is still starting up.
+	conn, err := grpc.NewClient(endpoint,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("telemetry: grpc dial: %w", err)
+	}
+	shutdown.conn = conn
+
+	// Trace exporter (non-blocking — conn dials in background).
 	traceExporter, err := otlptracegrpc.New(ctx,
-		otlptracegrpc.WithEndpoint(endpoint),
-		otlptracegrpc.WithInsecure(),
+		otlptracegrpc.WithGRPCConn(conn),
 		otlptracegrpc.WithTimeout(10*time.Second),
 	)
 	if err != nil {
+		conn.Close()
 		return nil, fmt.Errorf("telemetry: trace exporter: %w", err)
 	}
 
@@ -88,10 +116,9 @@ func Setup(ctx context.Context, cfg config.Config, log *slog.Logger) (*Shutdowne
 	otel.SetTracerProvider(tp)
 	shutdown.tracerShutdown = tp.Shutdown
 
-	// Metric exporter.
+	// Metric exporter (same non-blocking connection).
 	metricExporter, err := otlpmetricgrpc.New(ctx,
-		otlpmetricgrpc.WithEndpoint(endpoint),
-		otlpmetricgrpc.WithInsecure(),
+		otlpmetricgrpc.WithGRPCConn(conn),
 		otlpmetricgrpc.WithTimeout(10*time.Second),
 	)
 	if err != nil {

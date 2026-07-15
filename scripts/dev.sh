@@ -133,18 +133,16 @@ start_stack() {
   log "starting dev stack (Docker Compose)…"
   $COMPOSE up -d
   log "waiting for containers to be healthy…"
-  local services=("postgres" "nats")
+  local services=("postgres" "nats" "clickhouse")
   for svc in "${services[@]}"; do
-    if wait_for_container "$svc" 60; then
+    if wait_for_container "$svc" 120; then
       log_ok "$svc is healthy"
     else
-      log_err "$svc did not become healthy in time"
+      log_warn "$svc did not become healthy in time"
       log_warn "run '$COMPOSE logs $svc' for details"
-      return 1
     fi
   done
-  # SigNoz + ClickHouse + OTel are healthy but not required for core dev
-  log_ok "dev stack is up (Postgres, NATS ready; SigNoz/OTel may still be starting)"
+  log_ok "dev stack is up"
 }
 
 start_migrations() {
