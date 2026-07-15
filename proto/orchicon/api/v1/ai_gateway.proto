@@ -140,6 +140,17 @@ message ModelCapabilities {
   bool interleaved = 11;     // streaming with reasoning_content
 }
 
+// OpenCodeMCP is an MCP (Model Context Protocol) server discovered from
+// the `opencode mcp list` CLI output (docs/04 §6). The control plane
+// shells out to list configured MCP servers with their status and
+// connection details, similar to how OpenChamber surfaces available
+// MCP servers from the opencode config.
+message OpenCodeMCP {
+  string id = 1;             // server name, e.g. "godot", "context7"
+  string command = 2;        // the command/URL used to connect
+  string status = 3;         // "connected", "disconnected", "error"
+}
+
 // UsageRollup is the roll-up granularity for cost queries.
 enum UsageRollup {
   USAGE_ROLLUP_UNSPECIFIED = 0;

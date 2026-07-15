@@ -146,6 +146,15 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		modelDiscoverer = aigateway.MockModelDiscoverer(log)
 	}
 
+	// MCP discoverer: shells out to opencode CLI to list MCP servers.
+	var mcpDiscoverer *aigateway.MCPDiscoverer
+	if _, err := exec.LookPath("opencode"); err == nil {
+		mcpDiscoverer = aigateway.NewMCPDiscoverer(log, "opencode")
+	} else {
+		log.Warn("opencode binary not found on PATH, using mock MCP server list", "error", err)
+		mcpDiscoverer = aigateway.MockMCPDiscoverer(log)
+	}
+
 	deps := api.Dependencies{
 		Pool:              pool,
 		Log:               log,
@@ -157,6 +166,7 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		WebhookDispatcher: webhookDisp,
 		Mode:              cfg.Mode,
 		ModelDiscoverer:   modelDiscoverer,
+		MCPDiscoverer:     mcpDiscoverer,
 	}
 	handler := api.Mount(mux, deps)
 

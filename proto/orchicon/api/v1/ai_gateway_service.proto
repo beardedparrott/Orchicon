@@ -25,6 +25,11 @@ service AIGatewayService {
   // opencode registry rather than maintaining a hardcoded list.
   rpc ListOpenCodeModels(ListOpenCodeModelsRequest) returns (ListOpenCodeModelsResponse);
 
+  // ListOpenCodeMCPs enumerates MCP servers configured in opencode
+  // by shelling out to `opencode mcp list`. Returns server name, status,
+  // and connection command/URL.
+  rpc ListOpenCodeMCPs(ListOpenCodeMCPsRequest) returns (ListOpenCodeMCPsResponse);
+
   // GetUsage returns usage records matching the tenant-scoped filter.
   // The proxy injects tenant_id from the request context.
   rpc GetUsage(GetUsageRequest) returns (GetUsageResponse);
@@ -44,6 +49,13 @@ message ListOpenCodeModelsRequest {
 }
 message ListOpenCodeModelsResponse {
   repeated OpenCodeModel models = 1;
+}
+
+message ListOpenCodeMCPsRequest {
+  // No filters — all configured MCP servers are returned.
+}
+message ListOpenCodeMCPsResponse {
+  repeated OpenCodeMCP servers = 1;
 }
 
 message ListProvidersRequest {

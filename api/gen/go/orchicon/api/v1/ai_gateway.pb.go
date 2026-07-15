@@ -989,6 +989,71 @@ func (x *ModelCapabilities) GetInterleaved() bool {
 	return false
 }
 
+// OpenCodeMCP is an MCP (Model Context Protocol) server discovered from
+// the `opencode mcp list` CLI output (docs/04 §6). The control plane
+// shells out to list configured MCP servers with their status and
+// connection details, similar to how OpenChamber surfaces available
+// MCP servers from the opencode config.
+type OpenCodeMCP struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`           // server name, e.g. "godot", "context7"
+	Command       string                 `protobuf:"bytes,2,opt,name=command,proto3" json:"command,omitempty"` // the command/URL used to connect
+	Status        string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`   // "connected", "disconnected", "error"
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OpenCodeMCP) Reset() {
+	*x = OpenCodeMCP{}
+	mi := &file_orchicon_api_v1_ai_gateway_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OpenCodeMCP) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OpenCodeMCP) ProtoMessage() {}
+
+func (x *OpenCodeMCP) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_ai_gateway_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OpenCodeMCP.ProtoReflect.Descriptor instead.
+func (*OpenCodeMCP) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_ai_gateway_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *OpenCodeMCP) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *OpenCodeMCP) GetCommand() string {
+	if x != nil {
+		return x.Command
+	}
+	return ""
+}
+
+func (x *OpenCodeMCP) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
 var File_orchicon_api_v1_ai_gateway_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
@@ -1097,7 +1162,11 @@ const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
 	"\voutput_text\x18\n" +
 	" \x01(\bR\n" +
 	"outputText\x12 \n" +
-	"\vinterleaved\x18\v \x01(\bR\vinterleaved*\xa9\x01\n" +
+	"\vinterleaved\x18\v \x01(\bR\vinterleaved\"O\n" +
+	"\vOpenCodeMCP\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
+	"\acommand\x18\x02 \x01(\tR\acommand\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status*\xa9\x01\n" +
 	"\vUsageRollup\x12\x1c\n" +
 	"\x18USAGE_ROLLUP_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13USAGE_ROLLUP_TENANT\x10\x01\x12\x18\n" +
@@ -1120,7 +1189,7 @@ func file_orchicon_api_v1_ai_gateway_proto_rawDescGZIP() []byte {
 }
 
 var file_orchicon_api_v1_ai_gateway_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_orchicon_api_v1_ai_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_orchicon_api_v1_ai_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_orchicon_api_v1_ai_gateway_proto_goTypes = []any{
 	(UsageRollup)(0),              // 0: orchicon.api.v1.UsageRollup
 	(*UsageEvent)(nil),            // 1: orchicon.api.v1.UsageEvent
@@ -1131,22 +1200,23 @@ var file_orchicon_api_v1_ai_gateway_proto_goTypes = []any{
 	(*ModelCost)(nil),             // 6: orchicon.api.v1.ModelCost
 	(*ModelLimits)(nil),           // 7: orchicon.api.v1.ModelLimits
 	(*ModelCapabilities)(nil),     // 8: orchicon.api.v1.ModelCapabilities
-	(*timestamppb.Timestamp)(nil), // 9: google.protobuf.Timestamp
+	(*OpenCodeMCP)(nil),           // 9: orchicon.api.v1.OpenCodeMCP
+	(*timestamppb.Timestamp)(nil), // 10: google.protobuf.Timestamp
 }
 var file_orchicon_api_v1_ai_gateway_proto_depIdxs = []int32{
-	9, // 0: orchicon.api.v1.UsageEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	9, // 1: orchicon.api.v1.UsageRecord.occurred_at:type_name -> google.protobuf.Timestamp
-	9, // 2: orchicon.api.v1.CostSummary.window_start:type_name -> google.protobuf.Timestamp
-	9, // 3: orchicon.api.v1.CostSummary.window_end:type_name -> google.protobuf.Timestamp
-	4, // 4: orchicon.api.v1.CostSummary.children:type_name -> orchicon.api.v1.CostSummary
-	6, // 5: orchicon.api.v1.OpenCodeModel.cost:type_name -> orchicon.api.v1.ModelCost
-	7, // 6: orchicon.api.v1.OpenCodeModel.limits:type_name -> orchicon.api.v1.ModelLimits
-	8, // 7: orchicon.api.v1.OpenCodeModel.capabilities:type_name -> orchicon.api.v1.ModelCapabilities
-	8, // [8:8] is the sub-list for method output_type
-	8, // [8:8] is the sub-list for method input_type
-	8, // [8:8] is the sub-list for extension type_name
-	8, // [8:8] is the sub-list for extension extendee
-	0, // [0:8] is the sub-list for field type_name
+	10, // 0: orchicon.api.v1.UsageEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	10, // 1: orchicon.api.v1.UsageRecord.occurred_at:type_name -> google.protobuf.Timestamp
+	10, // 2: orchicon.api.v1.CostSummary.window_start:type_name -> google.protobuf.Timestamp
+	10, // 3: orchicon.api.v1.CostSummary.window_end:type_name -> google.protobuf.Timestamp
+	4,  // 4: orchicon.api.v1.CostSummary.children:type_name -> orchicon.api.v1.CostSummary
+	6,  // 5: orchicon.api.v1.OpenCodeModel.cost:type_name -> orchicon.api.v1.ModelCost
+	7,  // 6: orchicon.api.v1.OpenCodeModel.limits:type_name -> orchicon.api.v1.ModelLimits
+	8,  // 7: orchicon.api.v1.OpenCodeModel.capabilities:type_name -> orchicon.api.v1.ModelCapabilities
+	8,  // [8:8] is the sub-list for method output_type
+	8,  // [8:8] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_ai_gateway_proto_init() }
@@ -1160,7 +1230,7 @@ func file_orchicon_api_v1_ai_gateway_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_ai_gateway_proto_rawDesc), len(file_orchicon_api_v1_ai_gateway_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   8,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

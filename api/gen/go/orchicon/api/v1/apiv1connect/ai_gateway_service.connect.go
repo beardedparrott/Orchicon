@@ -48,6 +48,9 @@ const (
 	// AIGatewayServiceListOpenCodeModelsProcedure is the fully-qualified name of the AIGatewayService's
 	// ListOpenCodeModels RPC.
 	AIGatewayServiceListOpenCodeModelsProcedure = "/orchicon.api.v1.AIGatewayService/ListOpenCodeModels"
+	// AIGatewayServiceListOpenCodeMCPsProcedure is the fully-qualified name of the AIGatewayService's
+	// ListOpenCodeMCPs RPC.
+	AIGatewayServiceListOpenCodeMCPsProcedure = "/orchicon.api.v1.AIGatewayService/ListOpenCodeMCPs"
 	// AIGatewayServiceGetUsageProcedure is the fully-qualified name of the AIGatewayService's GetUsage
 	// RPC.
 	AIGatewayServiceGetUsageProcedure = "/orchicon.api.v1.AIGatewayService/GetUsage"
@@ -70,6 +73,10 @@ type AIGatewayServiceClient interface {
 	// OpenChamber, the control plane discovers models dynamically from the
 	// opencode registry rather than maintaining a hardcoded list.
 	ListOpenCodeModels(context.Context, *connect.Request[v1.ListOpenCodeModelsRequest]) (*connect.Response[v1.ListOpenCodeModelsResponse], error)
+	// ListOpenCodeMCPs enumerates MCP servers configured in opencode
+	// by shelling out to `opencode mcp list`. Returns server name, status,
+	// and connection command/URL.
+	ListOpenCodeMCPs(context.Context, *connect.Request[v1.ListOpenCodeMCPsRequest]) (*connect.Response[v1.ListOpenCodeMCPsResponse], error)
 	// GetUsage returns usage records matching the tenant-scoped filter.
 	// The proxy injects tenant_id from the request context.
 	GetUsage(context.Context, *connect.Request[v1.GetUsageRequest]) (*connect.Response[v1.GetUsageResponse], error)
@@ -105,6 +112,12 @@ func NewAIGatewayServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(aIGatewayServiceMethods.ByName("ListOpenCodeModels")),
 			connect.WithClientOptions(opts...),
 		),
+		listOpenCodeMCPs: connect.NewClient[v1.ListOpenCodeMCPsRequest, v1.ListOpenCodeMCPsResponse](
+			httpClient,
+			baseURL+AIGatewayServiceListOpenCodeMCPsProcedure,
+			connect.WithSchema(aIGatewayServiceMethods.ByName("ListOpenCodeMCPs")),
+			connect.WithClientOptions(opts...),
+		),
 		getUsage: connect.NewClient[v1.GetUsageRequest, v1.GetUsageResponse](
 			httpClient,
 			baseURL+AIGatewayServiceGetUsageProcedure,
@@ -130,6 +143,7 @@ func NewAIGatewayServiceClient(httpClient connect.HTTPClient, baseURL string, op
 type aIGatewayServiceClient struct {
 	listProviders      *connect.Client[v1.ListProvidersRequest, v1.ListProvidersResponse]
 	listOpenCodeModels *connect.Client[v1.ListOpenCodeModelsRequest, v1.ListOpenCodeModelsResponse]
+	listOpenCodeMCPs   *connect.Client[v1.ListOpenCodeMCPsRequest, v1.ListOpenCodeMCPsResponse]
 	getUsage           *connect.Client[v1.GetUsageRequest, v1.GetUsageResponse]
 	getCost            *connect.Client[v1.GetCostRequest, v1.GetCostResponse]
 	streamUsageEvents  *connect.Client[v1.StreamUsageEventsRequest, v1.StreamUsageEventsResponse]
@@ -143,6 +157,11 @@ func (c *aIGatewayServiceClient) ListProviders(ctx context.Context, req *connect
 // ListOpenCodeModels calls orchicon.api.v1.AIGatewayService.ListOpenCodeModels.
 func (c *aIGatewayServiceClient) ListOpenCodeModels(ctx context.Context, req *connect.Request[v1.ListOpenCodeModelsRequest]) (*connect.Response[v1.ListOpenCodeModelsResponse], error) {
 	return c.listOpenCodeModels.CallUnary(ctx, req)
+}
+
+// ListOpenCodeMCPs calls orchicon.api.v1.AIGatewayService.ListOpenCodeMCPs.
+func (c *aIGatewayServiceClient) ListOpenCodeMCPs(ctx context.Context, req *connect.Request[v1.ListOpenCodeMCPsRequest]) (*connect.Response[v1.ListOpenCodeMCPsResponse], error) {
+	return c.listOpenCodeMCPs.CallUnary(ctx, req)
 }
 
 // GetUsage calls orchicon.api.v1.AIGatewayService.GetUsage.
@@ -171,6 +190,10 @@ type AIGatewayServiceHandler interface {
 	// OpenChamber, the control plane discovers models dynamically from the
 	// opencode registry rather than maintaining a hardcoded list.
 	ListOpenCodeModels(context.Context, *connect.Request[v1.ListOpenCodeModelsRequest]) (*connect.Response[v1.ListOpenCodeModelsResponse], error)
+	// ListOpenCodeMCPs enumerates MCP servers configured in opencode
+	// by shelling out to `opencode mcp list`. Returns server name, status,
+	// and connection command/URL.
+	ListOpenCodeMCPs(context.Context, *connect.Request[v1.ListOpenCodeMCPsRequest]) (*connect.Response[v1.ListOpenCodeMCPsResponse], error)
 	// GetUsage returns usage records matching the tenant-scoped filter.
 	// The proxy injects tenant_id from the request context.
 	GetUsage(context.Context, *connect.Request[v1.GetUsageRequest]) (*connect.Response[v1.GetUsageResponse], error)
@@ -202,6 +225,12 @@ func NewAIGatewayServiceHandler(svc AIGatewayServiceHandler, opts ...connect.Han
 		connect.WithSchema(aIGatewayServiceMethods.ByName("ListOpenCodeModels")),
 		connect.WithHandlerOptions(opts...),
 	)
+	aIGatewayServiceListOpenCodeMCPsHandler := connect.NewUnaryHandler(
+		AIGatewayServiceListOpenCodeMCPsProcedure,
+		svc.ListOpenCodeMCPs,
+		connect.WithSchema(aIGatewayServiceMethods.ByName("ListOpenCodeMCPs")),
+		connect.WithHandlerOptions(opts...),
+	)
 	aIGatewayServiceGetUsageHandler := connect.NewUnaryHandler(
 		AIGatewayServiceGetUsageProcedure,
 		svc.GetUsage,
@@ -226,6 +255,8 @@ func NewAIGatewayServiceHandler(svc AIGatewayServiceHandler, opts ...connect.Han
 			aIGatewayServiceListProvidersHandler.ServeHTTP(w, r)
 		case AIGatewayServiceListOpenCodeModelsProcedure:
 			aIGatewayServiceListOpenCodeModelsHandler.ServeHTTP(w, r)
+		case AIGatewayServiceListOpenCodeMCPsProcedure:
+			aIGatewayServiceListOpenCodeMCPsHandler.ServeHTTP(w, r)
 		case AIGatewayServiceGetUsageProcedure:
 			aIGatewayServiceGetUsageHandler.ServeHTTP(w, r)
 		case AIGatewayServiceGetCostProcedure:
@@ -247,6 +278,10 @@ func (UnimplementedAIGatewayServiceHandler) ListProviders(context.Context, *conn
 
 func (UnimplementedAIGatewayServiceHandler) ListOpenCodeModels(context.Context, *connect.Request[v1.ListOpenCodeModelsRequest]) (*connect.Response[v1.ListOpenCodeModelsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AIGatewayService.ListOpenCodeModels is not implemented"))
+}
+
+func (UnimplementedAIGatewayServiceHandler) ListOpenCodeMCPs(context.Context, *connect.Request[v1.ListOpenCodeMCPsRequest]) (*connect.Response[v1.ListOpenCodeMCPsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AIGatewayService.ListOpenCodeMCPs is not implemented"))
 }
 
 func (UnimplementedAIGatewayServiceHandler) GetUsage(context.Context, *connect.Request[v1.GetUsageRequest]) (*connect.Response[v1.GetUsageResponse], error) {
