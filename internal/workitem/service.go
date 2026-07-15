@@ -96,9 +96,9 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		}
 		parentDepth := kindOrder[parent.Kind]
 		childDepth := kindOrder[kind]
-		if childDepth != parentDepth+1 {
+		if childDepth <= parentDepth {
 			return nil, connect.NewError(connect.CodeInvalidArgument,
-				fmt.Errorf("a %s can only be a child of a %s (parent is %s)", kind, kindForDepth(childDepth-1), parent.Kind))
+				fmt.Errorf("a %s must be deeper than its parent (parent is %s)", kind, parent.Kind))
 		}
 	} else if kind != domain.WorkItemKindEpic {
 		return nil, connect.NewError(connect.CodeInvalidArgument,

@@ -37,8 +37,8 @@ function WorkItemsPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Work Items</h1>
           <p className="text-sm text-muted-foreground">
-            The work hierarchy: Epic → Feature → Task → Subtask. Dependencies
-            form a DAG between items.
+            The work hierarchy: Project → Epic → Feature → Task → Subtask.
+            Dependencies form a DAG between items.
           </p>
         </div>
         <div className="flex items-center gap-2">
