@@ -147,8 +147,14 @@ func devStart(log *slog.Logger) int {
 	}
 
 	// 5. Tear down compose on clean shutdown.
+	// Use a fresh context here — srv.Run returns when the signal ctx is
+	// cancelled (SIGINT/SIGTERM), so ctx is already Done.  composeDown
+	// calls exec.CommandContext which would immediately fail on a done
+	// context, leaving containers running.
 	log.Info("stopping dev stack…")
-	if err := composeDown(ctx, log); err != nil {
+	downCtx, downCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer downCancel()
+	if err := composeDown(downCtx, log); err != nil {
 		log.Warn("compose down failed", "error", err)
 	}
 	log.Info("orchicon dev stopped")
