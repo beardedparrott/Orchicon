@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { Link, createRoute } from "@tanstack/react-router";
 
 import { useListWorkers } from "@/api/workers";
+import { WorkerStatus } from "@/api/gen/orchicon/api/v1/worker_pb";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -9,6 +11,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -23,7 +26,13 @@ export const Route = createRoute({
 });
 
 function WorkersPage() {
-  const { data: workers, isLoading, error } = useListWorkers();
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState("all");
+  const [sortBy, setSortBy] = useState("created_at");
+  const [sortOrder, setSortOrder] = useState("asc");
+
+  const statusFilter = status === "all" ? undefined : Number(status) as WorkerStatus;
+  const { data: workers, isLoading, error } = useListWorkers({ search, status: statusFilter, sortBy, sortOrder });
 
   return (
     <div className="space-y-6">
@@ -38,6 +47,43 @@ function WorkersPage() {
         <Button asChild>
           <Link to="/workers/new">New Worker</Link>
         </Button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          placeholder="Search workers…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="h-9 w-64"
+        />
+        <select
+          value={status}
+          onChange={(e) => setStatus(e.target.value)}
+          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+        >
+          <option value="all">All</option>
+          <option value="1">Draft</option>
+          <option value="2">Published</option>
+          <option value="3">Deprecated</option>
+          <option value="4">Retired</option>
+        </select>
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value)}
+          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+        >
+          <option value="created_at">Created</option>
+          <option value="name">Name</option>
+          <option value="status">Status</option>
+        </select>
+        <select
+          value={sortOrder}
+          onChange={(e) => setSortOrder(e.target.value)}
+          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+        >
+          <option value="asc">Asc</option>
+          <option value="desc">Desc</option>
+        </select>
       </div>
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}

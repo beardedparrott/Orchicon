@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AcquireEditLockRequest, AcquireEditLockResponse, CreateWorkerRequest, CreateWorkerResponse, DeprecateWorkerRequest, DeprecateWorkerResponse, GetEditLockRequest, GetEditLockResponse, GetWorkerRequest, GetWorkerResponse, ListWorkersRequest, ListWorkersResponse, ListWorkerVersionsRequest, ListWorkerVersionsResponse, PublishWorkerVersionRequest, PublishWorkerVersionResponse, ReleaseEditLockRequest, ReleaseEditLockResponse, RetireWorkerRequest, RetireWorkerResponse } from "./worker_service_pb.js";
+import { AcquireEditLockRequest, AcquireEditLockResponse, CreateWorkerRequest, CreateWorkerResponse, DeleteWorkerRequest, DeleteWorkerResponse, DeprecateWorkerRequest, DeprecateWorkerResponse, GetEditLockRequest, GetEditLockResponse, GetWorkerRequest, GetWorkerResponse, ListWorkersRequest, ListWorkersResponse, ListWorkerVersionsRequest, ListWorkerVersionsResponse, PublishWorkerVersionRequest, PublishWorkerVersionResponse, ReleaseEditLockRequest, ReleaseEditLockResponse, RetireWorkerRequest, RetireWorkerResponse } from "./worker_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -68,6 +68,17 @@ export const WorkerService = {
       name: "RetireWorker",
       I: RetireWorkerRequest,
       O: RetireWorkerResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * DeleteWorker hard-deletes a Worker and all its versions.
+     *
+     * @generated from rpc orchicon.api.v1.WorkerService.DeleteWorker
+     */
+    deleteWorker: {
+      name: "DeleteWorker",
+      I: DeleteWorkerRequest,
+      O: DeleteWorkerResponse,
       kind: MethodKind.Unary,
     },
     /**

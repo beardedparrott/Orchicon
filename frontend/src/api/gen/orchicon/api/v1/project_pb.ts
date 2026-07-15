@@ -361,6 +361,34 @@ export class ListProjectsRequest extends Message<ListProjectsRequest> {
    */
   pageSize = 0;
 
+  /**
+   * free-text search across name and slug
+   *
+   * @generated from field: string search = 4;
+   */
+  search = "";
+
+  /**
+   * filter by status
+   *
+   * @generated from field: optional orchicon.api.v1.ProjectStatus status = 5;
+   */
+  status?: ProjectStatus;
+
+  /**
+   * field name: "name", "status", "created_at" (default)
+   *
+   * @generated from field: string sort_by = 6;
+   */
+  sortBy = "";
+
+  /**
+   * "asc" or "desc" (default "asc")
+   *
+   * @generated from field: string sort_order = 7;
+   */
+  sortOrder = "";
+
   constructor(data?: PartialMessage<ListProjectsRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -372,6 +400,10 @@ export class ListProjectsRequest extends Message<ListProjectsRequest> {
     { no: 1, name: "tenant_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "page_size", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 4, name: "search", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "status", kind: "enum", T: proto3.getEnumType(ProjectStatus), opt: true },
+    { no: 6, name: "sort_by", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 7, name: "sort_order", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListProjectsRequest {

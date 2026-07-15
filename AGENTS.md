@@ -571,3 +571,11 @@ platform, or `--uninstall` to test cleanup).
   authed ListProjects → scoped API key (`project:read`) denied
   `project:write` with HTTP 403 → webhook subscription CRUD → token
   refresh via the HttpOnly cookie.
+- **Search, sort, filter, and hard delete**: List RPCs for projects, workers, and
+  workflows now support `search` (ILIKE on name/slug/purpose), `status` filter,
+  `sort_by`, and `sort_order` params. Each entity also has a new `Delete*` RPC
+  that hard-deletes with application-level cascade cleanup (work items, workflow
+  versions, runs, step runs, edit locks, usage records, outbox events). Frontend
+  list pages have search bars, native `<select>` status/sort controls; detail
+  pages have destructive Delete buttons with `window.confirm` guards. Build
+  verified: `go build ./...` and `npm run build` pass cleanly.

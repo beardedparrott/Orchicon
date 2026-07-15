@@ -21,6 +21,7 @@ import ReactFlow, {
 
 import {
   useAcquireWorkflowEditLock,
+  useDeleteWorkflow,
   useDeprecateWorkflow,
   useGetWorkflow,
   useGetWorkflowEditLock,
@@ -116,6 +117,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const publishWorkflow = usePublishWorkflow();
   const deprecateWorkflow = useDeprecateWorkflow();
   const startWorkflow = useStartWorkflow();
+  const deleteMutation = useDeleteWorkflow();
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -495,6 +497,19 @@ function EditorInner({ workflowId }: { workflowId: string }) {
               {startWorkflow.isPending ? "Starting…" : "Start run"}
             </Button>
           )}
+          <Button
+            variant="destructive"
+            onClick={() => {
+              if (window.confirm("Permanently delete this workflow and all its versions and runs? This cannot be undone.")) {
+                deleteMutation.mutate(workflowId, {
+                  onSuccess: () => navigate({ to: "/workflows" }),
+                });
+              }
+            }}
+            disabled={deleteMutation.isPending}
+          >
+            {deleteMutation.isPending ? "Deleting…" : "Delete"}
+          </Button>
         </div>
       </div>
 

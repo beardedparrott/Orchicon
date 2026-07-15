@@ -102,30 +102,54 @@ func GetWorker(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkerRow, 
 }
 
 // ListWorkersFilter scopes a list query to a tenant, optionally
-// filtered by status.
+// filtered by status, search text, and sort.
 type ListWorkersFilter struct {
-	TenantID string
-	Status   string // empty = all statuses
-	PageSize int
-	AfterID  string
+	TenantID  string
+	Status    string // empty = all statuses
+	Search    string
+	SortBy    string
+	SortOrder string
+	PageSize  int
+	AfterID   string
 }
 
-// ListWorkers returns a page of workers for the tenant, ordered by ULID
-// id for stable cursor pagination (docs/07 §5.2).
+// ListWorkers returns a page of workers for the tenant with cursor-based
+// pagination, optional search/filter, and configurable sort.
 func ListWorkers(ctx context.Context, tx pgx.Tx, f ListWorkersFilter) ([]WorkerRow, error) {
 	if f.PageSize <= 0 || f.PageSize > 1000 {
 		f.PageSize = 100
 	}
-	q := `SELECT id, tenant_id, name, slug, description, purpose, status,
+	args := []any{f.TenantID}
+	where := `tenant_id = $1`
+	idx := 2
+	if f.AfterID != "" {
+		where += fmt.Sprintf(` AND id > $%d`, idx)
+		args = append(args, f.AfterID)
+		idx++
+	}
+	if f.Search != "" {
+		where += fmt.Sprintf(` AND (name ILIKE $%d OR slug ILIKE $%d OR purpose ILIKE $%d)`, idx, idx, idx)
+		args = append(args, "%"+f.Search+"%")
+		idx++
+	}
+	if f.Status != "" {
+		where += fmt.Sprintf(` AND status = $%d`, idx)
+		args = append(args, f.Status)
+		idx++
+	}
+	sortBy := "created_at"
+	if f.SortBy == "name" || f.SortBy == "status" {
+		sortBy = f.SortBy
+	}
+	sortOrder := "ASC"
+	if f.SortOrder == "desc" {
+		sortOrder = "DESC"
+	}
+	q := fmt.Sprintf(`SELECT id, tenant_id, name, slug, description, purpose, status,
 		current_version, created_by, version, created_at, updated_at
 		FROM workers
-		WHERE tenant_id = $1 AND ($2 = '' OR id > $2)`
-	args := []any{f.TenantID, f.AfterID}
-	if f.Status != "" {
-		q += fmt.Sprintf(` AND status = $%d`, len(args)+1)
-		args = append(args, f.Status)
-	}
-	q += ` ORDER BY id ASC LIMIT $` + fmt.Sprint(len(args)+1)
+		WHERE %s
+		ORDER BY %s %s LIMIT $%d`, where, sortBy, sortOrder, idx)
 	args = append(args, f.PageSize)
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
@@ -337,6 +361,26 @@ func DeprecateWorkerVersion(ctx context.Context, tx pgx.Tx, tenantID, workerID s
 		return WorkerVersionRow{}, fmt.Errorf("db: deprecate worker version: %w", err)
 	}
 	return v, nil
+}
+
+// DeleteWorker hard-deletes a worker and cascades to all owned entities
+// (worker versions, edit locks). The tenant_id is injected into the
+// WHERE clause for isolation. Returns ErrNotFound if no row matches.
+func DeleteWorker(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM worker_versions WHERE tenant_id = $1 AND worker_id = $2`, tenantID, id); err != nil {
+		return fmt.Errorf("db: delete worker versions: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM edit_locks WHERE resource_id = $2 AND resource_type = 'worker' AND tenant_id = $1`, tenantID, id); err != nil {
+		return fmt.Errorf("db: delete worker edit locks: %w", err)
+	}
+	ct, err := tx.Exec(ctx, `DELETE FROM workers WHERE id = $2 AND tenant_id = $1`, tenantID, id)
+	if err != nil {
+		return fmt.Errorf("db: delete worker: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // NextWorkerVersionNumber returns the next version number for a worker

@@ -325,6 +325,74 @@ export class DeprecateWorkflowResponse extends Message<DeprecateWorkflowResponse
 }
 
 /**
+ * @generated from message orchicon.api.v1.DeleteWorkflowRequest
+ */
+export class DeleteWorkflowRequest extends Message<DeleteWorkflowRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  constructor(data?: PartialMessage<DeleteWorkflowRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DeleteWorkflowRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteWorkflowRequest {
+    return new DeleteWorkflowRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteWorkflowRequest {
+    return new DeleteWorkflowRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteWorkflowRequest {
+    return new DeleteWorkflowRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteWorkflowRequest | PlainMessage<DeleteWorkflowRequest> | undefined, b: DeleteWorkflowRequest | PlainMessage<DeleteWorkflowRequest> | undefined): boolean {
+    return proto3.util.equals(DeleteWorkflowRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.DeleteWorkflowResponse
+ */
+export class DeleteWorkflowResponse extends Message<DeleteWorkflowResponse> {
+  constructor(data?: PartialMessage<DeleteWorkflowResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DeleteWorkflowResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteWorkflowResponse {
+    return new DeleteWorkflowResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteWorkflowResponse {
+    return new DeleteWorkflowResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteWorkflowResponse {
+    return new DeleteWorkflowResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteWorkflowResponse | PlainMessage<DeleteWorkflowResponse> | undefined, b: DeleteWorkflowResponse | PlainMessage<DeleteWorkflowResponse> | undefined): boolean {
+    return proto3.util.equals(DeleteWorkflowResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.GetWorkflowRequest
  */
 export class GetWorkflowRequest extends Message<GetWorkflowRequest> {
@@ -437,6 +505,27 @@ export class ListWorkflowsRequest extends Message<ListWorkflowsRequest> {
    */
   status?: WorkflowStatus;
 
+  /**
+   * free-text search across name
+   *
+   * @generated from field: string search = 6;
+   */
+  search = "";
+
+  /**
+   * field name: "name", "status", "created_at" (default)
+   *
+   * @generated from field: string sort_by = 7;
+   */
+  sortBy = "";
+
+  /**
+   * "asc" or "desc" (default "asc")
+   *
+   * @generated from field: string sort_order = 8;
+   */
+  sortOrder = "";
+
   constructor(data?: PartialMessage<ListWorkflowsRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -450,6 +539,9 @@ export class ListWorkflowsRequest extends Message<ListWorkflowsRequest> {
     { no: 3, name: "page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 4, name: "page_size", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 5, name: "status", kind: "enum", T: proto3.getEnumType(WorkflowStatus), opt: true },
+    { no: 6, name: "search", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 7, name: "sort_by", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 8, name: "sort_order", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListWorkflowsRequest {

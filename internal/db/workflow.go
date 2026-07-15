@@ -130,35 +130,61 @@ func GetWorkflow(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkflowR
 }
 
 // ListWorkflowsFilter scopes a list query to a tenant, optionally
-// filtered by project and status.
+// filtered by project, status, search, and sort.
 type ListWorkflowsFilter struct {
 	TenantID  string
 	ProjectID string // empty = all (including templates)
 	Status    string // empty = all statuses
 	PageSize  int
 	AfterID   string
+	Search    string
+	SortBy    string // "name", "status", "created_at" (default "id")
+	SortOrder string // "asc" or "desc" (default "asc")
 }
 
-// ListWorkflows returns a page of workflows for the tenant, ordered by
-// ULID id for stable cursor pagination (docs/07 §5.2).
+// ListWorkflows returns a page of workflows for the tenant with
+// cursor-based pagination, optional search/filter, and configurable sort
+// (docs/07 §5.2).
 func ListWorkflows(ctx context.Context, tx pgx.Tx, f ListWorkflowsFilter) ([]WorkflowRow, error) {
 	if f.PageSize <= 0 || f.PageSize > 1000 {
 		f.PageSize = 100
 	}
-	q := `SELECT id, tenant_id, project_id, name, current_version, status,
-		version, created_at, updated_at
-		FROM workflows
-		WHERE tenant_id = $1 AND ($2 = '' OR id > $2)`
-	args := []any{f.TenantID, f.AfterID}
+	args := []any{f.TenantID}
+	where := `tenant_id = $1`
+	idx := 2
+	if f.AfterID != "" {
+		where += fmt.Sprintf(` AND id > $%d`, idx)
+		args = append(args, f.AfterID)
+		idx++
+	}
 	if f.ProjectID != "" {
-		q += fmt.Sprintf(` AND project_id = $%d`, len(args)+1)
+		where += fmt.Sprintf(` AND project_id = $%d`, idx)
 		args = append(args, f.ProjectID)
+		idx++
 	}
 	if f.Status != "" {
-		q += fmt.Sprintf(` AND status = $%d`, len(args)+1)
+		where += fmt.Sprintf(` AND status = $%d`, idx)
 		args = append(args, f.Status)
+		idx++
 	}
-	q += ` ORDER BY id ASC LIMIT $` + fmt.Sprint(len(args)+1)
+	if f.Search != "" {
+		where += fmt.Sprintf(` AND name ILIKE $%d`, idx)
+		args = append(args, "%"+f.Search+"%")
+		idx++
+	}
+	sortBy := "id"
+	if f.SortBy == "name" || f.SortBy == "status" || f.SortBy == "created_at" {
+		sortBy = f.SortBy
+	}
+	sortOrder := "ASC"
+	if f.SortOrder == "desc" {
+		sortOrder = "DESC"
+	}
+	q := fmt.Sprintf(`SELECT id, tenant_id, project_id, name, current_version, status,
+		version, created_at, updated_at
+		FROM workflows
+		WHERE %s
+		ORDER BY %s %s LIMIT $%d`, where, sortBy, sortOrder, idx)
 	args = append(args, f.PageSize)
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
@@ -177,6 +203,32 @@ func ListWorkflows(ctx context.Context, tx pgx.Tx, f ListWorkflowsFilter) ([]Wor
 		out = append(out, w)
 	}
 	return out, rows.Err()
+}
+
+// DeleteWorkflow hard-deletes a workflow and all its child rows (runs,
+// step runs, versions, edit locks) within the tenant scope. This is an
+// irreversible operation (docs/02 §2.4 — use Deprecate for soft hide).
+func DeleteWorkflow(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM workflow_step_runs WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE tenant_id = $1 AND workflow_id = $2)`, tenantID, id); err != nil {
+		return fmt.Errorf("db: delete workflow step runs: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM workflow_runs WHERE tenant_id = $1 AND workflow_id = $2`, tenantID, id); err != nil {
+		return fmt.Errorf("db: delete workflow runs: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM workflow_versions WHERE tenant_id = $1 AND workflow_id = $2`, tenantID, id); err != nil {
+		return fmt.Errorf("db: delete workflow versions: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM edit_locks WHERE resource_id = $2 AND resource_type = 'workflow' AND tenant_id = $1`, tenantID, id); err != nil {
+		return fmt.Errorf("db: delete workflow edit locks: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM workflows WHERE id = $2 AND tenant_id = $1`, tenantID, id)
+	if err != nil {
+		return fmt.Errorf("db: delete workflow: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // UpdateWorkflowStatus transitions a workflow's status with optimistic

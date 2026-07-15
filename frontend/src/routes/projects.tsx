@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link, createRoute } from "@tanstack/react-router";
 
 import { useListProjects } from "@/api/projects";
@@ -9,8 +10,10 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
+import type { ProjectStatus } from "@/api/gen/orchicon/api/v1/project_pb";
 
 // Projects list (docs/10 §5). Fetches via Connect-ES + TanStack Query;
 // the UI reflects server state only (AGENTS.md invariant #1).
@@ -21,7 +24,20 @@ export const Route = createRoute({
 });
 
 function ProjectsPage() {
-  const { data: projects, isLoading, error } = useListProjects();
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState<string>("all");
+  const [sortBy, setSortBy] = useState("created_at");
+  const [sortOrder, setSortOrder] = useState("asc");
+
+  const statusFilter: ProjectStatus | undefined =
+    status === "all" ? undefined : (Number(status) as ProjectStatus);
+
+  const { data: projects, isLoading, error } = useListProjects({
+    search,
+    status: statusFilter,
+    sortBy,
+    sortOrder,
+  });
 
   return (
     <div className="space-y-6">
@@ -36,6 +52,43 @@ function ProjectsPage() {
         <Button asChild>
           <Link to="/projects/new">New Project</Link>
         </Button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Input
+          placeholder="Search projects..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="max-w-xs"
+        />
+        <select
+          value={status}
+          onChange={(e) => setStatus(e.target.value)}
+          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+        >
+          <option value="all">All</option>
+          <option value="1">Drafting</option>
+          <option value="2">Active</option>
+          <option value="3">Paused</option>
+          <option value="4">Archived</option>
+        </select>
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value)}
+          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+        >
+          <option value="created_at">Created</option>
+          <option value="name">Name</option>
+          <option value="status">Status</option>
+        </select>
+        <select
+          value={sortOrder}
+          onChange={(e) => setSortOrder(e.target.value)}
+          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+        >
+          <option value="asc">Asc</option>
+          <option value="desc">Desc</option>
+        </select>
       </div>
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}

@@ -56,6 +56,9 @@ const (
 	// WorkflowServiceDeprecateWorkflowProcedure is the fully-qualified name of the WorkflowService's
 	// DeprecateWorkflow RPC.
 	WorkflowServiceDeprecateWorkflowProcedure = "/orchicon.api.v1.WorkflowService/DeprecateWorkflow"
+	// WorkflowServiceDeleteWorkflowProcedure is the fully-qualified name of the WorkflowService's
+	// DeleteWorkflow RPC.
+	WorkflowServiceDeleteWorkflowProcedure = "/orchicon.api.v1.WorkflowService/DeleteWorkflow"
 	// WorkflowServiceGetWorkflowProcedure is the fully-qualified name of the WorkflowService's
 	// GetWorkflow RPC.
 	WorkflowServiceGetWorkflowProcedure = "/orchicon.api.v1.WorkflowService/GetWorkflow"
@@ -110,6 +113,8 @@ type WorkflowServiceClient interface {
 	// DeprecateWorkflow transitions a published Workflow to deprecated.
 	// Still runnable for in-flight runs; no new runs may start.
 	DeprecateWorkflow(context.Context, *connect.Request[v1.DeprecateWorkflowRequest]) (*connect.Response[v1.DeprecateWorkflowResponse], error)
+	// DeleteWorkflow hard-deletes a Workflow, its versions, runs, and step runs.
+	DeleteWorkflow(context.Context, *connect.Request[v1.DeleteWorkflowRequest]) (*connect.Response[v1.DeleteWorkflowResponse], error)
 	// GetWorkflow returns a single Workflow header by id, with its latest
 	// published version (if any).
 	GetWorkflow(context.Context, *connect.Request[v1.GetWorkflowRequest]) (*connect.Response[v1.GetWorkflowResponse], error)
@@ -177,6 +182,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			httpClient,
 			baseURL+WorkflowServiceDeprecateWorkflowProcedure,
 			connect.WithSchema(workflowServiceMethods.ByName("DeprecateWorkflow")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteWorkflow: connect.NewClient[v1.DeleteWorkflowRequest, v1.DeleteWorkflowResponse](
+			httpClient,
+			baseURL+WorkflowServiceDeleteWorkflowProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("DeleteWorkflow")),
 			connect.WithClientOptions(opts...),
 		),
 		getWorkflow: connect.NewClient[v1.GetWorkflowRequest, v1.GetWorkflowResponse](
@@ -265,6 +276,7 @@ type workflowServiceClient struct {
 	createWorkflow        *connect.Client[v1.CreateWorkflowRequest, v1.CreateWorkflowResponse]
 	publishWorkflow       *connect.Client[v1.PublishWorkflowRequest, v1.PublishWorkflowResponse]
 	deprecateWorkflow     *connect.Client[v1.DeprecateWorkflowRequest, v1.DeprecateWorkflowResponse]
+	deleteWorkflow        *connect.Client[v1.DeleteWorkflowRequest, v1.DeleteWorkflowResponse]
 	getWorkflow           *connect.Client[v1.GetWorkflowRequest, v1.GetWorkflowResponse]
 	listWorkflows         *connect.Client[v1.ListWorkflowsRequest, v1.ListWorkflowsResponse]
 	listWorkflowVersions  *connect.Client[v1.ListWorkflowVersionsRequest, v1.ListWorkflowVersionsResponse]
@@ -293,6 +305,11 @@ func (c *workflowServiceClient) PublishWorkflow(ctx context.Context, req *connec
 // DeprecateWorkflow calls orchicon.api.v1.WorkflowService.DeprecateWorkflow.
 func (c *workflowServiceClient) DeprecateWorkflow(ctx context.Context, req *connect.Request[v1.DeprecateWorkflowRequest]) (*connect.Response[v1.DeprecateWorkflowResponse], error) {
 	return c.deprecateWorkflow.CallUnary(ctx, req)
+}
+
+// DeleteWorkflow calls orchicon.api.v1.WorkflowService.DeleteWorkflow.
+func (c *workflowServiceClient) DeleteWorkflow(ctx context.Context, req *connect.Request[v1.DeleteWorkflowRequest]) (*connect.Response[v1.DeleteWorkflowResponse], error) {
+	return c.deleteWorkflow.CallUnary(ctx, req)
 }
 
 // GetWorkflow calls orchicon.api.v1.WorkflowService.GetWorkflow.
@@ -373,6 +390,8 @@ type WorkflowServiceHandler interface {
 	// DeprecateWorkflow transitions a published Workflow to deprecated.
 	// Still runnable for in-flight runs; no new runs may start.
 	DeprecateWorkflow(context.Context, *connect.Request[v1.DeprecateWorkflowRequest]) (*connect.Response[v1.DeprecateWorkflowResponse], error)
+	// DeleteWorkflow hard-deletes a Workflow, its versions, runs, and step runs.
+	DeleteWorkflow(context.Context, *connect.Request[v1.DeleteWorkflowRequest]) (*connect.Response[v1.DeleteWorkflowResponse], error)
 	// GetWorkflow returns a single Workflow header by id, with its latest
 	// published version (if any).
 	GetWorkflow(context.Context, *connect.Request[v1.GetWorkflowRequest]) (*connect.Response[v1.GetWorkflowResponse], error)
@@ -436,6 +455,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		WorkflowServiceDeprecateWorkflowProcedure,
 		svc.DeprecateWorkflow,
 		connect.WithSchema(workflowServiceMethods.ByName("DeprecateWorkflow")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServiceDeleteWorkflowHandler := connect.NewUnaryHandler(
+		WorkflowServiceDeleteWorkflowProcedure,
+		svc.DeleteWorkflow,
+		connect.WithSchema(workflowServiceMethods.ByName("DeleteWorkflow")),
 		connect.WithHandlerOptions(opts...),
 	)
 	workflowServiceGetWorkflowHandler := connect.NewUnaryHandler(
@@ -524,6 +549,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServicePublishWorkflowHandler.ServeHTTP(w, r)
 		case WorkflowServiceDeprecateWorkflowProcedure:
 			workflowServiceDeprecateWorkflowHandler.ServeHTTP(w, r)
+		case WorkflowServiceDeleteWorkflowProcedure:
+			workflowServiceDeleteWorkflowHandler.ServeHTTP(w, r)
 		case WorkflowServiceGetWorkflowProcedure:
 			workflowServiceGetWorkflowHandler.ServeHTTP(w, r)
 		case WorkflowServiceListWorkflowsProcedure:
@@ -569,6 +596,10 @@ func (UnimplementedWorkflowServiceHandler) PublishWorkflow(context.Context, *con
 
 func (UnimplementedWorkflowServiceHandler) DeprecateWorkflow(context.Context, *connect.Request[v1.DeprecateWorkflowRequest]) (*connect.Response[v1.DeprecateWorkflowResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.DeprecateWorkflow is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) DeleteWorkflow(context.Context, *connect.Request[v1.DeleteWorkflowRequest]) (*connect.Response[v1.DeleteWorkflowResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.DeleteWorkflow is not implemented"))
 }
 
 func (UnimplementedWorkflowServiceHandler) GetWorkflow(context.Context, *connect.Request[v1.GetWorkflowRequest]) (*connect.Response[v1.GetWorkflowResponse], error) {

@@ -24,13 +24,16 @@ export const workerKeys = {
 };
 
 // useListWorkers fetches a page of workers for the resolved tenant.
-export function useListWorkers(status?: WorkerStatus) {
+export function useListWorkers(opts?: { status?: WorkerStatus; search?: string; sortBy?: string; sortOrder?: string }) {
   return useQuery({
-    queryKey: workerKeys.list(status),
+    queryKey: workerKeys.list(opts?.status),
     queryFn: async () => {
       const res = await workerClient.listWorkers({
         pageSize: 100,
-        status: status ?? undefined,
+        status: opts?.status ?? undefined,
+        search: opts?.search || "",
+        sortBy: opts?.sortBy || "",
+        sortOrder: opts?.sortOrder || "",
       });
       return res.workers as Worker[];
     },
@@ -106,6 +109,19 @@ export function useDeprecateWorker() {
     onSuccess: (worker) => {
       qc.invalidateQueries({ queryKey: workerKeys.list() });
       qc.invalidateQueries({ queryKey: workerKeys.detail(worker.id) });
+    },
+  });
+}
+
+// useDeleteWorker hard-deletes a worker and invalidates the list.
+export function useDeleteWorker() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      await workerClient.deleteWorker({ id });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: workerKeys.list() });
     },
   });
 }
