@@ -57,6 +57,9 @@ const (
 	// WorkItemServiceDeleteWorkItemProcedure is the fully-qualified name of the WorkItemService's
 	// DeleteWorkItem RPC.
 	WorkItemServiceDeleteWorkItemProcedure = "/orchicon.api.v1.WorkItemService/DeleteWorkItem"
+	// WorkItemServiceHardDeleteWorkItemProcedure is the fully-qualified name of the WorkItemService's
+	// HardDeleteWorkItem RPC.
+	WorkItemServiceHardDeleteWorkItemProcedure = "/orchicon.api.v1.WorkItemService/HardDeleteWorkItem"
 	// WorkItemServiceAddDependencyProcedure is the fully-qualified name of the WorkItemService's
 	// AddDependency RPC.
 	WorkItemServiceAddDependencyProcedure = "/orchicon.api.v1.WorkItemService/AddDependency"
@@ -89,6 +92,12 @@ type WorkItemServiceClient interface {
 	UpdateWorkItem(context.Context, *connect.Request[v1.UpdateWorkItemRequest]) (*connect.Response[v1.UpdateWorkItemResponse], error)
 	// DeleteWorkItem soft-deletes a work item (sets status to cancelled).
 	DeleteWorkItem(context.Context, *connect.Request[v1.DeleteWorkItemRequest]) (*connect.Response[v1.DeleteWorkItemResponse], error)
+	// HardDeleteWorkItem permanently removes a work item. Cascades to
+	// dependencies (work_item_dependencies rows where this item is either
+	// the from or to side are deleted). The outbox emits a
+	// work_item.purged event. Use this for irreversible removal — the
+	// soft DeleteWorkItem is preferred for normal cancellation.
+	HardDeleteWorkItem(context.Context, *connect.Request[v1.HardDeleteWorkItemRequest]) (*connect.Response[v1.HardDeleteWorkItemResponse], error)
 	// AddDependency adds an edge to the work DAG. Cycles are rejected at
 	// admission (docs/02 §2.2, docs/09 §3.2).
 	AddDependency(context.Context, *connect.Request[v1.AddDependencyRequest]) (*connect.Response[v1.AddDependencyResponse], error)
@@ -144,6 +153,12 @@ func NewWorkItemServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workItemServiceMethods.ByName("DeleteWorkItem")),
 			connect.WithClientOptions(opts...),
 		),
+		hardDeleteWorkItem: connect.NewClient[v1.HardDeleteWorkItemRequest, v1.HardDeleteWorkItemResponse](
+			httpClient,
+			baseURL+WorkItemServiceHardDeleteWorkItemProcedure,
+			connect.WithSchema(workItemServiceMethods.ByName("HardDeleteWorkItem")),
+			connect.WithClientOptions(opts...),
+		),
 		addDependency: connect.NewClient[v1.AddDependencyRequest, v1.AddDependencyResponse](
 			httpClient,
 			baseURL+WorkItemServiceAddDependencyProcedure,
@@ -184,6 +199,7 @@ type workItemServiceClient struct {
 	listWorkItems      *connect.Client[v1.ListWorkItemsRequest, v1.ListWorkItemsResponse]
 	updateWorkItem     *connect.Client[v1.UpdateWorkItemRequest, v1.UpdateWorkItemResponse]
 	deleteWorkItem     *connect.Client[v1.DeleteWorkItemRequest, v1.DeleteWorkItemResponse]
+	hardDeleteWorkItem *connect.Client[v1.HardDeleteWorkItemRequest, v1.HardDeleteWorkItemResponse]
 	addDependency      *connect.Client[v1.AddDependencyRequest, v1.AddDependencyResponse]
 	removeDependency   *connect.Client[v1.RemoveDependencyRequest, v1.RemoveDependencyResponse]
 	getDependencyGraph *connect.Client[v1.GetDependencyGraphRequest, v1.GetDependencyGraphResponse]
@@ -214,6 +230,11 @@ func (c *workItemServiceClient) UpdateWorkItem(ctx context.Context, req *connect
 // DeleteWorkItem calls orchicon.api.v1.WorkItemService.DeleteWorkItem.
 func (c *workItemServiceClient) DeleteWorkItem(ctx context.Context, req *connect.Request[v1.DeleteWorkItemRequest]) (*connect.Response[v1.DeleteWorkItemResponse], error) {
 	return c.deleteWorkItem.CallUnary(ctx, req)
+}
+
+// HardDeleteWorkItem calls orchicon.api.v1.WorkItemService.HardDeleteWorkItem.
+func (c *workItemServiceClient) HardDeleteWorkItem(ctx context.Context, req *connect.Request[v1.HardDeleteWorkItemRequest]) (*connect.Response[v1.HardDeleteWorkItemResponse], error) {
+	return c.hardDeleteWorkItem.CallUnary(ctx, req)
 }
 
 // AddDependency calls orchicon.api.v1.WorkItemService.AddDependency.
@@ -256,6 +277,12 @@ type WorkItemServiceHandler interface {
 	UpdateWorkItem(context.Context, *connect.Request[v1.UpdateWorkItemRequest]) (*connect.Response[v1.UpdateWorkItemResponse], error)
 	// DeleteWorkItem soft-deletes a work item (sets status to cancelled).
 	DeleteWorkItem(context.Context, *connect.Request[v1.DeleteWorkItemRequest]) (*connect.Response[v1.DeleteWorkItemResponse], error)
+	// HardDeleteWorkItem permanently removes a work item. Cascades to
+	// dependencies (work_item_dependencies rows where this item is either
+	// the from or to side are deleted). The outbox emits a
+	// work_item.purged event. Use this for irreversible removal — the
+	// soft DeleteWorkItem is preferred for normal cancellation.
+	HardDeleteWorkItem(context.Context, *connect.Request[v1.HardDeleteWorkItemRequest]) (*connect.Response[v1.HardDeleteWorkItemResponse], error)
 	// AddDependency adds an edge to the work DAG. Cycles are rejected at
 	// admission (docs/02 §2.2, docs/09 §3.2).
 	AddDependency(context.Context, *connect.Request[v1.AddDependencyRequest]) (*connect.Response[v1.AddDependencyResponse], error)
@@ -307,6 +334,12 @@ func NewWorkItemServiceHandler(svc WorkItemServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workItemServiceMethods.ByName("DeleteWorkItem")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workItemServiceHardDeleteWorkItemHandler := connect.NewUnaryHandler(
+		WorkItemServiceHardDeleteWorkItemProcedure,
+		svc.HardDeleteWorkItem,
+		connect.WithSchema(workItemServiceMethods.ByName("HardDeleteWorkItem")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workItemServiceAddDependencyHandler := connect.NewUnaryHandler(
 		WorkItemServiceAddDependencyProcedure,
 		svc.AddDependency,
@@ -349,6 +382,8 @@ func NewWorkItemServiceHandler(svc WorkItemServiceHandler, opts ...connect.Handl
 			workItemServiceUpdateWorkItemHandler.ServeHTTP(w, r)
 		case WorkItemServiceDeleteWorkItemProcedure:
 			workItemServiceDeleteWorkItemHandler.ServeHTTP(w, r)
+		case WorkItemServiceHardDeleteWorkItemProcedure:
+			workItemServiceHardDeleteWorkItemHandler.ServeHTTP(w, r)
 		case WorkItemServiceAddDependencyProcedure:
 			workItemServiceAddDependencyHandler.ServeHTTP(w, r)
 		case WorkItemServiceRemoveDependencyProcedure:
@@ -386,6 +421,10 @@ func (UnimplementedWorkItemServiceHandler) UpdateWorkItem(context.Context, *conn
 
 func (UnimplementedWorkItemServiceHandler) DeleteWorkItem(context.Context, *connect.Request[v1.DeleteWorkItemRequest]) (*connect.Response[v1.DeleteWorkItemResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkItemService.DeleteWorkItem is not implemented"))
+}
+
+func (UnimplementedWorkItemServiceHandler) HardDeleteWorkItem(context.Context, *connect.Request[v1.HardDeleteWorkItemRequest]) (*connect.Response[v1.HardDeleteWorkItemResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkItemService.HardDeleteWorkItem is not implemented"))
 }
 
 func (UnimplementedWorkItemServiceHandler) AddDependency(context.Context, *connect.Request[v1.AddDependencyRequest]) (*connect.Response[v1.AddDependencyResponse], error) {

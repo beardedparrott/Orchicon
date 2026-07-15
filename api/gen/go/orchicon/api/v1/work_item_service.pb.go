@@ -292,8 +292,11 @@ type ListWorkItemsRequest struct {
 	ProjectId     string                 `protobuf:"bytes,2,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
 	ParentId      *string                `protobuf:"bytes,3,opt,name=parent_id,json=parentId,proto3,oneof" json:"parent_id,omitempty"`                  // filter by parent (tree view)
 	Status        *WorkItemStatus        `protobuf:"varint,4,opt,name=status,proto3,enum=orchicon.api.v1.WorkItemStatus,oneof" json:"status,omitempty"` // filter by status (Kanban)
-	PageToken     string                 `protobuf:"bytes,5,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
-	PageSize      int32                  `protobuf:"varint,6,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	Search        string                 `protobuf:"bytes,5,opt,name=search,proto3" json:"search,omitempty"`                                            // free-text search across title and description
+	SortBy        string                 `protobuf:"bytes,6,opt,name=sort_by,json=sortBy,proto3" json:"sort_by,omitempty"`                              // "title", "priority", "created_at" (default)
+	SortOrder     string                 `protobuf:"bytes,7,opt,name=sort_order,json=sortOrder,proto3" json:"sort_order,omitempty"`                     // "asc" or "desc" (default "asc")
+	PageToken     string                 `protobuf:"bytes,8,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
+	PageSize      int32                  `protobuf:"varint,9,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -354,6 +357,27 @@ func (x *ListWorkItemsRequest) GetStatus() WorkItemStatus {
 		return *x.Status
 	}
 	return WorkItemStatus_WORK_ITEM_STATUS_UNSPECIFIED
+}
+
+func (x *ListWorkItemsRequest) GetSearch() string {
+	if x != nil {
+		return x.Search
+	}
+	return ""
+}
+
+func (x *ListWorkItemsRequest) GetSortBy() string {
+	if x != nil {
+		return x.SortBy
+	}
+	return ""
+}
+
+func (x *ListWorkItemsRequest) GetSortOrder() string {
+	if x != nil {
+		return x.SortOrder
+	}
+	return ""
 }
 
 func (x *ListWorkItemsRequest) GetPageToken() string {
@@ -432,6 +456,7 @@ type UpdateWorkItemRequest struct {
 	Priority           *int32                 `protobuf:"varint,6,opt,name=priority,proto3,oneof" json:"priority,omitempty"`
 	Budgets            *string                `protobuf:"bytes,7,opt,name=budgets,proto3,oneof" json:"budgets,omitempty"`
 	ContextWindow      *int32                 `protobuf:"varint,8,opt,name=context_window,json=contextWindow,proto3,oneof" json:"context_window,omitempty"`
+	ProjectId          *string                `protobuf:"bytes,10,opt,name=project_id,json=projectId,proto3,oneof" json:"project_id,omitempty"` // reassign to a different project; target must be active
 	RequestId          string                 `protobuf:"bytes,9,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
@@ -521,6 +546,13 @@ func (x *UpdateWorkItemRequest) GetContextWindow() int32 {
 		return *x.ContextWindow
 	}
 	return 0
+}
+
+func (x *UpdateWorkItemRequest) GetProjectId() string {
+	if x != nil && x.ProjectId != nil {
+		return *x.ProjectId
+	}
+	return ""
 }
 
 func (x *UpdateWorkItemRequest) GetRequestId() string {
@@ -662,6 +694,86 @@ func (x *DeleteWorkItemResponse) GetWorkItem() *WorkItem {
 	return nil
 }
 
+type HardDeleteWorkItemRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HardDeleteWorkItemRequest) Reset() {
+	*x = HardDeleteWorkItemRequest{}
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HardDeleteWorkItemRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HardDeleteWorkItemRequest) ProtoMessage() {}
+
+func (x *HardDeleteWorkItemRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HardDeleteWorkItemRequest.ProtoReflect.Descriptor instead.
+func (*HardDeleteWorkItemRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *HardDeleteWorkItemRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+type HardDeleteWorkItemResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HardDeleteWorkItemResponse) Reset() {
+	*x = HardDeleteWorkItemResponse{}
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HardDeleteWorkItemResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HardDeleteWorkItemResponse) ProtoMessage() {}
+
+func (x *HardDeleteWorkItemResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HardDeleteWorkItemResponse.ProtoReflect.Descriptor instead.
+func (*HardDeleteWorkItemResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{11}
+}
+
 type AddDependencyRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
@@ -676,7 +788,7 @@ type AddDependencyRequest struct {
 
 func (x *AddDependencyRequest) Reset() {
 	*x = AddDependencyRequest{}
-	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[10]
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -688,7 +800,7 @@ func (x *AddDependencyRequest) String() string {
 func (*AddDependencyRequest) ProtoMessage() {}
 
 func (x *AddDependencyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[10]
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -701,7 +813,7 @@ func (x *AddDependencyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddDependencyRequest.ProtoReflect.Descriptor instead.
 func (*AddDependencyRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{10}
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *AddDependencyRequest) GetTenantId() string {
@@ -755,7 +867,7 @@ type AddDependencyResponse struct {
 
 func (x *AddDependencyResponse) Reset() {
 	*x = AddDependencyResponse{}
-	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[11]
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -767,7 +879,7 @@ func (x *AddDependencyResponse) String() string {
 func (*AddDependencyResponse) ProtoMessage() {}
 
 func (x *AddDependencyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[11]
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -780,7 +892,7 @@ func (x *AddDependencyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddDependencyResponse.ProtoReflect.Descriptor instead.
 func (*AddDependencyResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{11}
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *AddDependencyResponse) GetDependency() *WorkItemDependency {
@@ -799,7 +911,7 @@ type RemoveDependencyRequest struct {
 
 func (x *RemoveDependencyRequest) Reset() {
 	*x = RemoveDependencyRequest{}
-	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[12]
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -811,7 +923,7 @@ func (x *RemoveDependencyRequest) String() string {
 func (*RemoveDependencyRequest) ProtoMessage() {}
 
 func (x *RemoveDependencyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[12]
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -824,7 +936,7 @@ func (x *RemoveDependencyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveDependencyRequest.ProtoReflect.Descriptor instead.
 func (*RemoveDependencyRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{12}
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *RemoveDependencyRequest) GetId() string {
@@ -842,7 +954,7 @@ type RemoveDependencyResponse struct {
 
 func (x *RemoveDependencyResponse) Reset() {
 	*x = RemoveDependencyResponse{}
-	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[13]
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -854,7 +966,7 @@ func (x *RemoveDependencyResponse) String() string {
 func (*RemoveDependencyResponse) ProtoMessage() {}
 
 func (x *RemoveDependencyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[13]
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -867,7 +979,7 @@ func (x *RemoveDependencyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveDependencyResponse.ProtoReflect.Descriptor instead.
 func (*RemoveDependencyResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{13}
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{15}
 }
 
 type GetDependencyGraphRequest struct {
@@ -880,7 +992,7 @@ type GetDependencyGraphRequest struct {
 
 func (x *GetDependencyGraphRequest) Reset() {
 	*x = GetDependencyGraphRequest{}
-	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[14]
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -892,7 +1004,7 @@ func (x *GetDependencyGraphRequest) String() string {
 func (*GetDependencyGraphRequest) ProtoMessage() {}
 
 func (x *GetDependencyGraphRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[14]
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -905,7 +1017,7 @@ func (x *GetDependencyGraphRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDependencyGraphRequest.ProtoReflect.Descriptor instead.
 func (*GetDependencyGraphRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{14}
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *GetDependencyGraphRequest) GetTenantId() string {
@@ -931,7 +1043,7 @@ type GetDependencyGraphResponse struct {
 
 func (x *GetDependencyGraphResponse) Reset() {
 	*x = GetDependencyGraphResponse{}
-	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[15]
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -943,7 +1055,7 @@ func (x *GetDependencyGraphResponse) String() string {
 func (*GetDependencyGraphResponse) ProtoMessage() {}
 
 func (x *GetDependencyGraphResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[15]
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -956,7 +1068,7 @@ func (x *GetDependencyGraphResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDependencyGraphResponse.ProtoReflect.Descriptor instead.
 func (*GetDependencyGraphResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{15}
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *GetDependencyGraphResponse) GetGraph() *DependencyGraph {
@@ -976,7 +1088,7 @@ type AssignWorkerRequest struct {
 
 func (x *AssignWorkerRequest) Reset() {
 	*x = AssignWorkerRequest{}
-	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[16]
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -988,7 +1100,7 @@ func (x *AssignWorkerRequest) String() string {
 func (*AssignWorkerRequest) ProtoMessage() {}
 
 func (x *AssignWorkerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[16]
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1001,7 +1113,7 @@ func (x *AssignWorkerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AssignWorkerRequest.ProtoReflect.Descriptor instead.
 func (*AssignWorkerRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{16}
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *AssignWorkerRequest) GetId() string {
@@ -1027,7 +1139,7 @@ type AssignWorkerResponse struct {
 
 func (x *AssignWorkerResponse) Reset() {
 	*x = AssignWorkerResponse{}
-	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[17]
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1039,7 +1151,7 @@ func (x *AssignWorkerResponse) String() string {
 func (*AssignWorkerResponse) ProtoMessage() {}
 
 func (x *AssignWorkerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[17]
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1052,7 +1164,7 @@ func (x *AssignWorkerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AssignWorkerResponse.ProtoReflect.Descriptor instead.
 func (*AssignWorkerResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{17}
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *AssignWorkerResponse) GetWorkItem() *WorkItem {
@@ -1071,7 +1183,7 @@ type UnassignWorkerRequest struct {
 
 func (x *UnassignWorkerRequest) Reset() {
 	*x = UnassignWorkerRequest{}
-	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[18]
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1083,7 +1195,7 @@ func (x *UnassignWorkerRequest) String() string {
 func (*UnassignWorkerRequest) ProtoMessage() {}
 
 func (x *UnassignWorkerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[18]
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1096,7 +1208,7 @@ func (x *UnassignWorkerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnassignWorkerRequest.ProtoReflect.Descriptor instead.
 func (*UnassignWorkerRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{18}
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *UnassignWorkerRequest) GetId() string {
@@ -1115,7 +1227,7 @@ type UnassignWorkerResponse struct {
 
 func (x *UnassignWorkerResponse) Reset() {
 	*x = UnassignWorkerResponse{}
-	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[19]
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1127,7 +1239,7 @@ func (x *UnassignWorkerResponse) String() string {
 func (*UnassignWorkerResponse) ProtoMessage() {}
 
 func (x *UnassignWorkerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[19]
+	mi := &file_orchicon_api_v1_work_item_service_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1140,7 +1252,7 @@ func (x *UnassignWorkerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnassignWorkerResponse.ProtoReflect.Descriptor instead.
 func (*UnassignWorkerResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{19}
+	return file_orchicon_api_v1_work_item_service_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *UnassignWorkerResponse) GetWorkItem() *WorkItem {
@@ -1175,23 +1287,27 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\x12GetWorkItemRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"M\n" +
 	"\x13GetWorkItemResponse\x126\n" +
-	"\twork_item\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkItemR\bworkItem\"\x87\x02\n" +
+	"\twork_item\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkItemR\bworkItem\"\xd7\x02\n" +
 	"\x14ListWorkItemsRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1d\n" +
 	"\n" +
 	"project_id\x18\x02 \x01(\tR\tprojectId\x12 \n" +
 	"\tparent_id\x18\x03 \x01(\tH\x00R\bparentId\x88\x01\x01\x12<\n" +
-	"\x06status\x18\x04 \x01(\x0e2\x1f.orchicon.api.v1.WorkItemStatusH\x01R\x06status\x88\x01\x01\x12\x1d\n" +
+	"\x06status\x18\x04 \x01(\x0e2\x1f.orchicon.api.v1.WorkItemStatusH\x01R\x06status\x88\x01\x01\x12\x16\n" +
+	"\x06search\x18\x05 \x01(\tR\x06search\x12\x17\n" +
+	"\asort_by\x18\x06 \x01(\tR\x06sortBy\x12\x1d\n" +
 	"\n" +
-	"page_token\x18\x05 \x01(\tR\tpageToken\x12\x1b\n" +
-	"\tpage_size\x18\x06 \x01(\x05R\bpageSizeB\f\n" +
+	"sort_order\x18\a \x01(\tR\tsortOrder\x12\x1d\n" +
+	"\n" +
+	"page_token\x18\b \x01(\tR\tpageToken\x12\x1b\n" +
+	"\tpage_size\x18\t \x01(\x05R\bpageSizeB\f\n" +
 	"\n" +
 	"_parent_idB\t\n" +
 	"\a_status\"y\n" +
 	"\x15ListWorkItemsResponse\x128\n" +
 	"\n" +
 	"work_items\x18\x01 \x03(\v2\x19.orchicon.api.v1.WorkItemR\tworkItems\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xd1\x03\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\x84\x04\n" +
 	"\x15UpdateWorkItemRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\x05title\x18\x02 \x01(\tH\x00R\x05title\x88\x01\x01\x12%\n" +
@@ -1200,7 +1316,10 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\x06status\x18\x05 \x01(\x0e2\x1f.orchicon.api.v1.WorkItemStatusH\x03R\x06status\x88\x01\x01\x12\x1f\n" +
 	"\bpriority\x18\x06 \x01(\x05H\x04R\bpriority\x88\x01\x01\x12\x1d\n" +
 	"\abudgets\x18\a \x01(\tH\x05R\abudgets\x88\x01\x01\x12*\n" +
-	"\x0econtext_window\x18\b \x01(\x05H\x06R\rcontextWindow\x88\x01\x01\x12\x1d\n" +
+	"\x0econtext_window\x18\b \x01(\x05H\x06R\rcontextWindow\x88\x01\x01\x12\"\n" +
+	"\n" +
+	"project_id\x18\n" +
+	" \x01(\tH\aR\tprojectId\x88\x01\x01\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\t \x01(\tR\trequestIdB\b\n" +
 	"\x06_titleB\x0e\n" +
@@ -1210,13 +1329,17 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\t_priorityB\n" +
 	"\n" +
 	"\b_budgetsB\x11\n" +
-	"\x0f_context_window\"P\n" +
+	"\x0f_context_windowB\r\n" +
+	"\v_project_id\"P\n" +
 	"\x16UpdateWorkItemResponse\x126\n" +
 	"\twork_item\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkItemR\bworkItem\"'\n" +
 	"\x15DeleteWorkItemRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"P\n" +
 	"\x16DeleteWorkItemResponse\x126\n" +
-	"\twork_item\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkItemR\bworkItem\"\xd4\x01\n" +
+	"\twork_item\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkItemR\bworkItem\"+\n" +
+	"\x19HardDeleteWorkItemRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\x1c\n" +
+	"\x1aHardDeleteWorkItemResponse\"\xd4\x01\n" +
 	"\x14AddDependencyRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1d\n" +
 	"\n" +
@@ -1248,13 +1371,14 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\x15UnassignWorkerRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"P\n" +
 	"\x16UnassignWorkerResponse\x126\n" +
-	"\twork_item\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkItemR\bworkItem2\xec\a\n" +
+	"\twork_item\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkItemR\bworkItem2\xdb\b\n" +
 	"\x0fWorkItemService\x12a\n" +
 	"\x0eCreateWorkItem\x12&.orchicon.api.v1.CreateWorkItemRequest\x1a'.orchicon.api.v1.CreateWorkItemResponse\x12X\n" +
 	"\vGetWorkItem\x12#.orchicon.api.v1.GetWorkItemRequest\x1a$.orchicon.api.v1.GetWorkItemResponse\x12^\n" +
 	"\rListWorkItems\x12%.orchicon.api.v1.ListWorkItemsRequest\x1a&.orchicon.api.v1.ListWorkItemsResponse\x12a\n" +
 	"\x0eUpdateWorkItem\x12&.orchicon.api.v1.UpdateWorkItemRequest\x1a'.orchicon.api.v1.UpdateWorkItemResponse\x12a\n" +
-	"\x0eDeleteWorkItem\x12&.orchicon.api.v1.DeleteWorkItemRequest\x1a'.orchicon.api.v1.DeleteWorkItemResponse\x12^\n" +
+	"\x0eDeleteWorkItem\x12&.orchicon.api.v1.DeleteWorkItemRequest\x1a'.orchicon.api.v1.DeleteWorkItemResponse\x12m\n" +
+	"\x12HardDeleteWorkItem\x12*.orchicon.api.v1.HardDeleteWorkItemRequest\x1a+.orchicon.api.v1.HardDeleteWorkItemResponse\x12^\n" +
 	"\rAddDependency\x12%.orchicon.api.v1.AddDependencyRequest\x1a&.orchicon.api.v1.AddDependencyResponse\x12g\n" +
 	"\x10RemoveDependency\x12(.orchicon.api.v1.RemoveDependencyRequest\x1a).orchicon.api.v1.RemoveDependencyResponse\x12m\n" +
 	"\x12GetDependencyGraph\x12*.orchicon.api.v1.GetDependencyGraphRequest\x1a+.orchicon.api.v1.GetDependencyGraphResponse\x12[\n" +
@@ -1274,7 +1398,7 @@ func file_orchicon_api_v1_work_item_service_proto_rawDescGZIP() []byte {
 	return file_orchicon_api_v1_work_item_service_proto_rawDescData
 }
 
-var file_orchicon_api_v1_work_item_service_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_orchicon_api_v1_work_item_service_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_orchicon_api_v1_work_item_service_proto_goTypes = []any{
 	(*CreateWorkItemRequest)(nil),      // 0: orchicon.api.v1.CreateWorkItemRequest
 	(*CreateWorkItemResponse)(nil),     // 1: orchicon.api.v1.CreateWorkItemResponse
@@ -1286,59 +1410,63 @@ var file_orchicon_api_v1_work_item_service_proto_goTypes = []any{
 	(*UpdateWorkItemResponse)(nil),     // 7: orchicon.api.v1.UpdateWorkItemResponse
 	(*DeleteWorkItemRequest)(nil),      // 8: orchicon.api.v1.DeleteWorkItemRequest
 	(*DeleteWorkItemResponse)(nil),     // 9: orchicon.api.v1.DeleteWorkItemResponse
-	(*AddDependencyRequest)(nil),       // 10: orchicon.api.v1.AddDependencyRequest
-	(*AddDependencyResponse)(nil),      // 11: orchicon.api.v1.AddDependencyResponse
-	(*RemoveDependencyRequest)(nil),    // 12: orchicon.api.v1.RemoveDependencyRequest
-	(*RemoveDependencyResponse)(nil),   // 13: orchicon.api.v1.RemoveDependencyResponse
-	(*GetDependencyGraphRequest)(nil),  // 14: orchicon.api.v1.GetDependencyGraphRequest
-	(*GetDependencyGraphResponse)(nil), // 15: orchicon.api.v1.GetDependencyGraphResponse
-	(*AssignWorkerRequest)(nil),        // 16: orchicon.api.v1.AssignWorkerRequest
-	(*AssignWorkerResponse)(nil),       // 17: orchicon.api.v1.AssignWorkerResponse
-	(*UnassignWorkerRequest)(nil),      // 18: orchicon.api.v1.UnassignWorkerRequest
-	(*UnassignWorkerResponse)(nil),     // 19: orchicon.api.v1.UnassignWorkerResponse
-	(WorkItemKind)(0),                  // 20: orchicon.api.v1.WorkItemKind
-	(*WorkItem)(nil),                   // 21: orchicon.api.v1.WorkItem
-	(WorkItemStatus)(0),                // 22: orchicon.api.v1.WorkItemStatus
-	(DependencyType)(0),                // 23: orchicon.api.v1.DependencyType
-	(*WorkItemDependency)(nil),         // 24: orchicon.api.v1.WorkItemDependency
-	(*DependencyGraph)(nil),            // 25: orchicon.api.v1.DependencyGraph
+	(*HardDeleteWorkItemRequest)(nil),  // 10: orchicon.api.v1.HardDeleteWorkItemRequest
+	(*HardDeleteWorkItemResponse)(nil), // 11: orchicon.api.v1.HardDeleteWorkItemResponse
+	(*AddDependencyRequest)(nil),       // 12: orchicon.api.v1.AddDependencyRequest
+	(*AddDependencyResponse)(nil),      // 13: orchicon.api.v1.AddDependencyResponse
+	(*RemoveDependencyRequest)(nil),    // 14: orchicon.api.v1.RemoveDependencyRequest
+	(*RemoveDependencyResponse)(nil),   // 15: orchicon.api.v1.RemoveDependencyResponse
+	(*GetDependencyGraphRequest)(nil),  // 16: orchicon.api.v1.GetDependencyGraphRequest
+	(*GetDependencyGraphResponse)(nil), // 17: orchicon.api.v1.GetDependencyGraphResponse
+	(*AssignWorkerRequest)(nil),        // 18: orchicon.api.v1.AssignWorkerRequest
+	(*AssignWorkerResponse)(nil),       // 19: orchicon.api.v1.AssignWorkerResponse
+	(*UnassignWorkerRequest)(nil),      // 20: orchicon.api.v1.UnassignWorkerRequest
+	(*UnassignWorkerResponse)(nil),     // 21: orchicon.api.v1.UnassignWorkerResponse
+	(WorkItemKind)(0),                  // 22: orchicon.api.v1.WorkItemKind
+	(*WorkItem)(nil),                   // 23: orchicon.api.v1.WorkItem
+	(WorkItemStatus)(0),                // 24: orchicon.api.v1.WorkItemStatus
+	(DependencyType)(0),                // 25: orchicon.api.v1.DependencyType
+	(*WorkItemDependency)(nil),         // 26: orchicon.api.v1.WorkItemDependency
+	(*DependencyGraph)(nil),            // 27: orchicon.api.v1.DependencyGraph
 }
 var file_orchicon_api_v1_work_item_service_proto_depIdxs = []int32{
-	20, // 0: orchicon.api.v1.CreateWorkItemRequest.kind:type_name -> orchicon.api.v1.WorkItemKind
-	21, // 1: orchicon.api.v1.CreateWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	21, // 2: orchicon.api.v1.GetWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	22, // 3: orchicon.api.v1.ListWorkItemsRequest.status:type_name -> orchicon.api.v1.WorkItemStatus
-	21, // 4: orchicon.api.v1.ListWorkItemsResponse.work_items:type_name -> orchicon.api.v1.WorkItem
-	22, // 5: orchicon.api.v1.UpdateWorkItemRequest.status:type_name -> orchicon.api.v1.WorkItemStatus
-	21, // 6: orchicon.api.v1.UpdateWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	21, // 7: orchicon.api.v1.DeleteWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	23, // 8: orchicon.api.v1.AddDependencyRequest.type:type_name -> orchicon.api.v1.DependencyType
-	24, // 9: orchicon.api.v1.AddDependencyResponse.dependency:type_name -> orchicon.api.v1.WorkItemDependency
-	25, // 10: orchicon.api.v1.GetDependencyGraphResponse.graph:type_name -> orchicon.api.v1.DependencyGraph
-	21, // 11: orchicon.api.v1.AssignWorkerResponse.work_item:type_name -> orchicon.api.v1.WorkItem
-	21, // 12: orchicon.api.v1.UnassignWorkerResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	22, // 0: orchicon.api.v1.CreateWorkItemRequest.kind:type_name -> orchicon.api.v1.WorkItemKind
+	23, // 1: orchicon.api.v1.CreateWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	23, // 2: orchicon.api.v1.GetWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	24, // 3: orchicon.api.v1.ListWorkItemsRequest.status:type_name -> orchicon.api.v1.WorkItemStatus
+	23, // 4: orchicon.api.v1.ListWorkItemsResponse.work_items:type_name -> orchicon.api.v1.WorkItem
+	24, // 5: orchicon.api.v1.UpdateWorkItemRequest.status:type_name -> orchicon.api.v1.WorkItemStatus
+	23, // 6: orchicon.api.v1.UpdateWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	23, // 7: orchicon.api.v1.DeleteWorkItemResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	25, // 8: orchicon.api.v1.AddDependencyRequest.type:type_name -> orchicon.api.v1.DependencyType
+	26, // 9: orchicon.api.v1.AddDependencyResponse.dependency:type_name -> orchicon.api.v1.WorkItemDependency
+	27, // 10: orchicon.api.v1.GetDependencyGraphResponse.graph:type_name -> orchicon.api.v1.DependencyGraph
+	23, // 11: orchicon.api.v1.AssignWorkerResponse.work_item:type_name -> orchicon.api.v1.WorkItem
+	23, // 12: orchicon.api.v1.UnassignWorkerResponse.work_item:type_name -> orchicon.api.v1.WorkItem
 	0,  // 13: orchicon.api.v1.WorkItemService.CreateWorkItem:input_type -> orchicon.api.v1.CreateWorkItemRequest
 	2,  // 14: orchicon.api.v1.WorkItemService.GetWorkItem:input_type -> orchicon.api.v1.GetWorkItemRequest
 	4,  // 15: orchicon.api.v1.WorkItemService.ListWorkItems:input_type -> orchicon.api.v1.ListWorkItemsRequest
 	6,  // 16: orchicon.api.v1.WorkItemService.UpdateWorkItem:input_type -> orchicon.api.v1.UpdateWorkItemRequest
 	8,  // 17: orchicon.api.v1.WorkItemService.DeleteWorkItem:input_type -> orchicon.api.v1.DeleteWorkItemRequest
-	10, // 18: orchicon.api.v1.WorkItemService.AddDependency:input_type -> orchicon.api.v1.AddDependencyRequest
-	12, // 19: orchicon.api.v1.WorkItemService.RemoveDependency:input_type -> orchicon.api.v1.RemoveDependencyRequest
-	14, // 20: orchicon.api.v1.WorkItemService.GetDependencyGraph:input_type -> orchicon.api.v1.GetDependencyGraphRequest
-	16, // 21: orchicon.api.v1.WorkItemService.AssignWorker:input_type -> orchicon.api.v1.AssignWorkerRequest
-	18, // 22: orchicon.api.v1.WorkItemService.UnassignWorker:input_type -> orchicon.api.v1.UnassignWorkerRequest
-	1,  // 23: orchicon.api.v1.WorkItemService.CreateWorkItem:output_type -> orchicon.api.v1.CreateWorkItemResponse
-	3,  // 24: orchicon.api.v1.WorkItemService.GetWorkItem:output_type -> orchicon.api.v1.GetWorkItemResponse
-	5,  // 25: orchicon.api.v1.WorkItemService.ListWorkItems:output_type -> orchicon.api.v1.ListWorkItemsResponse
-	7,  // 26: orchicon.api.v1.WorkItemService.UpdateWorkItem:output_type -> orchicon.api.v1.UpdateWorkItemResponse
-	9,  // 27: orchicon.api.v1.WorkItemService.DeleteWorkItem:output_type -> orchicon.api.v1.DeleteWorkItemResponse
-	11, // 28: orchicon.api.v1.WorkItemService.AddDependency:output_type -> orchicon.api.v1.AddDependencyResponse
-	13, // 29: orchicon.api.v1.WorkItemService.RemoveDependency:output_type -> orchicon.api.v1.RemoveDependencyResponse
-	15, // 30: orchicon.api.v1.WorkItemService.GetDependencyGraph:output_type -> orchicon.api.v1.GetDependencyGraphResponse
-	17, // 31: orchicon.api.v1.WorkItemService.AssignWorker:output_type -> orchicon.api.v1.AssignWorkerResponse
-	19, // 32: orchicon.api.v1.WorkItemService.UnassignWorker:output_type -> orchicon.api.v1.UnassignWorkerResponse
-	23, // [23:33] is the sub-list for method output_type
-	13, // [13:23] is the sub-list for method input_type
+	10, // 18: orchicon.api.v1.WorkItemService.HardDeleteWorkItem:input_type -> orchicon.api.v1.HardDeleteWorkItemRequest
+	12, // 19: orchicon.api.v1.WorkItemService.AddDependency:input_type -> orchicon.api.v1.AddDependencyRequest
+	14, // 20: orchicon.api.v1.WorkItemService.RemoveDependency:input_type -> orchicon.api.v1.RemoveDependencyRequest
+	16, // 21: orchicon.api.v1.WorkItemService.GetDependencyGraph:input_type -> orchicon.api.v1.GetDependencyGraphRequest
+	18, // 22: orchicon.api.v1.WorkItemService.AssignWorker:input_type -> orchicon.api.v1.AssignWorkerRequest
+	20, // 23: orchicon.api.v1.WorkItemService.UnassignWorker:input_type -> orchicon.api.v1.UnassignWorkerRequest
+	1,  // 24: orchicon.api.v1.WorkItemService.CreateWorkItem:output_type -> orchicon.api.v1.CreateWorkItemResponse
+	3,  // 25: orchicon.api.v1.WorkItemService.GetWorkItem:output_type -> orchicon.api.v1.GetWorkItemResponse
+	5,  // 26: orchicon.api.v1.WorkItemService.ListWorkItems:output_type -> orchicon.api.v1.ListWorkItemsResponse
+	7,  // 27: orchicon.api.v1.WorkItemService.UpdateWorkItem:output_type -> orchicon.api.v1.UpdateWorkItemResponse
+	9,  // 28: orchicon.api.v1.WorkItemService.DeleteWorkItem:output_type -> orchicon.api.v1.DeleteWorkItemResponse
+	11, // 29: orchicon.api.v1.WorkItemService.HardDeleteWorkItem:output_type -> orchicon.api.v1.HardDeleteWorkItemResponse
+	13, // 30: orchicon.api.v1.WorkItemService.AddDependency:output_type -> orchicon.api.v1.AddDependencyResponse
+	15, // 31: orchicon.api.v1.WorkItemService.RemoveDependency:output_type -> orchicon.api.v1.RemoveDependencyResponse
+	17, // 32: orchicon.api.v1.WorkItemService.GetDependencyGraph:output_type -> orchicon.api.v1.GetDependencyGraphResponse
+	19, // 33: orchicon.api.v1.WorkItemService.AssignWorker:output_type -> orchicon.api.v1.AssignWorkerResponse
+	21, // 34: orchicon.api.v1.WorkItemService.UnassignWorker:output_type -> orchicon.api.v1.UnassignWorkerResponse
+	24, // [24:35] is the sub-list for method output_type
+	13, // [13:24] is the sub-list for method input_type
 	13, // [13:13] is the sub-list for extension type_name
 	13, // [13:13] is the sub-list for extension extendee
 	0,  // [0:13] is the sub-list for field type_name
@@ -1358,7 +1486,7 @@ func file_orchicon_api_v1_work_item_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_work_item_service_proto_rawDesc), len(file_orchicon_api_v1_work_item_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   20,
+			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

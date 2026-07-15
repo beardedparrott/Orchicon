@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -102,6 +103,9 @@ type ListWorkItemsFilter struct {
 	ProjectID string
 	ParentID  *string // nil = all; empty string = top-level only
 	Status    string  // empty = all statuses
+	Search    string  // ILIKE across title and description
+	SortBy    string  // "title", "priority", "created_at" (default)
+	SortOrder string  // "asc" or "desc" (default "asc")
 	PageSize  int
 	AfterID   string
 }
@@ -130,7 +134,24 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 		q += fmt.Sprintf(` AND status = $%d`, len(args)+1)
 		args = append(args, f.Status)
 	}
-	q += ` ORDER BY id ASC LIMIT $` + fmt.Sprint(len(args)+1)
+	if f.Search != "" {
+		q += fmt.Sprintf(` AND (title ILIKE $%d OR description ILIKE $%d)`, len(args)+1, len(args)+1)
+		args = append(args, "%"+f.Search+"%")
+	}
+	orderCol := "id"
+	switch f.SortBy {
+	case "title":
+		orderCol = "title"
+	case "priority":
+		orderCol = "priority"
+	case "created_at":
+		orderCol = "created_at"
+	}
+	orderDir := "ASC"
+	if strings.ToLower(f.SortOrder) == "desc" {
+		orderDir = "DESC"
+	}
+	q += ` ORDER BY ` + orderCol + ` ` + orderDir + ` LIMIT $` + fmt.Sprint(len(args)+1)
 	args = append(args, f.PageSize)
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
@@ -165,6 +186,7 @@ type UpdateWorkItemFields struct {
 	Budgets            *[]byte
 	ContextWindow      *int
 	AssignedWorkerRef  *[]byte
+	ProjectID          *string
 }
 
 // UpdateWorkItem applies a partial update with optimistic concurrency.
@@ -212,6 +234,11 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 	if f.AssignedWorkerRef != nil {
 		q += fmt.Sprintf(`, assigned_worker_ref = $%d`, setIdx)
 		args = append(args, *f.AssignedWorkerRef)
+		setIdx++
+	}
+	if f.ProjectID != nil {
+		q += fmt.Sprintf(`, project_id = $%d`, setIdx)
+		args = append(args, *f.ProjectID)
 		setIdx++
 	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
@@ -328,4 +355,26 @@ func CheckCycleWithRecursiveCTE(ctx context.Context, tx pgx.Tx, tenantID, projec
 		return false, fmt.Errorf("db: check cycle (recursive CTE): %w", err)
 	}
 	return creates, nil
+}
+
+// HardDeleteWorkItem permanently removes a work item and cascades to
+// its dependencies (rows where this item is either the from or to side).
+// Returns ErrNotFound if no row matches the id+tenant.
+func HardDeleteWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM work_item_dependencies
+		 WHERE tenant_id = $1 AND (from_id = $2 OR to_id = $2)`,
+		tenantID, id); err != nil {
+		return fmt.Errorf("db: hard delete work item dependencies: %w", err)
+	}
+	ct, err := tx.Exec(ctx,
+		`DELETE FROM work_items WHERE id = $1 AND tenant_id = $2`,
+		id, tenantID)
+	if err != nil {
+		return fmt.Errorf("db: hard delete work item: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

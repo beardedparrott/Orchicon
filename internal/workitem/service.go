@@ -169,6 +169,9 @@ func (s *Service) ListWorkItems(ctx context.Context, req *connect.Request[apiv1.
 		ProjectID: req.Msg.ProjectId,
 		PageSize:  int(req.Msg.PageSize),
 		AfterID:   req.Msg.PageToken,
+		Search:    req.Msg.Search,
+		SortBy:    req.Msg.SortBy,
+		SortOrder: req.Msg.SortOrder,
 	}
 	if req.Msg.ParentId != nil {
 		pid := *req.Msg.ParentId
@@ -245,6 +248,9 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if msg.ContextWindow != nil {
 		fields.ContextWindow = intPtr(int(*msg.ContextWindow))
 	}
+	if msg.ProjectId != nil {
+		fields.ProjectID = msg.ProjectId
+	}
 
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -253,6 +259,15 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	defer ttx.Rollback(ctx)
 
 	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	// If reassigning to a different project, the target must be active.
+	if fields.ProjectID != nil && *fields.ProjectID != current.ProjectID {
+		if err := db.RequireProjectActive(ctx, ttx.Tx, tenantID, *fields.ProjectID); err != nil {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("target project not active: %w", err))
+		}
+	}
 	if err != nil {
 		return nil, mapDBError(err)
 	}
@@ -301,6 +316,38 @@ func (s *Service) DeleteWorkItem(ctx context.Context, req *connect.Request[apiv1
 	}
 	s.log.Info("work item deleted (cancelled)", "id", updated.ID)
 	return connect.NewResponse(&apiv1.DeleteWorkItemResponse{WorkItem: rowToProto(updated)}), nil
+}
+
+// HardDeleteWorkItem permanently removes a work item. Cascades to its
+// dependencies. The outbox emits a work_item.purged event.
+func (s *Service) HardDeleteWorkItem(ctx context.Context, req *connect.Request[apiv1.HardDeleteWorkItemRequest]) (*connect.Response[apiv1.HardDeleteWorkItemResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := db.HardDeleteWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.purged", current); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("work item hard-deleted", "id", req.Msg.Id)
+	return connect.NewResponse(&apiv1.HardDeleteWorkItemResponse{}), nil
 }
 
 // AddDependency adds an edge to the work DAG. Cycles are rejected at

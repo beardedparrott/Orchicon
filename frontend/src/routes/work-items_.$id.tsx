@@ -1,13 +1,15 @@
-import { createRoute } from "@tanstack/react-router";
+import { createRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import {
   useGetWorkItem,
   useUpdateWorkItem,
   useDeleteWorkItem,
+  useHardDeleteWorkItem,
   useAddDependency,
   useGetDependencyGraph,
 } from "@/api/workItems";
+import { useListProjects } from "@/api/projects";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -37,8 +39,11 @@ function WorkItemDetailPage() {
   const { data: item, isLoading, error } = useGetWorkItem(id);
   const updateWorkItem = useUpdateWorkItem(item?.projectId ?? "");
   const deleteWorkItem = useDeleteWorkItem(item?.projectId ?? "");
+  const hardDeleteWorkItem = useHardDeleteWorkItem(item?.projectId ?? "");
   const addDependency = useAddDependency(item?.projectId ?? "");
   const { data: graph } = useGetDependencyGraph(item?.projectId ?? "");
+  const { data: projects } = useListProjects();
+  const navigate = useNavigate();
 
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState("");
@@ -46,6 +51,7 @@ function WorkItemDetailPage() {
   const [acceptanceCriteria, setAcceptanceCriteria] = useState("");
   const [priority, setPriority] = useState(0);
   const [contextWindow, setContextWindow] = useState(0);
+  const [editProjectId, setEditProjectId] = useState("");
 
   const [depTarget, setDepTarget] = useState("");
   const [depType, setDepType] = useState(1); // BLOCKS
@@ -72,8 +78,26 @@ function WorkItemDetailPage() {
     updateWorkItem.mutate({ id, status: newStatus });
   };
 
-  const handleDelete = () => {
-    deleteWorkItem.mutate(id);
+  const handleSoftDelete = () => {
+    if (
+      window.confirm(
+        "Cancel this work item? The status will be set to cancelled and it will be hidden from the board.",
+      )
+    ) {
+      deleteWorkItem.mutate(id);
+    }
+  };
+
+  const handleHardDelete = () => {
+    if (
+      window.confirm(
+        "Permanently delete this work item and all its dependencies? This cannot be undone.",
+      )
+    ) {
+      hardDeleteWorkItem.mutate(id, {
+        onSuccess: () => navigate({ to: "/work-items" }),
+      });
+    }
   };
 
   const handleAddDep = () => {
@@ -88,6 +112,9 @@ function WorkItemDetailPage() {
     (n) => n.id !== id && n.projectId === item.projectId,
   );
 
+  const projectName =
+    projects?.find((p) => p.id === item.projectId)?.name ?? item.projectId;
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between">
@@ -101,6 +128,16 @@ function WorkItemDetailPage() {
           <p className="mt-1 text-xs text-muted-foreground">
             v{item.version} · {item.id}
           </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Project:{" "}
+            <Link
+              to="/projects/$id"
+              params={{ id: item.projectId }}
+              className="font-medium hover:underline"
+            >
+              {projectName}
+            </Link>
+          </p>
         </div>
         <div className="flex gap-2">
           {!editing && (
@@ -112,21 +149,27 @@ function WorkItemDetailPage() {
                 setAcceptanceCriteria(item.acceptanceCriteria ?? "");
                 setPriority(item.priority);
                 setContextWindow(item.contextWindow ?? 0);
+                setEditProjectId(item.projectId);
                 setEditing(true);
               }}
             >
               Edit
             </Button>
           )}
-          {item.status !== 8 && (
-            <Button
-              variant="outline"
-              onClick={handleDelete}
-              disabled={deleteWorkItem.isPending}
-            >
-              {deleteWorkItem.isPending ? "Cancelling…" : "Cancel item"}
-            </Button>
-          )}
+          <Button
+            variant="outline"
+            onClick={handleSoftDelete}
+            disabled={deleteWorkItem.isPending || item.status === 8}
+          >
+            {deleteWorkItem.isPending ? "Cancelling…" : "Cancel item"}
+          </Button>
+          <Button
+            variant="destructive"
+            onClick={handleHardDelete}
+            disabled={hardDeleteWorkItem.isPending}
+          >
+            {hardDeleteWorkItem.isPending ? "Deleting…" : "Delete"}
+          </Button>
         </div>
       </div>
 
@@ -242,6 +285,31 @@ function WorkItemDetailPage() {
         </CardContent>
       </Card>
 
+      {/* Project (editable) */}
+      {editing && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Project</CardTitle>
+            <CardDescription>
+              Reassign to a different project. The target must be active.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <select
+              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+              value={editProjectId}
+              onChange={(e) => setEditProjectId(e.target.value)}
+            >
+              {(projects ?? []).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Edit save/cancel */}
       {editing && (
         <div className="flex gap-2">
@@ -255,6 +323,7 @@ function WorkItemDetailPage() {
                   acceptanceCriteria,
                   priority,
                   contextWindow,
+                  projectId: editProjectId,
                 },
                 { onSuccess: () => setEditing(false) },
               )

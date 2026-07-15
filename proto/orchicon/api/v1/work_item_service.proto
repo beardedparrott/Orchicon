@@ -31,6 +31,13 @@ service WorkItemService {
   // DeleteWorkItem soft-deletes a work item (sets status to cancelled).
   rpc DeleteWorkItem(DeleteWorkItemRequest) returns (DeleteWorkItemResponse);
 
+  // HardDeleteWorkItem permanently removes a work item. Cascades to
+  // dependencies (work_item_dependencies rows where this item is either
+  // the from or to side are deleted). The outbox emits a
+  // work_item.purged event. Use this for irreversible removal — the
+  // soft DeleteWorkItem is preferred for normal cancellation.
+  rpc HardDeleteWorkItem(HardDeleteWorkItemRequest) returns (HardDeleteWorkItemResponse);
+
   // AddDependency adds an edge to the work DAG. Cycles are rejected at
   // admission (docs/02 §2.2, docs/09 §3.2).
   rpc AddDependency(AddDependencyRequest) returns (AddDependencyResponse);
@@ -80,8 +87,11 @@ message ListWorkItemsRequest {
   string project_id = 2;
   optional string parent_id = 3; // filter by parent (tree view)
   optional WorkItemStatus status = 4; // filter by status (Kanban)
-  string page_token = 5;
-  int32 page_size = 6;
+  string search = 5; // free-text search across title and description
+  string sort_by = 6; // "title", "priority", "created_at" (default)
+  string sort_order = 7; // "asc" or "desc" (default "asc")
+  string page_token = 8;
+  int32 page_size = 9;
 }
 
 message ListWorkItemsResponse {
@@ -98,6 +108,7 @@ message UpdateWorkItemRequest {
   optional int32 priority = 6;
   optional string budgets = 7;
   optional int32 context_window = 8;
+  optional string project_id = 10; // reassign to a different project; target must be active
   string request_id = 9;
 }
 
@@ -112,6 +123,12 @@ message DeleteWorkItemRequest {
 message DeleteWorkItemResponse {
   WorkItem work_item = 1;
 }
+
+message HardDeleteWorkItemRequest {
+  string id = 1;
+}
+
+message HardDeleteWorkItemResponse {}
 
 message AddDependencyRequest {
   string tenant_id = 1;
