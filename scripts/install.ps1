@@ -38,10 +38,10 @@ Options:
   -Version <tag>      Install a specific version (e.g. v0.2.0). Default: latest.
   -InstallDir <dir>   Installation directory (default: `$HOME\.local\bin).
   -Uninstall          Remove Orchicon from the install directory.
-  -Clean              Stop and destroy dev containers, then remove the Orchicon
-                      binary. All user data is preserved (Postgres, NATS,
-                      ClickHouse volumes + BlobStore files + runtime state).
-                      Use before upgrading to a new version.
+  -Clean              Stop dev containers, remove the old Orchicon binary, then
+                      install the latest version — one-shot upgrade. All user
+                      data is preserved (Docker volumes, BlobStore files,
+                      runtime state).
   -DryRun             Print what would happen without making changes.
   -Help               Show this help.
 "@
@@ -116,12 +116,8 @@ if ($Clean) {
     Write-Host "  • BlobStore files (data\blobs)" -ForegroundColor DarkGray
     Write-Host "  • Runtime state (.dev)" -ForegroundColor DarkGray
     Write-Host ""
-    Write-Host "Containers destroyed, binary removed." -ForegroundColor White
-    Write-Host "Re-run the installer to get the latest version:" -ForegroundColor DarkGray
-    Write-Host "  irm https://orchicon.dev/install.ps1 | iex" -ForegroundColor DarkGray
+    Write-Host "Now installing latest version…" -ForegroundColor White
     Write-Host ""
-
-    exit 0
 }
 
 # --- Detect arch ---

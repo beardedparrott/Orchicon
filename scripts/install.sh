@@ -59,10 +59,10 @@ Options:
   --version <tag>      Install a specific version (e.g. v0.2.0). Default: latest.
   --install-dir <dir>  Installation directory (default: ~/.local/bin).
   --uninstall          Remove Orchicon from the install directory.
-  --clean              Stop and destroy dev containers, then remove the Orchicon
-                       binary. All user data is preserved (Postgres, NATS,
-                       ClickHouse volumes + BlobStore files + runtime state).
-                       Use before upgrading to a new version.
+  --clean              Stop dev containers, remove the old Orchicon binary, then
+                       install the latest version — one-shot upgrade. All user
+                       data is preserved (Docker volumes, BlobStore files,
+                       runtime state).
   --dry-run            Print what would happen without making changes.
   -h, --help           Show this help.
 EOF
@@ -107,12 +107,11 @@ do_uninstall() {
   exit 0
 }
 
-# --- Clean ------------------------------------------------------------------
+# --- Clean then install -----------------------------------------------------
 #
-# Stop dev containers and remove the binary while preserving all user data
-# (Postgres, NATS, ClickHouse volumes + BlobStore files + runtime state).
-# This is meant for version upgrades: clean stops the old stack, then the
-# installer installs the new version.
+# Stop dev containers, remove the old binary, then install the latest
+# version — one-shot upgrade. All user data is preserved (Docker volumes,
+# BlobStore files, runtime state).
 #
 do_clean() {
   echo ""
@@ -137,16 +136,16 @@ do_clean() {
     fi
   fi
 
-  # 2. Remove the binary.
+  # 2. Remove the old binary.
   if [ -f "$bin" ]; then
     info "removing $bin"
     $DRY_RUN || rm -f "$bin"
-    ok "binary removed"
+    ok "old binary removed"
   else
     warn "orchicon not found in $INSTALL_DIR — nothing to remove"
   fi
 
-  # 3. Summary.
+  # 3. Show summary then proceed to install.
   echo ""
   echo -e "${G}Infrastructure cleaned — all user data preserved${X}"
   echo ""
@@ -157,12 +156,8 @@ do_clean() {
   echo -e "  ${D}• BlobStore files (./data/blobs)${X}"
   echo -e "  ${D}• Runtime state (.dev/)${X}"
   echo ""
-  echo -e "${B}Containers destroyed, binary removed.${X}"
-  echo -e "  Re-run the installer to get the latest version:"
-  echo -e "  ${D}curl -fsSL https://orchicon.dev/install | bash${X}"
+  echo -e "${B}Now installing latest version…${X}"
   echo ""
-
-  exit 0
 }
 
 # --- Main install -----------------------------------------------------------
@@ -263,6 +258,7 @@ if [ "$UNINSTALL" = true ]; then
   do_uninstall
 elif [ "$CLEAN" = true ]; then
   do_clean
+  main
 else
   main
 fi
