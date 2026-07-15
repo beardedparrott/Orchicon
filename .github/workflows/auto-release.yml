@@ -1,9 +1,12 @@
 # Orchicon auto-release workflow.
 #
 # When a PR with the "release" label is merged to main, this workflow
-# bumps the patch version, creates a tag, and pushes it. The existing
-# release.yml workflow picks up the tag and builds + publishes the
-# GitHub Release assets.
+# bumps the patch version, creates a tag, and dispatches release.yml
+# to build and publish the GitHub Release assets.
+#
+# We use workflow_dispatch (not tag-push chaining) because the default
+# GITHUB_TOKEN blocks recursive workflow triggers — a tag push from one
+# workflow will not fire another workflow's push:tags trigger.
 #
 # In early development all PRs carry the "release" label so every merge
 # produces a release. Update the trigger condition if you want a more
@@ -18,9 +21,10 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
-  tag:
+  tag-and-release:
     if: github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'release')
     runs-on: ubuntu-latest
     steps:
@@ -29,7 +33,8 @@ jobs:
           fetch-tags: true
           fetch-depth: 0
 
-      - name: Determine next version and tag
+      - name: Determine next version and create tag
+        id: version
         run: |
           LATEST_TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
           if [ -z "$LATEST_TAG" ]; then
@@ -45,3 +50,12 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag "$NEW_TAG"
           git push origin "$NEW_TAG"
+          echo "tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run release.yml \
+            --ref main \
+            --field version="${{ steps.version.outputs.tag }}"
