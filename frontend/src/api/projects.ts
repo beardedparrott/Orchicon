@@ -36,6 +36,27 @@ export function useListProjects(opts?: { search?: string; status?: ProjectStatus
   });
 }
 
+// useUpdateProject updates the mutable fields of a project (name, slug,
+// goals). Partial update — only non-nil fields are written.
+export function useUpdateProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      id: string;
+      name?: string;
+      slug?: string;
+      goals?: { fields: GoalField[] };
+    }) => {
+      const res = await projectClient.updateProject(input);
+      return res.project as Project;
+    },
+    onSuccess: (project) => {
+      qc.invalidateQueries({ queryKey: projectKeys.list() });
+      qc.invalidateQueries({ queryKey: projectKeys.detail(project.id) });
+    },
+  });
+}
+
 // useGetProject fetches a single project by id.
 export function useGetProject(id: string) {
   return useQuery({

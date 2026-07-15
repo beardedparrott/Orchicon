@@ -48,7 +48,7 @@ allow if {
 `;
 
 const createPolicySchema = z.object({
-  name: z.string().min(1, "Name is required").max(200),
+  name: z.string().min(1, "Name is required").max(500),
   decisionPoint: z.number().int().min(1).max(6),
   scope: z.number().int().min(1).max(4),
   scopeRef: z.string().max(200).optional(),

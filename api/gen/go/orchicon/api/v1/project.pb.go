@@ -568,6 +568,7 @@ type UpdateProjectRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Name  *string                `protobuf:"bytes,2,opt,name=name,proto3,oneof" json:"name,omitempty"`
+	Slug  *string                `protobuf:"bytes,5,opt,name=slug,proto3,oneof" json:"slug,omitempty"`
 	Goals *GoalFields            `protobuf:"bytes,3,opt,name=goals,proto3,oneof" json:"goals,omitempty"` // converted to JSON by the server; empty fields clears goals
 	// FieldMask support added as the schema grows (docs/07 §5.4).
 	RequestId     string `protobuf:"bytes,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
@@ -615,6 +616,13 @@ func (x *UpdateProjectRequest) GetId() string {
 func (x *UpdateProjectRequest) GetName() string {
 	if x != nil && x.Name != nil {
 		return *x.Name
+	}
+	return ""
+}
+
+func (x *UpdateProjectRequest) GetSlug() string {
+	if x != nil && x.Slug != nil {
+		return *x.Slug
 	}
 	return ""
 }
@@ -852,14 +860,16 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\a_status\"t\n" +
 	"\x14ListProjectsResponse\x124\n" +
 	"\bprojects\x18\x01 \x03(\v2\x18.orchicon.api.v1.ProjectR\bprojects\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xa9\x01\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xcb\x01\n" +
 	"\x14UpdateProjectRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
-	"\x04name\x18\x02 \x01(\tH\x00R\x04name\x88\x01\x01\x126\n" +
-	"\x05goals\x18\x03 \x01(\v2\x1b.orchicon.api.v1.GoalFieldsH\x01R\x05goals\x88\x01\x01\x12\x1d\n" +
+	"\x04name\x18\x02 \x01(\tH\x00R\x04name\x88\x01\x01\x12\x17\n" +
+	"\x04slug\x18\x05 \x01(\tH\x01R\x04slug\x88\x01\x01\x126\n" +
+	"\x05goals\x18\x03 \x01(\v2\x1b.orchicon.api.v1.GoalFieldsH\x02R\x05goals\x88\x01\x01\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x04 \x01(\tR\trequestIdB\a\n" +
-	"\x05_nameB\b\n" +
+	"\x05_nameB\a\n" +
+	"\x05_slugB\b\n" +
 	"\x06_goals\"'\n" +
 	"\x15ArchiveProjectRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"%\n" +

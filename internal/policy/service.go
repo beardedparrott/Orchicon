@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	maxNameLen         = 200
+	maxNameLen         = 500
 	maxVersionNoteLen  = 1 << 14
 	maxRegoModuleLen   = 1 << 20 // 1 MiB
 	maxQueryLen        = 1000

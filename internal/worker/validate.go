@@ -30,7 +30,7 @@ import (
 // Input size bounds (AGENTS.md security standards: size bounds on all
 // inputs to prevent memory-exhaustion abuse).
 const (
-	maxNameLen        = 200
+	maxNameLen        = 500
 	maxSlugLen        = 63
 	maxDescLen        = 1 << 14 // 16 KiB
 	maxPurposeLen     = 1 << 14

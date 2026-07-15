@@ -32,7 +32,7 @@ import (
 // maxNameLen / maxSlugLen bound input size to prevent abuse. Slugs are
 // also constrained to URL-safe characters by the slug regex.
 const (
-	maxNameLen      = 200
+	maxNameLen      = 500
 	maxSlugLen      = 63
 	maxGoalKeyLen   = 100
 	maxGoalValueLen = 10000
@@ -56,6 +56,22 @@ func validateName(name string) (string, error) {
 		return "", fmt.Errorf("name must be at most %d characters", maxNameLen)
 	}
 	return name, nil
+}
+
+// validateSlug validates a slug for updates: must match the slug regex
+// and not exceed max length.
+func validateSlug(slug string) (string, error) {
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return "", errors.New("slug must not be empty")
+	}
+	if !slugRE.MatchString(slug) {
+		return "", fmt.Errorf("slug must match %s", slugRE.String())
+	}
+	if len(slug) > maxSlugLen {
+		return "", fmt.Errorf("slug must be at most %d characters", maxSlugLen)
+	}
+	return slug, nil
 }
 
 // normalizeSlug validates the slug if provided; otherwise derives one

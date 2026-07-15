@@ -40,6 +40,20 @@ export function useDeleteSubscription() {
   });
 }
 
+export function useUpdateSubscription() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      id: string;
+      targetUrl?: string;
+      eventFilter?: string;
+      status?: string;
+      maxRetries?: number;
+    }) => (await webhookClient.updateSubscription(input)).subscription,
+    onSuccess: () => qc.invalidateQueries({ queryKey: webhookKeys.subs() }),
+  });
+}
+
 export function useTestSubscription() {
   return useMutation({
     mutationFn: async (id: string) =>

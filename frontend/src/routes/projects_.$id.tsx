@@ -1,10 +1,13 @@
 import { createRoute, useNavigate } from "@tanstack/react-router";
+import { useState } from "react";
+import { useForm } from "react-hook-form";
 import { useQueryClient } from "@tanstack/react-query";
 
 import {
   useArchiveProject,
   useDeleteProject,
   useGetProject,
+  useUpdateProject,
   projectKeys,
 } from "@/api/projects";
 import { useStreamProjectEvents } from "@/api/projectEvents";
@@ -16,12 +19,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Route as rootRoute } from "@/routes/__root";
 
-// Project detail (docs/10 §5). Shows the project's lifecycle state,
-// goals, version, and a live event feed (docs/10 §4 Realtime Model).
-// Archive is a server-confirmed mutation (no optimistic transition —
-// docs/10 invariant #3).
+// Project detail with inline editing. UseUpdateProject calls the existing
+// UpdateProject RPC (partial update — only non-nil fields are written).
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/projects/$id",
@@ -33,12 +36,17 @@ function ProjectDetailPage() {
   const { data: project, isLoading, error } = useGetProject(id);
   const archiveProject = useArchiveProject();
   const deleteMutation = useDeleteProject();
+  const updateProject = useUpdateProject();
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
 
-  // Live event feed (docs/10 §4). Subscribes to StreamProjectEvents
-  // filtered to this project. Events invalidate the detail query so
-  // the UI reflects server-confirmed state.
+  const { register, handleSubmit, reset } = useForm({
+    defaultValues: { name: "", slug: "" },
+    values: project ? { name: project.name, slug: project.slug } : undefined,
+  });
+
+  // Live event feed.
   const { events, status } = useStreamProjectEvents({
     projectId: id,
     onEvent: () => {
@@ -79,16 +87,60 @@ function ProjectDetailPage() {
 
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">
-            {project.name}
-          </h1>
-          <p className="font-mono text-xs text-muted-foreground">
-            {project.slug}
-          </p>
+          {editing ? (
+            <form
+              onSubmit={handleSubmit((data) => {
+                updateProject.mutate(
+                  { id, name: data.name, slug: data.slug },
+                  { onSuccess: () => setEditing(false) },
+                );
+              })}
+              className="space-y-3"
+            >
+              <div className="space-y-2">
+                <Label htmlFor="name">Name</Label>
+                <Input id="name" {...register("name", { required: true })} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="slug">Slug</Label>
+                <Input id="slug" {...register("slug")} />
+              </div>
+              <div className="flex gap-2">
+                <Button type="submit" disabled={updateProject.isPending}>
+                  {updateProject.isPending ? "Saving…" : "Save"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    reset();
+                    setEditing(false);
+                  }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          ) : (
+            <>
+              <h1 className="text-2xl font-semibold tracking-tight">
+                {project.name}
+              </h1>
+              <p className="font-mono text-xs text-muted-foreground">
+                {project.slug}
+              </p>
+            </>
+          )}
         </div>
         <div className="flex gap-2">
+          {!editing && (
+            <Button variant="outline" onClick={() => setEditing(true)}>
+              Edit
+            </Button>
+          )}
           {project.status !== 4 && (
             <Button
               variant="outline"
@@ -156,8 +208,7 @@ function ProjectDetailPage() {
         </Card>
       )}
 
-      {/* Live event feed (docs/10 §4). Streams project lifecycle events
-          in real-time with automatic reconnect and dedup. */}
+      {/* Live event feed */}
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">

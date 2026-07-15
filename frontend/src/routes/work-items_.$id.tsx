@@ -16,13 +16,16 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 
 // Work item detail (docs/10 §5, docs/02 §2.2). Shows the item's kind,
-// status, hierarchy position, and allows adding dependencies (edges in
-// the work DAG — cycles are rejected server-side via recursive CTE).
+// status, hierarchy position, and allows editing all mutable fields and
+// adding dependencies (edges in the work DAG — cycles are rejected
+// server-side via recursive CTE).
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/work-items/$id",
@@ -36,6 +39,13 @@ function WorkItemDetailPage() {
   const deleteWorkItem = useDeleteWorkItem(item?.projectId ?? "");
   const addDependency = useAddDependency(item?.projectId ?? "");
   const { data: graph } = useGetDependencyGraph(item?.projectId ?? "");
+
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [acceptanceCriteria, setAcceptanceCriteria] = useState("");
+  const [priority, setPriority] = useState(0);
+  const [contextWindow, setContextWindow] = useState(0);
 
   const [depTarget, setDepTarget] = useState("");
   const [depType, setDepType] = useState(1); // BLOCKS
@@ -93,6 +103,21 @@ function WorkItemDetailPage() {
           </p>
         </div>
         <div className="flex gap-2">
+          {!editing && (
+            <Button
+              variant="outline"
+              onClick={() => {
+                setTitle(item.title);
+                setDescription(item.description ?? "");
+                setAcceptanceCriteria(item.acceptanceCriteria ?? "");
+                setPriority(item.priority);
+                setContextWindow(item.contextWindow ?? 0);
+                setEditing(true);
+              }}
+            >
+              Edit
+            </Button>
+          )}
           {item.status !== 8 && (
             <Button
               variant="outline"
@@ -132,14 +157,38 @@ function WorkItemDetailPage() {
         <Card>
           <CardHeader>
             <CardDescription>Priority</CardDescription>
-            <CardTitle className="text-base">{item.priority}</CardTitle>
+            <CardTitle className="text-base">
+              {editing ? (
+                <Input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={priority}
+                  onChange={(e) => setPriority(Number(e.target.value))}
+                  className="h-8 w-20"
+                />
+              ) : (
+                item.priority
+              )}
+            </CardTitle>
           </CardHeader>
         </Card>
         <Card>
           <CardHeader>
             <CardDescription>Context window</CardDescription>
             <CardTitle className="text-base">
-              {item.contextWindow || "—"}
+              {editing ? (
+                <Input
+                  type="number"
+                  min={0}
+                  max={1000000}
+                  value={contextWindow}
+                  onChange={(e) => setContextWindow(Number(e.target.value))}
+                  className="h-8 w-24"
+                />
+              ) : (
+                item.contextWindow || "—"
+              )}
             </CardTitle>
           </CardHeader>
         </Card>
@@ -153,28 +202,71 @@ function WorkItemDetailPage() {
         </Card>
       </div>
 
-      {item.description && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Description</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm whitespace-pre-wrap">{item.description}</p>
-          </CardContent>
-        </Card>
-      )}
-
-      {item.acceptanceCriteria && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Acceptance criteria</CardTitle>
-          </CardHeader>
-          <CardContent>
+      {/* Description */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Description</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {editing ? (
+            <Textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="min-h-[80px]"
+            />
+          ) : (
             <p className="text-sm whitespace-pre-wrap">
-              {item.acceptanceCriteria}
+              {item.description || "—"}
             </p>
-          </CardContent>
-        </Card>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Acceptance criteria */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Acceptance criteria</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {editing ? (
+            <Textarea
+              value={acceptanceCriteria}
+              onChange={(e) => setAcceptanceCriteria(e.target.value)}
+              className="min-h-[80px]"
+            />
+          ) : (
+            <p className="text-sm whitespace-pre-wrap">
+              {item.acceptanceCriteria || "—"}
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Edit save/cancel */}
+      {editing && (
+        <div className="flex gap-2">
+          <Button
+            onClick={() =>
+              updateWorkItem.mutate(
+                {
+                  id,
+                  title,
+                  description,
+                  acceptanceCriteria,
+                  priority,
+                  contextWindow,
+                },
+                { onSuccess: () => setEditing(false) },
+              )
+            }
+            disabled={updateWorkItem.isPending || !title.trim()}
+          >
+            {updateWorkItem.isPending ? "Saving…" : "Save changes"}
+          </Button>
+          <Button variant="outline" onClick={() => setEditing(false)}>
+            Cancel
+          </Button>
+        </div>
       )}
 
       {/* Dependencies (DAG edges — docs/02 §2.2, docs/09 §3.2) */}
