@@ -62,6 +62,91 @@ proto3.util.setEnumType(ProjectStatus, "orchicon.api.v1.ProjectStatus", [
 ]);
 
 /**
+ * GoalField is a single key-value pair describing a project goal.
+ *
+ * @generated from message orchicon.api.v1.GoalField
+ */
+export class GoalField extends Message<GoalField> {
+  /**
+   * @generated from field: string key = 1;
+   */
+  key = "";
+
+  /**
+   * @generated from field: string value = 2;
+   */
+  value = "";
+
+  constructor(data?: PartialMessage<GoalField>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GoalField";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "key", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "value", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GoalField {
+    return new GoalField().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GoalField {
+    return new GoalField().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GoalField {
+    return new GoalField().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GoalField | PlainMessage<GoalField> | undefined, b: GoalField | PlainMessage<GoalField> | undefined): boolean {
+    return proto3.util.equals(GoalField, a, b);
+  }
+}
+
+/**
+ * GoalFields is a wrapper so UpdateProjectRequest can distinguish
+ * "don't update" from "clear goals" via optional.
+ *
+ * @generated from message orchicon.api.v1.GoalFields
+ */
+export class GoalFields extends Message<GoalFields> {
+  /**
+   * @generated from field: repeated orchicon.api.v1.GoalField fields = 1;
+   */
+  fields: GoalField[] = [];
+
+  constructor(data?: PartialMessage<GoalFields>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GoalFields";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "fields", kind: "message", T: GoalField, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GoalFields {
+    return new GoalFields().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GoalFields {
+    return new GoalFields().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GoalFields {
+    return new GoalFields().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GoalFields | PlainMessage<GoalFields> | undefined, b: GoalFields | PlainMessage<GoalFields> | undefined): boolean {
+    return proto3.util.equals(GoalFields, a, b);
+  }
+}
+
+/**
  * Project is the persistent source of work. All schedulable entities
  * belong to a Project (docs/02_Domain_Model.md §2.1).
  *
@@ -173,11 +258,11 @@ export class CreateProjectRequest extends Message<CreateProjectRequest> {
   slug = "";
 
   /**
-   * JSON
+   * converted to JSON by the server
    *
-   * @generated from field: string goals = 4;
+   * @generated from field: repeated orchicon.api.v1.GoalField goals = 4;
    */
-  goals = "";
+  goals: GoalField[] = [];
 
   /**
    * idempotency key (docs/07 §5.5)
@@ -197,7 +282,7 @@ export class CreateProjectRequest extends Message<CreateProjectRequest> {
     { no: 1, name: "tenant_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "slug", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 4, name: "goals", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "goals", kind: "message", T: GoalField, repeated: true },
     { no: 5, name: "request_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
@@ -364,9 +449,11 @@ export class UpdateProjectRequest extends Message<UpdateProjectRequest> {
   name?: string;
 
   /**
-   * @generated from field: optional string goals = 3;
+   * converted to JSON by the server; empty fields clears goals
+   *
+   * @generated from field: optional orchicon.api.v1.GoalFields goals = 3;
    */
-  goals?: string;
+  goals?: GoalFields;
 
   /**
    * FieldMask support added as the schema grows (docs/07 §5.4).
@@ -385,7 +472,7 @@ export class UpdateProjectRequest extends Message<UpdateProjectRequest> {
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
-    { no: 3, name: "goals", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 3, name: "goals", kind: "message", T: GoalFields, opt: true },
     { no: 4, name: "request_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 

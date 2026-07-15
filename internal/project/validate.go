@@ -32,9 +32,11 @@ import (
 // maxNameLen / maxSlugLen bound input size to prevent abuse. Slugs are
 // also constrained to URL-safe characters by the slug regex.
 const (
-	maxNameLen  = 200
-	maxSlugLen  = 63
-	maxGoalsLen = 1 << 20 // 1 MiB; goals is a JSON document
+	maxNameLen      = 200
+	maxSlugLen      = 63
+	maxGoalKeyLen   = 100
+	maxGoalValueLen = 10000
+	maxGoalsLen     = 1 << 20 // 1 MiB; goals is a JSON document
 )
 
 // slugRE defines the canonical slug character set: lowercase alphanumerics
@@ -100,10 +102,39 @@ func deriveSlug(name string) string {
 	return out
 }
 
-// validateGoals ensures the goals field is either empty (→ "{}") or valid
-// JSON. Rejecting malformed JSON at the API boundary prevents storing
-// garbage that the frontend cannot render. Size is bounded to mitigate
-// memory-exhaustion abuse.
+// convertGoalsToJSON converts a list of GoalField key-value pairs into a
+// JSON object for storage. Empty input produces an empty JSON object.
+func convertGoalsToJSON(goals []*apiv1.GoalField) ([]byte, error) {
+	if len(goals) == 0 {
+		return []byte("{}"), nil
+	}
+	m := make(map[string]string, len(goals))
+	for _, gf := range goals {
+		key := strings.TrimSpace(gf.Key)
+		if key == "" {
+			return nil, errors.New("goal key must not be empty")
+		}
+		if utf8.RuneCountInString(key) > maxGoalKeyLen {
+			return nil, fmt.Errorf("goal key must be at most %d characters", maxGoalKeyLen)
+		}
+		val := gf.Value
+		if utf8.RuneCountInString(val) > maxGoalValueLen {
+			return nil, fmt.Errorf("goal value must be at most %d characters", maxGoalValueLen)
+		}
+		m[key] = val
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("marshal goals: %w", err)
+	}
+	if len(b) > maxGoalsLen {
+		return nil, fmt.Errorf("goals must be at most %d bytes", maxGoalsLen)
+	}
+	return b, nil
+}
+
+// validateGoals ensures the goals JSON is valid and size-bounded.
+// Used when goals arrive as a pre-encoded JSON string (legacy path).
 func validateGoals(goals string) ([]byte, error) {
 	goals = strings.TrimSpace(goals)
 	if goals == "" {
@@ -116,6 +147,23 @@ func validateGoals(goals string) ([]byte, error) {
 		return nil, errors.New("goals must be valid JSON")
 	}
 	return []byte(goals), nil
+}
+
+// goalsToFields parses a JSON-encoded goals string into GoalField messages.
+// Used by the response path so the frontend can render goals as fields.
+func goalsToFields(goals string) ([]*apiv1.GoalField, error) {
+	if goals == "" || goals == "{}" {
+		return nil, nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(goals), &m); err != nil {
+		return nil, err
+	}
+	fields := make([]*apiv1.GoalField, 0, len(m))
+	for k, v := range m {
+		fields = append(fields, &apiv1.GoalField{Key: k, Value: v})
+	}
+	return fields, nil
 }
 
 // requireTenant resolves the tenant id from the context. The middleware
