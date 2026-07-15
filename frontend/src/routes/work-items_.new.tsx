@@ -19,7 +19,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Route as rootRoute } from "@/routes/__root";
 
 // Create work item form (docs/10 §5, §2). The kind determines the
-// allowed parent (epic=none, feature=epic, task=feature, subtask=task).
+// allowed parent (epic=none, otherwise any shallower kind).
 // Zod validation mirrors the server-side rules
 // (internal/workitem/validate.go).
 export const Route = createRoute({
@@ -98,12 +98,13 @@ function NewWorkItemPage() {
   const selectedKind = watch("kind");
   const selectedParentId = watch("parentId");
 
-  // Validate parent/kind consistency (docs/02 §2.2: max 4 levels).
+  // Validate parent/kind consistency — allow skipping levels (e.g.
+  // Task under Epic), but reject same-level or deeper parents.
   const allowedParents = projectItems?.filter((i) => {
     if (selectedKind === "epic") return false; // epics have no parent
-    const expectedParentKind =
-      selectedKind === "feature" ? 1 : selectedKind === "task" ? 2 : 3;
-    return i.kind === expectedParentKind;
+    const childDepth = depthForKind(KIND_TO_PROTO[selectedKind as keyof typeof KIND_TO_PROTO]);
+    const parentDepth = depthForKind(i.kind);
+    return parentDepth < childDepth;
   });
 
   const onSubmit = async (values: CreateWorkItemForm) => {
@@ -127,8 +128,8 @@ function NewWorkItemPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">New Work Item</h1>
         <p className="text-sm text-muted-foreground">
-          Create an item in the work hierarchy. Epics are top-level; features
-          belong to epics; tasks to features; subtasks to tasks.
+          Create an item in the work hierarchy. Epics are top-level; features,
+          tasks, and subtasks nest under any shallower kind.
         </p>
       </div>
 
@@ -165,9 +166,9 @@ function NewWorkItemPage() {
                   {...register("kind")}
                 >
                   <option value="epic">Epic (top-level)</option>
-                  <option value="feature">Feature (parent: epic)</option>
-                  <option value="task">Task (parent: feature)</option>
-                  <option value="subtask">Subtask (parent: task)</option>
+                  <option value="feature">Feature</option>
+                  <option value="task">Task</option>
+                  <option value="subtask">Subtask</option>
                 </select>
                 {errors.kind && (
                   <p className="text-xs text-destructive">
@@ -269,4 +270,8 @@ function NewWorkItemPage() {
       </Card>
     </div>
   );
+}
+
+function depthForKind(kind: number): number {
+  return kind >= 1 && kind <= 4 ? kind : 0;
 }
