@@ -149,29 +149,37 @@ func (s *NATSSubscriber) Subscribe(ctx context.Context, filter string, fromSeq u
 
 	ch := make(chan EventMsg, 64)
 
-	go func() {
-		defer close(ch)
-		_, err := cons.Consume(func(msg jetstream.Msg) {
-			meta, mErr := msg.Metadata()
-			if mErr != nil {
-				return
-			}
-			em := EventMsg{
-				Subject: msg.Subject(),
-				Seq:     meta.Sequence.Stream,
-				Data:    msg.Data(),
-			}
-			select {
-			case ch <- em:
-				_ = msg.Ack()
-			case <-ctx.Done():
-				_ = msg.Nak()
-			}
-		})
-		if err != nil {
+	consCtx, err := cons.Consume(func(msg jetstream.Msg) {
+		meta, mErr := msg.Metadata()
+		if mErr != nil {
 			return
 		}
+		em := EventMsg{
+			Subject: msg.Subject(),
+			Seq:     meta.Sequence.Stream,
+			Data:    msg.Data(),
+		}
+		select {
+		case ch <- em:
+			_ = msg.Ack()
+		case <-ctx.Done():
+			_ = msg.Nak()
+		}
+	})
+	if err != nil {
+		return nil, fmt.Errorf("eventbus: start consumer: %w", err)
+	}
+
+	go func() {
+		defer close(ch)
 		<-ctx.Done()
+		consCtx.Stop()
+		// Drain any in-flight message from the NATS callback before
+		// closing the channel. The consumer's own internal goroutine
+		// may still be mid-callback; Stop() prevents new deliveries.
+		// Without this, the callback can send on a closed channel
+		// (AGENTS.md: panics are not acceptable).
+		<-consCtx.Closed()
 	}()
 
 	return ch, nil
