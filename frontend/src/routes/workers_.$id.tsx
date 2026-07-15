@@ -1,7 +1,8 @@
-import { createRoute } from "@tanstack/react-router";
+import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
 import {
+  useDeleteWorker,
   useDeprecateWorker,
   useGetEditLock,
   useGetWorker,
@@ -43,6 +44,8 @@ function WorkerDetailPage() {
   const retireWorker = useRetireWorker();
   const acquireLock = useAcquireEditLock();
   const releaseLock = useReleaseEditLock();
+  const navigate = useNavigate();
+  const deleteMutation = useDeleteWorker();
 
   // Edit lock lifecycle (docs/07 §3.3). Acquire when the user enters the
   // editor; release on unmount. A TTL expires it automatically if the
@@ -127,6 +130,17 @@ function WorkerDetailPage() {
               {retireWorker.isPending ? "Retiring…" : "Retire"}
             </Button>
           )}
+          <Button
+            variant="destructive"
+            onClick={() => {
+              if (window.confirm("Permanently delete this worker and all its versions? This cannot be undone.")) {
+                deleteMutation.mutate(id, { onSuccess: () => navigate({ to: "/workers" }) });
+              }
+            }}
+            disabled={deleteMutation.isPending}
+          >
+            {deleteMutation.isPending ? "Deleting…" : "Delete"}
+          </Button>
         </div>
       </div>
 

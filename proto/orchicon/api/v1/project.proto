@@ -65,6 +65,10 @@ message ListProjectsRequest {
   string tenant_id = 1;
   string page_token = 2; // cursor (docs/07 §5.2)
   int32 page_size = 3;
+  string search = 4; // free-text search across name and slug
+  optional ProjectStatus status = 5; // filter by status
+  string sort_by = 6; // field name: "name", "status", "created_at" (default)
+  string sort_order = 7; // "asc" or "desc" (default "asc")
 }
 
 message ListProjectsResponse {

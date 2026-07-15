@@ -39,7 +39,7 @@ export const workflowKeys = {
 
 // useListWorkflows fetches a page of workflows, optionally scoped to a
 // project (empty = all tenant workflows including templates).
-export function useListWorkflows(opts?: { projectId?: string; status?: WorkflowStatus }) {
+export function useListWorkflows(opts?: { projectId?: string; status?: WorkflowStatus; search?: string; sortBy?: string; sortOrder?: string }) {
   return useQuery({
     queryKey: workflowKeys.list(opts?.projectId, opts?.status),
     queryFn: async () => {
@@ -47,6 +47,9 @@ export function useListWorkflows(opts?: { projectId?: string; status?: WorkflowS
         pageSize: 100,
         projectId: opts?.projectId ?? "",
         status: opts?.status ?? undefined,
+        search: opts?.search || "",
+        sortBy: opts?.sortBy || "",
+        sortOrder: opts?.sortOrder || "",
       });
       return res.workflows as Workflow[];
     },
@@ -164,6 +167,19 @@ export function useStartWorkflow() {
     },
     onSuccess: (run) => {
       qc.invalidateQueries({ queryKey: workflowKeys.runs(run.workflowId) });
+    },
+  });
+}
+
+// useDeleteWorkflow hard-deletes a workflow and invalidates the list.
+export function useDeleteWorkflow() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      await workflowClient.deleteWorkflow({ id });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: workflowKeys.list() });
     },
   });
 }

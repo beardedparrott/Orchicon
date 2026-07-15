@@ -77,33 +77,61 @@ func GetProject(ctx context.Context, tx pgx.Tx, tenantID, id string) (ProjectRow
 	return p, nil
 }
 
-// ListProjectsFilter scopes a list query to a tenant. Excluded statuses
-// (e.g. deleted) are filtered out by default; the caller may override.
+// ListProjectsFilter scopes a list query to a tenant with optional
+// search, status filter, and sort.
 type ListProjectsFilter struct {
 	TenantID        string
-	ExcludeStatuses []string // e.g. []string{"deleted"}
+	ExcludeStatuses []string
 	PageSize        int
-	AfterID         string // cursor: list rows with id > AfterID (ULID ordering)
+	AfterID         string
+	Search          string
+	Status          string
+	SortBy          string // "name", "status", "created_at" (default)
+	SortOrder       string // "asc" or "desc" (default "asc")
 }
 
-// ListProjects returns a page of projects for the tenant, ordered by ULID
-// id for stable cursor pagination (docs/07 §5.2). The cursor is the last
-// id of the page; the client passes it as page_token. The tenant_id is
-// injected into the WHERE clause as the primary isolation layer.
+// ListProjects returns a page of projects for the tenant with cursor-based
+// pagination, optional search/filter, and configurable sort.
 func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]ProjectRow, error) {
 	if f.PageSize <= 0 || f.PageSize > 1000 {
 		f.PageSize = 100
 	}
-	q := `SELECT id, tenant_id, name, slug, status, goals, version,
+	args := []any{f.TenantID}
+	where := `tenant_id = $1`
+	idx := 2
+	if f.AfterID != "" {
+		where += fmt.Sprintf(` AND id > $%d`, idx)
+		args = append(args, f.AfterID)
+		idx++
+	}
+	if f.Search != "" {
+		where += fmt.Sprintf(` AND (name ILIKE $%d OR slug ILIKE $%d)`, idx, idx)
+		args = append(args, "%"+f.Search+"%")
+		idx++
+	}
+	if f.Status != "" {
+		where += fmt.Sprintf(` AND status = $%d`, idx)
+		args = append(args, f.Status)
+		idx++
+	}
+	if len(f.ExcludeStatuses) > 0 {
+		where += fmt.Sprintf(` AND status <> ALL($%d)`, idx)
+		args = append(args, f.ExcludeStatuses)
+		idx++
+	}
+	sortBy := "created_at"
+	if f.SortBy == "name" || f.SortBy == "status" {
+		sortBy = f.SortBy
+	}
+	sortOrder := "ASC"
+	if f.SortOrder == "desc" {
+		sortOrder = "DESC"
+	}
+	q := fmt.Sprintf(`SELECT id, tenant_id, name, slug, status, goals, version,
 		created_at, updated_at
 		FROM projects
-		WHERE tenant_id = $1 AND ($2 = '' OR id > $2)`
-	args := []any{f.TenantID, f.AfterID}
-	if len(f.ExcludeStatuses) > 0 {
-		q += fmt.Sprintf(` AND status <> ALL($%d)`, len(args)+1)
-		args = append(args, f.ExcludeStatuses)
-	}
-	q += ` ORDER BY id ASC LIMIT $` + fmt.Sprint(len(args)+1)
+		WHERE %s
+		ORDER BY %s %s LIMIT $%d`, where, sortBy, sortOrder, idx)
 	args = append(args, f.PageSize)
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
@@ -164,6 +192,57 @@ func UpdateProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expected
 		return ProjectRow{}, fmt.Errorf("db: update project: %w", err)
 	}
 	return p, nil
+}
+
+// DeleteProject hard-deletes a project and cascades to all owned entities
+// (work items, workflows, workflow versions, workflow runs, step runs).
+// The tenant_id is injected into the WHERE clause for isolation.
+func DeleteProject(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
+	// Cascade: delete step runs for all workflow runs in this project
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM workflow_step_runs
+		 WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE tenant_id = $1 AND project_id = $2)`,
+		tenantID, id); err != nil {
+		return fmt.Errorf("db: delete project cascade step runs: %w", err)
+	}
+	// Cascade: delete workflow runs
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM workflow_runs WHERE tenant_id = $1 AND project_id = $2`,
+		tenantID, id); err != nil {
+		return fmt.Errorf("db: delete project cascade workflow runs: %w", err)
+	}
+	// Cascade: delete workflow versions
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM workflow_versions
+		 WHERE workflow_id IN (SELECT id FROM workflows WHERE tenant_id = $1 AND project_id = $2)`,
+		tenantID, id); err != nil {
+		return fmt.Errorf("db: delete project cascade workflow versions: %w", err)
+	}
+	// Cascade: delete workflows
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM workflows WHERE tenant_id = $1 AND project_id = $2`,
+		tenantID, id); err != nil {
+		return fmt.Errorf("db: delete project cascade workflows: %w", err)
+	}
+	// Cascade: delete work item dependencies
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM work_item_dependencies WHERE project_id = $1 AND tenant_id = $2`,
+		id, tenantID); err != nil {
+		return fmt.Errorf("db: delete project cascade work item dependencies: %w", err)
+	}
+	// Cascade: delete work items
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM work_items WHERE project_id = $1 AND tenant_id = $2`,
+		id, tenantID); err != nil {
+		return fmt.Errorf("db: delete project cascade work items: %w", err)
+	}
+	// Delete the project itself
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM projects WHERE id = $1 AND tenant_id = $2`,
+		id, tenantID); err != nil {
+		return fmt.Errorf("db: delete project: %w", err)
+	}
+	return nil
 }
 
 // ArchiveProject transitions a project to archived status with optimistic

@@ -15,6 +15,7 @@ service ProjectService {
   rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
   rpc UpdateProject(UpdateProjectRequest) returns (UpdateProjectResponse);
   rpc ArchiveProject(ArchiveProjectRequest) returns (ArchiveProjectResponse);
+  rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse);
   rpc PauseProject(PauseProjectRequest) returns (PauseProjectResponse);
   rpc StreamProjectEvents(StreamProjectEventsRequest) returns (stream StreamProjectEventsResponse);
 }
@@ -34,6 +35,12 @@ message UpdateProjectResponse {
 message ArchiveProjectResponse {
   Project project = 1;
 }
+
+message DeleteProjectRequest {
+  string id = 1;
+}
+
+message DeleteProjectResponse {}
 
 message PauseProjectResponse {
   Project project = 1;

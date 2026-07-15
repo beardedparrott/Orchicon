@@ -178,6 +178,25 @@ func requireTenant(ctx context.Context) (string, error) {
 	return id, nil
 }
 
+// statusFromProto maps a proto enum value to a domain status string.
+// Unknown/UNSPECIFIED returns empty string.
+func statusFromProto(status apiv1.ProjectStatus) string {
+	switch status {
+	case apiv1.ProjectStatus_PROJECT_STATUS_DRAFTING:
+		return domain.ProjectDrafting
+	case apiv1.ProjectStatus_PROJECT_STATUS_ACTIVE:
+		return domain.ProjectActive
+	case apiv1.ProjectStatus_PROJECT_STATUS_PAUSED:
+		return domain.ProjectPaused
+	case apiv1.ProjectStatus_PROJECT_STATUS_ARCHIVED:
+		return domain.ProjectArchived
+	case apiv1.ProjectStatus_PROJECT_STATUS_DELETED:
+		return domain.ProjectDeleted
+	default:
+		return ""
+	}
+}
+
 // statusToProto maps a domain status string to the proto enum value.
 // Unknown statuses map to UNSPECIFIED so the API never crashes on a row
 // with an unexpected status (defensive — the DB should prevent this).

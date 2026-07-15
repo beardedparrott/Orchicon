@@ -53,6 +53,9 @@ const (
 	// WorkerServiceRetireWorkerProcedure is the fully-qualified name of the WorkerService's
 	// RetireWorker RPC.
 	WorkerServiceRetireWorkerProcedure = "/orchicon.api.v1.WorkerService/RetireWorker"
+	// WorkerServiceDeleteWorkerProcedure is the fully-qualified name of the WorkerService's
+	// DeleteWorker RPC.
+	WorkerServiceDeleteWorkerProcedure = "/orchicon.api.v1.WorkerService/DeleteWorker"
 	// WorkerServiceGetWorkerProcedure is the fully-qualified name of the WorkerService's GetWorker RPC.
 	WorkerServiceGetWorkerProcedure = "/orchicon.api.v1.WorkerService/GetWorker"
 	// WorkerServiceListWorkersProcedure is the fully-qualified name of the WorkerService's ListWorkers
@@ -88,6 +91,8 @@ type WorkerServiceClient interface {
 	// RetireWorker transitions a deprecated Worker to retired. No new
 	// dispatches; in-flight executions run to completion (docs/05 §4).
 	RetireWorker(context.Context, *connect.Request[v1.RetireWorkerRequest]) (*connect.Response[v1.RetireWorkerResponse], error)
+	// DeleteWorker hard-deletes a Worker and all its versions.
+	DeleteWorker(context.Context, *connect.Request[v1.DeleteWorkerRequest]) (*connect.Response[v1.DeleteWorkerResponse], error)
 	// GetWorker returns a single Worker header by id.
 	GetWorker(context.Context, *connect.Request[v1.GetWorkerRequest]) (*connect.Response[v1.GetWorkerResponse], error)
 	// ListWorkers returns a page of Workers for the tenant.
@@ -139,6 +144,12 @@ func NewWorkerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(workerServiceMethods.ByName("RetireWorker")),
 			connect.WithClientOptions(opts...),
 		),
+		deleteWorker: connect.NewClient[v1.DeleteWorkerRequest, v1.DeleteWorkerResponse](
+			httpClient,
+			baseURL+WorkerServiceDeleteWorkerProcedure,
+			connect.WithSchema(workerServiceMethods.ByName("DeleteWorker")),
+			connect.WithClientOptions(opts...),
+		),
 		getWorker: connect.NewClient[v1.GetWorkerRequest, v1.GetWorkerResponse](
 			httpClient,
 			baseURL+WorkerServiceGetWorkerProcedure,
@@ -184,6 +195,7 @@ type workerServiceClient struct {
 	publishWorkerVersion *connect.Client[v1.PublishWorkerVersionRequest, v1.PublishWorkerVersionResponse]
 	deprecateWorker      *connect.Client[v1.DeprecateWorkerRequest, v1.DeprecateWorkerResponse]
 	retireWorker         *connect.Client[v1.RetireWorkerRequest, v1.RetireWorkerResponse]
+	deleteWorker         *connect.Client[v1.DeleteWorkerRequest, v1.DeleteWorkerResponse]
 	getWorker            *connect.Client[v1.GetWorkerRequest, v1.GetWorkerResponse]
 	listWorkers          *connect.Client[v1.ListWorkersRequest, v1.ListWorkersResponse]
 	listWorkerVersions   *connect.Client[v1.ListWorkerVersionsRequest, v1.ListWorkerVersionsResponse]
@@ -210,6 +222,11 @@ func (c *workerServiceClient) DeprecateWorker(ctx context.Context, req *connect.
 // RetireWorker calls orchicon.api.v1.WorkerService.RetireWorker.
 func (c *workerServiceClient) RetireWorker(ctx context.Context, req *connect.Request[v1.RetireWorkerRequest]) (*connect.Response[v1.RetireWorkerResponse], error) {
 	return c.retireWorker.CallUnary(ctx, req)
+}
+
+// DeleteWorker calls orchicon.api.v1.WorkerService.DeleteWorker.
+func (c *workerServiceClient) DeleteWorker(ctx context.Context, req *connect.Request[v1.DeleteWorkerRequest]) (*connect.Response[v1.DeleteWorkerResponse], error) {
+	return c.deleteWorker.CallUnary(ctx, req)
 }
 
 // GetWorker calls orchicon.api.v1.WorkerService.GetWorker.
@@ -258,6 +275,8 @@ type WorkerServiceHandler interface {
 	// RetireWorker transitions a deprecated Worker to retired. No new
 	// dispatches; in-flight executions run to completion (docs/05 §4).
 	RetireWorker(context.Context, *connect.Request[v1.RetireWorkerRequest]) (*connect.Response[v1.RetireWorkerResponse], error)
+	// DeleteWorker hard-deletes a Worker and all its versions.
+	DeleteWorker(context.Context, *connect.Request[v1.DeleteWorkerRequest]) (*connect.Response[v1.DeleteWorkerResponse], error)
 	// GetWorker returns a single Worker header by id.
 	GetWorker(context.Context, *connect.Request[v1.GetWorkerRequest]) (*connect.Response[v1.GetWorkerResponse], error)
 	// ListWorkers returns a page of Workers for the tenant.
@@ -303,6 +322,12 @@ func NewWorkerServiceHandler(svc WorkerServiceHandler, opts ...connect.HandlerOp
 		WorkerServiceRetireWorkerProcedure,
 		svc.RetireWorker,
 		connect.WithSchema(workerServiceMethods.ByName("RetireWorker")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workerServiceDeleteWorkerHandler := connect.NewUnaryHandler(
+		WorkerServiceDeleteWorkerProcedure,
+		svc.DeleteWorker,
+		connect.WithSchema(workerServiceMethods.ByName("DeleteWorker")),
 		connect.WithHandlerOptions(opts...),
 	)
 	workerServiceGetWorkerHandler := connect.NewUnaryHandler(
@@ -351,6 +376,8 @@ func NewWorkerServiceHandler(svc WorkerServiceHandler, opts ...connect.HandlerOp
 			workerServiceDeprecateWorkerHandler.ServeHTTP(w, r)
 		case WorkerServiceRetireWorkerProcedure:
 			workerServiceRetireWorkerHandler.ServeHTTP(w, r)
+		case WorkerServiceDeleteWorkerProcedure:
+			workerServiceDeleteWorkerHandler.ServeHTTP(w, r)
 		case WorkerServiceGetWorkerProcedure:
 			workerServiceGetWorkerHandler.ServeHTTP(w, r)
 		case WorkerServiceListWorkersProcedure:
@@ -386,6 +413,10 @@ func (UnimplementedWorkerServiceHandler) DeprecateWorker(context.Context, *conne
 
 func (UnimplementedWorkerServiceHandler) RetireWorker(context.Context, *connect.Request[v1.RetireWorkerRequest]) (*connect.Response[v1.RetireWorkerResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkerService.RetireWorker is not implemented"))
+}
+
+func (UnimplementedWorkerServiceHandler) DeleteWorker(context.Context, *connect.Request[v1.DeleteWorkerRequest]) (*connect.Response[v1.DeleteWorkerResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkerService.DeleteWorker is not implemented"))
 }
 
 func (UnimplementedWorkerServiceHandler) GetWorker(context.Context, *connect.Request[v1.GetWorkerRequest]) (*connect.Response[v1.GetWorkerResponse], error) {

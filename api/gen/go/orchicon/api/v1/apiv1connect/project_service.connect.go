@@ -54,6 +54,9 @@ const (
 	// ProjectServiceArchiveProjectProcedure is the fully-qualified name of the ProjectService's
 	// ArchiveProject RPC.
 	ProjectServiceArchiveProjectProcedure = "/orchicon.api.v1.ProjectService/ArchiveProject"
+	// ProjectServiceDeleteProjectProcedure is the fully-qualified name of the ProjectService's
+	// DeleteProject RPC.
+	ProjectServiceDeleteProjectProcedure = "/orchicon.api.v1.ProjectService/DeleteProject"
 	// ProjectServicePauseProjectProcedure is the fully-qualified name of the ProjectService's
 	// PauseProject RPC.
 	ProjectServicePauseProjectProcedure = "/orchicon.api.v1.ProjectService/PauseProject"
@@ -69,6 +72,7 @@ type ProjectServiceClient interface {
 	ListProjects(context.Context, *connect.Request[v1.ListProjectsRequest]) (*connect.Response[v1.ListProjectsResponse], error)
 	UpdateProject(context.Context, *connect.Request[v1.UpdateProjectRequest]) (*connect.Response[v1.UpdateProjectResponse], error)
 	ArchiveProject(context.Context, *connect.Request[v1.ArchiveProjectRequest]) (*connect.Response[v1.ArchiveProjectResponse], error)
+	DeleteProject(context.Context, *connect.Request[v1.DeleteProjectRequest]) (*connect.Response[v1.DeleteProjectResponse], error)
 	PauseProject(context.Context, *connect.Request[v1.PauseProjectRequest]) (*connect.Response[v1.PauseProjectResponse], error)
 	StreamProjectEvents(context.Context, *connect.Request[v1.StreamProjectEventsRequest]) (*connect.ServerStreamForClient[v1.StreamProjectEventsResponse], error)
 }
@@ -114,6 +118,12 @@ func NewProjectServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(projectServiceMethods.ByName("ArchiveProject")),
 			connect.WithClientOptions(opts...),
 		),
+		deleteProject: connect.NewClient[v1.DeleteProjectRequest, v1.DeleteProjectResponse](
+			httpClient,
+			baseURL+ProjectServiceDeleteProjectProcedure,
+			connect.WithSchema(projectServiceMethods.ByName("DeleteProject")),
+			connect.WithClientOptions(opts...),
+		),
 		pauseProject: connect.NewClient[v1.PauseProjectRequest, v1.PauseProjectResponse](
 			httpClient,
 			baseURL+ProjectServicePauseProjectProcedure,
@@ -136,6 +146,7 @@ type projectServiceClient struct {
 	listProjects        *connect.Client[v1.ListProjectsRequest, v1.ListProjectsResponse]
 	updateProject       *connect.Client[v1.UpdateProjectRequest, v1.UpdateProjectResponse]
 	archiveProject      *connect.Client[v1.ArchiveProjectRequest, v1.ArchiveProjectResponse]
+	deleteProject       *connect.Client[v1.DeleteProjectRequest, v1.DeleteProjectResponse]
 	pauseProject        *connect.Client[v1.PauseProjectRequest, v1.PauseProjectResponse]
 	streamProjectEvents *connect.Client[v1.StreamProjectEventsRequest, v1.StreamProjectEventsResponse]
 }
@@ -165,6 +176,11 @@ func (c *projectServiceClient) ArchiveProject(ctx context.Context, req *connect.
 	return c.archiveProject.CallUnary(ctx, req)
 }
 
+// DeleteProject calls orchicon.api.v1.ProjectService.DeleteProject.
+func (c *projectServiceClient) DeleteProject(ctx context.Context, req *connect.Request[v1.DeleteProjectRequest]) (*connect.Response[v1.DeleteProjectResponse], error) {
+	return c.deleteProject.CallUnary(ctx, req)
+}
+
 // PauseProject calls orchicon.api.v1.ProjectService.PauseProject.
 func (c *projectServiceClient) PauseProject(ctx context.Context, req *connect.Request[v1.PauseProjectRequest]) (*connect.Response[v1.PauseProjectResponse], error) {
 	return c.pauseProject.CallUnary(ctx, req)
@@ -182,6 +198,7 @@ type ProjectServiceHandler interface {
 	ListProjects(context.Context, *connect.Request[v1.ListProjectsRequest]) (*connect.Response[v1.ListProjectsResponse], error)
 	UpdateProject(context.Context, *connect.Request[v1.UpdateProjectRequest]) (*connect.Response[v1.UpdateProjectResponse], error)
 	ArchiveProject(context.Context, *connect.Request[v1.ArchiveProjectRequest]) (*connect.Response[v1.ArchiveProjectResponse], error)
+	DeleteProject(context.Context, *connect.Request[v1.DeleteProjectRequest]) (*connect.Response[v1.DeleteProjectResponse], error)
 	PauseProject(context.Context, *connect.Request[v1.PauseProjectRequest]) (*connect.Response[v1.PauseProjectResponse], error)
 	StreamProjectEvents(context.Context, *connect.Request[v1.StreamProjectEventsRequest], *connect.ServerStream[v1.StreamProjectEventsResponse]) error
 }
@@ -223,6 +240,12 @@ func NewProjectServiceHandler(svc ProjectServiceHandler, opts ...connect.Handler
 		connect.WithSchema(projectServiceMethods.ByName("ArchiveProject")),
 		connect.WithHandlerOptions(opts...),
 	)
+	projectServiceDeleteProjectHandler := connect.NewUnaryHandler(
+		ProjectServiceDeleteProjectProcedure,
+		svc.DeleteProject,
+		connect.WithSchema(projectServiceMethods.ByName("DeleteProject")),
+		connect.WithHandlerOptions(opts...),
+	)
 	projectServicePauseProjectHandler := connect.NewUnaryHandler(
 		ProjectServicePauseProjectProcedure,
 		svc.PauseProject,
@@ -247,6 +270,8 @@ func NewProjectServiceHandler(svc ProjectServiceHandler, opts ...connect.Handler
 			projectServiceUpdateProjectHandler.ServeHTTP(w, r)
 		case ProjectServiceArchiveProjectProcedure:
 			projectServiceArchiveProjectHandler.ServeHTTP(w, r)
+		case ProjectServiceDeleteProjectProcedure:
+			projectServiceDeleteProjectHandler.ServeHTTP(w, r)
 		case ProjectServicePauseProjectProcedure:
 			projectServicePauseProjectHandler.ServeHTTP(w, r)
 		case ProjectServiceStreamProjectEventsProcedure:
@@ -278,6 +303,10 @@ func (UnimplementedProjectServiceHandler) UpdateProject(context.Context, *connec
 
 func (UnimplementedProjectServiceHandler) ArchiveProject(context.Context, *connect.Request[v1.ArchiveProjectRequest]) (*connect.Response[v1.ArchiveProjectResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.ProjectService.ArchiveProject is not implemented"))
+}
+
+func (UnimplementedProjectServiceHandler) DeleteProject(context.Context, *connect.Request[v1.DeleteProjectRequest]) (*connect.Response[v1.DeleteProjectResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.ProjectService.DeleteProject is not implemented"))
 }
 
 func (UnimplementedProjectServiceHandler) PauseProject(context.Context, *connect.Request[v1.PauseProjectRequest]) (*connect.Response[v1.PauseProjectResponse], error) {

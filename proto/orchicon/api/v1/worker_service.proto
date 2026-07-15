@@ -30,6 +30,9 @@ service WorkerService {
   // dispatches; in-flight executions run to completion (docs/05 §4).
   rpc RetireWorker(RetireWorkerRequest) returns (RetireWorkerResponse);
 
+  // DeleteWorker hard-deletes a Worker and all its versions.
+  rpc DeleteWorker(DeleteWorkerRequest) returns (DeleteWorkerResponse);
+
   // GetWorker returns a single Worker header by id.
   rpc GetWorker(GetWorkerRequest) returns (GetWorkerResponse);
 
@@ -104,6 +107,12 @@ message RetireWorkerResponse {
   Worker worker = 1;
 }
 
+message DeleteWorkerRequest {
+  string id = 1;
+}
+
+message DeleteWorkerResponse {}
+
 message GetWorkerRequest {
   string id = 1;
 }
@@ -118,6 +127,9 @@ message ListWorkersRequest {
   string page_token = 2;
   int32 page_size = 3;
   optional WorkerStatus status = 4; // optional filter
+  string search = 5; // free-text search across name, slug, purpose
+  string sort_by = 6; // field name: "name", "status", "created_at" (default)
+  string sort_order = 7; // "asc" or "desc" (default "asc")
 }
 
 message ListWorkersResponse {

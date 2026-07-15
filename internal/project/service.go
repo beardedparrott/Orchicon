@@ -108,25 +108,34 @@ func (s *Service) GetProject(ctx context.Context, req *connect.Request[apiv1.Get
 	return connect.NewResponse(&apiv1.GetProjectResponse{Project: rowToProto(p)}), nil
 }
 
-// ListProjects returns a page of projects for the tenant. Deleted
-// projects are excluded by default. Pagination is cursor-based on ULID
-// id ordering (docs/07 §5.2).
+// ListProjects returns a page of projects for the tenant with optional
+// search, status filter, and sort. Deleted projects are excluded by
+// default. Pagination is cursor-based on ULID id ordering (docs/07 §5.2).
 func (s *Service) ListProjects(ctx context.Context, req *connect.Request[apiv1.ListProjectsRequest]) (*connect.Response[apiv1.ListProjectsResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	f := db.ListProjectsFilter{
+		TenantID:        tenantID,
+		ExcludeStatuses: []string{domain.ProjectDeleted},
+		PageSize:        int(req.Msg.PageSize),
+		AfterID:         req.Msg.PageToken,
+		Search:          req.Msg.Search,
+		SortBy:          req.Msg.SortBy,
+		SortOrder:       req.Msg.SortOrder,
+	}
+	if req.Msg.Status != nil {
+		f.Status = statusFromProto(*req.Msg.Status)
+	} else {
+		f.ExcludeStatuses = []string{domain.ProjectDeleted}
 	}
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
-	projects, err := db.ListProjects(ctx, ttx.Tx, db.ListProjectsFilter{
-		TenantID:        tenantID,
-		ExcludeStatuses: []string{domain.ProjectDeleted},
-		PageSize:        int(req.Msg.PageSize),
-		AfterID:         req.Msg.PageToken,
-	})
+	projects, err := db.ListProjects(ctx, ttx.Tx, f)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
@@ -226,6 +235,35 @@ func (s *Service) ArchiveProject(ctx context.Context, req *connect.Request[apiv1
 	}
 	s.log.Info("project archived", "id", archived.ID)
 	return connect.NewResponse(&apiv1.ArchiveProjectResponse{Project: rowToProto(archived)}), nil
+}
+
+// DeleteProject hard-deletes a project and cascades to owned entities
+// (work items, workflows, workflow versions, runs, step runs).
+func (s *Service) DeleteProject(ctx context.Context, req *connect.Request[apiv1.DeleteProjectRequest]) (*connect.Response[apiv1.DeleteProjectResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	// Check project exists before deleting
+	if _, err := db.GetProject(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := db.DeleteProject(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("project deleted", "id", req.Msg.Id, "tenant", tenantID)
+	return connect.NewResponse(&apiv1.DeleteProjectResponse{}), nil
 }
 
 // PauseProject is a lifecycle transition. It reuses the update path to

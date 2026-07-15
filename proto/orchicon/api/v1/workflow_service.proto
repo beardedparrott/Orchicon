@@ -33,6 +33,9 @@ service WorkflowService {
   // Still runnable for in-flight runs; no new runs may start.
   rpc DeprecateWorkflow(DeprecateWorkflowRequest) returns (DeprecateWorkflowResponse);
 
+  // DeleteWorkflow hard-deletes a Workflow, its versions, runs, and step runs.
+  rpc DeleteWorkflow(DeleteWorkflowRequest) returns (DeleteWorkflowResponse);
+
   // GetWorkflow returns a single Workflow header by id, with its latest
   // published version (if any).
   rpc GetWorkflow(GetWorkflowRequest) returns (GetWorkflowResponse);
@@ -121,6 +124,12 @@ message DeprecateWorkflowResponse {
   Workflow workflow = 1;
 }
 
+message DeleteWorkflowRequest {
+  string id = 1;
+}
+
+message DeleteWorkflowResponse {}
+
 message GetWorkflowRequest {
   string id = 1;
 }
@@ -136,6 +145,9 @@ message ListWorkflowsRequest {
   string page_token = 3;
   int32 page_size = 4;
   optional WorkflowStatus status = 5;
+  string search = 6; // free-text search across name
+  string sort_by = 7; // field name: "name", "status", "created_at" (default)
+  string sort_order = 8; // "asc" or "desc" (default "asc")
 }
 
 message ListWorkflowsResponse {

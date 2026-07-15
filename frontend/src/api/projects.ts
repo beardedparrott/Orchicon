@@ -8,7 +8,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { projectClient } from "@/api/clients";
-import type { GoalField, Project } from "@/api/gen/orchicon/api/v1/project_pb";
+import type { GoalField, Project, ProjectStatus } from "@/api/gen/orchicon/api/v1/project_pb";
 
 // Query keys are centralized so invalidation is type-safe and
 // refactor-proof. New project-scoped queries extend this tree.
@@ -19,12 +19,18 @@ export const projectKeys = {
 };
 
 // useListProjects fetches a page of projects for the resolved tenant.
-// Deleted projects are excluded server-side.
-export function useListProjects() {
+// Deleted projects are excluded server-side unless status is explicitly set.
+export function useListProjects(opts?: { search?: string; status?: ProjectStatus; sortBy?: string; sortOrder?: string }) {
   return useQuery({
-    queryKey: projectKeys.list(),
+    queryKey: [...projectKeys.list(), opts],
     queryFn: async () => {
-      const res = await projectClient.listProjects({ pageSize: 100 });
+      const res = await projectClient.listProjects({
+        pageSize: 100,
+        search: opts?.search || "",
+        status: opts?.status,
+        sortBy: opts?.sortBy || "",
+        sortOrder: opts?.sortOrder || "",
+      });
       return res.projects as Project[];
     },
   });
@@ -67,6 +73,19 @@ export function useArchiveProject() {
     onSuccess: (project) => {
       qc.invalidateQueries({ queryKey: projectKeys.list() });
       qc.invalidateQueries({ queryKey: projectKeys.detail(project.id) });
+    },
+  });
+}
+
+// useDeleteProject hard-deletes a project and invalidates the list.
+export function useDeleteProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      await projectClient.deleteProject({ id });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: projectKeys.list() });
     },
   });
 }

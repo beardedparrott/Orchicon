@@ -10,7 +10,7 @@
 // @ts-nocheck
 
 import { ArchiveProjectRequest, CreateProjectRequest, GetProjectRequest, ListProjectsRequest, ListProjectsResponse, PauseProjectRequest, UpdateProjectRequest } from "./project_pb.js";
-import { ArchiveProjectResponse, CreateProjectResponse, GetProjectResponse, PauseProjectResponse, StreamProjectEventsRequest, StreamProjectEventsResponse, UpdateProjectResponse } from "./project_service_pb.js";
+import { ArchiveProjectResponse, CreateProjectResponse, DeleteProjectRequest, DeleteProjectResponse, GetProjectResponse, PauseProjectResponse, StreamProjectEventsRequest, StreamProjectEventsResponse, UpdateProjectResponse } from "./project_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -62,6 +62,15 @@ export const ProjectService = {
       name: "ArchiveProject",
       I: ArchiveProjectRequest,
       O: ArchiveProjectResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc orchicon.api.v1.ProjectService.DeleteProject
+     */
+    deleteProject: {
+      name: "DeleteProject",
+      I: DeleteProjectRequest,
+      O: DeleteProjectResponse,
       kind: MethodKind.Unary,
     },
     /**

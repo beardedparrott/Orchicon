@@ -17,7 +17,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortWorkflowRequest, AbortWorkflowResponse, AcquireWorkflowEditLockRequest, AcquireWorkflowEditLockResponse, CreateWorkflowRequest, CreateWorkflowResponse, DeprecateWorkflowRequest, DeprecateWorkflowResponse, GetWorkflowEditLockRequest, GetWorkflowEditLockResponse, GetWorkflowRequest, GetWorkflowResponse, GetWorkflowRunRequest, GetWorkflowRunResponse, GetWorkflowStepRunsRequest, GetWorkflowStepRunsResponse, ListWorkflowRunsRequest, ListWorkflowRunsResponse, ListWorkflowsRequest, ListWorkflowsResponse, ListWorkflowVersionsRequest, ListWorkflowVersionsResponse, PublishWorkflowRequest, PublishWorkflowResponse, ReleaseWorkflowEditLockRequest, ReleaseWorkflowEditLockResponse, StartWorkflowRequest, StartWorkflowResponse, StreamWorkflowEventsRequest, StreamWorkflowEventsResponse, UpdateWorkflowVersionRequest, UpdateWorkflowVersionResponse } from "./workflow_service_pb.js";
+import { AbortWorkflowRequest, AbortWorkflowResponse, AcquireWorkflowEditLockRequest, AcquireWorkflowEditLockResponse, CreateWorkflowRequest, CreateWorkflowResponse, DeleteWorkflowRequest, DeleteWorkflowResponse, DeprecateWorkflowRequest, DeprecateWorkflowResponse, GetWorkflowEditLockRequest, GetWorkflowEditLockResponse, GetWorkflowRequest, GetWorkflowResponse, GetWorkflowRunRequest, GetWorkflowRunResponse, GetWorkflowStepRunsRequest, GetWorkflowStepRunsResponse, ListWorkflowRunsRequest, ListWorkflowRunsResponse, ListWorkflowsRequest, ListWorkflowsResponse, ListWorkflowVersionsRequest, ListWorkflowVersionsResponse, PublishWorkflowRequest, PublishWorkflowResponse, ReleaseWorkflowEditLockRequest, ReleaseWorkflowEditLockResponse, StartWorkflowRequest, StartWorkflowResponse, StreamWorkflowEventsRequest, StreamWorkflowEventsResponse, UpdateWorkflowVersionRequest, UpdateWorkflowVersionResponse } from "./workflow_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -62,6 +62,17 @@ export const WorkflowService = {
       name: "DeprecateWorkflow",
       I: DeprecateWorkflowRequest,
       O: DeprecateWorkflowResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * DeleteWorkflow hard-deletes a Workflow, its versions, runs, and step runs.
+     *
+     * @generated from rpc orchicon.api.v1.WorkflowService.DeleteWorkflow
+     */
+    deleteWorkflow: {
+      name: "DeleteWorkflow",
+      I: DeleteWorkflowRequest,
+      O: DeleteWorkflowResponse,
       kind: MethodKind.Unary,
     },
     /**

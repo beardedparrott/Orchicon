@@ -425,6 +425,10 @@ type ListProjectsRequest struct {
 	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	PageToken     string                 `protobuf:"bytes,2,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"` // cursor (docs/07 §5.2)
 	PageSize      int32                  `protobuf:"varint,3,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	Search        string                 `protobuf:"bytes,4,opt,name=search,proto3" json:"search,omitempty"`                                           // free-text search across name and slug
+	Status        *ProjectStatus         `protobuf:"varint,5,opt,name=status,proto3,enum=orchicon.api.v1.ProjectStatus,oneof" json:"status,omitempty"` // filter by status
+	SortBy        string                 `protobuf:"bytes,6,opt,name=sort_by,json=sortBy,proto3" json:"sort_by,omitempty"`                             // field name: "name", "status", "created_at" (default)
+	SortOrder     string                 `protobuf:"bytes,7,opt,name=sort_order,json=sortOrder,proto3" json:"sort_order,omitempty"`                    // "asc" or "desc" (default "asc")
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -478,6 +482,34 @@ func (x *ListProjectsRequest) GetPageSize() int32 {
 		return x.PageSize
 	}
 	return 0
+}
+
+func (x *ListProjectsRequest) GetSearch() string {
+	if x != nil {
+		return x.Search
+	}
+	return ""
+}
+
+func (x *ListProjectsRequest) GetStatus() ProjectStatus {
+	if x != nil && x.Status != nil {
+		return *x.Status
+	}
+	return ProjectStatus_PROJECT_STATUS_UNSPECIFIED
+}
+
+func (x *ListProjectsRequest) GetSortBy() string {
+	if x != nil {
+		return x.SortBy
+	}
+	return ""
+}
+
+func (x *ListProjectsRequest) GetSortOrder() string {
+	if x != nil {
+		return x.SortOrder
+	}
+	return ""
 }
 
 type ListProjectsResponse struct {
@@ -806,12 +838,18 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\n" +
 	"request_id\x18\x05 \x01(\tR\trequestId\"#\n" +
 	"\x11GetProjectRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"n\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\x86\x02\n" +
 	"\x13ListProjectsRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1d\n" +
 	"\n" +
 	"page_token\x18\x02 \x01(\tR\tpageToken\x12\x1b\n" +
-	"\tpage_size\x18\x03 \x01(\x05R\bpageSize\"t\n" +
+	"\tpage_size\x18\x03 \x01(\x05R\bpageSize\x12\x16\n" +
+	"\x06search\x18\x04 \x01(\tR\x06search\x12;\n" +
+	"\x06status\x18\x05 \x01(\x0e2\x1e.orchicon.api.v1.ProjectStatusH\x00R\x06status\x88\x01\x01\x12\x17\n" +
+	"\asort_by\x18\x06 \x01(\tR\x06sortBy\x12\x1d\n" +
+	"\n" +
+	"sort_order\x18\a \x01(\tR\tsortOrderB\t\n" +
+	"\a_status\"t\n" +
 	"\x14ListProjectsResponse\x124\n" +
 	"\bprojects\x18\x01 \x03(\v2\x18.orchicon.api.v1.ProjectR\bprojects\x12&\n" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xa9\x01\n" +
@@ -881,14 +919,15 @@ var file_orchicon_api_v1_project_proto_depIdxs = []int32{
 	12, // 2: orchicon.api.v1.Project.created_at:type_name -> google.protobuf.Timestamp
 	12, // 3: orchicon.api.v1.Project.updated_at:type_name -> google.protobuf.Timestamp
 	1,  // 4: orchicon.api.v1.CreateProjectRequest.goals:type_name -> orchicon.api.v1.GoalField
-	3,  // 5: orchicon.api.v1.ListProjectsResponse.projects:type_name -> orchicon.api.v1.Project
-	2,  // 6: orchicon.api.v1.UpdateProjectRequest.goals:type_name -> orchicon.api.v1.GoalFields
-	12, // 7: orchicon.api.v1.ProjectEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	8,  // [8:8] is the sub-list for method output_type
-	8,  // [8:8] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	0,  // 5: orchicon.api.v1.ListProjectsRequest.status:type_name -> orchicon.api.v1.ProjectStatus
+	3,  // 6: orchicon.api.v1.ListProjectsResponse.projects:type_name -> orchicon.api.v1.Project
+	2,  // 7: orchicon.api.v1.UpdateProjectRequest.goals:type_name -> orchicon.api.v1.GoalFields
+	12, // 8: orchicon.api.v1.ProjectEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	9,  // [9:9] is the sub-list for method output_type
+	9,  // [9:9] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_project_proto_init() }
@@ -896,6 +935,7 @@ func file_orchicon_api_v1_project_proto_init() {
 	if File_orchicon_api_v1_project_proto != nil {
 		return
 	}
+	file_orchicon_api_v1_project_proto_msgTypes[5].OneofWrappers = []any{}
 	file_orchicon_api_v1_project_proto_msgTypes[7].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

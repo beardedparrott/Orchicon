@@ -1,7 +1,12 @@
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { useArchiveProject, useGetProject, projectKeys } from "@/api/projects";
+import {
+  useArchiveProject,
+  useDeleteProject,
+  useGetProject,
+  projectKeys,
+} from "@/api/projects";
 import { useStreamProjectEvents } from "@/api/projectEvents";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,6 +32,7 @@ function ProjectDetailPage() {
   const { id } = Route.useParams();
   const { data: project, isLoading, error } = useGetProject(id);
   const archiveProject = useArchiveProject();
+  const deleteMutation = useDeleteProject();
   const navigate = useNavigate();
   const qc = useQueryClient();
 
@@ -43,6 +49,18 @@ function ProjectDetailPage() {
   const handleArchive = async () => {
     await archiveProject.mutateAsync(id);
     navigate({ to: "/projects" });
+  };
+
+  const handleDelete = () => {
+    if (
+      window.confirm(
+        "Permanently delete this project and all its workflows, work items, and data? This cannot be undone.",
+      )
+    ) {
+      deleteMutation.mutate(id, {
+        onSuccess: () => navigate({ to: "/projects" }),
+      });
+    }
   };
 
   if (isLoading) {
@@ -80,6 +98,13 @@ function ProjectDetailPage() {
               {archiveProject.isPending ? "Archiving…" : "Archive"}
             </Button>
           )}
+          <Button
+            variant="destructive"
+            onClick={handleDelete}
+            disabled={deleteMutation.isPending}
+          >
+            {deleteMutation.isPending ? "Deleting…" : "Delete"}
+          </Button>
         </div>
       </div>
 

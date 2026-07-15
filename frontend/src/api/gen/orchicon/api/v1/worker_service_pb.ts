@@ -448,6 +448,74 @@ export class RetireWorkerResponse extends Message<RetireWorkerResponse> {
 }
 
 /**
+ * @generated from message orchicon.api.v1.DeleteWorkerRequest
+ */
+export class DeleteWorkerRequest extends Message<DeleteWorkerRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  constructor(data?: PartialMessage<DeleteWorkerRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DeleteWorkerRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteWorkerRequest {
+    return new DeleteWorkerRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteWorkerRequest {
+    return new DeleteWorkerRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteWorkerRequest {
+    return new DeleteWorkerRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteWorkerRequest | PlainMessage<DeleteWorkerRequest> | undefined, b: DeleteWorkerRequest | PlainMessage<DeleteWorkerRequest> | undefined): boolean {
+    return proto3.util.equals(DeleteWorkerRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.DeleteWorkerResponse
+ */
+export class DeleteWorkerResponse extends Message<DeleteWorkerResponse> {
+  constructor(data?: PartialMessage<DeleteWorkerResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DeleteWorkerResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteWorkerResponse {
+    return new DeleteWorkerResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteWorkerResponse {
+    return new DeleteWorkerResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteWorkerResponse {
+    return new DeleteWorkerResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteWorkerResponse | PlainMessage<DeleteWorkerResponse> | undefined, b: DeleteWorkerResponse | PlainMessage<DeleteWorkerResponse> | undefined): boolean {
+    return proto3.util.equals(DeleteWorkerResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.GetWorkerRequest
  */
 export class GetWorkerRequest extends Message<GetWorkerRequest> {
@@ -555,6 +623,27 @@ export class ListWorkersRequest extends Message<ListWorkersRequest> {
    */
   status?: WorkerStatus;
 
+  /**
+   * free-text search across name, slug, purpose
+   *
+   * @generated from field: string search = 5;
+   */
+  search = "";
+
+  /**
+   * field name: "name", "status", "created_at" (default)
+   *
+   * @generated from field: string sort_by = 6;
+   */
+  sortBy = "";
+
+  /**
+   * "asc" or "desc" (default "asc")
+   *
+   * @generated from field: string sort_order = 7;
+   */
+  sortOrder = "";
+
   constructor(data?: PartialMessage<ListWorkersRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -567,6 +656,9 @@ export class ListWorkersRequest extends Message<ListWorkersRequest> {
     { no: 2, name: "page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "page_size", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 4, name: "status", kind: "enum", T: proto3.getEnumType(WorkerStatus), opt: true },
+    { no: 5, name: "search", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "sort_by", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 7, name: "sort_order", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListWorkersRequest {

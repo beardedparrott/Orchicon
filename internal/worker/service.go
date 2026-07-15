@@ -313,6 +313,33 @@ func (s *Service) RetireWorker(ctx context.Context, req *connect.Request[apiv1.R
 	return connect.NewResponse(&apiv1.RetireWorkerResponse{Worker: workerRowToProto(updated)}), nil
 }
 
+// DeleteWorker hard-deletes a Worker and all its versions (cascade).
+func (s *Service) DeleteWorker(ctx context.Context, req *connect.Request[apiv1.DeleteWorkerRequest]) (*connect.Response[apiv1.DeleteWorkerResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	if _, err := db.GetWorker(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := db.DeleteWorker(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("worker deleted", "id", req.Msg.Id, "tenant", tenantID)
+	return connect.NewResponse(&apiv1.DeleteWorkerResponse{}), nil
+}
+
 // GetWorker returns a single worker header by id, with its latest
 // published version (if any).
 func (s *Service) GetWorker(ctx context.Context, req *connect.Request[apiv1.GetWorkerRequest]) (*connect.Response[apiv1.GetWorkerResponse], error) {
@@ -353,6 +380,9 @@ func (s *Service) ListWorkers(ctx context.Context, req *connect.Request[apiv1.Li
 		TenantID:  tenantID,
 		PageSize:  int(req.Msg.PageSize),
 		AfterID:   req.Msg.PageToken,
+		Search:    req.Msg.Search,
+		SortBy:    req.Msg.SortBy,
+		SortOrder: req.Msg.SortOrder,
 	}
 	if req.Msg.Status != nil {
 		f.Status = workerStatusFromProto(*req.Msg.Status)

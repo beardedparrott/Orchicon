@@ -226,6 +226,35 @@ func (s *Service) DeprecateWorkflow(ctx context.Context, req *connect.Request[ap
 	return connect.NewResponse(&apiv1.DeprecateWorkflowResponse{Workflow: workflowRowToProto(updated)}), nil
 }
 
+// DeleteWorkflow hard-deletes a workflow and all its child rows (steps,
+// runs, versions, edit locks). This is irreversible — use DeprecateWorkflow
+// for a soft hide (docs/02 §2.4).
+func (s *Service) DeleteWorkflow(ctx context.Context, req *connect.Request[apiv1.DeleteWorkflowRequest]) (*connect.Response[apiv1.DeleteWorkflowResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	if _, err := db.GetWorkflow(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := db.DeleteWorkflow(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("workflow deleted", "id", req.Msg.Id, "tenant", tenantID)
+	return connect.NewResponse(&apiv1.DeleteWorkflowResponse{}), nil
+}
+
 // GetWorkflow returns a single workflow header by id, with its latest
 // published version (if any).
 func (s *Service) GetWorkflow(ctx context.Context, req *connect.Request[apiv1.GetWorkflowRequest]) (*connect.Response[apiv1.GetWorkflowResponse], error) {
@@ -256,7 +285,7 @@ func (s *Service) GetWorkflow(ctx context.Context, req *connect.Request[apiv1.Ge
 }
 
 // ListWorkflows returns a page of workflows for the tenant, optionally
-// scoped to a project. Pagination is cursor-based on ULID id ordering
+// scoped to a project, with search/filter and configurable sort
 // (docs/07 §5.2).
 func (s *Service) ListWorkflows(ctx context.Context, req *connect.Request[apiv1.ListWorkflowsRequest]) (*connect.Response[apiv1.ListWorkflowsResponse], error) {
 	tenantID, err := requireTenant(ctx)
@@ -268,6 +297,9 @@ func (s *Service) ListWorkflows(ctx context.Context, req *connect.Request[apiv1.
 		ProjectID: req.Msg.ProjectId,
 		PageSize:  int(req.Msg.PageSize),
 		AfterID:   req.Msg.PageToken,
+		Search:    req.Msg.Search,
+		SortBy:    req.Msg.SortBy,
+		SortOrder: req.Msg.SortOrder,
 	}
 	if req.Msg.Status != nil {
 		f.Status = workflowStatusFromProto(*req.Msg.Status)
