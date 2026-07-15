@@ -32,7 +32,7 @@ const createWorkflowSchema = z.object({
   name: z
     .string()
     .min(1, "Name is required")
-    .max(200, "Name must be at most 200 characters"),
+    .max(500, "Name must be at most 500 characters"),
   projectId: z.string().optional(),
   versionNote: z.string().max(16384, "Version note is too long").optional(),
   recoveryPolicyRef: z.string().max(200).optional(),

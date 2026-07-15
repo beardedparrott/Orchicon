@@ -579,6 +579,13 @@ platform, or `--uninstall` to test cleanup).
   list pages have search bars, native `<select>` status/sort controls; detail
   pages have destructive Delete buttons with `window.confirm` guards. Build
   verified: `go build ./...` and `npm run build` pass cleanly.
+- **Full edit capabilities across all entities**: Projects now editable inline
+  (UpdateProject RPC wired to detail page with name/slug edit). Work items get
+  full inline editing (title, description, acceptance criteria, priority,
+  context window, status). Webhook subscriptions editable (target URL, event
+  filter). Name length limit raised globally from 200 to 500 characters across
+  projects, workers, workflows, policies (backend validation + frontend Zod
+  schemas). Build verified: `go build ./...`, `npm run build` pass cleanly.
 - **Worker form revamp**: The worker create form replaces raw JSON textareas with
   structured form controls. `modelRef` is now a searchable `<ModelPicker>` that
   shells out to `opencode models --verbose` (like OpenChamber) and displays model

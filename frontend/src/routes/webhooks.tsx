@@ -6,6 +6,7 @@ import {
   useCreateSubscription,
   useDeleteSubscription,
   useTestSubscription,
+  useUpdateSubscription,
   useListDeliveries,
   useReplayDelivery,
 } from "@/api/webhooks";
@@ -17,7 +18,7 @@ import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 
 // Webhook subscription management (docs/10 §5, docs/07 §3.11).
-// Create/list/test/delete subscriptions + view delivery attempts +
+// Create/list/test/delete/edit subscriptions + view delivery attempts +
 // replay dead-lettered events.
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
@@ -55,9 +56,13 @@ function SubscriptionsPanel({
   const create = useCreateSubscription();
   const del = useDeleteSubscription();
   const test = useTestSubscription();
+  const update = useUpdateSubscription();
   const [name, setName] = useState("");
   const [url, setUrl] = useState("https://example.com/webhook");
   const [filter, setFilter] = useState("*");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editUrl, setEditUrl] = useState("");
+  const [editFilter, setEditFilter] = useState("");
 
   return (
     <Card>
@@ -84,43 +89,93 @@ function SubscriptionsPanel({
         <div className="space-y-2">
           {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
           {data?.map((s) => (
-            <button
-              key={s.id}
-              onClick={() => onSelect(s.id)}
-              className={cn(
-                "w-full rounded-md border p-3 text-left transition-colors",
-                selected === s.id ? "border-primary bg-accent" : "hover:bg-accent"
+            <div key={s.id} className="rounded-md border">
+              <button
+                onClick={() => onSelect(s.id)}
+                className={cn(
+                  "w-full p-3 text-left transition-colors",
+                  selected === s.id ? "border-primary bg-accent" : "hover:bg-accent",
+                )}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-medium">{s.name}</span>
+                  <span className="text-xs text-muted-foreground">{s.status}</span>
+                </div>
+                <div className="mt-1 font-mono text-xs text-muted-foreground">{s.targetUrl}</div>
+                <div className="mt-1 flex items-center gap-2">
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-xs">{s.eventFilter}</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      test.mutate(s.id);
+                    }}
+                  >
+                    Test
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setEditingId(editingId === s.id ? null : s.id);
+                      setEditUrl(s.targetUrl);
+                      setEditFilter(s.eventFilter);
+                    }}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      del.mutate(s.id);
+                    }}
+                  >
+                    Delete
+                  </Button>
+                </div>
+              </button>
+              {editingId === s.id && (
+                <div className="border-t p-3 space-y-2">
+                  <Label htmlFor={`edit-url-${s.id}`}>Target URL</Label>
+                  <Input
+                    id={`edit-url-${s.id}`}
+                    value={editUrl}
+                    onChange={(e) => setEditUrl(e.target.value)}
+                  />
+                  <Label htmlFor={`edit-filter-${s.id}`}>Event filter</Label>
+                  <Input
+                    id={`edit-filter-${s.id}`}
+                    value={editFilter}
+                    onChange={(e) => setEditFilter(e.target.value)}
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() =>
+                        update.mutate(
+                          { id: s.id, targetUrl: editUrl, eventFilter: editFilter },
+                          { onSuccess: () => setEditingId(null) },
+                        )
+                      }
+                      disabled={update.isPending}
+                    >
+                      Save
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setEditingId(null)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
               )}
-            >
-              <div className="flex items-center justify-between">
-                <span className="font-medium">{s.name}</span>
-                <span className="text-xs text-muted-foreground">{s.status}</span>
-              </div>
-              <div className="mt-1 font-mono text-xs text-muted-foreground">{s.targetUrl}</div>
-              <div className="mt-1 flex items-center gap-2">
-                <span className="rounded bg-muted px-1.5 py-0.5 text-xs">{s.eventFilter}</span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    test.mutate(s.id);
-                  }}
-                >
-                  Test
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    del.mutate(s.id);
-                  }}
-                >
-                  Delete
-                </Button>
-              </div>
-            </button>
+            </div>
           ))}
           {data && data.length === 0 && (
             <p className="text-sm text-muted-foreground">No subscriptions yet.</p>
@@ -158,7 +213,7 @@ function DeliveriesPanel({ subscriptionId }: { subscriptionId: string }) {
                       ? "bg-green-100 text-green-800"
                       : d.status === "dead_letter"
                       ? "bg-red-100 text-red-800"
-                      : "bg-yellow-100 text-yellow-800"
+                      : "bg-yellow-100 text-yellow-800",
                   )}
                 >
                   {d.status}

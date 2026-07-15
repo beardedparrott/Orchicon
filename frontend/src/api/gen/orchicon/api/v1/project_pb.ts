@@ -481,6 +481,11 @@ export class UpdateProjectRequest extends Message<UpdateProjectRequest> {
   name?: string;
 
   /**
+   * @generated from field: optional string slug = 5;
+   */
+  slug?: string;
+
+  /**
    * converted to JSON by the server; empty fields clears goals
    *
    * @generated from field: optional orchicon.api.v1.GoalFields goals = 3;
@@ -504,6 +509,7 @@ export class UpdateProjectRequest extends Message<UpdateProjectRequest> {
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 5, name: "slug", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 3, name: "goals", kind: "message", T: GoalFields, opt: true },
     { no: 4, name: "request_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);

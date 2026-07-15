@@ -37,7 +37,7 @@ const createProjectSchema = z.object({
   name: z
     .string()
     .min(1, "Name is required")
-    .max(200, "Name must be at most 200 characters"),
+    .max(500, "Name must be at most 500 characters"),
   slug: z
     .string()
     .max(63, "Slug must be at most 63 characters")

@@ -169,6 +169,13 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 		}
 		fields.Name = &name
 	}
+	if msg.Slug != nil {
+		slug, err := validateSlug(*msg.Slug)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		fields.Slug = &slug
+	}
 	if msg.Goals != nil {
 		goals, err := convertGoalsToJSON(msg.Goals.Fields)
 		if err != nil {
@@ -176,7 +183,7 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 		}
 		fields.Goals = &goals
 	}
-	if fields.Name == nil && fields.Goals == nil {
+	if fields.Name == nil && fields.Slug == nil && fields.Goals == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("at least one field must be set"))
 	}
 

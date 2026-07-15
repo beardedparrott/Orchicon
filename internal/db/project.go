@@ -157,6 +157,7 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 // semantics — docs/07 §5.4).
 type UpdateProjectFields struct {
 	Name  *string
+	Slug  *string
 	Goals *[]byte
 }
 
@@ -171,6 +172,11 @@ func UpdateProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expected
 	if f.Name != nil {
 		q += fmt.Sprintf(`, name = $%d`, setIdx)
 		args = append(args, *f.Name)
+		setIdx++
+	}
+	if f.Slug != nil {
+		q += fmt.Sprintf(`, slug = $%d`, setIdx)
+		args = append(args, *f.Slug)
 		setIdx++
 	}
 	if f.Goals != nil {
