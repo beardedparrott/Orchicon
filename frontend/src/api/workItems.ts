@@ -113,8 +113,9 @@ export function useDeleteWorkItem(projectId: string) {
       const res = await workItemClient.deleteWorkItem({ id });
       return res.workItem as WorkItem;
     },
-    onSuccess: () => {
+    onSuccess: (item) => {
       qc.invalidateQueries({ queryKey: workItemKeys.list(projectId) });
+      qc.invalidateQueries({ queryKey: workItemKeys.detail(item.id) });
       qc.invalidateQueries({ queryKey: workItemKeys.graph(projectId) });
     },
   });
