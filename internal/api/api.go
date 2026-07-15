@@ -41,9 +41,11 @@ type Dependencies struct {
 	RecoveryEngine *recovery.Engine
 	SigNozClient   *telemetry.SigNozClient
 	// Phase 9: auth + webhooks + blobstore.
-	AuthHandler    *auth.Handler
-	WebhookDispatcher *webhook.Dispatcher
-	Mode           config.DeploymentMode
+	AuthHandler          *auth.Handler
+	WebhookDispatcher    *webhook.Dispatcher
+	Mode                 config.DeploymentMode
+	// ModelDiscoverer enumerates models from opencode CLI.
+	ModelDiscoverer *aigateway.ModelDiscoverer
 }
 
 // Mount returns an http.Handler serving the Orchicon API. Generated
@@ -109,7 +111,7 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	mux.Handle(apiv1connect.NewTelemetryServiceHandler(telemetrySvc, interceptorOpt))
 
 	// AIGatewayService (docs/07 §3.10).
-	aiGatewaySvc := aigateway.NewService(deps.Pool, deps.Log, deps.Subscriber)
+	aiGatewaySvc := aigateway.NewService(deps.Pool, deps.Log, deps.Subscriber, deps.ModelDiscoverer)
 	mux.Handle(apiv1connect.NewAIGatewayServiceHandler(aiGatewaySvc, interceptorOpt))
 
 	// Phase 9: AuthService (docs/07 §3.12) — API keys, identities, RBAC

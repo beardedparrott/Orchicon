@@ -14,7 +14,83 @@
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3, protoInt64, Timestamp } from "@bufbuild/protobuf";
-import { AIProvider, CostSummary, UsageEvent, UsageRecord, UsageRollup } from "./ai_gateway_pb.js";
+import { AIProvider, CostSummary, OpenCodeModel, UsageEvent, UsageRecord, UsageRollup } from "./ai_gateway_pb.js";
+
+/**
+ * @generated from message orchicon.api.v1.ListOpenCodeModelsRequest
+ */
+export class ListOpenCodeModelsRequest extends Message<ListOpenCodeModelsRequest> {
+  /**
+   * filter by provider id (e.g. "anthropic", "opencode")
+   *
+   * @generated from field: optional string provider = 1;
+   */
+  provider?: string;
+
+  constructor(data?: PartialMessage<ListOpenCodeModelsRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListOpenCodeModelsRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "provider", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListOpenCodeModelsRequest {
+    return new ListOpenCodeModelsRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListOpenCodeModelsRequest {
+    return new ListOpenCodeModelsRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListOpenCodeModelsRequest {
+    return new ListOpenCodeModelsRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListOpenCodeModelsRequest | PlainMessage<ListOpenCodeModelsRequest> | undefined, b: ListOpenCodeModelsRequest | PlainMessage<ListOpenCodeModelsRequest> | undefined): boolean {
+    return proto3.util.equals(ListOpenCodeModelsRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ListOpenCodeModelsResponse
+ */
+export class ListOpenCodeModelsResponse extends Message<ListOpenCodeModelsResponse> {
+  /**
+   * @generated from field: repeated orchicon.api.v1.OpenCodeModel models = 1;
+   */
+  models: OpenCodeModel[] = [];
+
+  constructor(data?: PartialMessage<ListOpenCodeModelsResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListOpenCodeModelsResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "models", kind: "message", T: OpenCodeModel, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListOpenCodeModelsResponse {
+    return new ListOpenCodeModelsResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListOpenCodeModelsResponse {
+    return new ListOpenCodeModelsResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListOpenCodeModelsResponse {
+    return new ListOpenCodeModelsResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListOpenCodeModelsResponse | PlainMessage<ListOpenCodeModelsResponse> | undefined, b: ListOpenCodeModelsResponse | PlainMessage<ListOpenCodeModelsResponse> | undefined): boolean {
+    return proto3.util.equals(ListOpenCodeModelsResponse, a, b);
+  }
+}
 
 /**
  * No filters — providers are not tenant-scoped in v0.1.

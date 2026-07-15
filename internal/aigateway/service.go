@@ -38,6 +38,7 @@ type Service struct {
 	subscriber eventbus.Subscriber
 	metrics    *usageMetrics
 	providers  []*apiv1.AIProvider
+	discoverer *ModelDiscoverer
 	apiv1connect.UnimplementedAIGatewayServiceHandler
 }
 
@@ -47,13 +48,15 @@ var _ apiv1connect.AIGatewayServiceHandler = (*Service)(nil)
 // reflects the LLM providers known to the gateway (docs/01 §2). In v0.1
 // the OpenCode runtime executes the actual LLM calls; the gateway
 // records usage + cost from adapter telemetry.
-func NewService(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber) *Service {
+// If discoverer is nil, ListOpenCodeModels returns Unimplemented.
+func NewService(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber, discoverer *ModelDiscoverer) *Service {
 	return &Service{
 		pool:       pool,
 		log:        log,
 		subscriber: sub,
 		metrics:    newUsageMetrics(log),
 		providers:  defaultProviders(),
+		discoverer: discoverer,
 	}
 }
 
@@ -61,6 +64,23 @@ func NewService(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber) *Servi
 // (docs/07 §3.10). Providers are not tenant-scoped in v0.1.
 func (s *Service) ListProviders(ctx context.Context, req *connect.Request[apiv1.ListProvidersRequest]) (*connect.Response[apiv1.ListProvidersResponse], error) {
 	return connect.NewResponse(&apiv1.ListProvidersResponse{Providers: s.providers}), nil
+}
+
+// ListOpenCodeModels enumerates all models available via the `opencode`
+// CLI by shelling out to `opencode models --verbose` (docs/04 §6).
+func (s *Service) ListOpenCodeModels(ctx context.Context, req *connect.Request[apiv1.ListOpenCodeModelsRequest]) (*connect.Response[apiv1.ListOpenCodeModelsResponse], error) {
+	if s.discoverer == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("model discovery is not configured (set ORCHICON_OPENCODE_BIN or install opencode on PATH)"))
+	}
+	provider := ""
+	if req.Msg.Provider != nil {
+		provider = *req.Msg.Provider
+	}
+	models, err := s.discoverer.ListModels(ctx, provider)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list opencode models: %w", err))
+	}
+	return connect.NewResponse(&apiv1.ListOpenCodeModelsResponse{Models: models}), nil
 }
 
 // GetUsage returns usage records matching the tenant-scoped filter. The

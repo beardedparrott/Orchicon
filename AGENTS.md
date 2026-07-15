@@ -579,3 +579,13 @@ platform, or `--uninstall` to test cleanup).
   list pages have search bars, native `<select>` status/sort controls; detail
   pages have destructive Delete buttons with `window.confirm` guards. Build
   verified: `go build ./...` and `npm run build` pass cleanly.
+- **Worker form revamp**: The worker create form replaces raw JSON textareas with
+  structured form controls. `modelRef` is now a searchable `<ModelPicker>` that
+  shells out to `opencode models --verbose` (like OpenChamber) and displays model
+  metadata (cost, context limits, capabilities) in a popup info card. Permissions,
+  gated tools, budget overrides, and context sources are now checkboxes, number
+  inputs, and multi-select fields with descriptions. A new `AIGatewayService.ListOpenCodeModels`
+  RPC drives model discovery; the `ModelDiscoverer` caches results with a 5-minute
+  TTL and falls back to a mock list when opencode is absent. Backend proto extended
+  with `OpenCodeModel`/`ModelCost`/`ModelLimits`/`ModelCapabilities` messages.
+  Build verified: `go build ./...`, `go vet ./...`, `npm run build` pass cleanly.

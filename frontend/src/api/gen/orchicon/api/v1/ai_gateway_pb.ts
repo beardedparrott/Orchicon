@@ -496,3 +496,339 @@ export class CostSummary extends Message<CostSummary> {
   }
 }
 
+/**
+ * OpenCodeModel is a model discovered from the `opencode models --verbose`
+ * CLI output (docs/04 §6). The control plane shells out to the opencode
+ * binary at startup / on-demand to enumerate models with full metadata
+ * (cost, context limits, capabilities). This mirrors OpenChamber's
+ * approach to model discovery from the opencode registry.
+ *
+ * @generated from message orchicon.api.v1.OpenCodeModel
+ */
+export class OpenCodeModel extends Message<OpenCodeModel> {
+  /**
+   * e.g. "claude-sonnet-4"
+   *
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * e.g. "anthropic", "opencode", "openai"
+   *
+   * @generated from field: string provider_id = 2;
+   */
+  providerId = "";
+
+  /**
+   * display name, e.g. "Claude Sonnet 4"
+   *
+   * @generated from field: string name = 3;
+   */
+  name = "";
+
+  /**
+   * model family for grouping
+   *
+   * @generated from field: string family = 4;
+   */
+  family = "";
+
+  /**
+   * "active", "deprecated", etc.
+   *
+   * @generated from field: string status = 5;
+   */
+  status = "";
+
+  /**
+   * full ref for dispatch: "provider/id"
+   *
+   * @generated from field: string model_ref = 6;
+   */
+  modelRef = "";
+
+  /**
+   * Cost per million tokens (docs/05 §9).
+   *
+   * @generated from field: orchicon.api.v1.ModelCost cost = 7;
+   */
+  cost?: ModelCost;
+
+  /**
+   * Context / token limits.
+   *
+   * @generated from field: orchicon.api.v1.ModelLimits limits = 8;
+   */
+  limits?: ModelLimits;
+
+  /**
+   * Capability flags.
+   *
+   * @generated from field: orchicon.api.v1.ModelCapabilities capabilities = 9;
+   */
+  capabilities?: ModelCapabilities;
+
+  /**
+   * @generated from field: string release_date = 10;
+   */
+  releaseDate = "";
+
+  /**
+   * reasoning effort variants
+   *
+   * @generated from field: repeated string variants = 11;
+   */
+  variants: string[] = [];
+
+  constructor(data?: PartialMessage<OpenCodeModel>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.OpenCodeModel";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "provider_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "family", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "model_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 7, name: "cost", kind: "message", T: ModelCost },
+    { no: 8, name: "limits", kind: "message", T: ModelLimits },
+    { no: 9, name: "capabilities", kind: "message", T: ModelCapabilities },
+    { no: 10, name: "release_date", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 11, name: "variants", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): OpenCodeModel {
+    return new OpenCodeModel().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): OpenCodeModel {
+    return new OpenCodeModel().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): OpenCodeModel {
+    return new OpenCodeModel().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: OpenCodeModel | PlainMessage<OpenCodeModel> | undefined, b: OpenCodeModel | PlainMessage<OpenCodeModel> | undefined): boolean {
+    return proto3.util.equals(OpenCodeModel, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ModelCost
+ */
+export class ModelCost extends Message<ModelCost> {
+  /**
+   * USD per 1M input tokens
+   *
+   * @generated from field: double input = 1;
+   */
+  input = 0;
+
+  /**
+   * USD per 1M output tokens
+   *
+   * @generated from field: double output = 2;
+   */
+  output = 0;
+
+  /**
+   * @generated from field: double cache_read = 3;
+   */
+  cacheRead = 0;
+
+  /**
+   * @generated from field: double cache_write = 4;
+   */
+  cacheWrite = 0;
+
+  constructor(data?: PartialMessage<ModelCost>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ModelCost";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "input", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+    { no: 2, name: "output", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+    { no: 3, name: "cache_read", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+    { no: 4, name: "cache_write", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ModelCost {
+    return new ModelCost().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ModelCost {
+    return new ModelCost().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ModelCost {
+    return new ModelCost().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ModelCost | PlainMessage<ModelCost> | undefined, b: ModelCost | PlainMessage<ModelCost> | undefined): boolean {
+    return proto3.util.equals(ModelCost, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ModelLimits
+ */
+export class ModelLimits extends Message<ModelLimits> {
+  /**
+   * max context window (input + output)
+   *
+   * @generated from field: int64 context = 1;
+   */
+  context = protoInt64.zero;
+
+  /**
+   * max input tokens
+   *
+   * @generated from field: int64 input = 2;
+   */
+  input = protoInt64.zero;
+
+  /**
+   * max output tokens
+   *
+   * @generated from field: int64 output = 3;
+   */
+  output = protoInt64.zero;
+
+  constructor(data?: PartialMessage<ModelLimits>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ModelLimits";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "context", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 2, name: "input", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 3, name: "output", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ModelLimits {
+    return new ModelLimits().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ModelLimits {
+    return new ModelLimits().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ModelLimits {
+    return new ModelLimits().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ModelLimits | PlainMessage<ModelLimits> | undefined, b: ModelLimits | PlainMessage<ModelLimits> | undefined): boolean {
+    return proto3.util.equals(ModelLimits, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ModelCapabilities
+ */
+export class ModelCapabilities extends Message<ModelCapabilities> {
+  /**
+   * @generated from field: bool temperature = 1;
+   */
+  temperature = false;
+
+  /**
+   * @generated from field: bool reasoning = 2;
+   */
+  reasoning = false;
+
+  /**
+   * @generated from field: bool attachment = 3;
+   */
+  attachment = false;
+
+  /**
+   * @generated from field: bool toolcall = 4;
+   */
+  toolcall = false;
+
+  /**
+   * @generated from field: bool input_text = 5;
+   */
+  inputText = false;
+
+  /**
+   * @generated from field: bool input_image = 6;
+   */
+  inputImage = false;
+
+  /**
+   * @generated from field: bool input_pdf = 7;
+   */
+  inputPdf = false;
+
+  /**
+   * @generated from field: bool input_audio = 8;
+   */
+  inputAudio = false;
+
+  /**
+   * @generated from field: bool input_video = 9;
+   */
+  inputVideo = false;
+
+  /**
+   * @generated from field: bool output_text = 10;
+   */
+  outputText = false;
+
+  /**
+   * streaming with reasoning_content
+   *
+   * @generated from field: bool interleaved = 11;
+   */
+  interleaved = false;
+
+  constructor(data?: PartialMessage<ModelCapabilities>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ModelCapabilities";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "temperature", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 2, name: "reasoning", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 3, name: "attachment", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 4, name: "toolcall", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 5, name: "input_text", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 6, name: "input_image", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 7, name: "input_pdf", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 8, name: "input_audio", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 9, name: "input_video", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 10, name: "output_text", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 11, name: "interleaved", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ModelCapabilities {
+    return new ModelCapabilities().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ModelCapabilities {
+    return new ModelCapabilities().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ModelCapabilities {
+    return new ModelCapabilities().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ModelCapabilities | PlainMessage<ModelCapabilities> | undefined, b: ModelCapabilities | PlainMessage<ModelCapabilities> | undefined): boolean {
+    return proto3.util.equals(ModelCapabilities, a, b);
+  }
+}
+

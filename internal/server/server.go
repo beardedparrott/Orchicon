@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os/exec"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/api"
@@ -134,6 +135,17 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		webhookDisp = webhook.NewDispatcher(pool, sub, log)
 	}
 
+	// Model discoverer: shells out to opencode CLI to list models.
+	// Falls back to a static mock list in dev mode when opencode is
+	// not on PATH (docs/04 §6).
+	var modelDiscoverer *aigateway.ModelDiscoverer
+	if _, err := exec.LookPath("opencode"); err == nil {
+		modelDiscoverer = aigateway.NewModelDiscoverer(log, "opencode")
+	} else {
+		log.Warn("opencode binary not found on PATH, using mock model list", "error", err)
+		modelDiscoverer = aigateway.MockModelDiscoverer(log)
+	}
+
 	deps := api.Dependencies{
 		Pool:              pool,
 		Log:               log,
@@ -144,6 +156,7 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		AuthHandler:       authHandler,
 		WebhookDispatcher: webhookDisp,
 		Mode:              cfg.Mode,
+		ModelDiscoverer:   modelDiscoverer,
 	}
 	handler := api.Mount(mux, deps)
 

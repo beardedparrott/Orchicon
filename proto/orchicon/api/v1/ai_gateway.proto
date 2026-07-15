@@ -87,6 +87,59 @@ message CostSummary {
   repeated CostSummary children = 12;
 }
 
+// OpenCodeModel is a model discovered from the `opencode models --verbose`
+// CLI output (docs/04 §6). The control plane shells out to the opencode
+// binary at startup / on-demand to enumerate models with full metadata
+// (cost, context limits, capabilities). This mirrors OpenChamber's
+// approach to model discovery from the opencode registry.
+message OpenCodeModel {
+  string id = 1;             // e.g. "claude-sonnet-4"
+  string provider_id = 2;    // e.g. "anthropic", "opencode", "openai"
+  string name = 3;           // display name, e.g. "Claude Sonnet 4"
+  string family = 4;         // model family for grouping
+  string status = 5;         // "active", "deprecated", etc.
+  string model_ref = 6;      // full ref for dispatch: "provider/id"
+
+  // Cost per million tokens (docs/05 §9).
+  ModelCost cost = 7;
+
+  // Context / token limits.
+  ModelLimits limits = 8;
+
+  // Capability flags.
+  ModelCapabilities capabilities = 9;
+
+  string release_date = 10;
+  repeated string variants = 11; // reasoning effort variants
+}
+
+message ModelCost {
+  double input = 1;          // USD per 1M input tokens
+  double output = 2;         // USD per 1M output tokens
+  double cache_read = 3;
+  double cache_write = 4;
+}
+
+message ModelLimits {
+  int64 context = 1;         // max context window (input + output)
+  int64 input = 2;           // max input tokens
+  int64 output = 3;          // max output tokens
+}
+
+message ModelCapabilities {
+  bool temperature = 1;
+  bool reasoning = 2;
+  bool attachment = 3;
+  bool toolcall = 4;
+  bool input_text = 5;
+  bool input_image = 6;
+  bool input_pdf = 7;
+  bool input_audio = 8;
+  bool input_video = 9;
+  bool output_text = 10;
+  bool interleaved = 11;     // streaming with reasoning_content
+}
+
 // UsageRollup is the roll-up granularity for cost queries.
 enum UsageRollup {
   USAGE_ROLLUP_UNSPECIFIED = 0;
