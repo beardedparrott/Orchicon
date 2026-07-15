@@ -96,27 +96,6 @@ export function PermissionsSection({ value, onChange }: SectionProps) {
       </div>
 
       <div className="space-y-1">
-        <Label className="text-xs">Model providers</Label>
-        <p className="text-xs text-muted-foreground">
-          Comma-separated provider IDs the worker may call (e.g. anthropic, openai, opencode)
-        </p>
-        <Input
-          value={data.model_providers.join(", ")}
-          onChange={(e) =>
-            update((d) => {
-              d.model_providers = e.target.value
-                .split(",")
-                .map((s) => s.trim())
-                .filter(Boolean);
-              return d;
-            })
-          }
-          placeholder="anthropic, openai, opencode"
-          className="font-mono text-xs"
-        />
-      </div>
-
-      <div className="space-y-1">
         <Label className="text-xs">MCP servers</Label>
         <p className="text-xs text-muted-foreground">
           Comma-separated MCP server IDs the worker may use
@@ -241,7 +220,7 @@ export function BudgetSection({ value, onChange }: SectionProps) {
   return (
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground">
-        Per-execution budget limits. Leave blank to use defaults.
+        Per-execution budget limits. Leave blank for server defaults; enter 0 for unlimited.
       </p>
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1">
@@ -252,14 +231,14 @@ export function BudgetSection({ value, onChange }: SectionProps) {
             value={data.tokens ?? ""}
             onChange={(e) =>
               update((d) => {
-                d.tokens = e.target.value ? Number(e.target.value) : undefined;
+                d.tokens = e.target.value !== "" ? Number(e.target.value) : undefined;
                 return d;
               })
             }
             placeholder="1000000"
             className="font-mono text-xs"
+            title="0 = unlimited (blank = server default)"
           />
-          <p className="text-xs text-muted-foreground">Total token limit per execution</p>
         </div>
         <div className="space-y-1">
           <Label className="text-xs">Max cost (USD)</Label>
@@ -270,14 +249,14 @@ export function BudgetSection({ value, onChange }: SectionProps) {
             value={data.cost_usd ?? ""}
             onChange={(e) =>
               update((d) => {
-                d.cost_usd = e.target.value ? Number(e.target.value) : undefined;
+                d.cost_usd = e.target.value !== "" ? Number(e.target.value) : undefined;
                 return d;
               })
             }
             placeholder="10"
             className="font-mono text-xs"
+            title="0 = unlimited (blank = server default)"
           />
-          <p className="text-xs text-muted-foreground">Hard spend cap</p>
         </div>
         <div className="space-y-1">
           <Label className="text-xs">Wall clock (seconds)</Label>
@@ -287,14 +266,14 @@ export function BudgetSection({ value, onChange }: SectionProps) {
             value={data.wall_clock_seconds ?? ""}
             onChange={(e) =>
               update((d) => {
-                d.wall_clock_seconds = e.target.value ? Number(e.target.value) : undefined;
+                d.wall_clock_seconds = e.target.value !== "" ? Number(e.target.value) : undefined;
                 return d;
               })
             }
             placeholder="3600"
             className="font-mono text-xs"
+            title="0 = unlimited (blank = server default)"
           />
-          <p className="text-xs text-muted-foreground">Max runtime before timeout</p>
         </div>
         <div className="space-y-1">
           <Label className="text-xs">Max tool calls</Label>
@@ -304,14 +283,14 @@ export function BudgetSection({ value, onChange }: SectionProps) {
             value={data.tool_call_count ?? ""}
             onChange={(e) =>
               update((d) => {
-                d.tool_call_count = e.target.value ? Number(e.target.value) : undefined;
+                d.tool_call_count = e.target.value !== "" ? Number(e.target.value) : undefined;
                 return d;
               })
             }
             placeholder="100"
             className="font-mono text-xs"
+            title="0 = unlimited (blank = server default)"
           />
-          <p className="text-xs text-muted-foreground">Max tool invocations</p>
         </div>
       </div>
 
