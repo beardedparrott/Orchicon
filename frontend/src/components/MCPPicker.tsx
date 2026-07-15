@@ -172,9 +172,19 @@ export function MCPPicker({ value, onChange }: MCPPickerProps) {
                     <div className="shrink-0">
                       <span
                         className={`inline-block h-2 w-2 rounded-full ${
-                          srv.status === "connected" ? "bg-green-500" : "bg-yellow-500"
+                          srv.status === "connected"
+                            ? "bg-green-500"
+                            : srv.status === "configured"
+                              ? "bg-yellow-500"
+                              : "bg-blue-500"
                         }`}
-                        title={srv.status}
+                        title={
+                          srv.status === "connected"
+                            ? "Connected"
+                            : srv.status === "configured"
+                              ? "Configured locally"
+                              : "Available (well-known)"
+                        }
                       />
                     </div>
                   </button>

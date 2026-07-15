@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
+	"os/user"
 	"strings"
 	"sync"
 	"time"
@@ -84,6 +86,7 @@ func (d *MCPDiscoverer) fetchMCPs(ctx context.Context) ([]*apiv1.OpenCodeMCP, er
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, d.binary, "debug", "config")
+	cmd.Dir = homeDir()
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("opencode debug config: %w", err)
@@ -128,24 +131,58 @@ func (d *MCPDiscoverer) fetchMCPs(ctx context.Context) ([]*apiv1.OpenCodeMCP, er
 		})
 	}
 
+	servers = mergeMCPs(servers, wellKnownMCPs)
 	return servers, nil
 }
 
-// MockMCPDiscoverer returns a discoverer with a hardcoded server list
-// matching opencode's built-in MCP servers.
+// homeDir returns the user's home directory.
+func homeDir() string {
+	if u, err := user.Current(); err == nil {
+		return u.HomeDir
+	}
+	return os.Getenv("HOME")
+}
+
+// wellKnownMCPs is a curated list of common MCP servers available for
+// workers. These are merged with the user's configured servers so they
+// are always selectable in the MCP picker regardless of local config.
+var wellKnownMCPs = []*apiv1.OpenCodeMCP{
+	{Id: "context7", Command: "https://mcp.context7.com/mcp", Status: "available"},
+	{Id: "gh_grep", Command: "https://mcp.grep.app", Status: "available"},
+	{Id: "filesystem", Command: "npx -y @modelcontextprotocol/server-filesystem", Status: "available"},
+	{Id: "github", Command: "npx -y @modelcontextprotocol/server-github", Status: "available"},
+	{Id: "postgres", Command: "npx -y @modelcontextprotocol/server-postgres", Status: "available"},
+	{Id: "brave-search", Command: "npx -y @anthropic/mcp-brave-search", Status: "available"},
+	{Id: "playwright", Command: "npx -y @playwright/mcp", Status: "available"},
+	{Id: "slack", Command: "npx -y @modelcontextprotocol/server-slack", Status: "available"},
+}
+
+// mergeMCPs merges configured servers with well-known ones.
+// Configured servers take precedence (same id → configured wins).
+func mergeMCPs(configured, wellknown []*apiv1.OpenCodeMCP) []*apiv1.OpenCodeMCP {
+	seen := make(map[string]bool, len(configured))
+	result := make([]*apiv1.OpenCodeMCP, 0, len(configured)+len(wellknown))
+	result = append(result, configured...)
+	for _, s := range configured {
+		seen[s.Id] = true
+	}
+	for _, s := range wellknown {
+		if !seen[s.Id] {
+			result = append(result, s)
+			seen[s.Id] = true
+		}
+	}
+	return result
+}
+
+// MockMCPDiscoverer returns a discoverer with a hardcoded server list.
 func MockMCPDiscoverer(log *slog.Logger) *MCPDiscoverer {
 	d := &MCPDiscoverer{
 		log:    log.With("component", "mcp_discoverer"),
 		binary: "",
 		ttl:    24 * time.Hour,
 	}
-	d.cache = []*apiv1.OpenCodeMCP{
-		{Id: "filesystem", Command: "npx -y @modelcontextprotocol/server-filesystem", Status: "configured"},
-		{Id: "github", Command: "npx -y @modelcontextprotocol/server-github", Status: "configured"},
-		{Id: "context7", Command: "https://mcp.context7.com/mcp", Status: "configured"},
-		{Id: "gh_grep", Command: "https://mcp.grep.app", Status: "configured"},
-		{Id: "postgres", Command: "npx -y @modelcontextprotocol/server-postgres", Status: "configured"},
-	}
+	d.cache = mergeMCPs(nil, wellKnownMCPs)
 	d.cached = time.Now()
 	return d
 }
