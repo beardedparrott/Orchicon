@@ -15,6 +15,13 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { ModelPicker } from "@/components/ModelPicker";
+import {
+  BudgetSection,
+  ContextSourcesSection,
+  GatedToolsSection,
+  PermissionsSection,
+} from "@/components/WorkerFormSections";
 import { Route as rootRoute } from "@/routes/__root";
 
 // Create worker form (docs/10 §5, §2: React Hook Form + Zod).
@@ -27,7 +34,10 @@ import { Route as rootRoute } from "@/routes/__root";
 // Zod validation mirrors the server-side rules (internal/worker/validate.go)
 // so the form rejects invalid input before round-tripping. JSON fields
 // (permissions, gated_tools, budget_overrides, context_sources, labels)
-// are validated as valid JSON before submission.
+// are validated as valid JSON before submission. The revamped UI replaces
+// JSON textareas with structured form controls (checkboxes, number inputs,
+// multi-select) so users pick options with descriptions rather than
+// editing raw JSON — docs/05_Worker_Specification.md §3.
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/workers/new",
@@ -121,6 +131,8 @@ function NewWorkerPage() {
   const {
     register,
     handleSubmit,
+    setValue,
+    watch,
     formState: { errors, isSubmitting },
   } = useForm<CreateWorkerForm>({
     resolver: zodResolver(createWorkerSchema),
@@ -140,6 +152,12 @@ function NewWorkerPage() {
       versionNote: "",
     },
   });
+
+  const modelRef = watch("modelRef");
+  const permissions = watch("permissions");
+  const gatedTools = watch("gatedTools");
+  const budgetOverrides = watch("budgetOverrides");
+  const contextSources = watch("contextSources");
 
   const onSubmit = async (values: CreateWorkerForm) => {
     const result = await createWorker.mutateAsync({
@@ -265,11 +283,10 @@ function NewWorkerPage() {
                 )}
               </div>
               <div className="space-y-2">
-                <Label htmlFor="modelRef">Model ref</Label>
-                <Input
-                  id="modelRef"
-                  placeholder="anthropic/claude-sonnet-4"
-                  {...register("modelRef")}
+                <Label>Model</Label>
+                <ModelPicker
+                  value={modelRef ?? ""}
+                  onChange={(v) => setValue("modelRef", v, { shouldValidate: true })}
                 />
                 {errors.modelRef && (
                   <p className="text-xs text-destructive">
@@ -303,15 +320,11 @@ function NewWorkerPage() {
               </CardDescription>
             </CardHeader>
 
-            <div className="space-y-2">
-              <Label htmlFor="permissions">
-                Permissions (JSON allowlist)
-              </Label>
-              <Textarea
-                id="permissions"
-                rows={6}
-                className="font-mono text-xs"
-                {...register("permissions")}
+            <div className="space-y-2 rounded-lg border p-4">
+              <Label>Permissions</Label>
+              <PermissionsSection
+                value={permissions ?? DEFAULT_PERMISSIONS}
+                onChange={(v) => setValue("permissions", v, { shouldValidate: true })}
               />
               {errors.permissions && (
                 <p className="text-xs text-destructive">
@@ -320,36 +333,24 @@ function NewWorkerPage() {
               )}
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="gatedTools">
-                Gated tools (JSON array — Tier 2 per-call gating)
-              </Label>
-              <Input
-                id="gatedTools"
-                placeholder='["terminal", "git"]'
-                className="font-mono text-xs"
-                {...register("gatedTools")}
+            <div className="space-y-2 rounded-lg border p-4">
+              <Label>Gated tools (Tier 2 — per-call approval)</Label>
+              <GatedToolsSection
+                value={gatedTools ?? "[]"}
+                onChange={(v) => setValue("gatedTools", v, { shouldValidate: true })}
               />
               {errors.gatedTools && (
                 <p className="text-xs text-destructive">
                   {errors.gatedTools.message}
                 </p>
               )}
-              <p className="text-xs text-muted-foreground">
-                v0.1 supports gating: terminal, web_fetch, git. Empty = Tier
-                1 only (dispatch-time).
-              </p>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="budgetOverrides">
-                Budget overrides (JSON)
-              </Label>
-              <Textarea
-                id="budgetOverrides"
-                rows={5}
-                className="font-mono text-xs"
-                {...register("budgetOverrides")}
+            <div className="space-y-2 rounded-lg border p-4">
+              <Label>Budget overrides</Label>
+              <BudgetSection
+                value={budgetOverrides ?? DEFAULT_BUDGETS}
+                onChange={(v) => setValue("budgetOverrides", v, { shouldValidate: true })}
               />
               {errors.budgetOverrides && (
                 <p className="text-xs text-destructive">
@@ -358,15 +359,11 @@ function NewWorkerPage() {
               )}
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="contextSources">
-                Context sources (JSON array)
-              </Label>
-              <Input
-                id="contextSources"
-                placeholder='["project_docs", "file_tree"]'
-                className="font-mono text-xs"
-                {...register("contextSources")}
+            <div className="space-y-2 rounded-lg border p-4">
+              <Label>Context sources</Label>
+              <ContextSourcesSection
+                value={contextSources ?? "[]"}
+                onChange={(v) => setValue("contextSources", v, { shouldValidate: true })}
               />
               {errors.contextSources && (
                 <p className="text-xs text-destructive">

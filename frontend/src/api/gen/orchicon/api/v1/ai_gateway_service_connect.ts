@@ -12,7 +12,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { GetCostRequest, GetCostResponse, GetUsageRequest, GetUsageResponse, ListProvidersRequest, ListProvidersResponse, StreamUsageEventsRequest, StreamUsageEventsResponse } from "./ai_gateway_service_pb.js";
+import { GetCostRequest, GetCostResponse, GetUsageRequest, GetUsageResponse, ListOpenCodeModelsRequest, ListOpenCodeModelsResponse, ListProvidersRequest, ListProvidersResponse, StreamUsageEventsRequest, StreamUsageEventsResponse } from "./ai_gateway_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -31,6 +31,21 @@ export const AIGatewayService = {
       name: "ListProviders",
       I: ListProvidersRequest,
       O: ListProvidersResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ListOpenCodeModels enumerates all models available via the `opencode`
+     * CLI by shelling out to `opencode models --verbose`. Returns full
+     * metadata per model (cost, context limits, capabilities). Like
+     * OpenChamber, the control plane discovers models dynamically from the
+     * opencode registry rather than maintaining a hardcoded list.
+     *
+     * @generated from rpc orchicon.api.v1.AIGatewayService.ListOpenCodeModels
+     */
+    listOpenCodeModels: {
+      name: "ListOpenCodeModels",
+      I: ListOpenCodeModelsRequest,
+      O: ListOpenCodeModelsResponse,
       kind: MethodKind.Unary,
     },
     /**

@@ -605,6 +605,390 @@ func (x *CostSummary) GetChildren() []*CostSummary {
 	return nil
 }
 
+// OpenCodeModel is a model discovered from the `opencode models --verbose`
+// CLI output (docs/04 §6). The control plane shells out to the opencode
+// binary at startup / on-demand to enumerate models with full metadata
+// (cost, context limits, capabilities). This mirrors OpenChamber's
+// approach to model discovery from the opencode registry.
+type OpenCodeModel struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Id         string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                                   // e.g. "claude-sonnet-4"
+	ProviderId string                 `protobuf:"bytes,2,opt,name=provider_id,json=providerId,proto3" json:"provider_id,omitempty"` // e.g. "anthropic", "opencode", "openai"
+	Name       string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`                               // display name, e.g. "Claude Sonnet 4"
+	Family     string                 `protobuf:"bytes,4,opt,name=family,proto3" json:"family,omitempty"`                           // model family for grouping
+	Status     string                 `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`                           // "active", "deprecated", etc.
+	ModelRef   string                 `protobuf:"bytes,6,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`       // full ref for dispatch: "provider/id"
+	// Cost per million tokens (docs/05 §9).
+	Cost *ModelCost `protobuf:"bytes,7,opt,name=cost,proto3" json:"cost,omitempty"`
+	// Context / token limits.
+	Limits *ModelLimits `protobuf:"bytes,8,opt,name=limits,proto3" json:"limits,omitempty"`
+	// Capability flags.
+	Capabilities  *ModelCapabilities `protobuf:"bytes,9,opt,name=capabilities,proto3" json:"capabilities,omitempty"`
+	ReleaseDate   string             `protobuf:"bytes,10,opt,name=release_date,json=releaseDate,proto3" json:"release_date,omitempty"`
+	Variants      []string           `protobuf:"bytes,11,rep,name=variants,proto3" json:"variants,omitempty"` // reasoning effort variants
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OpenCodeModel) Reset() {
+	*x = OpenCodeModel{}
+	mi := &file_orchicon_api_v1_ai_gateway_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OpenCodeModel) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OpenCodeModel) ProtoMessage() {}
+
+func (x *OpenCodeModel) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_ai_gateway_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OpenCodeModel.ProtoReflect.Descriptor instead.
+func (*OpenCodeModel) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_ai_gateway_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *OpenCodeModel) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *OpenCodeModel) GetProviderId() string {
+	if x != nil {
+		return x.ProviderId
+	}
+	return ""
+}
+
+func (x *OpenCodeModel) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *OpenCodeModel) GetFamily() string {
+	if x != nil {
+		return x.Family
+	}
+	return ""
+}
+
+func (x *OpenCodeModel) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *OpenCodeModel) GetModelRef() string {
+	if x != nil {
+		return x.ModelRef
+	}
+	return ""
+}
+
+func (x *OpenCodeModel) GetCost() *ModelCost {
+	if x != nil {
+		return x.Cost
+	}
+	return nil
+}
+
+func (x *OpenCodeModel) GetLimits() *ModelLimits {
+	if x != nil {
+		return x.Limits
+	}
+	return nil
+}
+
+func (x *OpenCodeModel) GetCapabilities() *ModelCapabilities {
+	if x != nil {
+		return x.Capabilities
+	}
+	return nil
+}
+
+func (x *OpenCodeModel) GetReleaseDate() string {
+	if x != nil {
+		return x.ReleaseDate
+	}
+	return ""
+}
+
+func (x *OpenCodeModel) GetVariants() []string {
+	if x != nil {
+		return x.Variants
+	}
+	return nil
+}
+
+type ModelCost struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Input         float64                `protobuf:"fixed64,1,opt,name=input,proto3" json:"input,omitempty"`   // USD per 1M input tokens
+	Output        float64                `protobuf:"fixed64,2,opt,name=output,proto3" json:"output,omitempty"` // USD per 1M output tokens
+	CacheRead     float64                `protobuf:"fixed64,3,opt,name=cache_read,json=cacheRead,proto3" json:"cache_read,omitempty"`
+	CacheWrite    float64                `protobuf:"fixed64,4,opt,name=cache_write,json=cacheWrite,proto3" json:"cache_write,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ModelCost) Reset() {
+	*x = ModelCost{}
+	mi := &file_orchicon_api_v1_ai_gateway_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ModelCost) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ModelCost) ProtoMessage() {}
+
+func (x *ModelCost) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_ai_gateway_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ModelCost.ProtoReflect.Descriptor instead.
+func (*ModelCost) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_ai_gateway_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *ModelCost) GetInput() float64 {
+	if x != nil {
+		return x.Input
+	}
+	return 0
+}
+
+func (x *ModelCost) GetOutput() float64 {
+	if x != nil {
+		return x.Output
+	}
+	return 0
+}
+
+func (x *ModelCost) GetCacheRead() float64 {
+	if x != nil {
+		return x.CacheRead
+	}
+	return 0
+}
+
+func (x *ModelCost) GetCacheWrite() float64 {
+	if x != nil {
+		return x.CacheWrite
+	}
+	return 0
+}
+
+type ModelLimits struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Context       int64                  `protobuf:"varint,1,opt,name=context,proto3" json:"context,omitempty"` // max context window (input + output)
+	Input         int64                  `protobuf:"varint,2,opt,name=input,proto3" json:"input,omitempty"`     // max input tokens
+	Output        int64                  `protobuf:"varint,3,opt,name=output,proto3" json:"output,omitempty"`   // max output tokens
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ModelLimits) Reset() {
+	*x = ModelLimits{}
+	mi := &file_orchicon_api_v1_ai_gateway_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ModelLimits) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ModelLimits) ProtoMessage() {}
+
+func (x *ModelLimits) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_ai_gateway_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ModelLimits.ProtoReflect.Descriptor instead.
+func (*ModelLimits) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_ai_gateway_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ModelLimits) GetContext() int64 {
+	if x != nil {
+		return x.Context
+	}
+	return 0
+}
+
+func (x *ModelLimits) GetInput() int64 {
+	if x != nil {
+		return x.Input
+	}
+	return 0
+}
+
+func (x *ModelLimits) GetOutput() int64 {
+	if x != nil {
+		return x.Output
+	}
+	return 0
+}
+
+type ModelCapabilities struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Temperature   bool                   `protobuf:"varint,1,opt,name=temperature,proto3" json:"temperature,omitempty"`
+	Reasoning     bool                   `protobuf:"varint,2,opt,name=reasoning,proto3" json:"reasoning,omitempty"`
+	Attachment    bool                   `protobuf:"varint,3,opt,name=attachment,proto3" json:"attachment,omitempty"`
+	Toolcall      bool                   `protobuf:"varint,4,opt,name=toolcall,proto3" json:"toolcall,omitempty"`
+	InputText     bool                   `protobuf:"varint,5,opt,name=input_text,json=inputText,proto3" json:"input_text,omitempty"`
+	InputImage    bool                   `protobuf:"varint,6,opt,name=input_image,json=inputImage,proto3" json:"input_image,omitempty"`
+	InputPdf      bool                   `protobuf:"varint,7,opt,name=input_pdf,json=inputPdf,proto3" json:"input_pdf,omitempty"`
+	InputAudio    bool                   `protobuf:"varint,8,opt,name=input_audio,json=inputAudio,proto3" json:"input_audio,omitempty"`
+	InputVideo    bool                   `protobuf:"varint,9,opt,name=input_video,json=inputVideo,proto3" json:"input_video,omitempty"`
+	OutputText    bool                   `protobuf:"varint,10,opt,name=output_text,json=outputText,proto3" json:"output_text,omitempty"`
+	Interleaved   bool                   `protobuf:"varint,11,opt,name=interleaved,proto3" json:"interleaved,omitempty"` // streaming with reasoning_content
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ModelCapabilities) Reset() {
+	*x = ModelCapabilities{}
+	mi := &file_orchicon_api_v1_ai_gateway_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ModelCapabilities) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ModelCapabilities) ProtoMessage() {}
+
+func (x *ModelCapabilities) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_ai_gateway_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ModelCapabilities.ProtoReflect.Descriptor instead.
+func (*ModelCapabilities) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_ai_gateway_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ModelCapabilities) GetTemperature() bool {
+	if x != nil {
+		return x.Temperature
+	}
+	return false
+}
+
+func (x *ModelCapabilities) GetReasoning() bool {
+	if x != nil {
+		return x.Reasoning
+	}
+	return false
+}
+
+func (x *ModelCapabilities) GetAttachment() bool {
+	if x != nil {
+		return x.Attachment
+	}
+	return false
+}
+
+func (x *ModelCapabilities) GetToolcall() bool {
+	if x != nil {
+		return x.Toolcall
+	}
+	return false
+}
+
+func (x *ModelCapabilities) GetInputText() bool {
+	if x != nil {
+		return x.InputText
+	}
+	return false
+}
+
+func (x *ModelCapabilities) GetInputImage() bool {
+	if x != nil {
+		return x.InputImage
+	}
+	return false
+}
+
+func (x *ModelCapabilities) GetInputPdf() bool {
+	if x != nil {
+		return x.InputPdf
+	}
+	return false
+}
+
+func (x *ModelCapabilities) GetInputAudio() bool {
+	if x != nil {
+		return x.InputAudio
+	}
+	return false
+}
+
+func (x *ModelCapabilities) GetInputVideo() bool {
+	if x != nil {
+		return x.InputVideo
+	}
+	return false
+}
+
+func (x *ModelCapabilities) GetOutputText() bool {
+	if x != nil {
+		return x.OutputText
+	}
+	return false
+}
+
+func (x *ModelCapabilities) GetInterleaved() bool {
+	if x != nil {
+		return x.Interleaved
+	}
+	return false
+}
+
 var File_orchicon_api_v1_ai_gateway_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
@@ -668,7 +1052,52 @@ const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
 	" \x01(\v2\x1a.google.protobuf.TimestampR\vwindowStart\x129\n" +
 	"\n" +
 	"window_end\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\twindowEnd\x128\n" +
-	"\bchildren\x18\f \x03(\v2\x1c.orchicon.api.v1.CostSummaryR\bchildren*\xa9\x01\n" +
+	"\bchildren\x18\f \x03(\v2\x1c.orchicon.api.v1.CostSummaryR\bchildren\"\x8e\x03\n" +
+	"\rOpenCodeModel\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
+	"\vprovider_id\x18\x02 \x01(\tR\n" +
+	"providerId\x12\x12\n" +
+	"\x04name\x18\x03 \x01(\tR\x04name\x12\x16\n" +
+	"\x06family\x18\x04 \x01(\tR\x06family\x12\x16\n" +
+	"\x06status\x18\x05 \x01(\tR\x06status\x12\x1b\n" +
+	"\tmodel_ref\x18\x06 \x01(\tR\bmodelRef\x12.\n" +
+	"\x04cost\x18\a \x01(\v2\x1a.orchicon.api.v1.ModelCostR\x04cost\x124\n" +
+	"\x06limits\x18\b \x01(\v2\x1c.orchicon.api.v1.ModelLimitsR\x06limits\x12F\n" +
+	"\fcapabilities\x18\t \x01(\v2\".orchicon.api.v1.ModelCapabilitiesR\fcapabilities\x12!\n" +
+	"\frelease_date\x18\n" +
+	" \x01(\tR\vreleaseDate\x12\x1a\n" +
+	"\bvariants\x18\v \x03(\tR\bvariants\"y\n" +
+	"\tModelCost\x12\x14\n" +
+	"\x05input\x18\x01 \x01(\x01R\x05input\x12\x16\n" +
+	"\x06output\x18\x02 \x01(\x01R\x06output\x12\x1d\n" +
+	"\n" +
+	"cache_read\x18\x03 \x01(\x01R\tcacheRead\x12\x1f\n" +
+	"\vcache_write\x18\x04 \x01(\x01R\n" +
+	"cacheWrite\"U\n" +
+	"\vModelLimits\x12\x18\n" +
+	"\acontext\x18\x01 \x01(\x03R\acontext\x12\x14\n" +
+	"\x05input\x18\x02 \x01(\x03R\x05input\x12\x16\n" +
+	"\x06output\x18\x03 \x01(\x03R\x06output\"\xf1\x02\n" +
+	"\x11ModelCapabilities\x12 \n" +
+	"\vtemperature\x18\x01 \x01(\bR\vtemperature\x12\x1c\n" +
+	"\treasoning\x18\x02 \x01(\bR\treasoning\x12\x1e\n" +
+	"\n" +
+	"attachment\x18\x03 \x01(\bR\n" +
+	"attachment\x12\x1a\n" +
+	"\btoolcall\x18\x04 \x01(\bR\btoolcall\x12\x1d\n" +
+	"\n" +
+	"input_text\x18\x05 \x01(\bR\tinputText\x12\x1f\n" +
+	"\vinput_image\x18\x06 \x01(\bR\n" +
+	"inputImage\x12\x1b\n" +
+	"\tinput_pdf\x18\a \x01(\bR\binputPdf\x12\x1f\n" +
+	"\vinput_audio\x18\b \x01(\bR\n" +
+	"inputAudio\x12\x1f\n" +
+	"\vinput_video\x18\t \x01(\bR\n" +
+	"inputVideo\x12\x1f\n" +
+	"\voutput_text\x18\n" +
+	" \x01(\bR\n" +
+	"outputText\x12 \n" +
+	"\vinterleaved\x18\v \x01(\bR\vinterleaved*\xa9\x01\n" +
 	"\vUsageRollup\x12\x1c\n" +
 	"\x18USAGE_ROLLUP_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13USAGE_ROLLUP_TENANT\x10\x01\x12\x18\n" +
@@ -691,26 +1120,33 @@ func file_orchicon_api_v1_ai_gateway_proto_rawDescGZIP() []byte {
 }
 
 var file_orchicon_api_v1_ai_gateway_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_orchicon_api_v1_ai_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_orchicon_api_v1_ai_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_orchicon_api_v1_ai_gateway_proto_goTypes = []any{
 	(UsageRollup)(0),              // 0: orchicon.api.v1.UsageRollup
 	(*UsageEvent)(nil),            // 1: orchicon.api.v1.UsageEvent
 	(*AIProvider)(nil),            // 2: orchicon.api.v1.AIProvider
 	(*UsageRecord)(nil),           // 3: orchicon.api.v1.UsageRecord
 	(*CostSummary)(nil),           // 4: orchicon.api.v1.CostSummary
-	(*timestamppb.Timestamp)(nil), // 5: google.protobuf.Timestamp
+	(*OpenCodeModel)(nil),         // 5: orchicon.api.v1.OpenCodeModel
+	(*ModelCost)(nil),             // 6: orchicon.api.v1.ModelCost
+	(*ModelLimits)(nil),           // 7: orchicon.api.v1.ModelLimits
+	(*ModelCapabilities)(nil),     // 8: orchicon.api.v1.ModelCapabilities
+	(*timestamppb.Timestamp)(nil), // 9: google.protobuf.Timestamp
 }
 var file_orchicon_api_v1_ai_gateway_proto_depIdxs = []int32{
-	5, // 0: orchicon.api.v1.UsageEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	5, // 1: orchicon.api.v1.UsageRecord.occurred_at:type_name -> google.protobuf.Timestamp
-	5, // 2: orchicon.api.v1.CostSummary.window_start:type_name -> google.protobuf.Timestamp
-	5, // 3: orchicon.api.v1.CostSummary.window_end:type_name -> google.protobuf.Timestamp
+	9, // 0: orchicon.api.v1.UsageEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	9, // 1: orchicon.api.v1.UsageRecord.occurred_at:type_name -> google.protobuf.Timestamp
+	9, // 2: orchicon.api.v1.CostSummary.window_start:type_name -> google.protobuf.Timestamp
+	9, // 3: orchicon.api.v1.CostSummary.window_end:type_name -> google.protobuf.Timestamp
 	4, // 4: orchicon.api.v1.CostSummary.children:type_name -> orchicon.api.v1.CostSummary
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	6, // 5: orchicon.api.v1.OpenCodeModel.cost:type_name -> orchicon.api.v1.ModelCost
+	7, // 6: orchicon.api.v1.OpenCodeModel.limits:type_name -> orchicon.api.v1.ModelLimits
+	8, // 7: orchicon.api.v1.OpenCodeModel.capabilities:type_name -> orchicon.api.v1.ModelCapabilities
+	8, // [8:8] is the sub-list for method output_type
+	8, // [8:8] is the sub-list for method input_type
+	8, // [8:8] is the sub-list for extension type_name
+	8, // [8:8] is the sub-list for extension extendee
+	0, // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_ai_gateway_proto_init() }
@@ -724,7 +1160,7 @@ func file_orchicon_api_v1_ai_gateway_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_ai_gateway_proto_rawDesc), len(file_orchicon_api_v1_ai_gateway_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   4,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

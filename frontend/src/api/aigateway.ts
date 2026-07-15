@@ -8,6 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { aiGatewayClient } from "@/api/clients";
 import type { AIProvider } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
+import type { OpenCodeModel } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import type { UsageRecord } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import type { CostSummary } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import type { UsageRollup } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
@@ -15,10 +16,22 @@ import type { UsageRollup } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 export const usageKeys = {
   all: ["usage"] as const,
   providers: ["usage", "providers"] as const,
+  models: ["usage", "models"] as const,
   records: (projectId?: string) => ["usage", "records", projectId] as const,
   cost: (rollup?: UsageRollup, projectId?: string, taskId?: string) =>
     ["usage", "cost", rollup, projectId, taskId] as const,
 };
+
+export function useListOpenCodeModels() {
+  return useQuery({
+    queryKey: usageKeys.models,
+    queryFn: async () => {
+      const res = await aiGatewayClient.listOpenCodeModels({});
+      return (res.models ?? []) as OpenCodeModel[];
+    },
+    staleTime: 5 * 60 * 1000, // 5 min cache — models don't change often
+  });
+}
 
 export function useListProviders() {
   return useQuery({

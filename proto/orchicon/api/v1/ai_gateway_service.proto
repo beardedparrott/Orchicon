@@ -18,6 +18,13 @@ service AIGatewayService {
   // (docs/01 §2, docs/07 §3.10).
   rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse);
 
+  // ListOpenCodeModels enumerates all models available via the `opencode`
+  // CLI by shelling out to `opencode models --verbose`. Returns full
+  // metadata per model (cost, context limits, capabilities). Like
+  // OpenChamber, the control plane discovers models dynamically from the
+  // opencode registry rather than maintaining a hardcoded list.
+  rpc ListOpenCodeModels(ListOpenCodeModelsRequest) returns (ListOpenCodeModelsResponse);
+
   // GetUsage returns usage records matching the tenant-scoped filter.
   // The proxy injects tenant_id from the request context.
   rpc GetUsage(GetUsageRequest) returns (GetUsageResponse);
@@ -30,6 +37,13 @@ service AIGatewayService {
   // usage/cost events from NATS to connected clients (docs/07 §4,
   // docs/08 §5.2). Each event mirrors a usage_records Postgres row.
   rpc StreamUsageEvents(StreamUsageEventsRequest) returns (stream StreamUsageEventsResponse);
+}
+
+message ListOpenCodeModelsRequest {
+  optional string provider = 1; // filter by provider id (e.g. "anthropic", "opencode")
+}
+message ListOpenCodeModelsResponse {
+  repeated OpenCodeModel models = 1;
 }
 
 message ListProvidersRequest {
