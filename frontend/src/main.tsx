@@ -6,6 +6,7 @@ import { ConnectError } from "@connectrpc/connect";
 
 import { router } from "@/router";
 import { AuthProvider } from "@/auth/auth";
+import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/toaster";
 import { useToastStore } from "@/components/ui/toast";
 import "@/index.css";
@@ -55,8 +56,10 @@ createRoot(root).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <RouterProvider router={router} />
-        <Toaster />
+        <ThemeProvider>
+          <RouterProvider router={router} />
+          <Toaster />
+        </ThemeProvider>
       </AuthProvider>
     </QueryClientProvider>
   </StrictMode>

@@ -1,9 +1,11 @@
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
+import { Moon, Sun, Palette } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useSession, logout } from "@/auth/auth";
+import { useThemeStore } from "@/lib/theme-store";
 
 // Application layout shell (docs/10_Frontend_Architecture.md §5).
 //
@@ -29,6 +31,7 @@ const NAV: NavItem[] = [
   { label: "Telemetry", to: "/telemetry" },
   { label: "Adapters", to: "/adapters" },
   { label: "Webhooks", to: "/webhooks" },
+  { label: "Preferences", to: "/preferences" },
   { label: "Admin", to: "/admin", admin: true },
 ];
 
@@ -78,18 +81,23 @@ function Sidebar() {
 function TopBar() {
   const session = useSession();
   const navigate = useNavigate();
+  const toggleMode = useThemeStore((s) => s.toggleMode);
+  const mode = useThemeStore((s) => s.mode);
   if (!session.authenticated) {
     return (
       <header className="flex h-14 items-center justify-between border-b px-6">
         <div className="text-sm text-muted-foreground">
           Orchicon control plane · v0.1
         </div>
-        <Link
-          to="/login"
-          className="text-xs font-medium text-primary hover:underline"
-        >
-          Sign in
-        </Link>
+        <div className="flex items-center gap-3">
+          <ThemeToggleButton mode={mode} onToggle={toggleMode} />
+          <Link
+            to="/login"
+            className="text-xs font-medium text-primary hover:underline"
+          >
+            Sign in
+          </Link>
+        </div>
       </header>
     );
   }
@@ -98,7 +106,15 @@ function TopBar() {
       <div className="text-sm text-muted-foreground">
         Orchicon control plane · <TopBarVersion />
       </div>
-      <div className="flex items-center gap-4 text-xs text-muted-foreground">
+      <div className="flex items-center gap-3 text-xs text-muted-foreground">
+        <ThemeToggleButton mode={mode} onToggle={toggleMode} />
+        <Link
+          to="/preferences"
+          className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          title="Preferences"
+        >
+          <Palette className="h-4 w-4" />
+        </Link>
         <span>
           {session.is_admin ? "admin" : "user"} ·{" "}
           <span className="font-mono">
@@ -116,6 +132,24 @@ function TopBar() {
         </button>
       </div>
     </header>
+  );
+}
+
+function ThemeToggleButton({
+  mode,
+  onToggle,
+}: {
+  mode: "light" | "dark";
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      onClick={onToggle}
+      className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+      title={mode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+    >
+      {mode === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+    </button>
   );
 }
 
