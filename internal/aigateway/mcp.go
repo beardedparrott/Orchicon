@@ -152,7 +152,7 @@ var wellKnownMCPs = []*apiv1.OpenCodeMCP{
 	{Id: "filesystem", Command: "npx -y @modelcontextprotocol/server-filesystem", Status: "available"},
 	{Id: "github", Command: "npx -y @modelcontextprotocol/server-github", Status: "available"},
 	{Id: "postgres", Command: "npx -y @modelcontextprotocol/server-postgres", Status: "available"},
-	{Id: "brave-search", Command: "npx -y @anthropic/mcp-brave-search", Status: "available"},
+	{Id: "memory", Command: "npx -y @modelcontextprotocol/server-memory", Status: "available"},
 	{Id: "playwright", Command: "npx -y @playwright/mcp", Status: "available"},
 	{Id: "slack", Command: "npx -y @modelcontextprotocol/server-slack", Status: "available"},
 }

@@ -3,9 +3,14 @@ import { useState, useMemo, useRef, useEffect } from "react";
 import { useListOpenCodeMCPs } from "@/api/aigateway";
 import type { OpenCodeMCP } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 
+export interface MCPConfig {
+  id: string;
+  command: string;
+}
+
 interface MCPPickerProps {
-  value: string[];        // selected MCP server ids
-  onChange: (ids: string[]) => void;
+  value: MCPConfig[];        // selected MCP servers with their configs
+  onChange: (configs: MCPConfig[]) => void;
 }
 
 export function MCPPicker({ value, onChange }: MCPPickerProps) {
@@ -16,9 +21,12 @@ export function MCPPicker({ value, onChange }: MCPPickerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
+  const selectedIds = useMemo(() => new Set(value.map((c) => c.id)), [value]);
+
   const selected = useMemo(() => {
-    if (!servers) return [] as OpenCodeMCP[];
-    return servers.filter((s) => value.includes(s.id));
+    if (!servers) return value as OpenCodeMCP[];
+    const byId = new Map(servers.map((s) => [s.id, s]));
+    return value.map((c) => byId.get(c.id) ?? ({ id: c.id, command: c.command, status: "configured" } as OpenCodeMCP));
   }, [servers, value]);
 
   const filtered = useMemo(() => {
@@ -53,14 +61,16 @@ export function MCPPicker({ value, onChange }: MCPPickerProps) {
   }, []);
 
   function toggleServer(srv: OpenCodeMCP) {
-    const updated = value.includes(srv.id)
-      ? value.filter((id) => id !== srv.id)
-      : [...value, srv.id];
+    const already = value.findIndex((c) => c.id === srv.id);
+    const updated =
+      already >= 0
+        ? value.filter((_, i) => i !== already)
+        : [...value, { id: srv.id, command: srv.command }];
     onChange(updated);
   }
 
   function removeServer(id: string) {
-    onChange(value.filter((v) => v !== id));
+    onChange(value.filter((c) => c.id !== id));
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -147,7 +157,7 @@ export function MCPPicker({ value, onChange }: MCPPickerProps) {
             )}
             {!isLoading &&
               filtered.map((srv, idx) => {
-                const isSelected = value.includes(srv.id);
+                const isSelected = selectedIds.has(srv.id);
                 return (
                   <button
                     key={srv.id}
