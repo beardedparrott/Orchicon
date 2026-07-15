@@ -12,7 +12,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AddDependencyRequest, AddDependencyResponse, AssignWorkerRequest, AssignWorkerResponse, CreateWorkItemRequest, CreateWorkItemResponse, DeleteWorkItemRequest, DeleteWorkItemResponse, GetDependencyGraphRequest, GetDependencyGraphResponse, GetWorkItemRequest, GetWorkItemResponse, ListWorkItemsRequest, ListWorkItemsResponse, RemoveDependencyRequest, RemoveDependencyResponse, UnassignWorkerRequest, UnassignWorkerResponse, UpdateWorkItemRequest, UpdateWorkItemResponse } from "./work_item_service_pb.js";
+import { AddDependencyRequest, AddDependencyResponse, AssignWorkerRequest, AssignWorkerResponse, CreateWorkItemRequest, CreateWorkItemResponse, DeleteWorkItemRequest, DeleteWorkItemResponse, GetDependencyGraphRequest, GetDependencyGraphResponse, GetWorkItemRequest, GetWorkItemResponse, HardDeleteWorkItemRequest, HardDeleteWorkItemResponse, ListWorkItemsRequest, ListWorkItemsResponse, RemoveDependencyRequest, RemoveDependencyResponse, UnassignWorkerRequest, UnassignWorkerResponse, UpdateWorkItemRequest, UpdateWorkItemResponse } from "./work_item_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -77,6 +77,21 @@ export const WorkItemService = {
       name: "DeleteWorkItem",
       I: DeleteWorkItemRequest,
       O: DeleteWorkItemResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * HardDeleteWorkItem permanently removes a work item. Cascades to
+     * dependencies (work_item_dependencies rows where this item is either
+     * the from or to side are deleted). The outbox emits a
+     * work_item.purged event. Use this for irreversible removal — the
+     * soft DeleteWorkItem is preferred for normal cancellation.
+     *
+     * @generated from rpc orchicon.api.v1.WorkItemService.HardDeleteWorkItem
+     */
+    hardDeleteWorkItem: {
+      name: "HardDeleteWorkItem",
+      I: HardDeleteWorkItemRequest,
+      O: HardDeleteWorkItemResponse,
       kind: MethodKind.Unary,
     },
     /**

@@ -259,12 +259,33 @@ export class ListWorkItemsRequest extends Message<ListWorkItemsRequest> {
   status?: WorkItemStatus;
 
   /**
-   * @generated from field: string page_token = 5;
+   * free-text search across title and description
+   *
+   * @generated from field: string search = 5;
+   */
+  search = "";
+
+  /**
+   * "title", "priority", "created_at" (default)
+   *
+   * @generated from field: string sort_by = 6;
+   */
+  sortBy = "";
+
+  /**
+   * "asc" or "desc" (default "asc")
+   *
+   * @generated from field: string sort_order = 7;
+   */
+  sortOrder = "";
+
+  /**
+   * @generated from field: string page_token = 8;
    */
   pageToken = "";
 
   /**
-   * @generated from field: int32 page_size = 6;
+   * @generated from field: int32 page_size = 9;
    */
   pageSize = 0;
 
@@ -280,8 +301,11 @@ export class ListWorkItemsRequest extends Message<ListWorkItemsRequest> {
     { no: 2, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "parent_id", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 4, name: "status", kind: "enum", T: proto3.getEnumType(WorkItemStatus), opt: true },
-    { no: 5, name: "page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 6, name: "page_size", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 5, name: "search", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "sort_by", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 7, name: "sort_order", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 8, name: "page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 9, name: "page_size", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListWorkItemsRequest {
@@ -389,6 +413,13 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
   contextWindow?: number;
 
   /**
+   * reassign to a different project; target must be active
+   *
+   * @generated from field: optional string project_id = 10;
+   */
+  projectId?: string;
+
+  /**
    * @generated from field: string request_id = 9;
    */
   requestId = "";
@@ -409,6 +440,7 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
     { no: 6, name: "priority", kind: "scalar", T: 5 /* ScalarType.INT32 */, opt: true },
     { no: 7, name: "budgets", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 8, name: "context_window", kind: "scalar", T: 5 /* ScalarType.INT32 */, opt: true },
+    { no: 10, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 9, name: "request_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
@@ -537,6 +569,74 @@ export class DeleteWorkItemResponse extends Message<DeleteWorkItemResponse> {
 
   static equals(a: DeleteWorkItemResponse | PlainMessage<DeleteWorkItemResponse> | undefined, b: DeleteWorkItemResponse | PlainMessage<DeleteWorkItemResponse> | undefined): boolean {
     return proto3.util.equals(DeleteWorkItemResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.HardDeleteWorkItemRequest
+ */
+export class HardDeleteWorkItemRequest extends Message<HardDeleteWorkItemRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  constructor(data?: PartialMessage<HardDeleteWorkItemRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.HardDeleteWorkItemRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): HardDeleteWorkItemRequest {
+    return new HardDeleteWorkItemRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): HardDeleteWorkItemRequest {
+    return new HardDeleteWorkItemRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): HardDeleteWorkItemRequest {
+    return new HardDeleteWorkItemRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: HardDeleteWorkItemRequest | PlainMessage<HardDeleteWorkItemRequest> | undefined, b: HardDeleteWorkItemRequest | PlainMessage<HardDeleteWorkItemRequest> | undefined): boolean {
+    return proto3.util.equals(HardDeleteWorkItemRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.HardDeleteWorkItemResponse
+ */
+export class HardDeleteWorkItemResponse extends Message<HardDeleteWorkItemResponse> {
+  constructor(data?: PartialMessage<HardDeleteWorkItemResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.HardDeleteWorkItemResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): HardDeleteWorkItemResponse {
+    return new HardDeleteWorkItemResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): HardDeleteWorkItemResponse {
+    return new HardDeleteWorkItemResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): HardDeleteWorkItemResponse {
+    return new HardDeleteWorkItemResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: HardDeleteWorkItemResponse | PlainMessage<HardDeleteWorkItemResponse> | undefined, b: HardDeleteWorkItemResponse | PlainMessage<HardDeleteWorkItemResponse> | undefined): boolean {
+    return proto3.util.equals(HardDeleteWorkItemResponse, a, b);
   }
 }
 

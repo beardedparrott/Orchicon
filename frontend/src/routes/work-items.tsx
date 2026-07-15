@@ -11,13 +11,15 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 import type { WorkItem as WorkItemProto } from "@/api/gen/orchicon/api/v1/work_item_pb";
 
 // Work items page (docs/10 §5, docs/02 §2.2). Provides a tree view
 // (Epic → Feature → Task → Subtask hierarchy) and a Kanban board
-// (status columns). The user selects a project to scope the view.
+// (status columns). The user selects a project to scope the view and
+// can search/sort/filter the work items within.
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/work-items",
@@ -28,6 +30,10 @@ function WorkItemsPage() {
   const { data: projects } = useListProjects();
   const [projectId, setProjectId] = useState<string>("");
   const [view, setView] = useState<"tree" | "board">("tree");
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("");
+  const [sortBy, setSortBy] = useState("created_at");
+  const [sortOrder, setSortOrder] = useState("desc");
 
   const activeProjectId = projectId || projects?.[0]?.id || "";
 
@@ -55,7 +61,7 @@ function WorkItemsPage() {
         </div>
       </div>
 
-      <div className="flex items-center gap-4">
+      <div className="flex flex-wrap items-center gap-3">
         <select
           className="rounded-md border bg-background px-3 py-1.5 text-sm"
           value={activeProjectId}
@@ -72,6 +78,48 @@ function WorkItemsPage() {
             <option value="">No projects available</option>
           )}
         </select>
+
+        <Input
+          placeholder="Search title or description…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="h-9 w-48"
+        />
+
+        <select
+          className="rounded-md border bg-background px-3 py-1.5 text-sm"
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+        >
+          <option value="">All statuses</option>
+          <option value="1">pending</option>
+          <option value="2">ready</option>
+          <option value="3">assigned</option>
+          <option value="4">running</option>
+          <option value="6">succeeded</option>
+          <option value="7">failed</option>
+          <option value="8">cancelled</option>
+        </select>
+
+        <select
+          className="rounded-md border bg-background px-3 py-1.5 text-sm"
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value)}
+        >
+          <option value="created_at">Sort: created</option>
+          <option value="title">Sort: title</option>
+          <option value="priority">Sort: priority</option>
+        </select>
+
+        <select
+          className="rounded-md border bg-background px-3 py-1.5 text-sm"
+          value={sortOrder}
+          onChange={(e) => setSortOrder(e.target.value)}
+        >
+          <option value="desc">desc</option>
+          <option value="asc">asc</option>
+        </select>
+
         <div className="flex rounded-md border">
           <button
             className={cn(
@@ -96,6 +144,7 @@ function WorkItemsPage() {
             Board
           </button>
         </div>
+
         {activeProjectId && (
           <Button variant="outline" asChild>
             <Link
@@ -120,19 +169,41 @@ function WorkItemsPage() {
       )}
 
       {activeProjectId && view === "tree" && (
-        <TreeView projectId={activeProjectId} />
+        <TreeView
+          projectId={activeProjectId}
+          search={search}
+          statusFilter={statusFilter}
+          sortBy={sortBy}
+          sortOrder={sortOrder}
+        />
       )}
       {activeProjectId && view === "board" && (
-        <KanbanBoard projectId={activeProjectId} />
+        <KanbanBoard
+          projectId={activeProjectId}
+          search={search}
+          sortBy={sortBy}
+          sortOrder={sortOrder}
+        />
       )}
     </div>
   );
 }
 
-// TreeView renders the work hierarchy as a collapsible tree
-// (docs/02 §2.2). Top-level epics → features → tasks → subtasks.
-function TreeView({ projectId }: { projectId: string }) {
-  const { data: items, isLoading, error } = useListWorkItems(projectId);
+function TreeView({
+  projectId,
+  search,
+  statusFilter,
+}: {
+  projectId: string;
+  search: string;
+  statusFilter: string;
+  sortBy: string;
+  sortOrder: string;
+}) {
+  const { data: items, isLoading, error } = useListWorkItems(projectId, {
+    search: search || undefined,
+    status: statusFilter ? (Number(statusFilter) as WorkItemProto["status"]) : undefined,
+  });
 
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
@@ -228,10 +299,22 @@ function TreeNode({
   );
 }
 
-// KanbanBoard renders work items grouped by status in columns
-// (docs/02 §2.2 lifecycle states).
-function KanbanBoard({ projectId }: { projectId: string }) {
-  const { data: items, isLoading, error } = useListWorkItems(projectId);
+function KanbanBoard({
+  projectId,
+  search,
+  sortBy,
+  sortOrder,
+}: {
+  projectId: string;
+  search: string;
+  sortBy: string;
+  sortOrder: string;
+}) {
+  const { data: items, isLoading, error } = useListWorkItems(projectId, {
+    search: search || undefined,
+    sortBy: sortBy || undefined,
+    sortOrder: sortOrder || undefined,
+  });
 
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;

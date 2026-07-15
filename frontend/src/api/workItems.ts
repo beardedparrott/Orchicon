@@ -18,28 +18,33 @@ import type { PartialMessage } from "@bufbuild/protobuf";
 // Query keys are centralized so invalidation is type-safe.
 export const workItemKeys = {
   all: ["work-items"] as const,
-  list: (projectId: string, parentId?: string, status?: number) =>
-    [...workItemKeys.all, "list", projectId, parentId, status] as const,
+  list: (projectId: string, parentId?: string, status?: number, opts?: { search?: string; sortBy?: string; sortOrder?: string }) =>
+    [...workItemKeys.all, "list", projectId, parentId, status, opts] as const,
   detail: (id: string) => [...workItemKeys.all, "detail", id] as const,
   graph: (projectId: string) =>
     [...workItemKeys.all, "graph", projectId] as const,
 };
 
 // useListWorkItems fetches a page of work items for a project, optionally
-// filtered by parent (tree) or status (Kanban).
+// filtered by parent (tree) or status (Kanban), with free-text search and
+// sort_by/sort_order.
 export function useListWorkItems(
   projectId: string,
-  opts?: { parentId?: string; status?: WorkItemStatus },
+  opts?: { parentId?: string; status?: WorkItemStatus; search?: string; sortBy?: string; sortOrder?: string },
 ) {
   const parentId = opts?.parentId;
   const status = opts?.status;
+  const listOpts = { search: opts?.search, sortBy: opts?.sortBy, sortOrder: opts?.sortOrder };
   return useQuery({
-    queryKey: workItemKeys.list(projectId, parentId, status),
+    queryKey: workItemKeys.list(projectId, parentId, status, listOpts),
     queryFn: async () => {
       const res = await workItemClient.listWorkItems({
         projectId,
         parentId: parentId ?? undefined,
         status: status ?? undefined,
+        search: opts?.search || "",
+        sortBy: opts?.sortBy || "",
+        sortOrder: opts?.sortOrder || "",
         pageSize: 1000,
       });
       return res.workItems as WorkItem[];
@@ -116,6 +121,22 @@ export function useDeleteWorkItem(projectId: string) {
     onSuccess: (item) => {
       qc.invalidateQueries({ queryKey: workItemKeys.list(projectId) });
       qc.invalidateQueries({ queryKey: workItemKeys.detail(item.id) });
+      qc.invalidateQueries({ queryKey: workItemKeys.graph(projectId) });
+    },
+  });
+}
+
+// useHardDeleteWorkItem permanently removes a work item and its
+// dependencies. After success, the caller is responsible for navigating
+// away from the detail page.
+export function useHardDeleteWorkItem(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      await workItemClient.hardDeleteWorkItem({ id });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: workItemKeys.list(projectId) });
       qc.invalidateQueries({ queryKey: workItemKeys.graph(projectId) });
     },
   });
