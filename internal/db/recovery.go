@@ -91,6 +91,21 @@ type ContinuationPlanRow struct {
 }
 
 // CreateRecoveryExecution inserts a new recovery execution row.
+//
+// Strategy (PR C — recovery as typed work items) is intentionally NOT in
+// the INSERT column list: the column has a DEFAULT of 'summarize_restart'
+// (migration 20260715000000_recovery_strategy.sql) and the engine
+// currently sets Strategy on the row only as a routing hint — the
+// recover-strategy rounding happens at the top of the engine loop
+// (engine.go applyStrategy), not via this INSERT. Preserving the column
+// default keeps backward compat with rows written before PR C without
+// requiring the engine to plumb strategy through every reader.
+//
+// Parameter numbering used to skip $12 (params went $1..$11, $13..$22),
+// which Postgres rejected with "could not determine data type of
+// parameter $12" — the engine's insert into recovery_executions has
+// been silently failing on every failed execution, so recovery never
+// actually started. Renumber contiguously to fix it.
 func CreateRecoveryExecution(ctx context.Context, tx pgx.Tx, r RecoveryExecutionRow) (RecoveryExecutionRow, error) {
 	const q = `INSERT INTO recovery_executions
 		(id, tenant_id, project_id, task_id, failed_execution_id,
@@ -99,7 +114,8 @@ func CreateRecoveryExecution(ctx context.Context, tx pgx.Tx, r RecoveryExecution
 		 budget_cost_limit_usd, budget_cost_used_usd, budget_relax_fraction,
 		 needs_human_approval, continuation_plan_id, reviewer_worker_id,
 		 summary, triggered_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+		 $15, $16, $17, $18, $19, $20, $21)
 		RETURNING id, tenant_id, project_id, task_id, failed_execution_id,
 			recovery_workflow_id, trigger_reason, level, status, current_step,
 			resumption_path, budget_tokens_limit, budget_tokens_used,

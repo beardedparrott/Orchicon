@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -197,6 +198,16 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	})
 	defer monitor.close()
 
+	// Accumulated JSON error message. opencode's `--format json`
+	// stream emits {"type":"error","error":{"data":{"message":"..."}}}
+	// when the model/API reports a failure. PR #64 wired error_message
+	// through every failure path except this one — without it, a failed
+	// stream shows up as just "exit status 1" (cmd.Wait()'s generic
+	// error) and the operator can't tell *why* the run failed. We
+	// stash the most recent JSON error message and fold it into the
+	// OnResult error so the execution detail page shows the real reason.
+	var lastStreamErr string
+
 	// PR B (context propagation): accumulate the worker's text output
 	// across `text` events. The accumulator is closed over by
 	// parseStdoutLine; the value is passed to OnResult so the
@@ -214,7 +225,7 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		if line == "" {
 			continue
 		}
-		a.parseStdoutLine(ctx, execRow, manifest, line, callbacks, monitor, &output)
+		a.parseStdoutLine(ctx, execRow, manifest, line, callbacks, monitor, &output, &lastStreamErr)
 	}
 
 	// Check for scanner error (e.g. truncated output).
@@ -242,6 +253,18 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		}
 		errorMsg += strings.TrimSpace(stderrBuf.String())
 	}
+	// Fold in the most recent JSON-stream error (if any). This is
+	// what the user actually wants to see: opencode's structured
+	// error like `{"code":500,"message":"Internal Server Error",...}`
+	// instead of the opaque "exit status 1" from cmd.Wait(). When
+	// both are present we keep both — the JSON message gives the
+	// cause, the stderr line gives the surrounding log context.
+	if lastStreamErr != "" {
+		if errorMsg != "" {
+			errorMsg += "; "
+		}
+		errorMsg += lastStreamErr
+	}
 	callbacks.OnResult(ctx, execRow.ID, succeeded, output.String(), errorMsg)
 	return nil
 }
@@ -256,7 +279,7 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 // `output` is the per-execution text accumulator (PR B — context
 // propagation). For "text" events the part text is appended so the
 // full worker output is available to OnResult.
-func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, line string, callbacks scheduler.ExecutionCallbacks, monitor *progressMonitor, output *strings.Builder) {
+func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, line string, callbacks scheduler.ExecutionCallbacks, monitor *progressMonitor, output *strings.Builder, lastStreamErr *string) {
 	var evt map[string]any
 	if err := json.Unmarshal([]byte(line), &evt); err != nil {
 		// Non-JSON line: treat as a log/progress marker.
@@ -282,7 +305,7 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, 
 		if output != nil && text != "" {
 			output.WriteString(text)
 		}
-		if text != "" && callbacks.OnText != nil {
+		if text != "" {
 			callbacks.OnText(ctx, execID, text)
 		}
 		a.log.Debug("opencode text", "execution", execID, "text_len", len(text))
@@ -317,8 +340,21 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, 
 			callbacks.OnHealth(ctx, execID, state)
 		}
 	case "error":
-		msg, _ := evt["message"].(string)
+		// opencode's --format json emits an error event shaped like
+		// {"type":"error","error":{"name":"...","data":{"message":"..."}}}
+		// — the human-readable message lives at error.data.message, NOT
+		// at the top level (which has no `message` field). The previous
+		// implementation read evt["message"] and got "" every time,
+		// silently dropping the actual reason. Read it correctly here
+		// AND stash the message in lastStreamErr so the OnResult call
+		// below can include it in error_message (docs/04 §6.1: errors
+		// surfaced via telemetry must also be surfaced in the failure
+		// reason).
+		msg := extractErrorMessage(evt)
 		a.log.Warn("opencode error", "execution", execID, "message", msg)
+		if msg != "" {
+			*lastStreamErr = msg
+		}
 		callbacks.OnHealth(ctx, execID, domain.HealthUnhealthy)
 	default:
 		a.log.Debug("opencode event", "execution", execID, "type", eventType)
@@ -355,6 +391,40 @@ func (a *Adapter) recordUsage(ctx context.Context, execRow db.ExecutionRow, mani
 	if err := a.usageRecorder(ctx, in); err != nil {
 		a.log.Warn("usage record failed", "execution", execRow.ID, "error", err)
 	}
+}
+
+// extractErrorMessage pulls the human-readable message out of an opencode
+// error event. The shape is
+//   {"type":"error","error":{"name":"...","data":{"message":"..."}}}
+// The `data.message` field can be a JSON-stringified payload (e.g. when
+// the upstream provider returned a structured error), so we try to
+// unquote it for readability. Falls back to whatever it can find.
+func extractErrorMessage(evt map[string]any) string {
+	errObj, ok := evt["error"].(map[string]any)
+	if !ok {
+		// Older shapes may still surface a top-level message field.
+		if m, ok := evt["message"].(string); ok {
+			return m
+		}
+		return ""
+	}
+	if data, ok := errObj["data"].(map[string]any); ok {
+		if m, ok := data["message"].(string); ok && m != "" {
+			// If the message looks like a JSON object (common with
+			// provider errors like OpenRouter 500s), unquote it so the
+			// error_message column carries the readable form.
+			if len(m) > 0 && m[0] == '{' {
+				if unq, err := strconv.Unquote(m); err == nil {
+					return unq
+				}
+			}
+			return m
+		}
+	}
+	if n, ok := errObj["name"].(string); ok {
+		return n
+	}
+	return ""
 }
 
 // parseModelRef splits a model ref like "anthropic/claude-sonnet-4" or
