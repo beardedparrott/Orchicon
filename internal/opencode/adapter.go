@@ -16,9 +16,11 @@ package opencode
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -159,12 +161,15 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		cmd.Env = append(cmd.Env, "OPENCODE_SYSTEM_PROMPT="+manifest.SystemPrompt)
 	}
 
-	// Capture stdout + stderr.
+	// Capture stdout + stderr. Stderr is both logged to the control
+	// plane's stderr AND captured into a buffer so the error message
+	// includes the actual opencode error text (not just "exit status 1").
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("opencode: stdout pipe: %w", err)
 	}
-	cmd.Stderr = os.Stderr
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("opencode: start: %w", err)
@@ -212,12 +217,30 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		a.parseStdoutLine(ctx, execRow, manifest, line, callbacks, monitor, &output)
 	}
 
+	// Check for scanner error (e.g. truncated output).
+	scanErr := scanner.Err()
+	if scanErr != nil {
+		a.log.Warn("opencode stdout scan error", "execution", execRow.ID, "error", scanErr)
+	}
+
 	// Wait for the process to exit.
 	err = cmd.Wait()
 	succeeded := err == nil
 	errorMsg := ""
 	if err != nil {
 		errorMsg = err.Error()
+	}
+	if scanErr != nil {
+		if errorMsg != "" {
+			errorMsg += "; "
+		}
+		errorMsg += "stdout scan: " + scanErr.Error()
+	}
+	if stderrBuf.Len() > 0 {
+		if errorMsg != "" {
+			errorMsg += "; "
+		}
+		errorMsg += strings.TrimSpace(stderrBuf.String())
 	}
 	callbacks.OnResult(ctx, execRow.ID, succeeded, output.String(), errorMsg)
 	return nil
