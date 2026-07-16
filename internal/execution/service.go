@@ -570,6 +570,10 @@ func execStatusToProto(status string) apiv1.ExecutionStatus {
 		return apiv1.ExecutionStatus_EXECUTION_STATUS_TERMINATED
 	case domain.ExecutionFailedToStart:
 		return apiv1.ExecutionStatus_EXECUTION_STATUS_FAILED_TO_START
+	case domain.ExecutionSucceeded:
+		return apiv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED
+	case domain.ExecutionFailed:
+		return apiv1.ExecutionStatus_EXECUTION_STATUS_FAILED
 	default:
 		return apiv1.ExecutionStatus_EXECUTION_STATUS_UNSPECIFIED
 	}
@@ -593,6 +597,10 @@ func execStatusFromProto(status apiv1.ExecutionStatus) string {
 		return domain.ExecutionTerminated
 	case apiv1.ExecutionStatus_EXECUTION_STATUS_FAILED_TO_START:
 		return domain.ExecutionFailedToStart
+	case apiv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED:
+		return domain.ExecutionSucceeded
+	case apiv1.ExecutionStatus_EXECUTION_STATUS_FAILED:
+		return domain.ExecutionFailed
 	default:
 		return ""
 	}
@@ -656,6 +664,9 @@ func rowToProto(e db.ExecutionRow) *apiv1.WorkerExecution {
 		TokenUsage:    e.TokenUsage,
 		CostUsd:       e.CostUSD,
 		Version:       int32(e.Version),
+		WorkflowRunId: e.WorkflowRunID,
+		WorkflowStepId: e.WorkflowStepID,
+		WorkflowName:  e.WorkflowName,
 	}
 	if e.AdapterID != nil {
 		p.AdapterId = *e.AdapterID
@@ -672,8 +683,6 @@ func rowToProto(e db.ExecutionRow) *apiv1.WorkerExecution {
 	if e.RecoveryID != nil {
 		p.RecoveryId = *e.RecoveryID
 	}
-	p.WorkflowRunId = e.WorkflowRunID
-	p.WorkflowStepId = e.WorkflowStepID
 	return p
 }
 

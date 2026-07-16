@@ -388,9 +388,9 @@ func (r *TaskReconciler) OnStarted(ctx context.Context, execID string) {
 // context. `output` may be empty for non-opencode adapters or when
 // the worker errored before producing any text.
 func (r *TaskReconciler) OnResult(ctx context.Context, execID string, succeeded bool, output string) {
-	status := domain.ExecutionTerminated
+	status := domain.ExecutionSucceeded
 	if !succeeded {
-		status = domain.ExecutionUnhealthy
+		status = domain.ExecutionFailed
 	}
 	r.updateExecStatus(ctx, execID, status, domain.HealthTerminating)
 	r.transitionWorkItemOnResult(ctx, execID, succeeded, output)
@@ -610,7 +610,7 @@ func (r *TaskReconciler) updateExecStatus(ctx context.Context, execID, status, h
 		return
 	}
 	var endedAt *time.Time
-	if status == domain.ExecutionTerminated || status == domain.ExecutionUnhealthy {
+	if status == domain.ExecutionSucceeded || status == domain.ExecutionFailed || status == domain.ExecutionTerminated || status == domain.ExecutionUnhealthy {
 		now := time.Now().UTC()
 		endedAt = &now
 	}

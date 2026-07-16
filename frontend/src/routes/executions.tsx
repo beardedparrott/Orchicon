@@ -68,18 +68,18 @@ function ExecutionsPage() {
               >
                 <Card className="transition-colors hover:bg-accent">
                   <CardContent className="flex items-center justify-between p-4">
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
                       <ExecStatusBadge status={e.status} />
-                        <div>
-                          <p className="text-sm font-medium">
-                            {e.workerId} v{e.workerVersion}
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium truncate">
+                            {e.workflowName || e.workerId} v{e.workerVersion}
                           </p>
-                          <p className="text-xs text-muted-foreground font-mono">
+                          <p className="text-xs text-muted-foreground font-mono truncate">
                             {e.id}
                           </p>
-                          {e.workflowRunId && (
+                          {e.workflowName && (
                             <p className="text-xs text-muted-foreground/70 mt-0.5 truncate max-w-[200px]">
-                              workflow run: {e.workflowRunId.slice(0, 18)}…
+                              {e.workflowName}
                             </p>
                           )}
                         </div>
@@ -127,6 +127,8 @@ function ExecStatusBadge({ status }: { status: number }) {
     6: "terminating",
     7: "terminated",
     8: "failed_to_start",
+    9: "succeeded",
+    10: "failed",
   };
   const styles: Record<number, string> = {
     1: "bg-blue-100 text-blue-800",
@@ -137,6 +139,8 @@ function ExecStatusBadge({ status }: { status: number }) {
     6: "bg-orange-100 text-orange-800",
     7: "bg-gray-200 text-gray-700",
     8: "bg-red-600 text-white",
+    9: "bg-emerald-100 text-emerald-800",
+    10: "bg-red-700 text-white",
   };
   return (
     <span

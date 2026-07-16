@@ -19,16 +19,18 @@ interface ParsedText {
 
 interface RuntimeSessionPaneProps {
   events: StreamExecutionEventsResponse[];
+  prompt?: string;
 }
 
-export function RuntimeSessionPane({ events }: RuntimeSessionPaneProps) {
-  const [activeTab, setActiveTab] = useState<string>("output");
+export function RuntimeSessionPane({ events, prompt }: RuntimeSessionPaneProps) {
+  const [activeTab, setActiveTab] = useState<string>(prompt ? "prompt" : "output");
 
   // Parse events into tool calls and text output
-  const { toolCalls, textOutputs, resultText } = useMemo(() => {
+  const { toolCalls, textOutputs, resultText, fullOutput } = useMemo(() => {
     const toolCalls: ParsedToolCall[] = [];
     const textOutputs: ParsedText[] = [];
     let resultText = "";
+    const fullOutput: string[] = [];
 
     for (const resp of events) {
       const evt = resp.event;
@@ -53,9 +55,9 @@ export function RuntimeSessionPane({ events }: RuntimeSessionPaneProps) {
         try {
           const raw = new TextDecoder().decode(evt.payload);
           const data = JSON.parse(raw);
-          if (data.text) resultText += data.text;
-          if (data.status === "terminated" && data.aggregate_version) {
-            // final result — could include accumulated output
+          if (data.text) {
+            resultText += data.text;
+            fullOutput.push(data.text);
           }
         } catch {
           // ignore
@@ -66,6 +68,7 @@ export function RuntimeSessionPane({ events }: RuntimeSessionPaneProps) {
           const data = JSON.parse(raw);
           if (data.text) {
             textOutputs.push({ id, text: data.text, occurredAt: ts });
+            fullOutput.push(data.text);
           }
         } catch {
           // ignore
@@ -73,15 +76,17 @@ export function RuntimeSessionPane({ events }: RuntimeSessionPaneProps) {
       }
     }
 
-    return { toolCalls, textOutputs, resultText };
+    return { toolCalls, textOutputs, resultText, fullOutput };
   }, [events]);
 
   const tabs = [
-    { id: "output", label: "Output", count: textOutputs.length || (resultText ? 1 : 0) },
-    { id: "tools", label: "Tool Calls", count: toolCalls.length },
+    ...(prompt ? [{ id: "prompt" as const, label: "Prompt", count: 0 }] : []),
+    { id: "output" as const, label: "Output", count: fullOutput.length },
+    { id: "tools" as const, label: "Tool Calls", count: toolCalls.length },
   ];
 
-  if (events.length === 0) return null;
+  // Show the component if we have events OR a prompt
+  if (events.length === 0 && !prompt) return null;
 
   return (
     <Card>
@@ -112,6 +117,15 @@ export function RuntimeSessionPane({ events }: RuntimeSessionPaneProps) {
             </button>
           ))}
         </div>
+
+        {/* Prompt tab */}
+        {activeTab === "prompt" && prompt && (
+          <div className="max-h-[400px] overflow-auto">
+            <pre className="whitespace-pre-wrap rounded bg-muted p-3 text-xs leading-relaxed">
+              {prompt}
+            </pre>
+          </div>
+        )}
 
         {/* Output tab */}
         {activeTab === "output" && (

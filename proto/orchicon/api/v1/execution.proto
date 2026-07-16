@@ -38,11 +38,12 @@ message WorkerExecution {
   int32 version = 16; // optimistic concurrency (docs/09 §5)
   string workflow_run_id = 17;
   string workflow_step_id = 18;
+  string workflow_name = 19;
 }
 
 // ExecutionStatus — lifecycle of a WorkerExecution
 // (docs/02 §2.7, docs/03 §6):
-// dispatching → running → healthy | stalled | unhealthy → terminating → terminated
+// dispatching → running → healthy | stalled | unhealthy → terminating → succeeded | failed
 enum ExecutionStatus {
   EXECUTION_STATUS_UNSPECIFIED = 0;
   EXECUTION_STATUS_DISPATCHING = 1;
@@ -53,6 +54,8 @@ enum ExecutionStatus {
   EXECUTION_STATUS_TERMINATING = 6;
   EXECUTION_STATUS_TERMINATED = 7;
   EXECUTION_STATUS_FAILED_TO_START = 8;
+  EXECUTION_STATUS_SUCCEEDED = 9;
+  EXECUTION_STATUS_FAILED = 10;
 }
 
 // HealthState is the union of heartbeat freshness, progress rate,

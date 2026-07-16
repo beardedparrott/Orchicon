@@ -31,6 +31,7 @@ type ExecutionRow struct {
 	RecoveryID      *string
 	WorkflowRunID   string
 	WorkflowStepID  string
+	WorkflowName    string
 	Version         int
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
@@ -72,19 +73,22 @@ func CreateExecution(ctx context.Context, tx pgx.Tx, e ExecutionRow) (ExecutionR
 
 // GetExecution fetches a single execution by id within the tenant scope.
 func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (ExecutionRow, error) {
-	const q = `SELECT id, tenant_id, project_id, task_id, worker_id, worker_version,
-		adapter_id, status, health_state, started_at, ended_at,
-		token_usage, cost_usd, checkpoint_ref, recovery_id,
-		workflow_run_id, workflow_step_id, version,
-		created_at, updated_at
-		FROM worker_executions WHERE id = $1 AND tenant_id = $2`
+	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
+		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
+		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
+		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.version,
+		we.created_at, we.updated_at
+		FROM worker_executions we
+		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
+		LEFT JOIN workflows w ON w.id = wr.workflow_id
+		WHERE we.id = $1 AND we.tenant_id = $2`
 	var e ExecutionRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&e.ID, &e.TenantID, &e.ProjectID, &e.TaskID, &e.WorkerID,
 		&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 		&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 		&e.CheckpointRef, &e.RecoveryID,
-		&e.WorkflowRunID, &e.WorkflowStepID,
+		&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName,
 		&e.Version,
 		&e.CreatedAt, &e.UpdatedAt,
 	)
@@ -114,31 +118,33 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 	if f.PageSize <= 0 || f.PageSize > 1000 {
 		f.PageSize = 100
 	}
-	q := `SELECT id, tenant_id, project_id, task_id, worker_id, worker_version,
-		adapter_id, status, health_state, started_at, ended_at,
-		token_usage, cost_usd, checkpoint_ref, recovery_id,
-		workflow_run_id, workflow_step_id, version,
-		created_at, updated_at
-		FROM worker_executions
-		WHERE tenant_id = $1 AND ($2 = '' OR id > $2)`
+	q := `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
+		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
+		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
+		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.version,
+		we.created_at, we.updated_at
+		FROM worker_executions we
+		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
+		LEFT JOIN workflows w ON w.id = wr.workflow_id
+		WHERE we.tenant_id = $1 AND ($2 = '' OR we.id > $2)`
 	args := []any{f.TenantID, f.AfterID}
 	if f.ProjectID != "" {
-		q += fmt.Sprintf(` AND project_id = $%d`, len(args)+1)
+		q += fmt.Sprintf(` AND we.project_id = $%d`, len(args)+1)
 		args = append(args, f.ProjectID)
 	}
 	if f.TaskID != "" {
-		q += fmt.Sprintf(` AND task_id = $%d`, len(args)+1)
+		q += fmt.Sprintf(` AND we.task_id = $%d`, len(args)+1)
 		args = append(args, f.TaskID)
 	}
 	if f.Status != "" {
-		q += fmt.Sprintf(` AND status = $%d`, len(args)+1)
+		q += fmt.Sprintf(` AND we.status = $%d`, len(args)+1)
 		args = append(args, f.Status)
 	}
 	if f.WorkflowRunID != "" {
-		q += fmt.Sprintf(` AND workflow_run_id = $%d`, len(args)+1)
+		q += fmt.Sprintf(` AND we.workflow_run_id = $%d`, len(args)+1)
 		args = append(args, f.WorkflowRunID)
 	}
-	q += ` ORDER BY id DESC LIMIT $` + fmt.Sprint(len(args)+1)
+	q += ` ORDER BY we.id DESC LIMIT $` + fmt.Sprint(len(args)+1)
 	args = append(args, f.PageSize)
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
@@ -153,7 +159,7 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 			&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 			&e.CheckpointRef, &e.RecoveryID,
-			&e.WorkflowRunID, &e.WorkflowStepID,
+			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName,
 			&e.Version,
 			&e.CreatedAt, &e.UpdatedAt,
 		); err != nil {
@@ -255,13 +261,16 @@ func UpdateExecution(ctx context.Context, tx pgx.Tx, tenantID, id string, expect
 // ListDispatchingExecutions returns executions in "dispatching" state
 // (docs/03 §6). Used by the TaskReconciler to track in-flight dispatches.
 func ListDispatchingExecutions(ctx context.Context, tx pgx.Tx, tenantID string) ([]ExecutionRow, error) {
-	const q = `SELECT id, tenant_id, project_id, task_id, worker_id, worker_version,
-		adapter_id, status, health_state, started_at, ended_at,
-		token_usage, cost_usd, checkpoint_ref, recovery_id, version,
-		created_at, updated_at
-		FROM worker_executions
-		WHERE tenant_id = $1 AND status = 'dispatching'
-		ORDER BY created_at ASC`
+	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
+		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
+		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
+		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.version,
+		we.created_at, we.updated_at
+		FROM worker_executions we
+		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
+		LEFT JOIN workflows w ON w.id = wr.workflow_id
+		WHERE we.tenant_id = $1 AND we.status = 'dispatching'
+		ORDER BY we.created_at ASC`
 	rows, err := tx.Query(ctx, q, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("db: list dispatching executions: %w", err)
@@ -274,7 +283,9 @@ func ListDispatchingExecutions(ctx context.Context, tx pgx.Tx, tenantID string) 
 			&e.ID, &e.TenantID, &e.ProjectID, &e.TaskID, &e.WorkerID,
 			&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
-			&e.CheckpointRef, &e.RecoveryID, &e.Version,
+			&e.CheckpointRef, &e.RecoveryID,
+			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName,
+			&e.Version,
 			&e.CreatedAt, &e.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan execution: %w", err)

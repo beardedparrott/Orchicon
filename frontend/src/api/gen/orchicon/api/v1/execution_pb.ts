@@ -22,7 +22,7 @@ import { Message, proto3, protoInt64, Timestamp } from "@bufbuild/protobuf";
 /**
  * ExecutionStatus — lifecycle of a WorkerExecution
  * (docs/02 §2.7, docs/03 §6):
- * dispatching → running → healthy | stalled | unhealthy → terminating → terminated
+ * dispatching → running → healthy | stalled | unhealthy → terminating → succeeded | failed
  *
  * @generated from enum orchicon.api.v1.ExecutionStatus
  */
@@ -71,6 +71,16 @@ export enum ExecutionStatus {
    * @generated from enum value: EXECUTION_STATUS_FAILED_TO_START = 8;
    */
   FAILED_TO_START = 8,
+
+  /**
+   * @generated from enum value: EXECUTION_STATUS_SUCCEEDED = 9;
+   */
+  SUCCEEDED = 9,
+
+  /**
+   * @generated from enum value: EXECUTION_STATUS_FAILED = 10;
+   */
+  FAILED = 10,
 }
 // Retrieve enum metadata with: proto3.getEnumType(ExecutionStatus)
 proto3.util.setEnumType(ExecutionStatus, "orchicon.api.v1.ExecutionStatus", [
@@ -83,6 +93,8 @@ proto3.util.setEnumType(ExecutionStatus, "orchicon.api.v1.ExecutionStatus", [
   { no: 6, name: "EXECUTION_STATUS_TERMINATING" },
   { no: 7, name: "EXECUTION_STATUS_TERMINATED" },
   { no: 8, name: "EXECUTION_STATUS_FAILED_TO_START" },
+  { no: 9, name: "EXECUTION_STATUS_SUCCEEDED" },
+  { no: 10, name: "EXECUTION_STATUS_FAILED" },
 ]);
 
 /**
@@ -295,6 +307,11 @@ export class WorkerExecution extends Message<WorkerExecution> {
    */
   workflowStepId = "";
 
+  /**
+   * @generated from field: string workflow_name = 19;
+   */
+  workflowName = "";
+
   constructor(data?: PartialMessage<WorkerExecution>) {
     super();
     proto3.util.initPartial(data, this);
@@ -321,6 +338,7 @@ export class WorkerExecution extends Message<WorkerExecution> {
     { no: 16, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 17, name: "workflow_run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 18, name: "workflow_step_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 19, name: "workflow_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkerExecution {
