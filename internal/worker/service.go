@@ -360,11 +360,10 @@ func (s *Service) GetWorker(ctx context.Context, req *connect.Request[apiv1.GetW
 		return nil, mapDBError(err)
 	}
 	resp := &apiv1.GetWorkerResponse{Worker: workerRowToProto(w)}
-	// Include the latest published version if one exists.
-	if w.CurrentVersion > 0 {
-		if v, err := db.GetLatestWorkerVersion(ctx, ttx.Tx, tenantID, req.Msg.Id, true); err == nil {
-			resp.LatestVersion = versionRowToProto(v)
-		}
+	// Include the latest version (draft or published) so the frontend can
+	// show the edit/publish buttons for draft workers (docs/05 §4).
+	if v, err := db.GetLatestWorkerVersion(ctx, ttx.Tx, tenantID, req.Msg.Id, false); err == nil {
+		resp.LatestVersion = versionRowToProto(v)
 	}
 	return connect.NewResponse(resp), nil
 }
