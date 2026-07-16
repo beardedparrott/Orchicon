@@ -80,6 +80,31 @@ const (
 	WorkItemKindSubtask = "subtask"
 )
 
+// Recovery work item kinds (PR C — recovery as work items). These are
+// regular work items with a recovery strategy encoded in the kind.
+// RecoveryReconciler routes on these; the regular TaskReconciler
+// dispatches all other task kinds. docs/06 §3 + §4 + §11.
+const (
+	WorkItemKindRecoveryStop             = "recovery_stop"
+	WorkItemKindRecoverySummarizeRestart = "recovery_summarize_restart"
+	WorkItemKindRecoveryHumanEscalation  = "recovery_human_escalation"
+	WorkItemKindRecoveryRetryN           = "recovery_retry_n"
+)
+
+// IsRecoveryKind reports whether a WorkItem kind is one of the typed
+// recovery strategies. Returns false for the regular hierarchy kinds
+// or anything else.
+func IsRecoveryKind(kind string) bool {
+	switch kind {
+	case WorkItemKindRecoveryStop,
+		WorkItemKindRecoverySummarizeRestart,
+		WorkItemKindRecoveryHumanEscalation,
+		WorkItemKindRecoveryRetryN:
+		return true
+	}
+	return false
+}
+
 // WorkItemStatus — schedulable kinds follow:
 // pending → ready → assigned → running → checkpointing →
 // succeeded | failed | cancelled | recovering (docs/02 §2.2).

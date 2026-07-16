@@ -36,6 +36,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -461,11 +462,28 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 				}
 				return fmt.Errorf("load work item: %w", err)
 			}
-			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, wi.ID, wi.Version, db.UpdateWorkItemFields{
+			// PR B (context propagation): build the composite prompt
+			// the worker should see. The prompt is the work item
+			// itself + ancestor chain + summaries from upstream
+			// stages in this run. It is stored on the work item
+			// before dispatch; the opencode adapter reads it via
+			// the TaskReconciler → manifest Goal.
+			composite, err := r.buildCompositePrompt(ctx, tx, tenantID, wi, allSteps, runs)
+			if err != nil {
+				return fmt.Errorf("build composite prompt for %s: %w", wid, err)
+			}
+			pcJSON, _ := json.Marshal(map[string]any{
+				"composite": composite,
+			})
+			assignFields := db.UpdateWorkItemFields{
 				AssignedWorkerRef: &workerRef,
 				WorkflowID:        &wfID,
 				Status:            strPtr(domain.WorkItemReady),
-			}); err != nil {
+			}
+			if pcJSON != nil {
+				assignFields.PromptContext = &pcJSON
+			}
+			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, wi.ID, wi.Version, assignFields); err != nil {
 				return fmt.Errorf("assign worker to work item: %w", err)
 			}
 			primaryWID = wid
@@ -606,6 +624,146 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 		return fmt.Errorf("enqueue step_failed: %w", err)
 	}
 	return reason
+}
+
+// buildCompositePrompt assembles the prompt text the worker should see
+// when this work item is dispatched (PR B — context propagation). It
+// has three sections:
+//
+//   1. # Task — the work item itself: title, description, acceptance
+//      criteria. This is THE task; everything else is context.
+//   2. # Project context — the ancestor chain walked via
+//      work_items.parent_id (oldest first).
+//   3. # Upstream context — summaries from prior TASK step runs in
+//      this workflow. Each upstream step's results._summary (set by
+//      the TaskReconciler via ORCHICON WORKER SUMMARY extraction) is
+//      included verbatim, in upstream order.
+//
+// The composite is the opencode adapter's "message" (passed via the
+// manifest Goal). The worker is instructed via the prompt's footer to
+// end its response with `ORCHICON WORKER SUMMARY:` followed by a short
+// summary that becomes the next stage's upstream context.
+func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, error) {
+	var sb strings.Builder
+	// 1. Task.
+	sb.WriteString("# Task\n\n")
+	fmt.Fprintf(&sb, "Title: %s\n\n", strings.TrimSpace(wi.Title))
+	if d := strings.TrimSpace(wi.Description); d != "" {
+		fmt.Fprintf(&sb, "Description:\n%s\n\n", d)
+	}
+	if ac := strings.TrimSpace(wi.AcceptanceCriteria); ac != "" {
+		fmt.Fprintf(&sb, "Acceptance criteria:\n%s\n\n", ac)
+	}
+	// 2. Project context — ancestors, oldest first.
+	ancestors, err := walkAncestors(ctx, tx, tenantID, wi)
+	if err != nil {
+		return "", fmt.Errorf("walk ancestors: %w", err)
+	}
+	if len(ancestors) > 0 {
+		sb.WriteString("# Project context\n\n")
+		sb.WriteString("The items below are ancestor work items (epic → feature → task). They provide project context; the task above is the actual work to do.\n\n")
+		for _, a := range ancestors {
+			fmt.Fprintf(&sb, "## %s (%s)\n", strings.TrimSpace(a.Title), workItemKindLabel(a.Kind))
+			if d := strings.TrimSpace(a.Description); d != "" {
+				fmt.Fprintf(&sb, "%s\n", d)
+			}
+			sb.WriteString("\n")
+		}
+	}
+	// 3. Upstream context — prior TASK step runs that have completed.
+	upstream := upstreamStepSummaries(ctx, allSteps, runs)
+	if len(upstream) > 0 {
+		sb.WriteString("# Upstream context\n\n")
+		sb.WriteString("Summaries from prior worker steps in this workflow. Each summary is the worker's final output for that stage.\n\n")
+		for i, s := range upstream {
+			fmt.Fprintf(&sb, "## Stage %d\n%s\n\n", i+1, s)
+		}
+	}
+	// Footer: instruction for the worker to emit the summary marker.
+	sb.WriteString("# Instructions\n\n")
+	sb.WriteString("Complete the task above. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one short paragraph summarizing what you did. Everything from that marker to the end of your output is passed to the next stage of the workflow as upstream context.\n")
+	return sb.String(), nil
+}
+
+// walkAncestors walks the parent_id chain from a work item up to the
+// root (epic) and returns the ancestors in root-first order. Stops at
+// the first missing parent or after `maxAncestorDepth` hops to defend
+// against pathological data. PR B.
+func walkAncestors(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow) ([]db.WorkItemRow, error) {
+	const maxAncestorDepth = 16
+	var out []db.WorkItemRow
+	cur := wi
+	for i := 0; i < maxAncestorDepth; i++ {
+		if cur.ParentID == nil || *cur.ParentID == "" {
+			break
+		}
+		parent, err := db.GetWorkItem(ctx, tx, tenantID, *cur.ParentID)
+		if err != nil {
+			if err == db.ErrNotFound {
+				break
+			}
+			return nil, err
+		}
+		out = append(out, parent)
+		cur = parent
+	}
+	// Reverse so the oldest (epic) comes first.
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
+}
+
+// upstreamStepSummaries collects the `_summary` field from each prior
+// TASK step run that is succeeded. Order: topological — the function
+// walks the DAG in step-id order via allSteps (which is in the order
+// the author placed them; for a linear chain that's left-to-right).
+// Cycles are the caller's responsibility to prevent (validated at save
+// time, docs/10 §11).
+func upstreamStepSummaries(ctx context.Context, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) []string {
+	var out []string
+	for _, s := range allSteps {
+		if s.Kind != domain.StepKindTask {
+			continue
+		}
+		sr, ok := runs[s.ID]
+		if !ok {
+			continue
+		}
+		if sr.Status != domain.StepRunSucceeded {
+			continue
+		}
+		if len(sr.Result) == 0 {
+			continue
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(sr.Result, &parsed); err != nil {
+			continue
+		}
+		s, _ := parsed["_summary"].(string)
+		if s == "" {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// workItemKindLabel returns a human-readable label for a work item's
+// kind enum value (1=task, 2=feature, 3=epic, 4=subtask).
+func workItemKindLabel(kind string) string {
+	switch kind {
+	case "task":
+		return "task"
+	case "feature":
+		return "feature"
+	case "epic":
+		return "epic"
+	case "subtask":
+		return "subtask"
+	default:
+		return kind
+	}
 }
 
 // readConfigWorkItemID extracts work_item_id from a step's config JSON.

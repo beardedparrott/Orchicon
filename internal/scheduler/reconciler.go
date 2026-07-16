@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -211,6 +212,20 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID string) error 
 // adapter call (docs/03 §8: no SELECT FOR UPDATE held across external
 // calls). The bridge updates the execution status as telemetry arrives.
 func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow, adapter db.AdapterRow) {
+	// PR B (context propagation): if the WorkflowReconciler populated
+	// the work item's prompt_context, the composite prompt is the
+	// Goal — it carries the work item's title + description + AC +
+	// ancestor chain + upstream step summaries. Otherwise fall back
+	// to task.Title (the legacy direct-dispatch path).
+	goal := task.Title
+	if len(task.PromptContext) > 0 {
+		var pc struct {
+			Composite string `json:"composite"`
+		}
+		if err := json.Unmarshal(task.PromptContext, &pc); err == nil && pc.Composite != "" {
+			goal = pc.Composite
+		}
+	}
 	manifest := ExecutionManifest{
 		ExecutionID:        exec.ID,
 		TaskID:             exec.TaskID,
@@ -218,7 +233,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		WorkerID:           version.WorkerID,
 		WorkerVersion:      version.Version,
 		SystemPrompt:       version.SystemPrompt,
-		Goal:               task.Title,
+		Goal:               goal,
 		AcceptanceCriteria: task.AcceptanceCriteria,
 		ModelRef:           version.ModelRef,
 		ContextSources:     version.ContextSources,
@@ -362,13 +377,21 @@ func (r *TaskReconciler) OnStarted(ctx context.Context, execID string) {
 // succeeded/failed so downstream consumers (the WorkflowReconciler
 // polling task steps) observe completion (docs/02 §2.4: tasks are
 // reconciled as children of workflows).
-func (r *TaskReconciler) OnResult(ctx context.Context, execID string, succeeded bool) {
+//
+// `output` is the worker's accumulated text from the adapter (PR B —
+// context propagation). When the worker succeeded, the TaskReconciler
+// extracts the ORCHICON WORKER SUMMARY block from `output`, persists
+// it as the work item's _summary, and copies it onto the linked
+// workflow step run so downstream stages can include it as upstream
+// context. `output` may be empty for non-opencode adapters or when
+// the worker errored before producing any text.
+func (r *TaskReconciler) OnResult(ctx context.Context, execID string, succeeded bool, output string) {
 	status := domain.ExecutionTerminated
 	if !succeeded {
 		status = domain.ExecutionUnhealthy
 	}
 	r.updateExecStatus(ctx, execID, status, domain.HealthTerminating)
-	r.transitionWorkItemOnResult(ctx, execID, succeeded)
+	r.transitionWorkItemOnResult(ctx, execID, succeeded, output)
 }
 
 // transitionWorkItemOnResult moves the WorkItem linked to the execution
@@ -377,7 +400,13 @@ func (r *TaskReconciler) OnResult(ctx context.Context, execID string, succeeded 
 // terminal state (docs/02 §2.4, docs/03 §6). On failure, the
 // TaskReconciler triggers recovery (Phase 7, docs/06 §2) — recovery is
 // opt-out, not opt-in (docs/06 §1).
-func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID string, succeeded bool) {
+//
+// `output` is the worker's accumulated text (PR B). On success, the
+// function extracts the ORCHICON WORKER SUMMARY block, persists the
+// full output + extracted summary onto the work item's results, and
+// copies the summary onto the linked workflow step run so downstream
+// stages can read it as upstream context.
+func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID string, succeeded bool, output string) {
 	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {
 		r.log.Error("transition work item: begin tx", "execution", execID, "error", err)
@@ -396,20 +425,61 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 		r.log.Error("transition work item: get work item", "task", exec.TaskID, "error", err)
 		return
 	}
+	// PR B: extract summary from worker output. If the marker is
+	// absent, the entire output is treated as the summary (the
+	// worker's prompt instructs it to end with the marker; lenient
+	// workers that don't follow the contract still get their full
+	// output propagated downstream).
+	var summary string
+	if succeeded && output != "" {
+		summary = extractWorkerSummary(output)
+	}
+	// Persist output + summary on the work item's results JSON so the
+	// audit trail shows what the worker produced. The summary is the
+	// canonical downstream input.
+	results := map[string]any{}
+	if len(wi.Results) > 0 {
+		_ = json.Unmarshal(wi.Results, &results)
+	}
+	if output != "" {
+		results["_output"] = output
+	}
+	if summary != "" {
+		results["_summary"] = summary
+	}
+	resultsJSON, _ := json.Marshal(results)
 	if succeeded {
-		if _, err := db.UpdateWorkItem(ctx, ttx.Tx, "tnt_dev", exec.TaskID, wi.Version, db.UpdateWorkItemFields{
+		fields := db.UpdateWorkItemFields{
 			Status: strPtr(domain.WorkItemSucceeded),
-		}); err != nil {
+		}
+		if resultsJSON != nil {
+			fields.Results = &resultsJSON
+		}
+		if _, err := db.UpdateWorkItem(ctx, ttx.Tx, "tnt_dev", exec.TaskID, wi.Version, fields); err != nil {
 			r.log.Error("transition work item: update", "task", exec.TaskID, "error", err)
 			return
+		}
+		// PR B: copy the summary onto the linked workflow step run
+		// (results._summary) so the WorkflowReconciler can compose
+		// it into the next stage's prompt. Best-effort — a missing
+		// step run (e.g. dispatched without a workflow) is logged
+		// and skipped, not fatal.
+		if summary != "" {
+			if err := r.propagateSummaryToStepRun(ctx, ttx.Tx, "tnt_dev", exec.TaskID, summary); err != nil {
+				r.log.Warn("propagate summary to step run", "task", exec.TaskID, "error", err)
+			}
 		}
 	} else {
 		// Failure: transition to recovering and trigger the recovery
 		// workflow (docs/06 §2). Recovery is opt-out, not opt-in
 		// (docs/06 §1). The trigger is idempotent (docs/06 §9).
-		if _, err := db.UpdateWorkItem(ctx, ttx.Tx, "tnt_dev", exec.TaskID, wi.Version, db.UpdateWorkItemFields{
+		fields := db.UpdateWorkItemFields{
 			Status: strPtr(domain.WorkItemRecovering),
-		}); err != nil {
+		}
+		if resultsJSON != nil {
+			fields.Results = &resultsJSON
+		}
+		if _, err := db.UpdateWorkItem(ctx, ttx.Tx, "tnt_dev", exec.TaskID, wi.Version, fields); err != nil {
 			r.log.Error("transition work item: update", "task", exec.TaskID, "error", err)
 			return
 		}
@@ -579,3 +649,75 @@ func enqueueWorkItemEvent(ctx context.Context, tx pgx.Tx, eventType string, w db
 }
 
 func strPtr(s string) *string { return &s }
+
+// summaryMarker is the literal line the worker's prompt instructs it to
+// end with. Everything from the marker (inclusive) to the end of the
+// worker's output becomes the summary that flows downstream as upstream
+// context. If absent, the entire output is treated as the summary so
+// lenient workers that don't follow the contract still propagate.
+const summaryMarker = "ORCHICON WORKER SUMMARY:"
+
+// extractWorkerSummary parses the ORCHICON WORKER SUMMARY block from
+// the worker's text. It takes the LAST occurrence of the marker (in
+// case the worker mentions the literal in earlier text) and returns
+// everything from the marker to the end of the string, trimmed. If the
+// marker is not present, the entire input is returned (best-effort —
+// the worker's prompt instructs it to end with the marker, but
+// fallbacks keep lenient workers from breaking the workflow).
+func extractWorkerSummary(output string) string {
+	idx := strings.LastIndex(output, summaryMarker)
+	if idx < 0 {
+		return strings.TrimSpace(output)
+	}
+	return strings.TrimSpace(output[idx+len(summaryMarker):])
+}
+
+// propagateSummaryToStepRun copies the worker's summary onto the
+// workflow step run that is awaiting this task (PR B — context
+// propagation). The step run's _work_item_id (set when the run was
+// dispatched) points at the work item; we look up the step run by
+// that id and append _summary to its results JSON.
+//
+// Best-effort: a missing step run (e.g. dispatched without a
+// workflow) is logged at debug and skipped. An error is returned only
+// for genuine database errors.
+func (r *TaskReconciler) propagateSummaryToStepRun(ctx context.Context, tx pgx.Tx, tenantID, taskID, summary string) error {
+	// Find the step run that references this task.
+	const q = `SELECT id, result, version FROM workflow_step_runs
+		WHERE tenant_id = $1 AND result::text LIKE $2
+		ORDER BY created_at DESC LIMIT 1`
+	// We can't pass JSONB -> text via bind, so use a LIKE on the
+	// result's text projection. The _work_item_id is a unique key in
+	// the result JSON for task steps dispatched by the workflow.
+	// Postgres's JSONB text representation has a space after each
+	// colon, so the pattern needs a wildcard between the colon and
+	// the id: "_work_item_id":<space?>01K...; the leading + trailing
+	// `%` cover anything before/after.
+	rows, err := tx.Query(ctx, q, tenantID, `%_work_item_id":%`+taskID+`%`)
+	if err != nil {
+		return fmt.Errorf("find step run for task: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		r.log.Debug("no step run references task", "task", taskID)
+		return nil // no step run — task wasn't dispatched by a workflow
+	}
+	var stepRunID, rawResult string
+	var version int
+	if err := rows.Scan(&stepRunID, &rawResult, &version); err != nil {
+		return fmt.Errorf("scan step run: %w", err)
+	}
+	rows.Close()
+	merged := map[string]any{}
+	if rawResult != "" {
+		_ = json.Unmarshal([]byte(rawResult), &merged)
+	}
+	merged["_summary"] = summary
+	updated, _ := json.Marshal(merged)
+	if _, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, stepRunID, version, db.UpdateWorkflowStepRunFields{
+		Result: &updated,
+	}); err != nil {
+		return fmt.Errorf("update step run result: %w", err)
+	}
+	return nil
+}

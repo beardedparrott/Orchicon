@@ -23,6 +23,12 @@ type RecoveryExecutionRow struct {
 	Level              int32
 	Status             string
 	CurrentStep        string
+	// Strategy is the recovery strategy routed on by the engine (PR C).
+	// One of: summarize_restart (default — the 6-step flow), stop,
+	// human_escalation, retry_n. Empty string falls back to
+	// summarize_restart for backward compat with rows written before
+	// the column existed.
+	Strategy           string
 	ResumptionPath     string
 	BudgetTokensLimit  int64
 	BudgetTokensUsed   int64
@@ -93,7 +99,7 @@ func CreateRecoveryExecution(ctx context.Context, tx pgx.Tx, r RecoveryExecution
 		 budget_cost_limit_usd, budget_cost_used_usd, budget_relax_fraction,
 		 needs_human_approval, continuation_plan_id, reviewer_worker_id,
 		 summary, triggered_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
 		RETURNING id, tenant_id, project_id, task_id, failed_execution_id,
 			recovery_workflow_id, trigger_reason, level, status, current_step,
 			resumption_path, budget_tokens_limit, budget_tokens_used,
@@ -129,7 +135,7 @@ func CreateRecoveryExecution(ctx context.Context, tx pgx.Tx, r RecoveryExecution
 // GetRecoveryExecution fetches a single recovery by id within the tenant.
 func GetRecoveryExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (RecoveryExecutionRow, error) {
 	const q = `SELECT id, tenant_id, project_id, task_id, failed_execution_id,
-		recovery_workflow_id, trigger_reason, level, status, current_step,
+		recovery_workflow_id, trigger_reason, level, status, current_step, strategy,
 		resumption_path, budget_tokens_limit, budget_tokens_used,
 		budget_cost_limit_usd, budget_cost_used_usd, budget_relax_fraction,
 		needs_human_approval, continuation_plan_id, reviewer_worker_id,
@@ -139,7 +145,7 @@ func GetRecoveryExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&r.ID, &r.TenantID, &r.ProjectID, &r.TaskID, &r.FailedExecutionID,
 		&r.RecoveryWorkflowID, &r.TriggerReason, &r.Level, &r.Status,
-		&r.CurrentStep, &r.ResumptionPath, &r.BudgetTokensLimit,
+		&r.CurrentStep, &r.Strategy, &r.ResumptionPath, &r.BudgetTokensLimit,
 		&r.BudgetTokensUsed, &r.BudgetCostLimitUSD, &r.BudgetCostUsedUSD,
 		&r.BudgetRelaxFraction, &r.NeedsHumanApproval,
 		&r.ContinuationPlanID, &r.ReviewerWorkerID, &r.Summary,
@@ -170,7 +176,7 @@ func ListRecoveries(ctx context.Context, tx pgx.Tx, f ListRecoveriesFilter) ([]R
 		f.PageSize = 100
 	}
 	q := `SELECT id, tenant_id, project_id, task_id, failed_execution_id,
-		recovery_workflow_id, trigger_reason, level, status, current_step,
+		recovery_workflow_id, trigger_reason, level, status, current_step, strategy,
 		resumption_path, budget_tokens_limit, budget_tokens_used,
 		budget_cost_limit_usd, budget_cost_used_usd, budget_relax_fraction,
 		needs_human_approval, continuation_plan_id, reviewer_worker_id,
@@ -202,7 +208,7 @@ func ListRecoveries(ctx context.Context, tx pgx.Tx, f ListRecoveriesFilter) ([]R
 		if err := rows.Scan(
 			&r.ID, &r.TenantID, &r.ProjectID, &r.TaskID, &r.FailedExecutionID,
 			&r.RecoveryWorkflowID, &r.TriggerReason, &r.Level, &r.Status,
-			&r.CurrentStep, &r.ResumptionPath, &r.BudgetTokensLimit,
+			&r.CurrentStep, &r.Strategy, &r.ResumptionPath, &r.BudgetTokensLimit,
 			&r.BudgetTokensUsed, &r.BudgetCostLimitUSD, &r.BudgetCostUsedUSD,
 			&r.BudgetRelaxFraction, &r.NeedsHumanApproval,
 			&r.ContinuationPlanID, &r.ReviewerWorkerID, &r.Summary,
@@ -220,7 +226,7 @@ func ListRecoveries(ctx context.Context, tx pgx.Tx, f ListRecoveriesFilter) ([]R
 func ListPendingRecoveries(ctx context.Context, tx pgx.Tx, tenantID string) ([]RecoveryExecutionRow, error) {
 	const q = `SELECT id, tenant_id, project_id, task_id, failed_execution_id,
 		recovery_workflow_id, trigger_reason, level, status, current_step,
-		resumption_path, budget_tokens_limit, budget_tokens_used,
+		strategy, resumption_path, budget_tokens_limit, budget_tokens_used,
 		budget_cost_limit_usd, budget_cost_used_usd, budget_relax_fraction,
 		needs_human_approval, continuation_plan_id, reviewer_worker_id,
 		summary, version, triggered_at, ended_at, created_at, updated_at
@@ -238,7 +244,7 @@ func ListPendingRecoveries(ctx context.Context, tx pgx.Tx, tenantID string) ([]R
 		if err := rows.Scan(
 			&r.ID, &r.TenantID, &r.ProjectID, &r.TaskID, &r.FailedExecutionID,
 			&r.RecoveryWorkflowID, &r.TriggerReason, &r.Level, &r.Status,
-			&r.CurrentStep, &r.ResumptionPath, &r.BudgetTokensLimit,
+			&r.CurrentStep, &r.Strategy, &r.ResumptionPath, &r.BudgetTokensLimit,
 			&r.BudgetTokensUsed, &r.BudgetCostLimitUSD, &r.BudgetCostUsedUSD,
 			&r.BudgetRelaxFraction, &r.NeedsHumanApproval,
 			&r.ContinuationPlanID, &r.ReviewerWorkerID, &r.Summary,
@@ -268,7 +274,7 @@ func GetActiveRecoveryForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID s
 	err := tx.QueryRow(ctx, q, tenantID, taskID).Scan(
 		&r.ID, &r.TenantID, &r.ProjectID, &r.TaskID, &r.FailedExecutionID,
 		&r.RecoveryWorkflowID, &r.TriggerReason, &r.Level, &r.Status,
-		&r.CurrentStep, &r.ResumptionPath, &r.BudgetTokensLimit,
+		&r.CurrentStep, &r.Strategy, &r.ResumptionPath, &r.BudgetTokensLimit,
 		&r.BudgetTokensUsed, &r.BudgetCostLimitUSD, &r.BudgetCostUsedUSD,
 		&r.BudgetRelaxFraction, &r.NeedsHumanApproval,
 		&r.ContinuationPlanID, &r.ReviewerWorkerID, &r.Summary,
@@ -299,6 +305,9 @@ type UpdateRecoveryExecutionFields struct {
 	ReviewerWorkerID     *string
 	Summary              *string
 	Level                *int32
+	// Strategy is the recovery strategy routed on by the engine. PR C
+	// routes per row; left nil on updates that don't change strategy.
+	Strategy             *string
 	EndedAt              *time.Time
 }
 
@@ -373,6 +382,11 @@ func UpdateRecoveryExecution(ctx context.Context, tx pgx.Tx, tenantID, id string
 		args = append(args, *f.Level)
 		setIdx++
 	}
+	if f.Strategy != nil {
+		q += fmt.Sprintf(`, strategy = $%d`, setIdx)
+		args = append(args, *f.Strategy)
+		setIdx++
+	}
 	if f.EndedAt != nil {
 		q += fmt.Sprintf(`, ended_at = $%d`, setIdx)
 		args = append(args, *f.EndedAt)
@@ -380,7 +394,7 @@ func UpdateRecoveryExecution(ctx context.Context, tx pgx.Tx, tenantID, id string
 	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, project_id, task_id, failed_execution_id,
-		recovery_workflow_id, trigger_reason, level, status, current_step,
+		recovery_workflow_id, trigger_reason, level, status, current_step, strategy,
 		resumption_path, budget_tokens_limit, budget_tokens_used,
 		budget_cost_limit_usd, budget_cost_used_usd, budget_relax_fraction,
 		needs_human_approval, continuation_plan_id, reviewer_worker_id,
@@ -389,7 +403,7 @@ func UpdateRecoveryExecution(ctx context.Context, tx pgx.Tx, tenantID, id string
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&r.ID, &r.TenantID, &r.ProjectID, &r.TaskID, &r.FailedExecutionID,
 		&r.RecoveryWorkflowID, &r.TriggerReason, &r.Level, &r.Status,
-		&r.CurrentStep, &r.ResumptionPath, &r.BudgetTokensLimit,
+		&r.CurrentStep, &r.Strategy, &r.ResumptionPath, &r.BudgetTokensLimit,
 		&r.BudgetTokensUsed, &r.BudgetCostLimitUSD, &r.BudgetCostUsedUSD,
 		&r.BudgetRelaxFraction, &r.NeedsHumanApproval,
 		&r.ContinuationPlanID, &r.ReviewerWorkerID, &r.Summary,

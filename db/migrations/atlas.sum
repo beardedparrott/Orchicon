@@ -1,4 +1,4 @@
-h1:iOXgKHDgw0LdBRQm7ypOQ4PcZCjqoh4xn1zezH63AYM=
+h1:HWs/xD5Re1Z/o5Z1LNA+Q9Hh08EQUvdOmVx12gSISu4=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712223028_add_outbox.sql h1:tlrMIs8ABXFMszWNaYd7gxjn3p42rmqrZeoxOJ1Vqvg=
 20260713012808_workers_workitems.sql h1:3li9AejCZaj9bcZz8wKOw0GG7UER3Uz9jbSNKF74Zo8=
@@ -8,3 +8,5 @@ h1:iOXgKHDgw0LdBRQm7ypOQ4PcZCjqoh4xn1zezH63AYM=
 20260713120000_recovery_policy.sql h1:mjKk6LyM1pecZSA2oBW9t5POiJau6B5LoyY/GblwDMs=
 20260713140000_telemetry_cost.sql h1:fOxev9Hk6JEy9Yyv94heycoA66YZ6jBXdatRe+ktWVg=
 20260713160000_auth_webhooks.sql h1:qxaPhZUGZZBLYGKFTx5DOj/YKPvNq1E80qYYfVriSvk=
+20260713210000_work_items_prompt_context.sql h1:OJEamyq84VvaJSnfFXwqdqtwuevXST8vdfvVDkH9nkA=
+20260715000000_recovery_strategy.sql h1:T2HE1hiBH9hi+ReyfaaQLgMHH/GNIgvPSLOTPQWvi6s=

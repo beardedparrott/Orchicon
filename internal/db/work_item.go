@@ -32,9 +32,15 @@ type WorkItemRow struct {
 	Budgets            []byte // jsonb
 	ContextWindow      int
 	Results            []byte // jsonb
-	Version            int
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	// PromptContext is the composite prompt the worker should see when
+	// dispatched for this work item. Set by the WorkflowReconciler
+	// before dispatch (PR B — context propagation). Read by the opencode
+	// adapter via the TaskReconciler → manifest Goal. JSONB shape:
+	//   {"composite": "# Task\n...\n# Project context\n...\n# Upstream context\n..."}
+	PromptContext []byte // jsonb
+	Version       int
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // CreateWorkItem inserts a new work item within the given tenant
@@ -52,21 +58,21 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 	const q = `INSERT INTO work_items
 		(id, tenant_id, project_id, parent_id, kind, title, description,
 		 acceptance_criteria, status, assigned_worker_ref, workflow_id,
-		 priority, budgets, context_window, results)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		 priority, budgets, context_window, results, prompt_context)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
 			acceptance_criteria, status, assigned_worker_ref, workflow_id,
-			priority, budgets, context_window, results, version, created_at, updated_at`
+			priority, budgets, context_window, results, prompt_context, version, created_at, updated_at`
 	row := w
 	err := tx.QueryRow(ctx, q,
 		w.ID, w.TenantID, w.ProjectID, w.ParentID, w.Kind, w.Title, w.Description,
 		w.AcceptanceCriteria, w.Status, w.AssignedWorkerRef, w.WorkflowID,
-		w.Priority, w.Budgets, w.ContextWindow, w.Results,
+		w.Priority, w.Budgets, w.ContextWindow, w.Results, w.PromptContext,
 	).Scan(
 		&row.ID, &row.TenantID, &row.ProjectID, &row.ParentID, &row.Kind, &row.Title,
 		&row.Description, &row.AcceptanceCriteria, &row.Status, &row.AssignedWorkerRef,
 		&row.WorkflowID, &row.Priority, &row.Budgets, &row.ContextWindow, &row.Results,
-		&row.Version, &row.CreatedAt, &row.UpdatedAt,
+		&row.PromptContext, &row.Version, &row.CreatedAt, &row.UpdatedAt,
 	)
 	if err != nil {
 		return WorkItemRow{}, fmt.Errorf("db: create work item: %w", err)
@@ -78,14 +84,14 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 func GetWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkItemRow, error) {
 	const q = `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
 		acceptance_criteria, status, assigned_worker_ref, workflow_id,
-		priority, budgets, context_window, results, version, created_at, updated_at
+		priority, budgets, context_window, results, prompt_context, version, created_at, updated_at
 		FROM work_items WHERE id = $1 AND tenant_id = $2`
 	var w WorkItemRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
 		&w.Description, &w.AcceptanceCriteria, &w.Status, &w.AssignedWorkerRef,
 		&w.WorkflowID, &w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
-		&w.Version, &w.CreatedAt, &w.UpdatedAt,
+		&w.PromptContext, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkItemRow{}, ErrNotFound
@@ -118,7 +124,7 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 	}
 	q := `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
 		acceptance_criteria, status, assigned_worker_ref, workflow_id,
-		priority, budgets, context_window, results, version, created_at, updated_at
+		priority, budgets, context_window, results, prompt_context, version, created_at, updated_at
 		FROM work_items
 		WHERE tenant_id = $1 AND project_id = $2 AND ($3 = '' OR id > $3)`
 	args := []any{f.TenantID, f.ProjectID, f.AfterID}
@@ -187,9 +193,18 @@ type UpdateWorkItemFields struct {
 	ContextWindow      *int
 	AssignedWorkerRef  *[]byte
 	ProjectID          *string
+	// PromptContext is set by the WorkflowReconciler before dispatch
+	// (PR B — context propagation). The opencode adapter reads it via
+	// the TaskReconciler → manifest Goal. JSONB payload (see
+	// migration 20260713210000).
+	PromptContext *[]byte
 	// WorkflowID links a work item to the workflow it's part of (set
 	// when a TASK step dispatches it). Nullable; empty string clears.
 	WorkflowID *string
+	// Results is the work item's output JSON. The TaskReconciler
+	// writes _output (raw worker text) and _summary (extracted
+	// summary) here on terminal state (PR B).
+	Results *[]byte
 }
 
 // UpdateWorkItem applies a partial update with optimistic concurrency.
@@ -244,21 +259,31 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 		args = append(args, *f.ProjectID)
 		setIdx++
 	}
+	if f.PromptContext != nil {
+		q += fmt.Sprintf(`, prompt_context = $%d`, setIdx)
+		args = append(args, *f.PromptContext)
+		setIdx++
+	}
 	if f.WorkflowID != nil {
 		q += fmt.Sprintf(`, workflow_id = $%d`, setIdx)
 		args = append(args, *f.WorkflowID)
 		setIdx++
 	}
+	if f.Results != nil {
+		q += fmt.Sprintf(`, results = $%d`, setIdx)
+		args = append(args, *f.Results)
+		setIdx++
+	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
 		acceptance_criteria, status, assigned_worker_ref, workflow_id,
-		priority, budgets, context_window, results, version, created_at, updated_at`
+		priority, budgets, context_window, results, prompt_context, version, created_at, updated_at`
 	var w WorkItemRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
 		&w.Description, &w.AcceptanceCriteria, &w.Status, &w.AssignedWorkerRef,
 		&w.WorkflowID, &w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
-		&w.Version, &w.CreatedAt, &w.UpdatedAt,
+		&w.PromptContext, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkItemRow{}, ErrNotFound

@@ -28,16 +28,37 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// WorkItemKind enumerates the four levels of the work hierarchy
-// (docs/02_Domain_Model.md §2.2). Depth is constrained to 4 levels.
+// WorkItemKind enumerates the work hierarchy kinds (docs/02_Domain_Model.md
+// §2.2) plus the typed recovery strategies (PR C — recovery as work
+// items). Depth of the regular hierarchy is constrained to 4 levels;
+// recovery kinds are schedulable like tasks but route to the
+// RecoveryReconciler instead of the TaskReconciler.
+//
+// Regular: epic → feature → task → subtask.
+// Recovery strategies (PR C):
+//   - recovery_stop:              abandon the workflow cleanly. Marks
+//     the linked workflow run failed/aborted.
+//   - recovery_summarize_restart:  capture the failure summary, prepend
+//     to the next attempt's prompt, then
+//     restart the workflow with that
+//     expanded context (docs/06 §4).
+//   - recovery_human_escalation:  block until a human approves or rejects
+//     a continuation plan (L3 — docs/06 §7).
+//   - recovery_retry_n:           retry the same step up to N times
+//     before escalating (bounded auto-relax
+//     per docs/06 §11).
 type WorkItemKind int32
 
 const (
-	WorkItemKind_WORK_ITEM_KIND_UNSPECIFIED WorkItemKind = 0
-	WorkItemKind_WORK_ITEM_KIND_EPIC        WorkItemKind = 1
-	WorkItemKind_WORK_ITEM_KIND_FEATURE     WorkItemKind = 2
-	WorkItemKind_WORK_ITEM_KIND_TASK        WorkItemKind = 3
-	WorkItemKind_WORK_ITEM_KIND_SUBTASK     WorkItemKind = 4
+	WorkItemKind_WORK_ITEM_KIND_UNSPECIFIED                WorkItemKind = 0
+	WorkItemKind_WORK_ITEM_KIND_EPIC                       WorkItemKind = 1
+	WorkItemKind_WORK_ITEM_KIND_FEATURE                    WorkItemKind = 2
+	WorkItemKind_WORK_ITEM_KIND_TASK                       WorkItemKind = 3
+	WorkItemKind_WORK_ITEM_KIND_SUBTASK                    WorkItemKind = 4
+	WorkItemKind_WORK_ITEM_KIND_RECOVERY_STOP              WorkItemKind = 5
+	WorkItemKind_WORK_ITEM_KIND_RECOVERY_SUMMARIZE_RESTART WorkItemKind = 6
+	WorkItemKind_WORK_ITEM_KIND_RECOVERY_HUMAN_ESCALATION  WorkItemKind = 7
+	WorkItemKind_WORK_ITEM_KIND_RECOVERY_RETRY_N           WorkItemKind = 8
 )
 
 // Enum value maps for WorkItemKind.
@@ -48,13 +69,21 @@ var (
 		2: "WORK_ITEM_KIND_FEATURE",
 		3: "WORK_ITEM_KIND_TASK",
 		4: "WORK_ITEM_KIND_SUBTASK",
+		5: "WORK_ITEM_KIND_RECOVERY_STOP",
+		6: "WORK_ITEM_KIND_RECOVERY_SUMMARIZE_RESTART",
+		7: "WORK_ITEM_KIND_RECOVERY_HUMAN_ESCALATION",
+		8: "WORK_ITEM_KIND_RECOVERY_RETRY_N",
 	}
 	WorkItemKind_value = map[string]int32{
-		"WORK_ITEM_KIND_UNSPECIFIED": 0,
-		"WORK_ITEM_KIND_EPIC":        1,
-		"WORK_ITEM_KIND_FEATURE":     2,
-		"WORK_ITEM_KIND_TASK":        3,
-		"WORK_ITEM_KIND_SUBTASK":     4,
+		"WORK_ITEM_KIND_UNSPECIFIED":                0,
+		"WORK_ITEM_KIND_EPIC":                       1,
+		"WORK_ITEM_KIND_FEATURE":                    2,
+		"WORK_ITEM_KIND_TASK":                       3,
+		"WORK_ITEM_KIND_SUBTASK":                    4,
+		"WORK_ITEM_KIND_RECOVERY_STOP":              5,
+		"WORK_ITEM_KIND_RECOVERY_SUMMARIZE_RESTART": 6,
+		"WORK_ITEM_KIND_RECOVERY_HUMAN_ESCALATION":  7,
+		"WORK_ITEM_KIND_RECOVERY_RETRY_N":           8,
 	}
 )
 
@@ -230,12 +259,18 @@ type WorkItem struct {
 	Priority           int32                  `protobuf:"varint,12,opt,name=priority,proto3" json:"priority,omitempty"`
 	Budgets            string                 `protobuf:"bytes,13,opt,name=budgets,proto3" json:"budgets,omitempty"` // JSON: tokens/cost/time (docs/02 §2.2)
 	ContextWindow      int32                  `protobuf:"varint,14,opt,name=context_window,json=contextWindow,proto3" json:"context_window,omitempty"`
-	Results            string                 `protobuf:"bytes,15,opt,name=results,proto3" json:"results,omitempty"`  // JSON: execution results
-	Version            int32                  `protobuf:"varint,16,opt,name=version,proto3" json:"version,omitempty"` // optimistic concurrency (docs/09 §5)
-	CreatedAt          *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt          *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	Results            string                 `protobuf:"bytes,15,opt,name=results,proto3" json:"results,omitempty"` // JSON: execution results
+	// PR B (context propagation, PR-A follow-up): composite prompt the
+	// worker should see when dispatched. Set by the WorkflowReconciler
+	// before dispatch; read by the opencode adapter via the
+	// TaskReconciler → manifest Goal. JSONB payload (see migration
+	// 20260713210000): {"composite": "# Task\n...\n# Project context\n...\n# Upstream context\n..."}.
+	PromptContext string                 `protobuf:"bytes,19,opt,name=prompt_context,json=promptContext,proto3" json:"prompt_context,omitempty"`
+	Version       int32                  `protobuf:"varint,16,opt,name=version,proto3" json:"version,omitempty"` // optimistic concurrency (docs/09 §5)
+	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WorkItem) Reset() {
@@ -369,6 +404,13 @@ func (x *WorkItem) GetContextWindow() int32 {
 func (x *WorkItem) GetResults() string {
 	if x != nil {
 		return x.Results
+	}
+	return ""
+}
+
+func (x *WorkItem) GetPromptContext() string {
+	if x != nil {
+		return x.PromptContext
 	}
 	return ""
 }
@@ -548,7 +590,7 @@ var File_orchicon_api_v1_work_item_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\n" +
-	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa0\x05\n" +
+	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc7\x05\n" +
 	"\bWorkItem\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -567,7 +609,8 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\bpriority\x18\f \x01(\x05R\bpriority\x12\x18\n" +
 	"\abudgets\x18\r \x01(\tR\abudgets\x12%\n" +
 	"\x0econtext_window\x18\x0e \x01(\x05R\rcontextWindow\x12\x18\n" +
-	"\aresults\x18\x0f \x01(\tR\aresults\x12\x18\n" +
+	"\aresults\x18\x0f \x01(\tR\aresults\x12%\n" +
+	"\x0eprompt_context\x18\x13 \x01(\tR\rpromptContext\x12\x18\n" +
 	"\aversion\x18\x10 \x01(\x05R\aversion\x129\n" +
 	"\n" +
 	"created_at\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
@@ -585,13 +628,17 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"created_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"}\n" +
 	"\x0fDependencyGraph\x12/\n" +
 	"\x05nodes\x18\x01 \x03(\v2\x19.orchicon.api.v1.WorkItemR\x05nodes\x129\n" +
-	"\x05edges\x18\x02 \x03(\v2#.orchicon.api.v1.WorkItemDependencyR\x05edges*\x98\x01\n" +
+	"\x05edges\x18\x02 \x03(\v2#.orchicon.api.v1.WorkItemDependencyR\x05edges*\xbc\x02\n" +
 	"\fWorkItemKind\x12\x1e\n" +
 	"\x1aWORK_ITEM_KIND_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13WORK_ITEM_KIND_EPIC\x10\x01\x12\x1a\n" +
 	"\x16WORK_ITEM_KIND_FEATURE\x10\x02\x12\x17\n" +
 	"\x13WORK_ITEM_KIND_TASK\x10\x03\x12\x1a\n" +
-	"\x16WORK_ITEM_KIND_SUBTASK\x10\x04*\xcb\x02\n" +
+	"\x16WORK_ITEM_KIND_SUBTASK\x10\x04\x12 \n" +
+	"\x1cWORK_ITEM_KIND_RECOVERY_STOP\x10\x05\x12-\n" +
+	")WORK_ITEM_KIND_RECOVERY_SUMMARIZE_RESTART\x10\x06\x12,\n" +
+	"(WORK_ITEM_KIND_RECOVERY_HUMAN_ESCALATION\x10\a\x12#\n" +
+	"\x1fWORK_ITEM_KIND_RECOVERY_RETRY_N\x10\b*\xcb\x02\n" +
 	"\x0eWorkItemStatus\x12 \n" +
 	"\x1cWORK_ITEM_STATUS_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18WORK_ITEM_STATUS_PENDING\x10\x01\x12\x1a\n" +

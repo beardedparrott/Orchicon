@@ -200,7 +200,7 @@ func CountActiveExecutionsForAdapter(ctx context.Context, tx pgx.Tx, tenantID, a
 	err := tx.QueryRow(ctx,
 		`SELECT count(*) FROM worker_executions
 		WHERE tenant_id = $1 AND adapter_id = $2
-		  AND status NOT IN ('terminated', 'failed_to_start')`,
+		  AND status NOT IN ('terminated', 'failed_to_start', 'unhealthy')`,
 		tenantID, adapterID,
 	).Scan(&count)
 	if err != nil {

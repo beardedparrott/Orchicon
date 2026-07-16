@@ -64,6 +64,148 @@ func New(pool *db.Pool, log *slog.Logger) *Engine {
 	return &Engine{pool: pool, log: log}
 }
 
+// Recovery strategy constants persisted to recovery_executions.strategy
+// (PR C — recovery as work items). The engine reads this column and
+// routes accordingly in progressRecovery.
+const (
+	RecoveryStrategySummarizeRestart = "summarize_restart" // default — 6-step flow
+	RecoveryStrategyStop              = "stop"               // PR C
+	RecoveryStrategyHumanEscalation   = "human_escalation"   // PR C — L3 block
+	RecoveryStrategyRetryN            = "retry_n"            // PR C
+)
+
+// strategyForWorkItem maps a work item's kind to the recovery strategy
+// that should run when a worker fails on a task it is associated with.
+// The regular hierarchy kinds default to summarize_restart (preserves
+// existing behavior); the recovery_X kinds in the enum trigger their
+// corresponding strategy. New recovery kinds can be added without
+// touching this function (they'll default to summarize_restart).
+func strategyForWorkItem(kind string) string {
+	switch kind {
+	case domain.WorkItemKindRecoveryStop:
+		return RecoveryStrategyStop
+	case domain.WorkItemKindRecoveryHumanEscalation:
+		return RecoveryStrategyHumanEscalation
+	case domain.WorkItemKindRecoveryRetryN:
+		return RecoveryStrategyRetryN
+	case domain.WorkItemKindRecoverySummarizeRestart:
+		return RecoveryStrategySummarizeRestart
+	default:
+		return RecoveryStrategySummarizeRestart
+	}
+}
+
+// applyStrategy mutates the recovery + task according to the strategy
+// recorded on the row. Returns true if the strategy was handled
+// directly (no need to advance the 6-step DAG). PR C.
+//
+//   summarize_restart — fall through, the 6-step default runs.
+//   stop              — mark the recovery failed; transition the task
+//                       back to pending (no re-dispatch) and mark its
+//                       owning workflow run failed if any.
+//   human_escalation  — block the recovery at L3 (needs_human_approval).
+//                       The run stays in recovering until the human
+//                       approves / rejects via the existing
+//                       ApproveContinuationPlan path.
+//   retry_n           — requeue the task immediately to ready so the
+//                       TaskReconciler dispatches a fresh execution.
+//                       No bounded auto-relax (docs/06 §11) — the
+//                       caller chooses the retry budget via the
+//                       work item's description / config.
+func (r *Reconciler) applyStrategy(ctx context.Context, tx pgx.Tx, tenantID string, rec *db.RecoveryExecutionRow) (bool, error) {
+	strategy := rec.Strategy
+	if strategy == "" {
+		strategy = RecoveryStrategySummarizeRestart
+	}
+	switch strategy {
+	case RecoveryStrategySummarizeRestart:
+		// Fall through to the 6-step DAG below.
+		return false, nil
+
+	case RecoveryStrategyStop:
+		now := time.Now().UTC()
+		updated, err := db.UpdateRecoveryExecution(ctx, tx, tenantID, rec.ID, rec.Version, db.UpdateRecoveryExecutionFields{
+			Status:  strPtr(domain.RecoveryFailed),
+			EndedAt: &now,
+			Summary: strPtr("recovery strategy = stop: workflow abandoned cleanly"),
+		})
+		if err != nil {
+			return true, fmt.Errorf("applyStrategy(stop): %w", err)
+		}
+		*rec = updated
+		// Mark the task terminal-cancelled; do not requeue. The
+		// workflow run's next poll will see the failed task and
+		// end the run.
+		task, err := db.GetWorkItem(ctx, tx, tenantID, rec.TaskID)
+		if err == nil {
+			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, rec.TaskID, task.Version, db.UpdateWorkItemFields{
+				Status: strPtr(domain.WorkItemCancelled),
+			}); err != nil {
+				return true, fmt.Errorf("applyStrategy(stop): mark task cancelled: %w", err)
+			}
+		}
+		_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventEscalated, *rec, "", "", rec.TriggerReason, "strategy=stop; workflow abandoned", "")
+		r.log.Info("recovery strategy applied",
+			"recovery", rec.ID, "task", rec.TaskID, "strategy", strategy)
+		return true, nil
+
+	case RecoveryStrategyHumanEscalation:
+		now := time.Now().UTC()
+		updated, err := db.UpdateRecoveryExecution(ctx, tx, tenantID, rec.ID, rec.Version, db.UpdateRecoveryExecutionFields{
+			Status:             strPtr(domain.RecoveryBlocked),
+			EndedAt:            &now, // PR C: blocked counts as terminal for the 6-step DAG
+			NeedsHumanApproval: boolPtr(true),
+			Summary:            strPtr("recovery strategy = human_escalation: blocked at L3 awaiting human approval"),
+		})
+		if err != nil {
+			return true, fmt.Errorf("applyStrategy(human_escalation): %w", err)
+		}
+		*rec = updated
+		_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventBlocked, *rec, "", "", rec.TriggerReason, "strategy=human_escalation; blocked at L3", "")
+		r.log.Info("recovery strategy applied",
+			"recovery", rec.ID, "task", rec.TaskID, "strategy", strategy)
+		return true, nil
+
+	case RecoveryStrategyRetryN:
+		// Bypass the capture / summarize flow entirely; requeue the
+		// task so the TaskReconciler dispatches a fresh execution
+		// right away. The work item's own description is what the
+		// worker sees (no failure summary attached at this level).
+		task, err := db.GetWorkItem(ctx, tx, tenantID, rec.TaskID)
+		if err != nil {
+			return true, fmt.Errorf("applyStrategy(retry_n): get task: %w", err)
+		}
+		if _, err := db.UpdateWorkItem(ctx, tx, tenantID, rec.TaskID, task.Version, db.UpdateWorkItemFields{
+			Status: strPtr(domain.WorkItemReady),
+		}); err != nil {
+			return true, fmt.Errorf("applyStrategy(retry_n): mark ready: %w", err)
+		}
+		now := time.Now().UTC()
+		updated, err := db.UpdateRecoveryExecution(ctx, tx, tenantID, rec.ID, rec.Version, db.UpdateRecoveryExecutionFields{
+			Status:  strPtr(domain.RecoveryResumed),
+			EndedAt: &now,
+			Summary: strPtr("recovery strategy = retry_n: task requeued immediately, no capture step"),
+		})
+		if err != nil {
+			return true, fmt.Errorf("applyStrategy(retry_n): %w", err)
+		}
+		*rec = updated
+		_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventResumed, *rec, "", "", rec.TriggerReason, "strategy=retry_n; task requeued", "")
+		r.log.Info("recovery strategy applied",
+			"recovery", rec.ID, "task", rec.TaskID, "strategy", strategy)
+		return true, nil
+
+	default:
+		// Unknown strategy — fall through to the 6-step default so we
+		// make forward progress.
+		return false, nil
+	}
+}
+
+// boolPtr is declared in engine.go via the helper at the bottom of
+// this file (line ~1064). The local helper used by applyStrategy
+// shares that definition.
+
 // TriggerOnFailure is called by the TaskReconciler when a WorkerExecution
 // fails (docs/06 §2). It creates a RecoveryExecution (idempotent — if an
 // active recovery already exists for the task, it is a no-op) and seeds
@@ -126,6 +268,7 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, tr
 		TriggerReason:      triggerReason,
 		Level:              level,
 		Status:             domain.RecoveryPending,
+		Strategy:           strategyForWorkItem(task.Kind), // PR C — work item kind drives the strategy
 		ResumptionPath:     resumptionPath,
 		BudgetTokensLimit:  budgetTokensLimit,
 		BudgetCostLimitUSD: budgetCostLimit,
@@ -404,6 +547,21 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 	if rec.Status == domain.RecoveryBlocked {
 		// Awaiting human approval (L3 — docs/06 §7). Do nothing until
 		// ApproveContinuationPlan un-blocks.
+		return nil
+	}
+
+	// PR C: route on the strategy at the very top of the reconciler
+	// loop. Strategies that don't run the 6-step DAG (stop, retry_n,
+	// human_escalation) mutate the recovery + task directly and
+	// commit. summarize_restart falls through.
+	handled, err := r.applyStrategy(ctx, ttx.Tx, tenantID, &rec)
+	if err != nil {
+		return fmt.Errorf("applyStrategy: %w", err)
+	}
+	if handled {
+		if err := ttx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit strategy: %w", err)
+		}
 		return nil
 	}
 

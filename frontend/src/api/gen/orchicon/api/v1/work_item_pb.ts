@@ -13,8 +13,25 @@ import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialM
 import { Message, proto3, Timestamp } from "@bufbuild/protobuf";
 
 /**
- * WorkItemKind enumerates the four levels of the work hierarchy
- * (docs/02_Domain_Model.md §2.2). Depth is constrained to 4 levels.
+ * WorkItemKind enumerates the work hierarchy kinds (docs/02_Domain_Model.md
+ * §2.2) plus the typed recovery strategies (PR C — recovery as work
+ * items). Depth of the regular hierarchy is constrained to 4 levels;
+ * recovery kinds are schedulable like tasks but route to the
+ * RecoveryReconciler instead of the TaskReconciler.
+ *
+ * Regular: epic → feature → task → subtask.
+ * Recovery strategies (PR C):
+ *   - recovery_stop:              abandon the workflow cleanly. Marks
+ *                                  the linked workflow run failed/aborted.
+ *   - recovery_summarize_restart:  capture the failure summary, prepend
+ *                                  to the next attempt's prompt, then
+ *                                  restart the workflow with that
+ *                                  expanded context (docs/06 §4).
+ *   - recovery_human_escalation:  block until a human approves or rejects
+ *                                  a continuation plan (L3 — docs/06 §7).
+ *   - recovery_retry_n:           retry the same step up to N times
+ *                                  before escalating (bounded auto-relax
+ *                                  per docs/06 §11).
  *
  * @generated from enum orchicon.api.v1.WorkItemKind
  */
@@ -43,6 +60,26 @@ export enum WorkItemKind {
    * @generated from enum value: WORK_ITEM_KIND_SUBTASK = 4;
    */
   SUBTASK = 4,
+
+  /**
+   * @generated from enum value: WORK_ITEM_KIND_RECOVERY_STOP = 5;
+   */
+  RECOVERY_STOP = 5,
+
+  /**
+   * @generated from enum value: WORK_ITEM_KIND_RECOVERY_SUMMARIZE_RESTART = 6;
+   */
+  RECOVERY_SUMMARIZE_RESTART = 6,
+
+  /**
+   * @generated from enum value: WORK_ITEM_KIND_RECOVERY_HUMAN_ESCALATION = 7;
+   */
+  RECOVERY_HUMAN_ESCALATION = 7,
+
+  /**
+   * @generated from enum value: WORK_ITEM_KIND_RECOVERY_RETRY_N = 8;
+   */
+  RECOVERY_RETRY_N = 8,
 }
 // Retrieve enum metadata with: proto3.getEnumType(WorkItemKind)
 proto3.util.setEnumType(WorkItemKind, "orchicon.api.v1.WorkItemKind", [
@@ -51,6 +88,10 @@ proto3.util.setEnumType(WorkItemKind, "orchicon.api.v1.WorkItemKind", [
   { no: 2, name: "WORK_ITEM_KIND_FEATURE" },
   { no: 3, name: "WORK_ITEM_KIND_TASK" },
   { no: 4, name: "WORK_ITEM_KIND_SUBTASK" },
+  { no: 5, name: "WORK_ITEM_KIND_RECOVERY_STOP" },
+  { no: 6, name: "WORK_ITEM_KIND_RECOVERY_SUMMARIZE_RESTART" },
+  { no: 7, name: "WORK_ITEM_KIND_RECOVERY_HUMAN_ESCALATION" },
+  { no: 8, name: "WORK_ITEM_KIND_RECOVERY_RETRY_N" },
 ]);
 
 /**
@@ -250,6 +291,17 @@ export class WorkItem extends Message<WorkItem> {
   results = "";
 
   /**
+   * PR B (context propagation, PR-A follow-up): composite prompt the
+   * worker should see when dispatched. Set by the WorkflowReconciler
+   * before dispatch; read by the opencode adapter via the
+   * TaskReconciler → manifest Goal. JSONB payload (see migration
+   * 20260713210000): {"composite": "# Task\n...\n# Project context\n...\n# Upstream context\n..."}.
+   *
+   * @generated from field: string prompt_context = 19;
+   */
+  promptContext = "";
+
+  /**
    * optimistic concurrency (docs/09 §5)
    *
    * @generated from field: int32 version = 16;
@@ -289,6 +341,7 @@ export class WorkItem extends Message<WorkItem> {
     { no: 13, name: "budgets", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 14, name: "context_window", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 15, name: "results", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 19, name: "prompt_context", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 16, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 17, name: "created_at", kind: "message", T: Timestamp },
     { no: 18, name: "updated_at", kind: "message", T: Timestamp },

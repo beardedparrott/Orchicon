@@ -34,7 +34,14 @@ type ExecutionManifest struct {
 // TaskReconciler uses it to trigger recovery (idempotent — docs/06 §9).
 type ExecutionCallbacks interface {
 	OnStarted(ctx context.Context, execID string)
-	OnResult(ctx context.Context, execID string, succeeded bool)
+	// OnResult carries the worker's accumulated text output (PR B —
+	// context propagation). The TaskReconciler extracts the ORCHICON
+	// WORKER SUMMARY block from `output`, persists it as the work
+	// item's `_summary`, and copies it onto the linked workflow step
+	// run so downstream stages see it. `output` may be empty if the
+	// adapter didn't accumulate any text (e.g. the worker errored
+	// before producing output).
+	OnResult(ctx context.Context, execID string, succeeded bool, output string)
 	OnHealth(ctx context.Context, execID, healthState string)
 	// OnStall signals a detected stall (the reason carries which signal
 	// tripped: stalled:no_progress | stalled:no_file_progress |

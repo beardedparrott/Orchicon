@@ -633,3 +633,48 @@ platform, or `--uninstall` to test cleanup).
   satisfied by either a worker ref OR a work item reference. New
   keyboard shortcut: `Del`/`Backspace` removes the selected step.
   Build verified: `go build ./...`, `npm run build` pass cleanly.
+- **PR B (workflow context propagation)**: Workers now receive a
+  composite prompt with the work item (title + desc + AC) + ancestor
+  work items (project context) + summaries from prior worker stages
+  (upstream context). The lowest-level work item is THE task; the
+  rest is added context. The worker is instructed to end its response
+  with `ORCHICON WORKER SUMMARY:` followed by a short summary that
+  becomes the next stage's input. The marker is best-effort: if
+  absent, the entire response is treated as the summary.
+  Implementation:
+  - `work_items.prompt_context` (jsonb, migration
+    `20260713210000_work_items_prompt_context.sql`) carries the
+    composite prompt the worker should see. Set by
+    `WorkflowReconciler.buildCompositePrompt` before dispatch.
+  - `opencode.Adapter` accumulates the worker's text output across
+    `text` events and passes it to `OnResult` (extended signature).
+  - `TaskReconciler.transitionWorkItemOnResult` extracts the
+    ORCHICON WORKER SUMMARY block, persists `_output` + `_summary`
+    on `work_items.results`, and propagates `_summary` onto the
+    linked workflow step run so downstream stages can compose it as
+    upstream context.
+  - `db.CountActiveExecutionsForAdapter` excludes `unhealthy` (a
+    terminal state) — fix for stuck adapters at capacity.
+  - `WorkflowReconciler.upstreamStepSummaries` collects prior TASK
+    step runs' `_summary` and includes them in the composite
+    prompt.
+  - PropertiesPanel shows a "Composite prompt (preview)" block for
+    TASK steps with the actual prompt text.
+  Verified end-to-end with a 1-stage workflow + real opencode on
+  `opencode/deepseek-v4-flash-free`: composite prompt is built with
+  task + ancestor; worker's output is parsed for the marker and the
+  summary is stored on `work_items.results._summary`; the summary
+  is propagated to `workflow_step_runs.results._summary`.
+- **PR C (recovery as typed work items)**: Recovery is now a typed
+  work item. The proto `WorkItemKind` gains 4 recovery enum values
+  (`RECOVERY_STOP`, `RECOVERY_SUMMARIZE_RESTART`,
+  `RECOVERY_HUMAN_ESCALATION`, `RECOVERY_RETRY_N`). The
+  `recovery_executions` table gains a `strategy` column (migration
+  `20260715000000_recovery_strategy.sql`); the `RecoveryReconciler`
+  reads `strategy` at the top of its loop and routes per strategy
+  (stop → mark failed/cancelled; human_escalation → block at L3;
+  retry_n → requeue immediately; summarize_restart → 6-step default
+  flow). `strategyForWorkItem(workItem.Kind)` maps the new recovery
+  kinds to their strategies; default kinds still map to
+  summarize_restart. The user-facing palette UI for the new recovery
+  kinds is PR D (no regression for existing flows).</newString>

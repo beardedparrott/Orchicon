@@ -192,6 +192,13 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	})
 	defer monitor.close()
 
+	// PR B (context propagation): accumulate the worker's text output
+	// across `text` events. The accumulator is closed over by
+	// parseStdoutLine; the value is passed to OnResult so the
+	// TaskReconciler can extract the ORCHICON WORKER SUMMARY block
+	// and propagate it as upstream context for the next stage.
+	var output strings.Builder
+
 	// Parse stdout JSON lines into telemetry events
 	// (docs/04 §6.1: line-buffered stdout parsing). Each event is also
 	// fed to the progress monitor for stall detection.
@@ -202,13 +209,13 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		if line == "" {
 			continue
 		}
-		a.parseStdoutLine(ctx, execRow, manifest, line, callbacks, monitor)
+		a.parseStdoutLine(ctx, execRow, manifest, line, callbacks, monitor, &output)
 	}
 
 	// Wait for the process to exit.
 	err = cmd.Wait()
 	succeeded := err == nil
-	callbacks.OnResult(ctx, execRow.ID, succeeded)
+	callbacks.OnResult(ctx, execRow.ID, succeeded, output.String())
 	if err != nil {
 		a.log.Warn("opencode subprocess exited with error", "execution", execRow.ID, "error", err)
 	}
@@ -221,7 +228,11 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 // each line has `type`, `timestamp`, `sessionID`, and a `part` object.
 // Each event is also fed to the progress monitor (may be nil in tests)
 // for stall detection (docs/06 §2 stalled trigger).
-func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, line string, callbacks scheduler.ExecutionCallbacks, monitor *progressMonitor) {
+//
+// `output` is the per-execution text accumulator (PR B — context
+// propagation). For "text" events the part text is appended so the
+// full worker output is available to OnResult.
+func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, line string, callbacks scheduler.ExecutionCallbacks, monitor *progressMonitor, output *strings.Builder) {
 	var evt map[string]any
 	if err := json.Unmarshal([]byte(line), &evt); err != nil {
 		// Non-JSON line: treat as a log/progress marker.
@@ -238,8 +249,13 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, 
 	case "step_start":
 		a.log.Info("opencode step started", "execution", execID)
 	case "text":
-		// Text part: the model's response text.
+		// Text part: the model's response text. PR B: append to the
+		// accumulator so the TaskReconciler can extract the
+		// ORCHICON WORKER SUMMARY block on completion.
 		text, _ := part["text"].(string)
+		if output != nil && text != "" {
+			output.WriteString(text)
+		}
 		a.log.Info("opencode prompt response", "execution", execID, "text_len", len(text))
 	case "tool_call":
 		toolName, _ := part["tool"].(string)
@@ -344,7 +360,7 @@ func (a *Adapter) runSimulation(ctx context.Context, execRow db.ExecutionRow, ma
 	for {
 		select {
 		case <-ctx.Done():
-			callbacks.OnResult(ctx, execRow.ID, false)
+			callbacks.OnResult(ctx, execRow.ID, false, "")
 			return ctx.Err()
 		case <-ticker.C:
 			steps++
@@ -352,7 +368,10 @@ func (a *Adapter) runSimulation(ctx context.Context, execRow db.ExecutionRow, ma
 				"execution", execRow.ID, "step", steps, "max", maxSteps,
 				"goal", manifest.Goal)
 			if steps >= maxSteps {
-				callbacks.OnResult(ctx, execRow.ID, true)
+				// Simulation emits no real worker output, so the
+				// summary is empty; the workflow run sees an empty
+				// _summary for this stage.
+				callbacks.OnResult(ctx, execRow.ID, true, "")
 				return nil
 			}
 		}
