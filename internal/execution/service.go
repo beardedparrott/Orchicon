@@ -571,23 +571,28 @@ func healthStateToProto(state string) apiv1.HealthState {
 }
 
 func eventTypeToProto(eventType string) apiv1.ExecutionEventType {
+	// Map the `execution.<status>` lifecycle events from updateExecStatus.
 	switch eventType {
-	case "execution.started":
+	case "execution.ready", "execution.dispatching", "execution.created":
 		return apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_STARTED
-	case "execution.telemetry":
+	case "execution.running":
 		return apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_TELEMETRY
+	case "execution.terminated":
+		return apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_RESULT
+	case "execution.unhealthy", "execution.failed_to_start":
+		return apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_ERROR
+	case "execution.healthy":
+		return apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_HEALTH
+	case "execution.stalled":
+		return apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_HEALTH
 	case "execution.tool_call":
 		return apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_TOOL_CALL
+	case "execution.text":
+		return apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_TELEMETRY
 	case "execution.checkpoint":
 		return apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_CHECKPOINT
 	case "execution.approval_request":
 		return apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_APPROVAL_REQUEST
-	case "execution.health":
-		return apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_HEALTH
-	case "execution.result":
-		return apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_RESULT
-	case "execution.error":
-		return apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_ERROR
 	case "execution.control":
 		return apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_CONTROL
 	default:
@@ -624,6 +629,8 @@ func rowToProto(e db.ExecutionRow) *apiv1.WorkerExecution {
 	if e.RecoveryID != nil {
 		p.RecoveryId = *e.RecoveryID
 	}
+	p.WorkflowRunId = e.WorkflowRunID
+	p.WorkflowStepId = e.WorkflowStepID
 	return p
 }
 

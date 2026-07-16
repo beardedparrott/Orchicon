@@ -14,24 +14,26 @@ import (
 // against a Task on an adapter. Created by the TaskReconciler at
 // dispatch; owns the adapter session.
 type ExecutionRow struct {
-	ID            string
-	TenantID      string
-	ProjectID     string
-	TaskID        string
-	WorkerID      string
-	WorkerVersion int
-	AdapterID     *string
-	Status        string
-	HealthState   string
-	StartedAt     *time.Time
-	EndedAt       *time.Time
-	TokenUsage    int64
-	CostUSD       float64
-	CheckpointRef *string
-	RecoveryID    *string
-	Version       int
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID              string
+	TenantID        string
+	ProjectID       string
+	TaskID          string
+	WorkerID        string
+	WorkerVersion   int
+	AdapterID       *string
+	Status          string
+	HealthState     string
+	StartedAt       *time.Time
+	EndedAt         *time.Time
+	TokenUsage      int64
+	CostUSD         float64
+	CheckpointRef   *string
+	RecoveryID      *string
+	WorkflowRunID   string
+	WorkflowStepID  string
+	Version         int
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // CreateExecution inserts a new worker execution row
@@ -40,21 +42,26 @@ type ExecutionRow struct {
 func CreateExecution(ctx context.Context, tx pgx.Tx, e ExecutionRow) (ExecutionRow, error) {
 	const q = `INSERT INTO worker_executions
 		(id, tenant_id, project_id, task_id, worker_id, worker_version,
-		 adapter_id, status, health_state, started_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		 adapter_id, status, health_state, started_at,
+		 workflow_run_id, workflow_step_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id, tenant_id, project_id, task_id, worker_id, worker_version,
 			adapter_id, status, health_state, started_at, ended_at,
-			token_usage, cost_usd, checkpoint_ref, recovery_id, version,
+			token_usage, cost_usd, checkpoint_ref, recovery_id,
+			workflow_run_id, workflow_step_id, version,
 			created_at, updated_at`
 	row := e
 	err := tx.QueryRow(ctx, q,
 		e.ID, e.TenantID, e.ProjectID, e.TaskID, e.WorkerID, e.WorkerVersion,
 		e.AdapterID, e.Status, e.HealthState, e.StartedAt,
+		e.WorkflowRunID, e.WorkflowStepID,
 	).Scan(
 		&row.ID, &row.TenantID, &row.ProjectID, &row.TaskID, &row.WorkerID,
 		&row.WorkerVersion, &row.AdapterID, &row.Status, &row.HealthState,
 		&row.StartedAt, &row.EndedAt, &row.TokenUsage, &row.CostUSD,
-		&row.CheckpointRef, &row.RecoveryID, &row.Version,
+		&row.CheckpointRef, &row.RecoveryID,
+		&row.WorkflowRunID, &row.WorkflowStepID,
+		&row.Version,
 		&row.CreatedAt, &row.UpdatedAt,
 	)
 	if err != nil {
@@ -67,7 +74,8 @@ func CreateExecution(ctx context.Context, tx pgx.Tx, e ExecutionRow) (ExecutionR
 func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (ExecutionRow, error) {
 	const q = `SELECT id, tenant_id, project_id, task_id, worker_id, worker_version,
 		adapter_id, status, health_state, started_at, ended_at,
-		token_usage, cost_usd, checkpoint_ref, recovery_id, version,
+		token_usage, cost_usd, checkpoint_ref, recovery_id,
+		workflow_run_id, workflow_step_id, version,
 		created_at, updated_at
 		FROM worker_executions WHERE id = $1 AND tenant_id = $2`
 	var e ExecutionRow
@@ -75,7 +83,9 @@ func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (Executio
 		&e.ID, &e.TenantID, &e.ProjectID, &e.TaskID, &e.WorkerID,
 		&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 		&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
-		&e.CheckpointRef, &e.RecoveryID, &e.Version,
+		&e.CheckpointRef, &e.RecoveryID,
+		&e.WorkflowRunID, &e.WorkflowStepID,
+		&e.Version,
 		&e.CreatedAt, &e.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -105,7 +115,8 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 	}
 	q := `SELECT id, tenant_id, project_id, task_id, worker_id, worker_version,
 		adapter_id, status, health_state, started_at, ended_at,
-		token_usage, cost_usd, checkpoint_ref, recovery_id, version,
+		token_usage, cost_usd, checkpoint_ref, recovery_id,
+		workflow_run_id, workflow_step_id, version,
 		created_at, updated_at
 		FROM worker_executions
 		WHERE tenant_id = $1 AND ($2 = '' OR id > $2)`
@@ -136,7 +147,9 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 			&e.ID, &e.TenantID, &e.ProjectID, &e.TaskID, &e.WorkerID,
 			&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
-			&e.CheckpointRef, &e.RecoveryID, &e.Version,
+			&e.CheckpointRef, &e.RecoveryID,
+			&e.WorkflowRunID, &e.WorkflowStepID,
+			&e.Version,
 			&e.CreatedAt, &e.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan execution: %w", err)
@@ -272,6 +285,7 @@ func ListDispatchingExecutions(ctx context.Context, tx pgx.Tx, tenantID string) 
 func ListReadyTasks(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkItemRow, error) {
 	const q = `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
 		acceptance_criteria, status, assigned_worker_ref, workflow_id,
+		workflow_run_id, workflow_step_id,
 		priority, budgets, context_window, results, prompt_context, version, created_at, updated_at
 		FROM work_items
 		WHERE tenant_id = $1 AND status = 'ready'
@@ -287,7 +301,8 @@ func ListReadyTasks(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkItem
 		if err := rows.Scan(
 			&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
 			&w.Description, &w.AcceptanceCriteria, &w.Status, &w.AssignedWorkerRef,
-			&w.WorkflowID, &w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
+			&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
+			&w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
 			&w.PromptContext, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan work item: %w", err)

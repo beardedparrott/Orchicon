@@ -285,6 +285,16 @@ export class WorkerExecution extends Message<WorkerExecution> {
    */
   version = 0;
 
+  /**
+   * @generated from field: string workflow_run_id = 17;
+   */
+  workflowRunId = "";
+
+  /**
+   * @generated from field: string workflow_step_id = 18;
+   */
+  workflowStepId = "";
+
   constructor(data?: PartialMessage<WorkerExecution>) {
     super();
     proto3.util.initPartial(data, this);
@@ -309,6 +319,8 @@ export class WorkerExecution extends Message<WorkerExecution> {
     { no: 14, name: "checkpoint_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 15, name: "recovery_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 16, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 17, name: "workflow_run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 18, name: "workflow_step_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkerExecution {

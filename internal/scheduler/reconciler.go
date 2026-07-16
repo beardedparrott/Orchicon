@@ -158,16 +158,18 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID string) error 
 	// Create WorkerExecution (docs/03 §4: createWorkerExecution).
 	now := time.Now().UTC()
 	execRow := db.ExecutionRow{
-		ID:            db.NewID(),
-		TenantID:      tenantID,
-		ProjectID:     task.ProjectID,
-		TaskID:        task.ID,
-		WorkerID:      version.WorkerID,
-		WorkerVersion: version.Version,
-		AdapterID:     &adapter.ID,
-		Status:        domain.ExecutionDispatching,
-		HealthState:   domain.HealthHealthy,
-		StartedAt:     &now,
+		ID:             db.NewID(),
+		TenantID:       tenantID,
+		ProjectID:      task.ProjectID,
+		TaskID:         task.ID,
+		WorkerID:       version.WorkerID,
+		WorkerVersion:  version.Version,
+		AdapterID:      &adapter.ID,
+		Status:         domain.ExecutionDispatching,
+		HealthState:    domain.HealthHealthy,
+		StartedAt:      &now,
+		WorkflowRunID:  task.WorkflowRunID,
+		WorkflowStepID: task.WorkflowStepID,
 	}
 	created, err := db.CreateExecution(ctx, ttx.Tx, execRow)
 	if err != nil {
@@ -553,6 +555,46 @@ func (r *TaskReconciler) OnStall(ctx context.Context, execID, reason string) {
 	if err := r.recovery.TriggerOnFailure(ctx, "tnt_dev", exec.TaskID, execID, reason); err != nil {
 		r.log.Error("on stall: trigger recovery", "execution", execID, "task", exec.TaskID, "error", err)
 	}
+}
+
+// OnToolCall publishes a tool_call execution event so the frontend live
+// session pane can show the tool invocation in real-time.
+func (r *TaskReconciler) OnToolCall(ctx context.Context, execID, toolName string, input, output []byte) {
+	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		return
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetExecution(ctx, ttx.Tx, "tnt_dev", execID)
+	if err != nil {
+		r.log.Error("on tool call: get execution", "execution", execID, "error", err)
+		return
+	}
+	_ = enqueueExecEvent(ctx, ttx.Tx, "execution.tool_call", current, map[string]any{
+		"tool_name": toolName,
+		"input":     string(input),
+		"output":    string(output),
+	})
+	_ = ttx.Commit(ctx)
+}
+
+// OnText publishes a text execution event so the frontend live session
+// pane can show model output in real-time.
+func (r *TaskReconciler) OnText(ctx context.Context, execID string, text string) {
+	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		return
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetExecution(ctx, ttx.Tx, "tnt_dev", execID)
+	if err != nil {
+		r.log.Error("on text: get execution", "execution", execID, "error", err)
+		return
+	}
+	_ = enqueueExecEvent(ctx, ttx.Tx, "execution.text", current, map[string]any{
+		"text": text,
+	})
+	_ = ttx.Commit(ctx)
 }
 
 func (r *TaskReconciler) updateExecStatus(ctx context.Context, execID, status, health string) {

@@ -508,6 +508,16 @@ table "work_items" {
     type = text
     null = true
   }
+  column "workflow_run_id" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "workflow_step_id" {
+    type = text
+    null = false
+    default = ""
+  }
   column "priority" {
     type = integer
     null = false
@@ -787,6 +797,16 @@ table "worker_executions" {
   column "recovery_id" {
     type = text
     null = true
+  }
+  column "workflow_run_id" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "workflow_step_id" {
+    type = text
+    null = false
+    default = ""
   }
   column "version" {
     type = integer

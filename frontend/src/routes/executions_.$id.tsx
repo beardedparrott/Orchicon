@@ -12,6 +12,7 @@ import {
   useApproveToolCall,
 } from "@/api/executions";
 import { executionKeys } from "@/api/executions";
+import { RuntimeSessionPane } from "@/components/executions/RuntimeSessionPane";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -150,13 +151,13 @@ function ExecutionDetailPage() {
         </Card>
       </div>
 
-      {/* Worker + adapter info */}
+      {/* Worker + adapter + workflow info */}
       <Card>
         <CardHeader>
           <CardTitle>Execution context</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-4 md:grid-cols-3 text-sm">
+          <div className="grid gap-4 md:grid-cols-4 text-sm">
             <div>
               <span className="text-xs font-medium uppercase text-muted-foreground">
                 Worker
@@ -176,9 +177,25 @@ function ExecutionDetailPage() {
               </span>
               <p className="font-mono text-xs">{exec.taskId}</p>
             </div>
+            <div>
+              <span className="text-xs font-medium uppercase text-muted-foreground">
+                Workflow
+              </span>
+              {exec.workflowRunId ? (
+                <>
+                  <p className="font-mono text-xs">{exec.workflowRunId.slice(0, 18)}…</p>
+                  <p className="text-xs text-muted-foreground">step: {exec.workflowStepId ? exec.workflowStepId.slice(0, 14) + "…" : "—"}</p>
+                </>
+              ) : (
+                <p className="text-xs text-muted-foreground">—</p>
+              )}
+            </div>
           </div>
         </CardContent>
       </Card>
+
+      {/* Runtime session pane — live model output + tool calls */}
+      <RuntimeSessionPane events={events} />
 
       {/* Tier 2 pending approval requests (docs/05 §7.1) */}
       {pendingApprovals && pendingApprovals.length > 0 && (

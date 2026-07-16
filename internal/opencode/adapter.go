@@ -260,9 +260,13 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, 
 	case "tool_call":
 		toolName, _ := part["tool"].(string)
 		a.log.Info("opencode tool call", "execution", execID, "tool", toolName)
+		inp, _ := json.Marshal(part)
+		callbacks.OnToolCall(ctx, execID, toolName, inp, nil)
 	case "tool_result":
 		toolName, _ := part["tool"].(string)
 		a.log.Info("opencode tool result", "execution", execID, "tool", toolName)
+		out, _ := json.Marshal(part)
+		callbacks.OnToolCall(ctx, execID, toolName, nil, out)
 	case "file_diff":
 		path, _ := part["path"].(string)
 		a.log.Info("opencode file diff", "execution", execID, "path", path)
@@ -275,6 +279,10 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, 
 		cost, _ := part["cost"].(float64)
 		a.log.Info("opencode step finished", "execution", execID, "cost", cost, "tokens", tokens)
 		a.recordUsage(ctx, execRow, manifest, tokens, cost)
+		// Publish the accumulated output text for the runtime session pane.
+		if output != nil && output.Len() > 0 {
+			callbacks.OnText(ctx, execID, output.String())
+		}
 	case "health":
 		if state, ok := evt["state"].(string); ok {
 			callbacks.OnHealth(ctx, execID, state)
