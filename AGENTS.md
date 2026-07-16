@@ -665,3 +665,16 @@ platform, or `--uninstall` to test cleanup).
   task + ancestor; worker's output is parsed for the marker and the
   summary is stored on `work_items.results._summary`; the summary
   is propagated to `workflow_step_runs.results._summary`.
+- **PR C (recovery as typed work items)**: Recovery is now a typed
+  work item. The proto `WorkItemKind` gains 4 recovery enum values
+  (`RECOVERY_STOP`, `RECOVERY_SUMMARIZE_RESTART`,
+  `RECOVERY_HUMAN_ESCALATION`, `RECOVERY_RETRY_N`). The
+  `recovery_executions` table gains a `strategy` column (migration
+  `20260715000000_recovery_strategy.sql`); the `RecoveryReconciler`
+  reads `strategy` at the top of its loop and routes per strategy
+  (stop → mark failed/cancelled; human_escalation → block at L3;
+  retry_n → requeue immediately; summarize_restart → 6-step default
+  flow). `strategyForWorkItem(workItem.Kind)` maps the new recovery
+  kinds to their strategies; default kinds still map to
+  summarize_restart. The user-facing palette UI for the new recovery
+  kinds is PR D (no regression for existing flows).</newString>

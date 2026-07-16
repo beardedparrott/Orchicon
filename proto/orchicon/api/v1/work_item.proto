@@ -9,14 +9,35 @@ package orchicon.api.v1;
 
 import "google/protobuf/timestamp.proto";
 
-// WorkItemKind enumerates the four levels of the work hierarchy
-// (docs/02_Domain_Model.md §2.2). Depth is constrained to 4 levels.
+// WorkItemKind enumerates the work hierarchy kinds (docs/02_Domain_Model.md
+// §2.2) plus the typed recovery strategies (PR C — recovery as work
+// items). Depth of the regular hierarchy is constrained to 4 levels;
+// recovery kinds are schedulable like tasks but route to the
+// RecoveryReconciler instead of the TaskReconciler.
+//
+// Regular: epic → feature → task → subtask.
+// Recovery strategies (PR C):
+//   - recovery_stop:              abandon the workflow cleanly. Marks
+//                                  the linked workflow run failed/aborted.
+//   - recovery_summarize_restart:  capture the failure summary, prepend
+//                                  to the next attempt's prompt, then
+//                                  restart the workflow with that
+//                                  expanded context (docs/06 §4).
+//   - recovery_human_escalation:  block until a human approves or rejects
+//                                  a continuation plan (L3 — docs/06 §7).
+//   - recovery_retry_n:           retry the same step up to N times
+//                                  before escalating (bounded auto-relax
+//                                  per docs/06 §11).
 enum WorkItemKind {
   WORK_ITEM_KIND_UNSPECIFIED = 0;
   WORK_ITEM_KIND_EPIC = 1;
   WORK_ITEM_KIND_FEATURE = 2;
   WORK_ITEM_KIND_TASK = 3;
   WORK_ITEM_KIND_SUBTASK = 4;
+  WORK_ITEM_KIND_RECOVERY_STOP = 5;
+  WORK_ITEM_KIND_RECOVERY_SUMMARIZE_RESTART = 6;
+  WORK_ITEM_KIND_RECOVERY_HUMAN_ESCALATION = 7;
+  WORK_ITEM_KIND_RECOVERY_RETRY_N = 8;
 }
 
 // WorkItem is the base entity of the work hierarchy. All four kinds
