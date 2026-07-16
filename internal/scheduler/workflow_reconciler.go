@@ -13,7 +13,10 @@
 //       - task: create a WorkItem (kind=task) with the step's Worker ref
 //         and hand it to the TaskReconciler for dispatch (only the
 //         TaskReconciler creates WorkerExecutions — docs/03 §8
-//         invariant #1). The step run polls the WorkItem to completion.
+//         invariant #1). After the workflow transaction commits,
+//         the reconciler calls DispatchTask inline so the execution
+//         appears immediately (no wait for the TaskReconciler
+//         heartbeat). The step run polls the WorkItem to completion.
 //       - decision: evaluate the branch (v0.1: default-true) and mark
 //         succeeded; downstream branches that don't match are skipped.
 //       - approval: block at approval_pending (human approval wiring
@@ -50,16 +53,20 @@ import (
 // the "workflow" kind. It polls the workflow_runs table for pending/
 // running runs and progresses their step DAGs.
 type WorkflowReconciler struct {
-	pool   *db.Pool
-	log    *slog.Logger
-	policy PolicyEvaluator // Phase 7: Rego gate evaluation (docs/02 §2.5)
+	pool           *db.Pool
+	log            *slog.Logger
+	policy         PolicyEvaluator // Phase 7: Rego gate evaluation (docs/02 §2.5)
+	taskDispatcher TaskDispatcher  // inline dispatch so executions appear immediately
 }
 
 // NewWorkflowReconciler creates a WorkflowReconciler. The policy
 // evaluator evaluates gate_policy_ref before a ready step runs (Phase 7,
 // docs/02 §2.5 Tier 1). May be nil (pass-through allow — v0.1 dev).
-func NewWorkflowReconciler(pool *db.Pool, log *slog.Logger, pe PolicyEvaluator) *WorkflowReconciler {
-	return &WorkflowReconciler{pool: pool, log: log, policy: pe}
+// The taskDispatcher is called after the workflow transaction commits
+// to dispatch ready work items immediately (not waiting for the next
+// TaskReconciler heartbeat). May be nil (fall back to heartbeat).
+func NewWorkflowReconciler(pool *db.Pool, log *slog.Logger, pe PolicyEvaluator, td TaskDispatcher) *WorkflowReconciler {
+	return &WorkflowReconciler{pool: pool, log: log, policy: pe, taskDispatcher: td}
 }
 
 // Kind returns the reconciler kind (docs/03 §2.1).
@@ -186,6 +193,10 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		}
 	}
 
+	// Collect work items dispatched in this pass for inline TaskReconciler
+	// dispatch after the transaction commits.
+	var dispatchedWIDs []string
+
 	// Dispatch ready steps by kind, evaluating gates first.
 	for _, sr := range stepRuns {
 		if sr.Status != domain.StepRunReady {
@@ -220,10 +231,12 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			}
 			continue
 		}
-		if err := r.dispatchStep(ctx, ttx.Tx, tenantID, run, step, sr, runByID, steps); err != nil {
+		var stepWIDs []string
+		if err := r.dispatchStep(ctx, ttx.Tx, tenantID, run, step, sr, runByID, steps, &stepWIDs); err != nil {
 			return err
 		}
 		progressed = true
+		dispatchedWIDs = append(dispatchedWIDs, stepWIDs...)
 	}
 
 	// Poll running task steps: check their linked WorkItem status.
@@ -345,6 +358,19 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	if err := ttx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
+	// Inline dispatch: hand dispatched work items to the TaskReconciler
+	// immediately so executions appear in the UI without waiting for the
+	// next TaskReconciler heartbeat (~1s). The dispatch happens after the
+	// workflow transaction commits so the work item (status=ready) is
+	// visible to the TaskReconciler's own transaction (docs/03 §8 invariant
+	// #1: only the TaskReconciler creates WorkerExecutions).
+	if r.taskDispatcher != nil {
+		for _, wid := range dispatchedWIDs {
+			if err := r.taskDispatcher.DispatchTask(context.Background(), wid); err != nil {
+				r.log.Warn("inline dispatch failed", "work_item", wid, "error", err)
+			}
+		}
+	}
 	if progressed {
 		r.log.Info("workflow run progressed", "run", runID, "status", run.Status)
 	}
@@ -417,7 +443,7 @@ func (r *WorkflowReconciler) evaluateGate(ctx context.Context, step workflow.Ste
 //     assigned_worker_ref — docs/03 §8 invariant #1).
 //   - The step run tracks the primary work item id under
 //     _work_item_id in result JSON so pollTaskStep can poll.
-func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, step workflow.StepWire, sr db.WorkflowStepRunRow, runs map[string]db.WorkflowStepRunRow, allSteps []workflow.StepWire) error {
+func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, step workflow.StepWire, sr db.WorkflowStepRunRow, runs map[string]db.WorkflowStepRunRow, allSteps []workflow.StepWire, dispatchedWIDs *[]string) error {
 	now := time.Now().UTC()
 	switch step.Kind {
 	case domain.StepKindProject:
@@ -523,6 +549,11 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 				return fmt.Errorf("assign worker to work item: %w", err)
 			}
 			primaryWID = wid
+		}
+		// Record the primary work item id for inline TaskReconciler
+		// dispatch after the workflow transaction commits.
+		if dispatchedWIDs != nil {
+			*dispatchedWIDs = append(*dispatchedWIDs, primaryWID)
 		}
 		// Record the primary work item id on the step run so
 		// pollTaskStep can poll it.

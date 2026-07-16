@@ -89,3 +89,13 @@ type PolicyEvaluator interface {
 	// step transition (docs/02 §2.5: gate denied → blocked).
 	EvaluateGate(ctx context.Context, tenantID, gatePolicyRef, targetType, targetID string, input any) (bool, error)
 }
+
+// TaskDispatcher is the interface the WorkflowReconciler uses to
+// dispatch a ready work item to a WorkerExecution immediately after
+// creating it (docs/03 §8 invariant #1: only the TaskReconciler creates
+// WorkerExecutions). The WorkflowReconciler calls DispatchTask after
+// its own transaction commits so the work item is visible to the
+// TaskReconciler's dispatch transaction.
+type TaskDispatcher interface {
+	DispatchTask(ctx context.Context, taskID string) error
+}
