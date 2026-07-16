@@ -289,6 +289,39 @@ func GetActiveRecoveryForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID s
 	return r, nil
 }
 
+// GetLatestRecoveryForTask returns the most recent recovery execution for
+// a task, regardless of status. Used by the workflow RECOVER step to
+// determine whether a recovery has completed (terminal) or is still
+// in flight.
+func GetLatestRecoveryForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (RecoveryExecutionRow, error) {
+	const q = `SELECT id, tenant_id, project_id, task_id, failed_execution_id,
+		recovery_workflow_id, trigger_reason, level, status, current_step,
+		strategy, resumption_path, budget_tokens_limit, budget_tokens_used,
+		budget_cost_limit_usd, budget_cost_used_usd, budget_relax_fraction,
+		needs_human_approval, continuation_plan_id, reviewer_worker_id,
+		summary, version, triggered_at, ended_at, created_at, updated_at
+		FROM recovery_executions
+		WHERE tenant_id = $1 AND task_id = $2
+		ORDER BY triggered_at DESC LIMIT 1`
+	var r RecoveryExecutionRow
+	err := tx.QueryRow(ctx, q, tenantID, taskID).Scan(
+		&r.ID, &r.TenantID, &r.ProjectID, &r.TaskID, &r.FailedExecutionID,
+		&r.RecoveryWorkflowID, &r.TriggerReason, &r.Level, &r.Status,
+		&r.CurrentStep, &r.Strategy, &r.ResumptionPath, &r.BudgetTokensLimit,
+		&r.BudgetTokensUsed, &r.BudgetCostLimitUSD, &r.BudgetCostUsedUSD,
+		&r.BudgetRelaxFraction, &r.NeedsHumanApproval,
+		&r.ContinuationPlanID, &r.ReviewerWorkerID, &r.Summary,
+		&r.Version, &r.TriggeredAt, &r.EndedAt, &r.CreatedAt, &r.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RecoveryExecutionRow{}, ErrNotFound
+	}
+	if err != nil {
+		return RecoveryExecutionRow{}, fmt.Errorf("db: get latest recovery for task: %w", err)
+	}
+	return r, nil
+}
+
 // UpdateRecoveryExecutionFields is a partial update applied with
 // optimistic concurrency (docs/09 §5).
 type UpdateRecoveryExecutionFields struct {
