@@ -68,17 +68,17 @@ function ExecutionsPage() {
               >
                 <Card className="transition-colors hover:bg-accent">
                   <CardContent className="flex items-center justify-between p-4">
-                    <div className="flex items-center gap-3 min-w-0">
+                    <div className="flex items-center gap-3 min-w-0 max-w-full">
                       <ExecStatusBadge status={e.status} />
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium truncate">
+                        <div className="min-w-0 max-w-full overflow-hidden">
+                          <p className="text-sm font-medium break-all">
                             {e.workflowName || e.workerId} v{e.workerVersion}
                           </p>
-                          <p className="text-xs text-muted-foreground font-mono truncate">
+                          <p className="text-xs text-muted-foreground font-mono break-all">
                             {e.id}
                           </p>
                           {e.workflowName && (
-                            <p className="text-xs text-muted-foreground/70 mt-0.5 truncate max-w-[200px]">
+                            <p className="text-xs text-muted-foreground/70 mt-0.5 truncate">
                               {e.workflowName}
                             </p>
                           )}

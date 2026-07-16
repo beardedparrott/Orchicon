@@ -139,30 +139,30 @@ function ExecutionDetailPage() {
         </div>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
-        <Card>
+      <div className="flex flex-wrap gap-3">
+        <Card className="flex-1 min-w-[140px]">
           <CardHeader className="p-3">
             <CardDescription className="text-[11px]">Status</CardDescription>
-            <CardTitle className="text-sm truncate">
+            <CardTitle className="text-sm break-all">
               <ExecStatusLabel status={exec.status} />
             </CardTitle>
           </CardHeader>
         </Card>
-        <Card>
+        <Card className="flex-1 min-w-[140px]">
           <CardHeader className="p-3">
             <CardDescription className="text-[11px]">Health</CardDescription>
-            <CardTitle className="text-sm truncate">
+            <CardTitle className="text-sm">
               <HealthLabel health={exec.healthState} />
             </CardTitle>
           </CardHeader>
         </Card>
-        <Card>
+        <Card className="flex-1 min-w-[140px]">
           <CardHeader className="p-3">
             <CardDescription className="text-[11px]">Token usage</CardDescription>
             <CardTitle className="text-sm">{Number(exec.tokenUsage)}</CardTitle>
           </CardHeader>
         </Card>
-        <Card>
+        <Card className="flex-1 min-w-[140px]">
           <CardHeader className="p-3">
             <CardDescription className="text-[11px]">Cost (USD)</CardDescription>
             <CardTitle className="text-sm">${exec.costUsd.toFixed(4)}</CardTitle>
@@ -176,34 +176,34 @@ function ExecutionDetailPage() {
           <CardTitle className="text-sm">Execution context</CardTitle>
         </CardHeader>
         <CardContent className="p-3 pt-0">
-          <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4 text-xs">
-            <div className="min-w-0">
+          <div className="flex flex-col gap-3 text-sm">
+            <div>
               <span className="text-[10px] font-semibold uppercase text-muted-foreground">
                 Worker
               </span>
-              <p className="font-mono truncate">{exec.workerId}</p>
+              <p className="font-mono break-all">{exec.workerId}</p>
               <p className="text-muted-foreground">v{exec.workerVersion}</p>
             </div>
-            <div className="min-w-0">
+            <div>
               <span className="text-[10px] font-semibold uppercase text-muted-foreground">
                 Adapter
               </span>
-              <p className="font-mono truncate">{exec.adapterId || "—"}</p>
+              <p className="font-mono break-all">{exec.adapterId || "—"}</p>
             </div>
-            <div className="min-w-0">
+            <div>
               <span className="text-[10px] font-semibold uppercase text-muted-foreground">
                 Task
               </span>
-              <p className="font-mono truncate">{exec.taskId}</p>
+              <p className="font-mono break-all">{exec.taskId}</p>
             </div>
-            <div className="min-w-0">
+            <div>
               <span className="text-[10px] font-semibold uppercase text-muted-foreground">
                 Workflow
               </span>
               {exec.workflowRunId ? (
                 <>
-                  <p className="font-mono truncate">{exec.workflowName || exec.workflowRunId}</p>
-                  {exec.workflowStepId && <p className="text-muted-foreground truncate">step: {exec.workflowStepId}</p>}
+                  <p className="font-mono break-all">{exec.workflowName || exec.workflowRunId}</p>
+                  {exec.workflowStepId && <p className="text-muted-foreground">step: {exec.workflowStepId}</p>}
                 </>
               ) : (
                 <p className="text-muted-foreground">—</p>
