@@ -76,6 +76,7 @@ function ExecutionDetailPage() {
   const isRunning = exec.status === 2 || exec.status === 3;
   const isPaused = exec.status === 6;
   const isTerminal = exec.status === 7 || exec.status === 8;
+  const isFailed = exec.status === 10 || exec.status === 8;
 
   return (
     <div className="space-y-6">
@@ -169,6 +170,28 @@ function ExecutionDetailPage() {
           </CardHeader>
         </Card>
       </div>
+
+      {/* Error message (shown on failure) */}
+      {exec.errorMessage && (
+        <Card className="border-destructive/50">
+          <CardHeader className="p-3">
+            <CardDescription className="text-[11px] text-destructive">Error</CardDescription>
+            <CardTitle className="text-sm font-mono text-destructive whitespace-pre-wrap">
+              {exec.errorMessage}
+            </CardTitle>
+          </CardHeader>
+        </Card>
+      )}
+      {isFailed && !exec.errorMessage && (
+        <Card className="border-destructive/50">
+          <CardHeader className="p-3">
+            <CardDescription className="text-[11px] text-destructive">Error</CardDescription>
+            <CardTitle className="text-sm text-muted-foreground italic">
+              Execution failed with no additional details.
+            </CardTitle>
+          </CardHeader>
+        </Card>
+      )}
 
       {/* Worker + adapter + workflow info */}
       <Card>

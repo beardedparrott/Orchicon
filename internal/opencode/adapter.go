@@ -215,10 +215,11 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// Wait for the process to exit.
 	err = cmd.Wait()
 	succeeded := err == nil
-	callbacks.OnResult(ctx, execRow.ID, succeeded, output.String())
+	errorMsg := ""
 	if err != nil {
-		a.log.Warn("opencode subprocess exited with error", "execution", execRow.ID, "error", err)
+		errorMsg = err.Error()
 	}
+	callbacks.OnResult(ctx, execRow.ID, succeeded, output.String(), errorMsg)
 	return nil
 }
 
@@ -373,7 +374,7 @@ func (a *Adapter) runSimulation(ctx context.Context, execRow db.ExecutionRow, ma
 	for {
 		select {
 		case <-ctx.Done():
-			callbacks.OnResult(ctx, execRow.ID, false, "")
+			callbacks.OnResult(ctx, execRow.ID, false, "", ctx.Err().Error())
 			return ctx.Err()
 		case <-ticker.C:
 			steps++
@@ -384,7 +385,7 @@ func (a *Adapter) runSimulation(ctx context.Context, execRow db.ExecutionRow, ma
 				// Simulation emits no real worker output, so the
 				// summary is empty; the workflow run sees an empty
 				// _summary for this stage.
-				callbacks.OnResult(ctx, execRow.ID, true, "")
+				callbacks.OnResult(ctx, execRow.ID, true, "", "")
 				return nil
 			}
 		}

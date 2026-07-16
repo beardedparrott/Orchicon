@@ -41,7 +41,7 @@ type ExecutionCallbacks interface {
 	// run so downstream stages see it. `output` may be empty if the
 	// adapter didn't accumulate any text (e.g. the worker errored
 	// before producing output).
-	OnResult(ctx context.Context, execID string, succeeded bool, output string)
+	OnResult(ctx context.Context, execID string, succeeded bool, output string, errorMessage string)
 	OnHealth(ctx context.Context, execID, healthState string)
 	// OnStall signals a detected stall (the reason carries which signal
 	// tripped: stalled:no_progress | stalled:no_file_progress |

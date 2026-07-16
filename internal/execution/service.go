@@ -683,6 +683,9 @@ func rowToProto(e db.ExecutionRow) *apiv1.WorkerExecution {
 	if e.RecoveryID != nil {
 		p.RecoveryId = *e.RecoveryID
 	}
+	if e.ErrorMessage != "" {
+		p.ErrorMessage = e.ErrorMessage
+	}
 	return p
 }
 
