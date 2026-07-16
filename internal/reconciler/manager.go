@@ -78,7 +78,7 @@ func (m *Manager) Run(ctx context.Context) error {
 }
 
 func (m *Manager) runReconciler(ctx context.Context, j *job) {
-	heartbeat := time.NewTicker(5 * time.Second)
+	heartbeat := time.NewTicker(1 * time.Second)
 	defer heartbeat.Stop()
 
 	for {

@@ -328,42 +328,54 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
         </CardContent>
       </Card>
 
-      {/* associated worker executions */}
+      {/* associated worker executions + pending step runs */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Executions</CardTitle>
           <CardDescription>
-            Worker executions spawned by this run (auto-refreshes).
+            Worker executions spawned by this run. Step runs pending dispatch
+            appear immediately; executor links appear once the reconciler
+            creates them (auto-refreshes).
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {(runExecs ?? []).length === 0 ? (
-            <p className="text-sm text-muted-foreground">No executions yet. The reconciler will dispatch them shortly.</p>
-          ) : (
-            <div className="space-y-2">
-              {(runExecs ?? []).map((ex) => (
-                <button
-                  key={ex.id}
-                  className="flex w-full items-center gap-3 rounded-md border p-2 text-left text-sm hover:bg-accent"
-                  onClick={() =>
-                    navigate({
-                      to: "/executions/$id",
-                      params: { id: ex.id },
-                    })
-                  }
-                >
-                  <ExecStatusBadge status={ex.status} />
-                  <span className="font-medium">{ex.workerId}</span>
-                  <span className="font-mono text-xs text-muted-foreground">{ex.id.slice(0, 12)}…</span>
-                  {ex.startedAt && (
-                    <span className="ml-auto text-xs text-muted-foreground">
-                      {new Date(Number(ex.startedAt.seconds) * 1000).toLocaleTimeString()}
-                    </span>
-                  )}
-                </button>
+          <div className="space-y-2">
+            {/* Pending step runs (no workerExecutionId yet) */}
+            {(stepRuns ?? [])
+              .filter((sr) => !sr.workerExecutionId)
+              .map((sr) => (
+                <div key={sr.id} className="flex items-center gap-3 rounded-md border p-2 text-sm text-muted-foreground">
+                  <StepStatusPill status={sr.status} />
+                  <span className="font-medium">{sr.stepName || sr.stepId.slice(0, 12)}</span>
+                  <span className="text-xs text-muted-foreground/60">waiting for dispatch…</span>
+                </div>
               ))}
-            </div>
-          )}
+            {/* Actual WorkerExecutions */}
+            {(runExecs ?? []).length === 0 && (stepRuns ?? []).filter((sr) => !sr.workerExecutionId).length === 0 && (
+              <p className="text-sm text-muted-foreground">No executions yet.</p>
+            )}
+            {(runExecs ?? []).map((ex) => (
+              <button
+                key={ex.id}
+                className="flex w-full items-center gap-3 rounded-md border p-2 text-left text-sm hover:bg-accent"
+                onClick={() =>
+                  navigate({
+                    to: "/executions/$id",
+                    params: { id: ex.id },
+                  })
+                }
+              >
+                <ExecStatusBadge status={ex.status} />
+                <span className="font-medium min-w-0 truncate">{ex.workflowName || ex.workerId}</span>
+                <span className="font-mono text-xs text-muted-foreground shrink-0">{ex.id.slice(0, 12)}…</span>
+                {ex.startedAt && (
+                  <span className="ml-auto text-xs text-muted-foreground shrink-0">
+                    {new Date(Number(ex.startedAt.seconds) * 1000).toLocaleTimeString()}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
         </CardContent>
       </Card>
     </div>
