@@ -46,6 +46,8 @@ import { StepNode } from "@/components/workflow-editor/StepNode";
 import { DeletableEdge } from "@/components/workflow-editor/DeletableEdge";
 import { canvasToSteps, stepsToCanvas } from "@/components/workflow-editor/canvas";
 import {
+  ACCENT_STROKE,
+  KIND_ACCENT,
   PALETTE_MIME,
   type PaletteDropPayload,
   type StepData,
@@ -231,6 +233,22 @@ function EditorInner({ workflowId }: { workflowId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [latestVersion?.id]);
 
+  // --- version restore: load an older version's steps into the canvas ---
+  const restoreVersion = useCallback(
+    (v: { id: string; steps: string; version: number }) => {
+      if (loadedRef.current === v.id) return; // already on canvas
+      if (!window.confirm(`Load v${v.version} into the editor? Any unsaved changes will be lost.`)) return;
+      const { nodes: n, edges: e } = stepsToCanvas(v.steps);
+      setNodes(n);
+      setEdges(e);
+      loadedRef.current = v.id;
+      history.current = [{ nodes: n, edges: e }];
+      histPtr.current = 0;
+      setDirty(true);
+    },
+    [setNodes, setEdges],
+  );
+
   // --- node changes: track position updates for persistence ---
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -277,13 +295,21 @@ function EditorInner({ workflowId }: { workflowId: string }) {
     (conn: Connection) => {
       if (conn.source === conn.target) return; // no self-deps
       // Edge source→target means target depends on source.
+      // Color the edge by the source node's step kind for visual flow.
+      const srcNode = nodes.find((n) => n.id === conn.source);
+      const srcKind = srcNode?.data.kind ?? 1;
+      const accent = KIND_ACCENT[srcKind] ?? "sky";
+      const edgeStyle = { stroke: `var(--kind-${accent})` };
+      const edgeClass = ACCENT_STROKE[accent] ?? "";
       setEdges((eds) =>
         addEdge(
           {
             ...conn,
             id: `e-${conn.source}-${conn.target}`,
             markerEnd: { type: MarkerType.ArrowClosed },
-            animated: false,
+            animated: true,
+            style: edgeStyle,
+            className: edgeClass,
           },
           eds,
         ),
@@ -298,6 +324,9 @@ function EditorInner({ workflowId }: { workflowId: string }) {
               source: conn.source!,
               target: conn.target!,
               markerEnd: { type: MarkerType.ArrowClosed },
+              animated: true,
+              style: edgeStyle,
+              className: edgeClass,
             },
           ]),
         0,
@@ -822,6 +851,14 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                         {new Date(Number(v.publishedAt.seconds) * 1000).toLocaleString()}
                       </span>
                     )}
+                    <button
+                      type="button"
+                      className="ml-auto rounded px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                      title="Load this version into the editor"
+                      onClick={() => restoreVersion(v)}
+                    >
+                      Restore
+                    </button>
                   </div>
                 ))}
               </div>
