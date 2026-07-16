@@ -50,7 +50,7 @@ func CreateExecution(ctx context.Context, tx pgx.Tx, e ExecutionRow) (ExecutionR
 		RETURNING id, tenant_id, project_id, task_id, worker_id, worker_version,
 			adapter_id, status, health_state, started_at, ended_at,
 			token_usage, cost_usd, checkpoint_ref, recovery_id,
-			workflow_run_id, workflow_step_id, version,
+			workflow_run_id, workflow_step_id, error_message, version,
 			created_at, updated_at`
 	row := e
 	err := tx.QueryRow(ctx, q,
@@ -63,6 +63,7 @@ func CreateExecution(ctx context.Context, tx pgx.Tx, e ExecutionRow) (ExecutionR
 		&row.StartedAt, &row.EndedAt, &row.TokenUsage, &row.CostUSD,
 		&row.CheckpointRef, &row.RecoveryID,
 		&row.WorkflowRunID, &row.WorkflowStepID,
+		&row.ErrorMessage,
 		&row.Version,
 		&row.CreatedAt, &row.UpdatedAt,
 	)
@@ -162,6 +163,7 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 			&e.CheckpointRef, &e.RecoveryID,
 			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName,
+			&e.ErrorMessage,
 			&e.Version,
 			&e.CreatedAt, &e.UpdatedAt,
 		); err != nil {
