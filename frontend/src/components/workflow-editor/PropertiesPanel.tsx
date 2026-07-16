@@ -150,8 +150,62 @@ export function PropertiesPanel({
             </pre>
           </div>
         )}
+        {/* PR D: surface the recovery strategy on RECOVER steps. The
+            palette writes the strategy into config.strategy when the
+            user drags a Stop / Summarize+restart / Human escalation /
+            Retry N tile. We display the resolved human-readable name
+            + a one-line summary of what it does. */}
+        {d.kind === 5 /* RECOVER */ && (
+          <RecoveryStrategyField
+            strategy={typeof cfg.strategy === "string" ? (cfg.strategy as string) : "summarize_restart"}
+            onChange={(v) => {
+              const next = { ...cfg, strategy: v };
+              onChange({ config: JSON.stringify(next) });
+            }}
+            readOnly={readOnly}
+          />
+        )}
       </CardContent>
     </Card>
+  );
+}
+
+function RecoveryStrategyField({
+  strategy,
+  onChange,
+  readOnly,
+}: {
+  strategy: string;
+  onChange: (v: string) => void;
+  readOnly: boolean;
+}) {
+  const strategies: { value: string; label: string; summary: string }[] = [
+    { value: "summarize_restart", label: "Summarize + restart", summary: "Default 6-step recovery flow" },
+    { value: "stop", label: "Stop", summary: "Abandon the workflow cleanly" },
+    { value: "human_escalation", label: "Human escalation", summary: "Block at L3 for human approval" },
+    { value: "retry_n", label: "Retry N", summary: "Requeue immediately, no capture" },
+  ];
+  const current = strategies.find((s) => s.value === strategy) ?? strategies[0];
+  return (
+    <div className="space-y-1">
+      <Label className="text-xs">Recovery strategy</Label>
+      <select
+        className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+        value={strategy}
+        disabled={readOnly}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {strategies.map((s) => (
+          <option key={s.value} value={s.value}>
+            {s.label}
+          </option>
+        ))}
+      </select>
+      <p className="flex items-start gap-1 text-[10px] leading-snug text-muted-foreground">
+        <Info className="mt-0.5 h-2.5 w-2.5 shrink-0" />
+        {current.summary}
+      </p>
+    </div>
   );
 }
 

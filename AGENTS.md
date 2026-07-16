@@ -677,4 +677,22 @@ platform, or `--uninstall` to test cleanup).
   flow). `strategyForWorkItem(workItem.Kind)` maps the new recovery
   kinds to their strategies; default kinds still map to
   summarize_restart. The user-facing palette UI for the new recovery
-  kinds is PR D (no regression for existing flows).</newString>
+  kinds is PR D (no regression for existing flows).
+- **PR D (workflow editor polish — delete, Start/Stop, Recovery palette)**:
+  The workflow editor gets four new affordances that were flagged as
+  missing in the original drag-fix PR: (1) hover-only × on each step
+  node's top-right corner; (2) hover-only × at the midpoint of each
+  edge via a custom `DeletableEdge` React Flow edge type and an
+  `EdgeLabelRenderer`; (3) an inline `Stop` button on the editor
+  header — shown only when the most recent run is in pending or
+  running state — using the existing `useAbortWorkflow` mutation;
+  (4) a new `Recovery` palette section with 4 tiles (Summarize +
+  restart / Stop / Human escalation / Retry N) that drag RECOVER
+  step primitives with a `strategy` field in config, and a
+  `RecoveryStrategyField` in the properties panel for editing the
+  strategy on a selected recover step. The `WorkflowReconciler` reads
+  `config.strategy` on RECOVER steps and logs the resolved value so
+  operators can see what would have run on a real failure. Build
+  verified: `go build`, `npm run build`, `make ci` all pass; smoke
+  test (`/tmp/opencode/e2e_prd.sh`) confirms the strategy field
+  round-trips through the workflow API and the reconciler logs it.</newString>
