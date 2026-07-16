@@ -710,3 +710,4 @@ platform, or `--uninstall` to test cleanup).
   (`docker compose down -v --remove-orphans`), remove `data/`, `.dev/`, and
   `bin/` directories, then install the latest binary. Build verified: `go
   build ./cmd/orchicon` passes cleanly.
+- **Execution error_message**: `WorkerExecution` now has `error_message` field (proto field 20, DB column `error_message text`). Populated from all failure paths: adapter subprocess exit error, adapter start failure (`markFailedToStart`), stall detection (`OnStall`), and context cancellation. Previously errors were only logged and silently discarded. The execution detail page shows the error message in a red-bordered card. (PR #64)
