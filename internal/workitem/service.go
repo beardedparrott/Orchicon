@@ -560,13 +560,13 @@ func (s *Service) UnassignWorker(ctx context.Context, req *connect.Request[apiv1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
 		RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
 			acceptance_criteria, status, assigned_worker_ref, workflow_id,
-			priority, budgets, context_window, results, version, created_at, updated_at`
+			priority, budgets, context_window, results, prompt_context, version, created_at, updated_at`
 	var updated db.WorkItemRow
 	err = ttx.Tx.QueryRow(ctx, q, tenantID, req.Msg.Id, current.Version).Scan(
 		&updated.ID, &updated.TenantID, &updated.ProjectID, &updated.ParentID, &updated.Kind, &updated.Title,
 		&updated.Description, &updated.AcceptanceCriteria, &updated.Status, &updated.AssignedWorkerRef,
 		&updated.WorkflowID, &updated.Priority, &updated.Budgets, &updated.ContextWindow, &updated.Results,
-		&updated.Version, &updated.CreatedAt, &updated.UpdatedAt,
+		&updated.PromptContext, &updated.Version, &updated.CreatedAt, &updated.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("work item not found"))
