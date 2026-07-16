@@ -237,7 +237,11 @@ function ExecutionDetailPage() {
       </Card>
 
       {/* Runtime session pane — live model output + tool calls */}
-      <RuntimeSessionPane events={events} prompt={workItem?.promptContext} />
+      <RuntimeSessionPane
+        events={events}
+        prompt={workItem?.promptContext}
+        streamStatus={status}
+      />
 
       {/* Tier 2 pending approval requests (docs/05 §7.1) */}
       {pendingApprovals && pendingApprovals.length > 0 && (

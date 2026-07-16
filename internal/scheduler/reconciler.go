@@ -19,6 +19,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -191,6 +192,28 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID string) error 
 	})
 	if err != nil {
 		return fmt.Errorf("update task status: %w", err)
+	}
+
+	// Link the workflow step run to the new execution so the run-view
+	// UI can show "click step → open execution". Without this link,
+	// the run view falls back to "waiting for dispatch…" placeholders
+	// even after the dispatch succeeded, and the step run rows aren't
+	// clickable (no worker_execution_id to navigate to).
+	//
+	// Done inside the same transaction so a worker-step run never
+	// points at an execution that doesn't exist.
+	if task.WorkflowStepID != "" {
+		if stepRun, err := db.GetWorkflowStepRunByStep(ctx, ttx.Tx, tenantID, task.WorkflowRunID, task.WorkflowStepID); err == nil {
+			if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRun.ID, stepRun.Version, db.UpdateWorkflowStepRunFields{
+				WorkerExecutionID: &created.ID,
+				Status:           strPtr(domain.StepRunRunning),
+				StartedAt:        &now,
+			}); err != nil {
+				return fmt.Errorf("link step run to execution: %w", err)
+			}
+		} else if !errors.Is(err, db.ErrNotFound) {
+			return fmt.Errorf("get step run for link: %w", err)
+		}
 	}
 
 	// Enqueue outbox events for the execution + task.
