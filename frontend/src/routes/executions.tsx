@@ -28,18 +28,20 @@ function ExecutionsPage() {
   const deleteExec = useDeleteExecution();
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Executions</h1>
-        <p className="text-sm text-muted-foreground">
-          Worker executions — concrete invocations of a Worker against a
-          Task on a runtime adapter. Click through to view live telemetry.
-        </p>
-        {workflowRunId && (
-          <p className="mt-1 text-xs text-muted-foreground/70 font-mono">
-            Filtered by workflow run: {workflowRunId}
+    <div className="mx-auto max-w-6xl space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-semibold tracking-tight">Executions</h1>
+          <p className="text-sm text-muted-foreground">
+            Worker executions — concrete invocations of a Worker against a
+            Task on a runtime adapter. Click through to view live telemetry.
           </p>
-        )}
+          {workflowRunId && (
+            <p className="mt-1 break-all font-mono text-xs text-muted-foreground/70">
+              Filtered by workflow run: {workflowRunId}
+            </p>
+          )}
+        </div>
       </div>
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
@@ -64,29 +66,33 @@ function ExecutionsPage() {
               <Link
                 to="/executions/$id"
                 params={{ id: e.id }}
-                className="flex-1"
+                className="min-w-0 flex-1"
               >
                 <Card className="transition-colors hover:bg-accent">
-                  <CardContent className="flex items-center justify-between p-4">
-                    <div className="flex items-center gap-3 min-w-0 max-w-full">
+                  <CardContent className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex min-w-0 items-center gap-3">
                       <ExecStatusBadge status={e.status} />
-                        <div className="min-w-0 max-w-full overflow-hidden">
-                          <p className="text-sm font-medium break-all">
-                            {e.workflowName || e.workerId} v{e.workerVersion}
-                          </p>
-                          <p className="text-xs text-muted-foreground font-mono break-all">
-                            {e.id}
-                          </p>
-                          {e.workflowName && (
-                            <p className="text-xs text-muted-foreground/70 mt-0.5 truncate">
-                              {e.workflowName}
-                            </p>
-                          )}
-                        </div>
+                      <div className="min-w-0 flex-1 overflow-hidden">
+                        <p className="truncate text-sm font-medium">
+                          {e.workflowName || e.workerId} v{e.workerVersion}
+                        </p>
+                        <p className="break-all font-mono text-xs text-muted-foreground">
+                          {e.id}
+                        </p>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground sm:shrink-0">
                       <HealthBadge health={e.healthState} />
-                      {Number(e.tokenUsage) > 0 && <span>{Number(e.tokenUsage)} tokens</span>}
+                      {Number(e.tokenUsage) > 0 && (
+                        <span className="font-mono tabular-nums">
+                          {Number(e.tokenUsage).toLocaleString()} tokens
+                        </span>
+                      )}
+                      {Number(e.costUsd) > 0 && (
+                        <span className="font-mono tabular-nums">
+                          ${Number(e.costUsd).toFixed(4)}
+                        </span>
+                      )}
                       {e.startedAt && (
                         <span>
                           {new Date(

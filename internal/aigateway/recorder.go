@@ -76,10 +76,20 @@ func (u *UsageRecorder) Record(ctx context.Context, in UsageInput) (db.UsageReco
 			u.log.Warn("usage record: begin tx failed", "error", err)
 		} else {
 			persisted, err := db.CreateUsageRecord(ctx, ttx.Tx, row)
-			ttx.Rollback(ctx)
+			// Commit the transaction so the row sticks. The previous
+			// version called ttx.Rollback here unconditionally — which
+			// silently dropped every usage record — so usage_records
+			// stayed empty even when the model was clearly running and
+			// the AI Gateway was wired up. (Same pattern as the
+			// recovery / opencode fixes in PR #69 / #70: a one-liner
+			// that disables the whole feature.)
 			if err != nil {
+				_ = ttx.Rollback(ctx)
 				u.log.Warn("usage record: insert failed (telemetry-only)", "error", err)
 			} else {
+				if err := ttx.Commit(ctx); err != nil {
+					u.log.Warn("usage record: commit failed", "error", err)
+				}
 				row = persisted
 			}
 		}
