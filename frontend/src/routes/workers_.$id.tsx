@@ -133,18 +133,22 @@ function WorkerDetailPage() {
   const isEditingEnabled = draftVersion && editing;
 
   return (
-    <div className="space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       {/* Header + lifecycle actions */}
-      <div className="flex items-start justify-between">
-        <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
           <h1 className="text-2xl font-semibold tracking-tight">
             {worker.name}
           </h1>
-          <p className="font-mono text-xs text-muted-foreground">
+          <p className="font-mono text-xs break-all text-muted-foreground">
             {worker.slug}
           </p>
         </div>
-        <div className="flex gap-2">
+        {/* Action buttons: wrap on narrow viewports so the row doesn't
+            force a horizontal scroll on phones. Each button stays its
+            natural width; gap-2 + flex-wrap drops them onto multiple
+            lines cleanly. */}
+        <div className="flex flex-wrap items-center gap-2">
           {draftVersion && !editing && (
             <Button onClick={() => setEditing(true)}>Edit</Button>
           )}
@@ -213,9 +217,10 @@ function WorkerDetailPage() {
         </div>
       </div>
 
-      {/* Status cards */}
-      <div className="grid gap-4 md:grid-cols-5">
-        <Card>
+      {/* Status cards: scale column count with viewport so phones
+          don't get a horizontally-scrolling 5-column row. */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <Card className="min-w-0">
           <CardHeader>
             <CardDescription>Status</CardDescription>
             <CardTitle className="text-base capitalize">
@@ -223,7 +228,7 @@ function WorkerDetailPage() {
             </CardTitle>
           </CardHeader>
         </Card>
-        <Card>
+        <Card className="min-w-0">
           <CardHeader>
             <CardDescription>Current version</CardDescription>
             <CardTitle className="text-base">
@@ -231,23 +236,23 @@ function WorkerDetailPage() {
             </CardTitle>
           </CardHeader>
         </Card>
-        <Card>
+        <Card className="min-w-0">
           <CardHeader>
             <CardDescription>Runtime</CardDescription>
-            <CardTitle className="text-base font-mono text-sm">
+            <CardTitle className="break-all text-base font-mono text-sm">
               {latestVersion?.runtimeRef || "—"}
             </CardTitle>
           </CardHeader>
         </Card>
-        <Card>
+        <Card className="min-w-0">
           <CardHeader>
             <CardDescription>Model</CardDescription>
-            <CardTitle className="text-base font-mono text-sm">
+            <CardTitle className="break-all text-base font-mono text-sm">
               {latestVersion?.modelRef || "—"}
             </CardTitle>
           </CardHeader>
         </Card>
-        <Card>
+        <Card className="min-w-0">
           <CardHeader>
             <CardDescription>Purpose</CardDescription>
             <CardTitle className="text-sm font-normal leading-snug">
@@ -361,7 +366,7 @@ function WorkerDetailPage() {
                 </p>
               )}
 
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Button type="submit" disabled={updateVersion.isPending}>
                   {updateVersion.isPending ? "Saving…" : "Save changes"}
                 </Button>
@@ -461,15 +466,15 @@ function WorkerDetailPage() {
               {versions.map((v) => (
                 <div
                   key={v.id}
-                  className="flex items-start gap-3 rounded-md border p-3 text-sm"
+                  className="flex flex-col gap-2 rounded-md border p-3 text-sm sm:flex-row sm:items-start sm:gap-3"
                 >
-                  <span className="mt-0.5 font-mono text-xs font-medium">
+                  <span className="font-mono text-xs font-medium">
                     v{v.version}
                   </span>
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
                       <VersionStatusBadge status={v.status} />
-                      <span className="text-xs text-muted-foreground">
+                      <span className="break-all font-mono text-xs text-muted-foreground">
                         {v.modelRef}
                       </span>
                     </div>
@@ -480,7 +485,7 @@ function WorkerDetailPage() {
                     )}
                   </div>
                   {v.publishedAt && (
-                    <span className="text-xs text-muted-foreground">
+                    <span className="text-xs text-muted-foreground sm:shrink-0">
                       {new Date(
                         Number(v.publishedAt.seconds) * 1000,
                       ).toLocaleDateString()}
