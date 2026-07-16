@@ -21,8 +21,10 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -259,11 +261,7 @@ func devStartParent() int {
 	fmt.Println()
 
 	// 8. Tail log file until Ctrl-C.
-	tailCmd := exec.Command("tail", "-f", devLogFile)
-	tailCmd.Stdin = os.Stdin
-	tailCmd.Stdout = os.Stdout
-	tailCmd.Stderr = os.Stderr
-	_ = tailCmd.Run() // exits on Ctrl-C
+	followFile(devLogFile, os.Stdout)
 
 	fmt.Println()
 	fmt.Println("◆ Log tail ended. Server continues running in background.")
@@ -380,13 +378,44 @@ func devLogs(log *slog.Logger) int {
 		fmt.Fprintf(os.Stderr, "  Is Orchicon running? Run 'orchicon dev start' first.\n")
 		return 1
 	}
-	cmd := exec.Command("tail", "-f", devLogFile)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	_ = cmd.Run()
+	fmt.Println("◆ Tailing control plane logs (Ctrl+C to stop)")
+	followFile(devLogFile, os.Stdout)
 	fmt.Println()
 	return 0
+}
+
+// followFile reads path from the current end and prints new content to w as
+// it is written (like tail -f).  Returns when reading fails (e.g. file
+// deleted) or when interrupted (the caller should handle signals).  Works on
+// any OS — no external command needed.
+func followFile(path string, w io.Writer) {
+	f, err := os.Open(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "✗ Cannot open log file: %v\n", err)
+		return
+	}
+	defer f.Close()
+
+	// Seek to end so we only show new content.
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		fmt.Fprintf(os.Stderr, "✗ Cannot seek log file: %v\n", err)
+		return
+	}
+
+	br := bufio.NewReader(f)
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				// No new data yet — wait briefly then retry.
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			// File was deleted or truncated — stop following.
+			return
+		}
+		fmt.Fprint(w, line)
+	}
 }
 
 // --- Helpers ----------------------------------------------------------------
