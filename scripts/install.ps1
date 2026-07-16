@@ -67,6 +67,25 @@ if (-not $InstallDir) {
 # --- Uninstall ---
 if ($Uninstall) {
     $bin = Join-Path $InstallDir "orchicon.exe"
+
+    # Stop the binary cleanly before removing it. `dev stop` SIGKILLs
+    # orphans internally too; the taskkill fallback covers a binary
+    # that was launched manually (so it has no PID file).
+    if (Test-Path $bin) {
+        Write-Info "stopping dev stack via '$bin dev stop'…"
+        if (-not $DryRun) { & $bin dev stop 2>$null | Out-Null }
+    }
+    $taskkill = Get-Command "taskkill" -ErrorAction SilentlyContinue
+    if ($null -ne $taskkill) {
+        Write-Info "killing any leftover orchicon.exe processes…"
+        if (-not $DryRun) {
+            # /F = force, /IM = image-name match. We exclude ourselves
+            # by spawning detached: cmd /C start /B "" taskkill …
+            # outlives this PowerShell process.
+            cmd /C "start /B `"`" taskkill /F /IM orchicon.exe" 2>$null | Out-Null
+        }
+    }
+
     if (Test-Path $bin) {
         Write-Info "removing $bin"
         if (-not $DryRun) { Remove-Item $bin -Force }
@@ -99,6 +118,21 @@ if ($Clean) {
             if (-not $DryRun) {
                 docker compose -p orchicon down 2>$null | Out-Null
             }
+        }
+    }
+
+    # 1b. Belt-and-suspenders orphan cleanup. `dev stop` SIGKILLs
+    # orphans by name internally; the taskkill fallback covers the
+    # case where the binary itself was launched manually (no PID
+    # file). On Windows, `taskkill /F /IM orchicon.exe` matches the
+    # image name; we spawn it detached via start /B so it outlives us
+    # — otherwise it would race with our own exit and take this
+    # process down too.
+    $taskkill = Get-Command "taskkill" -ErrorAction SilentlyContinue
+    if ($null -ne $taskkill) {
+        Write-Info "killing any leftover orchicon.exe processes…"
+        if (-not $DryRun) {
+            cmd /C "start /B `"`" taskkill /F /IM orchicon.exe" 2>$null | Out-Null
         }
     }
 
@@ -139,6 +173,17 @@ if ($ForceClean) {
         Write-Info "stopping dev stack via '$bin dev stop'..."
         if (-not $DryRun) {
             & $bin dev stop 2>$null | Out-Null
+        }
+    }
+
+    # 1b. Orphan cleanup (same rationale as -Clean 1b). Without this
+    # the old binary holds the file lock and the Move-Item below
+    # fails with "file in use".
+    $taskkill = Get-Command "taskkill" -ErrorAction SilentlyContinue
+    if ($null -ne $taskkill) {
+        Write-Info "killing any leftover orchicon.exe processes..."
+        if (-not $DryRun) {
+            cmd /C "start /B `"`" taskkill /F /IM orchicon.exe" 2>$null | Out-Null
         }
     }
 

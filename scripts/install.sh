@@ -105,6 +105,19 @@ check_cmd() {
 # --- Uninstall --------------------------------------------------------------
 do_uninstall() {
   local bin="$INSTALL_DIR/orchicon"
+
+  # Stop the binary cleanly before removing it. The `dev stop`
+  # internally SIGKILLs orphans too, but a defensive pkill covers
+  # the case where the binary was launched manually (no PID file).
+  if [ -f "$bin" ]; then
+    info "stopping dev stack via '${bin} dev stop'…"
+    $DRY_RUN || "$bin" dev stop 2>/dev/null || warn "dev stop failed (ignoring)"
+  fi
+  if command -v pkill >/dev/null 2>&1; then
+    info "killing any leftover orchicon processes…"
+    $DRY_RUN || pkill -9 -x orchicon 2>/dev/null || true
+  fi
+
   if [ -f "$bin" ]; then
     info "removing $bin"
     $DRY_RUN || rm -f "$bin"
@@ -128,13 +141,34 @@ do_force_clean() {
 
   local bin="$INSTALL_DIR/orchicon"
 
-  # 1. Stop dev stack via the binary (if available).
+  # 1. Stop dev stack via the binary (if available). The binary's
+  # `orchicon dev stop` already SIGKILLs any orphan orchicon processes
+  # by name, but if the binary itself was started without going through
+  # `dev start` (so its PID file was never written) the cleaner below
+  # is what actually frees the binary file lock.
   if [ -f "$bin" ]; then
     info "stopping dev stack via '${bin} dev stop'…"
     if [ "$DRY_RUN" = false ]; then
       "$bin" dev stop 2>/dev/null || warn "dev stop failed (ignoring)"
     else
       echo -e "  ${D}(would run: ${bin} dev stop)${X}"
+    fi
+  fi
+
+  # 1b. Belt-and-suspenders: even if `dev stop` ran (or was skipped
+  # because the binary is gone / corrupt), kill any remaining orchicon
+  # processes by executable name. Without this step an old binary
+  # process holds the mmap on $INSTALL_DIR/orchicon and the `mv` below
+  # fails with "Text file busy". Idempotent and safe — `dev stop`
+  # already filters its own PID, and `pkill -x` matches the executable
+  # basename exactly (so worker subprocesses like `opencode` are
+  # unaffected).
+  if command -v pkill >/dev/null 2>&1; then
+    info "killing any leftover orchicon processes…"
+    if [ "$DRY_RUN" = false ]; then
+      pkill -9 -x orchicon 2>/dev/null && ok "killed leftover orchicon process(es)" || true
+    else
+      echo -e "  ${D}(would run: pkill -9 -x orchicon)${X}"
     fi
   fi
 
@@ -209,6 +243,20 @@ do_clean() {
     if command -v docker >/dev/null 2>&1; then
       info "stopping orchicon containers via docker compose…"
       $DRY_RUN || docker compose -p orchicon down 2>/dev/null || true
+    fi
+  fi
+
+  # 1b. Belt-and-suspenders orphan cleanup (same rationale as
+  # do_force_clean step 1b). The `dev stop` above SIGKILLs orphans by
+  # name internally, but this defensive pass catches the case where
+  # the binary itself was running from a different path (so its PID
+  # file was elsewhere) or was launched manually.
+  if command -v pkill >/dev/null 2>&1; then
+    info "killing any leftover orchicon processes…"
+    if [ "$DRY_RUN" = false ]; then
+      pkill -9 -x orchicon 2>/dev/null && ok "killed leftover orchicon process(es)" || true
+    else
+      echo -e "  ${D}(would run: pkill -9 -x orchicon)${X}"
     fi
   fi
 
