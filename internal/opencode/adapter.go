@@ -366,12 +366,21 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, 
 // the opencode JSON shape and derives provider/model from the manifest's
 // ModelRef (which the human defined — docs/05 §11). Best-effort: a nil
 // recorder means usage is not recorded (docs/08 §8).
+//
+// Token field naming: opencode emits `tokens.input` / `tokens.output`
+// (plus reasoning and a cache sub-object) at the top level of the
+// tokens object. The previous version read `prompt_tokens` /
+// `completion_tokens` — names that don't appear on the wire — so
+// `recordUsage` always saw zeros and the early-return dropped every
+// sample. Result: usage_records stayed empty even when the model was
+// clearly running, and the AI Gateway's Postgres source-of-truth had
+// no data to surface. Now reads the actual opencode fields.
 func (a *Adapter) recordUsage(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, tokens map[string]any, cost float64) {
 	if a.usageRecorder == nil {
 		return
 	}
-	promptTokens := toInt64(tokens["prompt_tokens"])
-	completionTokens := toInt64(tokens["completion_tokens"])
+	promptTokens := toInt64(tokens["input"])
+	completionTokens := toInt64(tokens["output"])
 	if promptTokens == 0 && completionTokens == 0 && cost == 0 {
 		return
 	}
