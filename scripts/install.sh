@@ -8,6 +8,7 @@
 #   curl -fsSL https://orchicon.dev/install | bash -s -- --install-dir /usr/local/bin
 #   curl -fsSL https://orchicon.dev/install | bash -s -- --uninstall
 #   curl -fsSL https://orchicon.dev/install | bash -s -- --clean
+#   curl -fsSL https://orchicon.dev/install | bash -s -- --force-clean
 #
 # This script downloads the latest (or specified) Orchicon release binary
 # from GitHub and installs it to the chosen directory. It detects OS and
@@ -26,6 +27,7 @@ INSTALL_DIR="${ORCHICON_INSTALL_DIR:-${HOME}/.local/bin}"
 VERSION=""
 UNINSTALL=false
 CLEAN=false
+FORCE_CLEAN=false
 DRY_RUN=false
 
 # --- Colors -----------------------------------------------------------------
@@ -48,6 +50,7 @@ while [ $# -gt 0 ]; do
     --install-dir|-d)  INSTALL_DIR="$2"; shift 2 ;;
     --uninstall)       UNINSTALL=true; shift ;;
     --clean)           CLEAN=true; shift ;;
+    --force-clean|--nuke|-f) FORCE_CLEAN=true; shift ;;
     --dry-run)         DRY_RUN=true; shift ;;
     --help|-h)
       cat <<EOF
@@ -59,11 +62,16 @@ Options:
   --version <tag>      Install a specific version (e.g. v0.2.0). Default: latest.
   --install-dir <dir>  Installation directory (default: ~/.local/bin).
   --uninstall          Remove Orchicon from the install directory.
-  --clean              Stop dev containers, remove the old Orchicon binary, then
-                       install the latest version — one-shot upgrade. All user
-                       data is preserved (Docker volumes, BlobStore files,
-                       runtime state).
-  --dry-run            Print what would happen without making changes.
+   --clean              Stop dev containers, remove the old Orchicon binary, then
+                        install the latest version — one-shot upgrade. All user
+                        data is preserved (Docker volumes, BlobStore files,
+                        runtime state).
+   --force-clean, --nuke
+                        Wipe everything and start fresh: stop the dev stack,
+                        destroy Docker volumes (database, NATS, ClickHouse),
+                        remove blob store data and runtime state, then install
+                        the latest version. WARNING: all data is lost.
+   --dry-run            Print what would happen without making changes.
   -h, --help           Show this help.
 EOF
       exit 0 ;;
@@ -105,6 +113,74 @@ do_uninstall() {
     warn "orchicon not found in $INSTALL_DIR — nothing to remove"
   fi
   exit 0
+}
+
+# --- Force-clean then install -----------------------------------------------
+#
+# Wipe everything and start fresh: stop the dev stack, destroy Docker
+# volumes (database, NATS, ClickHouse), remove blob store data and
+# runtime state, then install the latest version.
+#
+do_force_clean() {
+  echo ""
+  echo -e "${B}Orchicon — force-clean (NUKE)${X}"
+  echo ""
+
+  local bin="$INSTALL_DIR/orchicon"
+
+  # 1. Stop dev stack via the binary (if available).
+  if [ -f "$bin" ]; then
+    info "stopping dev stack via '${bin} dev stop'…"
+    if [ "$DRY_RUN" = false ]; then
+      "$bin" dev stop 2>/dev/null || warn "dev stop failed (ignoring)"
+    else
+      echo -e "  ${D}(would run: ${bin} dev stop)${X}"
+    fi
+  fi
+
+  # 2. Nuke Docker volumes (postgres, nats, clickhouse, signoz).
+  if command -v docker >/dev/null 2>&1; then
+    info "destroying all orchicon Docker volumes…"
+    if [ "$DRY_RUN" = false ]; then
+      if docker compose -p orchicon down -v --remove-orphans 2>/dev/null; then
+        ok "Docker volumes destroyed"
+      else
+        warn "docker compose down -v failed (containers may not exist yet)"
+      fi
+    else
+      echo -e "  ${D}(would run: docker compose -p orchicon down -v)${X}"
+    fi
+  else
+    warn "docker not found — skipping volume cleanup"
+  fi
+
+  # 3. Clean up local state.
+  local state_dirs=("data" ".dev" "bin")
+  for d in "${state_dirs[@]}"; do
+    if [ -d "$d" ]; then
+      info "removing ${d}/"
+      $DRY_RUN || rm -rf "$d"
+      ok "$d removed"
+    fi
+  done
+
+  # 4. Remove the old binary.
+  if [ -f "$bin" ]; then
+    info "removing $bin"
+    $DRY_RUN || rm -f "$bin"
+    ok "old binary removed"
+  fi
+
+  # 5. Summary.
+  echo ""
+  echo -e "${G}All data wiped — ready for a fresh start${X}"
+  echo -e "  ${D}• Docker volumes destroyed${X}"
+  echo -e "  ${D}• BlobStore files removed${X}"
+  echo -e "  ${D}• Runtime state (.dev/) removed${X}"
+  echo -e "  ${D}• Old binary removed${X}"
+  echo ""
+  echo -e "${B}Now installing latest version…${X}"
+  echo ""
 }
 
 # --- Clean then install -----------------------------------------------------
@@ -256,6 +332,9 @@ main() {
 # --- Run --------------------------------------------------------------------
 if [ "$UNINSTALL" = true ]; then
   do_uninstall
+elif [ "$FORCE_CLEAN" = true ]; then
+  do_force_clean
+  main
 elif [ "$CLEAN" = true ]; then
   do_clean
   main
