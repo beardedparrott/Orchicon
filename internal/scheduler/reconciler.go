@@ -60,6 +60,15 @@ func (r *TaskReconciler) SetRecoveryTrigger(rt RecoveryTrigger) { r.recovery = r
 // Kind returns the reconciler kind (docs/03 §2.1).
 func (r *TaskReconciler) Kind() string { return "task" }
 
+// DispatchTask implements scheduler.TaskDispatcher. It dispatches a
+// single ready task synchronously. The WorkflowReconciler calls this
+// after its own transaction commits so the work item is visible to the
+// TaskReconciler's internal dispatch transaction (docs/03 §8 invariant
+// #1: only the TaskReconciler creates WorkerExecutions).
+func (r *TaskReconciler) DispatchTask(ctx context.Context, taskID string) error {
+	return r.reconcileOne(ctx, taskID)
+}
+
 // Reconcile processes a single task key. The key is the task (work item)
 // ID. It is idempotent: re-running a pass for a task converges to the
 // same state (docs/03 §1).

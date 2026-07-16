@@ -221,7 +221,7 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	// RecoveryTrigger interface (loose coupling — no scheduler→recovery
 	// import).
 	taskRec.SetRecoveryTrigger(recoveryEngine)
-	workflowRec := scheduler.NewWorkflowReconciler(pool, log, policyEngine)
+	workflowRec := scheduler.NewWorkflowReconciler(pool, log, policyEngine, taskRec)
 	recoveryRec := recovery.NewReconciler(recoveryEngine)
 	s.rcmgr = reconciler.NewManager(pool, log)
 	s.rcmgr.Register(taskRec)
