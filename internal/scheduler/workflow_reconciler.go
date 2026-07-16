@@ -261,6 +261,34 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		}
 	}
 
+	// Poll running RECOVER steps: check if their linked recovery
+	// execution has completed (terminal).
+	for i, sr := range stepRuns {
+		if sr.Status != domain.StepRunRunning || sr.StepKind != domain.StepKindRecover {
+			continue
+		}
+		terminal, err := r.pollRecoverStep(ctx, ttx.Tx, tenantID, run, sr)
+		if err != nil {
+			return err
+		}
+		if terminal {
+			endNow := time.Now().UTC()
+			updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:  strPtr(domain.StepRunSucceeded),
+				EndedAt: &endNow,
+			})
+			if err != nil {
+				return fmt.Errorf("mark recover step terminal: %w", err)
+			}
+			stepRuns[i] = updated
+			runByID[sr.StepID] = updated
+			progressed = true
+			if err := r.enqueueStepEvent(ctx, ttx.Tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
+				return fmt.Errorf("enqueue recover step_succeeded: %w", err)
+			}
+		}
+	}
+
 	// Determine run terminal state: all steps succeeded → completed;
 	// any failed → failed.
 	allSucceeded := true
@@ -324,16 +352,22 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 }
 
 // depsSatisfied returns true if all depends_on steps of `step` are in a
-// terminal-success state (succeeded or skipped).
+// terminal-success state (succeeded or skipped). For RECOVER steps,
+// failed deps are also acceptable — they trigger the recovery wait path.
 func (r *WorkflowReconciler) depsSatisfied(step workflow.StepWire, runs map[string]db.WorkflowStepRunRow) bool {
+	isRecover := step.Kind == domain.StepKindRecover
 	for _, dep := range step.DependsOn {
 		sr, ok := runs[dep]
 		if !ok {
 			return false
 		}
-		if sr.Status != domain.StepRunSucceeded && sr.Status != domain.StepRunSkipped {
-			return false
+		if sr.Status == domain.StepRunSucceeded || sr.Status == domain.StepRunSkipped {
+			continue
 		}
+		if isRecover && sr.Status == domain.StepRunFailed {
+			continue
+		}
+		return false
 	}
 	return true
 }
@@ -541,30 +575,112 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		}
 
 	case domain.StepKindRecover:
-		// PR D: a RECOVER step on the canvas is a passive marker; the
-		// runtime records the strategy (from config.strategy — set by
-		// the palette tiles for stop / human_escalation / retry_n /
-		// summarize_restart) so operators can see what would have run
-		// had the upstream worker actually failed. The actual recovery
-		// flow is driven by the opencode-adapter failure path (see
-		// TaskReconciler.transitionWorkItemOnResult → propagation of
-		// the failed task to RecoveryEngine.TriggerOnFailure). Mark
-		// succeeded so the DAG continues.
-		strategy := readConfigStrategy(step.Config)
-		if strategy != "" {
-			r.log.Info("workflow recover step recorded", "run", run.ID, "step", step.ID, "strategy", strategy)
+		// Check whether any dependency failed. If all deps succeeded,
+		// skip recovery — the task completed normally.
+		depFailed := false
+		for _, dep := range step.DependsOn {
+			if s, ok := runs[dep]; ok && s.Status == domain.StepRunFailed {
+				depFailed = true
+				break
+			}
 		}
-		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-			Status:    strPtr(domain.StepRunSucceeded),
-			StartedAt: &now,
-			EndedAt:   &now,
-		})
+		if !depFailed {
+			// All deps succeeded → skip recovery.
+			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:    strPtr(domain.StepRunSucceeded),
+				StartedAt: &now,
+				EndedAt:   &now,
+			})
+			if err != nil {
+				return fmt.Errorf("mark recover step succeeded (no-op): %w", err)
+			}
+			runs[step.ID] = updated
+			r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated)
+			break
+		}
+		// A dep failed — transition to running and wait for the recovery
+		// engine to complete. We find the failed dep's work item id from
+		// its result JSON (_work_item_id), then poll the recovery
+		// execution status.
+		var depResult struct {
+			WorkItemID string `json:"_work_item_id"`
+		}
+		for _, dep := range step.DependsOn {
+			if s, ok := runs[dep]; ok && s.Status == domain.StepRunFailed {
+				if err := json.Unmarshal(s.Result, &depResult); err == nil && depResult.WorkItemID != "" {
+					break
+				}
+			}
+		}
+		if depResult.WorkItemID == "" {
+			// No work item found yet — leave ready and retry next pass.
+			r.log.Warn("recover step has no work item id from failed dep", "run", run.ID, "step", step.ID)
+			break
+		}
+		recovery, err := db.GetLatestRecoveryForTask(ctx, tx, tenantID, depResult.WorkItemID)
+		if err == db.ErrNotFound {
+			// Recovery not yet created (TaskReconciler may not have
+			// processed the failure). Leave ready and retry next pass.
+			r.log.Info("recover step waiting for recovery execution", "run", run.ID, "step", step.ID, "work_item", depResult.WorkItemID)
+			break
+		}
 		if err != nil {
-			return fmt.Errorf("mark recover step succeeded: %w", err)
+			return fmt.Errorf("get latest recovery for task %s: %w", depResult.WorkItemID, err)
 		}
-		runs[step.ID] = updated
-		if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
-			return fmt.Errorf("enqueue recover step_succeeded: %w", err)
+		// Terminal recovery states: resumed (success), failed, cancelled,
+		// escalated. Non-terminal: pending, running, blocked.
+		switch recovery.Status {
+		case domain.RecoveryResumed:
+			// Recovery completed successfully.
+			strategy := readConfigStrategy(step.Config)
+			if strategy != "" {
+				r.log.Info("workflow recover step completed", "run", run.ID, "step", step.ID, "strategy", strategy, "recovery", recovery.ID)
+			}
+			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:    strPtr(domain.StepRunSucceeded),
+				StartedAt: &now,
+				EndedAt:   &now,
+			})
+			if err != nil {
+				return fmt.Errorf("mark recover step succeeded: %w", err)
+			}
+			runs[step.ID] = updated
+			if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
+				return fmt.Errorf("enqueue recover step_succeeded: %w", err)
+			}
+		case domain.RecoveryFailed, domain.RecoveryCancelled, domain.RecoveryEscalated:
+			// Recovery terminated without success. The RECOVER step
+			// still succeeds to let the DAG continue; downstream steps
+			// see the failed work item and can decide how to react.
+			r.log.Warn("workflow recover step: recovery did not resume", "run", run.ID, "step", step.ID, "recovery", recovery.ID, "recovery_status", recovery.Status)
+			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:    strPtr(domain.StepRunSucceeded),
+				StartedAt: &now,
+				EndedAt:   &now,
+			})
+			if err != nil {
+				return fmt.Errorf("mark recover step succeeded (recovery %s): %w", recovery.Status, err)
+			}
+			runs[step.ID] = updated
+			if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
+				return fmt.Errorf("enqueue recover step_succeeded: %w", err)
+			}
+		default:
+			// Recovery still in progress — stay in running, retry next pass.
+			if sr.Status != domain.StepRunRunning {
+				updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+					Status:    strPtr(domain.StepRunRunning),
+					StartedAt: &now,
+				})
+				if err != nil {
+					return fmt.Errorf("mark recover step running: %w", err)
+				}
+				runs[step.ID] = updated
+				if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepStarted, run, updated); err != nil {
+					return fmt.Errorf("enqueue recover step_started: %w", err)
+				}
+			}
+			r.log.Info("recover step waiting for recovery", "run", run.ID, "step", step.ID, "recovery", recovery.ID, "recovery_status", recovery.Status)
 		}
 
 	case domain.StepKindApproval:
@@ -848,6 +964,47 @@ func upstreamWorkItemIDs(step workflow.StepWire, allSteps []workflow.StepWire) [
 		}
 	}
 	return ids
+}
+
+// pollRecoverStep checks whether the recovery execution linked to a
+// running RECOVER step has completed. Returns (terminal, error). The
+// work item id is read from the failed dep step run's result JSON
+// (_work_item_id).
+func (r *WorkflowReconciler) pollRecoverStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow) (bool, error) {
+	// Find the latest stepRuns for this run to look up the dep's result.
+	stepRuns, err := db.ListWorkflowStepRuns(ctx, tx, tenantID, run.ID)
+	if err != nil {
+		return false, fmt.Errorf("list step runs for recover poll: %w", err)
+	}
+	var workItemID string
+	for _, s := range stepRuns {
+		if s.StepKind == domain.StepKindTask && s.Status == domain.StepRunFailed {
+			var parsed struct {
+				WorkItemID string `json:"_work_item_id"`
+			}
+			if err := json.Unmarshal(s.Result, &parsed); err == nil && parsed.WorkItemID != "" {
+				workItemID = parsed.WorkItemID
+				break
+			}
+		}
+	}
+	if workItemID == "" {
+		return false, nil
+	}
+	recovery, err := db.GetLatestRecoveryForTask(ctx, tx, tenantID, workItemID)
+	if err == db.ErrNotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("get latest recovery for task %s: %w", workItemID, err)
+	}
+	switch recovery.Status {
+	case domain.RecoveryResumed, domain.RecoveryFailed, domain.RecoveryCancelled, domain.RecoveryEscalated:
+		r.log.Info("recover step recovery terminal", "run", run.ID, "step", sr.StepID, "recovery", recovery.ID, "status", recovery.Status)
+		return true, nil
+	default:
+		return false, nil
+	}
 }
 
 // pollTaskStep checks the WorkItem linked to a running task step. Returns
