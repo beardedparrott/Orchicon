@@ -11,11 +11,17 @@
 //   - PROJECT (7)  — passive marker. Shows the project name + status.
 //   - DECISION/APPROVAL/PARALLEL/RECOVER — control flow (unchanged).
 //
+// PR D: a small × button in the top-right corner appears on hover;
+// clicking it removes the node from the canvas. The click is fired
+// via the data-onDelete callback the parent injects, so the React
+// Flow state stays the single source of truth (no store copies).
+//
 // React Flow's Handle is the connection target — `target` on the left
 // for incoming edges (= dependencies), `source` on the right for
 // outgoing edges. Style must be set so Handles are visible.
 
 import { Handle, Position, type NodeProps } from "reactflow";
+import { X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import {
@@ -70,7 +76,7 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
   return (
     <div
       className={cn(
-        "min-w-[180px] max-w-[240px] rounded-md border px-3 py-2 shadow-sm",
+        "group relative min-w-[180px] max-w-[240px] rounded-md border px-3 py-2 shadow-sm",
         stepKindClasses[kind] ?? "border-border bg-card text-card-foreground",
         selected && "ring-2 ring-primary ring-offset-2 ring-offset-background",
         // Incomplete node: red dashed border if a binding is missing
@@ -92,6 +98,27 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
           stepKindHandleClasses[kind],
         )}
       />
+      {/* PR D: hover-only × in the top-right corner. Clicking removes
+          the node. We use a regular <button> for accessibility; the
+          parent ReactFlow parent stops propagation so the click
+          doesn't also select the node. */}
+      <button
+        type="button"
+        aria-label="Delete step"
+        title="Delete step"
+        data-on-delete
+        onClick={(e) => {
+          e.stopPropagation();
+          // Dispatch a custom event the parent listens for; the
+          // parent owns the nodes/edges state.
+          window.dispatchEvent(
+            new CustomEvent("orchicon:delete-node", { detail: { id: (e.currentTarget as HTMLElement).closest(".react-flow__node")?.getAttribute("data-id") } }),
+          );
+        }}
+        className="absolute -right-2 -top-2 hidden h-5 w-5 items-center justify-center rounded-full border bg-background text-muted-foreground shadow-sm hover:bg-rose-100 hover:text-rose-700 group-hover:flex dark:hover:bg-rose-950/60"
+      >
+        <X className="h-3 w-3" />
+      </button>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide opacity-80">
           <Icon className="h-3 w-3" />

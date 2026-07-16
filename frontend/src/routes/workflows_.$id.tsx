@@ -18,6 +18,7 @@ import ReactFlow, {
 } from "reactflow";
 
 import {
+  useAbortWorkflow,
   useAcquireWorkflowEditLock,
   useDeleteWorkflow,
   useDeprecateWorkflow,
@@ -41,6 +42,7 @@ import {
 import { Palette } from "@/components/workflow-editor/Palette";
 import { PropertiesPanel } from "@/components/workflow-editor/PropertiesPanel";
 import { StepNode } from "@/components/workflow-editor/StepNode";
+import { DeletableEdge } from "@/components/workflow-editor/DeletableEdge";
 import { canvasToSteps, stepsToCanvas } from "@/components/workflow-editor/canvas";
 import {
   PALETTE_MIME,
@@ -90,6 +92,7 @@ function WorkflowEditorPage() {
 }
 
 const NODE_TYPES = { step: StepNode };
+const EDGE_TYPES = { default: DeletableEdge };
 
 function EditorInner({ workflowId }: { workflowId: string }) {
   const navigate = useNavigate();
@@ -103,6 +106,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const publishWorkflow = usePublishWorkflow();
   const deprecateWorkflow = useDeprecateWorkflow();
   const startWorkflow = useStartWorkflow();
+  const abortWorkflow = useAbortWorkflow();
   const deleteMutation = useDeleteWorkflow();
 
   const [nodes, setNodes, onNodesChange] = useNodesState(
@@ -113,6 +117,36 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const [dirty, setDirty] = useState(false);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [dropActive, setDropActive] = useState(false);
+
+  // PR D: listen for delete events from StepNode's hover-× button.
+  // The node dispatches a CustomEvent on window; we remove the node
+  // + its connected edges and push history. Equivalent to pressing
+  // Del/Backspace on a selected node, but discoverable.
+  useEffect(() => {
+    const onDeleteNode = (e: Event) => {
+      const detail = (e as CustomEvent<{ id: string }>).detail;
+      if (!detail?.id) return;
+      const removed = detail.id;
+      setNodes((nds) => nds.filter((n) => n.id !== removed));
+      setEdges((eds) =>
+        eds.filter((ed) => ed.source !== removed && ed.target !== removed),
+      );
+      setSelectedId(null);
+      setDirty(true);
+    };
+    const onDeleteEdge = (e: Event) => {
+      const detail = (e as CustomEvent<{ id: string }>).detail;
+      if (!detail?.id) return;
+      setEdges((eds) => eds.filter((ed) => ed.id !== detail.id));
+      setDirty(true);
+    };
+    window.addEventListener("orchicon:delete-node", onDeleteNode as EventListener);
+    window.addEventListener("orchicon:delete-edge", onDeleteEdge as EventListener);
+    return () => {
+      window.removeEventListener("orchicon:delete-node", onDeleteNode as EventListener);
+      window.removeEventListener("orchicon:delete-edge", onDeleteEdge as EventListener);
+    };
+  }, []);
 
   // --- undo/redo history ---
   const history = useRef<{ nodes: Node<StepData>[]; edges: Edge[] }[]>([]);
@@ -308,7 +342,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
       } catch {
         return;
       }
-      const { kind, name, ref, workerId, workItemId, policyId } = parsed;
+      const { kind, name, ref, workerId, workItemId, policyId, recoveryStrategy } = parsed;
       // screenToFlowPosition falls back to clientX/clientY if the
       // viewport is not yet initialized (the function returns the input
       // unchanged when its internal domNode ref is null). Guard the
@@ -332,6 +366,11 @@ function EditorInner({ workflowId }: { workflowId: string }) {
       }
       if (policyId) {
         configObj.policy_id = policyId;
+      }
+      // PR D: recovery strategy rides along in config so the
+      // recovery engine can pick it up at dispatch.
+      if (recoveryStrategy) {
+        configObj.strategy = recoveryStrategy;
       }
       // PROJECT steps also carry the project id in the ref so the
       // node card shows a short label, and in config.project_id for
@@ -471,7 +510,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
       window.alert(
         "This workflow is a tenant template. Start it from a project context, or assign a project.",
       );
-      return;
+      return
     }
     const run = await startWorkflow.mutateAsync({
       workflowId,
@@ -482,6 +521,25 @@ function EditorInner({ workflowId }: { workflowId: string }) {
       to: "/workflows/$id/runs/$runId",
       params: { id: workflowId, runId: run.id },
     });
+  };
+
+  // PR D: inline Stop / Abort for the most recent running or pending
+  // run. The latest run is whichever row has the highest
+  // (createdAt) — runs are listed newest-first by the API.
+  const latestRun = (runs ?? [])[0];
+  const latestRunActive = latestRun
+    ? latestRun.status === 1 /* pending */ || latestRun.status === 2 /* running */
+    : false;
+  const handleStop = async () => {
+    if (!latestRun) return;
+    if (
+      !window.confirm(
+        `Stop run ${latestRun.id.slice(0, 12)}…? Aborting halts all queued and running steps; the run is marked aborted (terminal).`,
+      )
+    ) {
+      return;
+    }
+    await abortWorkflow.mutateAsync({ runId: latestRun.id, reason: "user clicked Stop" });
   };
 
   // keyboard shortcuts: undo/redo + delete selected
@@ -604,6 +662,20 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                 {startWorkflow.isPending ? "Starting…" : "Start run"}
               </Button>
             )}
+            {/* PR D: inline Stop for the most recent active run. The
+                button is destructive (Stop halts steps + marks the run
+                aborted) so it's a red outline. Disabled when the run
+                has already terminal'd. */}
+            {latestRunActive && latestRun && (
+              <Button
+                variant="destructive"
+                onClick={handleStop}
+                disabled={abortWorkflow.isPending}
+                title={`Stop run ${latestRun.id.slice(0, 12)}…`}
+              >
+                {abortWorkflow.isPending ? "Stopping…" : `Stop ${latestRun.id.slice(0, 12)}…`}
+              </Button>
+            )}
             <Button
               variant="destructive"
               onClick={() => {
@@ -668,6 +740,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
               onNodeClick={(_, n) => setSelectedId(n.id)}
               onPaneClick={() => setSelectedId(null)}
               nodeTypes={NODE_TYPES}
+              edgeTypes={EDGE_TYPES}
               fitView
               minZoom={0.2}
               maxZoom={2}

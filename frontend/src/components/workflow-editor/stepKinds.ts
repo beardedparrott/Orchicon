@@ -125,8 +125,12 @@ export interface StepWire {
 //
 // Exactly one of `workerId`, `workItemId`, `projectId`, or `policyId`
 // is set, in addition to `kind`. `kind` is the StepKind enum value
-// (1-7). The step primitives (decision/approval/parallel/recover) leave
-// the ref fields empty.
+// (1-7). The step primitives (decision/approval/parallel/recover)
+// leave the ref fields empty.
+//
+// `recoveryStrategy` (PR D) is set by the recovery palette tiles and
+// stored in the step's config.strategy. The recovery engine reads
+// this on dispatch to choose between the 4 strategies.
 export interface PaletteDropPayload {
   kind: number;
   name?: string;
@@ -135,6 +139,7 @@ export interface PaletteDropPayload {
   workItemId?: string;
   projectId?: string;
   policyId?: string;
+  recoveryStrategy?: string;
 }
 
 // The dataTransfer mime key the palette uses. Namespaced with

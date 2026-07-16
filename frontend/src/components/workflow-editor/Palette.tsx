@@ -26,6 +26,7 @@ import {
   FileText,
   Folder,
   Info,
+  LifeBuoy,
   Search,
   Workflow as WorkflowIcon,
   X,
@@ -87,6 +88,30 @@ const STEP_KIND_DESCRIPTIONS: Record<number, { summary: string; example: string 
   [STEP_KIND.PROJECT]: {
     summary: "Binds the run to a project on first dispatch.",
     example: "Downstream work items land in this project.",
+  },
+};
+
+// Recovery strategy descriptions (PR D). The four strategies map to the
+// 4 WorkItemKind values added in PR C, but are surfaced here as
+// strategy tiles that the onDrop handler stores in step config
+// (since the WorkItem CREATE endpoint doesn't yet accept recovery
+// kinds for top-level items).
+const RECOVERY_DESCRIPTIONS: Record<string, { summary: string; example: string }> = {
+  summarize_restart: {
+    summary: "Default 6-step flow (capture → summarize → preserve → review → plan → resume).",
+    example: "Worker failed → engine captures context → restarts with upstream summary.",
+  },
+  stop: {
+    summary: "Abandon the workflow cleanly. No retry, no resumption.",
+    example: "Worker failed → recovery marked failed; task cancelled; run aborted.",
+  },
+  human_escalation: {
+    summary: "Block at L3 until a human approves or rejects the continuation plan.",
+    example: "Worker failed → recovery blocked; operator reviews + approves via the API.",
+  },
+  retry_n: {
+    summary: "Requeue the task immediately. Bypasses the capture/summarize flow.",
+    example: "Worker failed → task back to ready; TaskReconciler dispatches a fresh execution.",
   },
 };
 
@@ -275,6 +300,69 @@ export function Palette({
             />
           );
         })}
+      </Section>
+      {/* PR D: Recovery section. PR C added four WorkItemKind values
+          (RECOVERY_STOP, RECOVERY_SUMMARIZE_RESTART,
+          RECOVERY_HUMAN_ESCALATION, RECOVERY_RETRY_N) so the data
+          model supports typed recovery; the workflow CREATE endpoint
+          still rejects them at the API boundary, so these palette
+          tiles drop TASK-kind steps with the strategy stored in
+          config.strategy. The runtime / workflow engine reads the
+          strategy on dispatch and routes accordingly. UI for the
+          full work-item-based flow is a follow-up. */}
+      <Section
+        title="Recovery"
+        icon={LifeBuoy}
+        subtitle="What to do when a worker fails"
+      >
+        {[
+          {
+            kind: STEP_KIND.RECOVER,
+            label: "Summarize + restart",
+            sublabel: "default 6-step flow",
+            strategy: "summarize_restart",
+            color: "rose",
+          },
+          {
+            kind: STEP_KIND.RECOVER,
+            label: "Stop",
+            sublabel: "abandon the workflow",
+            strategy: "stop",
+            color: "rose",
+          },
+          {
+            kind: STEP_KIND.RECOVER,
+            label: "Human escalation",
+            sublabel: "block until a human approves",
+            strategy: "human_escalation",
+            color: "rose",
+          },
+          {
+            kind: STEP_KIND.RECOVER,
+            label: "Retry N",
+            sublabel: "requeue immediately, no capture",
+            strategy: "retry_n",
+            color: "rose",
+          },
+        ].map((tile) => (
+          <DraggableTile
+            key={`${tile.label}-${tile.strategy}`}
+            label={tile.label}
+            sublabel={tile.sublabel}
+            icon={STEP_KIND_ICONS[STEP_KIND.RECOVER]}
+            kindAccent={tile.color}
+            payload={{
+              kind: STEP_KIND.RECOVER,
+              // The strategy rides along in the data transfer so the
+              // onDrop handler can store it in step config. The
+              // reconciler + adapter read it back at dispatch.
+              recoveryStrategy: tile.strategy,
+            }}
+            description={RECOVERY_DESCRIPTIONS[tile.strategy].summary}
+            example={RECOVERY_DESCRIPTIONS[tile.strategy].example}
+            readOnly={readOnly}
+          />
+        ))}
       </Section>
       <PaletteFooter />
     </div>

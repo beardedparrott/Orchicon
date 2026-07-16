@@ -541,8 +541,19 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		}
 
 	case domain.StepKindRecover:
-		// v0.1: recovery workflow invocation arrives with the Recovery
-		// Engine (Phase 7). For now mark succeeded so the DAG progresses.
+		// PR D: a RECOVER step on the canvas is a passive marker; the
+		// runtime records the strategy (from config.strategy — set by
+		// the palette tiles for stop / human_escalation / retry_n /
+		// summarize_restart) so operators can see what would have run
+		// had the upstream worker actually failed. The actual recovery
+		// flow is driven by the opencode-adapter failure path (see
+		// TaskReconciler.transitionWorkItemOnResult → propagation of
+		// the failed task to RecoveryEngine.TriggerOnFailure). Mark
+		// succeeded so the DAG continues.
+		strategy := readConfigStrategy(step.Config)
+		if strategy != "" {
+			r.log.Info("workflow recover step recorded", "run", run.ID, "step", step.ID, "strategy", strategy)
+		}
 		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 			Status:    strPtr(domain.StepRunSucceeded),
 			StartedAt: &now,
@@ -794,6 +805,25 @@ func readConfigProjectID(config string) string {
 		return ""
 	}
 	return parsed.ProjectID
+}
+
+// readConfigStrategy extracts the recovery strategy from a step's
+// config JSON. PR D — recovery palette tiles (stop, summarize_restart,
+// human_escalation, retry_n) write this field. The reconciler logs it
+// when a RECOVER step is reached so operators can see what the
+// runtime would have done on a real failure. Returns "" for empty /
+// missing.
+func readConfigStrategy(config string) string {
+	if config == "" {
+		return ""
+	}
+	var parsed struct {
+		Strategy string `json:"strategy"`
+	}
+	if err := json.Unmarshal([]byte(config), &parsed); err != nil {
+		return ""
+	}
+	return parsed.Strategy
 }
 
 // upstreamWorkItemIDs walks step.DependsOn looking for WORK_ITEM steps
