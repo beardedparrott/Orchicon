@@ -17,7 +17,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortWorkflowRequest, AbortWorkflowResponse, AcquireWorkflowEditLockRequest, AcquireWorkflowEditLockResponse, CreateWorkflowRequest, CreateWorkflowResponse, DeleteWorkflowRequest, DeleteWorkflowResponse, DeprecateWorkflowRequest, DeprecateWorkflowResponse, GetWorkflowEditLockRequest, GetWorkflowEditLockResponse, GetWorkflowRequest, GetWorkflowResponse, GetWorkflowRunRequest, GetWorkflowRunResponse, GetWorkflowStepRunsRequest, GetWorkflowStepRunsResponse, ListWorkflowRunsRequest, ListWorkflowRunsResponse, ListWorkflowsRequest, ListWorkflowsResponse, ListWorkflowVersionsRequest, ListWorkflowVersionsResponse, PublishWorkflowRequest, PublishWorkflowResponse, ReleaseWorkflowEditLockRequest, ReleaseWorkflowEditLockResponse, StartWorkflowRequest, StartWorkflowResponse, StreamWorkflowEventsRequest, StreamWorkflowEventsResponse, UpdateWorkflowVersionRequest, UpdateWorkflowVersionResponse } from "./workflow_service_pb.js";
+import { AbortWorkflowRequest, AbortWorkflowResponse, AcquireWorkflowEditLockRequest, AcquireWorkflowEditLockResponse, CreateWorkflowRequest, CreateWorkflowResponse, CreateWorkflowVersionRequest, CreateWorkflowVersionResponse, DeleteWorkflowRequest, DeleteWorkflowResponse, DeprecateWorkflowRequest, DeprecateWorkflowResponse, GetWorkflowEditLockRequest, GetWorkflowEditLockResponse, GetWorkflowRequest, GetWorkflowResponse, GetWorkflowRunRequest, GetWorkflowRunResponse, GetWorkflowStepRunsRequest, GetWorkflowStepRunsResponse, ListWorkflowRunsRequest, ListWorkflowRunsResponse, ListWorkflowsRequest, ListWorkflowsResponse, ListWorkflowVersionsRequest, ListWorkflowVersionsResponse, PublishWorkflowRequest, PublishWorkflowResponse, ReleaseWorkflowEditLockRequest, ReleaseWorkflowEditLockResponse, StartWorkflowRequest, StartWorkflowResponse, StreamWorkflowEventsRequest, StreamWorkflowEventsResponse, UpdateWorkflowVersionRequest, UpdateWorkflowVersionResponse } from "./workflow_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -108,6 +108,20 @@ export const WorkflowService = {
       name: "ListWorkflowVersions",
       I: ListWorkflowVersionsRequest,
       O: ListWorkflowVersionsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * CreateWorkflowVersion creates a new draft version of a published or
+     * deprecated workflow, copying the latest published version's steps and
+     * configuration. The new version is editable; once published it becomes
+     * immutable (docs/02 §2.4).
+     *
+     * @generated from rpc orchicon.api.v1.WorkflowService.CreateWorkflowVersion
+     */
+    createWorkflowVersion: {
+      name: "CreateWorkflowVersion",
+      I: CreateWorkflowVersionRequest,
+      O: CreateWorkflowVersionResponse,
       kind: MethodKind.Unary,
     },
     /**

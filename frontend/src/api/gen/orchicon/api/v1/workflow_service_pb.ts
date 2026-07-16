@@ -679,6 +679,94 @@ export class ListWorkflowVersionsResponse extends Message<ListWorkflowVersionsRe
 }
 
 /**
+ * @generated from message orchicon.api.v1.CreateWorkflowVersionRequest
+ */
+export class CreateWorkflowVersionRequest extends Message<CreateWorkflowVersionRequest> {
+  /**
+   * @generated from field: string workflow_id = 1;
+   */
+  workflowId = "";
+
+  /**
+   * optional note for the new version
+   *
+   * @generated from field: string version_note = 2;
+   */
+  versionNote = "";
+
+  constructor(data?: PartialMessage<CreateWorkflowVersionRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.CreateWorkflowVersionRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "workflow_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "version_note", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkflowVersionRequest {
+    return new CreateWorkflowVersionRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateWorkflowVersionRequest {
+    return new CreateWorkflowVersionRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateWorkflowVersionRequest {
+    return new CreateWorkflowVersionRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateWorkflowVersionRequest | PlainMessage<CreateWorkflowVersionRequest> | undefined, b: CreateWorkflowVersionRequest | PlainMessage<CreateWorkflowVersionRequest> | undefined): boolean {
+    return proto3.util.equals(CreateWorkflowVersionRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.CreateWorkflowVersionResponse
+ */
+export class CreateWorkflowVersionResponse extends Message<CreateWorkflowVersionResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.Workflow workflow = 1;
+   */
+  workflow?: Workflow;
+
+  /**
+   * @generated from field: orchicon.api.v1.WorkflowVersion version = 2;
+   */
+  version?: WorkflowVersion;
+
+  constructor(data?: PartialMessage<CreateWorkflowVersionResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.CreateWorkflowVersionResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "workflow", kind: "message", T: Workflow },
+    { no: 2, name: "version", kind: "message", T: WorkflowVersion },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkflowVersionResponse {
+    return new CreateWorkflowVersionResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateWorkflowVersionResponse {
+    return new CreateWorkflowVersionResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateWorkflowVersionResponse {
+    return new CreateWorkflowVersionResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateWorkflowVersionResponse | PlainMessage<CreateWorkflowVersionResponse> | undefined, b: CreateWorkflowVersionResponse | PlainMessage<CreateWorkflowVersionResponse> | undefined): boolean {
+    return proto3.util.equals(CreateWorkflowVersionResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.UpdateWorkflowVersionRequest
  */
 export class UpdateWorkflowVersionRequest extends Message<UpdateWorkflowVersionRequest> {

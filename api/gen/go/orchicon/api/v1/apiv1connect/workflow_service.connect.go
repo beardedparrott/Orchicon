@@ -68,6 +68,9 @@ const (
 	// WorkflowServiceListWorkflowVersionsProcedure is the fully-qualified name of the WorkflowService's
 	// ListWorkflowVersions RPC.
 	WorkflowServiceListWorkflowVersionsProcedure = "/orchicon.api.v1.WorkflowService/ListWorkflowVersions"
+	// WorkflowServiceCreateWorkflowVersionProcedure is the fully-qualified name of the
+	// WorkflowService's CreateWorkflowVersion RPC.
+	WorkflowServiceCreateWorkflowVersionProcedure = "/orchicon.api.v1.WorkflowService/CreateWorkflowVersion"
 	// WorkflowServiceUpdateWorkflowVersionProcedure is the fully-qualified name of the
 	// WorkflowService's UpdateWorkflowVersion RPC.
 	WorkflowServiceUpdateWorkflowVersionProcedure = "/orchicon.api.v1.WorkflowService/UpdateWorkflowVersion"
@@ -123,6 +126,11 @@ type WorkflowServiceClient interface {
 	ListWorkflows(context.Context, *connect.Request[v1.ListWorkflowsRequest]) (*connect.Response[v1.ListWorkflowsResponse], error)
 	// ListWorkflowVersions returns all versions of a Workflow, newest first.
 	ListWorkflowVersions(context.Context, *connect.Request[v1.ListWorkflowVersionsRequest]) (*connect.Response[v1.ListWorkflowVersionsResponse], error)
+	// CreateWorkflowVersion creates a new draft version of a published or
+	// deprecated workflow, copying the latest published version's steps and
+	// configuration. The new version is editable; once published it becomes
+	// immutable (docs/02 §2.4).
+	CreateWorkflowVersion(context.Context, *connect.Request[v1.CreateWorkflowVersionRequest]) (*connect.Response[v1.CreateWorkflowVersionResponse], error)
 	// UpdateWorkflowVersion saves edits to a draft version's steps (and
 	// inputs/outputs/recovery_policy_ref). Only draft versions are mutable;
 	// published versions are immutable (docs/02 §2.4). This is the "save"
@@ -208,6 +216,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("ListWorkflowVersions")),
 			connect.WithClientOptions(opts...),
 		),
+		createWorkflowVersion: connect.NewClient[v1.CreateWorkflowVersionRequest, v1.CreateWorkflowVersionResponse](
+			httpClient,
+			baseURL+WorkflowServiceCreateWorkflowVersionProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("CreateWorkflowVersion")),
+			connect.WithClientOptions(opts...),
+		),
 		updateWorkflowVersion: connect.NewClient[v1.UpdateWorkflowVersionRequest, v1.UpdateWorkflowVersionResponse](
 			httpClient,
 			baseURL+WorkflowServiceUpdateWorkflowVersionProcedure,
@@ -280,6 +294,7 @@ type workflowServiceClient struct {
 	getWorkflow           *connect.Client[v1.GetWorkflowRequest, v1.GetWorkflowResponse]
 	listWorkflows         *connect.Client[v1.ListWorkflowsRequest, v1.ListWorkflowsResponse]
 	listWorkflowVersions  *connect.Client[v1.ListWorkflowVersionsRequest, v1.ListWorkflowVersionsResponse]
+	createWorkflowVersion *connect.Client[v1.CreateWorkflowVersionRequest, v1.CreateWorkflowVersionResponse]
 	updateWorkflowVersion *connect.Client[v1.UpdateWorkflowVersionRequest, v1.UpdateWorkflowVersionResponse]
 	startWorkflow         *connect.Client[v1.StartWorkflowRequest, v1.StartWorkflowResponse]
 	abortWorkflow         *connect.Client[v1.AbortWorkflowRequest, v1.AbortWorkflowResponse]
@@ -325,6 +340,11 @@ func (c *workflowServiceClient) ListWorkflows(ctx context.Context, req *connect.
 // ListWorkflowVersions calls orchicon.api.v1.WorkflowService.ListWorkflowVersions.
 func (c *workflowServiceClient) ListWorkflowVersions(ctx context.Context, req *connect.Request[v1.ListWorkflowVersionsRequest]) (*connect.Response[v1.ListWorkflowVersionsResponse], error) {
 	return c.listWorkflowVersions.CallUnary(ctx, req)
+}
+
+// CreateWorkflowVersion calls orchicon.api.v1.WorkflowService.CreateWorkflowVersion.
+func (c *workflowServiceClient) CreateWorkflowVersion(ctx context.Context, req *connect.Request[v1.CreateWorkflowVersionRequest]) (*connect.Response[v1.CreateWorkflowVersionResponse], error) {
+	return c.createWorkflowVersion.CallUnary(ctx, req)
 }
 
 // UpdateWorkflowVersion calls orchicon.api.v1.WorkflowService.UpdateWorkflowVersion.
@@ -400,6 +420,11 @@ type WorkflowServiceHandler interface {
 	ListWorkflows(context.Context, *connect.Request[v1.ListWorkflowsRequest]) (*connect.Response[v1.ListWorkflowsResponse], error)
 	// ListWorkflowVersions returns all versions of a Workflow, newest first.
 	ListWorkflowVersions(context.Context, *connect.Request[v1.ListWorkflowVersionsRequest]) (*connect.Response[v1.ListWorkflowVersionsResponse], error)
+	// CreateWorkflowVersion creates a new draft version of a published or
+	// deprecated workflow, copying the latest published version's steps and
+	// configuration. The new version is editable; once published it becomes
+	// immutable (docs/02 §2.4).
+	CreateWorkflowVersion(context.Context, *connect.Request[v1.CreateWorkflowVersionRequest]) (*connect.Response[v1.CreateWorkflowVersionResponse], error)
 	// UpdateWorkflowVersion saves edits to a draft version's steps (and
 	// inputs/outputs/recovery_policy_ref). Only draft versions are mutable;
 	// published versions are immutable (docs/02 §2.4). This is the "save"
@@ -481,6 +506,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("ListWorkflowVersions")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceCreateWorkflowVersionHandler := connect.NewUnaryHandler(
+		WorkflowServiceCreateWorkflowVersionProcedure,
+		svc.CreateWorkflowVersion,
+		connect.WithSchema(workflowServiceMethods.ByName("CreateWorkflowVersion")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workflowServiceUpdateWorkflowVersionHandler := connect.NewUnaryHandler(
 		WorkflowServiceUpdateWorkflowVersionProcedure,
 		svc.UpdateWorkflowVersion,
@@ -557,6 +588,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceListWorkflowsHandler.ServeHTTP(w, r)
 		case WorkflowServiceListWorkflowVersionsProcedure:
 			workflowServiceListWorkflowVersionsHandler.ServeHTTP(w, r)
+		case WorkflowServiceCreateWorkflowVersionProcedure:
+			workflowServiceCreateWorkflowVersionHandler.ServeHTTP(w, r)
 		case WorkflowServiceUpdateWorkflowVersionProcedure:
 			workflowServiceUpdateWorkflowVersionHandler.ServeHTTP(w, r)
 		case WorkflowServiceStartWorkflowProcedure:
@@ -612,6 +645,10 @@ func (UnimplementedWorkflowServiceHandler) ListWorkflows(context.Context, *conne
 
 func (UnimplementedWorkflowServiceHandler) ListWorkflowVersions(context.Context, *connect.Request[v1.ListWorkflowVersionsRequest]) (*connect.Response[v1.ListWorkflowVersionsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.ListWorkflowVersions is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) CreateWorkflowVersion(context.Context, *connect.Request[v1.CreateWorkflowVersionRequest]) (*connect.Response[v1.CreateWorkflowVersionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.CreateWorkflowVersion is not implemented"))
 }
 
 func (UnimplementedWorkflowServiceHandler) UpdateWorkflowVersion(context.Context, *connect.Request[v1.UpdateWorkflowVersionRequest]) (*connect.Response[v1.UpdateWorkflowVersionResponse], error) {

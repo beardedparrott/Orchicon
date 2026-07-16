@@ -19,7 +19,7 @@ import type { WorkflowRun } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import type { WorkflowStepRun } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import type { WorkflowStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import type { WorkflowRunStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
-import type { CreateWorkflowRequest } from "@/api/gen/orchicon/api/v1/workflow_service_pb";
+import type { CreateWorkflowRequest, CreateWorkflowVersionRequest } from "@/api/gen/orchicon/api/v1/workflow_service_pb";
 import type { UpdateWorkflowVersionRequest } from "@/api/gen/orchicon/api/v1/workflow_service_pb";
 import type { PartialMessage } from "@bufbuild/protobuf";
 
@@ -98,6 +98,26 @@ export function useCreateWorkflow() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: workflowKeys.list() });
+    },
+  });
+}
+
+// useCreateWorkflowVersion creates a new draft version from the latest
+// published version of a published or deprecated workflow.
+export function useCreateWorkflowVersion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: PartialMessage<CreateWorkflowVersionRequest>) => {
+      const res = await workflowClient.createWorkflowVersion(input);
+      return {
+        workflow: res.workflow as Workflow,
+        version: res.version as WorkflowVersion,
+      };
+    },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: workflowKeys.list() });
+      qc.invalidateQueries({ queryKey: workflowKeys.detail(data.workflow.id) });
+      qc.invalidateQueries({ queryKey: workflowKeys.versions(data.workflow.id) });
     },
   });
 }

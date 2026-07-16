@@ -195,6 +195,88 @@ func (s *Service) PublishWorkflow(ctx context.Context, req *connect.Request[apiv
 	}), nil
 }
 
+// CreateWorkflowVersion creates a new draft version from the latest
+// published version of a published or deprecated workflow (docs/02 §2.4).
+// If the workflow is deprecated, it's transitioned back to draft so the
+// user can edit and republish. Published workflows keep their status; the
+// new draft version sits ahead of the published one.
+func (s *Service) CreateWorkflowVersion(ctx context.Context, req *connect.Request[apiv1.CreateWorkflowVersionRequest]) (*connect.Response[apiv1.CreateWorkflowVersionResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.WorkflowId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("workflow_id must not be empty"))
+	}
+	versionNote, err := validateTextField(req.Msg.VersionNote, maxVersionNoteLen, "version_note")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	current, err := db.GetWorkflow(ctx, ttx.Tx, tenantID, req.Msg.WorkflowId)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if current.Status != domain.WorkflowPublished && current.Status != domain.WorkflowDeprecated {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("workflow must be published or deprecated to create a new version (status=%s)", current.Status))
+	}
+
+	// Clone the latest published version's data into the new draft version.
+	latestPublished, err := db.GetLatestWorkflowVersion(ctx, ttx.Tx, tenantID, req.Msg.WorkflowId, true)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	nextVersion, err := db.NextWorkflowVersionNumber(ctx, ttx.Tx, tenantID, req.Msg.WorkflowId)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("next version: %w", err))
+	}
+	versionRow := db.WorkflowVersionRow{
+		ID:                db.NewID(),
+		TenantID:          tenantID,
+		WorkflowID:        req.Msg.WorkflowId,
+		Version:           nextVersion,
+		VersionNote:       versionNote,
+		Status:            domain.WorkflowVersionDraft,
+		Steps:             latestPublished.Steps,
+		Inputs:            latestPublished.Inputs,
+		Outputs:           latestPublished.Outputs,
+		RecoveryPolicyRef: latestPublished.RecoveryPolicyRef,
+	}
+	created, err := db.CreateWorkflowVersion(ctx, ttx.Tx, versionRow)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+
+	// If deprecated, transition the header back to draft so the editor
+	// shows the save/publish affordances.
+	updated := current
+	if current.Status == domain.WorkflowDeprecated {
+		updated, err = db.UpdateWorkflowStatus(ctx, ttx.Tx, tenantID, req.Msg.WorkflowId, current.Version, domain.WorkflowDraft)
+		if err != nil {
+			return nil, mapDBError(err)
+		}
+	}
+
+	if err := enqueueWorkflowEvent(ctx, ttx.Tx, "workflow.version_created", updated, created, db.WorkflowRunRow{}, ""); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("workflow version created", "id", updated.ID, "version", created.Version)
+	return connect.NewResponse(&apiv1.CreateWorkflowVersionResponse{
+		Workflow: workflowRowToProto(updated),
+		Version:  versionRowToProto(created),
+	}), nil
+}
+
 // DeprecateWorkflow transitions a published Workflow to deprecated
 // (docs/02 §2.4). Still runnable for in-flight runs; no new runs may
 // start.
@@ -282,11 +364,10 @@ func (s *Service) GetWorkflow(ctx context.Context, req *connect.Request[apiv1.Ge
 		return nil, mapDBError(err)
 	}
 	resp := &apiv1.GetWorkflowResponse{Workflow: workflowRowToProto(w)}
-	// Include the latest published version if one exists.
-	if w.CurrentVersion > 0 {
-		if v, err := db.GetLatestWorkflowVersion(ctx, ttx.Tx, tenantID, req.Msg.Id, true); err == nil {
-			resp.LatestVersion = versionRowToProto(v)
-		}
+	// Include the latest version (draft or published) so the frontend
+	// can always show version info and editing affordances.
+	if v, err := db.GetLatestWorkflowVersion(ctx, ttx.Tx, tenantID, req.Msg.Id, false); err == nil {
+		resp.LatestVersion = versionRowToProto(v)
 	}
 	return connect.NewResponse(resp), nil
 }
