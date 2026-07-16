@@ -51,6 +51,7 @@ function WorkItemDetailPage() {
   const [acceptanceCriteria, setAcceptanceCriteria] = useState("");
   const [priority, setPriority] = useState(0);
   const [contextWindow, setContextWindow] = useState(0);
+  const [status, setStatus] = useState(0);
   const [editProjectId, setEditProjectId] = useState("");
 
   const [depTarget, setDepTarget] = useState("");
@@ -74,9 +75,6 @@ function WorkItemDetailPage() {
   const incomingDeps = graph?.edges?.filter((e) => e.toId === id) ?? [];
   const outgoingDeps = graph?.edges?.filter((e) => e.fromId === id) ?? [];
 
-  const handleStatusChange = (newStatus: number) => {
-    updateWorkItem.mutate({ id, status: newStatus });
-  };
 
   const handleSoftDelete = () => {
     if (
@@ -150,6 +148,7 @@ function WorkItemDetailPage() {
                 setPriority(item.priority);
                 setContextWindow(item.contextWindow ?? 0);
                 setEditProjectId(item.projectId);
+                setStatus(item.status);
                 setEditing(true);
               }}
             >
@@ -178,22 +177,31 @@ function WorkItemDetailPage() {
           <CardHeader>
             <CardDescription>Status</CardDescription>
             <CardTitle className="text-base">
-              <select
-                value={item.status}
-                onChange={(e) =>
-                  handleStatusChange(Number(e.target.value))
-                }
-                className="rounded-md border bg-background px-2 py-1 text-sm"
-                disabled={updateWorkItem.isPending}
-              >
-                <option value={1}>pending</option>
-                <option value={2}>ready</option>
-                <option value={3}>assigned</option>
-                <option value={4}>running</option>
-                <option value={6}>succeeded</option>
-                <option value={7}>failed</option>
-                <option value={8}>cancelled</option>
-              </select>
+              {editing ? (
+                <select
+                  value={status}
+                  onChange={(e) => setStatus(Number(e.target.value))}
+                  className="rounded-md border bg-background px-2 py-1 text-sm"
+                >
+                  <option value={1}>pending</option>
+                  <option value={2}>ready</option>
+                  <option value={3}>assigned</option>
+                  <option value={4}>running</option>
+                  <option value={6}>succeeded</option>
+                  <option value={7}>failed</option>
+                  <option value={8}>cancelled</option>
+                </select>
+              ) : (
+                ({
+                  1: "pending",
+                  2: "ready",
+                  3: "assigned",
+                  4: "running",
+                  6: "succeeded",
+                  7: "failed",
+                  8: "cancelled",
+                } as Record<number, string>)[item.status] ?? "unknown"
+              )}
             </CardTitle>
           </CardHeader>
         </Card>
@@ -323,6 +331,7 @@ function WorkItemDetailPage() {
                   acceptanceCriteria,
                   priority,
                   contextWindow,
+                  status,
                   projectId: editProjectId,
                 },
                 { onSuccess: () => setEditing(false) },
