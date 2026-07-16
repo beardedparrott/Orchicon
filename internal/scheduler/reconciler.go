@@ -254,14 +254,14 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	if err := r.bridge.Start(ctx, exec, manifest, r); err != nil {
 		r.log.Error("adapter start failed", "execution", exec.ID, "error", err)
 		// Mark the execution as failed_to_start.
-		r.markFailedToStart(context.Background(), exec)
+		r.markFailedToStart(context.Background(), exec, err.Error())
 	}
 }
 
 // markFailedToStart transitions an execution to failed_to_start
 // (docs/03 §8: adapter unreachable mid-dispatch → failed_to_start, task
 // requeues with backoff).
-func (r *TaskReconciler) markFailedToStart(ctx context.Context, exec db.ExecutionRow) {
+func (r *TaskReconciler) markFailedToStart(ctx context.Context, exec db.ExecutionRow, errorMessage string) {
 	ttx, err := r.pool.BeginTenantTx(ctx, exec.TenantID)
 	if err != nil {
 		r.log.Error("begin tx for failed_to_start", "execution", exec.ID, "error", err)
@@ -270,8 +270,9 @@ func (r *TaskReconciler) markFailedToStart(ctx context.Context, exec db.Executio
 	defer ttx.Rollback(ctx)
 	now := time.Now().UTC()
 	_, err = db.UpdateExecution(ctx, ttx.Tx, exec.TenantID, exec.ID, exec.Version, db.UpdateExecutionFields{
-		Status:  strPtr(domain.ExecutionFailedToStart),
-		EndedAt: &now,
+		Status:       strPtr(domain.ExecutionFailedToStart),
+		EndedAt:      &now,
+		ErrorMessage: &errorMessage,
 	})
 	if err != nil {
 		r.log.Error("mark failed_to_start", "execution", exec.ID, "error", err)
@@ -396,12 +397,12 @@ func (r *TaskReconciler) OnStarted(ctx context.Context, execID string) {
 // workflow step run so downstream stages can include it as upstream
 // context. `output` may be empty for non-opencode adapters or when
 // the worker errored before producing any text.
-func (r *TaskReconciler) OnResult(ctx context.Context, execID string, succeeded bool, output string) {
+func (r *TaskReconciler) OnResult(ctx context.Context, execID string, succeeded bool, output string, errorMessage string) {
 	status := domain.ExecutionSucceeded
 	if !succeeded {
 		status = domain.ExecutionFailed
 	}
-	r.updateExecStatus(ctx, execID, status, domain.HealthTerminating)
+	r.updateExecStatus(ctx, execID, status, domain.HealthTerminating, errorMessage)
 	r.transitionWorkItemOnResult(ctx, execID, succeeded, output)
 }
 
@@ -543,9 +544,21 @@ func (r *TaskReconciler) OnHealth(ctx context.Context, execID, healthState strin
 func (r *TaskReconciler) OnStall(ctx context.Context, execID, reason string) {
 	r.log.Warn("execution stalled — triggering recovery",
 		"execution", execID, "reason", reason)
-	// Update health_state to stalled so the UI + timeline surface the
-	// detected stall.
+	// Update health_state to stalled and persist the stall reason as
+	// error_message so the UI surfaces why recovery was triggered.
 	r.OnHealth(ctx, execID, domain.HealthStalled)
+	ttx, txErr := r.pool.BeginTenantTx(ctx, "tnt_dev")
+	if txErr != nil {
+		r.log.Error("on stall: begin tx for error_message", "execution", execID, "error", txErr)
+	} else {
+		current, getErr := db.GetExecution(ctx, ttx.Tx, "tnt_dev", execID)
+		if getErr == nil {
+			_, _ = db.UpdateExecution(ctx, ttx.Tx, "tnt_dev", execID, current.Version, db.UpdateExecutionFields{
+				ErrorMessage: &reason,
+			})
+		}
+		_ = ttx.Commit(ctx)
+	}
 	if r.recovery == nil {
 		return
 	}
@@ -606,7 +619,7 @@ func (r *TaskReconciler) OnText(ctx context.Context, execID string, text string)
 	_ = ttx.Commit(ctx)
 }
 
-func (r *TaskReconciler) updateExecStatus(ctx context.Context, execID, status, health string) {
+func (r *TaskReconciler) updateExecStatus(ctx context.Context, execID, status, health string, errorMessage ...string) {
 	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {
 		r.log.Error("begin tx for status update", "execution", execID, "error", err)
@@ -623,11 +636,15 @@ func (r *TaskReconciler) updateExecStatus(ctx context.Context, execID, status, h
 		now := time.Now().UTC()
 		endedAt = &now
 	}
-	updated, err := db.UpdateExecution(ctx, ttx.Tx, "tnt_dev", execID, current.Version, db.UpdateExecutionFields{
+	fields := db.UpdateExecutionFields{
 		Status:      &status,
 		HealthState: &health,
 		EndedAt:     endedAt,
-	})
+	}
+	if len(errorMessage) > 0 && errorMessage[0] != "" {
+		fields.ErrorMessage = &errorMessage[0]
+	}
+	updated, err := db.UpdateExecution(ctx, ttx.Tx, "tnt_dev", execID, current.Version, fields)
 	if err != nil {
 		r.log.Error("update execution status", "execution", execID, "error", err)
 		return

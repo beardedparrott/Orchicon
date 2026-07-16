@@ -263,6 +263,7 @@ type WorkerExecution struct {
 	WorkflowRunId  string                 `protobuf:"bytes,17,opt,name=workflow_run_id,json=workflowRunId,proto3" json:"workflow_run_id,omitempty"`
 	WorkflowStepId string                 `protobuf:"bytes,18,opt,name=workflow_step_id,json=workflowStepId,proto3" json:"workflow_step_id,omitempty"`
 	WorkflowName   string                 `protobuf:"bytes,19,opt,name=workflow_name,json=workflowName,proto3" json:"workflow_name,omitempty"`
+	ErrorMessage   string                 `protobuf:"bytes,20,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"` // human-readable failure reason (docs/02 §2.7)
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -426,6 +427,13 @@ func (x *WorkerExecution) GetWorkflowStepId() string {
 func (x *WorkerExecution) GetWorkflowName() string {
 	if x != nil {
 		return x.WorkflowName
+	}
+	return ""
+}
+
+func (x *WorkerExecution) GetErrorMessage() string {
+	if x != nil {
+		return x.ErrorMessage
 	}
 	return ""
 }
@@ -1619,7 +1627,7 @@ var File_orchicon_api_v1_execution_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"\n" +
-	"\x1forchicon/api/v1/execution.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xdb\x05\n" +
+	"\x1forchicon/api/v1/execution.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x80\x06\n" +
 	"\x0fWorkerExecution\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -1645,7 +1653,8 @@ const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"\aversion\x18\x10 \x01(\x05R\aversion\x12&\n" +
 	"\x0fworkflow_run_id\x18\x11 \x01(\tR\rworkflowRunId\x12(\n" +
 	"\x10workflow_step_id\x18\x12 \x01(\tR\x0eworkflowStepId\x12#\n" +
-	"\rworkflow_name\x18\x13 \x01(\tR\fworkflowName\"\x86\x02\n" +
+	"\rworkflow_name\x18\x13 \x01(\tR\fworkflowName\x12#\n" +
+	"\rerror_message\x18\x14 \x01(\tR\ferrorMessage\"\x86\x02\n" +
 	"\x0eExecutionEvent\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12!\n" +
 	"\fexecution_id\x18\x02 \x01(\tR\vexecutionId\x12\x1b\n" +
