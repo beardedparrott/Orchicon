@@ -171,7 +171,7 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 			&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
 			&w.Description, &w.AcceptanceCriteria, &w.Status, &w.AssignedWorkerRef,
 			&w.WorkflowID, &w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
-			&w.Version, &w.CreatedAt, &w.UpdatedAt,
+			&w.PromptContext, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan work item: %w", err)
 		}
