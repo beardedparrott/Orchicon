@@ -25,6 +25,7 @@ import { X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import {
+  RECOVERY_STRATEGY_LABELS,
   STEP_KIND,
   STEP_KIND_ICONS,
   STEP_KIND_LABELS,
@@ -71,6 +72,10 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
   const ctxRef = (config.work_item_id as string) || (config.project_id as string) || "";
   const ctxShort = ctxRef
     ? ctxRef.slice(0, 14) + (ctxRef.length > 14 ? "…" : "")
+    : "";
+  const recoveryStrategy = config.strategy as string | undefined;
+  const recoveryLabel = recoveryStrategy
+    ? RECOVERY_STRATEGY_LABELS[recoveryStrategy] ?? recoveryStrategy
     : "";
   const hasBinding = kind === STEP_KIND.TASK ? !!data.ref : !!ctxRef;
   return (
@@ -166,6 +171,11 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
           title={ctxRef}
         >
           {ctxShort}
+        </div>
+      )}
+      {kind === STEP_KIND.RECOVER && recoveryLabel && (
+        <div className="mt-1 flex items-center gap-1 truncate rounded px-1 py-0.5 text-[10px] font-medium text-rose-600 dark:text-rose-300">
+          <span>{recoveryLabel}</span>
         </div>
       )}
       {data.gatePolicyRef && (

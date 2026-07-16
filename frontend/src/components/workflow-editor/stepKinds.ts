@@ -115,6 +115,16 @@ export const WORKITEM_ICON: LucideIcon = FileText;
 export const PROJECT_ICON: LucideIcon = FileText;
 export const POLICY_ICON: LucideIcon = ShieldCheck;
 
+// Human-readable labels for recovery strategies tracked in config.strategy.
+// Used by the StepNode and PropertiesPanel to show what type of recovery
+// action the step will perform.
+export const RECOVERY_STRATEGY_LABELS: Record<string, string> = {
+  summarize_restart: "Summarize + restart",
+  stop: "Stop",
+  human_escalation: "Human escalation",
+  retry_n: "Retry N",
+};
+
 // StepData is the per-node payload kept in React Flow's nodes state.
 // Fields are persisted into StepWire (workflow_versions.steps JSON) by
 // canvasToSteps. Unknown fields flow through `config` as JSON.
