@@ -125,15 +125,12 @@ function WorkerDetailPage() {
   }
 
   const { worker } = data;
-  const isDraft = worker.status === 1;
   const isPublished = worker.status === 2;
   const isDeprecated = worker.status === 3;
   const isRetired = worker.status === 4;
 
-  const draftVersion = isDraft
-    ? versions?.find((v) => v.status === 1)
-    : undefined;
-  const isEditingEnabled = isDraft && editing && draftVersion;
+  const draftVersion = versions?.find((v) => v.status === 1);
+  const isEditingEnabled = draftVersion && editing;
 
   return (
     <div className="space-y-6">
@@ -148,42 +145,42 @@ function WorkerDetailPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          {isDraft && latestVersion && !editing && (
+          {draftVersion && !editing && (
             <Button onClick={() => setEditing(true)}>Edit</Button>
           )}
-          {isDraft && latestVersion && (
+          {draftVersion && (
             <Button
               onClick={() => publishVersion.mutateAsync(id)}
               disabled={publishVersion.isPending}
             >
               {publishVersion.isPending
                 ? "Publishing…"
-                : "Publish v" + (worker.currentVersion + 1)}
+                : "Publish v" + (draftVersion.version)}
+            </Button>
+          )}
+          {isPublished && !draftVersion && (
+            <Button
+              onClick={() =>
+                createVersion.mutate(
+                  { workerId: id },
+                  {
+                    onSuccess: () => setEditing(true),
+                  },
+                )
+              }
+              disabled={createVersion.isPending}
+            >
+              {createVersion.isPending ? "Creating…" : "New version"}
             </Button>
           )}
           {isPublished && (
-            <>
-              <Button
-                onClick={() =>
-                  createVersion.mutate(
-                    { workerId: id },
-                    {
-                      onSuccess: () => setEditing(true),
-                    },
-                  )
-                }
-                disabled={createVersion.isPending}
-              >
-                {createVersion.isPending ? "Creating…" : "New version"}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => deprecateWorker.mutateAsync(id)}
-                disabled={deprecateWorker.isPending}
-              >
-                {deprecateWorker.isPending ? "Deprecating…" : "Deprecate"}
-              </Button>
-            </>
+            <Button
+              variant="outline"
+              onClick={() => deprecateWorker.mutateAsync(id)}
+              disabled={deprecateWorker.isPending}
+            >
+              {deprecateWorker.isPending ? "Deprecating…" : "Deprecate"}
+            </Button>
           )}
           {isDeprecated && (
             <Button
