@@ -306,23 +306,53 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
             <p className="text-sm text-muted-foreground">No step runs yet.</p>
           ) : (
             <div className="space-y-2">
-              {(stepRuns ?? []).map((sr) => (
-                <div
-                  key={sr.id}
-                  className="flex items-center gap-3 rounded-md border p-2 text-sm"
-                >
-                  <StepStatusPill status={sr.status} />
-                  <span className="font-medium">{sr.stepName || sr.stepId}</span>
-                  <span className="text-xs text-muted-foreground">
-                    {STEP_KIND_LABELS[sr.stepKind] ?? "step"}
-                  </span>
-                  {sr.workerExecutionId && (
-                    <span className="font-mono text-xs text-muted-foreground">
-                      exec: {sr.workerExecutionId.slice(0, 12)}…
+              {(stepRuns ?? []).map((sr) => {
+                // Step rows that already have a worker execution
+                // become buttons — click through to the live execution
+                // session pane (the user expects this in the "Workflows
+                // → click execution → see live chat" flow).
+                // Rows without an execution yet (still waiting for the
+                // task reconciler to dispatch) stay non-interactive so
+                // they don't look clickable when they aren't.
+                const clickable = !!sr.workerExecutionId;
+                const Row = clickable ? "button" : "div";
+                return (
+                  <Row
+                    key={sr.id}
+                    type={clickable ? "button" : undefined}
+                    className={cn(
+                      "flex w-full items-center gap-3 rounded-md border p-2 text-left text-sm",
+                      clickable &&
+                        "hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    )}
+                    onClick={
+                      clickable
+                        ? () =>
+                            navigate({
+                              to: "/executions/$id",
+                              params: { id: sr.workerExecutionId! },
+                            })
+                        : undefined
+                    }
+                    aria-label={
+                      clickable
+                        ? `Open execution ${sr.workerExecutionId}`
+                        : undefined
+                    }
+                  >
+                    <StepStatusPill status={sr.status} />
+                    <span className="font-medium">{sr.stepName || sr.stepId}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {STEP_KIND_LABELS[sr.stepKind] ?? "step"}
                     </span>
-                  )}
-                </div>
-              ))}
+                    {sr.workerExecutionId && (
+                      <span className="font-mono text-xs text-muted-foreground">
+                        exec: {sr.workerExecutionId.slice(0, 12)}…
+                      </span>
+                    )}
+                  </Row>
+                );
+              })}
             </div>
           )}
         </CardContent>

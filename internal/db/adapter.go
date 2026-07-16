@@ -195,12 +195,29 @@ func ListReadyAdaptersByKind(ctx context.Context, tx pgx.Tx, tenantID, kind stri
 // CountActiveExecutionsForAdapter returns the number of in-flight
 // (non-terminal) executions for an adapter. Used for capacity checks
 // (docs/03 §4.2: prefer adapters with free capacity).
+//
+// "Active" is the negation of "terminal". The terminal states are the
+// end-of-life outcomes — TERMINATED, FAILED_TO_START, SUCCEEDED,
+// FAILED, and UNHEALTHY (a permanently-broken adapter is also no
+// longer accepting new work, so it shouldn't count against the active
+// budget). Only DISPATCHING / RUNNING / HEALTHY / STALLED /
+// TERMINATING are actively using a concurrency slot.
+//
+// Earlier this query only excluded the three outcomes that
+// `updateExecStatus` writes most often, which meant old
+// `succeeded` and `failed` rows from previous runs accumulated
+// against an adapter's count and made it look permanently at
+// capacity even after every in-flight run had finished. That bug
+// surfaced as "no suitable adapter for task" warnings on the
+// recovery retry path.
 func CountActiveExecutionsForAdapter(ctx context.Context, tx pgx.Tx, tenantID, adapterID string) (int, error) {
 	var count int
 	err := tx.QueryRow(ctx,
 		`SELECT count(*) FROM worker_executions
 		WHERE tenant_id = $1 AND adapter_id = $2
-		  AND status NOT IN ('terminated', 'failed_to_start', 'unhealthy')`,
+		  AND status NOT IN (
+		    'terminated', 'failed_to_start', 'succeeded', 'failed', 'unhealthy'
+		  )`,
 		tenantID, adapterID,
 	).Scan(&count)
 	if err != nil {
