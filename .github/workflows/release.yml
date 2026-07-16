@@ -117,9 +117,54 @@ jobs:
           merge-multiple: true
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.version || github.ref_name }}
-          name: ${{ inputs.version || github.ref_name }}
-          generate_release_notes: true
-          files: artifacts/*
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          VERSION="${{ inputs.version || github.ref_name }}"
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not determine version tag (no input, no ref_name)"
+            exit 1
+          fi
+          # Ensure the tag exists locally and points at HEAD — the
+          # auto-release workflow creates the tag in its own job, but
+          # manual dispatches (workflow_dispatch) don't always have
+          # fetch-tags: true for tags created in a separate run. Pull
+          # the tag from origin if we don't have it, or recreate it
+          # pointing at the merge commit.
+          if ! git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
+            echo "Tag ${VERSION} not found locally; fetching from origin"
+            git fetch --tags origin
+          fi
+          if ! git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
+            echo "::error::Tag ${VERSION} does not exist on origin either"
+            exit 1
+          fi
+          # Build a list of asset files. softprops/action-gh-release
+          # had a couple of transient API failures under load (one
+          # step returned in <1s with no output — typically a 422
+          # from a stale release-name collision), so we use
+          # `gh release create` directly: it's the same primitive the
+          # action calls, but with explicit retry and clearer errors.
+          ASSETS=$(find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort)
+          if [ -z "$ASSETS" ]; then
+            echo "::error::No release assets found under artifacts/"
+            exit 1
+          fi
+          echo "Uploading ${ASSETS} to release ${VERSION}"
+          # Delete any pre-existing release for this tag (stale partial
+          # releases from earlier failed runs would otherwise 422 the
+          # create call).
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            echo "Release ${VERSION} already exists — deleting before re-create"
+            gh release delete "${VERSION}" --yes
+          fi
+          # Create the release. The `--generate-notes` flag mirrors the
+          # previous action's behavior (GitHub auto-generates the body
+          # from PR titles + commit messages since the last release).
+          gh release create "${VERSION}" \
+            --title "${VERSION}" \
+            --generate-notes \
+            --draft=false \
+            $ASSETS
+          echo "Release ${VERSION} created with $(echo "$ASSETS" | wc -l) assets"
