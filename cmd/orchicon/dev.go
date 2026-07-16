@@ -32,7 +32,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -211,11 +210,7 @@ func devStartParent() int {
 	cmd.Env = append(os.Environ(), devEnvChild+"=1")
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	if runtime.GOOS != "windows" {
-		// Separate process group so Ctrl-C in the parent does not reach
-		// the child. The child only responds to SIGTERM (via dev stop).
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	}
+	setProcAttrBackground(cmd)
 
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "✗ Failed to start server process: %v\n", err)
