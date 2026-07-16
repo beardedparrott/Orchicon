@@ -414,7 +414,17 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
 
 // --- Run step node (overlays step-run status on the canvas) ---
 function RunStepNode({ data }: { data: { kind: number; name: string; ref: string; runStatus: number } }) {
+  // data.runStatus is a STEP_RUN_STATUS_* (WorkflowStepRunRow.status),
+  // not a WorkflowRunStatus. They happen to share the same integer
+  // values for some entries but NOT for the ones that matter:
+  //   step run 4 = succeeded, 5 = failed
+  //   workflow run 4 = failed, 3 = completed
+  // Using RUN_STATUS_LABELS here made every succeeded step render as
+  // "failed" — the green pill said one thing, the label said another.
+  // Always use STEP_RUN_STATUS_LABELS so the color and label agree.
   const statusColor = STEP_RUN_STATUS_COLORS[data.runStatus] ?? "bg-gray-200";
+  const statusLabel =
+    STEP_RUN_STATUS_LABELS[data.runStatus] ?? "pending";
   return (
     <div
       className={cn(
@@ -428,7 +438,7 @@ function RunStepNode({ data }: { data: { kind: number; name: string; ref: string
       </div>
       <div className="truncate text-sm font-semibold">{data.name}</div>
       <div className={cn("mt-1 inline-block rounded-full px-2 py-0.5 text-[10px] font-medium", statusColor)}>
-        {RUN_STATUS_LABELS[data.runStatus] ?? "pending"}
+        {statusLabel}
       </div>
       <Handle type="source" position={Position.Right} />
     </div>
