@@ -141,9 +141,11 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   return (
     <div className="relative space-y-2">
       {selectedModel ? (
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm font-medium">Selected model:</span>
-          <span className="text-sm font-mono text-muted-foreground">{selectedModel.modelRef}</span>
+          <span className="min-w-0 flex-1 truncate text-sm font-mono text-muted-foreground">
+            {selectedModel.modelRef}
+          </span>
           <Button
             variant="ghost"
             size="sm"
