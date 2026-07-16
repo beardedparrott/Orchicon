@@ -59,14 +59,19 @@ function ExecutionsPage() {
                 <CardContent className="flex items-center justify-between p-4">
                   <div className="flex items-center gap-3">
                     <ExecStatusBadge status={e.status} />
-                    <div>
-                      <p className="text-sm font-medium">
-                        {e.workerId} v{e.workerVersion}
-                      </p>
-                      <p className="text-xs text-muted-foreground font-mono">
-                        {e.id}
-                      </p>
-                    </div>
+                      <div>
+                        <p className="text-sm font-medium">
+                          {e.workerId} v{e.workerVersion}
+                        </p>
+                        <p className="text-xs text-muted-foreground font-mono">
+                          {e.id}
+                        </p>
+                        {e.workflowRunId && (
+                          <p className="text-xs text-muted-foreground/70 mt-0.5 truncate max-w-[200px]">
+                            workflow run: {e.workflowRunId.slice(0, 18)}…
+                          </p>
+                        )}
+                      </div>
                   </div>
                   <div className="flex items-center gap-3 text-xs text-muted-foreground">
                     <HealthBadge health={e.healthState} />

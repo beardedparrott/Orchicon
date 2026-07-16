@@ -36,6 +36,8 @@ message WorkerExecution {
   string checkpoint_ref = 14;
   string recovery_id = 15;
   int32 version = 16; // optimistic concurrency (docs/09 §5)
+  string workflow_run_id = 17;
+  string workflow_step_id = 18;
 }
 
 // ExecutionStatus — lifecycle of a WorkerExecution

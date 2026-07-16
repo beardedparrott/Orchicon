@@ -237,25 +237,27 @@ func (ExecutionEventType) EnumDescriptor() ([]byte, []int) {
 // a specific RuntimeAdapter instance (docs/02 §2.7, docs/09 §3.3).
 // Created by the scheduler at dispatch; owns the adapter session.
 type WorkerExecution struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	TenantId      string                 `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
-	ProjectId     string                 `protobuf:"bytes,3,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
-	TaskId        string                 `protobuf:"bytes,4,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	WorkerId      string                 `protobuf:"bytes,5,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
-	WorkerVersion int32                  `protobuf:"varint,6,opt,name=worker_version,json=workerVersion,proto3" json:"worker_version,omitempty"`
-	AdapterId     string                 `protobuf:"bytes,7,opt,name=adapter_id,json=adapterId,proto3" json:"adapter_id,omitempty"`
-	Status        ExecutionStatus        `protobuf:"varint,8,opt,name=status,proto3,enum=orchicon.api.v1.ExecutionStatus" json:"status,omitempty"`
-	HealthState   HealthState            `protobuf:"varint,9,opt,name=health_state,json=healthState,proto3,enum=orchicon.api.v1.HealthState" json:"health_state,omitempty"`
-	StartedAt     *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
-	EndedAt       *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`
-	TokenUsage    int64                  `protobuf:"varint,12,opt,name=token_usage,json=tokenUsage,proto3" json:"token_usage,omitempty"`
-	CostUsd       float64                `protobuf:"fixed64,13,opt,name=cost_usd,json=costUsd,proto3" json:"cost_usd,omitempty"`
-	CheckpointRef string                 `protobuf:"bytes,14,opt,name=checkpoint_ref,json=checkpointRef,proto3" json:"checkpoint_ref,omitempty"`
-	RecoveryId    string                 `protobuf:"bytes,15,opt,name=recovery_id,json=recoveryId,proto3" json:"recovery_id,omitempty"`
-	Version       int32                  `protobuf:"varint,16,opt,name=version,proto3" json:"version,omitempty"` // optimistic concurrency (docs/09 §5)
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Id             string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	TenantId       string                 `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	ProjectId      string                 `protobuf:"bytes,3,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	TaskId         string                 `protobuf:"bytes,4,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	WorkerId       string                 `protobuf:"bytes,5,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	WorkerVersion  int32                  `protobuf:"varint,6,opt,name=worker_version,json=workerVersion,proto3" json:"worker_version,omitempty"`
+	AdapterId      string                 `protobuf:"bytes,7,opt,name=adapter_id,json=adapterId,proto3" json:"adapter_id,omitempty"`
+	Status         ExecutionStatus        `protobuf:"varint,8,opt,name=status,proto3,enum=orchicon.api.v1.ExecutionStatus" json:"status,omitempty"`
+	HealthState    HealthState            `protobuf:"varint,9,opt,name=health_state,json=healthState,proto3,enum=orchicon.api.v1.HealthState" json:"health_state,omitempty"`
+	StartedAt      *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	EndedAt        *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`
+	TokenUsage     int64                  `protobuf:"varint,12,opt,name=token_usage,json=tokenUsage,proto3" json:"token_usage,omitempty"`
+	CostUsd        float64                `protobuf:"fixed64,13,opt,name=cost_usd,json=costUsd,proto3" json:"cost_usd,omitempty"`
+	CheckpointRef  string                 `protobuf:"bytes,14,opt,name=checkpoint_ref,json=checkpointRef,proto3" json:"checkpoint_ref,omitempty"`
+	RecoveryId     string                 `protobuf:"bytes,15,opt,name=recovery_id,json=recoveryId,proto3" json:"recovery_id,omitempty"`
+	Version        int32                  `protobuf:"varint,16,opt,name=version,proto3" json:"version,omitempty"` // optimistic concurrency (docs/09 §5)
+	WorkflowRunId  string                 `protobuf:"bytes,17,opt,name=workflow_run_id,json=workflowRunId,proto3" json:"workflow_run_id,omitempty"`
+	WorkflowStepId string                 `protobuf:"bytes,18,opt,name=workflow_step_id,json=workflowStepId,proto3" json:"workflow_step_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *WorkerExecution) Reset() {
@@ -398,6 +400,20 @@ func (x *WorkerExecution) GetVersion() int32 {
 		return x.Version
 	}
 	return 0
+}
+
+func (x *WorkerExecution) GetWorkflowRunId() string {
+	if x != nil {
+		return x.WorkflowRunId
+	}
+	return ""
+}
+
+func (x *WorkerExecution) GetWorkflowStepId() string {
+	if x != nil {
+		return x.WorkflowStepId
+	}
+	return ""
 }
 
 // ExecutionEvent is a single telemetry/control/health signal from an
@@ -1501,7 +1517,7 @@ var File_orchicon_api_v1_execution_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"\n" +
-	"\x1forchicon/api/v1/execution.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe4\x04\n" +
+	"\x1forchicon/api/v1/execution.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb6\x05\n" +
 	"\x0fWorkerExecution\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -1524,7 +1540,9 @@ const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"\x0echeckpoint_ref\x18\x0e \x01(\tR\rcheckpointRef\x12\x1f\n" +
 	"\vrecovery_id\x18\x0f \x01(\tR\n" +
 	"recoveryId\x12\x18\n" +
-	"\aversion\x18\x10 \x01(\x05R\aversion\"\x86\x02\n" +
+	"\aversion\x18\x10 \x01(\x05R\aversion\x12&\n" +
+	"\x0fworkflow_run_id\x18\x11 \x01(\tR\rworkflowRunId\x12(\n" +
+	"\x10workflow_step_id\x18\x12 \x01(\tR\x0eworkflowStepId\"\x86\x02\n" +
 	"\x0eExecutionEvent\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12!\n" +
 	"\fexecution_id\x18\x02 \x01(\tR\vexecutionId\x12\x1b\n" +

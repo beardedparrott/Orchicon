@@ -47,6 +47,12 @@ type ExecutionCallbacks interface {
 	// tripped: stalled:no_progress | stalled:no_file_progress |
 	// stalled:repetition:<sig>). The receiver triggers recovery.
 	OnStall(ctx context.Context, execID, reason string)
+	// OnToolCall notifies the runtime that the worker invoked a tool.
+	// Published as a tool_call execution event for the live session pane.
+	OnToolCall(ctx context.Context, execID, toolName string, input, output []byte)
+	// OnText notifies the runtime that the worker produced text output.
+	// Published as a telemetry execution event for the live session pane.
+	OnText(ctx context.Context, execID string, text string)
 }
 
 // AdapterBridge is the control-plane side of the adapter contract. It

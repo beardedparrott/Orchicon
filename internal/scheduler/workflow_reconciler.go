@@ -512,6 +512,8 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			assignFields := db.UpdateWorkItemFields{
 				AssignedWorkerRef: &workerRef,
 				WorkflowID:        &wfID,
+				WorkflowRunID:     &run.ID,
+				WorkflowStepID:    &sr.StepID,
 				Status:            strPtr(domain.WorkItemReady),
 			}
 			if pcJSON != nil {

@@ -28,6 +28,8 @@ type WorkItemRow struct {
 	Status             string
 	AssignedWorkerRef  []byte // jsonb: {worker_id, version}
 	WorkflowID         *string
+	WorkflowRunID      string
+	WorkflowStepID     string
 	Priority           int
 	Budgets            []byte // jsonb
 	ContextWindow      int
@@ -58,20 +60,24 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 	const q = `INSERT INTO work_items
 		(id, tenant_id, project_id, parent_id, kind, title, description,
 		 acceptance_criteria, status, assigned_worker_ref, workflow_id,
+		 workflow_run_id, workflow_step_id,
 		 priority, budgets, context_window, results, prompt_context)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
 			acceptance_criteria, status, assigned_worker_ref, workflow_id,
+			workflow_run_id, workflow_step_id,
 			priority, budgets, context_window, results, prompt_context, version, created_at, updated_at`
 	row := w
 	err := tx.QueryRow(ctx, q,
 		w.ID, w.TenantID, w.ProjectID, w.ParentID, w.Kind, w.Title, w.Description,
 		w.AcceptanceCriteria, w.Status, w.AssignedWorkerRef, w.WorkflowID,
+		w.WorkflowRunID, w.WorkflowStepID,
 		w.Priority, w.Budgets, w.ContextWindow, w.Results, w.PromptContext,
 	).Scan(
 		&row.ID, &row.TenantID, &row.ProjectID, &row.ParentID, &row.Kind, &row.Title,
 		&row.Description, &row.AcceptanceCriteria, &row.Status, &row.AssignedWorkerRef,
-		&row.WorkflowID, &row.Priority, &row.Budgets, &row.ContextWindow, &row.Results,
+		&row.WorkflowID, &row.WorkflowRunID, &row.WorkflowStepID,
+		&row.Priority, &row.Budgets, &row.ContextWindow, &row.Results,
 		&row.PromptContext, &row.Version, &row.CreatedAt, &row.UpdatedAt,
 	)
 	if err != nil {
@@ -84,13 +90,15 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 func GetWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkItemRow, error) {
 	const q = `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
 		acceptance_criteria, status, assigned_worker_ref, workflow_id,
+		workflow_run_id, workflow_step_id,
 		priority, budgets, context_window, results, prompt_context, version, created_at, updated_at
 		FROM work_items WHERE id = $1 AND tenant_id = $2`
 	var w WorkItemRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
 		&w.Description, &w.AcceptanceCriteria, &w.Status, &w.AssignedWorkerRef,
-		&w.WorkflowID, &w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
+		&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
+		&w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
 		&w.PromptContext, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -124,6 +132,7 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 	}
 	q := `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
 		acceptance_criteria, status, assigned_worker_ref, workflow_id,
+		workflow_run_id, workflow_step_id,
 		priority, budgets, context_window, results, prompt_context, version, created_at, updated_at
 		FROM work_items
 		WHERE tenant_id = $1 AND project_id = $2 AND ($3 = '' OR id > $3)`
@@ -170,7 +179,8 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 		if err := rows.Scan(
 			&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
 			&w.Description, &w.AcceptanceCriteria, &w.Status, &w.AssignedWorkerRef,
-			&w.WorkflowID, &w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
+			&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
+			&w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
 			&w.PromptContext, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan work item: %w", err)
@@ -205,6 +215,11 @@ type UpdateWorkItemFields struct {
 	// writes _output (raw worker text) and _summary (extracted
 	// summary) here on terminal state (PR B).
 	Results *[]byte
+	// WorkflowRunID and WorkflowStepID track which workflow run + step
+	// dispatched this work item. Set by the WorkflowReconciler and
+	// propagated to the WorkerExecution by the TaskReconciler.
+	WorkflowRunID  *string
+	WorkflowStepID *string
 }
 
 // UpdateWorkItem applies a partial update with optimistic concurrency.
@@ -274,15 +289,27 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 		args = append(args, *f.Results)
 		setIdx++
 	}
+	if f.WorkflowRunID != nil {
+		q += fmt.Sprintf(`, workflow_run_id = $%d`, setIdx)
+		args = append(args, *f.WorkflowRunID)
+		setIdx++
+	}
+	if f.WorkflowStepID != nil {
+		q += fmt.Sprintf(`, workflow_step_id = $%d`, setIdx)
+		args = append(args, *f.WorkflowStepID)
+		setIdx++
+	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
 		acceptance_criteria, status, assigned_worker_ref, workflow_id,
+		workflow_run_id, workflow_step_id,
 		priority, budgets, context_window, results, prompt_context, version, created_at, updated_at`
 	var w WorkItemRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
 		&w.Description, &w.AcceptanceCriteria, &w.Status, &w.AssignedWorkerRef,
-		&w.WorkflowID, &w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
+		&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
+		&w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
 		&w.PromptContext, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
