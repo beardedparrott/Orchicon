@@ -251,12 +251,17 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, 
 	case "text":
 		// Text part: the model's response text. PR B: append to the
 		// accumulator so the TaskReconciler can extract the
-		// ORCHICON WORKER SUMMARY block on completion.
+		// ORCHICON WORKER SUMMARY block on completion. Also publish
+		// each text chunk live so the runtime session pane shows
+		// real-time streaming output.
 		text, _ := part["text"].(string)
 		if output != nil && text != "" {
 			output.WriteString(text)
 		}
-		a.log.Info("opencode prompt response", "execution", execID, "text_len", len(text))
+		if text != "" && callbacks.OnText != nil {
+			callbacks.OnText(ctx, execID, text)
+		}
+		a.log.Debug("opencode text", "execution", execID, "text_len", len(text))
 	case "tool_call":
 		toolName, _ := part["tool"].(string)
 		a.log.Info("opencode tool call", "execution", execID, "tool", toolName)

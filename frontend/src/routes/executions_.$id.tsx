@@ -13,6 +13,7 @@ import {
   useApproveToolCall,
 } from "@/api/executions";
 import { executionKeys } from "@/api/executions";
+import { useGetWorkItem } from "@/api/workItems";
 import { RuntimeSessionPane } from "@/components/executions/RuntimeSessionPane";
 import { Button } from "@/components/ui/button";
 import {
@@ -39,6 +40,7 @@ function ExecutionDetailPage() {
   const qc = useQueryClient();
 
   const { data: exec, isLoading, error } = useGetExecution(id);
+  const { data: workItem } = useGetWorkItem(exec?.taskId ?? "");
   const pauseExec = usePauseExecution();
   const resumeExec = useResumeExecution();
   const cancelExec = useCancelExecution();
@@ -137,74 +139,74 @@ function ExecutionDetailPage() {
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
         <Card>
-          <CardHeader>
-            <CardDescription>Status</CardDescription>
-            <CardTitle className="text-base">
+          <CardHeader className="p-3">
+            <CardDescription className="text-[11px]">Status</CardDescription>
+            <CardTitle className="text-sm truncate">
               <ExecStatusLabel status={exec.status} />
             </CardTitle>
           </CardHeader>
         </Card>
         <Card>
-          <CardHeader>
-            <CardDescription>Health</CardDescription>
-            <CardTitle className="text-base">
+          <CardHeader className="p-3">
+            <CardDescription className="text-[11px]">Health</CardDescription>
+            <CardTitle className="text-sm truncate">
               <HealthLabel health={exec.healthState} />
             </CardTitle>
           </CardHeader>
         </Card>
         <Card>
-          <CardHeader>
-            <CardDescription>Token usage</CardDescription>
-            <CardTitle className="text-base">{Number(exec.tokenUsage)}</CardTitle>
+          <CardHeader className="p-3">
+            <CardDescription className="text-[11px]">Token usage</CardDescription>
+            <CardTitle className="text-sm">{Number(exec.tokenUsage)}</CardTitle>
           </CardHeader>
         </Card>
         <Card>
-          <CardHeader>
-            <CardDescription>Cost (USD)</CardDescription>
-            <CardTitle className="text-base">${exec.costUsd.toFixed(4)}</CardTitle>
+          <CardHeader className="p-3">
+            <CardDescription className="text-[11px]">Cost (USD)</CardDescription>
+            <CardTitle className="text-sm">${exec.costUsd.toFixed(4)}</CardTitle>
           </CardHeader>
         </Card>
       </div>
 
       {/* Worker + adapter + workflow info */}
       <Card>
-        <CardHeader>
-          <CardTitle>Execution context</CardTitle>
+        <CardHeader className="p-3">
+          <CardTitle className="text-sm">Execution context</CardTitle>
         </CardHeader>
-        <CardContent>
-          <div className="grid gap-4 md:grid-cols-4 text-sm">
-            <div>
-              <span className="text-xs font-medium uppercase text-muted-foreground">
+        <CardContent className="p-3 pt-0">
+          <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4 text-xs">
+            <div className="min-w-0">
+              <span className="text-[10px] font-semibold uppercase text-muted-foreground">
                 Worker
               </span>
-              <p className="font-mono text-xs">{exec.workerId}</p>
-              <p className="text-xs text-muted-foreground">v{exec.workerVersion}</p>
+              <p className="font-mono truncate">{exec.workerId}</p>
+              <p className="text-muted-foreground">v{exec.workerVersion}</p>
             </div>
-            <div>
-              <span className="text-xs font-medium uppercase text-muted-foreground">
+            <div className="min-w-0">
+              <span className="text-[10px] font-semibold uppercase text-muted-foreground">
                 Adapter
               </span>
-              <p className="font-mono text-xs">{exec.adapterId || "—"}</p>
+              <p className="font-mono truncate">{exec.adapterId || "—"}</p>
             </div>
-            <div>
-              <span className="text-xs font-medium uppercase text-muted-foreground">
+            <div className="min-w-0">
+              <span className="text-[10px] font-semibold uppercase text-muted-foreground">
                 Task
               </span>
-              <p className="font-mono text-xs">{exec.taskId}</p>
+              <p className="font-mono truncate">{exec.taskId}</p>
             </div>
-            <div>
-              <span className="text-xs font-medium uppercase text-muted-foreground">
+            <div className="min-w-0">
+              <span className="text-[10px] font-semibold uppercase text-muted-foreground">
                 Workflow
               </span>
               {exec.workflowRunId ? (
                 <>
-                  <p className="font-mono text-xs">{exec.workflowRunId.slice(0, 18)}…</p>
-                  <p className="text-xs text-muted-foreground">step: {exec.workflowStepId ? exec.workflowStepId.slice(0, 14) + "…" : "—"}</p>
+                  <p className="font-mono truncate">{exec.workflowName || exec.workflowRunId}</p>
+                  {exec.workflowStepId && <p className="text-muted-foreground truncate">step: {exec.workflowStepId}</p>}
                 </>
               ) : (
-                <p className="text-xs text-muted-foreground">—</p>
+                <p className="text-muted-foreground">—</p>
               )}
             </div>
           </div>
@@ -212,7 +214,7 @@ function ExecutionDetailPage() {
       </Card>
 
       {/* Runtime session pane — live model output + tool calls */}
-      <RuntimeSessionPane events={events} />
+      <RuntimeSessionPane events={events} prompt={workItem?.promptContext} />
 
       {/* Tier 2 pending approval requests (docs/05 §7.1) */}
       {pendingApprovals && pendingApprovals.length > 0 && (
@@ -387,8 +389,14 @@ function ExecStatusLabel({ status }: { status: number }) {
     6: "terminating",
     7: "terminated",
     8: "failed_to_start",
+    9: "succeeded",
+    10: "failed",
   };
-  return <span className="capitalize">{labels[status] ?? "unknown"}</span>;
+  const colors: Record<number, string> = {
+    9: "text-emerald-600 font-semibold",
+    10: "text-red-600 font-semibold",
+  };
+  return <span className={colors[status] ?? ""}>{labels[status] ?? "unknown"}</span>;
 }
 
 function HealthLabel({ health }: { health: number }) {

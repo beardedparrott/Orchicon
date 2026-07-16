@@ -37,7 +37,7 @@ const (
 
 // ExecutionStatus — lifecycle of a WorkerExecution
 // (docs/02 §2.7, docs/03 §6):
-// dispatching → running → healthy | stalled | unhealthy → terminating → terminated
+// dispatching → running → healthy | stalled | unhealthy → terminating → succeeded | failed
 type ExecutionStatus int32
 
 const (
@@ -50,20 +50,24 @@ const (
 	ExecutionStatus_EXECUTION_STATUS_TERMINATING     ExecutionStatus = 6
 	ExecutionStatus_EXECUTION_STATUS_TERMINATED      ExecutionStatus = 7
 	ExecutionStatus_EXECUTION_STATUS_FAILED_TO_START ExecutionStatus = 8
+	ExecutionStatus_EXECUTION_STATUS_SUCCEEDED       ExecutionStatus = 9
+	ExecutionStatus_EXECUTION_STATUS_FAILED          ExecutionStatus = 10
 )
 
 // Enum value maps for ExecutionStatus.
 var (
 	ExecutionStatus_name = map[int32]string{
-		0: "EXECUTION_STATUS_UNSPECIFIED",
-		1: "EXECUTION_STATUS_DISPATCHING",
-		2: "EXECUTION_STATUS_RUNNING",
-		3: "EXECUTION_STATUS_HEALTHY",
-		4: "EXECUTION_STATUS_STALLED",
-		5: "EXECUTION_STATUS_UNHEALTHY",
-		6: "EXECUTION_STATUS_TERMINATING",
-		7: "EXECUTION_STATUS_TERMINATED",
-		8: "EXECUTION_STATUS_FAILED_TO_START",
+		0:  "EXECUTION_STATUS_UNSPECIFIED",
+		1:  "EXECUTION_STATUS_DISPATCHING",
+		2:  "EXECUTION_STATUS_RUNNING",
+		3:  "EXECUTION_STATUS_HEALTHY",
+		4:  "EXECUTION_STATUS_STALLED",
+		5:  "EXECUTION_STATUS_UNHEALTHY",
+		6:  "EXECUTION_STATUS_TERMINATING",
+		7:  "EXECUTION_STATUS_TERMINATED",
+		8:  "EXECUTION_STATUS_FAILED_TO_START",
+		9:  "EXECUTION_STATUS_SUCCEEDED",
+		10: "EXECUTION_STATUS_FAILED",
 	}
 	ExecutionStatus_value = map[string]int32{
 		"EXECUTION_STATUS_UNSPECIFIED":     0,
@@ -75,6 +79,8 @@ var (
 		"EXECUTION_STATUS_TERMINATING":     6,
 		"EXECUTION_STATUS_TERMINATED":      7,
 		"EXECUTION_STATUS_FAILED_TO_START": 8,
+		"EXECUTION_STATUS_SUCCEEDED":       9,
+		"EXECUTION_STATUS_FAILED":          10,
 	}
 )
 
@@ -256,6 +262,7 @@ type WorkerExecution struct {
 	Version        int32                  `protobuf:"varint,16,opt,name=version,proto3" json:"version,omitempty"` // optimistic concurrency (docs/09 §5)
 	WorkflowRunId  string                 `protobuf:"bytes,17,opt,name=workflow_run_id,json=workflowRunId,proto3" json:"workflow_run_id,omitempty"`
 	WorkflowStepId string                 `protobuf:"bytes,18,opt,name=workflow_step_id,json=workflowStepId,proto3" json:"workflow_step_id,omitempty"`
+	WorkflowName   string                 `protobuf:"bytes,19,opt,name=workflow_name,json=workflowName,proto3" json:"workflow_name,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -412,6 +419,13 @@ func (x *WorkerExecution) GetWorkflowRunId() string {
 func (x *WorkerExecution) GetWorkflowStepId() string {
 	if x != nil {
 		return x.WorkflowStepId
+	}
+	return ""
+}
+
+func (x *WorkerExecution) GetWorkflowName() string {
+	if x != nil {
+		return x.WorkflowName
 	}
 	return ""
 }
@@ -1605,7 +1619,7 @@ var File_orchicon_api_v1_execution_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"\n" +
-	"\x1forchicon/api/v1/execution.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb6\x05\n" +
+	"\x1forchicon/api/v1/execution.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xdb\x05\n" +
 	"\x0fWorkerExecution\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -1630,7 +1644,8 @@ const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"recoveryId\x12\x18\n" +
 	"\aversion\x18\x10 \x01(\x05R\aversion\x12&\n" +
 	"\x0fworkflow_run_id\x18\x11 \x01(\tR\rworkflowRunId\x12(\n" +
-	"\x10workflow_step_id\x18\x12 \x01(\tR\x0eworkflowStepId\"\x86\x02\n" +
+	"\x10workflow_step_id\x18\x12 \x01(\tR\x0eworkflowStepId\x12#\n" +
+	"\rworkflow_name\x18\x13 \x01(\tR\fworkflowName\"\x86\x02\n" +
 	"\x0eExecutionEvent\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12!\n" +
 	"\fexecution_id\x18\x02 \x01(\tR\vexecutionId\x12\x1b\n" +
@@ -1715,7 +1730,7 @@ const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"\fexecution_id\x18\x02 \x01(\tH\x00R\vexecutionId\x88\x01\x01B\x0f\n" +
 	"\r_execution_id\"^\n" +
 	"\x1cListPendingApprovalsResponse\x12>\n" +
-	"\tapprovals\x18\x01 \x03(\v2 .orchicon.api.v1.ApprovalRequestR\tapprovals*\xb8\x02\n" +
+	"\tapprovals\x18\x01 \x03(\v2 .orchicon.api.v1.ApprovalRequestR\tapprovals*\xf5\x02\n" +
 	"\x0fExecutionStatus\x12 \n" +
 	"\x1cEXECUTION_STATUS_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cEXECUTION_STATUS_DISPATCHING\x10\x01\x12\x1c\n" +
@@ -1725,7 +1740,10 @@ const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"\x1aEXECUTION_STATUS_UNHEALTHY\x10\x05\x12 \n" +
 	"\x1cEXECUTION_STATUS_TERMINATING\x10\x06\x12\x1f\n" +
 	"\x1bEXECUTION_STATUS_TERMINATED\x10\a\x12$\n" +
-	" EXECUTION_STATUS_FAILED_TO_START\x10\b*\x99\x01\n" +
+	" EXECUTION_STATUS_FAILED_TO_START\x10\b\x12\x1e\n" +
+	"\x1aEXECUTION_STATUS_SUCCEEDED\x10\t\x12\x1b\n" +
+	"\x17EXECUTION_STATUS_FAILED\x10\n" +
+	"*\x99\x01\n" +
 	"\vHealthState\x12\x1c\n" +
 	"\x18HEALTH_STATE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14HEALTH_STATE_HEALTHY\x10\x01\x12\x18\n" +

@@ -74,6 +74,7 @@ export function useListExecutions(opts?: {
       });
       return res.executions as WorkerExecution[];
     },
+    refetchInterval: 5_000,
   });
 }
 

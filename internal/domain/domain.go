@@ -231,7 +231,7 @@ const (
 
 // ExecutionStatus — WorkerExecution lifecycle
 // (docs/02_Domain_Model.md §2.7, docs/03 §6):
-// dispatching → running → healthy|stalled|unhealthy → terminating → terminated
+// dispatching → running → healthy|stalled|unhealthy → terminating → succeeded|failed
 const (
 	ExecutionDispatching    = "dispatching"
 	ExecutionRunning        = "running"
@@ -241,6 +241,8 @@ const (
 	ExecutionTerminating   = "terminating"
 	ExecutionTerminated     = "terminated"
 	ExecutionFailedToStart = "failed_to_start"
+	ExecutionSucceeded      = "succeeded"
+	ExecutionFailed         = "failed"
 )
 
 // HealthState — union of heartbeat freshness, progress rate, error rate,

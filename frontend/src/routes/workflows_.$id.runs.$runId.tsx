@@ -19,6 +19,7 @@ import {
   useGetWorkflowRun,
   useGetWorkflowStepRuns,
 } from "@/api/workflows";
+import { useListExecutions } from "@/api/executions";
 import { useStreamWorkflowEvents } from "@/api/workflowEvents";
 import { workflowKeys } from "@/api/workflows";
 import { Button } from "@/components/ui/button";
@@ -86,6 +87,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
   const { data: wfData } = useGetWorkflow(workflowId);
   const { data: run, isLoading, error } = useGetWorkflowRun(runId);
   const { data: stepRuns } = useGetWorkflowStepRuns(runId);
+  const { data: runExecs } = useListExecutions({ workflowRunId: runId });
   const abortRun = useAbortWorkflow();
 
   // Live event stream (docs/10 §4). Subscribes to StreamWorkflowEvents
@@ -325,6 +327,45 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
           )}
         </CardContent>
       </Card>
+
+      {/* associated worker executions */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Executions</CardTitle>
+          <CardDescription>
+            Worker executions spawned by this run (auto-refreshes).
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {(runExecs ?? []).length === 0 ? (
+            <p className="text-sm text-muted-foreground">No executions yet. The reconciler will dispatch them shortly.</p>
+          ) : (
+            <div className="space-y-2">
+              {(runExecs ?? []).map((ex) => (
+                <button
+                  key={ex.id}
+                  className="flex w-full items-center gap-3 rounded-md border p-2 text-left text-sm hover:bg-accent"
+                  onClick={() =>
+                    navigate({
+                      to: "/executions/$id",
+                      params: { id: ex.id },
+                    })
+                  }
+                >
+                  <ExecStatusBadge status={ex.status} />
+                  <span className="font-medium">{ex.workerId}</span>
+                  <span className="font-mono text-xs text-muted-foreground">{ex.id.slice(0, 12)}…</span>
+                  {ex.startedAt && (
+                    <span className="ml-auto text-xs text-muted-foreground">
+                      {new Date(Number(ex.startedAt.seconds) * 1000).toLocaleTimeString()}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -458,3 +499,35 @@ const STEP_RUN_STATUS_LABELS: Record<number, string> = {
   7: "blocked",
   8: "approval_pending",
 };
+
+function ExecStatusBadge({ status }: { status: number }) {
+  const labels: Record<number, string> = {
+    1: "dispatching",
+    2: "running",
+    3: "healthy",
+    4: "stalled",
+    5: "unhealthy",
+    6: "terminating",
+    7: "terminated",
+    8: "failed_to_start",
+    9: "succeeded",
+    10: "failed",
+  };
+  const styles: Record<number, string> = {
+    1: "bg-blue-100 text-blue-800",
+    2: "bg-green-100 text-green-800",
+    3: "bg-green-600 text-white",
+    4: "bg-yellow-100 text-yellow-800",
+    5: "bg-red-100 text-red-800",
+    6: "bg-orange-100 text-orange-800",
+    7: "bg-gray-200 text-gray-700",
+    8: "bg-red-600 text-white",
+    9: "bg-emerald-100 text-emerald-800",
+    10: "bg-red-700 text-white",
+  };
+  return (
+    <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", styles[status] ?? "bg-muted text-muted-foreground")}>
+      {labels[status] ?? "unknown"}
+    </span>
+  );
+}
