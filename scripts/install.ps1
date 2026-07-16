@@ -9,6 +9,7 @@
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -InstallDir "C:\bin"
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Uninstall
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Clean
+#   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -ForceClean
 #
 # For Linux/macOS, see scripts/install.sh or:
 #   curl -fsSL https://orchicon.dev/install | bash
@@ -19,6 +20,7 @@ param(
     [string]$InstallDir = "",
     [switch]$Uninstall,
     [switch]$Clean,
+    [switch]$ForceClean,
     [switch]$DryRun,
     [switch]$Help
 )
@@ -42,6 +44,10 @@ Options:
                       install the latest version — one-shot upgrade. All user
                       data is preserved (Docker volumes, BlobStore files,
                       runtime state).
+  -ForceClean         Wipe everything and start fresh: stop the dev stack,
+                      destroy Docker volumes (database, NATS, ClickHouse),
+                      remove blob store data and runtime state, then install
+                      the latest version. WARNING: all data is lost.
   -DryRun             Print what would happen without making changes.
   -Help               Show this help.
 "@
@@ -117,6 +123,61 @@ if ($Clean) {
     Write-Host "  • Runtime state (.dev)" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "Now installing latest version…" -ForegroundColor White
+    Write-Host ""
+}
+
+# --- Force-clean ---
+if ($ForceClean) {
+    Write-Host ""
+    Write-Host "Orchicon — force-clean (NUKE)" -ForegroundColor White
+    Write-Host ""
+
+    $bin = Join-Path $InstallDir "orchicon.exe"
+
+    # 1. Stop dev stack via the binary (if available).
+    if (Test-Path $bin) {
+        Write-Info "stopping dev stack via '$bin dev stop'..."
+        if (-not $DryRun) {
+            & $bin dev stop 2>$null | Out-Null
+        }
+    }
+
+    # 2. Nuke Docker volumes.
+    $docker = Get-Command "docker" -ErrorAction SilentlyContinue
+    if ($null -ne $docker) {
+        Write-Info "destroying all orchicon Docker volumes..."
+        if (-not $DryRun) {
+            docker compose -p orchicon down -v --remove-orphans 2>$null | Out-Null
+            Write-Ok "Docker volumes destroyed"
+        }
+    } else {
+        Write-Warn "docker not found - skipping volume cleanup"
+    }
+
+    # 3. Clean up local state directories.
+    $stateDirs = @("data", ".dev", "bin")
+    foreach ($d in $stateDirs) {
+        if (Test-Path $d) {
+            Write-Info "removing $d"
+            if (-not $DryRun) {
+                Remove-Item -Path $d -Recurse -Force -ErrorAction SilentlyContinue
+                Write-Ok "$d removed"
+            }
+        }
+    }
+
+    # 4. Remove the old binary.
+    if (Test-Path $bin) {
+        Write-Info "removing $bin"
+        if (-not $DryRun) { Remove-Item $bin -Force }
+        Write-Ok "old binary removed"
+    }
+
+    # 5. Summary.
+    Write-Host ""
+    Write-Host "All data wiped - ready for a fresh start" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Now installing latest version..." -ForegroundColor White
     Write-Host ""
 }
 

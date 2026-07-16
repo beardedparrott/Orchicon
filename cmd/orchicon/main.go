@@ -42,6 +42,8 @@ func main() {
 			os.Exit(runDev([]string{"status"}))
 		case "restart":
 			os.Exit(runDev([]string{"restart"}))
+		case "logs":
+			os.Exit(runDev([]string{"logs"}))
 		case "version", "--version", "-v":
 			fmt.Println(version.Current().String())
 			return
@@ -90,6 +92,7 @@ Usage:
 Short aliases:
   orchicon start        Same as "orchicon dev start"
   orchicon stop         Same as "orchicon dev stop"
+  orchicon logs         Same as "orchicon dev logs"
 
   orchicon version      Print version info
 

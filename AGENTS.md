@@ -695,4 +695,18 @@ platform, or `--uninstall` to test cleanup).
   operators can see what would have run on a real failure. Build
   verified: `go build`, `npm run build`, `make ci` all pass; smoke
   test (`/tmp/opencode/e2e_prd.sh`) confirms the strategy field
-  round-trips through the workflow API and the reconciler logs it.</newString>
+  round-trips through the workflow API and the reconciler logs it.
+- **Background server + log management + force-clean installer**: `orchicon
+  dev start` now forks the control plane as a background child process
+  (separate process group on Unix so Ctrl-C doesn't kill it), writes
+  structured logs to `.dev/logs/orchicon.log`, waits for `/healthz`, then
+  automatically tails the log file (Ctrl-C stops the tail only). The server
+  keeps running in the background until `orchicon dev stop` is called, which
+  sends SIGTERM (with 15s grace period then SIGKILL) and runs `docker compose
+  down`. New `orchicon dev logs` / `orchicon logs` subcommand tails the log
+  file on demand. Startup and shutdown messages are detailed with clear
+  progress indicators. The installers (`scripts/install.sh` + `install.ps1`)
+  gained `--force-clean` / `-ForceClean` flags that nuke all Docker volumes
+  (`docker compose down -v --remove-orphans`), remove `data/`, `.dev/`, and
+  `bin/` directories, then install the latest binary. Build verified: `go
+  build ./cmd/orchicon` passes cleanly.

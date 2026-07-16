@@ -4,12 +4,18 @@
 // stack, migrations, and frontend bundle are embedded via go:embed so the
 // user needs only Docker + the orchicon binary.
 //
+// Control plane runs in the background (forked child process); logs go to
+// .dev/logs/orchicon.log; dev start tails the log after launching.
+// Ctrl-C on the tail does not kill the server — run orchicon dev stop
+// for a clean shutdown.
+//
 // Usage:
 //
-//	orchicon dev start    compose up → wait healthy → migrate → serve (control plane + embedded frontend)
-//	orchicon dev stop     compose down
+//	orchicon dev start    compose up → migrate → fork background server → tail log
+//	orchicon dev stop     signal server → compose down
 //	orchicon dev status   show what's running
 //	orchicon dev restart  stop then start
+//	orchicon dev logs     tail control plane logs
 //
 // When scripts/dev.sh detects the binary on PATH, it delegates here.
 package main
@@ -24,6 +30,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -34,6 +42,12 @@ import (
 	"github.com/beardedparrott/orchicon/internal/migrate"
 	"github.com/beardedparrott/orchicon/internal/server"
 	"github.com/beardedparrott/orchicon/internal/version"
+)
+
+const (
+	devPIDFile  = ".dev/pids/orchicon.pid"
+	devLogFile  = ".dev/logs/orchicon.log"
+	devEnvChild = "ORCHICON_DEV_CHILD"
 )
 
 // runDev dispatches to the dev subcommand. Returns an exit code.
@@ -53,6 +67,8 @@ func runDev(args []string) int {
 	case "restart":
 		_ = devStop(log)
 		return devStart(log)
+	case "logs":
+		return devLogs(log)
 	case "--help", "-h":
 		printDevUsage()
 		return 0
@@ -67,125 +83,272 @@ func printDevUsage() {
 	fmt.Fprintf(os.Stderr, `orchicon dev — manage the local development stack
 
 Usage:
-  orchicon dev start     Start the full stack (compose → migrate → serve)
-  orchicon dev stop      Stop the stack (compose down)
+  orchicon dev start     Start the full stack (compose → migrate → serve in background)
+  orchicon dev stop      Stop the stack (signal server → compose down)
   orchicon dev status    Show what's running
   orchicon dev restart   Stop then start
+  orchicon dev logs      Tail control plane logs
 
 The binary embeds the Docker Compose stack, migrations, and the frontend
 bundle, so no Go, Node, or source checkout is required — only Docker.
 `)
 }
 
-// devStart brings up the compose stack, applies migrations, and serves
-// the control plane + embedded frontend in the foreground. It blocks
-// until SIGINT/SIGTERM.
+// --- Start ------------------------------------------------------------------
+
+// devStart dispatches to parent or child based on environment.
 func devStart(log *slog.Logger) int {
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	if os.Getenv(devEnvChild) != "" {
+		return devStartChild()
+	}
+	return devStartParent()
+}
+
+// devStartChild runs the control plane server. Called from the background
+// child process. Output goes to .dev/logs/orchicon.log via inherited FDs.
+func devStartChild() int {
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	log.Info("orchicon dev start", "version", version.Current().String())
+	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	log.Info("orchicon control plane starting", "version", version.Current().String())
 
-	// 1. Write embedded compose file and bring up the stack.
-	if err := composeUp(ctx, log); err != nil {
-		log.Error("compose up failed", "error", err)
-		return 1
-	}
-
-	// 2. Wait for Postgres to be healthy.
-	log.Info("waiting for postgres…")
-	if err := waitForHTTP("http://localhost:8080/healthz", 0); err != nil {
-		// Postgres doesn't have an HTTP healthz; use docker healthcheck.
-		if err := waitForContainer("postgres", 60); err != nil {
-			log.Error("postgres did not become healthy", "error", err)
-			return 1
-		}
-	}
-	if err := waitForContainer("nats", 30); err != nil {
-		log.Warn("nats did not become healthy in time", "error", err)
-	}
-	log.Info("dev stack is healthy (Postgres, NATS)")
-
-	// 3. Apply migrations from the embedded SQL files.
 	cfg := config.Default()
-	pool, err := db.Open(ctx, cfg.PostgresDSN)
-	if err != nil {
-		log.Error("failed to open db", "error", err)
-		return 1
-	}
-	defer pool.Close()
-
-	if err := db.SeedDevTenant(ctx, pool); err != nil {
-		log.Warn("seed dev tenant failed (continuing)", "error", err)
-	}
-	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
-		log.Error("migrations failed", "error", err)
-		return 1
-	}
-	log.Info("migrations applied")
-
-	// 4. Serve the control plane + embedded frontend.
 	srv, err := server.New(cfg, log)
 	if err != nil {
 		log.Error("failed to construct server", "error", err)
 		return 1
 	}
 
-	// Wrap the server's handler to also serve the embedded frontend.
 	handler := withFrontend(srv.Handler(), log)
 	srv.SetHandler(handler)
-
-	log.Info("orchicon dev is serving",
-		"http", cfg.HTTPAddr,
-		"frontend", "embedded",
-		"signoz", "http://localhost:3301",
-		"nats_monitor", "http://localhost:8222")
 
 	if err := srv.Run(ctx); err != nil {
 		log.Error("server exited with error", "error", err)
 		return 1
 	}
-
-	// 5. Tear down compose on clean shutdown.
-	// Use a fresh context here — srv.Run returns when the signal ctx is
-	// cancelled (SIGINT/SIGTERM), so ctx is already Done.  composeDown
-	// calls exec.CommandContext which would immediately fail on a done
-	// context, leaving containers running.
-	log.Info("stopping dev stack…")
-	downCtx, downCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer downCancel()
-	if err := composeDown(downCtx, log); err != nil {
-		log.Warn("compose down failed", "error", err)
-	}
-	log.Info("orchicon dev stopped")
+	log.Info("orchicon control plane stopped")
 	return 0
 }
 
-// devStop tears down the compose stack.
-func devStop(log *slog.Logger) int {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	log.Info("stopping dev stack…")
-	if err := composeDown(ctx, log); err != nil {
-		log.Error("compose down failed", "error", err)
+// devStartParent brings up the compose stack, runs migrations, starts the
+// server in the background, waits for it to be healthy, then tails the log
+// file. Ctrl-C stops the tail only — the server keeps running.
+func devStartParent() int {
+	fmt.Printf("orchicon dev start %s\n\n", version.Current().String())
+
+	// 1. Check if already running.
+	if pid, running := procRunning(devPIDFile); running {
+		fmt.Fprintf(os.Stderr, "✗ orchicon is already running (PID %s)\n", pid)
+		fmt.Fprintf(os.Stderr, "  Run 'orchicon dev logs' to tail its logs.\n")
+		fmt.Fprintf(os.Stderr, "  Run 'orchicon dev stop' to stop it.\n")
 		return 1
 	}
-	log.Info("dev stack stopped")
+
+	// 2. Start Docker Compose stack.
+	fmt.Println("▸ Starting dev stack (Docker Compose)…")
+	if err := composeUp(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "✗ Compose up failed: %v\n", err)
+		return 1
+	}
+
+	fmt.Println("▸ Waiting for containers to be healthy…")
+	if err := waitForContainer("postgres", 60); err != nil {
+		fmt.Fprintf(os.Stderr, "✗ Postgres did not become healthy: %v\n", err)
+		return 1
+	}
+	fmt.Println("  ✓ postgres healthy")
+
+	if err := waitForContainer("nats", 30); err != nil {
+		fmt.Fprintf(os.Stderr, "  ! nats not healthy: %v\n", err)
+	} else {
+		fmt.Println("  ✓ nats healthy")
+	}
+
+	// 3. Apply migrations.
+	fmt.Println("▸ Applying migrations…")
+	ctx := context.Background()
+	cfg := config.Default()
+	pool, err := db.Open(ctx, cfg.PostgresDSN)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "✗ Failed to connect to database: %v\n", err)
+		return 1
+	}
+	defer pool.Close()
+
+	if err := db.SeedDevTenant(ctx, pool); err != nil {
+		fmt.Fprintf(os.Stderr, "  ! Seed dev tenant: %v\n", err)
+	}
+	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
+		fmt.Fprintf(os.Stderr, "✗ Migrations failed: %v\n", err)
+		return 1
+	}
+	fmt.Println("  ✓ Migrations applied")
+
+	// 4. Ensure .dev/ directories exist.
+	if err := os.MkdirAll(filepath.Dir(devPIDFile), 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "✗ Failed to create PID directory: %v\n", err)
+		return 1
+	}
+	if err := os.MkdirAll(filepath.Dir(devLogFile), 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "✗ Failed to create log directory: %v\n", err)
+		return 1
+	}
+
+	// 5. Fork the server process in the background.
+	fmt.Println("▸ Starting control plane…")
+
+	logFile, err := os.OpenFile(devLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "✗ Failed to open log file: %v\n", err)
+		return 1
+	}
+	defer logFile.Close()
+
+	cmd := exec.Command(os.Args[0], "dev", "start")
+	cmd.Env = append(os.Environ(), devEnvChild+"=1")
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if runtime.GOOS != "windows" {
+		// Separate process group so Ctrl-C in the parent does not reach
+		// the child. The child only responds to SIGTERM (via dev stop).
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	}
+
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "✗ Failed to start server process: %v\n", err)
+		return 1
+	}
+
+	pid := cmd.Process.Pid
+	if err := os.WriteFile(devPIDFile, []byte(strconv.Itoa(pid)+"\n"), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "  ! Failed to write PID file: %v\n", err)
+	}
+	fmt.Printf("  ✓ Server process started (PID %d)\n", pid)
+
+	// 6. Wait for healthz.
+	fmt.Print("▸ Waiting for control plane to be ready…")
+	healthURL := "http://localhost" + cfg.HTTPAddr + "/healthz"
+	healthy := false
+	for i := 0; i < 30; i++ {
+		if probeHTTP(context.Background(), healthURL) {
+			healthy = true
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	if !healthy {
+		fmt.Fprintf(os.Stderr, "\n✗ Control plane did not become healthy within 30s\n")
+		_ = cmd.Process.Kill()
+		_ = os.Remove(devPIDFile)
+		_ = os.Remove(devLogFile)
+		return 1
+	}
+	fmt.Println(" ✓")
+
+	// 7. Print endpoint info.
+	fmt.Println()
+	fmt.Println("  ✓ Orchicon is running")
+	fmt.Printf("    Control plane:  http://localhost%s\n", cfg.HTTPAddr)
+	fmt.Println("    SigNoz UI:      http://localhost:3301")
+	fmt.Println("    NATS monitor:   http://localhost:8222")
+	fmt.Printf("    Logs:           %s\n", devLogFile)
+	fmt.Printf("    PID:            %d\n", pid)
+	fmt.Println()
+	fmt.Println("→ Tailing control plane logs (Ctrl+C to stop tailing; server continues in background)")
+	fmt.Println()
+
+	// 8. Tail log file until Ctrl-C.
+	tailCmd := exec.Command("tail", "-f", devLogFile)
+	tailCmd.Stdin = os.Stdin
+	tailCmd.Stdout = os.Stdout
+	tailCmd.Stderr = os.Stderr
+	_ = tailCmd.Run() // exits on Ctrl-C
+
+	fmt.Println()
+	fmt.Println("◆ Log tail ended. Server continues running in background.")
+	fmt.Println("  Run 'orchicon dev stop' to stop the server.")
+	fmt.Println("  Run 'orchicon dev logs' to tail logs again.")
 	return 0
 }
+
+// --- Stop -------------------------------------------------------------------
+
+// devStop signals the background server to shut down gracefully, then tears
+// down the Docker Compose stack.
+func devStop(log *slog.Logger) int {
+	fmt.Println("▸ orchicon dev stop")
+
+	// 1. Signal child to stop gracefully.
+	if pid, running := procRunning(devPIDFile); running {
+		fmt.Printf("▸ Signaling control plane (PID %s)…\n", pid)
+		p, err := strconv.Atoi(strings.TrimSpace(pid))
+		if err == nil {
+			proc, err := os.FindProcess(p)
+			if err == nil {
+				_ = proc.Signal(syscall.SIGTERM)
+				// Wait up to 15s for graceful shutdown.
+				for i := 0; i < 30; i++ {
+					if proc.Signal(syscall.Signal(0)) != nil {
+						break
+					}
+					time.Sleep(500 * time.Millisecond)
+				}
+				if proc.Signal(syscall.Signal(0)) == nil {
+					fmt.Println("  ! Process did not exit in time, sending SIGKILL")
+					_ = proc.Kill()
+				}
+				fmt.Println("  ✓ Control plane stopped")
+			}
+		}
+	} else if pid != "" {
+		fmt.Printf("  ! PID file exists but process is not running (removing stale PID file)\n")
+	} else {
+		fmt.Println("  - Control plane not running (no PID file)")
+	}
+	_ = os.Remove(devPIDFile)
+
+	// 2. Compose down.
+	fmt.Println("▸ Stopping dev stack (Docker Compose)…")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := composeDown(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "  ! Compose down: %v\n", err)
+	} else {
+		fmt.Println("  ✓ Dev stack stopped")
+	}
+
+	return 0
+}
+
+// --- Status -----------------------------------------------------------------
 
 // devStatus checks what's running and probes key endpoints.
 func devStatus(log *slog.Logger) int {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
 	fmt.Println("Orchicon dev status")
 	fmt.Println()
 
+	// Control plane via PID file.
+	fmt.Println("Control plane:")
+	if pid, running := procRunning(devPIDFile); running {
+		if probeHTTP(context.Background(), "http://localhost:8080/healthz") {
+			fmt.Printf("  ✓ Running (PID %s) — healthy\n", pid)
+		} else {
+			fmt.Printf("  ! Running (PID %s) — not responding on :8080\n", pid)
+		}
+	} else if _, exists := os.Stat(devPIDFile); exists == nil {
+		fmt.Println("  ! PID file exists but process is not running (stale)")
+	} else {
+		fmt.Println("  - Not running")
+	}
+
 	// Docker Compose services.
+	fmt.Println()
 	fmt.Println("Docker Compose services:")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	if err := runComposeFromTemp(ctx, log, "ps", "--format", "table {{.Name}}\t{{.Service}}\t{{.Status}}"); err != nil {
-		log.Warn("compose ps failed", "error", err)
+		fmt.Fprintf(os.Stderr, "  ! Compose ps failed: %v\n", err)
 	}
 
 	// Endpoint probes.
@@ -206,6 +369,52 @@ func devStatus(log *slog.Logger) int {
 		}
 	}
 	return 0
+}
+
+// --- Logs -------------------------------------------------------------------
+
+// devLogs tails the control plane log file.
+func devLogs(log *slog.Logger) int {
+	if _, err := os.Stat(devLogFile); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "✗ Log file not found: %s\n", devLogFile)
+		fmt.Fprintf(os.Stderr, "  Is Orchicon running? Run 'orchicon dev start' first.\n")
+		return 1
+	}
+	cmd := exec.Command("tail", "-f", devLogFile)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	_ = cmd.Run()
+	fmt.Println()
+	return 0
+}
+
+// --- Helpers ----------------------------------------------------------------
+
+// procRunning reads the PID file and checks whether the corresponding
+// process is alive. Returns the PID string and a bool indicating if it's
+// running.
+func procRunning(pidFile string) (string, bool) {
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		return "", false
+	}
+	pid := strings.TrimSpace(string(data))
+	if pid == "" {
+		return "", false
+	}
+	p, err := strconv.Atoi(pid)
+	if err != nil {
+		return pid, false
+	}
+	proc, err := os.FindProcess(p)
+	if err != nil {
+		return pid, false
+	}
+	if proc.Signal(syscall.Signal(0)) != nil {
+		return pid, false
+	}
+	return pid, true
 }
 
 // --- Compose helpers --------------------------------------------------------
@@ -233,14 +442,10 @@ func extractComposeDir() (string, error) {
 			return walkErr
 		}
 		if !strings.HasPrefix(path, prefix) {
-			// Not under deploy/compose/ (e.g. the repo root, the deploy
-			// directory itself). Skip — we only want the compose tree.
 			return nil
 		}
 		rel := strings.TrimPrefix(path, prefix)
 		if rel == "" || d.IsDir() {
-			// The "deploy/compose" directory itself, or an empty path.
-			// Either way nothing to write.
 			return nil
 		}
 		target := filepath.Join(dir, rel)
@@ -248,7 +453,6 @@ func extractComposeDir() (string, error) {
 		if err != nil {
 			return fmt.Errorf("read embedded %s: %w", path, err)
 		}
-		// Read-only files like *.sql / *.xml / *.yaml are fine with 0o644.
 		return os.WriteFile(target, data, 0o644)
 	})
 	if err != nil {
@@ -263,18 +467,15 @@ func extractComposeDir() (string, error) {
 // temp dir on return. Used by composeUp / composeDown / composeStatus.
 //
 // The project name is pinned to "orchicon" (`-p orchicon`) so successive
-// `orchicon dev start` invocations target the same containers (and
-// `orchicon dev stop` cleanly tears them down) regardless of the
-// per-invocation temp dir the compose YAML lives in. Without this,
-// each start picks a fresh project name and the next start collides
-// on the hardcoded container names in docker-compose.yml.
+// invocations target the same containers regardless of the per-invocation
+// temp dir the compose YAML lives in.
 func runComposeFromTemp(ctx context.Context, log *slog.Logger, args ...string) error {
 	dir, err := extractComposeDir()
 	if err != nil {
 		return err
 	}
 	defer func() {
-		if rmErr := os.RemoveAll(dir); rmErr != nil {
+		if rmErr := os.RemoveAll(dir); rmErr != nil && log != nil {
 			log.Warn("remove temp compose dir", "dir", dir, "error", rmErr)
 		}
 	}()
@@ -285,7 +486,7 @@ func runComposeFromTemp(ctx context.Context, log *slog.Logger, args ...string) e
 		"-f", filepath.Join(dir, "docker-compose.yml"),
 	}, args...)
 	cmd := exec.CommandContext(ctx, "docker", fullArgs...)
-	cmd.Dir = dir // run from the dir so relative mounts resolve
+	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -293,16 +494,16 @@ func runComposeFromTemp(ctx context.Context, log *slog.Logger, args ...string) e
 
 // composeUp extracts the embedded compose tree to a temp dir and runs
 // `docker compose up -d` from there. The dir is removed on return.
-func composeUp(ctx context.Context, log *slog.Logger) error {
-	if err := runComposeFromTemp(ctx, log, "up", "-d"); err != nil {
+func composeUp(ctx context.Context) error {
+	if err := runComposeFromTemp(ctx, nil, "up", "-d"); err != nil {
 		return fmt.Errorf("docker compose up: %w", err)
 	}
 	return nil
 }
 
 // composeDown runs `docker compose down` with the embedded compose file.
-func composeDown(ctx context.Context, log *slog.Logger) error {
-	if err := runComposeFromTemp(ctx, log, "down"); err != nil {
+func composeDown(ctx context.Context) error {
+	if err := runComposeFromTemp(ctx, nil, "down"); err != nil {
 		return fmt.Errorf("docker compose down: %w", err)
 	}
 	return nil
@@ -325,21 +526,6 @@ func waitForContainer(service string, maxRetries int) error {
 		time.Sleep(2 * time.Second)
 	}
 	return fmt.Errorf("%s did not become healthy after %d retries", service, maxRetries)
-}
-
-// waitForHTTP polls a URL until it returns 200 or maxRetries is exceeded.
-// If maxRetries is 0, it returns immediately (used as a no-op sentinel).
-func waitForHTTP(url string, maxRetries int) error {
-	if maxRetries == 0 {
-		return fmt.Errorf("no retries")
-	}
-	for i := 0; i < maxRetries; i++ {
-		if probeHTTP(context.Background(), url) {
-			return nil
-		}
-		time.Sleep(time.Second)
-	}
-	return fmt.Errorf("%s did not respond after %d retries", url, maxRetries)
 }
 
 // probeHTTP returns true if the URL returns a 2xx status code.
@@ -367,21 +553,10 @@ func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 		log.Warn("frontend embed unavailable, serving API only", "error", err)
 		return apiHandler
 	}
-	// http.FileServer uses r.URL.Path verbatim when opening files from the
-	// FS, and embed.FS rejects paths with a leading slash. StripPrefix
-	// rewrites the path in the request so FileServer sees "assets/…"
-	// instead of "/assets/…"; without this every asset path falls
-	// through to the SPA index.html and the browser parses HTML as JS
-	// (a blank page).
 	fileServer := http.StripPrefix("/", http.FileServer(http.FS(spaFS)))
 	indexHTML, _ := fs.ReadFile(spaFS, "index.html")
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Pass through API + auth + health/version routes. The /auth/*
-		// endpoints (dev-login, refresh, oidc, session — docs/07 §6.1)
-		// are mounted on the API mux; without this pass-through they
-		// would be shadowed by the SPA's index.html fallback and login
-		// would silently serve HTML instead of minting a token.
 		path := r.URL.Path
 		if strings.HasPrefix(path, "/orchicon.api.v1") ||
 			strings.HasPrefix(path, "/auth/") ||
@@ -390,11 +565,6 @@ func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 			return
 		}
 
-		// Try to serve the file from the embedded FS. The check itself
-		// uses the slash-less path (embed.FS rejects leading slashes)
-		// so we don't fall through to the index.html branch; the actual
-		// fileServer (above) is wrapped in http.StripPrefix so it also
-		// sees a slash-less path internally.
 		cleanPath := strings.TrimPrefix(path, "/")
 		f, err := spaFS.Open(cleanPath)
 		if err == nil {
@@ -403,14 +573,12 @@ func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 			return
 		}
 
-		// File not found — serve index.html for client-side routing.
 		if len(indexHTML) > 0 {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Write(indexHTML)
 			return
 		}
 
-		// No frontend embedded — fall back to API handler (dev mode).
 		apiHandler.ServeHTTP(w, r)
 	})
 }
