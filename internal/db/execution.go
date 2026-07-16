@@ -98,14 +98,15 @@ func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (Executio
 }
 
 // ListExecutionsFilter scopes a list query to a tenant, optionally
-// filtered by project/task/status.
+// filtered by project/task/status/workflow_run_id.
 type ListExecutionsFilter struct {
-	TenantID  string
-	ProjectID string
-	TaskID    string
-	Status    string
-	PageSize  int
-	AfterID   string
+	TenantID      string
+	ProjectID     string
+	TaskID        string
+	Status        string
+	WorkflowRunID string
+	PageSize      int
+	AfterID       string
 }
 
 // ListExecutions returns a page of executions for the tenant.
@@ -133,7 +134,11 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 		q += fmt.Sprintf(` AND status = $%d`, len(args)+1)
 		args = append(args, f.Status)
 	}
-	q += ` ORDER BY id ASC LIMIT $` + fmt.Sprint(len(args)+1)
+	if f.WorkflowRunID != "" {
+		q += fmt.Sprintf(` AND workflow_run_id = $%d`, len(args)+1)
+		args = append(args, f.WorkflowRunID)
+	}
+	q += ` ORDER BY id DESC LIMIT $` + fmt.Sprint(len(args)+1)
 	args = append(args, f.PageSize)
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
@@ -310,6 +315,19 @@ func ListReadyTasks(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkItem
 		out = append(out, w)
 	}
 	return out, rows.Err()
+}
+
+// DeleteExecution hard-deletes a worker execution row by id.
+func DeleteExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
+	const q = `DELETE FROM worker_executions WHERE id = $1 AND tenant_id = $2`
+	tag, err := tx.Exec(ctx, q, id, tenantID)
+	if err != nil {
+		return fmt.Errorf("db: delete execution: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // CheckDependenciesSatisfied returns true if all dependency edges pointing

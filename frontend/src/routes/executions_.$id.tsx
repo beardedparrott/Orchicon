@@ -1,4 +1,4 @@
-import { createRoute } from "@tanstack/react-router";
+import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -8,6 +8,7 @@ import {
   useResumeExecution,
   useCancelExecution,
   useCheckpointNow,
+  useDeleteExecution,
   useListPendingApprovals,
   useApproveToolCall,
 } from "@/api/executions";
@@ -42,6 +43,9 @@ function ExecutionDetailPage() {
   const resumeExec = useResumeExecution();
   const cancelExec = useCancelExecution();
   const checkpointNow = useCheckpointNow();
+  const deleteExec = useDeleteExecution();
+
+  const navigate = useNavigate();
 
   // Live event stream (docs/10 §4). Subscribes to
   // StreamExecutionEvents filtered to this execution.
@@ -117,6 +121,19 @@ function ExecutionDetailPage() {
               {cancelExec.isPending ? "Cancelling…" : "Cancel"}
             </Button>
           )}
+          <Button
+            variant="outline"
+            onClick={() => {
+              if (window.confirm("Delete this execution? It will be force-stopped if running.")) {
+                deleteExec.mutate(id, {
+                  onSuccess: () => navigate({ to: "/executions" }),
+                });
+              }
+            }}
+            disabled={deleteExec.isPending}
+          >
+            {deleteExec.isPending ? "Deleting…" : "Delete"}
+          </Button>
         </div>
       </div>
 

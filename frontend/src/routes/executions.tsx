@@ -1,6 +1,7 @@
 import { Link, createRoute } from "@tanstack/react-router";
+import { z } from "zod";
 
-import { useListExecutions } from "@/api/executions";
+import { useDeleteExecution, useListExecutions } from "@/api/executions";
 import {
   Card,
   CardContent,
@@ -10,17 +11,21 @@ import {
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 
-// Executions list (docs/07 §3.8, docs/02 §2.7). Shows all
-// WorkerExecutions for the resolved tenant, with status and health
-// badges. Click through to the live execution view.
+const executionsSearchSchema = z.object({
+  workflowRunId: z.string().optional(),
+});
+
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/executions",
+  validateSearch: executionsSearchSchema,
   component: ExecutionsPage,
 });
 
 function ExecutionsPage() {
-  const { data: executions, isLoading, error } = useListExecutions();
+  const { workflowRunId } = Route.useSearch();
+  const { data: executions, isLoading, error } = useListExecutions({ workflowRunId });
+  const deleteExec = useDeleteExecution();
 
   return (
     <div className="space-y-6">
@@ -30,6 +35,11 @@ function ExecutionsPage() {
           Worker executions — concrete invocations of a Worker against a
           Task on a runtime adapter. Click through to view live telemetry.
         </p>
+        {workflowRunId && (
+          <p className="mt-1 text-xs text-muted-foreground/70 font-mono">
+            Filtered by workflow run: {workflowRunId}
+          </p>
+        )}
       </div>
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
@@ -50,43 +60,56 @@ function ExecutionsPage() {
       {executions && executions.length > 0 && (
         <div className="space-y-2">
           {executions.map((e) => (
-            <Link
-              key={e.id}
-              to="/executions/$id"
-              params={{ id: e.id }}
-            >
-              <Card className="transition-colors hover:bg-accent">
-                <CardContent className="flex items-center justify-between p-4">
-                  <div className="flex items-center gap-3">
-                    <ExecStatusBadge status={e.status} />
-                      <div>
-                        <p className="text-sm font-medium">
-                          {e.workerId} v{e.workerVersion}
-                        </p>
-                        <p className="text-xs text-muted-foreground font-mono">
-                          {e.id}
-                        </p>
-                        {e.workflowRunId && (
-                          <p className="text-xs text-muted-foreground/70 mt-0.5 truncate max-w-[200px]">
-                            workflow run: {e.workflowRunId.slice(0, 18)}…
+            <div key={e.id} className="group flex items-center gap-2">
+              <Link
+                to="/executions/$id"
+                params={{ id: e.id }}
+                className="flex-1"
+              >
+                <Card className="transition-colors hover:bg-accent">
+                  <CardContent className="flex items-center justify-between p-4">
+                    <div className="flex items-center gap-3">
+                      <ExecStatusBadge status={e.status} />
+                        <div>
+                          <p className="text-sm font-medium">
+                            {e.workerId} v{e.workerVersion}
                           </p>
-                        )}
-                      </div>
-                  </div>
-                  <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                    <HealthBadge health={e.healthState} />
-                    {Number(e.tokenUsage) > 0 && <span>{Number(e.tokenUsage)} tokens</span>}
-                    {e.startedAt && (
-                      <span>
-                        {new Date(
-                          Number(e.startedAt.seconds) * 1000,
-                        ).toLocaleTimeString()}
-                      </span>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-            </Link>
+                          <p className="text-xs text-muted-foreground font-mono">
+                            {e.id}
+                          </p>
+                          {e.workflowRunId && (
+                            <p className="text-xs text-muted-foreground/70 mt-0.5 truncate max-w-[200px]">
+                              workflow run: {e.workflowRunId.slice(0, 18)}…
+                            </p>
+                          )}
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                      <HealthBadge health={e.healthState} />
+                      {Number(e.tokenUsage) > 0 && <span>{Number(e.tokenUsage)} tokens</span>}
+                      {e.startedAt && (
+                        <span>
+                          {new Date(
+                            Number(e.startedAt.seconds) * 1000,
+                          ).toLocaleTimeString()}
+                        </span>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              </Link>
+              <button
+                onClick={() => {
+                  if (window.confirm("Delete this execution? This will force-stop it if running.")) {
+                    deleteExec.mutate(e.id);
+                  }
+                }}
+                className="opacity-0 group-hover:opacity-100 rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground hover:text-destructive hover:bg-accent transition-all shrink-0"
+                title="Delete execution"
+              >
+                ✕
+              </button>
+            </div>
           ))}
         </div>
       )}

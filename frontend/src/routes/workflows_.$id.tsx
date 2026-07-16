@@ -867,9 +867,9 @@ function EditorInner({ workflowId }: { workflowId: string }) {
 
           <Card>
             <CardHeader>
-              <CardTitle>Runs</CardTitle>
+              <CardTitle>Executions</CardTitle>
               <CardDescription>
-                Recent runs. Click to view live step transitions.
+                Executions spawned by this workflow's runs. Click to view live telemetry.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -883,8 +883,8 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                     className="flex w-full items-center gap-3 rounded-md border p-2 text-left text-sm hover:bg-accent"
                     onClick={() =>
                       navigate({
-                        to: "/workflows/$id/runs/$runId",
-                        params: { id: workflowId, runId: r.id },
+                        to: "/executions",
+                        search: { workflowRunId: r.id },
                       })
                     }
                   >

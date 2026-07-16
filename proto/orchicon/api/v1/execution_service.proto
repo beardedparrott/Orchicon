@@ -46,4 +46,8 @@ service ExecutionService {
   // ListPendingApprovals returns unresolved Tier 2 approval requests
   // for the tenant (optionally scoped to an execution).
   rpc ListPendingApprovals(ListPendingApprovalsRequest) returns (ListPendingApprovalsResponse);
+
+  // DeleteExecution hard-deletes an execution. If the execution is still
+  // running, it is cancelled first.
+  rpc DeleteExecution(DeleteExecutionRequest) returns (DeleteExecutionResponse);
 }
