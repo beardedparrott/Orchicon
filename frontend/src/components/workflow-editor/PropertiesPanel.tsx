@@ -37,6 +37,11 @@ export function PropertiesPanel({
   const d = node.data;
   const Icon = STEP_KIND_ICONS[d.kind] ?? STEP_KIND_ICONS[1];
   const cfg = parseConfig(d.config);
+  // PR B (context propagation): for TASK steps, show a preview of the
+  // composite prompt that will be sent to the worker (task + ancestors
+  // + upstream summaries). Helps the author understand what the worker
+  // sees and debug "the worker didn't get my context" issues.
+  const compositePrompt = typeof cfg.composite === "string" ? (cfg.composite as string) : "";
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -135,6 +140,16 @@ export function PropertiesPanel({
             onChange={(e) => onChange({ config: e.target.value })}
           />
         </Field>
+        {compositePrompt && (
+          <div className="rounded-md border bg-muted/40 p-2">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Composite prompt (preview)
+            </div>
+            <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-foreground/80">
+              {compositePrompt}
+            </pre>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

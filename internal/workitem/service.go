@@ -741,6 +741,12 @@ func rowToProto(w db.WorkItemRow) *apiv1.WorkItem {
 		Budgets:             string(w.Budgets),
 		ContextWindow:       int32(w.ContextWindow),
 		Results:             string(w.Results),
+		// PR B (context propagation): carry the composite prompt
+		// the worker should see when dispatched. Empty string
+		// when the WorkflowReconciler hasn't populated it (the
+		// task was dispatched without a workflow, e.g. direct
+		// Kanban dispatch).
+		PromptContext:       string(w.PromptContext),
 		Version:             int32(w.Version),
 		CreatedAt:           timestamppb.New(w.CreatedAt),
 		UpdatedAt:           timestamppb.New(w.UpdatedAt),

@@ -250,6 +250,17 @@ export class WorkItem extends Message<WorkItem> {
   results = "";
 
   /**
+   * PR B (context propagation, PR-A follow-up): composite prompt the
+   * worker should see when dispatched. Set by the WorkflowReconciler
+   * before dispatch; read by the opencode adapter via the
+   * TaskReconciler → manifest Goal. JSONB payload (see migration
+   * 20260713210000): {"composite": "# Task\n...\n# Project context\n...\n# Upstream context\n..."}.
+   *
+   * @generated from field: string prompt_context = 19;
+   */
+  promptContext = "";
+
+  /**
    * optimistic concurrency (docs/09 §5)
    *
    * @generated from field: int32 version = 16;
@@ -289,6 +300,7 @@ export class WorkItem extends Message<WorkItem> {
     { no: 13, name: "budgets", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 14, name: "context_window", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 15, name: "results", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 19, name: "prompt_context", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 16, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 17, name: "created_at", kind: "message", T: Timestamp },
     { no: 18, name: "updated_at", kind: "message", T: Timestamp },

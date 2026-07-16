@@ -230,12 +230,18 @@ type WorkItem struct {
 	Priority           int32                  `protobuf:"varint,12,opt,name=priority,proto3" json:"priority,omitempty"`
 	Budgets            string                 `protobuf:"bytes,13,opt,name=budgets,proto3" json:"budgets,omitempty"` // JSON: tokens/cost/time (docs/02 §2.2)
 	ContextWindow      int32                  `protobuf:"varint,14,opt,name=context_window,json=contextWindow,proto3" json:"context_window,omitempty"`
-	Results            string                 `protobuf:"bytes,15,opt,name=results,proto3" json:"results,omitempty"`  // JSON: execution results
-	Version            int32                  `protobuf:"varint,16,opt,name=version,proto3" json:"version,omitempty"` // optimistic concurrency (docs/09 §5)
-	CreatedAt          *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt          *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	Results            string                 `protobuf:"bytes,15,opt,name=results,proto3" json:"results,omitempty"` // JSON: execution results
+	// PR B (context propagation, PR-A follow-up): composite prompt the
+	// worker should see when dispatched. Set by the WorkflowReconciler
+	// before dispatch; read by the opencode adapter via the
+	// TaskReconciler → manifest Goal. JSONB payload (see migration
+	// 20260713210000): {"composite": "# Task\n...\n# Project context\n...\n# Upstream context\n..."}.
+	PromptContext string                 `protobuf:"bytes,19,opt,name=prompt_context,json=promptContext,proto3" json:"prompt_context,omitempty"`
+	Version       int32                  `protobuf:"varint,16,opt,name=version,proto3" json:"version,omitempty"` // optimistic concurrency (docs/09 §5)
+	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WorkItem) Reset() {
@@ -369,6 +375,13 @@ func (x *WorkItem) GetContextWindow() int32 {
 func (x *WorkItem) GetResults() string {
 	if x != nil {
 		return x.Results
+	}
+	return ""
+}
+
+func (x *WorkItem) GetPromptContext() string {
+	if x != nil {
+		return x.PromptContext
 	}
 	return ""
 }
@@ -548,7 +561,7 @@ var File_orchicon_api_v1_work_item_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\n" +
-	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa0\x05\n" +
+	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc7\x05\n" +
 	"\bWorkItem\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -567,7 +580,8 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\bpriority\x18\f \x01(\x05R\bpriority\x12\x18\n" +
 	"\abudgets\x18\r \x01(\tR\abudgets\x12%\n" +
 	"\x0econtext_window\x18\x0e \x01(\x05R\rcontextWindow\x12\x18\n" +
-	"\aresults\x18\x0f \x01(\tR\aresults\x12\x18\n" +
+	"\aresults\x18\x0f \x01(\tR\aresults\x12%\n" +
+	"\x0eprompt_context\x18\x13 \x01(\tR\rpromptContext\x12\x18\n" +
 	"\aversion\x18\x10 \x01(\x05R\aversion\x129\n" +
 	"\n" +
 	"created_at\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +

@@ -38,6 +38,12 @@ message WorkItem {
   string budgets = 13; // JSON: tokens/cost/time (docs/02 §2.2)
   int32 context_window = 14;
   string results = 15; // JSON: execution results
+  // PR B (context propagation, PR-A follow-up): composite prompt the
+  // worker should see when dispatched. Set by the WorkflowReconciler
+  // before dispatch; read by the opencode adapter via the
+  // TaskReconciler → manifest Goal. JSONB payload (see migration
+  // 20260713210000): {"composite": "# Task\n...\n# Project context\n...\n# Upstream context\n..."}.
+  string prompt_context = 19;
   int32 version = 16; // optimistic concurrency (docs/09 §5)
   google.protobuf.Timestamp created_at = 17;
   google.protobuf.Timestamp updated_at = 18;
