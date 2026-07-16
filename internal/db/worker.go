@@ -415,18 +415,18 @@ func GetWorkerVersionByID(ctx context.Context, tx pgx.Tx, tenantID, workerID, ve
 // applies overrides, and passes the merged row here).
 func UpdateDraftVersion(ctx context.Context, tx pgx.Tx, v WorkerVersionRow) (WorkerVersionRow, error) {
 	const q = `UPDATE worker_versions
-		SET runtime_ref = $4,
-		    model_ref = $5,
-		    system_prompt = $6,
-		    context_sources = $7,
-		    permissions = $8,
-		    gated_tools = $9,
-		    budget_overrides = $10,
-		    execution_policy_ref = $11,
-		    concurrency_limit = $12,
-		    recovery_workflow_ref = $13,
-		    labels = $14,
-		    version_note = $15
+		SET runtime_ref = $3,
+		    model_ref = $4,
+		    system_prompt = $5,
+		    context_sources = $6,
+		    permissions = $7,
+		    gated_tools = $8,
+		    budget_overrides = $9,
+		    execution_policy_ref = $10,
+		    concurrency_limit = $11,
+		    recovery_workflow_ref = $12,
+		    labels = $13,
+		    version_note = $14
 		WHERE id = $1 AND tenant_id = $2 AND status = 'draft'
 		RETURNING id, tenant_id, worker_id, version, version_note, status,
 			runtime_ref, model_ref, system_prompt, context_sources, permissions,
