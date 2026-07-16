@@ -37,7 +37,7 @@ import { Route as PoliciesNewRouteImport } from './routes/policies_.new'
 import { Route as PoliciesIdRouteImport } from './routes/policies_.$id'
 import { Route as ExecutionsIdRouteImport } from './routes/executions_.$id'
 import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
-import { Route as WorkflowsIdRunsRunIdRouteImport } from './routes/workflows_.$id.runs.$runId'
+import { Route as WorkflowsIdRunsRunIdRouteImport } from './routes/workflows_.$id_.runs.$runId'
 
 const WorkflowsRoute = WorkflowsRouteImport.update({
   id: '/workflows',
@@ -180,9 +180,9 @@ const AuthCallbackRoute = AuthCallbackRouteImport.update({
   getParentRoute: () => rootRouteImport,
 } as any)
 const WorkflowsIdRunsRunIdRoute = WorkflowsIdRunsRunIdRouteImport.update({
-  id: '/runs/$runId',
-  path: '/runs/$runId',
-  getParentRoute: () => WorkflowsIdRoute,
+  id: '/workflows_/$id_/runs/$runId',
+  path: '/workflows/$id/runs/$runId',
+  getParentRoute: () => rootRouteImport,
 } as any)
 
 export interface FileRoutesByFullPath {
@@ -212,7 +212,7 @@ export interface FileRoutesByFullPath {
   '/work-items/new': typeof WorkItemsNewRoute
   '/workers/$id': typeof WorkersIdRoute
   '/workers/new': typeof WorkersNewRoute
-  '/workflows/$id': typeof WorkflowsIdRouteWithChildren
+  '/workflows/$id': typeof WorkflowsIdRoute
   '/workflows/new': typeof WorkflowsNewRoute
   '/workflows/$id/runs/$runId': typeof WorkflowsIdRunsRunIdRoute
 }
@@ -243,7 +243,7 @@ export interface FileRoutesByTo {
   '/work-items/new': typeof WorkItemsNewRoute
   '/workers/$id': typeof WorkersIdRoute
   '/workers/new': typeof WorkersNewRoute
-  '/workflows/$id': typeof WorkflowsIdRouteWithChildren
+  '/workflows/$id': typeof WorkflowsIdRoute
   '/workflows/new': typeof WorkflowsNewRoute
   '/workflows/$id/runs/$runId': typeof WorkflowsIdRunsRunIdRoute
 }
@@ -275,9 +275,9 @@ export interface FileRoutesById {
   '/work-items_/new': typeof WorkItemsNewRoute
   '/workers_/$id': typeof WorkersIdRoute
   '/workers_/new': typeof WorkersNewRoute
-  '/workflows_/$id': typeof WorkflowsIdRouteWithChildren
+  '/workflows_/$id': typeof WorkflowsIdRoute
   '/workflows_/new': typeof WorkflowsNewRoute
-  '/workflows_/$id/runs/$runId': typeof WorkflowsIdRunsRunIdRoute
+  '/workflows_/$id_/runs/$runId': typeof WorkflowsIdRunsRunIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -372,7 +372,7 @@ export interface FileRouteTypes {
     | '/workers_/new'
     | '/workflows_/$id'
     | '/workflows_/new'
-    | '/workflows_/$id/runs/$runId'
+    | '/workflows_/$id_/runs/$runId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -402,8 +402,9 @@ export interface RootRouteChildren {
   WorkItemsNewRoute: typeof WorkItemsNewRoute
   WorkersIdRoute: typeof WorkersIdRoute
   WorkersNewRoute: typeof WorkersNewRoute
-  WorkflowsIdRoute: typeof WorkflowsIdRouteWithChildren
+  WorkflowsIdRoute: typeof WorkflowsIdRoute
   WorkflowsNewRoute: typeof WorkflowsNewRoute
+  WorkflowsIdRunsRunIdRoute: typeof WorkflowsIdRunsRunIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -604,27 +605,15 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/workflows_/$id/runs/$runId': {
-      id: '/workflows_/$id/runs/$runId'
-      path: '/runs/$runId'
+    '/workflows_/$id_/runs/$runId': {
+      id: '/workflows_/$id_/runs/$runId'
+      path: '/workflows/$id/runs/$runId'
       fullPath: '/workflows/$id/runs/$runId'
       preLoaderRoute: typeof WorkflowsIdRunsRunIdRouteImport
-      parentRoute: typeof WorkflowsIdRoute
+      parentRoute: typeof rootRouteImport
     }
   }
 }
-
-interface WorkflowsIdRouteChildren {
-  WorkflowsIdRunsRunIdRoute: typeof WorkflowsIdRunsRunIdRoute
-}
-
-const WorkflowsIdRouteChildren: WorkflowsIdRouteChildren = {
-  WorkflowsIdRunsRunIdRoute: WorkflowsIdRunsRunIdRoute,
-}
-
-const WorkflowsIdRouteWithChildren = WorkflowsIdRoute._addFileChildren(
-  WorkflowsIdRouteChildren,
-)
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
@@ -653,8 +642,9 @@ const rootRouteChildren: RootRouteChildren = {
   WorkItemsNewRoute: WorkItemsNewRoute,
   WorkersIdRoute: WorkersIdRoute,
   WorkersNewRoute: WorkersNewRoute,
-  WorkflowsIdRoute: WorkflowsIdRouteWithChildren,
+  WorkflowsIdRoute: WorkflowsIdRoute,
   WorkflowsNewRoute: WorkflowsNewRoute,
+  WorkflowsIdRunsRunIdRoute: WorkflowsIdRunsRunIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

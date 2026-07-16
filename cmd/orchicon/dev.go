@@ -269,14 +269,29 @@ func devStartParent() int {
 
 // devStop signals the background server to shut down gracefully, then tears
 // down the Docker Compose stack.
+//
+// Orphan handling: after the PID-file process is dealt with we scan for any
+// other running `orchicon` processes (by executable name) and SIGKILL them.
+// This catches the common "I left a stray orchicon running somewhere"
+// case which `dev stop` couldn't otherwise see — and which holds the
+// binary file lock so `mv` of a newer binary returns "Text file busy".
+// This is the user's installer-time escape valve: we use SIGKILL
+// directly because by the time we get here the user has already asked
+// for a stop, the PID-file process had its 15s grace period, and any
+// remaining orphans are almost always stuck (their parent context is
+// gone, they're blocked on a syscall that won't return, etc.) — SIGTERM
+// would just bounce. SIGKILL is the only signal that guarantees the
+// mmap'd binary is released so a new binary can be installed.
 func devStop(log *slog.Logger) int {
 	fmt.Println("▸ orchicon dev stop")
 
 	// 1. Signal child to stop gracefully.
+	var stoppedPID int
 	if pid, running := procRunning(devPIDFile); running {
 		fmt.Printf("▸ Signaling control plane (PID %s)…\n", pid)
 		p, err := strconv.Atoi(strings.TrimSpace(pid))
 		if err == nil {
+			stoppedPID = p
 			proc, err := os.FindProcess(p)
 			if err == nil {
 				_ = proc.Signal(syscall.SIGTERM)
@@ -300,6 +315,12 @@ func devStop(log *slog.Logger) int {
 		fmt.Println("  - Control plane not running (no PID file)")
 	}
 	_ = os.Remove(devPIDFile)
+
+	// 1b. Belt-and-suspenders: kill any orphan orchicon processes that
+	// the PID file didn't know about (e.g. a previous install left a
+	// running binary whose PID file was clobbered). Excludes the PID
+	// we just stopped (and us, internally) so we don't double-kill.
+	killOrphanOrchiconProcs(stoppedPID)
 
 	// 2. Compose down.
 	fmt.Println("▸ Stopping dev stack (Docker Compose)…")
