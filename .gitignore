@@ -33,8 +33,8 @@ frontend/dist/*
 Thumbs.db
 
 # Local dev artifacts
-orchicon
-orchicon.exe
+/orchicon
+/orchicon.exe
 *.log
 tmp/
 data/
