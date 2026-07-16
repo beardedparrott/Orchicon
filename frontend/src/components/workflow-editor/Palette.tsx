@@ -282,7 +282,6 @@ export function Palette({
           STEP_KIND.DECISION,
           STEP_KIND.APPROVAL,
           STEP_KIND.PARALLEL,
-          STEP_KIND.RECOVER,
         ].map((kind) => {
           const Icon = STEP_KIND_ICONS[kind];
           const meta = STEP_KIND_DESCRIPTIONS[kind];
@@ -582,10 +581,14 @@ const KIND_ACCENT: Record<number, string> = {
 };
 
 const KIND_LABEL: Record<number, string> = {
-  1: "task",
+  1: "epic",
   2: "feature",
-  3: "subtask",
-  4: "epic",
+  3: "task",
+  4: "subtask",
+  5: "recovery_stop",
+  6: "recovery_summarize_restart",
+  7: "recovery_human_escalation",
+  8: "recovery_retry_n",
 };
 
 const STATUS_LABEL: Record<number, string> = {

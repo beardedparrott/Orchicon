@@ -20,6 +20,7 @@ import ReactFlow, {
 import {
   useAbortWorkflow,
   useAcquireWorkflowEditLock,
+  useCreateWorkflowVersion,
   useDeleteWorkflow,
   useDeprecateWorkflow,
   useGetWorkflow,
@@ -108,6 +109,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const startWorkflow = useStartWorkflow();
   const abortWorkflow = useAbortWorkflow();
   const deleteMutation = useDeleteWorkflow();
+  const createVersion = useCreateWorkflowVersion();
 
   const [nodes, setNodes, onNodesChange] = useNodesState(
     [] as Node<StepData>[],
@@ -213,6 +215,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
 
   // --- load steps from the latest draft version into the canvas ---
   const latestVersion = versions && versions.length > 0 ? versions[0] : undefined;
+  const latestIsDraft = latestVersion?.status === 1; // WorkflowVersionStatus.DRAFT
   const loadedRef = useRef<string>("");
   useEffect(() => {
     if (!latestVersion) return;
@@ -588,7 +591,6 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   if (!data) return null;
 
   const wf = data.workflow;
-  const isDraft = wf.status === 1;
   const isPublished = wf.status === 2;
   const isDeprecated = wf.status === 3;
   const projectId = wf.projectId;
@@ -629,11 +631,11 @@ function EditorInner({ workflowId }: { workflowId: string }) {
             <Button
               variant="outline"
               onClick={handleSave}
-              disabled={readOnly || !isDraft || !dirty || updateVersion.isPending}
+              disabled={readOnly || !latestIsDraft || !dirty || updateVersion.isPending}
             >
               {updateVersion.isPending ? "Saving…" : "Save draft"}
             </Button>
-            {isDraft && (
+            {latestIsDraft && (
               <Button
                 onClick={handlePublish}
                 disabled={
@@ -646,6 +648,19 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                 }
               >
                 {publishWorkflow.isPending ? "Publishing…" : "Publish"}
+              </Button>
+            )}
+            {(isPublished || isDeprecated) && (
+              <Button
+                variant="outline"
+                onClick={async () => {
+                  const note = window.prompt("Version note (optional):");
+                  if (note === null) return; // cancelled
+                  await createVersion.mutateAsync({ workflowId, versionNote: note });
+                }}
+                disabled={createVersion.isPending}
+              >
+                {createVersion.isPending ? "Creating…" : "New version"}
               </Button>
             )}
             {isPublished && (
