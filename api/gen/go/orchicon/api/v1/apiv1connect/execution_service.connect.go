@@ -66,6 +66,9 @@ const (
 	// ExecutionServiceListPendingApprovalsProcedure is the fully-qualified name of the
 	// ExecutionService's ListPendingApprovals RPC.
 	ExecutionServiceListPendingApprovalsProcedure = "/orchicon.api.v1.ExecutionService/ListPendingApprovals"
+	// ExecutionServiceDeleteExecutionProcedure is the fully-qualified name of the ExecutionService's
+	// DeleteExecution RPC.
+	ExecutionServiceDeleteExecutionProcedure = "/orchicon.api.v1.ExecutionService/DeleteExecution"
 )
 
 // ExecutionServiceClient is a client for the orchicon.api.v1.ExecutionService service.
@@ -98,6 +101,9 @@ type ExecutionServiceClient interface {
 	// ListPendingApprovals returns unresolved Tier 2 approval requests
 	// for the tenant (optionally scoped to an execution).
 	ListPendingApprovals(context.Context, *connect.Request[v1.ListPendingApprovalsRequest]) (*connect.Response[v1.ListPendingApprovalsResponse], error)
+	// DeleteExecution hard-deletes an execution. If the execution is still
+	// running, it is cancelled first.
+	DeleteExecution(context.Context, *connect.Request[v1.DeleteExecutionRequest]) (*connect.Response[v1.DeleteExecutionResponse], error)
 }
 
 // NewExecutionServiceClient constructs a client for the orchicon.api.v1.ExecutionService service.
@@ -165,6 +171,12 @@ func NewExecutionServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(executionServiceMethods.ByName("ListPendingApprovals")),
 			connect.WithClientOptions(opts...),
 		),
+		deleteExecution: connect.NewClient[v1.DeleteExecutionRequest, v1.DeleteExecutionResponse](
+			httpClient,
+			baseURL+ExecutionServiceDeleteExecutionProcedure,
+			connect.WithSchema(executionServiceMethods.ByName("DeleteExecution")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -179,6 +191,7 @@ type executionServiceClient struct {
 	checkpointNow         *connect.Client[v1.CheckpointNowRequest, v1.CheckpointNowResponse]
 	approveToolCall       *connect.Client[v1.ApproveToolCallRequest, v1.ApproveToolCallResponse]
 	listPendingApprovals  *connect.Client[v1.ListPendingApprovalsRequest, v1.ListPendingApprovalsResponse]
+	deleteExecution       *connect.Client[v1.DeleteExecutionRequest, v1.DeleteExecutionResponse]
 }
 
 // GetExecution calls orchicon.api.v1.ExecutionService.GetExecution.
@@ -226,6 +239,11 @@ func (c *executionServiceClient) ListPendingApprovals(ctx context.Context, req *
 	return c.listPendingApprovals.CallUnary(ctx, req)
 }
 
+// DeleteExecution calls orchicon.api.v1.ExecutionService.DeleteExecution.
+func (c *executionServiceClient) DeleteExecution(ctx context.Context, req *connect.Request[v1.DeleteExecutionRequest]) (*connect.Response[v1.DeleteExecutionResponse], error) {
+	return c.deleteExecution.CallUnary(ctx, req)
+}
+
 // ExecutionServiceHandler is an implementation of the orchicon.api.v1.ExecutionService service.
 type ExecutionServiceHandler interface {
 	// GetExecution returns a single execution by id.
@@ -256,6 +274,9 @@ type ExecutionServiceHandler interface {
 	// ListPendingApprovals returns unresolved Tier 2 approval requests
 	// for the tenant (optionally scoped to an execution).
 	ListPendingApprovals(context.Context, *connect.Request[v1.ListPendingApprovalsRequest]) (*connect.Response[v1.ListPendingApprovalsResponse], error)
+	// DeleteExecution hard-deletes an execution. If the execution is still
+	// running, it is cancelled first.
+	DeleteExecution(context.Context, *connect.Request[v1.DeleteExecutionRequest]) (*connect.Response[v1.DeleteExecutionResponse], error)
 }
 
 // NewExecutionServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -319,6 +340,12 @@ func NewExecutionServiceHandler(svc ExecutionServiceHandler, opts ...connect.Han
 		connect.WithSchema(executionServiceMethods.ByName("ListPendingApprovals")),
 		connect.WithHandlerOptions(opts...),
 	)
+	executionServiceDeleteExecutionHandler := connect.NewUnaryHandler(
+		ExecutionServiceDeleteExecutionProcedure,
+		svc.DeleteExecution,
+		connect.WithSchema(executionServiceMethods.ByName("DeleteExecution")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/orchicon.api.v1.ExecutionService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ExecutionServiceGetExecutionProcedure:
@@ -339,6 +366,8 @@ func NewExecutionServiceHandler(svc ExecutionServiceHandler, opts ...connect.Han
 			executionServiceApproveToolCallHandler.ServeHTTP(w, r)
 		case ExecutionServiceListPendingApprovalsProcedure:
 			executionServiceListPendingApprovalsHandler.ServeHTTP(w, r)
+		case ExecutionServiceDeleteExecutionProcedure:
+			executionServiceDeleteExecutionHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -382,4 +411,8 @@ func (UnimplementedExecutionServiceHandler) ApproveToolCall(context.Context, *co
 
 func (UnimplementedExecutionServiceHandler) ListPendingApprovals(context.Context, *connect.Request[v1.ListPendingApprovalsRequest]) (*connect.Response[v1.ListPendingApprovalsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.ExecutionService.ListPendingApprovals is not implemented"))
+}
+
+func (UnimplementedExecutionServiceHandler) DeleteExecution(context.Context, *connect.Request[v1.DeleteExecutionRequest]) (*connect.Response[v1.DeleteExecutionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.ExecutionService.DeleteExecution is not implemented"))
 }

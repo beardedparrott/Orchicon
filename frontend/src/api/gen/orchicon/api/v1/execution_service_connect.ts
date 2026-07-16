@@ -9,7 +9,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { ApproveToolCallRequest, ApproveToolCallResponse, CancelExecutionRequest, CancelExecutionResponse, CheckpointNowRequest, CheckpointNowResponse, GetExecutionRequest, GetExecutionResponse, ListExecutionsRequest, ListExecutionsResponse, ListPendingApprovalsRequest, ListPendingApprovalsResponse, PauseExecutionRequest, PauseExecutionResponse, ResumeExecutionRequest, ResumeExecutionResponse, StreamExecutionEventsRequest, StreamExecutionEventsResponse } from "./execution_pb.js";
+import { ApproveToolCallRequest, ApproveToolCallResponse, CancelExecutionRequest, CancelExecutionResponse, CheckpointNowRequest, CheckpointNowResponse, DeleteExecutionRequest, DeleteExecutionResponse, GetExecutionRequest, GetExecutionResponse, ListExecutionsRequest, ListExecutionsResponse, ListPendingApprovalsRequest, ListPendingApprovalsResponse, PauseExecutionRequest, PauseExecutionResponse, ResumeExecutionRequest, ResumeExecutionResponse, StreamExecutionEventsRequest, StreamExecutionEventsResponse } from "./execution_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -125,6 +125,18 @@ export const ExecutionService = {
       name: "ListPendingApprovals",
       I: ListPendingApprovalsRequest,
       O: ListPendingApprovalsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * DeleteExecution hard-deletes an execution. If the execution is still
+     * running, it is cancelled first.
+     *
+     * @generated from rpc orchicon.api.v1.ExecutionService.DeleteExecution
+     */
+    deleteExecution: {
+      name: "DeleteExecution",
+      I: DeleteExecutionRequest,
+      O: DeleteExecutionResponse,
       kind: MethodKind.Unary,
     },
   }

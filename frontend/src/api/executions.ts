@@ -60,6 +60,7 @@ export function useListExecutions(opts?: {
   projectId?: string;
   taskId?: string;
   status?: number;
+  workflowRunId?: string;
 }) {
   return useQuery({
     queryKey: executionKeys.list(opts?.projectId, opts?.status),
@@ -69,6 +70,7 @@ export function useListExecutions(opts?: {
         projectId: opts?.projectId ?? undefined,
         taskId: opts?.taskId ?? undefined,
         status: opts?.status ?? undefined,
+        workflowRunId: opts?.workflowRunId ?? undefined,
       });
       return res.executions as WorkerExecution[];
     },
@@ -169,6 +171,18 @@ export function useCheckpointNow() {
     },
     onSuccess: (_, id) => {
       qc.invalidateQueries({ queryKey: executionKeys.detail(id) });
+    },
+  });
+}
+
+export function useDeleteExecution() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      await executionClient.deleteExecution({ id });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: executionKeys.all });
     },
   });
 }

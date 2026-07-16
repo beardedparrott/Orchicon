@@ -123,6 +123,9 @@ func (s *Service) ListExecutions(ctx context.Context, req *connect.Request[apiv1
 	if req.Msg.Status != nil {
 		f.Status = execStatusFromProto(*req.Msg.Status)
 	}
+	if req.Msg.WorkflowRunId != nil {
+		f.WorkflowRunID = *req.Msg.WorkflowRunId
+	}
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -140,6 +143,46 @@ func (s *Service) ListExecutions(ctx context.Context, req *connect.Request[apiv1
 		resp.NextPageToken = execs[len(execs)-1].ID
 	}
 	return connect.NewResponse(resp), nil
+}
+
+// DeleteExecution hard-deletes an execution. If running, it is cancelled first.
+func (s *Service) DeleteExecution(ctx context.Context, req *connect.Request[apiv1.DeleteExecutionRequest]) (*connect.Response[apiv1.DeleteExecutionResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetExecution(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	// If still running (not yet terminated), cancel it first.
+	if current.Status != domain.ExecutionTerminated && current.Status != domain.ExecutionFailedToStart {
+		now := time.Now().UTC()
+		_, err := db.UpdateExecution(ctx, ttx.Tx, tenantID, req.Msg.Id, current.Version, db.UpdateExecutionFields{
+			Status:      strPtr(domain.ExecutionTerminated),
+			HealthState: strPtr(domain.HealthTerminating),
+			EndedAt:     &now,
+		})
+		if err != nil {
+			return nil, mapDBError(err)
+		}
+	}
+	if err := db.DeleteExecution(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("execution deleted", "id", req.Msg.Id)
+	return connect.NewResponse(&apiv1.DeleteExecutionResponse{}), nil
 }
 
 // StreamExecutionEvents is the server-stream RPC that fans out execution

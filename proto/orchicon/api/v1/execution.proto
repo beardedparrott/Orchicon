@@ -123,7 +123,14 @@ message ListExecutionsRequest {
   optional ExecutionStatus status = 4;
   string page_token = 5;
   int32 page_size = 6;
+  optional string workflow_run_id = 7;
 }
+
+message DeleteExecutionRequest {
+  string id = 1;
+}
+
+message DeleteExecutionResponse {}
 
 message ListExecutionsResponse {
   repeated WorkerExecution executions = 1;
