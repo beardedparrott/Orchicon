@@ -86,6 +86,30 @@ export const STEP_KIND_ICONS: Record<number, LucideIcon> = {
   7: FileText, // project (same icon family as work item; palette labels distinguish)
 };
 
+// Accent name per step kind, shared by palette tiles, handle colors,
+// and edge stroke colors.
+export const KIND_ACCENT: Record<number, string> = {
+  [STEP_KIND.TASK]: "sky",
+  [STEP_KIND.DECISION]: "amber",
+  [STEP_KIND.APPROVAL]: "yellow",
+  [STEP_KIND.PARALLEL]: "violet",
+  [STEP_KIND.RECOVER]: "rose",
+  [STEP_KIND.WORK_ITEM]: "emerald",
+  [STEP_KIND.PROJECT]: "indigo",
+};
+
+// Tailwind stroke classes per accent name, used to color edges by source
+// step kind so the workflow flow is visually apparent.
+export const ACCENT_STROKE: Record<string, string> = {
+  sky: "stroke-sky-400",
+  amber: "stroke-amber-400",
+  yellow: "stroke-yellow-500",
+  violet: "stroke-violet-400",
+  rose: "stroke-rose-400",
+  emerald: "stroke-emerald-400",
+  indigo: "stroke-indigo-400",
+};
+
 export const WORKER_ICON: LucideIcon = Bot;
 export const WORKITEM_ICON: LucideIcon = FileText;
 export const PROJECT_ICON: LucideIcon = FileText;

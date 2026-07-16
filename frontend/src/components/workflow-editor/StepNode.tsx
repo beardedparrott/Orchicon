@@ -90,14 +90,27 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
           "border-dashed border-rose-400",
       )}
     >
+      {/* Target handles (incoming connections = dependencies) —
+          left and top positions for flexible layout. */}
       <Handle
         type="target"
+        id="target-left"
         position={Position.Left}
         className={cn(
           "!h-2.5 !w-2.5 !border-2 !border-background",
           stepKindHandleClasses[kind],
         )}
       />
+      <Handle
+        type="target"
+        id="target-top"
+        position={Position.Top}
+        className={cn(
+          "!h-2 !w-2 !border-2 !border-background",
+          stepKindHandleClasses[kind],
+        )}
+      />
+
       {/* PR D: hover-only × in the top-right corner. Clicking removes
           the node. We use a regular <button> for accessibility; the
           parent ReactFlow parent stops propagation so the click
@@ -164,11 +177,23 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
           </span>
         </div>
       )}
+      {/* Source handles (outgoing connections) — right and bottom
+          positions for flexible layout. */}
       <Handle
         type="source"
+        id="source-right"
         position={Position.Right}
         className={cn(
           "!h-2.5 !w-2.5 !border-2 !border-background",
+          stepKindHandleClasses[kind],
+        )}
+      />
+      <Handle
+        type="source"
+        id="source-bottom"
+        position={Position.Bottom}
+        className={cn(
+          "!h-2 !w-2 !border-2 !border-background",
           stepKindHandleClasses[kind],
         )}
       />

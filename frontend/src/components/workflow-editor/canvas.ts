@@ -8,6 +8,8 @@
 import { MarkerType, type Edge, type Node } from "reactflow";
 
 import {
+  ACCENT_STROKE,
+  KIND_ACCENT,
   KIND_TO_STR,
   STR_TO_KIND,
   type StepData,
@@ -74,14 +76,24 @@ export function stepsToCanvas(stepsJson: string): {
       config: s.config,
     },
   }));
+  // Build a kind lookup so edges can be color-coded by source kind.
+  const kindByNodeId = new Map<string, number>();
+  for (const s of steps) {
+    kindByNodeId.set(s.id, STR_TO_KIND[s.kind] ?? 1);
+  }
   const edges: Edge[] = [];
   for (const s of steps) {
     for (const dep of s.depends_on ?? []) {
+      const srcKind = kindByNodeId.get(dep) ?? 1;
+      const accent = KIND_ACCENT[srcKind] ?? "sky";
       edges.push({
         id: `e-${dep}-${s.id}`,
         source: dep,
         target: s.id,
         markerEnd: { type: MarkerType.ArrowClosed },
+        animated: true,
+        style: { stroke: `var(--kind-${accent})` },
+        className: ACCENT_STROKE[accent] ?? "",
       });
     }
   }
