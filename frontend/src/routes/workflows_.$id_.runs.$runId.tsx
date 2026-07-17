@@ -56,19 +56,25 @@ function WorkflowRunPage() {
 }
 
 const STEP_KIND_LABELS: Record<number, string> = {
-  1: "task",
-  2: "decision",
+  1: "worker",
+  2: "conditional",
   3: "approval",
   4: "parallel",
   5: "recover",
+  6: "work_item",
+  7: "project",
+  8: "policy",
 };
 
 const STEP_KIND_COLORS: Record<number, string> = {
-  1: "border-blue-400",
+  1: "border-sky-400",
   2: "border-amber-400",
   3: "border-yellow-500",
-  4: "border-purple-400",
-  5: "border-red-400",
+  4: "border-violet-400",
+  5: "border-rose-400",
+  6: "border-emerald-400",
+  7: "border-indigo-400",
+  8: "border-amber-400",
 };
 
 const STEP_RUN_STATUS_COLORS: Record<number, string> = {
@@ -123,6 +129,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
     }
     const kindStrToNum: Record<string, number> = {
       task: 1, decision: 2, approval: 3, parallel: 4, recover: 5,
+      work_item: 6, project: 7, policy: 8,
     };
     const statusByStep = new Map<string, number>();
     for (const sr of stepRuns ?? []) {
@@ -426,14 +433,6 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
 
 // --- Run step node (overlays step-run status on the canvas) ---
 function RunStepNode({ data }: { data: { kind: number; name: string; ref: string; runStatus: number } }) {
-  // data.runStatus is a STEP_RUN_STATUS_* (WorkflowStepRunRow.status),
-  // not a WorkflowRunStatus. They happen to share the same integer
-  // values for some entries but NOT for the ones that matter:
-  //   step run 4 = succeeded, 5 = failed
-  //   workflow run 4 = failed, 3 = completed
-  // Using RUN_STATUS_LABELS here made every succeeded step render as
-  // "failed" — the green pill said one thing, the label said another.
-  // Always use STEP_RUN_STATUS_LABELS so the color and label agree.
   const statusColor = STEP_RUN_STATUS_COLORS[data.runStatus] ?? "bg-gray-200";
   const statusLabel =
     STEP_RUN_STATUS_LABELS[data.runStatus] ?? "pending";
@@ -444,7 +443,8 @@ function RunStepNode({ data }: { data: { kind: number; name: string; ref: string
         STEP_KIND_COLORS[data.kind] ?? "border-gray-300",
       )}
     >
-      <Handle type="target" position={Position.Left} />
+      <Handle type="target" id="target-left" position={Position.Left} className="!h-2.5 !w-2.5 !border-2 !border-background" />
+      <Handle type="target" id="target-top" position={Position.Top} className="!h-2 !w-2 !border-2 !border-background" />
       <div className="text-[10px] font-medium uppercase text-muted-foreground">
         {STEP_KIND_LABELS[data.kind] ?? "step"}
       </div>
@@ -452,7 +452,8 @@ function RunStepNode({ data }: { data: { kind: number; name: string; ref: string
       <div className={cn("mt-1 inline-block rounded-full px-2 py-0.5 text-[10px] font-medium", statusColor)}>
         {statusLabel}
       </div>
-      <Handle type="source" position={Position.Right} />
+      <Handle type="source" id="source-right" position={Position.Right} className="!h-2.5 !w-2.5 !border-2 !border-background" />
+      <Handle type="source" id="source-bottom" position={Position.Bottom} className="!h-2 !w-2 !border-2 !border-background" />
     </div>
   );
 }
