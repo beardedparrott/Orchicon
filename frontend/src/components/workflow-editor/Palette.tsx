@@ -3,9 +3,12 @@ import {
   ChevronDown,
   ChevronRight,
   FileText,
+  GitBranch,
   GitFork,
   Info,
   LifeBuoy,
+  ShieldCheck,
+  UserCheck,
   type LucideIcon,
 } from "lucide-react";
 
@@ -14,10 +17,8 @@ import { cn } from "@/lib/utils";
 
 import {
   PALETTE_MIME,
-  POLICY_ICON,
   PROJECT_ICON,
   STEP_KIND,
-  STEP_KIND_ICONS,
   WORKER_ICON,
   WORKITEM_ICON,
   type PaletteDropPayload,
@@ -72,25 +73,28 @@ export function Palette({ readOnly }: { readOnly: boolean }) {
         />
       </Section>
       <Section
-        title="Policy"
-        icon={POLICY_ICON}
-        subtitle="Attach a Rego gate rule"
+        title="Conditional"
+        icon={GitBranch}
+        subtitle="Policy gates, approvals, and fan-out"
       >
         <DraggableTile
           label="Policy"
           sublabel="Pick a policy on the right"
-          icon={POLICY_ICON}
+          icon={ShieldCheck}
           kindAccent="amber"
           payload={{ kind: STEP_KIND.POLICY, name: "Policy" }}
-          description="A policy gate evaluated before the step runs. Select the policy in the properties panel."
+          description="A Rego policy gate evaluated before the step runs. Select the policy in the properties panel."
           readOnly={readOnly}
         />
-      </Section>
-      <Section
-        title="Parallel"
-        icon={GitFork}
-        subtitle="Fan out to multiple downstream steps"
-      >
+        <DraggableTile
+          label="Approval"
+          sublabel="Human approval gate"
+          icon={UserCheck}
+          kindAccent="yellow"
+          payload={{ kind: STEP_KIND.APPROVAL, name: "Approval" }}
+          description="Blocks until a human approves. Approval wiring coming in a follow-up."
+          readOnly={readOnly}
+        />
         <DraggableTile
           label="Parallel"
           sublabel="Runs all direct downstream steps concurrently"
@@ -109,7 +113,7 @@ export function Palette({ readOnly }: { readOnly: boolean }) {
         <DraggableTile
           label="Recovery"
           sublabel="Set strategy in properties"
-          icon={STEP_KIND_ICONS[STEP_KIND.RECOVER]}
+          icon={LifeBuoy}
           kindAccent="rose"
           payload={{ kind: STEP_KIND.RECOVER, name: "Recovery" }}
           description="Triggers recovery on upstream failure. Choose the strategy in the properties panel."

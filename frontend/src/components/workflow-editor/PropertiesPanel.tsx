@@ -181,6 +181,16 @@ export function PropertiesPanel({
           </Field>
         )}
 
+        {d.kind === STEP_KIND.APPROVAL && (
+          <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+            <p className="font-medium">Approval gate</p>
+            <p className="mt-1">
+              This step blocks until a human approves. The approval wiring (who approves,
+              notification channels, SLA, escalation) will be wired in a follow-up.
+            </p>
+          </div>
+        )}
+
         {d.kind === STEP_KIND.PARALLEL && (
           <Field label="Behavior" hint="All directly-connected downstream steps run concurrently. Steps two hops away still wait for their own dependency chain.">
             <p className="text-xs text-muted-foreground">
