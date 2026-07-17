@@ -49,6 +49,7 @@ import {
   ACCENT_STROKE,
   KIND_ACCENT,
   PALETTE_MIME,
+  STEP_KIND,
   type PaletteDropPayload,
   type StepData,
 } from "@/components/workflow-editor/stepKinds";
@@ -374,11 +375,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
       } catch {
         return;
       }
-      const { kind, name, ref, workerId, workItemId, policyId, recoveryStrategy } = parsed;
-      // screenToFlowPosition falls back to clientX/clientY if the
-      // viewport is not yet initialized (the function returns the input
-      // unchanged when its internal domNode ref is null). Guard the
-      // values anyway so we never place a node at NaN.
+      const { kind, name } = parsed;
       const raw = rf.screenToFlowPosition({
         x: event.clientX,
         y: event.clientY,
@@ -388,36 +385,13 @@ function EditorInner({ workflowId }: { workflowId: string }) {
         y: Number.isFinite(raw?.y) ? raw.y : 100,
       };
       const id = `step-${Math.random().toString(36).slice(2, 10)}`;
-      // Build the per-kind config JSON. The WorkflowReconciler reads
-      // work_item_id (WORK_ITEM steps) and project_id (PROJECT steps)
-      // out of config; the rest is preserved as editor-only hints.
-      let configObj: Record<string, unknown> = {};
-      if (workItemId) {
-        configObj.work_item_id = workItemId;
-        if (name) configObj.work_item_title = name;
-      }
-      if (policyId) {
-        configObj.policy_id = policyId;
-      }
-      // PR D: recovery strategy rides along in config so the
-      // recovery engine can pick it up at dispatch.
-      if (recoveryStrategy) {
-        configObj.strategy = recoveryStrategy;
-      }
-      // PROJECT steps also carry the project id in the ref so the
-      // node card shows a short label, and in config.project_id for
-      // the reconciler to pick up.
-      if (kind === 7 && ref) {
-        configObj.project_id = ref;
-      }
-      const config = JSON.stringify(configObj);
       const data: StepData = {
         kind,
         name: name ?? `step-${id.slice(5, 9)}`,
-        ref: ref ?? "",
-        workerVersion: workerId ? 0 : 0,
-        gatePolicyRef: policyId ?? "",
-        config,
+        ref: "",
+        workerVersion: 0,
+        gatePolicyRef: "",
+        config: "{}",
       };
       const node: Node<StepData> = {
         id,
@@ -445,32 +419,42 @@ function EditorInner({ workflowId }: { workflowId: string }) {
     setDirty(true);
   };
 
-  // --- validation (docs/10 §11: validation is part of the editor) ---
+  // --- validation ---
   // Per-kind required bindings:
-  //   task (1)      → worker ref OR a work_item_id in config (the latter
-  //                   from an upstream WORK_ITEM step; this validation
-  //                   checks the local ref which is the direct binding)
+  //   task (1)      → worker ref
   //   work_item (6) → config.work_item_id
-  //   project (7)   → config.project_id (or ref carrying the project id)
-  //   decision/approval/parallel/recover → no required binding
+  //   project (7)   → config.project_id
+  //   policy (8)    → gatePolicyRef
+  //   recover (5)   → config.strategy
+  //   decision/approval/parallel → no required binding
   const validate = useCallback((): string[] => {
     const errs: string[] = [];
     for (const n of nodes) {
       const d = n.data;
       const cfg = parseConfig(d.config);
-      if (d.kind === 1 && !d.ref) {
+      if (d.kind === STEP_KIND.TASK && !d.ref) {
         errs.push(
-          `Step "${d.name || n.id}" is a worker but has no Worker reference.`,
+          `Step "${d.name || n.id}" is a worker but has no Worker selected.`,
         );
       }
-      if (d.kind === 6 && !cfg.work_item_id) {
+      if (d.kind === STEP_KIND.WORK_ITEM && !cfg.work_item_id) {
         errs.push(
-          `Step "${d.name || n.id}" is a work item but has no work_item_id.`,
+          `Step "${d.name || n.id}" is a work item but has no work item selected.`,
         );
       }
-      if (d.kind === 7 && !cfg.project_id && !d.ref) {
+      if (d.kind === STEP_KIND.PROJECT && !cfg.project_id) {
         errs.push(
-          `Step "${d.name || n.id}" is a project but has no project_id.`,
+          `Step "${d.name || n.id}" is a project but has no project selected.`,
+        );
+      }
+      if (d.kind === STEP_KIND.POLICY && !d.gatePolicyRef) {
+        errs.push(
+          `Step "${d.name || n.id}" is a policy but has no policy selected.`,
+        );
+      }
+      if (d.kind === STEP_KIND.RECOVER && !cfg.strategy) {
+        errs.push(
+          `Step "${d.name || n.id}" is a recovery step but has no strategy selected.`,
         );
       }
       if (!d.name) {
@@ -761,7 +745,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
 
         {/* main editor layout: palette | canvas | properties */}
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[240px_1fr_300px]">
-          <Palette projectId={projectId} readOnly={readOnly} />
+          <Palette readOnly={readOnly} />
 
           {/* canvas */}
           <div
@@ -822,6 +806,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
             node={selectedNode}
             onChange={updateSelected}
             readOnly={readOnly}
+            projectId={projectId}
           />
         </div>
 
