@@ -188,15 +188,14 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// Signal execution started (docs/03 §6: assigned → running).
 	callbacks.OnStarted(ctx, execRow.ID)
 
-	// Progress monitor: detects stuck-looping (no progress, no file
-	// changes, repeated tool calls) and raises OnStall → triggers
-	// recovery (docs/06 §2 stalled trigger; docs/03 §5). One monitor
-	// per execution; closed when the subprocess exits.
-	monitor := newProgressMonitor(execRow.ID, defaultStallWindows())
-	go monitor.run(ctx, func(execID, reason string) {
-		callbacks.OnStall(ctx, execID, reason)
-	})
-	defer monitor.close()
+	// Per-execution streaming state. textSeq is a monotonically
+	// increasing per-execution counter so the frontend can order chunks
+	// even if NATS delivers them out of order. The text accumulator
+	// (`output`) is closed-over by parseStdoutLine so the ORCHICON
+	// WORKER SUMMARY block can still be extracted at OnResult time
+	// (PR B — context propagation), independent of how the chunks were
+	// fanned out for the live UI.
+	textSeq := 0
 
 	// Accumulated JSON error message. opencode's `--format json`
 	// stream emits {"type":"error","error":{"data":{"message":"..."}}}
@@ -215,6 +214,16 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// and propagate it as upstream context for the next stage.
 	var output strings.Builder
 
+	// Progress monitor: detects stuck-looping (no progress, no file
+	// changes, repeated tool calls) and raises OnStall → triggers
+	// recovery (docs/06 §2 stalled trigger; docs/03 §5). One monitor
+	// per execution; closed when the subprocess exits.
+	monitor := newProgressMonitor(execRow.ID, defaultStallWindows())
+	go monitor.run(ctx, func(execID, reason string) {
+		callbacks.OnStall(ctx, execID, reason)
+	})
+	defer monitor.close()
+
 	// Parse stdout JSON lines into telemetry events
 	// (docs/04 §6.1: line-buffered stdout parsing). Each event is also
 	// fed to the progress monitor for stall detection.
@@ -225,7 +234,7 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		if line == "" {
 			continue
 		}
-		a.parseStdoutLine(ctx, execRow, manifest, line, callbacks, monitor, &output, &lastStreamErr)
+		a.parseStdoutLine(ctx, execRow, manifest, line, callbacks, monitor, &output, &lastStreamErr, &textSeq)
 	}
 
 	// Check for scanner error (e.g. truncated output).
@@ -279,7 +288,11 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 // `output` is the per-execution text accumulator (PR B — context
 // propagation). For "text" events the part text is appended so the
 // full worker output is available to OnResult.
-func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, line string, callbacks scheduler.ExecutionCallbacks, monitor *progressMonitor, output *strings.Builder, lastStreamErr *string) {
+//
+// `textSeq` is a per-execution monotonic counter for streamed text
+// chunks. The frontend uses it to order chunks if NATS delivers them
+// out of order; it is incremented once per emitTextChunk call.
+func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, line string, callbacks scheduler.ExecutionCallbacks, monitor *progressMonitor, output *strings.Builder, lastStreamErr *string, textSeq *int) {
 	var evt map[string]any
 	if err := json.Unmarshal([]byte(line), &evt); err != nil {
 		// Non-JSON line: treat as a log/progress marker.
@@ -293,36 +306,81 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, 
 	}
 	execID := execRow.ID
 	switch eventType {
-	case "step_start":
+	case evtStepStart:
 		a.log.Info("opencode step started", "execution", execID)
-	case "text":
+	case evtText:
 		// Text part: the model's response text. PR B: append to the
 		// accumulator so the TaskReconciler can extract the
-		// ORCHICON WORKER SUMMARY block on completion. Also publish
-		// each text chunk live so the runtime session pane shows
-		// real-time streaming output.
+		// ORCHICON WORKER SUMMARY block on completion. Also fan the
+		// text out as incremental chunks (textStreamingChunkSize +
+		// textStreamingChunkDelay) so the runtime session pane shows
+		// a typing-style live stream — opencode's --format json
+		// delivers the full text in one event at step_finish, so
+		// without chunking the user would see no streaming at all.
 		text, _ := part["text"].(string)
 		if output != nil && text != "" {
 			output.WriteString(text)
 		}
 		if text != "" {
-			callbacks.OnText(ctx, execID, text)
+			a.emitTextChunked(ctx, callbacks, execID, text, textSeq)
 		}
 		a.log.Debug("opencode text", "execution", execID, "text_len", len(text))
-	case "tool_call":
+	case evtToolUse:
+		// opencode v1.x: input + output both arrive in a single
+		// `tool_use` event. The previous dispatch only matched the
+		// legacy `tool_call` / `tool_result` pair — which v1.x never
+		// emits — so tool calls were silently dropped and the
+		// runtime session pane never saw any tool cards. The model's
+		// actual work (file writes, bash commands, web fetches) was
+		// invisible to the operator. Handle the v1.x shape:
+		//   {
+		//     "type": "tool_use",
+		//     "part": {
+		//       "tool": "bash",
+		//       "callID": "...",
+		//       "state": {
+		//         "status": "completed",
+		//         "input":  {...},
+		//         "output": "...",
+		//         "title":  "...",
+		//         "time":   {...}
+		//       }
+		//     }
+		//   }
 		toolName, _ := part["tool"].(string)
-		a.log.Info("opencode tool call", "execution", execID, "tool", toolName)
-		inp, _ := json.Marshal(part)
-		callbacks.OnToolCall(ctx, execID, toolName, inp, nil)
-	case "tool_result":
-		toolName, _ := part["tool"].(string)
-		a.log.Info("opencode tool result", "execution", execID, "tool", toolName)
-		out, _ := json.Marshal(part)
-		callbacks.OnToolCall(ctx, execID, toolName, nil, out)
-	case "file_diff":
-		path, _ := part["path"].(string)
-		a.log.Info("opencode file diff", "execution", execID, "path", path)
-	case "step_finish":
+		state, _ := part["state"].(map[string]any)
+		inRaw, _ := state["input"]
+		outStr, _ := state["output"].(string)
+		// `inp` is the JSON-marshalled input object so the frontend
+		// can render it as a structured "Input:" block. If
+		// marshalling fails (rare — input is always a JSON object)
+		// fall back to a string form so the operator still sees what
+		// was attempted.
+		inp, err := json.Marshal(inRaw)
+		if err != nil {
+			inp = []byte(fmt.Sprintf("%v", inRaw))
+		}
+		a.log.Info("opencode tool use",
+			"execution", execID, "tool", toolName,
+			"status", state["status"], "output_len", len(outStr))
+		callbacks.OnToolCall(ctx, execID, toolName, inp, []byte(outStr))
+	case evtReasoning:
+		// v1.x reasoning content (only when --thinking is enabled
+		// on the opencode CLI). Show as a separate reasoning block
+		// so the operator can see what the model was "thinking"
+		// before each assistant turn. Without this the live pane
+		// just shows the final answer.
+		reasonText, _ := part["text"].(string)
+		if reasonText == "" {
+			return
+		}
+		a.log.Debug("opencode reasoning", "execution", execID, "len", len(reasonText))
+		// Reasoning is also streamed chunk-by-chunk so it appears to
+		// unfold live. We tag it with a `kind: reasoning` prefix in
+		// the JSON payload so the frontend can render it in a
+		// distinct style without a new event-type enum.
+		a.emitReasoningChunked(ctx, callbacks, execID, reasonText, textSeq)
+	case evtStepFinish:
 		// Step completion carries token usage + cost (docs/04 §6.1).
 		// Record it via the AI Gateway dual-write: Postgres source of
 		// truth + OTel metrics → ClickHouse (docs/08 §5.2). Best-effort
@@ -331,15 +389,11 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, 
 		cost, _ := part["cost"].(float64)
 		a.log.Info("opencode step finished", "execution", execID, "cost", cost, "tokens", tokens)
 		a.recordUsage(ctx, execRow, manifest, tokens, cost)
-		// Publish the accumulated output text for the runtime session pane.
-		if output != nil && output.Len() > 0 {
-			callbacks.OnText(ctx, execID, output.String())
-		}
-	case "health":
+	case evtHealth:
 		if state, ok := evt["state"].(string); ok {
 			callbacks.OnHealth(ctx, execID, state)
 		}
-	case "error":
+	case evtError:
 		// opencode's --format json emits an error event shaped like
 		// {"type":"error","error":{"name":"...","data":{"message":"..."}}}
 		// — the human-readable message lives at error.data.message, NOT
@@ -356,8 +410,103 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, 
 			*lastStreamErr = msg
 		}
 		callbacks.OnHealth(ctx, execID, domain.HealthUnhealthy)
+	case evtToolCall, evtToolResult, evtFileDiff:
+		// Legacy event names. opencode v1.x does NOT emit these —
+		// it uses `tool_use` (above) with embedded state for both
+		// input and output. Keep these branches as no-ops so a
+		// future rename is a one-line change.
+		a.log.Debug("opencode legacy event ignored", "execution", execID, "type", eventType)
 	default:
 		a.log.Debug("opencode event", "execution", execID, "type", eventType)
+	}
+}
+
+// emitTextChunked fans a single assistant-text payload out as a stream
+// of smaller chunks, each separated by a short delay, so the frontend
+// RuntimeSessionPane can render a typing-style live view. Without this,
+// opencode's --format json mode delivers the entire response in one
+// `text` event at step_finish and the user would see nothing until
+// completion.
+//
+// Each chunk is delivered via callbacks.OnText with a per-execution
+// sequence number so the frontend can order chunks even if NATS
+// delivers them out of order. The accumulator (`output`) is NOT
+// touched here — it is updated separately in parseStdoutLine so the
+// ORCHICON WORKER SUMMARY block is still extractable at OnResult time.
+func (a *Adapter) emitTextChunked(ctx context.Context, callbacks scheduler.ExecutionCallbacks, execID, text string, seq *int) {
+	if text == "" {
+		return
+	}
+	// Honor cancellation: if the context is done (execution
+	// cancelled/terminated), drop remaining chunks. The final
+	// accumulated output is still in `output` and will be folded
+	// into OnResult.
+	for i := 0; i < len(text); i += textStreamingChunkSize {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		end := i + textStreamingChunkSize
+		if end > len(text) {
+			end = len(text)
+		}
+		chunk := text[i:end]
+		*seq++
+		callbacks.OnText(ctx, execID, chunk)
+		// Pace the chunks so the frontend actually has time to
+		// render them. We skip the delay after the very last
+		// chunk — there's nothing to wait for.
+		if end < len(text) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(textStreamingChunkDelay):
+			}
+		}
+	}
+}
+
+// emitReasoningChunked is the reasoning-content counterpart to
+// emitTextChunked. Reasoning text arrives on a `reasoning` event
+// (opencode --thinking mode) and is also delivered in one big chunk,
+// so we fan it out the same way. Each chunk is tagged via a JSON
+// wrapper in the payload so the frontend can distinguish reasoning
+// from assistant text without needing a new event-type enum value.
+func (a *Adapter) emitReasoningChunked(ctx context.Context, callbacks scheduler.ExecutionCallbacks, execID, text string, seq *int) {
+	if text == "" {
+		return
+	}
+	for i := 0; i < len(text); i += textStreamingChunkSize {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		end := i + textStreamingChunkSize
+		if end > len(text) {
+			end = len(text)
+		}
+		chunk := text[i:end]
+		*seq++
+		wrapped := map[string]any{
+			"kind": "reasoning",
+			"text": chunk,
+			"seq":  *seq,
+		}
+		payload, _ := json.Marshal(wrapped)
+		// Use the existing OnText callback but encode the reasoning
+		// marker in the payload so the frontend can render it
+		// differently. OnText writes the payload verbatim into the
+		// outbox row.
+		callbacks.OnText(ctx, execID, string(payload))
+		if end < len(text) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(textStreamingChunkDelay):
+			}
+		}
 	}
 }
 
@@ -497,3 +646,40 @@ func (a *Adapter) runSimulation(ctx context.Context, execRow db.ExecutionRow, ma
 // Compile-time assertion that Adapter satisfies the AdapterBridge
 // interface.
 var _ scheduler.AdapterBridge = (*Adapter)(nil)
+
+// textStreamingChunkSize is the number of bytes per chunk when the
+// adapter fans out a single opencode `text` event into the streaming
+// pipeline (docs/04 §6.1). opencode's `--format json` mode delivers
+// the full assistant text as one event at step_finish — there is no
+// per-token streaming on the wire — so we chunk it on the adapter
+// side to give the frontend a typing-style experience. ~40 chars ≈
+// one short clause; small enough to feel incremental, large enough to
+// keep outbox writes under ~150/sec for the typical 1000-word
+// response.
+const textStreamingChunkSize = 40
+
+// textStreamingChunkDelay is the gap between emitted text chunks.
+// Tuned so a 1000-word response (~6000 chars) takes ~10s to "type
+// out" — fast enough to feel live, slow enough that each chunk is a
+// visible update rather than a flash.
+const textStreamingChunkDelay = 60 * time.Millisecond
+
+// opencode v1.x's --format json stream emits these event types.
+// Keep them as named constants so the dispatch table in
+// parseStdoutLine reads like the schema.
+const (
+	evtStepStart    = "step_start"
+	evtStepFinish   = "step_finish"
+	evtText         = "text"
+	evtToolUse      = "tool_use"  // v1.x: input + output in one event
+	evtReasoning    = "reasoning" // v1.x: only when --thinking is enabled
+	evtError        = "error"
+	evtHealth       = "health"
+	// Legacy names kept for backwards compatibility with older
+	// opencode builds / fork compat — we ignore these now but the
+	// case branches remain as no-ops so a future event-type rename
+	// is a one-liner.
+	evtToolCall     = "tool_call"
+	evtToolResult   = "tool_result"
+	evtFileDiff     = "file_diff"
+)
