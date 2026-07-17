@@ -559,7 +559,7 @@ const file_orchicon_api_v1_project_service_proto_rawDesc = "" +
 	"\x0e_from_sequence\"n\n" +
 	"\x1bStreamProjectEventsResponse\x123\n" +
 	"\x05event\x18\x01 \x01(\v2\x1d.orchicon.api.v1.ProjectEventR\x05event\x12\x1a\n" +
-	"\bsequence\x18\x02 \x01(\x03R\bsequence2\xfe\x06\n" +
+	"\bsequence\x18\x02 \x01(\x03R\bsequence2\xe7\a\n" +
 	"\x0eProjectService\x12^\n" +
 	"\rCreateProject\x12%.orchicon.api.v1.CreateProjectRequest\x1a&.orchicon.api.v1.CreateProjectResponse\x12U\n" +
 	"\n" +
@@ -570,7 +570,8 @@ const file_orchicon_api_v1_project_service_proto_rawDesc = "" +
 	"\rDeleteProject\x12%.orchicon.api.v1.DeleteProjectRequest\x1a&.orchicon.api.v1.DeleteProjectResponse\x12[\n" +
 	"\fPauseProject\x12$.orchicon.api.v1.PauseProjectRequest\x1a%.orchicon.api.v1.PauseProjectResponse\x12d\n" +
 	"\x0fActivateProject\x12'.orchicon.api.v1.ActivateProjectRequest\x1a(.orchicon.api.v1.ActivateProjectResponse\x12r\n" +
-	"\x13StreamProjectEvents\x12+.orchicon.api.v1.StreamProjectEventsRequest\x1a,.orchicon.api.v1.StreamProjectEventsResponse0\x01B\xcd\x01\n" +
+	"\x13StreamProjectEvents\x12+.orchicon.api.v1.StreamProjectEventsRequest\x1a,.orchicon.api.v1.StreamProjectEventsResponse0\x01\x12g\n" +
+	"\x10ListProjectFiles\x12(.orchicon.api.v1.ListProjectFilesRequest\x1a).orchicon.api.v1.ListProjectFilesResponseB\xcd\x01\n" +
 	"\x13com.orchicon.api.v1B\x13ProjectServiceProtoP\x01ZCgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1;apiv1\xa2\x02\x03OAX\xaa\x02\x0fOrchicon.Api.V1\xca\x02\x0fOrchicon\\Api\\V1\xe2\x02\x1bOrchicon\\Api\\V1\\GPBMetadata\xea\x02\x11Orchicon::Api::V1b\x06proto3"
 
 var (
@@ -606,7 +607,9 @@ var file_orchicon_api_v1_project_service_proto_goTypes = []any{
 	(*UpdateProjectRequest)(nil),        // 16: orchicon.api.v1.UpdateProjectRequest
 	(*ArchiveProjectRequest)(nil),       // 17: orchicon.api.v1.ArchiveProjectRequest
 	(*PauseProjectRequest)(nil),         // 18: orchicon.api.v1.PauseProjectRequest
-	(*ListProjectsResponse)(nil),        // 19: orchicon.api.v1.ListProjectsResponse
+	(*ListProjectFilesRequest)(nil),     // 19: orchicon.api.v1.ListProjectFilesRequest
+	(*ListProjectsResponse)(nil),        // 20: orchicon.api.v1.ListProjectsResponse
+	(*ListProjectFilesResponse)(nil),    // 21: orchicon.api.v1.ListProjectFilesResponse
 }
 var file_orchicon_api_v1_project_service_proto_depIdxs = []int32{
 	11, // 0: orchicon.api.v1.CreateProjectResponse.project:type_name -> orchicon.api.v1.Project
@@ -625,17 +628,19 @@ var file_orchicon_api_v1_project_service_proto_depIdxs = []int32{
 	18, // 13: orchicon.api.v1.ProjectService.PauseProject:input_type -> orchicon.api.v1.PauseProjectRequest
 	7,  // 14: orchicon.api.v1.ProjectService.ActivateProject:input_type -> orchicon.api.v1.ActivateProjectRequest
 	9,  // 15: orchicon.api.v1.ProjectService.StreamProjectEvents:input_type -> orchicon.api.v1.StreamProjectEventsRequest
-	0,  // 16: orchicon.api.v1.ProjectService.CreateProject:output_type -> orchicon.api.v1.CreateProjectResponse
-	1,  // 17: orchicon.api.v1.ProjectService.GetProject:output_type -> orchicon.api.v1.GetProjectResponse
-	19, // 18: orchicon.api.v1.ProjectService.ListProjects:output_type -> orchicon.api.v1.ListProjectsResponse
-	2,  // 19: orchicon.api.v1.ProjectService.UpdateProject:output_type -> orchicon.api.v1.UpdateProjectResponse
-	3,  // 20: orchicon.api.v1.ProjectService.ArchiveProject:output_type -> orchicon.api.v1.ArchiveProjectResponse
-	5,  // 21: orchicon.api.v1.ProjectService.DeleteProject:output_type -> orchicon.api.v1.DeleteProjectResponse
-	6,  // 22: orchicon.api.v1.ProjectService.PauseProject:output_type -> orchicon.api.v1.PauseProjectResponse
-	8,  // 23: orchicon.api.v1.ProjectService.ActivateProject:output_type -> orchicon.api.v1.ActivateProjectResponse
-	10, // 24: orchicon.api.v1.ProjectService.StreamProjectEvents:output_type -> orchicon.api.v1.StreamProjectEventsResponse
-	16, // [16:25] is the sub-list for method output_type
-	7,  // [7:16] is the sub-list for method input_type
+	19, // 16: orchicon.api.v1.ProjectService.ListProjectFiles:input_type -> orchicon.api.v1.ListProjectFilesRequest
+	0,  // 17: orchicon.api.v1.ProjectService.CreateProject:output_type -> orchicon.api.v1.CreateProjectResponse
+	1,  // 18: orchicon.api.v1.ProjectService.GetProject:output_type -> orchicon.api.v1.GetProjectResponse
+	20, // 19: orchicon.api.v1.ProjectService.ListProjects:output_type -> orchicon.api.v1.ListProjectsResponse
+	2,  // 20: orchicon.api.v1.ProjectService.UpdateProject:output_type -> orchicon.api.v1.UpdateProjectResponse
+	3,  // 21: orchicon.api.v1.ProjectService.ArchiveProject:output_type -> orchicon.api.v1.ArchiveProjectResponse
+	5,  // 22: orchicon.api.v1.ProjectService.DeleteProject:output_type -> orchicon.api.v1.DeleteProjectResponse
+	6,  // 23: orchicon.api.v1.ProjectService.PauseProject:output_type -> orchicon.api.v1.PauseProjectResponse
+	8,  // 24: orchicon.api.v1.ProjectService.ActivateProject:output_type -> orchicon.api.v1.ActivateProjectResponse
+	10, // 25: orchicon.api.v1.ProjectService.StreamProjectEvents:output_type -> orchicon.api.v1.StreamProjectEventsResponse
+	21, // 26: orchicon.api.v1.ProjectService.ListProjectFiles:output_type -> orchicon.api.v1.ListProjectFilesResponse
+	17, // [17:27] is the sub-list for method output_type
+	7,  // [7:17] is the sub-list for method input_type
 	7,  // [7:7] is the sub-list for extension type_name
 	7,  // [7:7] is the sub-list for extension extendee
 	0,  // [0:7] is the sub-list for field type_name

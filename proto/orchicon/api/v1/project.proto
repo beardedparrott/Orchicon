@@ -36,6 +36,29 @@ message Project {
   int32 version = 7;
   google.protobuf.Timestamp created_at = 8;
   google.protobuf.Timestamp updated_at = 9;
+  // project_dir is the root directory of the project on the local
+  // filesystem. Files within this directory can be selected as context
+  // for workers (context_files).
+  string project_dir = 10;
+  // context_files are relative file paths (from project_dir) selected
+  // to be included as context when workers are dispatched for this
+  // project. The contents of these files are injected into the
+  // composite prompt (buildCompositePrompt).
+  repeated string context_files = 11;
+}
+
+// ContextFiles is a wrapper so UpdateProjectRequest can distinguish
+// "don't update" from "clear context files" via optional.
+message ContextFiles {
+  repeated string files = 1;
+}
+
+// FileTreeEntry represents a file or directory in the project file tree.
+message FileTreeEntry {
+  string name = 1;
+  string path = 2; // relative path from project_dir
+  bool is_dir = 3;
+  repeated FileTreeEntry children = 4;
 }
 
 // Project lifecycle states. See docs/02_Domain_Model.md §2.1.
@@ -83,6 +106,21 @@ message UpdateProjectRequest {
   optional GoalFields goals = 3; // converted to JSON by the server; empty fields clears goals
   // FieldMask support added as the schema grows (docs/07 §5.4).
   string request_id = 4;
+  optional string project_dir = 6;
+  optional ContextFiles context_files = 7; // empty files list clears the selection
+}
+
+message ListProjectFilesRequest {
+  string id = 1; // project id (resolves project_dir)
+  // Optional subpath within project_dir to list. Empty string lists
+  // the root. Use for lazy directory expansion.
+  string subpath = 2;
+  // Max depth for recursive listing. 0 returns only immediate children.
+  int32 max_depth = 3;
+}
+
+message ListProjectFilesResponse {
+  FileTreeEntry root = 1;
 }
 
 message ArchiveProjectRequest {

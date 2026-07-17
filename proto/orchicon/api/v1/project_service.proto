@@ -19,6 +19,10 @@ service ProjectService {
   rpc PauseProject(PauseProjectRequest) returns (PauseProjectResponse);
   rpc ActivateProject(ActivateProjectRequest) returns (ActivateProjectResponse);
   rpc StreamProjectEvents(StreamProjectEventsRequest) returns (stream StreamProjectEventsResponse);
+  // ListProjectFiles returns the file tree of the project's directory.
+  // The project_dir must be set on the project first. Returns a recursive
+  // tree of files and directories rooted at project_dir.
+  rpc ListProjectFiles(ListProjectFilesRequest) returns (ListProjectFilesResponse);
 }
 
 message CreateProjectResponse {

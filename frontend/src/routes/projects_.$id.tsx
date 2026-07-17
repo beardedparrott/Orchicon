@@ -22,6 +22,8 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { FileBrowser } from "@/components/FileBrowser";
+
 import { Route as rootRoute } from "@/routes/__root";
 
 // Project detail with inline editing. UseUpdateProject calls the existing
@@ -216,6 +218,15 @@ function ProjectDetailPage() {
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {/* File browser section */}
+      {project && (
+        <FileBrowser
+          projectId={project.id}
+          projectDir={project.projectDir || ""}
+          initialSelectedFiles={project.contextFiles || []}
+        />
       )}
 
       {/* Live event feed */}

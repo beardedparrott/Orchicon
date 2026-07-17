@@ -18,6 +18,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -32,11 +34,15 @@ import (
 // maxNameLen / maxSlugLen bound input size to prevent abuse. Slugs are
 // also constrained to URL-safe characters by the slug regex.
 const (
-	maxNameLen      = 500
-	maxSlugLen      = 63
-	maxGoalKeyLen   = 100
-	maxGoalValueLen = 10000
-	maxGoalsLen     = 1 << 20 // 1 MiB; goals is a JSON document
+	maxNameLen        = 500
+	maxSlugLen        = 63
+	maxGoalKeyLen     = 100
+	maxGoalValueLen   = 10000
+	maxGoalsLen       = 1 << 20 // 1 MiB; goals is a JSON document
+	maxContextFiles   = 1000   // max number of context files
+	maxFilePathLen    = 4096   // max length of a single file path
+	maxFileTreeDepth  = 20     // max depth for recursive file tree listing
+	maxFileTreeSize   = 10000  // max total entries in a file tree listing
 )
 
 // slugRE defines the canonical slug character set: lowercase alphanumerics
@@ -233,18 +239,171 @@ func statusToProto(status string) int32 {
 	}
 }
 
+// validateProjectDir validates and cleans a project directory path.
+// It resolves the path to an absolute path (expanding ~ and symlinks),
+// verifies it exists and is a directory, and prevents path-traversal
+// attacks. Returns the cleaned absolute path.
+func validateProjectDir(dir string) (string, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return "", errors.New("project_dir must not be empty")
+	}
+	if len(dir) > maxFilePathLen {
+		return "", fmt.Errorf("project_dir exceeds max length of %d characters", maxFilePathLen)
+	}
+	// Expand ~
+	if strings.HasPrefix(dir, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("expand home dir: %w", err)
+		}
+		dir = filepath.Join(home, dir[2:])
+	} else if dir == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("expand home dir: %w", err)
+		}
+		dir = home
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve absolute path: %w", err)
+	}
+	abs = filepath.Clean(abs)
+	info, err := os.Stat(abs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("project_dir %q does not exist", abs)
+		}
+		return "", fmt.Errorf("stat project_dir: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("project_dir %q is not a directory", abs)
+	}
+	return abs, nil
+}
+
+// validateContextFiles validates a list of context file paths. Each path
+// must be non-empty, not exceed the max length, and must not be absolute
+// or contain path-traversal components like "..".
+func validateContextFiles(files []string) error {
+	if len(files) > maxContextFiles {
+		return fmt.Errorf("context_files exceeds max of %d entries", maxContextFiles)
+	}
+	for i, f := range files {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			return fmt.Errorf("context_files[%d] must not be empty", i)
+		}
+		if len(f) > maxFilePathLen {
+			return fmt.Errorf("context_files[%d] exceeds max length of %d characters", i, maxFilePathLen)
+		}
+		if filepath.IsAbs(f) {
+			return fmt.Errorf("context_files[%d] must be a relative path", i)
+		}
+		if strings.Contains(f, "..") {
+			return fmt.Errorf("context_files[%d] must not contain path-traversal components", i)
+		}
+		if strings.HasPrefix(f, "/") || strings.HasPrefix(f, "\\") {
+			return fmt.Errorf("context_files[%d] must be a relative path", i)
+		}
+	}
+	return nil
+}
+
+// contextFilesToJSON marshals a list of file paths to a JSON byte array.
+func contextFilesToJSON(files []string) ([]byte, error) {
+	if files == nil {
+		files = []string{}
+	}
+	return json.Marshal(files)
+}
+
+// contextFilesFromJSON unmarshals a JSON byte array to a list of file paths.
+func contextFilesFromJSON(data []byte) ([]string, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var files []string
+	if err := json.Unmarshal(data, &files); err != nil {
+		return nil, fmt.Errorf("parse context_files: %w", err)
+	}
+	return files, nil
+}
+
+// buildFileTree recursively builds a FileTreeEntry from a directory path.
+// Returns a tree rooted at the given path, limited by maxDepth and maxTotal.
+func buildFileTree(root string, relPath string, depth int, maxDepth int, counter *int) (*apiv1.FileTreeEntry, error) {
+	if depth > maxDepth {
+		return nil, nil
+	}
+	if counter != nil && *counter > maxFileTreeSize {
+		return nil, nil
+	}
+	fullPath := filepath.Join(root, relPath)
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		return nil, nil // skip inaccessible entries
+	}
+	name := filepath.Base(relPath)
+	if relPath == "" {
+		name = filepath.Base(root)
+	}
+	entry := &apiv1.FileTreeEntry{
+		Name:  name,
+		Path:  relPath,
+		IsDir: info.IsDir(),
+	}
+	if counter != nil {
+		*counter++
+	}
+	if info.IsDir() {
+		entries, err := os.ReadDir(fullPath)
+		if err != nil {
+			return entry, nil // directory exists but can't read contents
+		}
+		for _, e := range entries {
+			childRel := filepath.Join(relPath, e.Name())
+			if relPath == "" {
+				childRel = e.Name()
+			}
+			child, err := buildFileTree(root, childRel, depth+1, maxDepth, counter)
+			if err != nil {
+				continue
+			}
+			if child != nil {
+				entry.Children = append(entry.Children, child)
+			}
+		}
+	}
+	return entry, nil
+}
+
 // rowToProto maps a db.ProjectRow to the generated proto Project type.
 // Timestamps are converted to timestamppb.
 func rowToProto(p db.ProjectRow) *apiv1.Project {
 	return &apiv1.Project{
-		Id:        p.ID,
-		TenantId:  p.TenantID,
-		Name:      p.Name,
-		Slug:      p.Slug,
-		Status:    apiv1.ProjectStatus(statusToProto(p.Status)),
-		Goals:     string(p.Goals),
-		Version:   int32(p.Version),
-		CreatedAt: timestamppb.New(p.CreatedAt),
-		UpdatedAt: timestamppb.New(p.UpdatedAt),
+		Id:           p.ID,
+		TenantId:     p.TenantID,
+		Name:         p.Name,
+		Slug:         p.Slug,
+		Status:       apiv1.ProjectStatus(statusToProto(p.Status)),
+		Goals:        string(p.Goals),
+		Version:      int32(p.Version),
+		CreatedAt:    timestamppb.New(p.CreatedAt),
+		UpdatedAt:    timestamppb.New(p.UpdatedAt),
+		ProjectDir:   p.ProjectDir,
+		ContextFiles: contextFilesFromJSONOrEmpty(p.ContextFiles),
 	}
+}
+
+// contextFilesFromJSONOrEmpty is a best-effort parser for the context_files
+// JSONB column. Returns empty slice on any error so the API never crashes
+// on corrupt data.
+func contextFilesFromJSONOrEmpty(data []byte) []string {
+	files, err := contextFilesFromJSON(data)
+	if err != nil {
+		return nil
+	}
+	return files
 }

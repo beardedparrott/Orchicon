@@ -14,15 +14,17 @@ import (
 // centralized here (AGENTS.md invariant #4). Callers translate to/from
 // the domain or API types at the service boundary.
 type ProjectRow struct {
-	ID        string
-	TenantID  string
-	Name      string
-	Slug      string
-	Status    string
-	Goals     []byte
-	Version   int
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID           string
+	TenantID     string
+	Name         string
+	Slug         string
+	Status       string
+	Goals        []byte
+	Version      int
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	ProjectDir   string
+	ContextFiles []byte // jsonb: relative file paths selected as context
 }
 
 // ErrNotFound is returned when a single-row query matches no rows. The
@@ -40,15 +42,17 @@ var ErrNotFound = errors.New("db: not found")
 // and RLS is the backstop (docs/09 §8.5).
 func CreateProject(ctx context.Context, tx pgx.Tx, p ProjectRow) (ProjectRow, error) {
 	const q = `INSERT INTO projects
-		(id, tenant_id, name, slug, status, goals)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at`
+		(id, tenant_id, name, slug, status, goals, project_dir)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at,
+			project_dir, context_files`
 	row := p
 	err := tx.QueryRow(ctx, q,
-		p.ID, p.TenantID, p.Name, p.Slug, p.Status, p.Goals,
+		p.ID, p.TenantID, p.Name, p.Slug, p.Status, p.Goals, p.ProjectDir,
 	).Scan(
 		&row.ID, &row.TenantID, &row.Name, &row.Slug, &row.Status, &row.Goals,
 		&row.Version, &row.CreatedAt, &row.UpdatedAt,
+		&row.ProjectDir, &row.ContextFiles,
 	)
 	if err != nil {
 		return ProjectRow{}, fmt.Errorf("db: create project: %w", err)
@@ -61,12 +65,13 @@ func CreateProject(ctx context.Context, tx pgx.Tx, p ProjectRow) (ProjectRow, er
 // isolation layer; RLS is the backstop (docs/09 §8.5).
 func GetProject(ctx context.Context, tx pgx.Tx, tenantID, id string) (ProjectRow, error) {
 	const q = `SELECT id, tenant_id, name, slug, status, goals, version,
-		created_at, updated_at
+		created_at, updated_at, project_dir, context_files
 		FROM projects WHERE id = $1 AND tenant_id = $2`
 	var p ProjectRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
+		&p.ProjectDir, &p.ContextFiles,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectRow{}, ErrNotFound
@@ -128,7 +133,7 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 		sortOrder = "DESC"
 	}
 	q := fmt.Sprintf(`SELECT id, tenant_id, name, slug, status, goals, version,
-		created_at, updated_at
+		created_at, updated_at, project_dir, context_files
 		FROM projects
 		WHERE %s
 		ORDER BY %s %s LIMIT $%d`, where, sortBy, sortOrder, idx)
@@ -142,7 +147,8 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 	for rows.Next() {
 		var p ProjectRow
 		if err := rows.Scan(&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status,
-			&p.Goals, &p.Version, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			&p.Goals, &p.Version, &p.CreatedAt, &p.UpdatedAt,
+			&p.ProjectDir, &p.ContextFiles); err != nil {
 			return nil, fmt.Errorf("db: scan project: %w", err)
 		}
 		out = append(out, p)
@@ -156,9 +162,11 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 // fields are written; nil fields are left untouched (field-mask
 // semantics — docs/07 §5.4).
 type UpdateProjectFields struct {
-	Name  *string
-	Slug  *string
-	Goals *[]byte
+	Name         *string
+	Slug         *string
+	Goals        *[]byte
+	ProjectDir   *string
+	ContextFiles *[]byte
 }
 
 // UpdateProject applies a partial update with optimistic concurrency.
@@ -184,12 +192,23 @@ func UpdateProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expected
 		args = append(args, *f.Goals)
 		setIdx++
 	}
+	if f.ProjectDir != nil {
+		q += fmt.Sprintf(`, project_dir = $%d`, setIdx)
+		args = append(args, *f.ProjectDir)
+		setIdx++
+	}
+	if f.ContextFiles != nil {
+		q += fmt.Sprintf(`, context_files = $%d`, setIdx)
+		args = append(args, *f.ContextFiles)
+		setIdx++
+	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
-	q += ` RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at`
+	q += ` RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at, project_dir, context_files`
 	var p ProjectRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
+		&p.ProjectDir, &p.ContextFiles,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectRow{}, ErrNotFound
@@ -258,11 +277,13 @@ func ArchiveProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 	const q = `UPDATE projects
 		SET status = 'archived', updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
-		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at`
+		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at,
+			project_dir, context_files`
 	var p ProjectRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
+		&p.ProjectDir, &p.ContextFiles,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectRow{}, ErrNotFound

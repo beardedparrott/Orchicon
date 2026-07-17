@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"time"
 
 	"connectrpc.com/connect"
@@ -150,8 +151,7 @@ func (s *Service) ListProjects(ctx context.Context, req *connect.Request[apiv1.L
 }
 
 // UpdateProject applies a partial update with optimistic concurrency.
-// Only name and goals are mutable; slug is immutable after creation
-// (it appears in external references).
+// Supports name, slug, goals, project_dir, and context_files.
 func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.UpdateProjectRequest]) (*connect.Response[apiv1.UpdateProjectResponse], error) {
 	msg := req.Msg
 	tenantID, err := requireTenant(ctx)
@@ -183,7 +183,25 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 		}
 		fields.Goals = &goals
 	}
-	if fields.Name == nil && fields.Slug == nil && fields.Goals == nil {
+	if msg.ProjectDir != nil {
+		dir, err := validateProjectDir(*msg.ProjectDir)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		fields.ProjectDir = &dir
+	}
+	if msg.ContextFiles != nil {
+		files := msg.ContextFiles.Files
+		if err := validateContextFiles(files); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		filesJSON, err := contextFilesToJSON(files)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		fields.ContextFiles = &filesJSON
+	}
+	if fields.Name == nil && fields.Slug == nil && fields.Goals == nil && fields.ProjectDir == nil && fields.ContextFiles == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("at least one field must be set"))
 	}
 
@@ -297,11 +315,13 @@ func (s *Service) PauseProject(ctx context.Context, req *connect.Request[apiv1.P
 	// tenant_id is in the WHERE clause as the primary isolation layer.
 	const q = `UPDATE projects SET status = 'paused', updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
-		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at`
+		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at,
+			project_dir, context_files`
 	var p db.ProjectRow
 	err = ttx.Tx.QueryRow(ctx, q, tenantID, req.Msg.Id, current.Version).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
+		&p.ProjectDir, &p.ContextFiles,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("project not found"))
@@ -340,11 +360,13 @@ func (s *Service) ActivateProject(ctx context.Context, req *connect.Request[apiv
 	}
 	const q = `UPDATE projects SET status = 'active', updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3 AND status = 'drafting'
-		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at`
+		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at,
+			project_dir, context_files`
 	var p db.ProjectRow
 	err = ttx.Tx.QueryRow(ctx, q, tenantID, req.Msg.Id, current.Version).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
+		&p.ProjectDir, &p.ContextFiles,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Either the version was stale or the project is not drafting.
@@ -421,6 +443,58 @@ func (s *Service) StreamProjectEvents(ctx context.Context, req *connect.Request[
 			}
 		}
 	}
+}
+
+// ListProjectFiles returns the recursive file tree of the project's
+// configured project_dir. The project_dir must be set on the project
+// first. Returns a tree of entries rooted at project_dir, respecting
+// max_depth for recursion control.
+func (s *Service) ListProjectFiles(ctx context.Context, req *connect.Request[apiv1.ListProjectFilesRequest]) (*connect.Response[apiv1.ListProjectFilesResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	p, err := db.GetProject(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if p.ProjectDir == "" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("project_dir is not set on this project"))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+
+	maxDepth := int(req.Msg.MaxDepth)
+	if maxDepth <= 0 {
+		maxDepth = 5
+	}
+	if maxDepth > maxFileTreeDepth {
+		maxDepth = maxFileTreeDepth
+	}
+	var counter int
+	root, err := buildFileTree(p.ProjectDir, req.Msg.Subpath, 0, maxDepth, &counter)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("build file tree: %w", err))
+	}
+	if root == nil {
+		root = &apiv1.FileTreeEntry{
+			Name:  filepath.Base(p.ProjectDir),
+			Path:  "",
+			IsDir: true,
+		}
+	}
+	return connect.NewResponse(&apiv1.ListProjectFilesResponse{Root: root}), nil
 }
 
 // parseProjectEvent decodes the JSON event payload from the outbox/NATS

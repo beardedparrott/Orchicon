@@ -39,6 +39,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -927,6 +929,15 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 			fmt.Fprintf(&sb, "## Stage %d\n%s\n\n", i+1, s)
 		}
 	}
+	// 4. File context — selected project files (PR: project context files).
+	if wi.ProjectID != "" {
+		fileCtx, err := r.readProjectContextFiles(ctx, tx, tenantID, wi.ProjectID)
+		if err != nil {
+			r.log.Warn("failed to read project context files", "project_id", wi.ProjectID, "work_item_id", wi.ID, "error", err)
+		} else if fileCtx != "" {
+			sb.WriteString(fileCtx)
+		}
+	}
 	// Footer: instruction for the worker to emit the summary marker.
 	sb.WriteString("# Instructions\n\n")
 	sb.WriteString("Complete the task above. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one short paragraph summarizing what you did. Everything from that marker to the end of your output is passed to the next stage of the workflow as upstream context.\n\n")
@@ -996,6 +1007,57 @@ func upstreamStepSummaries(ctx context.Context, allSteps []workflow.StepWire, ru
 		out = append(out, s)
 	}
 	return out
+}
+
+const maxContextFileSize = 1 << 20 // 1 MiB — skip files larger than this
+
+// readProjectContextFiles reads the project's context_files and returns
+// a formatted string with file contents suitable for inclusion in the
+// composite prompt. Each file is prefixed by its path as a header.
+// Silent on missing/empty project_dir or context_files (best-effort).
+// Files larger than maxContextFileSize are skipped with a warning logged.
+func (r *WorkflowReconciler) readProjectContextFiles(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (string, error) {
+	p, err := db.GetProject(ctx, tx, tenantID, projectID)
+	if err != nil {
+		return "", fmt.Errorf("get project for context files: %w", err)
+	}
+	if p.ProjectDir == "" || len(p.ContextFiles) == 0 {
+		return "", nil
+	}
+	var files []string
+	if err := json.Unmarshal(p.ContextFiles, &files); err != nil {
+		return "", fmt.Errorf("parse context_files JSON: %w", err)
+	}
+	if len(files) == 0 {
+		return "", nil
+	}
+	var sb strings.Builder
+	sb.WriteString("# File context\n\n")
+	sb.WriteString("The following files from the project directory are provided as context:\n\n")
+	for _, relPath := range files {
+		fullPath := filepath.Join(p.ProjectDir, relPath)
+		// Prevent path traversal
+		if !strings.HasPrefix(filepath.Clean(fullPath), filepath.Clean(p.ProjectDir)) {
+			continue
+		}
+		info, err := os.Stat(fullPath)
+		if err != nil {
+			continue
+		}
+		if info.Size() > maxContextFileSize {
+			r.log.Warn("skipping context file: too large", "path", relPath, "size", info.Size(), "max", maxContextFileSize)
+			continue
+		}
+		data, err := os.ReadFile(fullPath)
+		if err != nil {
+			continue
+		}
+		fmt.Fprintf(&sb, "## File: %s\n\n```\n%s\n```\n\n", relPath, string(data))
+	}
+	if sb.Len() == 0 {
+		return "", nil
+	}
+	return sb.String(), nil
 }
 
 // workItemKindLabel returns a human-readable label for a work item's
