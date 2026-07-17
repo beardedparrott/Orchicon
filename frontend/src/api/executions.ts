@@ -86,14 +86,13 @@ export function useGetExecution(id: string) {
       return res.execution as WorkerExecution;
     },
     enabled: !!id,
-    // The execution detail is also kept fresh by the event stream's
-    // onEvent invalidation, but a 3s polling fallback is important:
-    // status transitions (running → succeeded) may arrive after the
-    // last event has been emitted (the final "result" event sometimes
-    // lands before the DB row's status is updated, or the stream
-    // closes cleanly with no closing event). Without polling, the page
-    // would sit on stale data until the user manually refreshed.
-    refetchInterval: 3_000,
+    // Poll aggressively so the page updates even when the event stream
+    // is not delivering real-time events (e.g. the stream consumer
+    // missed events during reconnect, or the outbox relay is batching).
+    // 1s polling means status transitions and metadata appear within
+    // at most 1 second of occurring.
+    refetchInterval: 1_000,
+    refetchIntervalInBackground: true,
   });
 }
 
