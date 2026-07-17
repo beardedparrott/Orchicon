@@ -364,6 +364,20 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, 
 					path, _ := inputMap["path"].(string)
 					a.log.Info("opencode write artifact",
 						"execution", execID, "path", path, "content_len", len(content))
+					// Stream the content as text FIRST so the user sees
+					// the story appear incrementally in the runtime
+					// session pane (chunked into 40-char pieces with
+					// 60ms delay for a typing-style effect). Then emit
+					// the artifact card with the full content so the
+					// operator can inspect/download/copy the file.
+					// Without this, the entire content arrives as one
+					// artifact event at the END of the model's
+					// processing, and the user sees "Waiting for model
+					// output…" → nothing for 30s → artifact burst.
+					if output != nil {
+						output.WriteString(content)
+					}
+					a.emitTextChunked(ctx, callbacks, execID, content, textSeq)
 					callbacks.OnArtifact(ctx, execID, path, artifactTypeFromPath(path), content)
 					break // skip normal tool call — artifact event is sufficient
 				}
@@ -382,6 +396,10 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, 
 					}
 					a.log.Info("opencode write_artifact",
 						"execution", execID, "name", name, "type", typ, "content_len", len(content))
+					if output != nil {
+						output.WriteString(content)
+					}
+					a.emitTextChunked(ctx, callbacks, execID, content, textSeq)
 					callbacks.OnArtifact(ctx, execID, name, typ, content)
 					break
 				}
