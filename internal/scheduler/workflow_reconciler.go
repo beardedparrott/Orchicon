@@ -339,26 +339,46 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	}
 
 	// Determine run terminal state: all steps succeeded → completed;
-	// any failed → failed.
+	// any failed → failed. Also skip any remaining pending steps so
+	// they don't incorrectly display as "pending" in a failed run.
 	allSucceeded := true
 	anyFailed := false
 	hasSteps := false
+	var toSkip []string
 	for _, sr := range stepRuns {
 		hasSteps = true
-		// Re-read the latest status from the map (some rows may have
-		// been promoted in this pass).
 		if latest, ok := runByID[sr.StepID]; ok {
 			sr = latest
 		}
 		switch sr.Status {
 		case domain.StepRunSucceeded, domain.StepRunSkipped:
-			// terminal-success
 		case domain.StepRunFailed, domain.StepRunBlocked:
 			anyFailed = true
 		case domain.StepRunApprovalPending:
 			allSucceeded = false
 		default:
 			allSucceeded = false
+			if anyFailed {
+				toSkip = append(toSkip, sr.StepID)
+			}
+		}
+	}
+	// If the run has failed, skip all remaining non-terminal steps so
+	// the UI accurately reflects the run state instead of showing them
+	// as "pending" forever.
+	if anyFailed {
+		for _, stepID := range toSkip {
+			if cur, ok := runByID[stepID]; ok {
+				now2 := time.Now().UTC()
+				updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, cur.ID, cur.Version, db.UpdateWorkflowStepRunFields{
+					Status:  strPtr(domain.StepRunSkipped),
+					EndedAt: &now2,
+				})
+				if err != nil {
+					return fmt.Errorf("skip pending step on failed run: %w", err)
+				}
+				runByID[stepID] = updated
+			}
 		}
 	}
 	if hasSteps && allSucceeded {
