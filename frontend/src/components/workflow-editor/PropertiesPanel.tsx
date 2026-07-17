@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { Node } from "reactflow";
 
 import { Info } from "lucide-react";
@@ -12,6 +13,7 @@ import { useListWorkItems } from "@/api/workItems";
 import { useListWorkers } from "@/api/workers";
 import { WorkerStatus } from "@/api/gen/orchicon/api/v1/worker_pb";
 import { PolicyStatus } from "@/api/gen/orchicon/api/v1/policy_pb";
+import { WorkItemKind } from "@/api/gen/orchicon/api/v1/work_item_pb";
 
 import {
   RECOVERY_STRATEGY_OPTIONS,
@@ -97,35 +99,18 @@ export function PropertiesPanel({
         )}
 
         {d.kind === STEP_KIND.WORK_ITEM && (
-          <Field label="Work Item" hint="The work item that flows through this step.">
-            <select
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-              value={typeof cfg.work_item_id === "string" ? cfg.work_item_id : ""}
-              disabled={readOnly || !projectId}
-              onChange={(e) => {
-                const wid = e.target.value;
-                const wi = workItems?.find((w) => w.id === wid);
-                if (wi) {
-                  updateNameAndConfig(wi.title, {
-                    work_item_id: wid,
-                    work_item_title: wi.title,
-                  });
-                }
-              }}
-            >
-              <option value="">-- Select a work item --</option>
-              {(workItems ?? []).map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.title}
-                </option>
-              ))}
-            </select>
-            {!projectId && (
-              <p className="text-[10px] text-amber-600 dark:text-amber-400">
-                Assign a project to this workflow to see work items.
-              </p>
-            )}
-          </Field>
+          <WorkItemSelector
+            projectId={projectId}
+            currentWid={typeof cfg.work_item_id === "string" ? cfg.work_item_id : ""}
+            disabled={readOnly}
+            workItems={workItems ?? []}
+            onSelect={(wi) => {
+              updateNameAndConfig(wi.title, {
+                work_item_id: wi.id,
+                work_item_title: wi.title,
+              });
+            }}
+          />
         )}
 
         {d.kind === STEP_KIND.TASK && (
@@ -235,6 +220,89 @@ export function PropertiesPanel({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+const WORK_ITEM_KIND_LABELS: Record<number, string> = {
+  [WorkItemKind.EPIC]: "Epic",
+  [WorkItemKind.FEATURE]: "Feature",
+  [WorkItemKind.TASK]: "Task",
+  [WorkItemKind.SUBTASK]: "Subtask",
+};
+
+function WorkItemSelector({
+  projectId,
+  currentWid,
+  disabled,
+  workItems,
+  onSelect,
+}: {
+  projectId?: string;
+  currentWid: string;
+  disabled: boolean;
+  workItems: { id: string; title: string; kind: WorkItemKind; parentId?: string }[];
+  onSelect: (wi: { id: string; title: string; kind: WorkItemKind }) => void;
+}) {
+  const [typeFilter, setTypeFilter] = useState<number | null>(null);
+
+  const currentItem = workItems.find((w) => w.id === currentWid);
+  const filtered = typeFilter != null
+    ? workItems.filter((w) => w.kind === typeFilter)
+    : workItems;
+
+  const topLevelTypes = [
+    { value: null, label: "All types" },
+    { value: WorkItemKind.EPIC, label: "Epic" },
+    { value: WorkItemKind.FEATURE, label: "Feature" },
+    { value: WorkItemKind.TASK, label: "Task" },
+    { value: WorkItemKind.SUBTASK, label: "Subtask" },
+  ];
+
+  return (
+    <div className="space-y-2">
+      <Field label="Type filter" hint="Narrow down by work item type.">
+        <select
+          className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+          value={typeFilter ?? ""}
+          disabled={disabled || !projectId}
+          onChange={(e) => setTypeFilter(e.target.value ? Number(e.target.value) : null)}
+        >
+          {topLevelTypes.map((t) => (
+            <option key={t.label} value={t.value ?? ""}>
+              {t.label}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Work Item" hint="The work item that flows through this step.">
+        <select
+          className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+          value={currentWid}
+          disabled={disabled || !projectId}
+          onChange={(e) => {
+            const wi = workItems.find((w) => w.id === e.target.value);
+            if (wi) onSelect(wi);
+          }}
+        >
+          <option value="">-- Select a work item --</option>
+          {filtered.map((w) => (
+            <option key={w.id} value={w.id}>
+              {WORK_ITEM_KIND_LABELS[w.kind] ?? "?"}: {w.title}
+            </option>
+          ))}
+        </select>
+        {!projectId && (
+          <p className="text-[10px] text-amber-600 dark:text-amber-400">
+            Assign a project to this workflow to see work items.
+          </p>
+        )}
+      </Field>
+      {currentItem && currentItem.parentId && (
+        <p className="text-[10px] text-muted-foreground">
+          Child of {workItems.find((w) => w.id === currentItem.parentId)?.title ?? currentItem.parentId.slice(0, 12)}
+        </p>
+      )}
+    </div>
   );
 }
 
