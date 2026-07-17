@@ -912,6 +912,10 @@ type StepWire struct {
 // ParseSteps decodes the steps JSON (an array of Step messages) into a
 // slice of StepWire. Returns an empty slice for empty/null input.
 // Exported for use by the WorkflowReconciler.
+//
+// Old kind strings from before the v1 palette rework (e.g. "worker"
+// instead of "task") are normalized to the current domain constants
+// for backward compatibility.
 func ParseSteps(data []byte) ([]StepWire, error) {
 	if len(data) == 0 {
 		return nil, nil
@@ -919,6 +923,13 @@ func ParseSteps(data []byte) ([]StepWire, error) {
 	var steps []StepWire
 	if err := json.Unmarshal(data, &steps); err != nil {
 		return nil, fmt.Errorf("unmarshal steps: %w", err)
+	}
+	// Normalize old frontend kind strings to domain constants.
+	for i := range steps {
+		switch steps[i].Kind {
+		case "worker":
+			steps[i].Kind = domain.StepKindTask
+		}
 	}
 	return steps, nil
 }
