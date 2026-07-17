@@ -230,6 +230,12 @@ const WORK_ITEM_KIND_LABELS: Record<number, string> = {
   [WorkItemKind.SUBTASK]: "Subtask",
 };
 
+const PARENT_TYPE: Record<number, number> = {
+  [WorkItemKind.FEATURE]: WorkItemKind.EPIC,
+  [WorkItemKind.TASK]: WorkItemKind.FEATURE,
+  [WorkItemKind.SUBTASK]: WorkItemKind.TASK,
+};
+
 function WorkItemSelector({
   projectId,
   currentWid,
@@ -244,11 +250,20 @@ function WorkItemSelector({
   onSelect: (wi: { id: string; title: string; kind: WorkItemKind }) => void;
 }) {
   const [typeFilter, setTypeFilter] = useState<number | null>(null);
+  const [parentId, setParentId] = useState<string>("");
 
   const currentItem = workItems.find((w) => w.id === currentWid);
-  const filtered = typeFilter != null
-    ? workItems.filter((w) => w.kind === typeFilter)
-    : workItems;
+
+  const parentKind = typeFilter != null ? PARENT_TYPE[typeFilter] : undefined;
+  const parentOptions = parentKind != null
+    ? workItems.filter((w) => w.kind === parentKind)
+    : [];
+
+  const filtered = workItems.filter((w) => {
+    if (typeFilter != null && w.kind !== typeFilter) return false;
+    if (parentId && w.parentId !== parentId) return false;
+    return true;
+  });
 
   const topLevelTypes = [
     { value: null, label: "All types" },
@@ -260,12 +275,15 @@ function WorkItemSelector({
 
   return (
     <div className="space-y-2">
-      <Field label="Type filter" hint="Narrow down by work item type.">
+      <Field label="Type" hint="Narrow down by work item type.">
         <select
           className="h-9 w-full rounded-md border bg-background px-2 text-sm"
           value={typeFilter ?? ""}
           disabled={disabled || !projectId}
-          onChange={(e) => setTypeFilter(e.target.value ? Number(e.target.value) : null)}
+          onChange={(e) => {
+            setTypeFilter(e.target.value ? Number(e.target.value) : null);
+            setParentId("");
+          }}
         >
           {topLevelTypes.map((t) => (
             <option key={t.label} value={t.value ?? ""}>
@@ -274,6 +292,28 @@ function WorkItemSelector({
           ))}
         </select>
       </Field>
+
+      {parentOptions.length > 0 && (
+        <Field
+          label={`Parent ${WORK_ITEM_KIND_LABELS[parentKind!]?.toLowerCase() ?? "item"}`}
+          hint={`Show only ${WORK_ITEM_KIND_LABELS[typeFilter!]?.toLowerCase() ?? "items"} under a specific parent.`}
+        >
+          <select
+            className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+            value={parentId}
+            disabled={disabled || !projectId}
+            onChange={(e) => setParentId(e.target.value)}
+          >
+            <option value="">All {WORK_ITEM_KIND_LABELS[typeFilter!]?.toLowerCase() ?? "items"}</option>
+            {parentOptions.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.title}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
+
       <Field label="Work Item" hint="The work item that flows through this step.">
         <select
           className="h-9 w-full rounded-md border bg-background px-2 text-sm"
@@ -287,7 +327,7 @@ function WorkItemSelector({
           <option value="">-- Select a work item --</option>
           {filtered.map((w) => (
             <option key={w.id} value={w.id}>
-              {WORK_ITEM_KIND_LABELS[w.kind] ?? "?"}: {w.title}
+              {w.title}
             </option>
           ))}
         </select>
@@ -297,6 +337,7 @@ function WorkItemSelector({
           </p>
         )}
       </Field>
+
       {currentItem && currentItem.parentId && (
         <p className="text-[10px] text-muted-foreground">
           Child of {workItems.find((w) => w.id === currentItem.parentId)?.title ?? currentItem.parentId.slice(0, 12)}
