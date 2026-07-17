@@ -131,6 +131,16 @@ func NewNATSSubscriber(ctx context.Context, url string) (*NATSSubscriber, error)
 // non-zero, the consumer starts from that sequence (resume after
 // reconnect — docs/07 §4). Messages are delivered on the returned
 // channel; cancelling ctx tears down the consumer.
+//
+// When fromSeq is zero (initial connection), the consumer starts from
+// the end of the stream (DeliverNew) rather than replaying the entire
+// stream from sequence 0. This avoids a multi-second stall during
+// which the consumer must iterate through every prior event before
+// reaching real-time messages — the user would see "nothing until
+// the end" because the backlog is processed before any current
+// events are delivered. The frontend's polling (1s refetchInterval)
+// fills in the execution status; real-time events arrive as they're
+// published.
 func (s *NATSSubscriber) Subscribe(ctx context.Context, filter string, fromSeq uint64) (<-chan EventMsg, error) {
 	cfg := jetstream.ConsumerConfig{
 		Durable:       "",
@@ -140,6 +150,12 @@ func (s *NATSSubscriber) Subscribe(ctx context.Context, filter string, fromSeq u
 	if fromSeq > 0 {
 		cfg.OptStartSeq = fromSeq
 		cfg.DeliverPolicy = jetstream.DeliverByStartSequencePolicy
+	} else {
+		// Skip the entire prior stream — only deliver new events.
+		// The old behaviour (DeliverAll = default zero value) forced
+		// the consumer to replay every message from sequence 0, which
+		// could take seconds or minutes in a busy environment.
+		cfg.DeliverPolicy = jetstream.DeliverNewPolicy
 	}
 
 	cons, err := s.js.CreateOrUpdateConsumer(ctx, "ORCHICON_EVENTS", cfg)
