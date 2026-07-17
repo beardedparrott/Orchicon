@@ -324,6 +324,8 @@ function EditorInner({ workflowId }: { workflowId: string }) {
               id: `e-${conn.source}-${conn.target}`,
               source: conn.source!,
               target: conn.target!,
+              sourceHandle: conn.sourceHandle,
+              targetHandle: conn.targetHandle,
               markerEnd: { type: MarkerType.ArrowClosed },
               animated: true,
               style: edgeStyle,
