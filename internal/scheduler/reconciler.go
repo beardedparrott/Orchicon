@@ -28,6 +28,7 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
+	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
 	"github.com/jackc/pgx/v5"
 )
@@ -44,6 +45,7 @@ type TaskReconciler struct {
 	log      *slog.Logger
 	bridge   AdapterBridge
 	recovery RecoveryTrigger // Phase 7: trigger recovery on failure (docs/06 §2)
+	eventPub eventbus.Publisher // direct NATS publisher for low-latency streaming (bypasses outbox relay)
 }
 
 // NewTaskReconciler creates a TaskReconciler.
@@ -57,6 +59,14 @@ func NewTaskReconciler(pool *db.Pool, log *slog.Logger, bridge AdapterBridge) *T
 // when an execution fails (docs/06 §2). Recovery is opt-out, not opt-in
 // (docs/06 §1).
 func (r *TaskReconciler) SetRecoveryTrigger(rt RecoveryTrigger) { r.recovery = rt }
+
+// SetEventPublisher injects a direct NATS publisher for streaming
+// execution events. When set, the reconciler publishes events directly
+// to NATS after each callback commits, bypassing the outbox relay's
+// 500ms poll interval. The outbox continues to be written for durability
+// and catch-up on reconnect; the direct publish provides near-zero
+// latency for the live frontend event stream.
+func (r *TaskReconciler) SetEventPublisher(pub eventbus.Publisher) { r.eventPub = pub }
 
 // Kind returns the reconciler kind (docs/03 §2.1).
 func (r *TaskReconciler) Kind() string { return "task" }
@@ -621,6 +631,11 @@ func (r *TaskReconciler) OnToolCall(ctx context.Context, execID, toolName string
 		"output":    string(output),
 	})
 	_ = ttx.Commit(ctx)
+	r.publishExecEvent(ctx, "execution.tool_call", current, map[string]any{
+		"tool_name": toolName,
+		"input":     string(input),
+		"output":    string(output),
+	})
 }
 
 // OnText publishes a text execution event so the frontend live session
@@ -640,6 +655,9 @@ func (r *TaskReconciler) OnText(ctx context.Context, execID string, text string)
 		"text": text,
 	})
 	_ = ttx.Commit(ctx)
+	r.publishExecEvent(ctx, "execution.text", current, map[string]any{
+		"text": text,
+	})
 }
 
 // OnArtifact publishes an artifact execution event so the frontend live
@@ -664,6 +682,11 @@ func (r *TaskReconciler) OnArtifact(ctx context.Context, execID, name, artifactT
 		"content":       content,
 	})
 	_ = ttx.Commit(ctx)
+	r.publishExecEvent(ctx, "execution.artifact", current, map[string]any{
+		"artifact_name": name,
+		"artifact_type": artifactType,
+		"content":       content,
+	})
 }
 
 func (r *TaskReconciler) updateExecStatus(ctx context.Context, execID, status, health string, errorMessage ...string) {
@@ -701,10 +724,57 @@ func (r *TaskReconciler) updateExecStatus(ctx context.Context, execID, status, h
 	_ = enqueueExecEvent(ctx, ttx.Tx, eventType, updated, nil)
 	if err := ttx.Commit(ctx); err != nil {
 		r.log.Error("commit status update", "execution", execID, "error", err)
+		return
 	}
+	r.publishExecEvent(ctx, eventType, updated, nil)
 }
 
 // --- helpers ---------------------------------------------------------------
+
+// publishExecEvent builds the same event payload as enqueueExecEvent and
+// publishes it directly to NATS via the reconciler's direct publisher.
+// This bypasses the outbox relay's 500ms poll interval so the frontend
+// event stream receives events in near-real-time (~1ms vs ~500ms).
+// Must be called AFTER the outbox transaction commits so the event is
+// committed to the DB before being published (the outbox serves as the
+// durable fallback for catch-up on reconnect).
+func (r *TaskReconciler) publishExecEvent(ctx context.Context, eventType string, e db.ExecutionRow, extra map[string]any) {
+	if r.eventPub == nil {
+		return
+	}
+	evt := map[string]any{
+		"event_type":      eventType,
+		"tenant_id":       e.TenantID,
+		"execution_id":    e.ID,
+		"task_id":         e.TaskID,
+		"project_id":      e.ProjectID,
+		"worker_id":       e.WorkerID,
+		"worker_version":  e.WorkerVersion,
+		"status":          e.Status,
+		"health_state":    e.HealthState,
+		"aggregate_type":  "execution",
+		"aggregate_id":    e.ID,
+		"occurred_at":     time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	for k, v := range extra {
+		evt[k] = v
+	}
+	payload, err := json.Marshal(evt)
+	if err != nil {
+		r.log.Error("publish exec event marshal", "execution", e.ID, "error", err)
+		return
+	}
+	subject := eventbus.SubjectFor("execution", eventType)
+	// Use the execution ID + event type as the dedup key so the outbox
+	// relay's eventual publish with its own MsgID (the outbox row ULID)
+	// is a distinct message — the frontend's seenIds dedup catches the
+	// duplicate. This is intentional: the direct publish arrives fast,
+	// the outbox relay provides the durable fallback.
+	dedupID := fmt.Sprintf("direct:%s:%s", e.ID, eventType)
+	if err := r.eventPub.Publish(ctx, subject, dedupID, payload); err != nil {
+		r.log.Warn("publish exec event", "execution", e.ID, "subject", subject, "error", err)
+	}
+}
 
 func enqueueExecEvent(ctx context.Context, tx pgx.Tx, eventType string, e db.ExecutionRow, extra map[string]any) error {
 	evt := map[string]any{
