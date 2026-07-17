@@ -230,6 +230,14 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		taskRec.SetEventPublisher(pub)
 	}
 	workflowRec := scheduler.NewWorkflowReconciler(pool, log, policyEngine, taskRec)
+	// Wire the workflow notifier: when a work item completes, enqueue
+	// the workflow run ID so the WorkflowReconciler progresses the DAG
+	// immediately instead of waiting for its next scan pass (200ms).
+	taskRec.SetWorkflowNotifier(func(ctx context.Context, runID string) {
+		if s.rcmgr != nil {
+			s.rcmgr.Enqueue("workflow", runID)
+		}
+	})
 	recoveryRec := recovery.NewReconciler(recoveryEngine)
 	s.rcmgr = reconciler.NewManager(pool, log)
 	s.rcmgr.Register(taskRec)

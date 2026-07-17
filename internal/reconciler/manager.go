@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Manager runs registered reconcilers, each with its own work queue
@@ -78,7 +79,7 @@ func (m *Manager) Run(ctx context.Context) error {
 }
 
 func (m *Manager) runReconciler(ctx context.Context, j *job) {
-	heartbeat := time.NewTicker(1 * time.Second)
+	heartbeat := time.NewTicker(200 * time.Millisecond)
 	defer heartbeat.Stop()
 
 	for {
@@ -165,6 +166,19 @@ func (s reconcileSpan) End() {
 	// (reconcile.<kind>.<key>). For the framework, we log duration.
 	elapsed := time.Since(s.start)
 	_ = elapsed
+}
+
+// Enqueue adds a key to the work queue for the given reconciler kind.
+// Thread-safe. No-op if the kind is not registered.
+func (m *Manager) Enqueue(kind, key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.jobs {
+		if m.jobs[i].rec.Kind() == kind {
+			m.jobs[i].queue.enqueue(key)
+			return
+		}
+	}
 }
 
 // --- Work Queue (docs/03 §2.2) -----------------------------------------------
@@ -280,14 +294,23 @@ func (q *workQueue) failures(key string) int {
 
 // --- Leader Election (docs/03 §2.3) ------------------------------------------
 
-// leaderElection uses Postgres advisory locks for per-kind leadership.
-// pg_try_advisory_lock(hash(kind)) — a replica that holds the lock runs
-// that kind's work queue; others stand by (docs/03 §2.3).
+// leaderElection uses Postgres advisory locks for per-kind leadership
+// with a pinned connection from the pool (docs/03 §2.3).
+//
+// pg_try_advisory_lock is session-level — it persists on the connection
+// that acquired it. Using QueryRow (acquire + release) in the old code
+// meant the lock lived on an idle connection in the pool; subsequent
+// heartbeats that drew a different connection found the lock already held
+// and got FALSE, starving the reconciler for seconds at a time.
+//
+// Fix: hold a dedicated *pgxpool.Conn for the duration of leadership.
+// Each heartbeat reuses the same connection; pg_try_advisory_lock returns
+// TRUE for a nested acquisition. On shutdown, release the connection.
 type leaderElection struct {
-	pool    *db.Pool
-	kind    string
-	lockKey int64
-	holding bool
+	pool     *db.Pool
+	kind     string
+	lockKey  int64
+	heldConn *pgxpool.Conn
 }
 
 func newLeaderElection(pool *db.Pool, kind string) *leaderElection {
@@ -300,30 +323,57 @@ func newLeaderElection(pool *db.Pool, kind string) *leaderElection {
 
 // tryAcquireOrRenew attempts to acquire or renew the advisory lock for
 // this kind. Returns true if this replica is the leader for this kind.
+// It pinches a connection from the pool on first acquisition and reuses
+// it across heartbeats so the session-level lock stays valid.
 func (l *leaderElection) tryAcquireOrRenew(ctx context.Context) (bool, error) {
-	// pg_try_advisory_lock returns true if the lock was acquired.
+	if l.heldConn != nil {
+		// Already the leader — the lock is held on our pinned
+		// connection. pg_try_advisory_lock returns TRUE for a nested
+		// acquisition by the same session, confirming the lock is
+		// still live. If the connection died, this errors and we
+		// fall through to re-acquire.
+		var acquired bool
+		err := l.heldConn.QueryRow(ctx,
+			"SELECT pg_try_advisory_lock($1)", l.lockKey,
+		).Scan(&acquired)
+		if err != nil {
+			l.heldConn.Release()
+			l.heldConn = nil
+			return false, fmt.Errorf("leader: renew: %w", err)
+		}
+		return true, nil
+	}
+
+	// Not yet leader — try to acquire a dedicated connection and lock.
+	conn, err := l.pool.Acquire(ctx)
+	if err != nil {
+		return false, fmt.Errorf("leader: acquire conn: %w", err)
+	}
 	var acquired bool
-	err := l.pool.QueryRow(ctx,
+	err = conn.QueryRow(ctx,
 		"SELECT pg_try_advisory_lock($1)", l.lockKey,
 	).Scan(&acquired)
 	if err != nil {
+		conn.Release()
 		return false, fmt.Errorf("leader: try advisory lock: %w", err)
 	}
-	l.holding = acquired
-	return acquired, nil
+	if !acquired {
+		conn.Release()
+		return false, nil
+	}
+	l.heldConn = conn
+	return true, nil
 }
 
-// release releases the advisory lock. Called on graceful shutdown.
+// release releases the advisory lock and the pinned connection.
+// Called on graceful shutdown.
 func (l *leaderElection) release(ctx context.Context) {
-	if !l.holding {
+	if l.heldConn == nil {
 		return
 	}
-	_, err := l.pool.Exec(ctx, "SELECT pg_advisory_unlock($1)", l.lockKey)
-	if err != nil {
-		// Non-fatal: the lock auto-expires when the session closes.
-		_ = err
-	}
-	l.holding = false
+	_, _ = l.heldConn.Exec(ctx, "SELECT pg_advisory_unlock($1)", l.lockKey)
+	l.heldConn.Release()
+	l.heldConn = nil
 }
 
 // hashKind produces a stable int64 hash of the kind string for use as
