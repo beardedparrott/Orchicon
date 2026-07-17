@@ -310,14 +310,18 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			if sr.Status != domain.StepRunRunning || sr.StepKind != domain.StepKindRecover {
 				continue
 			}
-			terminal, err := r.pollRecoverStep(ctx, ttx.Tx, tenantID, run, sr)
+			terminal, failed, err := r.pollRecoverStep(ctx, ttx.Tx, tenantID, run, sr)
 			if err != nil {
 				return err
 			}
 			if terminal {
 				endNow := time.Now().UTC()
+				finalStatus := domain.StepRunSucceeded
+				if failed {
+					finalStatus = domain.StepRunFailed
+				}
 				updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-					Status:  strPtr(domain.StepRunSucceeded),
+					Status:  strPtr(finalStatus),
 					EndedAt: &endNow,
 				})
 				if err != nil {
@@ -326,8 +330,12 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				stepRuns[i] = updated
 				runByID[sr.StepID] = updated
 				madeProgress = true
-				if err := r.enqueueStepEvent(ctx, ttx.Tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
-					return fmt.Errorf("enqueue recover step_succeeded: %w", err)
+				evt := domain.WorkflowEventStepSucceeded
+				if failed {
+					evt = domain.WorkflowEventStepFailed
+				}
+				if err := r.enqueueStepEvent(ctx, ttx.Tx, evt, run, updated); err != nil {
+					return fmt.Errorf("enqueue recover step result: %w", err)
 				}
 			}
 		}
@@ -708,8 +716,22 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			}
 		}
 		if depResult.WorkItemID == "" {
-			// No work item found yet — leave ready and retry next pass.
-			r.log.Warn("recover step has no work item id from failed dep", "run", run.ID, "step", step.ID)
+			// No work item found — the failed dep was never dispatched
+			// (e.g. failStep due to missing config). There's nothing to
+			// recover from; mark the step as failed and move on.
+			r.log.Warn("recover step: failed dep has no work item id — nothing to recover", "run", run.ID, "step", step.ID)
+			now := time.Now().UTC()
+			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:  strPtr(domain.StepRunFailed),
+				EndedAt: &now,
+			})
+			if err != nil {
+				return fmt.Errorf("mark recover step failed (no work item): %w", err)
+			}
+			runs[step.ID] = updated
+			if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepFailed, run, updated); err != nil {
+				return fmt.Errorf("enqueue recover step_failed: %w", err)
+			}
 			break
 		}
 		recovery, err := db.GetLatestRecoveryForTask(ctx, tx, tenantID, depResult.WorkItemID)
@@ -1070,11 +1092,11 @@ func upstreamWorkItemIDs(step workflow.StepWire, allSteps []workflow.StepWire) [
 // running RECOVER step has completed. Returns (terminal, error). The
 // work item id is read from the failed dep step run's result JSON
 // (_work_item_id).
-func (r *WorkflowReconciler) pollRecoverStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow) (bool, error) {
+func (r *WorkflowReconciler) pollRecoverStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow) (terminal bool, failed bool, err error) {
 	// Find the latest stepRuns for this run to look up the dep's result.
 	stepRuns, err := db.ListWorkflowStepRuns(ctx, tx, tenantID, run.ID)
 	if err != nil {
-		return false, fmt.Errorf("list step runs for recover poll: %w", err)
+		return false, false, fmt.Errorf("list step runs for recover poll: %w", err)
 	}
 	var workItemID string
 	for _, s := range stepRuns {
@@ -1089,21 +1111,24 @@ func (r *WorkflowReconciler) pollRecoverStep(ctx context.Context, tx pgx.Tx, ten
 		}
 	}
 	if workItemID == "" {
-		return false, nil
+		// No recoverable work item found — tell caller to mark step
+		// as failed so polling stops. Happens when the failed dep was
+		// never dispatched (no _work_item_id in its result).
+		return true, true, nil
 	}
 	recovery, err := db.GetLatestRecoveryForTask(ctx, tx, tenantID, workItemID)
 	if err == db.ErrNotFound {
-		return false, nil
+		return false, false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("get latest recovery for task %s: %w", workItemID, err)
+		return false, false, fmt.Errorf("get latest recovery for task %s: %w", workItemID, err)
 	}
 	switch recovery.Status {
 	case domain.RecoveryResumed, domain.RecoveryFailed, domain.RecoveryCancelled, domain.RecoveryEscalated:
 		r.log.Info("recover step recovery terminal", "run", run.ID, "step", sr.StepID, "recovery", recovery.ID, "status", recovery.Status)
-		return true, nil
+		return true, false, nil
 	default:
-		return false, nil
+		return false, false, nil
 	}
 }
 
