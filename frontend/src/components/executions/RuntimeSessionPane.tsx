@@ -47,6 +47,12 @@ interface ParsedTextChunk {
   occurredAt: Date;
 }
 
+interface ParsedReasoningChunk {
+  id: string;
+  text: string;
+  occurredAt: Date;
+}
+
 interface ParsedResult {
   text: string;
   occurredAt: Date;
@@ -65,6 +71,7 @@ type ChatMessage =
   | { kind: "system"; text: string; key: string; occurredAt: Date }
   | { kind: "tool"; tool: ParsedToolCall; key: string }
   | { kind: "text"; chunk: ParsedTextChunk; key: string }
+  | { kind: "reasoning"; chunk: ParsedReasoningChunk; key: string }
   | { kind: "result"; result: ParsedResult; key: string }
   | { kind: "error"; error: ParsedError; key: string };
 
@@ -105,8 +112,13 @@ export function RuntimeSessionPane({ events, prompt, streamStatus }: RuntimeSess
       // Decode the JSON payload once. Event payloads are
       // orchestration-side envelopes (see enqueueExecEvent in
       // scheduler/reconciler.go) — they include a `tool_name` /
-      // `text` / standard fields depending on event_type.
+      // `text` / standard fields depending on event_type. The
+      // shape is duck-typed on the read side and the source of
+      // truth lives in `internal/scheduler/reconciler.go`, so we
+      // accept `unknown`-shaped fields and narrow on read.
+      /* eslint-disable @typescript-eslint/no-explicit-any */
       let payload: any = {};
+      /* eslint-enable @typescript-eslint/no-explicit-any */
       if (evt.payload?.length) {
         try {
           const raw = new TextDecoder().decode(evt.payload);
@@ -119,9 +131,16 @@ export function RuntimeSessionPane({ events, prompt, streamStatus }: RuntimeSess
 
       const eventType = payload.event_type || "";
 
-      // 1 = STARTED, 2 = TELEMETRY (model text), 3 = TOOL_CALL (and
-      // results), 7 = RESULT (final), 8 = ERROR. The numeric constants
-      // match ExecutionEventType in proto/orchicon/api/v1/execution.proto.
+      // 1 = STARTED, 2 = TELEMETRY (model text OR reasoning chunks),
+      // 3 = TOOL_CALL (and results), 7 = RESULT (final), 8 = ERROR.
+      // The numeric constants match ExecutionEventType in
+      // proto/orchicon/api/v1/execution.proto.
+      //
+      // Reasoning chunks are tagged at the payload level by the
+      // adapter: each chunk is JSON-encoded as
+      // `{"kind":"reasoning","text":"...","seq":N}`. We unwrap and
+      // route them to a distinct bubble so the operator can see the
+      // model's "thinking" alongside the actual response.
       switch (evt.eventType) {
         case 1: // STARTED
           out.push({
@@ -131,27 +150,76 @@ export function RuntimeSessionPane({ events, prompt, streamStatus }: RuntimeSess
             occurredAt: ts,
           });
           break;
-        case 2: // TELEMETRY
-          if (payload.text) {
+        case 2: {
+          // TELEMETRY — either an assistant text chunk or a
+          // reasoning chunk. The adapter tags reasoning with
+          // `kind: "reasoning"` so we can route it here.
+          const rawText = payload.text;
+          if (typeof rawText !== "string" || rawText.length === 0) break;
+          // The reasoning wrapper is JSON-encoded inside the text
+          // payload. Try to detect and unwrap; if it isn't JSON,
+          // treat it as plain text.
+          const asText = rawText;
+          let asReasoning: string | null = null;
+          if (rawText.startsWith("{") && payload.kind === "reasoning") {
+            try {
+              const parsed = JSON.parse(rawText);
+              if (parsed && typeof parsed.text === "string") {
+                asReasoning = parsed.text;
+              }
+            } catch {
+              // not JSON — fall through as plain text
+            }
+          }
+          if (asReasoning !== null) {
+            out.push({
+              kind: "reasoning",
+              chunk: {
+                id,
+                text: asReasoning,
+                occurredAt: ts,
+              },
+              key: `reason-${id}`,
+            });
+          } else {
             out.push({
               kind: "text",
               chunk: {
                 id,
-                text: payload.text as string,
+                text: asText,
                 occurredAt: ts,
               },
               key: id,
             });
           }
           break;
+        }
         case 3: {
-          // TOOL_CALL — input OR result. opencode sends the call first
-          // (with input), then the result later (with output). Pair
-          // them so the user sees them as one card.
+          // TOOL_CALL — opencode v1.x emits a single `tool_use` event
+          // per tool invocation that carries BOTH input and output
+          // (state.input + state.output). Render that as a single
+          // complete card. The previous behavior — pairing two
+          // separate events — still works for the legacy
+          // tool_call/tool_result pair shape: an input-only event
+          // creates a pending card, a later output-only event fills
+          // it.
           const toolName = payload.tool_name || "tool";
           const input = (payload.input as string) || "";
           const output = (payload.output as string) || "";
-          if (input && !output) {
+          if (input && output) {
+            // Complete tool_use event — render as one card with both.
+            out.push({
+              kind: "tool",
+              tool: {
+                id,
+                toolName,
+                input,
+                output,
+                occurredAt: ts,
+              },
+              key: id,
+            });
+          } else if (input && !output) {
             const tc: ParsedToolCall = {
               id,
               toolName,
@@ -246,15 +314,25 @@ export function RuntimeSessionPane({ events, prompt, streamStatus }: RuntimeSess
     }
   }, [messages.length]);
 
-  // Tool call grouping: collapse consecutive `text` chunks from the
-  // same event window so the chat doesn't show a million tiny bubbles
-  // for streamed output. (Each `text` event is one chunk; we keep
-  // them separate events so the timeline stays accurate, but render
-  // them as one visual block.)
-  const rendered = useMemo<
-    Array<ChatMessage | { kind: "text-group"; chunks: ParsedTextChunk[] }>
-  >(() => {
-    const blocks: Array<ChatMessage | { kind: "text-group"; chunks: ParsedTextChunk[] }> = [];
+// Tool call grouping: collapse consecutive `text` chunks from the
+// same event window so the chat doesn't show a million tiny bubbles
+// for streamed output. (Each `text` event is one chunk; we keep
+// them separate events so the timeline stays accurate, but render
+// them as one visual block.) Same applies to `reasoning` chunks —
+// the operator should see one continuous "thinking" block, not a
+// hundred tiny cards.
+const rendered = useMemo<
+  Array<
+    | ChatMessage
+    | { kind: "text-group"; chunks: ParsedTextChunk[] }
+    | { kind: "reasoning-group"; chunks: ParsedReasoningChunk[] }
+  >
+>(() => {
+    const blocks: Array<
+      | ChatMessage
+      | { kind: "text-group"; chunks: ParsedTextChunk[] }
+      | { kind: "reasoning-group"; chunks: ParsedReasoningChunk[] }
+    > = [];
     for (const m of messages) {
       if (m.kind === "text") {
         const last = blocks[blocks.length - 1];
@@ -262,6 +340,13 @@ export function RuntimeSessionPane({ events, prompt, streamStatus }: RuntimeSess
           last.chunks.push(m.chunk);
         } else {
           blocks.push({ kind: "text-group", chunks: [m.chunk] });
+        }
+      } else if (m.kind === "reasoning") {
+        const last = blocks[blocks.length - 1];
+        if (last && "kind" in last && last.kind === "reasoning-group") {
+          last.chunks.push(m.chunk);
+        } else {
+          blocks.push({ kind: "reasoning-group", chunks: [m.chunk] });
         }
       } else {
         blocks.push(m);
@@ -317,11 +402,17 @@ export function RuntimeSessionPane({ events, prompt, streamStatus }: RuntimeSess
           )}
 
           {rendered.map((block, idx) => {
-            // The rendered list is a heterogeneous array (text groups
-            // + individual ChatMessage variants). We branch on shape
-            // since `block` doesn't narrow automatically across the
-            // `kind in block` check + the union.
+            // The rendered list is a heterogeneous array (text
+            // groups, reasoning groups, and individual ChatMessage
+            // variants). We branch on shape since `block` doesn't
+            // narrow automatically across the `kind in block` check
+            // + the union.
             if ("chunks" in block) {
+              if (block.kind === "reasoning-group") {
+                return (
+                  <ReasoningBubble key={`rg-${idx}`} chunks={block.chunks} />
+                );
+              }
               return (
                 <AssistantBubble key={`tg-${idx}`} chunks={block.chunks} />
               );
@@ -333,6 +424,10 @@ export function RuntimeSessionPane({ events, prompt, streamStatus }: RuntimeSess
                 return <SystemNote key={m.key} text={m.text} ts={m.occurredAt} />;
               case "tool":
                 return <ToolCard key={m.key} tool={m.tool} />;
+              case "text":
+                return null; // already grouped
+              case "reasoning":
+                return null; // already grouped
               case "result":
                 return <ResultCard key={m.key} result={m.result} />;
               case "error":
@@ -396,6 +491,41 @@ function AssistantBubble({ chunks }: { chunks: ParsedTextChunk[] }) {
           <span className="opacity-60">{lastTs.toLocaleTimeString()}</span>
         </div>
         <div className="whitespace-pre-wrap break-words">{text}</div>
+      </div>
+    </div>
+  );
+}
+
+function ReasoningBubble({ chunks }: { chunks: ParsedReasoningChunk[] }) {
+  // Reasoning is the model's "thinking" content (only emitted when
+  // opencode is started with --thinking). Render it in a distinct
+  // style — italic, dimmed, slightly inset — so it reads as
+  // meta-content alongside the actual answer. Collapsed by default
+  // if it gets long so it doesn't dominate the chat; expanded on
+  // click.
+  const text = chunks.map((c) => c.text).join("");
+  const lastTs = chunks[chunks.length - 1].occurredAt;
+  const long = text.length > 600;
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[85%] rounded-lg border border-violet-300/30 bg-violet-50/20 px-3 py-2 text-xs italic leading-relaxed text-muted-foreground dark:bg-violet-950/10">
+        <details open={!long}>
+          <summary className="cursor-pointer select-none text-[10px] font-medium not-italic uppercase tracking-wide text-violet-700 dark:text-violet-300">
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-violet-500" />
+              reasoning
+            </span>
+            <span className="ml-2 opacity-60 not-italic">{lastTs.toLocaleTimeString()}</span>
+            {long && (
+              <span className="ml-2 text-[10px] opacity-60 not-italic">
+                (click to expand)
+              </span>
+            )}
+          </summary>
+          <div className="mt-2 whitespace-pre-wrap break-words text-xs">
+            {text}
+          </div>
+        </details>
       </div>
     </div>
   );
