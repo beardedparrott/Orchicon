@@ -41,11 +41,12 @@ const heartbeatTTL = 60 * time.Second
 // "task" kind. It polls the work_items table for ready tasks and
 // dispatches them via the AdapterBridge.
 type TaskReconciler struct {
-	pool     *db.Pool
-	log      *slog.Logger
-	bridge   AdapterBridge
-	recovery RecoveryTrigger // Phase 7: trigger recovery on failure (docs/06 §2)
-	eventPub eventbus.Publisher // direct NATS publisher for low-latency streaming (bypasses outbox relay)
+	pool             *db.Pool
+	log              *slog.Logger
+	bridge           AdapterBridge
+	recovery         RecoveryTrigger   // Phase 7: trigger recovery on failure (docs/06 §2)
+	eventPub         eventbus.Publisher // direct NATS publisher for low-latency streaming (bypasses outbox relay)
+	workflowNotifier func(ctx context.Context, runID string) // enqueues run for WorkflowReconciler on task completion
 }
 
 // NewTaskReconciler creates a TaskReconciler.
@@ -67,6 +68,14 @@ func (r *TaskReconciler) SetRecoveryTrigger(rt RecoveryTrigger) { r.recovery = r
 // and catch-up on reconnect; the direct publish provides near-zero
 // latency for the live frontend event stream.
 func (r *TaskReconciler) SetEventPublisher(pub eventbus.Publisher) { r.eventPub = pub }
+
+// SetWorkflowNotifier injects a callback that is called when a work
+// item transitions to a terminal state (succeeded/failed). The callback
+// should enqueue the workflow run ID so the WorkflowReconciler picks it
+// up immediately instead of waiting for the next scan pass.
+func (r *TaskReconciler) SetWorkflowNotifier(fn func(ctx context.Context, runID string)) {
+	r.workflowNotifier = fn
+}
 
 // Kind returns the reconciler kind (docs/03 §2.1).
 func (r *TaskReconciler) Kind() string { return "task" }
@@ -533,6 +542,14 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 		r.log.Error("transition work item: commit", "execution", execID, "error", err)
 		return
 	}
+	// Notify the WorkflowReconciler that this task completed so it
+	// can progress the step DAG immediately (docs/03 §2). Done after
+	// commit so the work item status is visible. No-op when the work
+	// item has no workflow link (direct dispatch, not from a workflow).
+	if r.workflowNotifier != nil && wi.WorkflowRunID != "" {
+		r.workflowNotifier(context.Background(), wi.WorkflowRunID)
+	}
+
 	// Trigger recovery on failure (Phase 7). Done after commit so the
 	// recovering state is durable; the recovery trigger is idempotent
 	// (docs/06 §9). If no RecoveryTrigger is wired (nil), the task

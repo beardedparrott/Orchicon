@@ -168,138 +168,157 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		runByID[sr.StepID] = sr
 	}
 
-	// Progress pending steps whose deps are satisfied → ready.
-	progressed := false
-	for _, sr := range stepRuns {
-		if sr.Status != domain.StepRunPending {
-			continue
-		}
-		step, ok := stepByID[sr.StepID]
-		if !ok {
-			continue
-		}
-		if r.depsSatisfied(step, runByID) {
-			updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-				Status: strPtr(domain.StepRunReady),
-			})
-			if err != nil {
-				return fmt.Errorf("mark step ready: %w", err)
-			}
-			runByID[sr.StepID] = updated
-			progressed = true
-			if err := r.enqueueStepEvent(ctx, ttx.Tx, domain.WorkflowEventStepReady, run, updated); err != nil {
-				return fmt.Errorf("enqueue step_ready: %w", err)
-			}
-		}
-	}
-
 	// Collect work items dispatched in this pass for inline TaskReconciler
 	// dispatch after the transaction commits.
 	var dispatchedWIDs []string
 
-	// Dispatch ready steps by kind, evaluating gates first.
-	for _, sr := range stepRuns {
-		if sr.Status != domain.StepRunReady {
-			// Re-read from the map to catch steps we just promoted.
-			if r2, ok := runByID[sr.StepID]; ok && r2.Status == domain.StepRunReady {
-				sr = r2
-			} else {
+	// DAG progression loop: repeat pending→ready, dispatch, and poll
+	// until no step makes progress in a full pass. This ensures that
+	// when a task step is polled terminal, downstream pending steps
+	// whose deps just became satisfied are progressed and dispatched
+	// in the SAME scan pass — no need to wait for the next heartbeat
+	// (docs/03 §2, docs/02 §2.4).
+	progressed := false
+	for {
+		madeProgress := false
+
+		// Progress pending steps whose deps are satisfied → ready.
+		// Use runByID (which reflects in-pass updates) for the
+		// dependency check so earlier loop iterations see later ones.
+		for _, sr := range stepRuns {
+			if sr.Status != domain.StepRunPending {
+				// Catch steps marked ready/dispatched in a prior
+				// iteration of this loop.
+				if r2, ok := runByID[sr.StepID]; ok && r2.Status == domain.StepRunPending {
+					sr = r2
+				} else {
+					continue
+				}
+			}
+			step, ok := stepByID[sr.StepID]
+			if !ok {
 				continue
 			}
+			if r.depsSatisfied(step, runByID) {
+				updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+					Status: strPtr(domain.StepRunReady),
+				})
+				if err != nil {
+					return fmt.Errorf("mark step ready: %w", err)
+				}
+				runByID[sr.StepID] = updated
+				madeProgress = true
+				if err := r.enqueueStepEvent(ctx, ttx.Tx, domain.WorkflowEventStepReady, run, updated); err != nil {
+					return fmt.Errorf("enqueue step_ready: %w", err)
+				}
+			}
 		}
-		step, ok := stepByID[sr.StepID]
-		if !ok {
-			continue
+
+		// Dispatch ready steps by kind, evaluating gates first.
+		for _, sr := range stepRuns {
+			if sr.Status != domain.StepRunReady {
+				if r2, ok := runByID[sr.StepID]; ok && r2.Status == domain.StepRunReady {
+					sr = r2
+				} else {
+					continue
+				}
+			}
+			step, ok := stepByID[sr.StepID]
+			if !ok {
+				continue
+			}
+			allowed := r.evaluateGate(ctx, step, run)
+			if !allowed {
+				now := time.Now().UTC()
+				updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+					Status:  strPtr(domain.StepRunBlocked),
+					EndedAt: &now,
+				})
+				if err != nil {
+					return fmt.Errorf("mark step blocked: %w", err)
+				}
+				runByID[sr.StepID] = updated
+				madeProgress = true
+				if err := r.enqueueStepEvent(ctx, ttx.Tx, domain.WorkflowEventStepBlocked, run, updated); err != nil {
+					return fmt.Errorf("enqueue step_blocked: %w", err)
+				}
+				continue
+			}
+			var stepWIDs []string
+			if err := r.dispatchStep(ctx, ttx.Tx, tenantID, run, step, sr, runByID, steps, &stepWIDs); err != nil {
+				return err
+			}
+			madeProgress = true
+			dispatchedWIDs = append(dispatchedWIDs, stepWIDs...)
 		}
-		// Gate evaluation (docs/02 §2.5 Tier 1). The Rego Policy Engine
-		// arrives in Phase 7; for v0.1 the gate is a pass-through that
-		// logs the decision (allow) so the DAG progresses end-to-end.
-		allowed := r.evaluateGate(ctx, step, run)
-		if !allowed {
-			now := time.Now().UTC()
-			updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-				Status:  strPtr(domain.StepRunBlocked),
-				EndedAt: &now,
-			})
+
+		// Poll running task steps: check their linked WorkItem status.
+		for i, sr := range stepRuns {
+			if sr.Status != domain.StepRunRunning || sr.StepKind != domain.StepKindTask {
+				continue
+			}
+			terminal, failed, err := r.pollTaskStep(ctx, ttx.Tx, tenantID, run, sr)
 			if err != nil {
-				return fmt.Errorf("mark step blocked: %w", err)
+				return err
 			}
-			runByID[sr.StepID] = updated
-			progressed = true
-			if err := r.enqueueStepEvent(ctx, ttx.Tx, domain.WorkflowEventStepBlocked, run, updated); err != nil {
-				return fmt.Errorf("enqueue step_blocked: %w", err)
+			if terminal {
+				endNow := time.Now().UTC()
+				finalStatus := domain.StepRunSucceeded
+				if failed {
+					finalStatus = domain.StepRunFailed
+				}
+				updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+					Status:  strPtr(finalStatus),
+					EndedAt: &endNow,
+				})
+				if err != nil {
+					return fmt.Errorf("mark task step terminal: %w", err)
+				}
+				stepRuns[i] = updated
+				runByID[sr.StepID] = updated
+				madeProgress = true
+				evt := domain.WorkflowEventStepSucceeded
+				if failed {
+					evt = domain.WorkflowEventStepFailed
+				}
+				if err := r.enqueueStepEvent(ctx, ttx.Tx, evt, run, updated); err != nil {
+					return fmt.Errorf("enqueue step result: %w", err)
+				}
 			}
-			continue
 		}
-		var stepWIDs []string
-		if err := r.dispatchStep(ctx, ttx.Tx, tenantID, run, step, sr, runByID, steps, &stepWIDs); err != nil {
-			return err
+
+		// Poll running RECOVER steps: check if their linked recovery
+		// execution has completed (terminal).
+		for i, sr := range stepRuns {
+			if sr.Status != domain.StepRunRunning || sr.StepKind != domain.StepKindRecover {
+				continue
+			}
+			terminal, err := r.pollRecoverStep(ctx, ttx.Tx, tenantID, run, sr)
+			if err != nil {
+				return err
+			}
+			if terminal {
+				endNow := time.Now().UTC()
+				updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+					Status:  strPtr(domain.StepRunSucceeded),
+					EndedAt: &endNow,
+				})
+				if err != nil {
+					return fmt.Errorf("mark recover step terminal: %w", err)
+				}
+				stepRuns[i] = updated
+				runByID[sr.StepID] = updated
+				madeProgress = true
+				if err := r.enqueueStepEvent(ctx, ttx.Tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
+					return fmt.Errorf("enqueue recover step_succeeded: %w", err)
+				}
+			}
+		}
+
+		if !madeProgress {
+			break
 		}
 		progressed = true
-		dispatchedWIDs = append(dispatchedWIDs, stepWIDs...)
-	}
-
-	// Poll running task steps: check their linked WorkItem status.
-	for i, sr := range stepRuns {
-		if sr.Status != domain.StepRunRunning || sr.StepKind != domain.StepKindTask {
-			continue
-		}
-		terminal, failed, err := r.pollTaskStep(ctx, ttx.Tx, tenantID, run, sr)
-		if err != nil {
-			return err
-		}
-		if terminal {
-			endNow := time.Now().UTC()
-			finalStatus := domain.StepRunSucceeded
-			if failed {
-				finalStatus = domain.StepRunFailed
-			}
-			updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-				Status:  strPtr(finalStatus),
-				EndedAt: &endNow,
-			})
-			if err != nil {
-				return fmt.Errorf("mark task step terminal: %w", err)
-			}
-			stepRuns[i] = updated
-			runByID[sr.StepID] = updated
-			progressed = true
-			evt := domain.WorkflowEventStepSucceeded
-			if failed {
-				evt = domain.WorkflowEventStepFailed
-			}
-			if err := r.enqueueStepEvent(ctx, ttx.Tx, evt, run, updated); err != nil {
-				return fmt.Errorf("enqueue step result: %w", err)
-			}
-		}
-	}
-
-	// Poll running RECOVER steps: check if their linked recovery
-	// execution has completed (terminal).
-	for i, sr := range stepRuns {
-		if sr.Status != domain.StepRunRunning || sr.StepKind != domain.StepKindRecover {
-			continue
-		}
-		terminal, err := r.pollRecoverStep(ctx, ttx.Tx, tenantID, run, sr)
-		if err != nil {
-			return err
-		}
-		if terminal {
-			endNow := time.Now().UTC()
-			updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-				Status:  strPtr(domain.StepRunSucceeded),
-				EndedAt: &endNow,
-			})
-			if err != nil {
-				return fmt.Errorf("mark recover step terminal: %w", err)
-			}
-			stepRuns[i] = updated
-			runByID[sr.StepID] = updated
-			progressed = true
-			if err := r.enqueueStepEvent(ctx, ttx.Tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
-				return fmt.Errorf("enqueue recover step_succeeded: %w", err)
-			}
-		}
 	}
 
 	// Determine run terminal state: all steps succeeded → completed;
