@@ -1,10 +1,3 @@
-// Canvas ↔ StepWire serialization for the workflow editor.
-//
-// The editor keeps the canvas in React Flow's nodes + edges state. On
-// Save we convert to StepWire[] (the JSON shape stored in
-// workflow_versions.steps) and POST it. On Load we parse it back into
-// nodes + edges.
-
 import { MarkerType, type Edge, type Node } from "reactflow";
 
 import {
@@ -16,13 +9,6 @@ import {
   type StepWire,
 } from "./stepKinds";
 
-// canvasToSteps serializes the editor's nodes + edges into StepWire[].
-// The depends_on field is computed from incoming edges: for each node,
-// collect the sources of edges where the target is this node.
-//
-// `position_x` / `position_y` are stored on each step so the editor can
-// rehydrate the layout exactly on Load. The backend does not interpret
-// positions — it reads `kind` and `depends_on` only.
 export function canvasToSteps(nodes: Node<StepData>[], edges: Edge[]): StepWire[] {
   const depsByNode = new Map<string, string[]>();
   for (const n of nodes) depsByNode.set(n.id, []);
@@ -30,9 +16,20 @@ export function canvasToSteps(nodes: Node<StepData>[], edges: Edge[]): StepWire[
     if (e.source === e.target) continue;
     depsByNode.get(e.target)?.push(e.source);
   }
-  return nodes.map((n) => {
+
+  const edgeHandles: Record<string, { sourceHandle?: string; targetHandle?: string }> = {};
+  for (const e of edges) {
+    if (e.source && e.target) {
+      edgeHandles[`e-${e.source}-${e.target}`] = {
+        sourceHandle: e.sourceHandle ?? undefined,
+        targetHandle: e.targetHandle ?? undefined,
+      };
+    }
+  }
+
+  return nodes.map((n, i) => {
     const d = n.data;
-    return {
+    const wire: StepWire = {
       id: n.id,
       name: d.name,
       kind: KIND_TO_STR(d.kind),
@@ -44,12 +41,13 @@ export function canvasToSteps(nodes: Node<StepData>[], edges: Edge[]): StepWire[
       position_x: n.position.x,
       position_y: n.position.y,
     };
+    if (i === 0 && Object.keys(edgeHandles).length > 0) {
+      wire.edge_handles = edgeHandles;
+    }
+    return wire;
   });
 }
 
-// stepsToCanvas parses a workflow version's `steps` JSON into the
-// editor's nodes + edges. Malformed JSON is treated as an empty canvas
-// (with a console warning in dev).
 export function stepsToCanvas(stepsJson: string): {
   nodes: Node<StepData>[];
   edges: Edge[];
@@ -63,6 +61,7 @@ export function stepsToCanvas(stepsJson: string): {
     }
     steps = [];
   }
+
   const nodes: Node<StepData>[] = steps.map((s) => ({
     id: s.id,
     type: "step",
@@ -76,20 +75,32 @@ export function stepsToCanvas(stepsJson: string): {
       config: s.config,
     },
   }));
-  // Build a kind lookup so edges can be color-coded by source kind.
+
   const kindByNodeId = new Map<string, number>();
   for (const s of steps) {
     kindByNodeId.set(s.id, STR_TO_KIND[s.kind] ?? 1);
   }
+
+  let edgeHandles: Record<string, { sourceHandle?: string; targetHandle?: string }> = {};
+  for (const s of steps) {
+    if (s.edge_handles) {
+      edgeHandles = { ...edgeHandles, ...s.edge_handles };
+    }
+  }
+
   const edges: Edge[] = [];
   for (const s of steps) {
     for (const dep of s.depends_on ?? []) {
+      const edgeKey = `e-${dep}-${s.id}`;
+      const handles = edgeHandles[edgeKey];
       const srcKind = kindByNodeId.get(dep) ?? 1;
       const accent = KIND_ACCENT[srcKind] ?? "sky";
       edges.push({
-        id: `e-${dep}-${s.id}`,
+        id: edgeKey,
         source: dep,
         target: s.id,
+        sourceHandle: handles?.sourceHandle,
+        targetHandle: handles?.targetHandle,
         markerEnd: { type: MarkerType.ArrowClosed },
         animated: true,
         style: { stroke: `var(--kind-${accent})` },
@@ -97,5 +108,6 @@ export function stepsToCanvas(stepsJson: string): {
       });
     }
   }
+
   return { nodes, edges };
 }

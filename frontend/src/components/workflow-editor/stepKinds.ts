@@ -132,6 +132,7 @@ export interface StepWire {
   config: string;
   position_x: number;
   position_y: number;
+  edge_handles?: Record<string, { sourceHandle?: string; targetHandle?: string }>;
 }
 
 export interface PaletteDropPayload {
