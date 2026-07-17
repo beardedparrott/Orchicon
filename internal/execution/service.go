@@ -646,6 +646,8 @@ func eventTypeToProto(eventType string) apiv1.ExecutionEventType {
 		return apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_APPROVAL_REQUEST
 	case "execution.control":
 		return apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_CONTROL
+	case "execution.artifact":
+		return apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_ARTIFACT
 	default:
 		return apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_UNSPECIFIED
 	}

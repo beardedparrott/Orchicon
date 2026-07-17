@@ -53,6 +53,12 @@ type ExecutionCallbacks interface {
 	// OnText notifies the runtime that the worker produced text output.
 	// Published as a telemetry execution event for the live session pane.
 	OnText(ctx context.Context, execID string, text string)
+	// OnArtifact notifies the runtime that the worker produced an output
+	// artifact (e.g. a file via the `write` tool). The name is the file
+	// path, artifactType is the MIME type or extension hint (e.g. "markdown",
+	// "json", "text"), and content is the full artifact body. Published as
+	// an EXECUTION_EVENT_TYPE_ARTIFACT event for inline display (docs/10 §11).
+	OnArtifact(ctx context.Context, execID, name, artifactType, content string)
 }
 
 // AdapterBridge is the control-plane side of the adapter contract. It

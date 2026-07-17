@@ -192,6 +192,16 @@ export enum ExecutionEventType {
    * @generated from enum value: EXECUTION_EVENT_TYPE_CONTROL = 9;
    */
   CONTROL = 9,
+
+  /**
+   * EXECUTION_EVENT_TYPE_ARTIFACT is emitted when the model produces an
+   * output artifact (e.g. a file via the `write` tool). The payload
+   * contains the artifact name, type, and full content for inline display
+   * in the runtime session pane (docs/10 §11).
+   *
+   * @generated from enum value: EXECUTION_EVENT_TYPE_ARTIFACT = 10;
+   */
+  ARTIFACT = 10,
 }
 // Retrieve enum metadata with: proto3.getEnumType(ExecutionEventType)
 proto3.util.setEnumType(ExecutionEventType, "orchicon.api.v1.ExecutionEventType", [
@@ -205,6 +215,7 @@ proto3.util.setEnumType(ExecutionEventType, "orchicon.api.v1.ExecutionEventType"
   { no: 7, name: "EXECUTION_EVENT_TYPE_RESULT" },
   { no: 8, name: "EXECUTION_EVENT_TYPE_ERROR" },
   { no: 9, name: "EXECUTION_EVENT_TYPE_CONTROL" },
+  { no: 10, name: "EXECUTION_EVENT_TYPE_ARTIFACT" },
 ]);
 
 /**

@@ -182,21 +182,27 @@ const (
 	ExecutionEventType_EXECUTION_EVENT_TYPE_RESULT           ExecutionEventType = 7
 	ExecutionEventType_EXECUTION_EVENT_TYPE_ERROR            ExecutionEventType = 8
 	ExecutionEventType_EXECUTION_EVENT_TYPE_CONTROL          ExecutionEventType = 9
+	// EXECUTION_EVENT_TYPE_ARTIFACT is emitted when the model produces an
+	// output artifact (e.g. a file via the `write` tool). The payload
+	// contains the artifact name, type, and full content for inline display
+	// in the runtime session pane (docs/10 §11).
+	ExecutionEventType_EXECUTION_EVENT_TYPE_ARTIFACT ExecutionEventType = 10
 )
 
 // Enum value maps for ExecutionEventType.
 var (
 	ExecutionEventType_name = map[int32]string{
-		0: "EXECUTION_EVENT_TYPE_UNSPECIFIED",
-		1: "EXECUTION_EVENT_TYPE_STARTED",
-		2: "EXECUTION_EVENT_TYPE_TELEMETRY",
-		3: "EXECUTION_EVENT_TYPE_TOOL_CALL",
-		4: "EXECUTION_EVENT_TYPE_CHECKPOINT",
-		5: "EXECUTION_EVENT_TYPE_APPROVAL_REQUEST",
-		6: "EXECUTION_EVENT_TYPE_HEALTH",
-		7: "EXECUTION_EVENT_TYPE_RESULT",
-		8: "EXECUTION_EVENT_TYPE_ERROR",
-		9: "EXECUTION_EVENT_TYPE_CONTROL",
+		0:  "EXECUTION_EVENT_TYPE_UNSPECIFIED",
+		1:  "EXECUTION_EVENT_TYPE_STARTED",
+		2:  "EXECUTION_EVENT_TYPE_TELEMETRY",
+		3:  "EXECUTION_EVENT_TYPE_TOOL_CALL",
+		4:  "EXECUTION_EVENT_TYPE_CHECKPOINT",
+		5:  "EXECUTION_EVENT_TYPE_APPROVAL_REQUEST",
+		6:  "EXECUTION_EVENT_TYPE_HEALTH",
+		7:  "EXECUTION_EVENT_TYPE_RESULT",
+		8:  "EXECUTION_EVENT_TYPE_ERROR",
+		9:  "EXECUTION_EVENT_TYPE_CONTROL",
+		10: "EXECUTION_EVENT_TYPE_ARTIFACT",
 	}
 	ExecutionEventType_value = map[string]int32{
 		"EXECUTION_EVENT_TYPE_UNSPECIFIED":      0,
@@ -209,6 +215,7 @@ var (
 		"EXECUTION_EVENT_TYPE_RESULT":           7,
 		"EXECUTION_EVENT_TYPE_ERROR":            8,
 		"EXECUTION_EVENT_TYPE_CONTROL":          9,
+		"EXECUTION_EVENT_TYPE_ARTIFACT":         10,
 	}
 )
 
@@ -1758,7 +1765,7 @@ const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"\x14HEALTH_STATE_HEALTHY\x10\x01\x12\x18\n" +
 	"\x14HEALTH_STATE_STALLED\x10\x02\x12\x1a\n" +
 	"\x16HEALTH_STATE_UNHEALTHY\x10\x03\x12\x1c\n" +
-	"\x18HEALTH_STATE_TERMINATING\x10\x04*\xf8\x02\n" +
+	"\x18HEALTH_STATE_TERMINATING\x10\x04*\x9b\x03\n" +
 	"\x12ExecutionEventType\x12$\n" +
 	" EXECUTION_EVENT_TYPE_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cEXECUTION_EVENT_TYPE_STARTED\x10\x01\x12\"\n" +
@@ -1769,7 +1776,9 @@ const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"\x1bEXECUTION_EVENT_TYPE_HEALTH\x10\x06\x12\x1f\n" +
 	"\x1bEXECUTION_EVENT_TYPE_RESULT\x10\a\x12\x1e\n" +
 	"\x1aEXECUTION_EVENT_TYPE_ERROR\x10\b\x12 \n" +
-	"\x1cEXECUTION_EVENT_TYPE_CONTROL\x10\tB\xc8\x01\n" +
+	"\x1cEXECUTION_EVENT_TYPE_CONTROL\x10\t\x12!\n" +
+	"\x1dEXECUTION_EVENT_TYPE_ARTIFACT\x10\n" +
+	"B\xc8\x01\n" +
 	"\x13com.orchicon.api.v1B\x0eExecutionProtoP\x01ZCgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1;apiv1\xa2\x02\x03OAX\xaa\x02\x0fOrchicon.Api.V1\xca\x02\x0fOrchicon\\Api\\V1\xe2\x02\x1bOrchicon\\Api\\V1\\GPBMetadata\xea\x02\x11Orchicon::Api::V1b\x06proto3"
 
 var (

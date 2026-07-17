@@ -841,7 +841,8 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	}
 	// Footer: instruction for the worker to emit the summary marker.
 	sb.WriteString("# Instructions\n\n")
-	sb.WriteString("Complete the task above. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one short paragraph summarizing what you did. Everything from that marker to the end of your output is passed to the next stage of the workflow as upstream context.\n")
+	sb.WriteString("Complete the task above. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one short paragraph summarizing what you did. Everything from that marker to the end of your output is passed to the next stage of the workflow as upstream context.\n\n")
+	sb.WriteString("If you produce an output file (an essay, report, configuration, generated code, or any structured artifact), use the `write` tool to save it instead of `bash` with a heredoc. The `write` tool saves the file and orchicon automatically captures its content as an inline artifact visible in the execution log. Using `write` (not bash heredoc) makes your output visible to the operator without them having to click through tool input.\n")
 	return sb.String(), nil
 }
 

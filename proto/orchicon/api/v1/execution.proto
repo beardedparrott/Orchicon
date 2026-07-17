@@ -93,6 +93,11 @@ enum ExecutionEventType {
   EXECUTION_EVENT_TYPE_RESULT = 7;
   EXECUTION_EVENT_TYPE_ERROR = 8;
   EXECUTION_EVENT_TYPE_CONTROL = 9;
+  // EXECUTION_EVENT_TYPE_ARTIFACT is emitted when the model produces an
+  // output artifact (e.g. a file via the `write` tool). The payload
+  // contains the artifact name, type, and full content for inline display
+  // in the runtime session pane (docs/10 §11).
+  EXECUTION_EVENT_TYPE_ARTIFACT = 10;
 }
 
 // ApprovalRequest is a Tier 2 per-tool-call gating request
