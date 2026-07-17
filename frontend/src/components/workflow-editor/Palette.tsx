@@ -3,7 +3,7 @@ import {
   ChevronDown,
   ChevronRight,
   FileText,
-  GitBranch,
+  GitFork,
   Info,
   LifeBuoy,
   type LucideIcon,
@@ -87,17 +87,17 @@ export function Palette({ readOnly }: { readOnly: boolean }) {
         />
       </Section>
       <Section
-        title="Conditional"
-        icon={GitBranch}
-        subtitle="Control flow building blocks"
+        title="Parallel"
+        icon={GitFork}
+        subtitle="Fan out to multiple downstream steps"
       >
         <DraggableTile
-          label="Conditional"
-          sublabel="Set type in properties"
-          icon={STEP_KIND_ICONS[STEP_KIND.DECISION]}
-          kindAccent="amber"
-          payload={{ kind: STEP_KIND.DECISION, name: "Conditional" }}
-          description="A control-flow step. Choose Decision (Rego branch), Approval (human gate), or Parallel (fan-out) in the properties panel."
+          label="Parallel"
+          sublabel="Runs all direct downstream steps concurrently"
+          icon={GitFork}
+          kindAccent="violet"
+          payload={{ kind: STEP_KIND.PARALLEL, name: "Parallel" }}
+          description="Fans out to every directly-connected downstream step, running them concurrently. Steps further downstream still wait for their own dependencies."
           readOnly={readOnly}
         />
       </Section>
