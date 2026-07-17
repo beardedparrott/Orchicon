@@ -114,6 +114,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
       depends_on: string[];
       position_x: number;
       position_y: number;
+      edge_handles?: Record<string, { sourceHandle?: string; targetHandle?: string }>;
     }[] = [];
     try {
       steps = JSON.parse(stepsJson);
@@ -142,12 +143,20 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
       };
     });
     const edges: Edge[] = [];
+    const edgeHandles: Record<string, { sourceHandle?: string; targetHandle?: string }> = {};
+    for (const s of steps) {
+      if (s.edge_handles) Object.assign(edgeHandles, s.edge_handles);
+    }
     for (const s of steps) {
       for (const dep of s.depends_on ?? []) {
+        const edgeKey = `e-${dep}-${s.id}`;
+        const handles = edgeHandles[edgeKey];
         edges.push({
-          id: `e-${dep}-${s.id}`,
+          id: edgeKey,
           source: dep,
           target: s.id,
+          sourceHandle: handles?.sourceHandle,
+          targetHandle: handles?.targetHandle,
           markerEnd: { type: MarkerType.ArrowClosed },
           animated: statusByStep.get(s.id) === 3, // animate running steps
         });
