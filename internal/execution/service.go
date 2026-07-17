@@ -688,6 +688,9 @@ func rowToProto(e db.ExecutionRow) *apiv1.WorkerExecution {
 	if e.ErrorMessage != "" {
 		p.ErrorMessage = e.ErrorMessage
 	}
+	if e.Output != "" {
+		p.Output = e.Output
+	}
 	return p
 }
 

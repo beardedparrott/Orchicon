@@ -1,4 +1,4 @@
-h1:HWs/xD5Re1Z/o5Z1LNA+Q9Hh08EQUvdOmVx12gSISu4=
+h1:lbnUlLM/IXVCHxizHdHQcHPVgX5Ne0KMxR4lv9VeLUg=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712223028_add_outbox.sql h1:tlrMIs8ABXFMszWNaYd7gxjn3p42rmqrZeoxOJ1Vqvg=
 20260713012808_workers_workitems.sql h1:3li9AejCZaj9bcZz8wKOw0GG7UER3Uz9jbSNKF74Zo8=
@@ -10,3 +10,6 @@ h1:HWs/xD5Re1Z/o5Z1LNA+Q9Hh08EQUvdOmVx12gSISu4=
 20260713160000_auth_webhooks.sql h1:qxaPhZUGZZBLYGKFTx5DOj/YKPvNq1E80qYYfVriSvk=
 20260713210000_work_items_prompt_context.sql h1:OJEamyq84VvaJSnfFXwqdqtwuevXST8vdfvVDkH9nkA=
 20260715000000_recovery_strategy.sql h1:T2HE1hiBH9hi+ReyfaaQLgMHH/GNIgvPSLOTPQWvi6s=
+20260716000000_workflow_execution_links.sql h1:W0kA7gNbTJ6IUiOXMrJBWoXhwNVjHg3smUaDkJ/Nfpc=
+20260716010000_execution_error_message.sql h1:ftCPF3UGtje7nn171YewY4h0yLVscnjdiKlqH2gj4xQ=
+20260716020000_execution_output.sql h1:ECu4osrh02ned49Bc83/oBBxd10wJesNpz3WqChlak4=

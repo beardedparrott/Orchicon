@@ -422,7 +422,7 @@ func (r *TaskReconciler) selectAdapter(ctx context.Context, tx pgx.Tx, tenantID,
 // OnStarted is called by the adapter bridge when the adapter confirms
 // execution has started (docs/03 §6: assigned → running).
 func (r *TaskReconciler) OnStarted(ctx context.Context, execID string) {
-	r.updateExecStatus(ctx, execID, domain.ExecutionRunning, domain.HealthHealthy)
+	r.updateExecStatus(ctx, execID, domain.ExecutionRunning, domain.HealthHealthy, "")
 }
 
 // OnResult is called by the adapter bridge when the execution reaches a
@@ -444,7 +444,7 @@ func (r *TaskReconciler) OnResult(ctx context.Context, execID string, succeeded 
 	if !succeeded {
 		status = domain.ExecutionFailed
 	}
-	r.updateExecStatus(ctx, execID, status, domain.HealthTerminating, errorMessage)
+	r.updateExecStatus(ctx, execID, status, domain.HealthTerminating, output, errorMessage)
 	r.transitionWorkItemOnResult(ctx, execID, succeeded, output)
 }
 
@@ -706,7 +706,7 @@ func (r *TaskReconciler) OnArtifact(ctx context.Context, execID, name, artifactT
 	})
 }
 
-func (r *TaskReconciler) updateExecStatus(ctx context.Context, execID, status, health string, errorMessage ...string) {
+func (r *TaskReconciler) updateExecStatus(ctx context.Context, execID, status, health string, output string, errorMessage ...string) {
 	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {
 		r.log.Error("begin tx for status update", "execution", execID, "error", err)
@@ -730,6 +730,9 @@ func (r *TaskReconciler) updateExecStatus(ctx context.Context, execID, status, h
 	}
 	if len(errorMessage) > 0 && errorMessage[0] != "" {
 		fields.ErrorMessage = &errorMessage[0]
+	}
+	if output != "" {
+		fields.Output = &output
 	}
 	updated, err := db.UpdateExecution(ctx, ttx.Tx, "tnt_dev", execID, current.Version, fields)
 	if err != nil {

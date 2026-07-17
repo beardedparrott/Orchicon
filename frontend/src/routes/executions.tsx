@@ -82,7 +82,7 @@ function ExecutionsPage() {
                       </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground sm:shrink-0">
-                      <HealthBadge health={e.healthState} />
+                      <HealthBadge health={e.healthState} status={e.status} />
                       {Number(e.tokenUsage) > 0 && (
                         <span className="font-mono tabular-nums">
                           {Number(e.tokenUsage).toLocaleString()} tokens
@@ -160,7 +160,11 @@ function ExecStatusBadge({ status }: { status: number }) {
   );
 }
 
-function HealthBadge({ health }: { health: number }) {
+function HealthBadge({ health, status }: { health: number; status: number }) {
+  // Terminal statuses: terminated(7), failed_to_start(8), succeeded(9), failed(10)
+  const terminalStatuses = new Set([7, 8, 9, 10]);
+  if (terminalStatuses.has(status)) return null;
+
   const labels: Record<number, string> = {
     1: "healthy",
     2: "stalled",

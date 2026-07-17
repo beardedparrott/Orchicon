@@ -33,6 +33,7 @@ type ExecutionRow struct {
 	WorkflowStepID  string
 	WorkflowName    string
 	ErrorMessage    string
+	Output          string
 	Version         int
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
@@ -50,7 +51,7 @@ func CreateExecution(ctx context.Context, tx pgx.Tx, e ExecutionRow) (ExecutionR
 		RETURNING id, tenant_id, project_id, task_id, worker_id, worker_version,
 			adapter_id, status, health_state, started_at, ended_at,
 			token_usage, cost_usd, checkpoint_ref, recovery_id,
-			workflow_run_id, workflow_step_id, error_message, version,
+			workflow_run_id, workflow_step_id, error_message, output, version,
 			created_at, updated_at`
 	row := e
 	err := tx.QueryRow(ctx, q,
@@ -63,7 +64,7 @@ func CreateExecution(ctx context.Context, tx pgx.Tx, e ExecutionRow) (ExecutionR
 		&row.StartedAt, &row.EndedAt, &row.TokenUsage, &row.CostUSD,
 		&row.CheckpointRef, &row.RecoveryID,
 		&row.WorkflowRunID, &row.WorkflowStepID,
-		&row.ErrorMessage,
+		&row.ErrorMessage, &row.Output,
 		&row.Version,
 		&row.CreatedAt, &row.UpdatedAt,
 	)
@@ -78,7 +79,7 @@ func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (Executio
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
-		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.version,
+		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
 		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
@@ -91,7 +92,7 @@ func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (Executio
 		&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 		&e.CheckpointRef, &e.RecoveryID,
 		&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName,
-		&e.ErrorMessage,
+		&e.ErrorMessage, &e.Output,
 		&e.Version,
 		&e.CreatedAt, &e.UpdatedAt,
 	)
@@ -124,7 +125,7 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 	q := `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
-		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.version,
+		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
 		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
@@ -163,7 +164,7 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 			&e.CheckpointRef, &e.RecoveryID,
 			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName,
-			&e.ErrorMessage,
+			&e.ErrorMessage, &e.Output,
 			&e.Version,
 			&e.CreatedAt, &e.UpdatedAt,
 		); err != nil {
@@ -187,6 +188,7 @@ type UpdateExecutionFields struct {
 	CheckpointRef *string
 	RecoveryID   *string
 	ErrorMessage *string
+	Output       *string
 }
 
 // UpdateExecution applies a partial update with optimistic concurrency.
@@ -246,17 +248,22 @@ func UpdateExecution(ctx context.Context, tx pgx.Tx, tenantID, id string, expect
 		args = append(args, *f.ErrorMessage)
 		setIdx++
 	}
+	if f.Output != nil {
+		q += fmt.Sprintf(`, output = $%d`, setIdx)
+		args = append(args, *f.Output)
+		setIdx++
+	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, project_id, task_id, worker_id, worker_version,
 		adapter_id, status, health_state, started_at, ended_at,
-		token_usage, cost_usd, checkpoint_ref, recovery_id, error_message, version,
+		token_usage, cost_usd, checkpoint_ref, recovery_id, error_message, output, version,
 		created_at, updated_at`
 	var e ExecutionRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&e.ID, &e.TenantID, &e.ProjectID, &e.TaskID, &e.WorkerID,
 		&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 		&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
-		&e.CheckpointRef, &e.RecoveryID, &e.ErrorMessage,
+		&e.CheckpointRef, &e.RecoveryID, &e.ErrorMessage, &e.Output,
 		&e.Version,
 		&e.CreatedAt, &e.UpdatedAt,
 	)
@@ -275,7 +282,7 @@ func ListDispatchingExecutions(ctx context.Context, tx pgx.Tx, tenantID string) 
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
-		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.version,
+		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
 		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
@@ -296,7 +303,7 @@ func ListDispatchingExecutions(ctx context.Context, tx pgx.Tx, tenantID string) 
 			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 			&e.CheckpointRef, &e.RecoveryID,
 			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName,
-			&e.ErrorMessage,
+			&e.ErrorMessage, &e.Output,
 			&e.Version,
 			&e.CreatedAt, &e.UpdatedAt,
 		); err != nil {
