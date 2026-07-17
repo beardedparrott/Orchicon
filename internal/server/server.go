@@ -221,6 +221,14 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	// RecoveryTrigger interface (loose coupling — no scheduler→recovery
 	// import).
 	taskRec.SetRecoveryTrigger(recoveryEngine)
+	// Wire the direct NATS publisher for low-latency execution event
+	// streaming. When set, the reconciler publishes streaming events
+	// (text, tool_call, artifact, status changes) directly to NATS
+	// after each callback commits, bypassing the outbox relay's 500ms
+	// poll interval. The outbox is still written for durability.
+	if pub != nil {
+		taskRec.SetEventPublisher(pub)
+	}
 	workflowRec := scheduler.NewWorkflowReconciler(pool, log, policyEngine, taskRec)
 	recoveryRec := recovery.NewReconciler(recoveryEngine)
 	s.rcmgr = reconciler.NewManager(pool, log)
