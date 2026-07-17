@@ -387,13 +387,17 @@ function EditorInner({ workflowId }: { workflowId: string }) {
         y: Number.isFinite(raw?.y) ? raw.y : 100,
       };
       const id = `step-${Math.random().toString(36).slice(2, 10)}`;
+      const initialConfig =
+        kind === STEP_KIND.RECOVER
+          ? JSON.stringify({ strategy: "summarize_restart" })
+          : "{}";
       const data: StepData = {
         kind,
         name: name ?? `step-${id.slice(5, 9)}`,
         ref: "",
         workerVersion: 0,
         gatePolicyRef: "",
-        config: "{}",
+        config: initialConfig,
       };
       const node: Node<StepData> = {
         id,
