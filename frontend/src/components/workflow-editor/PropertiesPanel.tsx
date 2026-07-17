@@ -230,10 +230,11 @@ const WORK_ITEM_KIND_LABELS: Record<number, string> = {
   [WorkItemKind.SUBTASK]: "Subtask",
 };
 
-const PARENT_TYPE: Record<number, number> = {
-  [WorkItemKind.FEATURE]: WorkItemKind.EPIC,
-  [WorkItemKind.TASK]: WorkItemKind.FEATURE,
-  [WorkItemKind.SUBTASK]: WorkItemKind.TASK,
+const ANCESTOR_CHAIN: Record<number, number[]> = {
+  [WorkItemKind.EPIC]: [],
+  [WorkItemKind.FEATURE]: [WorkItemKind.EPIC],
+  [WorkItemKind.TASK]: [WorkItemKind.EPIC, WorkItemKind.FEATURE],
+  [WorkItemKind.SUBTASK]: [WorkItemKind.EPIC, WorkItemKind.FEATURE, WorkItemKind.TASK],
 };
 
 function WorkItemSelector({
@@ -250,20 +251,26 @@ function WorkItemSelector({
   onSelect: (wi: { id: string; title: string; kind: WorkItemKind }) => void;
 }) {
   const [typeFilter, setTypeFilter] = useState<number | null>(null);
-  const [parentId, setParentId] = useState<string>("");
+  const [selections, setSelections] = useState<Record<string, string>>({});
 
   const currentItem = workItems.find((w) => w.id === currentWid);
 
-  const parentKind = typeFilter != null ? PARENT_TYPE[typeFilter] : undefined;
-  const parentOptions = parentKind != null
-    ? workItems.filter((w) => w.kind === parentKind)
-    : [];
+  function setLevel(kind: number, id: string) {
+    const key = String(kind);
+    setSelections((prev) => {
+      const next = { ...prev, [key]: id };
+      const chain = ANCESTOR_CHAIN[typeFilter ?? 0] ?? [];
+      const idx = chain.indexOf(kind);
+      if (idx >= 0) {
+        for (let i = idx + 1; i < chain.length; i++) {
+          delete next[String(chain[i])];
+        }
+      }
+      return next;
+    });
+  }
 
-  const filtered = workItems.filter((w) => {
-    if (typeFilter != null && w.kind !== typeFilter) return false;
-    if (parentId && w.parentId !== parentId) return false;
-    return true;
-  });
+  const ancestorKinds = typeFilter != null ? ANCESTOR_CHAIN[typeFilter] ?? [] : [];
 
   const topLevelTypes = [
     { value: null, label: "All types" },
@@ -282,7 +289,7 @@ function WorkItemSelector({
           disabled={disabled || !projectId}
           onChange={(e) => {
             setTypeFilter(e.target.value ? Number(e.target.value) : null);
-            setParentId("");
+            setSelections({});
           }}
         >
           {topLevelTypes.map((t) => (
@@ -293,26 +300,31 @@ function WorkItemSelector({
         </select>
       </Field>
 
-      {parentOptions.length > 0 && (
-        <Field
-          label={`Parent ${WORK_ITEM_KIND_LABELS[parentKind!]?.toLowerCase() ?? "item"}`}
-          hint={`Show only ${WORK_ITEM_KIND_LABELS[typeFilter!]?.toLowerCase() ?? "items"} under a specific parent.`}
-        >
-          <select
-            className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-            value={parentId}
-            disabled={disabled || !projectId}
-            onChange={(e) => setParentId(e.target.value)}
+      {ancestorKinds.map((ancestorKind) => {
+        const selectedAncestorId = selections[String(ancestorKind)] ?? "";
+        const items = workItems.filter((w) => w.kind === ancestorKind);
+        return (
+          <Field
+            key={ancestorKind}
+            label={WORK_ITEM_KIND_LABELS[ancestorKind] ?? "Parent"}
+            hint={`Filter by ${WORK_ITEM_KIND_LABELS[ancestorKind]?.toLowerCase() ?? "parent"}.`}
           >
-            <option value="">All {WORK_ITEM_KIND_LABELS[typeFilter!]?.toLowerCase() ?? "items"}</option>
-            {parentOptions.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.title}
-              </option>
-            ))}
-          </select>
-        </Field>
-      )}
+            <select
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              value={selectedAncestorId}
+              disabled={disabled || !projectId}
+              onChange={(e) => setLevel(ancestorKind, e.target.value)}
+            >
+              <option value="">All {WORK_ITEM_KIND_LABELS[ancestorKind]?.toLowerCase() ?? "items"}</option>
+              {items.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.title}
+                </option>
+              ))}
+            </select>
+          </Field>
+        );
+      })}
 
       <Field label="Work Item" hint="The work item that flows through this step.">
         <select
@@ -325,11 +337,30 @@ function WorkItemSelector({
           }}
         >
           <option value="">-- Select a work item --</option>
-          {filtered.map((w) => (
-            <option key={w.id} value={w.id}>
-              {w.title}
-            </option>
-          ))}
+          {workItems
+            .filter((w) => {
+              if (typeFilter != null && w.kind !== typeFilter) return false;
+              // Apply all ancestor filters — an item matches if its parentId
+              // chain leads to the selected ancestor (or ancestor is unset).
+              for (const ak of ancestorKinds) {
+                const sel = selections[String(ak)];
+                if (!sel) continue;
+                // Walk up the parent chain to check if this item descends from sel.
+                let cur: (typeof workItems)[number] | undefined = w;
+                let found = false;
+                while (cur) {
+                  if (cur.id === sel) { found = true; break; }
+                  cur = cur.parentId ? workItems.find((x) => x.id === cur!.parentId) : undefined;
+                }
+                if (!found) return false;
+              }
+              return true;
+            })
+            .map((w) => (
+              <option key={w.id} value={w.id}>
+                {WORK_ITEM_KIND_LABELS[w.kind] ?? "?"}: {w.title}
+              </option>
+            ))}
         </select>
         {!projectId && (
           <p className="text-[10px] text-amber-600 dark:text-amber-400">
