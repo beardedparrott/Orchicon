@@ -14,7 +14,6 @@ import { WorkerStatus } from "@/api/gen/orchicon/api/v1/worker_pb";
 import { PolicyStatus } from "@/api/gen/orchicon/api/v1/policy_pb";
 
 import {
-  CONDITIONAL_OPTIONS,
   RECOVERY_STRATEGY_OPTIONS,
   STEP_KIND,
   STEP_KIND_DISPLAY_LABELS,
@@ -182,28 +181,11 @@ export function PropertiesPanel({
           </Field>
         )}
 
-        {(d.kind === STEP_KIND.DECISION ||
-          d.kind === STEP_KIND.APPROVAL ||
-          d.kind === STEP_KIND.PARALLEL) && (
-          <Field label="Conditional type" hint="What kind of control-flow step this is.">
-            <select
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-              value={d.kind}
-              disabled={readOnly}
-              onChange={(e) => {
-                const newKind = Number(e.target.value);
-                const opt = CONDITIONAL_OPTIONS.find((o) => o.kind === newKind);
-                if (opt) {
-                  onChange({ kind: newKind, name: opt.label });
-                }
-              }}
-            >
-              {CONDITIONAL_OPTIONS.map((opt) => (
-                <option key={opt.kind} value={opt.kind}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+        {d.kind === STEP_KIND.PARALLEL && (
+          <Field label="Behavior" hint="All directly-connected downstream steps run concurrently. Steps two hops away still wait for their own dependency chain.">
+            <p className="text-xs text-muted-foreground">
+              Steps wired to this Parallel node&apos;s output will all be dispatched simultaneously.
+            </p>
           </Field>
         )}
 

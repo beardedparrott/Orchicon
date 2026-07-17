@@ -88,12 +88,6 @@ export const KIND_ACCENT: Record<number, string> = {
   [STEP_KIND.POLICY]: "amber",
 };
 
-export const CONDITIONAL_OPTIONS = [
-  { kind: STEP_KIND.DECISION, label: "Decision", icon: GitBranch, description: "Branches based on a Rego policy." },
-  { kind: STEP_KIND.APPROVAL, label: "Approval", icon: ShieldCheck, description: "Blocks until a human approves." },
-  { kind: STEP_KIND.PARALLEL, label: "Parallel", icon: GitFork, description: "Fans out to every downstream step." },
-] as const;
-
 export const ACCENT_STROKE: Record<string, string> = {
   sky: "stroke-sky-400",
   amber: "stroke-amber-400",
