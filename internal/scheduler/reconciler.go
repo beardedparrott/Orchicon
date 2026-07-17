@@ -642,6 +642,30 @@ func (r *TaskReconciler) OnText(ctx context.Context, execID string, text string)
 	_ = ttx.Commit(ctx)
 }
 
+// OnArtifact publishes an artifact execution event so the frontend live
+// session pane can show model output files inline (docs/10 §11). Called
+// by the adapter when the model uses the `write` tool (opencode built-in
+// file writer). The name is the file path, artifactType is "markdown" /
+// "json" / "text", and content is the full artifact body.
+func (r *TaskReconciler) OnArtifact(ctx context.Context, execID, name, artifactType, content string) {
+	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		return
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetExecution(ctx, ttx.Tx, "tnt_dev", execID)
+	if err != nil {
+		r.log.Error("on artifact: get execution", "execution", execID, "error", err)
+		return
+	}
+	_ = enqueueExecEvent(ctx, ttx.Tx, "execution.artifact", current, map[string]any{
+		"artifact_name": name,
+		"artifact_type": artifactType,
+		"content":       content,
+	})
+	_ = ttx.Commit(ctx)
+}
+
 func (r *TaskReconciler) updateExecStatus(ctx context.Context, execID, status, health string, errorMessage ...string) {
 	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {

@@ -63,6 +63,13 @@ interface ParsedError {
   occurredAt: Date;
 }
 
+interface ParsedArtifact {
+  name: string;
+  artifactType: string;
+  content: string;
+  occurredAt: Date;
+}
+
 // ChatMessage is the unified type the renderer iterates over. The
 // streaming array of events is collapsed into an ordered list of
 // messages so the timeline reads top-to-bottom like a chat log.
@@ -73,7 +80,8 @@ type ChatMessage =
   | { kind: "text"; chunk: ParsedTextChunk; key: string }
   | { kind: "reasoning"; chunk: ParsedReasoningChunk; key: string }
   | { kind: "result"; result: ParsedResult; key: string }
-  | { kind: "error"; error: ParsedError; key: string };
+  | { kind: "error"; error: ParsedError; key: string }
+  | { kind: "artifact"; artifact: ParsedArtifact; key: string };
 
 interface RuntimeSessionPaneProps {
   events: StreamExecutionEventsResponse[];
@@ -283,6 +291,20 @@ export function RuntimeSessionPane({ events, prompt, streamStatus }: RuntimeSess
             key: id,
           });
           break;
+        case 10: // ARTIFACT
+          if (payload.content) {
+            out.push({
+              kind: "artifact",
+              artifact: {
+                name: payload.artifact_name as string || "artifact",
+                artifactType: payload.artifact_type as string || "text",
+                content: payload.content as string,
+                occurredAt: ts,
+              },
+              key: id,
+            });
+          }
+          break;
         default:
           // Unknown event type — show as a small system note so the
           // operator sees something arrived.
@@ -432,6 +454,8 @@ const rendered = useMemo<
                 return <ResultCard key={m.key} result={m.result} />;
               case "error":
                 return <ErrorCard key={m.key} error={m.error} />;
+              case "artifact":
+                return <ArtifactCard key={m.key} artifact={m.artifact} />;
             }
           })}
 
@@ -509,7 +533,7 @@ function ReasoningBubble({ chunks }: { chunks: ParsedReasoningChunk[] }) {
   return (
     <div className="flex justify-start">
       <div className="max-w-[85%] rounded-lg border border-violet-300/30 bg-violet-50/20 px-3 py-2 text-xs italic leading-relaxed text-muted-foreground dark:bg-violet-950/10">
-        <details open={!long}>
+      <details open={true}>
           <summary className="cursor-pointer select-none text-[10px] font-medium not-italic uppercase tracking-wide text-violet-700 dark:text-violet-300">
             <span className="inline-flex items-center gap-1">
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-violet-500" />
@@ -620,6 +644,39 @@ function ErrorCard({ error }: { error: ParsedError }) {
         </span>
       </div>
       <pre className="whitespace-pre-wrap text-xs">{error.message}</pre>
+    </div>
+  );
+}
+
+function ArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
+  const fileName = artifact.name.split("/").pop() || artifact.name;
+  const isMarkdown = artifact.artifactType === "markdown" || fileName.endsWith(".md");
+
+  return (
+    <div className="rounded-lg border border-sky-300/40 bg-sky-50/20 p-3 dark:bg-sky-950/15">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="inline-flex items-center rounded bg-sky-200 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-sky-800 dark:bg-sky-900 dark:text-sky-200">
+            artifact
+          </span>
+          <span className="truncate font-mono text-xs font-medium">{fileName}</span>
+          <span className="shrink-0 text-[10px] text-muted-foreground">
+            {artifact.content.length.toLocaleString()} bytes
+          </span>
+        </div>
+        <span className="shrink-0 text-[10px] text-muted-foreground">
+          {artifact.occurredAt.toLocaleTimeString()}
+        </span>
+      </div>
+      <details open={true}>
+        <summary className="cursor-pointer select-none text-[10px] font-medium uppercase tracking-wide text-sky-700 dark:text-sky-300">
+          {isMarkdown ? "Preview" : "Content"}
+          {artifact.content.length > 10000 && <span className="ml-2 opacity-60">(long — {artifact.content.length.toLocaleString()} chars)</span>}
+        </summary>
+        <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded bg-background/70 p-3 font-mono text-xs leading-relaxed">
+          {artifact.content}
+        </pre>
+      </details>
     </div>
   );
 }

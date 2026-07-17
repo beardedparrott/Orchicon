@@ -351,6 +351,43 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, 
 		state, _ := part["state"].(map[string]any)
 		inRaw, _ := state["input"]
 		outStr, _ := state["output"].(string)
+
+		// Detect `write` tool calls (opencode built-in file writer)
+		// and route them as artifacts instead of raw tool calls. The
+		// model uses `write` to save output files (essays, configs,
+		// code); capturing the content as an artifact event lets the
+		// frontend render it inline as a rich document card instead
+		// of a truncated tool input (docs/10 §11).
+		if toolName == "write" {
+			if inputMap, ok := inRaw.(map[string]any); ok {
+				if content, ok := inputMap["content"].(string); ok && content != "" {
+					path, _ := inputMap["path"].(string)
+					a.log.Info("opencode write artifact",
+						"execution", execID, "path", path, "content_len", len(content))
+					callbacks.OnArtifact(ctx, execID, path, artifactTypeFromPath(path), content)
+					break // skip normal tool call — artifact event is sufficient
+				}
+			}
+		}
+		if toolName == "write_artifact" {
+			if inputMap, ok := inRaw.(map[string]any); ok {
+				if content, ok := inputMap["content"].(string); ok && content != "" {
+					name, _ := inputMap["name"].(string)
+					typ, _ := inputMap["type"].(string)
+					if typ == "" {
+						typ = "text"
+					}
+					if name == "" {
+						name, _ = inputMap["path"].(string)
+					}
+					a.log.Info("opencode write_artifact",
+						"execution", execID, "name", name, "type", typ, "content_len", len(content))
+					callbacks.OnArtifact(ctx, execID, name, typ, content)
+					break
+				}
+			}
+		}
+
 		// `inp` is the JSON-marshalled input object so the frontend
 		// can render it as a structured "Input:" block. If
 		// marshalling fails (rare — input is always a JSON object)
@@ -646,6 +683,30 @@ func (a *Adapter) runSimulation(ctx context.Context, execRow db.ExecutionRow, ma
 // Compile-time assertion that Adapter satisfies the AdapterBridge
 // interface.
 var _ scheduler.AdapterBridge = (*Adapter)(nil)
+
+// artifactTypeFromPath returns a type label for an artifact based on its
+// file extension. Used by the `write` tool handler to tag artifact events
+// so the frontend can display them appropriately (docs/10 §11).
+func artifactTypeFromPath(path string) string {
+	switch {
+	case strings.HasSuffix(path, ".md"), strings.HasSuffix(path, ".markdown"):
+		return "markdown"
+	case strings.HasSuffix(path, ".json"):
+		return "json"
+	case strings.HasSuffix(path, ".yaml"), strings.HasSuffix(path, ".yml"):
+		return "yaml"
+	case strings.HasSuffix(path, ".html"), strings.HasSuffix(path, ".htm"):
+		return "html"
+	case strings.HasSuffix(path, ".csv"):
+		return "csv"
+	case strings.HasSuffix(path, ".xml"):
+		return "xml"
+	case strings.HasSuffix(path, ".svg"):
+		return "svg"
+	default:
+		return "text"
+	}
+}
 
 // textStreamingChunkSize is the number of bytes per chunk when the
 // adapter fans out a single opencode `text` event into the streaming
