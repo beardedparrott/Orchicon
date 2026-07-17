@@ -21,17 +21,21 @@ export const STEP_KIND = {
   POLICY: 8,
 } as const;
 
-export const STEP_KIND_LABELS: Record<number, string> = {
-  1: "worker",
-  2: "conditional",
-  3: "approval",
-  4: "parallel",
-  5: "recover",
-  6: "work_item",
-  7: "project",
-  8: "policy",
+// Wire-format kind strings — must match Go domain constants exactly.
+// These are what gets stored in workflow_versions.steps JSON and read
+// by the WorkflowReconciler's switch statement on the backend.
+export const STEP_KIND_WIRE: Record<number, string> = {
+  [STEP_KIND.TASK]: "task",
+  [STEP_KIND.DECISION]: "decision",
+  [STEP_KIND.APPROVAL]: "approval",
+  [STEP_KIND.PARALLEL]: "parallel",
+  [STEP_KIND.RECOVER]: "recover",
+  [STEP_KIND.WORK_ITEM]: "work_item",
+  [STEP_KIND.PROJECT]: "project",
+  [STEP_KIND.POLICY]: "policy",
 };
 
+// Display labels (capitalized, user-facing).
 export const STEP_KIND_DISPLAY_LABELS: Record<number, string> = {
   1: "Worker",
   2: "Conditional",
@@ -41,6 +45,18 @@ export const STEP_KIND_DISPLAY_LABELS: Record<number, string> = {
   6: "Work Item",
   7: "Project",
   8: "Policy",
+};
+
+// Backward-compatible short labels for the run view and legacy use.
+export const STEP_KIND_LABELS: Record<number, string> = {
+  1: "worker",
+  2: "conditional",
+  3: "approval",
+  4: "parallel",
+  5: "recover",
+  6: "work_item",
+  7: "project",
+  8: "policy",
 };
 
 export const STEP_KIND_TO_ENUM: Record<number, StepKind> = {
@@ -64,7 +80,7 @@ export const STR_TO_KIND: Record<string, number> = {
   policy: 8,
 };
 
-export const KIND_TO_STR = (k: number): string => STEP_KIND_LABELS[k] ?? "task";
+export const KIND_TO_STR = (k: number): string => STEP_KIND_WIRE[k] ?? "task";
 
 export const STEP_KIND_ICONS: Record<number, LucideIcon> = {
   1: Bot,
