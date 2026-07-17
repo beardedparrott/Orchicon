@@ -4,7 +4,6 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { useCreateWorkflow } from "@/api/workflows";
-import { useListProjects } from "@/api/projects";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -33,7 +32,6 @@ const createWorkflowSchema = z.object({
     .string()
     .min(1, "Name is required")
     .max(500, "Name must be at most 500 characters"),
-  projectId: z.string().optional(),
   versionNote: z.string().max(16384, "Version note is too long").optional(),
   recoveryPolicyRef: z.string().max(200).optional(),
 });
@@ -43,20 +41,18 @@ type CreateWorkflowForm = z.infer<typeof createWorkflowSchema>;
 function NewWorkflowPage() {
   const navigate = useNavigate();
   const createWorkflow = useCreateWorkflow();
-  const { data: projects } = useListProjects();
   const {
     register,
     handleSubmit,
     formState: { errors, isSubmitting },
   } = useForm<CreateWorkflowForm>({
     resolver: zodResolver(createWorkflowSchema),
-    defaultValues: { name: "", projectId: "", versionNote: "", recoveryPolicyRef: "" },
+    defaultValues: { name: "", versionNote: "", recoveryPolicyRef: "" },
   });
 
   const onSubmit = async (values: CreateWorkflowForm) => {
     const res = await createWorkflow.mutateAsync({
       name: values.name,
-      projectId: values.projectId ?? "",
       steps: "[]", // empty DAG — the editor adds steps
       inputs: "{}",
       outputs: "{}",
@@ -71,8 +67,9 @@ function NewWorkflowPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">New Workflow</h1>
         <p className="text-sm text-muted-foreground">
-          A composable execution plan. Starts as a draft with an empty step
-          DAG — open the visual editor to drag Workers and wire steps.
+          A composable execution plan. Starts as a draft. Open the visual
+          editor to drag connectors and wire steps. Use a Project connector
+          to bind the workflow to a project.
         </p>
       </div>
 
@@ -80,8 +77,9 @@ function NewWorkflowPage() {
         <CardHeader>
           <CardTitle>Workflow details</CardTitle>
           <CardDescription>
-            The workflow is created in draft state. Publish it from the
-            editor to make it runnable.
+            Workflows start in draft state. Drag a Project connector onto
+            the canvas to bind it to a project, then publish to make it
+            runnable.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -98,26 +96,6 @@ function NewWorkflowPage() {
                   {errors.name.message}
                 </p>
               )}
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="projectId">Project (optional)</Label>
-              <select
-                id="projectId"
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                {...register("projectId")}
-              >
-                <option value="">— tenant template —</option>
-                {(projects ?? []).map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-              <p className="text-xs text-muted-foreground">
-                Leave empty for a tenant-level reusable template. A
-                project-scoped workflow runs against that project's work.
-              </p>
             </div>
 
             <div className="space-y-2">

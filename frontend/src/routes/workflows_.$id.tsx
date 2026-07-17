@@ -1,5 +1,5 @@
 import { createRoute, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactFlow, {
   Background,
   Controls,
@@ -527,16 +527,9 @@ function EditorInner({ workflowId }: { workflowId: string }) {
 
   const handleStart = async () => {
     if (!data?.workflow) return;
-    const projectId = data.workflow.projectId;
-    if (!projectId) {
-      window.alert(
-        "This workflow is a tenant template. Start it from a project context, or assign a project.",
-      );
-      return
-    }
     const run = await startWorkflow.mutateAsync({
       workflowId,
-      projectId,
+      projectId: resolvedProjectId,
       runContext: "{}",
     });
     navigate({
@@ -612,7 +605,22 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const wf = data.workflow;
   const isPublished = wf.status === 2;
   const isDeprecated = wf.status === 3;
-  const projectId = wf.projectId;
+  // Resolve project from canvas PROJECT connector nodes rather than the
+  // workflow-level projectId. This lets the author drag a Project
+  // connector onto the canvas and configure it there, supporting
+  // complex workflows that may involve different projects on different
+  // branches.
+  const resolvedProjectId = useMemo(() => {
+    for (const n of nodes) {
+      if (n.data.kind === STEP_KIND.PROJECT) {
+        const cfg = parseConfig(n.data.config);
+        if (typeof cfg.project_id === "string" && cfg.project_id) {
+          return cfg.project_id;
+        }
+      }
+    }
+    return wf.projectId ?? "";
+  }, [nodes, wf.projectId]);
 
   return (
     <TooltipProvider delayDuration={250}>
@@ -622,7 +630,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">{wf.name}</h1>
             <p className="text-xs text-muted-foreground">
-              {projectId ? `project: ${projectId.slice(0, 12)}…` : "tenant template"} ·
+              {resolvedProjectId ? `project: ${resolvedProjectId.slice(0, 12)}…` : "tenant template"} ·
               {" "}v{wf.currentVersion || "—"} · status:{" "}
               {WORKFLOW_STATUS_LABELS[wf.status]}
             </p>
@@ -812,7 +820,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
             node={selectedNode}
             onChange={updateSelected}
             readOnly={readOnly}
-            projectId={projectId}
+            projectId={resolvedProjectId}
           />
         </div>
 
