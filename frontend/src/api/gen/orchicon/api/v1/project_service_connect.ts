@@ -9,7 +9,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { ArchiveProjectRequest, CreateProjectRequest, GetProjectRequest, ListProjectsRequest, ListProjectsResponse, PauseProjectRequest, UpdateProjectRequest } from "./project_pb.js";
+import { ArchiveProjectRequest, CreateProjectRequest, GetProjectRequest, ListProjectFilesRequest, ListProjectFilesResponse, ListProjectsRequest, ListProjectsResponse, PauseProjectRequest, UpdateProjectRequest } from "./project_pb.js";
 import { ActivateProjectRequest, ActivateProjectResponse, ArchiveProjectResponse, CreateProjectResponse, DeleteProjectRequest, DeleteProjectResponse, GetProjectResponse, PauseProjectResponse, StreamProjectEventsRequest, StreamProjectEventsResponse, UpdateProjectResponse } from "./project_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
@@ -99,6 +99,19 @@ export const ProjectService = {
       I: StreamProjectEventsRequest,
       O: StreamProjectEventsResponse,
       kind: MethodKind.ServerStreaming,
+    },
+    /**
+     * ListProjectFiles returns the file tree of the project's directory.
+     * The project_dir must be set on the project first. Returns a recursive
+     * tree of files and directories rooted at project_dir.
+     *
+     * @generated from rpc orchicon.api.v1.ProjectService.ListProjectFiles
+     */
+    listProjectFiles: {
+      name: "ListProjectFiles",
+      I: ListProjectFilesRequest,
+      O: ListProjectFilesResponse,
+      kind: MethodKind.Unary,
     },
   }
 } as const;

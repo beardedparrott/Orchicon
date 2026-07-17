@@ -200,6 +200,25 @@ export class Project extends Message<Project> {
    */
   updatedAt?: Timestamp;
 
+  /**
+   * project_dir is the root directory of the project on the local
+   * filesystem. Files within this directory can be selected as context
+   * for workers (context_files).
+   *
+   * @generated from field: string project_dir = 10;
+   */
+  projectDir = "";
+
+  /**
+   * context_files are relative file paths (from project_dir) selected
+   * to be included as context when workers are dispatched for this
+   * project. The contents of these files are injected into the
+   * composite prompt (buildCompositePrompt).
+   *
+   * @generated from field: repeated string context_files = 11;
+   */
+  contextFiles: string[] = [];
+
   constructor(data?: PartialMessage<Project>) {
     super();
     proto3.util.initPartial(data, this);
@@ -217,6 +236,8 @@ export class Project extends Message<Project> {
     { no: 7, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 8, name: "created_at", kind: "message", T: Timestamp },
     { no: 9, name: "updated_at", kind: "message", T: Timestamp },
+    { no: 10, name: "project_dir", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 11, name: "context_files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Project {
@@ -233,6 +254,105 @@ export class Project extends Message<Project> {
 
   static equals(a: Project | PlainMessage<Project> | undefined, b: Project | PlainMessage<Project> | undefined): boolean {
     return proto3.util.equals(Project, a, b);
+  }
+}
+
+/**
+ * ContextFiles is a wrapper so UpdateProjectRequest can distinguish
+ * "don't update" from "clear context files" via optional.
+ *
+ * @generated from message orchicon.api.v1.ContextFiles
+ */
+export class ContextFiles extends Message<ContextFiles> {
+  /**
+   * @generated from field: repeated string files = 1;
+   */
+  files: string[] = [];
+
+  constructor(data?: PartialMessage<ContextFiles>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ContextFiles";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ContextFiles {
+    return new ContextFiles().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ContextFiles {
+    return new ContextFiles().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ContextFiles {
+    return new ContextFiles().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ContextFiles | PlainMessage<ContextFiles> | undefined, b: ContextFiles | PlainMessage<ContextFiles> | undefined): boolean {
+    return proto3.util.equals(ContextFiles, a, b);
+  }
+}
+
+/**
+ * FileTreeEntry represents a file or directory in the project file tree.
+ *
+ * @generated from message orchicon.api.v1.FileTreeEntry
+ */
+export class FileTreeEntry extends Message<FileTreeEntry> {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name = "";
+
+  /**
+   * relative path from project_dir
+   *
+   * @generated from field: string path = 2;
+   */
+  path = "";
+
+  /**
+   * @generated from field: bool is_dir = 3;
+   */
+  isDir = false;
+
+  /**
+   * @generated from field: repeated orchicon.api.v1.FileTreeEntry children = 4;
+   */
+  children: FileTreeEntry[] = [];
+
+  constructor(data?: PartialMessage<FileTreeEntry>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.FileTreeEntry";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "path", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "is_dir", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 4, name: "children", kind: "message", T: FileTreeEntry, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): FileTreeEntry {
+    return new FileTreeEntry().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): FileTreeEntry {
+    return new FileTreeEntry().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): FileTreeEntry {
+    return new FileTreeEntry().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: FileTreeEntry | PlainMessage<FileTreeEntry> | undefined, b: FileTreeEntry | PlainMessage<FileTreeEntry> | undefined): boolean {
+    return proto3.util.equals(FileTreeEntry, a, b);
   }
 }
 
@@ -499,6 +619,18 @@ export class UpdateProjectRequest extends Message<UpdateProjectRequest> {
    */
   requestId = "";
 
+  /**
+   * @generated from field: optional string project_dir = 6;
+   */
+  projectDir?: string;
+
+  /**
+   * empty files list clears the selection
+   *
+   * @generated from field: optional orchicon.api.v1.ContextFiles context_files = 7;
+   */
+  contextFiles?: ContextFiles;
+
   constructor(data?: PartialMessage<UpdateProjectRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -512,6 +644,8 @@ export class UpdateProjectRequest extends Message<UpdateProjectRequest> {
     { no: 5, name: "slug", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 3, name: "goals", kind: "message", T: GoalFields, opt: true },
     { no: 4, name: "request_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "project_dir", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 7, name: "context_files", kind: "message", T: ContextFiles, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateProjectRequest {
@@ -528,6 +662,99 @@ export class UpdateProjectRequest extends Message<UpdateProjectRequest> {
 
   static equals(a: UpdateProjectRequest | PlainMessage<UpdateProjectRequest> | undefined, b: UpdateProjectRequest | PlainMessage<UpdateProjectRequest> | undefined): boolean {
     return proto3.util.equals(UpdateProjectRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ListProjectFilesRequest
+ */
+export class ListProjectFilesRequest extends Message<ListProjectFilesRequest> {
+  /**
+   * project id (resolves project_dir)
+   *
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * Optional subpath within project_dir to list. Empty string lists
+   * the root. Use for lazy directory expansion.
+   *
+   * @generated from field: string subpath = 2;
+   */
+  subpath = "";
+
+  /**
+   * Max depth for recursive listing. 0 returns only immediate children.
+   *
+   * @generated from field: int32 max_depth = 3;
+   */
+  maxDepth = 0;
+
+  constructor(data?: PartialMessage<ListProjectFilesRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListProjectFilesRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "subpath", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "max_depth", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListProjectFilesRequest {
+    return new ListProjectFilesRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListProjectFilesRequest {
+    return new ListProjectFilesRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListProjectFilesRequest {
+    return new ListProjectFilesRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListProjectFilesRequest | PlainMessage<ListProjectFilesRequest> | undefined, b: ListProjectFilesRequest | PlainMessage<ListProjectFilesRequest> | undefined): boolean {
+    return proto3.util.equals(ListProjectFilesRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ListProjectFilesResponse
+ */
+export class ListProjectFilesResponse extends Message<ListProjectFilesResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.FileTreeEntry root = 1;
+   */
+  root?: FileTreeEntry;
+
+  constructor(data?: PartialMessage<ListProjectFilesResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListProjectFilesResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "root", kind: "message", T: FileTreeEntry },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListProjectFilesResponse {
+    return new ListProjectFilesResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListProjectFilesResponse {
+    return new ListProjectFilesResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListProjectFilesResponse {
+    return new ListProjectFilesResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListProjectFilesResponse | PlainMessage<ListProjectFilesResponse> | undefined, b: ListProjectFilesResponse | PlainMessage<ListProjectFilesResponse> | undefined): boolean {
+    return proto3.util.equals(ListProjectFilesResponse, a, b);
   }
 }
 

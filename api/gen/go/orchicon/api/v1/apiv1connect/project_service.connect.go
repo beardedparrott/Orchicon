@@ -66,6 +66,9 @@ const (
 	// ProjectServiceStreamProjectEventsProcedure is the fully-qualified name of the ProjectService's
 	// StreamProjectEvents RPC.
 	ProjectServiceStreamProjectEventsProcedure = "/orchicon.api.v1.ProjectService/StreamProjectEvents"
+	// ProjectServiceListProjectFilesProcedure is the fully-qualified name of the ProjectService's
+	// ListProjectFiles RPC.
+	ProjectServiceListProjectFilesProcedure = "/orchicon.api.v1.ProjectService/ListProjectFiles"
 )
 
 // ProjectServiceClient is a client for the orchicon.api.v1.ProjectService service.
@@ -79,6 +82,10 @@ type ProjectServiceClient interface {
 	PauseProject(context.Context, *connect.Request[v1.PauseProjectRequest]) (*connect.Response[v1.PauseProjectResponse], error)
 	ActivateProject(context.Context, *connect.Request[v1.ActivateProjectRequest]) (*connect.Response[v1.ActivateProjectResponse], error)
 	StreamProjectEvents(context.Context, *connect.Request[v1.StreamProjectEventsRequest]) (*connect.ServerStreamForClient[v1.StreamProjectEventsResponse], error)
+	// ListProjectFiles returns the file tree of the project's directory.
+	// The project_dir must be set on the project first. Returns a recursive
+	// tree of files and directories rooted at project_dir.
+	ListProjectFiles(context.Context, *connect.Request[v1.ListProjectFilesRequest]) (*connect.Response[v1.ListProjectFilesResponse], error)
 }
 
 // NewProjectServiceClient constructs a client for the orchicon.api.v1.ProjectService service. By
@@ -146,6 +153,12 @@ func NewProjectServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(projectServiceMethods.ByName("StreamProjectEvents")),
 			connect.WithClientOptions(opts...),
 		),
+		listProjectFiles: connect.NewClient[v1.ListProjectFilesRequest, v1.ListProjectFilesResponse](
+			httpClient,
+			baseURL+ProjectServiceListProjectFilesProcedure,
+			connect.WithSchema(projectServiceMethods.ByName("ListProjectFiles")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -160,6 +173,7 @@ type projectServiceClient struct {
 	pauseProject        *connect.Client[v1.PauseProjectRequest, v1.PauseProjectResponse]
 	activateProject     *connect.Client[v1.ActivateProjectRequest, v1.ActivateProjectResponse]
 	streamProjectEvents *connect.Client[v1.StreamProjectEventsRequest, v1.StreamProjectEventsResponse]
+	listProjectFiles    *connect.Client[v1.ListProjectFilesRequest, v1.ListProjectFilesResponse]
 }
 
 // CreateProject calls orchicon.api.v1.ProjectService.CreateProject.
@@ -207,6 +221,11 @@ func (c *projectServiceClient) StreamProjectEvents(ctx context.Context, req *con
 	return c.streamProjectEvents.CallServerStream(ctx, req)
 }
 
+// ListProjectFiles calls orchicon.api.v1.ProjectService.ListProjectFiles.
+func (c *projectServiceClient) ListProjectFiles(ctx context.Context, req *connect.Request[v1.ListProjectFilesRequest]) (*connect.Response[v1.ListProjectFilesResponse], error) {
+	return c.listProjectFiles.CallUnary(ctx, req)
+}
+
 // ProjectServiceHandler is an implementation of the orchicon.api.v1.ProjectService service.
 type ProjectServiceHandler interface {
 	CreateProject(context.Context, *connect.Request[v1.CreateProjectRequest]) (*connect.Response[v1.CreateProjectResponse], error)
@@ -218,6 +237,10 @@ type ProjectServiceHandler interface {
 	PauseProject(context.Context, *connect.Request[v1.PauseProjectRequest]) (*connect.Response[v1.PauseProjectResponse], error)
 	ActivateProject(context.Context, *connect.Request[v1.ActivateProjectRequest]) (*connect.Response[v1.ActivateProjectResponse], error)
 	StreamProjectEvents(context.Context, *connect.Request[v1.StreamProjectEventsRequest], *connect.ServerStream[v1.StreamProjectEventsResponse]) error
+	// ListProjectFiles returns the file tree of the project's directory.
+	// The project_dir must be set on the project first. Returns a recursive
+	// tree of files and directories rooted at project_dir.
+	ListProjectFiles(context.Context, *connect.Request[v1.ListProjectFilesRequest]) (*connect.Response[v1.ListProjectFilesResponse], error)
 }
 
 // NewProjectServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -281,6 +304,12 @@ func NewProjectServiceHandler(svc ProjectServiceHandler, opts ...connect.Handler
 		connect.WithSchema(projectServiceMethods.ByName("StreamProjectEvents")),
 		connect.WithHandlerOptions(opts...),
 	)
+	projectServiceListProjectFilesHandler := connect.NewUnaryHandler(
+		ProjectServiceListProjectFilesProcedure,
+		svc.ListProjectFiles,
+		connect.WithSchema(projectServiceMethods.ByName("ListProjectFiles")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/orchicon.api.v1.ProjectService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ProjectServiceCreateProjectProcedure:
@@ -301,6 +330,8 @@ func NewProjectServiceHandler(svc ProjectServiceHandler, opts ...connect.Handler
 			projectServiceActivateProjectHandler.ServeHTTP(w, r)
 		case ProjectServiceStreamProjectEventsProcedure:
 			projectServiceStreamProjectEventsHandler.ServeHTTP(w, r)
+		case ProjectServiceListProjectFilesProcedure:
+			projectServiceListProjectFilesHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -344,4 +375,8 @@ func (UnimplementedProjectServiceHandler) ActivateProject(context.Context, *conn
 
 func (UnimplementedProjectServiceHandler) StreamProjectEvents(context.Context, *connect.Request[v1.StreamProjectEventsRequest], *connect.ServerStream[v1.StreamProjectEventsResponse]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.ProjectService.StreamProjectEvents is not implemented"))
+}
+
+func (UnimplementedProjectServiceHandler) ListProjectFiles(context.Context, *connect.Request[v1.ListProjectFilesRequest]) (*connect.Response[v1.ListProjectFilesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.ProjectService.ListProjectFiles is not implemented"))
 }

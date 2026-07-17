@@ -34,15 +34,17 @@ type Identity struct {
 // Project is the top-level tenant of work state. Every schedulable
 // entity FKs to a Project. See docs/02_Domain_Model.md §2.1.
 type Project struct {
-	ID        string
-	TenantID  string
-	Name      string
-	Slug      string
-	Status    string
-	Goals     []byte // jsonb
-	Version   int
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID           string
+	TenantID     string
+	Name         string
+	Slug         string
+	Status       string
+	Goals        []byte // jsonb
+	Version      int
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	ProjectDir   string
+	ContextFiles []byte // jsonb: relative file paths
 }
 
 // Project lifecycle states. See docs/02_Domain_Model.md §2.1.
