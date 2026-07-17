@@ -202,6 +202,7 @@ function ExecutionDetailPage() {
             events={events}
             prompt={workItem?.promptContext}
             streamStatus={status}
+            storedOutput={exec.output}
           />
 
           {/* Execution context — kept as a footer card with the

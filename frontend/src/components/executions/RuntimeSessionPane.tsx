@@ -89,9 +89,14 @@ interface RuntimeSessionPaneProps {
   /** Connection status of the underlying event stream (used for the
    *  "live" indicator). "open" = connected, anything else = degraded. */
   streamStatus?: string;
+  /** Stored output from the execution record — shown when no live stream
+   *  events are available (e.g. after navigating back to a completed
+   *  execution). This ensures the model's text output survives page
+   *  navigation (docs/02 §2.7). */
+  storedOutput?: string;
 }
 
-export function RuntimeSessionPane({ events, prompt, streamStatus }: RuntimeSessionPaneProps) {
+export function RuntimeSessionPane({ events, prompt, streamStatus, storedOutput }: RuntimeSessionPaneProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   // Build the chronological message list. Tool_call events come in
@@ -463,7 +468,7 @@ const rendered = useMemo<
             }
           })}
 
-          {messages.length === 0 && (
+          {messages.length === 0 && !storedOutput && (
             <p className="text-sm text-muted-foreground">
               {streamStatus === "open"
                 ? "Waiting for model output…"
@@ -471,6 +476,21 @@ const rendered = useMemo<
                   ? "Connecting to event stream…"
                   : "No events yet"}
             </p>
+          )}
+
+          {/* Show stored output when no live stream events are available.
+              This persists the model's text output across page navigation
+              (docs/02 §2.7). */}
+          {messages.length === 0 && storedOutput && (
+            <div className="flex justify-start">
+              <div className="max-w-[85%] rounded-lg rounded-tl-sm border border-border bg-card px-3 py-2 text-sm leading-relaxed shadow-sm">
+                <div className="mb-1 flex items-center gap-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                  <span>assistant output</span>
+                  <span className="opacity-60">(stored)</span>
+                </div>
+                <div className="whitespace-pre-wrap break-words">{storedOutput}</div>
+              </div>
+            </div>
           )}
         </div>
       </CardContent>

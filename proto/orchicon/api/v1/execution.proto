@@ -40,6 +40,7 @@ message WorkerExecution {
   string workflow_step_id = 18;
   string workflow_name = 19;
   string error_message = 20; // human-readable failure reason (docs/02 §2.7)
+  string output = 21; // accumulated model text output (docs/02 §2.7)
 }
 
 // ExecutionStatus — lifecycle of a WorkerExecution
