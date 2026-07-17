@@ -113,6 +113,7 @@ func (r *WorkflowReconciler) scanRuns(ctx context.Context, tenantID string) erro
 
 // reconcileRun progresses a single workflow run through its step DAG.
 func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID string) error {
+	r.log.Debug("DEBUG: reconcileRun entered", "runID", runID, "tenantID", tenantID)
 	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -126,6 +127,8 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		}
 		return fmt.Errorf("get run: %w", err)
 	}
+	r.log.Debug("DEBUG: run loaded", "runID", run.ID, "status", run.Status, "version", run.Version)
+	r.log.Debug("DEBUG: run workflow", "workflowID", run.WorkflowID, "workflowVersion", run.WorkflowVersion)
 	// Only progress non-terminal runs.
 	if run.Status == domain.WorkflowRunCompleted || run.Status == domain.WorkflowRunFailed || run.Status == domain.WorkflowRunAborted {
 		return nil
@@ -163,9 +166,17 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	if err != nil {
 		return fmt.Errorf("list step runs: %w", err)
 	}
+	r.log.Debug("DEBUG: step runs loaded", "count", len(stepRuns))
+	for _, sr := range stepRuns {
+		r.log.Debug("DEBUG: step run detail", "id", sr.ID, "stepID", sr.StepID, "stepKind", sr.StepKind, "status", sr.Status, "version", sr.Version)
+	}
 	runByID := make(map[string]db.WorkflowStepRunRow, len(stepRuns))
 	for _, sr := range stepRuns {
 		runByID[sr.StepID] = sr
+	}
+	r.log.Debug("DEBUG: runByID built", "keys", len(runByID))
+	for k, v := range runByID {
+		r.log.Debug("DEBUG: runByID entry", "key", k, "id", v.ID, "status", v.Status, "version", v.Version)
 	}
 
 	// Collect work items dispatched in this pass for inline TaskReconciler
@@ -183,23 +194,29 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		madeProgress := false
 
 		// Progress pending steps whose deps are satisfied → ready.
-		// Use runByID (which reflects in-pass updates) for the
-		// dependency check so earlier loop iterations see later ones.
+		// Use runByID (which reflects in-pass updates) for both the
+		// pending check AND the dependency check so steps progressed
+		// by Phase 2/3 in a prior outer iteration are not re-processed
+		// with a stale version (fix: "db: not found" on re-update).
 		for _, sr := range stepRuns {
-			if sr.Status != domain.StepRunPending {
-				// Catch steps marked ready/dispatched in a prior
-				// iteration of this loop.
-				if r2, ok := runByID[sr.StepID]; ok && r2.Status == domain.StepRunPending {
-					sr = r2
-				} else {
-					continue
-				}
-			}
-			step, ok := stepByID[sr.StepID]
-			if !ok {
+			if cur, ok := runByID[sr.StepID]; ok && cur.Status != domain.StepRunPending {
+				r.log.Debug("DEBUG: skipping step run (not pending in runByID)", "stepID", sr.StepID, "id", sr.ID, "status", cur.Status)
 				continue
 			}
+			r.log.Debug("DEBUG: checking step for ready", "stepID", sr.StepID, "id", sr.ID, "status", sr.Status, "version", sr.Version)
+			step, ok := stepByID[sr.StepID]
+			if !ok {
+				r.log.Debug("DEBUG: step not found in stepByID", "stepID", sr.StepID)
+				continue
+			}
+			r.log.Debug("DEBUG: checking deps satisfied", "stepID", sr.StepID)
 			if r.depsSatisfied(step, runByID) {
+				r.log.Debug("DEBUG: about to update step run",
+					"stepID", sr.StepID,
+					"runID", sr.ID,
+					"version", sr.Version,
+					"tenantID", tenantID,
+				)
 				updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 					Status: strPtr(domain.StepRunReady),
 				})
@@ -404,16 +421,22 @@ func (r *WorkflowReconciler) depsSatisfied(step workflow.StepWire, runs map[stri
 	for _, dep := range step.DependsOn {
 		sr, ok := runs[dep]
 		if !ok {
+			r.log.Debug("DEBUG: depsSatisfied dep not in map", "step", step.ID, "dep", dep)
 			return false
 		}
+		r.log.Debug("DEBUG: depsSatisfied check", "step", step.ID, "dep", dep, "depStatus", sr.Status)
 		if sr.Status == domain.StepRunSucceeded || sr.Status == domain.StepRunSkipped {
+			r.log.Debug("DEBUG: depsSatisfied dep satisfied", "step", step.ID, "dep", dep, "status", sr.Status)
 			continue
 		}
 		if isRecover && sr.Status == domain.StepRunFailed {
+			r.log.Debug("DEBUG: depsSatisfied recover dep satisfied (failed)", "step", step.ID, "dep", dep)
 			continue
 		}
+		r.log.Debug("DEBUG: depsSatisfied not satisfied yet", "step", step.ID, "dep", dep, "status", sr.Status)
 		return false
 	}
+	r.log.Debug("DEBUG: depsSatisfied all satisfied", "step", step.ID)
 	return true
 }
 
@@ -786,6 +809,9 @@ func (r *WorkflowReconciler) succeedStep(ctx context.Context, tx pgx.Tx, tenantI
 
 // failStep marks a step as failed with the given reason and emits the
 // failed event. Used by dispatchStep for missing-binding failures.
+// Returns nil on success — the failure is persisted in the transaction;
+// returning the reason would cause the caller to abort the entire
+// reconcileRun and roll back the step failure (pre-existing bug fix).
 func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, runs map[string]db.WorkflowStepRunRow, reason error) error {
 	now := time.Now().UTC()
 	msg := reason.Error()
@@ -799,10 +825,11 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 		return fmt.Errorf("mark step failed: %w", err)
 	}
 	runs[sr.StepID] = updated
+	r.log.Info("step failed", "run", run.ID, "step", sr.StepID, "reason", msg)
 	if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepFailed, run, updated); err != nil {
 		return fmt.Errorf("enqueue step_failed: %w", err)
 	}
-	return reason
+	return nil
 }
 
 // buildCompositePrompt assembles the prompt text the worker should see
