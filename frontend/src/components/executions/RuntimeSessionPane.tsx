@@ -377,9 +377,13 @@ const rendered = useMemo<
     return blocks;
   }, [messages]);
 
-  // Don't render an empty pane — that would just take up space on
-  // detail pages that have no live session data yet.
-  if (events.length === 0 && !prompt) return null;
+  // Always render the pane when the stream is or was active. A blank
+  // card is confusing — the user should see the "Waiting for model
+  // output…" state even before any events arrive (docs/10 §11).
+  // Only skip rendering when we have no events, no prompt, AND the
+  // stream was never open (e.g. the execution detail page and no
+  // streaming RPC has connected).
+  if (events.length === 0 && !prompt && streamStatus === "idle") return null;
 
   const isLive = streamStatus === "open";
 
@@ -459,9 +463,13 @@ const rendered = useMemo<
             }
           })}
 
-          {messages.length === 0 && prompt && (
+          {messages.length === 0 && (
             <p className="text-sm text-muted-foreground">
-              Waiting for model output…
+              {streamStatus === "open"
+                ? "Waiting for model output…"
+                : streamStatus === "connecting" || streamStatus === "reconnecting"
+                  ? "Connecting to event stream…"
+                  : "No events yet"}
             </p>
           )}
         </div>
