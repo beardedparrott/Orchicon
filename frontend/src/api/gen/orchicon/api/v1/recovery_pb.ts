@@ -381,7 +381,7 @@ export class RecoveryExecution extends Message<RecoveryExecution> {
   reviewerWorkerId = "";
 
   /**
-   * the captured/summarized context
+   * Markdown: the captured/summarized context
    *
    * @generated from field: string summary = 20;
    */
@@ -515,7 +515,7 @@ export class RecoveryStepRun extends Message<RecoveryStepRun> {
   attempt = 0;
 
   /**
-   * JSON: step output (summary, verdict, plan ref)
+   * Markdown + JSON: step output (summary, verdict, plan ref)
    *
    * @generated from field: string result = 8;
    */
@@ -690,7 +690,7 @@ export class ContinuationPlan extends Message<ContinuationPlan> {
   corrections = "";
 
   /**
-   * the compacted context to seed the replacement
+   * Markdown: the compacted context to seed the replacement
    *
    * @generated from field: string context_summary = 9;
    */

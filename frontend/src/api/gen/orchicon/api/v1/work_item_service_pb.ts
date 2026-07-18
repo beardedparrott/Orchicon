@@ -48,11 +48,15 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
   title = "";
 
   /**
+   * Markdown
+   *
    * @generated from field: string description = 6;
    */
   description = "";
 
   /**
+   * Markdown
+   *
    * @generated from field: string acceptance_criteria = 7;
    */
   acceptanceCriteria = "";

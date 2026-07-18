@@ -270,8 +270,8 @@ type WorkerExecution struct {
 	WorkflowRunId  string                 `protobuf:"bytes,17,opt,name=workflow_run_id,json=workflowRunId,proto3" json:"workflow_run_id,omitempty"`
 	WorkflowStepId string                 `protobuf:"bytes,18,opt,name=workflow_step_id,json=workflowStepId,proto3" json:"workflow_step_id,omitempty"`
 	WorkflowName   string                 `protobuf:"bytes,19,opt,name=workflow_name,json=workflowName,proto3" json:"workflow_name,omitempty"`
-	ErrorMessage   string                 `protobuf:"bytes,20,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"` // human-readable failure reason (docs/02 §2.7)
-	Output         string                 `protobuf:"bytes,21,opt,name=output,proto3" json:"output,omitempty"`                                 // accumulated model text output (docs/02 §2.7)
+	ErrorMessage   string                 `protobuf:"bytes,20,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"` // Markdown: human-readable failure reason (docs/02 §2.7)
+	Output         string                 `protobuf:"bytes,21,opt,name=output,proto3" json:"output,omitempty"`                                 // Markdown: accumulated model text output (docs/02 §2.7)
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }

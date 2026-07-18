@@ -472,16 +472,22 @@ export class StartExecution extends Message<StartExecution> {
   workerVersion = 0;
 
   /**
+   * Markdown: the worker's system prompt, resolved with template variables
+   *
    * @generated from field: string system_prompt = 6;
    */
   systemPrompt = "";
 
   /**
+   * Markdown: the composite prompt (task + context + upstream summaries + file context)
+   *
    * @generated from field: string goal = 7;
    */
   goal = "";
 
   /**
+   * Markdown: the task's success definition
+   *
    * @generated from field: string acceptance_criteria = 8;
    */
   acceptanceCriteria = "";

@@ -120,6 +120,8 @@ export class Worker extends Message<Worker> {
   slug = "";
 
   /**
+   * Markdown: long-form description of the worker
+   *
    * @generated from field: string description = 5;
    */
   description = "";
@@ -254,7 +256,7 @@ export class WorkerVersion extends Message<WorkerVersion> {
   modelRef = "";
 
   /**
-   * supports template variables (docs/05 §11)
+   * Markdown + template variables (docs/05 §11); rendered inline in the composite prompt
    *
    * @generated from field: string system_prompt = 8;
    */

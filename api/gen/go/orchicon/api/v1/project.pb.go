@@ -198,7 +198,7 @@ type Project struct {
 	Name      string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
 	Slug      string                 `protobuf:"bytes,4,opt,name=slug,proto3" json:"slug,omitempty"`
 	Status    ProjectStatus          `protobuf:"varint,5,opt,name=status,proto3,enum=orchicon.api.v1.ProjectStatus" json:"status,omitempty"`
-	Goals     string                 `protobuf:"bytes,6,opt,name=goals,proto3" json:"goals,omitempty"` // JSON-encoded goals document
+	Goals     string                 `protobuf:"bytes,6,opt,name=goals,proto3" json:"goals,omitempty"` // JSON-encoded goals document (values support Markdown)
 	Version   int32                  `protobuf:"varint,7,opt,name=version,proto3" json:"version,omitempty"`
 	CreatedAt *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`

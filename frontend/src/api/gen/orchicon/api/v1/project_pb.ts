@@ -179,7 +179,7 @@ export class Project extends Message<Project> {
   status = ProjectStatus.UNSPECIFIED;
 
   /**
-   * JSON-encoded goals document
+   * JSON-encoded goals document (values support Markdown)
    *
    * @generated from field: string goals = 6;
    */

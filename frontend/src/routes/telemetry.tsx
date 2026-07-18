@@ -1,10 +1,13 @@
 import { createRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { useGetCost, useGetUsage, useListProviders } from "@/api/aigateway";
-import { useGetDashboard, useQueryLogs, useQueryTraces } from "@/api/telemetry";
+import { useGetDashboard, useQueryLogs, useQueryMetrics, useQueryTraces } from "@/api/telemetry";
+import { useListProjects } from "@/api/projects";
+import { useListWorkItems } from "@/api/workItems";
 import { SIGNOZ_UI_URL } from "@/api/clients";
 import type { UsageRollup } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
+import { UsageRollup as UsageRollupEnum } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import {
   Card,
   CardContent,
@@ -26,11 +29,12 @@ export const Route = createRoute({
   component: TelemetryPage,
 });
 
-type Tab = "overview" | "cost" | "traces" | "metrics" | "logs";
+type Tab = "overview" | "cost" | "traces" | "metrics" | "logs" | "credits";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "cost", label: "Cost Explorer" },
+  { id: "credits", label: "Credits" },
   { id: "traces", label: "Traces (SigNoz)" },
   { id: "metrics", label: "Metrics (SigNoz)" },
   { id: "logs", label: "Logs (SigNoz)" },
@@ -66,8 +70,9 @@ function TelemetryPage() {
       </div>
       {tab === "overview" && <OverviewPanel />}
       {tab === "cost" && <CostExplorer />}
+      {tab === "credits" && <CreditsPanel />}
       {tab === "traces" && <TracesPanel />}
-      {tab === "metrics" && <SigNozEmbed title="Metrics" />}
+      {tab === "metrics" && <MetricsPanel />}
       {tab === "logs" && <LogsPanel />}
     </div>
   );
@@ -144,18 +149,85 @@ function OverviewPanel() {
 }
 
 // CostExplorer is the custom cost explorer with drill-down
-// Tenant → Project → Task → Execution (docs/10 §11). The drill-down is
+// Project → Task → Execution → Model (docs/10 §11). The drill-down is
 // server-validated — the UI reflects state, it does not make policy
 // (AGENTS.md invariant #1).
 function CostExplorer() {
-  const [rollup, setRollup] = useState<UsageRollup>(1); // PROJECT
-  const [projectId, setProjectId] = useState<string>("");
-  const [taskId, setTaskId] = useState<string>("");
+  const [rollup, setRollup] = useState<UsageRollup>(UsageRollupEnum.PROJECT);
+  const [projectId, setProjectId] = useState("");
+  const [taskId, setTaskId] = useState("");
+  const [executionId, setExecutionId] = useState("");
   const { data, isLoading, error } = useGetCost({
     rollup,
     projectId: projectId || undefined,
     taskId: taskId || undefined,
+    executionId: executionId || undefined,
   });
+
+  const { data: projects } = useListProjects();
+  const { data: workItems } = useListWorkItems(projectId || "__none__");
+
+  const projectNameMap = useMemo(() => {
+    const m = new Map<string, string>();
+    if (projects) for (const p of projects) m.set(p.id, p.name);
+    return m;
+  }, [projects]);
+
+  const workItemNameMap = useMemo(() => {
+    const m = new Map<string, string>();
+    if (workItems) for (const w of workItems) m.set(w.id, w.title);
+    return m;
+  }, [workItems]);
+
+  function scopeLabel(): string | null {
+    if (taskId) return `Task: ${workItemNameMap.get(taskId) || taskId.slice(0, 12)}`;
+    if (projectId) return `Project: ${projectNameMap.get(projectId) || projectId.slice(0, 12)}`;
+    return null;
+  }
+
+  function handleRowClick(key: string) {
+    if (rollup === UsageRollupEnum.PROJECT) {
+      setProjectId(key);
+      setTaskId("");
+      setExecutionId("");
+      setRollup(UsageRollupEnum.TASK);
+    } else if (rollup === UsageRollupEnum.TASK) {
+      setTaskId(key);
+      setExecutionId("");
+      setRollup(UsageRollupEnum.EXECUTION);
+    } else if (rollup === UsageRollupEnum.EXECUTION) {
+      setExecutionId(key);
+      setRollup(UsageRollupEnum.MODEL);
+    }
+  }
+
+  function clearScope() {
+    setProjectId("");
+    setTaskId("");
+    setExecutionId("");
+    setRollup(UsageRollupEnum.PROJECT);
+  }
+
+  function rollbackOneLevel() {
+    if (taskId) {
+      setTaskId("");
+      setExecutionId("");
+      setRollup(UsageRollupEnum.TASK);
+    } else if (projectId) {
+      setProjectId("");
+      setRollup(UsageRollupEnum.PROJECT);
+    } else {
+      clearScope();
+    }
+  }
+
+  function displayName(s: { groupBy: string; groupKey: string }): string {
+    if (s.groupBy === "project") return projectNameMap.get(s.groupKey) || s.groupKey.slice(0, 12);
+    if (s.groupBy === "task") return workItemNameMap.get(s.groupKey) || s.groupKey.slice(0, 12);
+    if (s.groupBy === "execution") return s.groupKey.slice(0, 12);
+    return s.groupKey;
+  }
+
   return (
     <div className="space-y-6">
       <Card>
@@ -163,20 +235,23 @@ function CostExplorer() {
           <CardTitle>Cost drill-down</CardTitle>
           <CardDescription>
             Roll up by a dimension, then drill into a row to narrow scope.
-            Tenant → Project → Task → Execution (docs/10 §11).
+            Project → Task → Execution → Model (docs/10 §11).
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {([
-              [1, "Project"],
-              [2, "Task"],
-              [3, "Execution"],
-              [4, "Model"],
+              [UsageRollupEnum.PROJECT, "By Project"],
+              [UsageRollupEnum.TASK, "By Task"],
+              [UsageRollupEnum.EXECUTION, "By Execution"],
+              [UsageRollupEnum.MODEL, "By Model"],
             ] as [UsageRollup, string][]).map(([r, label]) => (
               <button
                 key={r}
-                onClick={() => setRollup(r)}
+                onClick={() => {
+                  setRollup(r);
+                  if (r === UsageRollupEnum.PROJECT) clearScope();
+                }}
                 className={cn(
                   "rounded-md border px-3 py-1.5 text-sm font-medium",
                   rollup === r
@@ -187,16 +262,26 @@ function CostExplorer() {
                 {label}
               </button>
             ))}
+            {scopeLabel() && (
+              <span className="ml-2 text-xs text-muted-foreground">
+                Scoped to {scopeLabel()}
+              </span>
+            )}
             {(projectId || taskId) && (
-              <button
-                onClick={() => {
-                  setProjectId("");
-                  setTaskId("");
-                }}
-                className="rounded-md border px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent"
-              >
-                Clear scope
-              </button>
+              <>
+                <button
+                  onClick={rollbackOneLevel}
+                  className="rounded-md border px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent"
+                >
+                  ← Back
+                </button>
+                <button
+                  onClick={clearScope}
+                  className="rounded-md border px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent"
+                >
+                  Clear all
+                </button>
+              </>
             )}
           </div>
           {error && (
@@ -223,13 +308,18 @@ function CostExplorer() {
                 <button
                   key={s.groupKey || "unknown"}
                   onClick={() => {
-                    if (rollup === 1) setProjectId(s.groupKey);
-                    else if (rollup === 2) setTaskId(s.groupKey);
+                    if (rollup !== UsageRollupEnum.MODEL) handleRowClick(s.groupKey);
                   }}
-                  className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-accent"
+                  disabled={rollup === UsageRollupEnum.MODEL}
+                  className={cn(
+                    "flex w-full items-center justify-between px-3 py-2 text-left",
+                    rollup === UsageRollupEnum.MODEL
+                      ? "cursor-default"
+                      : "hover:bg-accent",
+                  )}
                 >
-                  <span className="font-mono text-sm">
-                    {s.groupKey || "—"}
+                  <span className="text-sm font-medium">
+                    {displayName(s)}
                   </span>
                   <span className="text-sm">
                     ${(s.costUsd ?? 0).toFixed(4)} ·{" "}
@@ -247,7 +337,11 @@ function CostExplorer() {
           )}
         </CardContent>
       </Card>
-      <UsageRecordsTable projectId={projectId} taskId={taskId} />
+      <UsageRecordsTable
+        projectId={projectId}
+        taskId={taskId}
+        executionId={executionId}
+      />
     </div>
   );
 }
@@ -255,11 +349,13 @@ function CostExplorer() {
 function UsageRecordsTable({
   projectId,
   taskId,
+  executionId,
 }: {
   projectId?: string;
   taskId?: string;
+  executionId?: string;
 }) {
-  const { data, isLoading } = useGetUsage({ projectId, taskId });
+  const { data, isLoading } = useGetUsage({ projectId, taskId, executionId });
   return (
     <Card>
       <CardHeader>
@@ -323,6 +419,7 @@ function UsageRecordsTable({
 // SigNoz trace explorer for raw drill-down (docs/10 §11).
 function TracesPanel() {
   const { data, isLoading } = useQueryTraces();
+  const degraded = data?.degraded ?? false;
   return (
     <div className="space-y-6">
       <Card>
@@ -334,12 +431,6 @@ function TracesPanel() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {data?.degraded && (
-            <p className="text-sm text-yellow-700">
-              SigNoz backend unavailable — showing degraded (empty) results.
-              Start the dev stack (`make up`) to explore traces.
-            </p>
-          )}
           {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
           {data?.traces && data.traces.length === 0 && !data.degraded && (
             <p className="text-sm text-muted-foreground">No traces yet.</p>
@@ -371,13 +462,14 @@ function TracesPanel() {
           )}
         </CardContent>
       </Card>
-      <SigNozEmbed title="Trace Explorer" path="/trace" />
+      <SigNozEmbed title="Trace Explorer" path="/trace" degraded={degraded} />
     </div>
   );
 }
 
 function LogsPanel() {
   const { data, isLoading } = useQueryLogs();
+  const degraded = data?.degraded ?? false;
   return (
     <div className="space-y-6">
       <Card>
@@ -389,11 +481,6 @@ function LogsPanel() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {data?.degraded && (
-            <p className="text-sm text-yellow-700">
-              SigNoz backend unavailable — degraded results.
-            </p>
-          )}
           {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
           {data?.logs && data.logs.length === 0 && !data.degraded && (
             <p className="text-sm text-muted-foreground">No logs yet.</p>
@@ -417,7 +504,131 @@ function LogsPanel() {
           )}
         </CardContent>
       </Card>
-      <SigNozEmbed title="Log Explorer" path="/logs" />
+      <SigNozEmbed title="Log Explorer" path="/logs" degraded={degraded} />
+    </div>
+  );
+}
+
+// MetricsPanel checks SigNoz availability and renders the embedded metrics
+// view only when the backend is healthy.
+function MetricsPanel() {
+  const { data } = useQueryMetrics({ metricNames: ["orchicon_cost_usd"] });
+  const degraded = data?.degraded ?? true;
+  return <SigNozEmbed title="Metrics" degraded={degraded} />;
+}
+
+// CreditsPanel shows total credits available and spent by provider, with
+// model usage breakdown within each provider. Computed from usage records
+// since no dedicated credit-tracking endpoint exists yet.
+function CreditsPanel() {
+  const { data: usageRecords, isLoading } = useGetUsage({});
+  const { data: providers } = useListProviders();
+
+  const providerMap = useMemo(() => {
+    const m = new Map<string, string>();
+    if (providers) for (const p of providers) m.set(p.id, p.name);
+    return m;
+  }, [providers]);
+
+  const { byProvider, grandTotal } = useMemo(() => {
+    const byProvider = new Map<
+      string,
+      { totalCost: number; totalTokens: number; count: number; models: Map<string, { cost: number; tokens: number; count: number }> }
+    >();
+    const grandTotal = { cost: 0, tokens: 0, count: 0 };
+    if (usageRecords) {
+      for (const r of usageRecords) {
+        const provider = r.provider || "unknown";
+        const model = r.model || "unknown";
+        const cost = Number(r.costUsd ?? 0);
+        const tokens = Number(r.totalTokens ?? 0);
+
+        let p = byProvider.get(provider);
+        if (!p) {
+          p = { totalCost: 0, totalTokens: 0, count: 0, models: new Map() };
+          byProvider.set(provider, p);
+        }
+        p.totalCost += cost;
+        p.totalTokens += tokens;
+        p.count += 1;
+
+        let m = p.models.get(model);
+        if (!m) {
+          m = { cost: 0, tokens: 0, count: 0 };
+          p.models.set(model, m);
+        }
+        m.cost += cost;
+        m.tokens += tokens;
+        m.count += 1;
+
+        grandTotal.cost += cost;
+        grandTotal.tokens += tokens;
+        grandTotal.count += 1;
+      }
+    }
+    return { byProvider, grandTotal };
+  }, [usageRecords]);
+
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-4 md:grid-cols-3">
+        <StatCard
+          label="Total spent (USD)"
+          value={`$${grandTotal.cost.toFixed(4)}`}
+          loading={isLoading}
+        />
+        <StatCard
+          label="Total tokens"
+          value={fmtInt(grandTotal.tokens)}
+          loading={isLoading}
+        />
+        <StatCard
+          label="Usage records"
+          value={fmtInt(grandTotal.count)}
+          loading={isLoading}
+        />
+      </div>
+      {byProvider.size === 0 && !isLoading && (
+        <Card>
+          <CardContent className="py-6">
+            <p className="text-sm text-muted-foreground text-center">
+              No usage records yet. Run an execution to populate credit
+              telemetry.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+      {byProvider.size > 0 &&
+        Array.from(byProvider.entries()).map(([providerId, p]) => {
+          const displayName = providerMap.get(providerId) || providerId;
+          return (
+            <Card key={providerId}>
+              <CardHeader>
+                <CardTitle>{displayName}</CardTitle>
+                <CardDescription>
+                  ${p.totalCost.toFixed(4)} · {fmtInt(p.totalTokens)} tokens ·{" "}
+                  {p.count} records
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-1">
+                  {Array.from(p.models.entries()).map(([model, m]) => (
+                    <div
+                      key={model}
+                      className="flex items-center justify-between rounded-md border px-3 py-2 text-sm"
+                    >
+                      <span className="font-mono text-xs">{model}</span>
+                      <span className="text-xs text-muted-foreground">
+                        ${m.cost.toFixed(4)} · {fmtInt(m.tokens)} tok ·{" "}
+                        {m.count} calls
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })}
     </div>
   );
 }
@@ -426,7 +637,17 @@ function LogsPanel() {
 // same-origin iframe (proxied under /signoz in dev — docs/10 §11:
 // seamless embedding, not a separate tool launch). The iframe shares
 // the Orchicon shell's chrome so it feels like one platform.
-function SigNozEmbed({ title, path = "" }: { title: string; path?: string }) {
+// When degraded, a placeholder is shown instead of a broken iframe
+// loading the SPA fallback (AGENTS.md verification §2).
+function SigNozEmbed({
+  title,
+  path = "",
+  degraded,
+}: {
+  title: string;
+  path?: string;
+  degraded?: boolean;
+}) {
   const src = `${SIGNOZ_UI_URL}${path}`;
   return (
     <Card>
@@ -438,12 +659,19 @@ function SigNozEmbed({ title, path = "" }: { title: string; path?: string }) {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <iframe
-          src={src}
-          title={title}
-          className="h-[640px] w-full rounded-md border"
-          sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
-        />
+        {degraded ? (
+          <div className="flex h-[160px] items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground">
+            SigNoz backend unavailable — start the dev stack (`make up`) to
+            explore {title.toLowerCase()}.
+          </div>
+        ) : (
+          <iframe
+            src={src}
+            title={title}
+            className="h-[640px] w-full rounded-md border"
+            sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+          />
+        )}
       </CardContent>
     </Card>
   );
