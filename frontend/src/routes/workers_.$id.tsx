@@ -12,6 +12,7 @@ import {
   useRetireWorker,
   useUpdateWorkerVersion,
 } from "@/api/workers";
+import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -403,9 +404,7 @@ function WorkerDetailPage() {
                 <h4 className="text-xs font-medium uppercase text-muted-foreground">
                   System prompt
                 </h4>
-                <pre className="mt-1 max-h-60 overflow-auto rounded-md bg-muted p-4 text-xs">
-                  {latestVersion.systemPrompt}
-                </pre>
+                <Markdown>{latestVersion.systemPrompt}</Markdown>
               </div>
             )}
             <div className="grid gap-4 md:grid-cols-2">

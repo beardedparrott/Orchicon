@@ -28,6 +28,7 @@ import {
 import { executionKeys } from "@/api/executions";
 import { useGetUsage } from "@/api/aigateway";
 import { useGetWorkItem } from "@/api/workItems";
+import { Markdown } from "@/components/markdown";
 import { RuntimeSessionPane } from "@/components/executions/RuntimeSessionPane";
 import { ExecutionContextSidebar } from "@/components/executions/ExecutionContextSidebar";
 import { Button } from "@/components/ui/button";
@@ -181,9 +182,7 @@ function ExecutionDetailPage() {
               <div className="mb-1 text-xs font-semibold uppercase tracking-wider text-destructive">
                 Error
               </div>
-              <pre className="whitespace-pre-wrap break-words font-mono text-sm text-destructive">
-                {exec.errorMessage}
-              </pre>
+              <Markdown className="text-destructive">{exec.errorMessage}</Markdown>
             </div>
           )}
           {isFailed && !exec.errorMessage && (

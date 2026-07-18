@@ -69,9 +69,9 @@ message StartExecution {
   string project_id = 3;
   string worker_id = 4;
   int32 worker_version = 5;
-  string system_prompt = 6;
-  string goal = 7;
-  string acceptance_criteria = 8;
+  string system_prompt = 6; // Markdown: the worker's system prompt, resolved with template variables
+  string goal = 7; // Markdown: the composite prompt (task + context + upstream summaries + file context)
+  string acceptance_criteria = 8; // Markdown: the task's success definition
   string model_ref = 9;       // human-defined; no auto-failover (docs/05 §11)
   bytes context_sources = 10;  // JSON refs
   bytes continuation_plan = 11; // present on recovery resume (docs/06 §8)

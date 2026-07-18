@@ -30,6 +30,7 @@
 // visibility is the same as tool-call visibility, which is the point.
 import { useEffect, useMemo, useRef } from "react";
 import type { StreamExecutionEventsResponse } from "@/api/gen/orchicon/api/v1/execution_pb";
+import { Markdown } from "@/components/markdown";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
@@ -488,7 +489,7 @@ const rendered = useMemo<
                   <span>assistant output</span>
                   <span className="opacity-60">(stored)</span>
                 </div>
-                <div className="whitespace-pre-wrap break-words">{storedOutput}</div>
+                <Markdown>{storedOutput}</Markdown>
               </div>
             </div>
           )}
@@ -511,9 +512,9 @@ function PromptCard({ prompt }: { prompt: string }) {
         <summary className="cursor-pointer select-none text-xs font-medium uppercase tracking-wide text-amber-700 dark:text-amber-400">
           System prompt {long ? "(click to expand)" : ""}
         </summary>
-        <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-foreground/80">
-          {prompt}
-        </pre>
+        <div className="mt-2 max-h-72 overflow-auto text-xs leading-relaxed text-foreground/80">
+          <Markdown>{prompt}</Markdown>
+        </div>
       </details>
     </div>
   );
@@ -542,7 +543,7 @@ function AssistantBubble({ chunks }: { chunks: ParsedTextChunk[] }) {
           <span>assistant</span>
           <span className="opacity-60">{lastTs.toLocaleTimeString()}</span>
         </div>
-        <div className="whitespace-pre-wrap break-words">{text}</div>
+        <Markdown>{text}</Markdown>
       </div>
     </div>
   );
@@ -574,8 +575,8 @@ function ReasoningBubble({ chunks }: { chunks: ParsedReasoningChunk[] }) {
               </span>
             )}
           </summary>
-          <div className="mt-2 whitespace-pre-wrap break-words text-xs">
-            {text}
+          <div className="mt-2 text-xs not-italic">
+            <Markdown>{text}</Markdown>
           </div>
         </details>
       </div>
@@ -654,7 +655,7 @@ function ResultCard({ result }: { result: ParsedResult }) {
           <span>final result</span>
           <span className="opacity-60">{result.occurredAt.toLocaleTimeString()}</span>
         </div>
-        <div className="whitespace-pre-wrap break-words">{result.text}</div>
+        <Markdown>{result.text}</Markdown>
       </div>
     </div>
   );
@@ -671,7 +672,7 @@ function ErrorCard({ error }: { error: ParsedError }) {
           {error.occurredAt.toLocaleTimeString()}
         </span>
       </div>
-      <pre className="whitespace-pre-wrap text-xs">{error.message}</pre>
+      <Markdown>{error.message}</Markdown>
     </div>
   );
 }
@@ -701,9 +702,15 @@ function ArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
           {isMarkdown ? "Preview" : "Content"}
           {artifact.content.length > 10000 && <span className="ml-2 opacity-60">(long — {artifact.content.length.toLocaleString()} chars)</span>}
         </summary>
-        <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded bg-background/70 p-3 font-mono text-xs leading-relaxed">
-          {artifact.content}
-        </pre>
+        {isMarkdown ? (
+          <div className="mt-2 max-h-96 overflow-auto rounded bg-background/70 p-3 leading-relaxed">
+            <Markdown>{artifact.content}</Markdown>
+          </div>
+        ) : (
+          <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded bg-background/70 p-3 font-mono text-xs leading-relaxed">
+            {artifact.content}
+          </pre>
+        )}
       </details>
     </div>
   );

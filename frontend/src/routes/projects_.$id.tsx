@@ -12,6 +12,7 @@ import {
   projectKeys,
 } from "@/api/projects";
 import { useStreamProjectEvents } from "@/api/projectEvents";
+import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -212,7 +213,7 @@ function ProjectDetailPage() {
                   <span className="w-1/3 font-medium text-muted-foreground">
                     {key}
                   </span>
-                  <span className="flex-1">{value}</span>
+                  <span className="flex-1"><Markdown>{value}</Markdown></span>
                 </div>
               ))}
             </div>

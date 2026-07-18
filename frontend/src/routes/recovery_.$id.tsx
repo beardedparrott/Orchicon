@@ -11,6 +11,7 @@ import {
   useRejectContinuationPlan,
 } from "@/api/recovery";
 import { useStreamRecoveryEvents } from "@/api/recoveryEvents";
+import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -137,7 +138,7 @@ function RecoveryDetailPage() {
           {recovery.summary && (
             <div className="md:col-span-2">
               <span className="text-muted-foreground">Summary: </span>
-              <span>{recovery.summary}</span>
+              <Markdown>{recovery.summary}</Markdown>
             </div>
           )}
         </CardContent>
@@ -217,9 +218,9 @@ function RecoveryDetailPage() {
                         <summary className="cursor-pointer text-xs text-muted-foreground">
                           result
                         </summary>
-                        <pre className="mt-1 max-h-40 overflow-auto rounded bg-muted/30 p-2 font-mono text-[10px]">
-                          {sr.result}
-                        </pre>
+                        <div className="mt-1 max-h-40 overflow-auto rounded bg-muted/30 p-2">
+                          <Markdown>{sr.result}</Markdown>
+                        </div>
                       </details>
                     )}
                   </li>
@@ -267,7 +268,9 @@ function RecoveryDetailPage() {
                   {plan.contextSummary && (
                     <div>
                       <Label className="text-xs">Context summary</Label>
-                      <p className="text-sm">{plan.contextSummary}</p>
+                      <div className="text-sm">
+                        <Markdown>{plan.contextSummary}</Markdown>
+                      </div>
                     </div>
                   )}
                   {plan.remaining && plan.remaining !== "[]" && (

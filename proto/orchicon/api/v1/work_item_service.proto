@@ -62,8 +62,8 @@ message CreateWorkItemRequest {
   string parent_id = 3; // empty for top-level (epic)
   WorkItemKind kind = 4;
   string title = 5;
-  string description = 6;
-  string acceptance_criteria = 7;
+  string description = 6; // Markdown
+  string acceptance_criteria = 7; // Markdown
   int32 priority = 8;
   string budgets = 9; // JSON
   int32 context_window = 10;
