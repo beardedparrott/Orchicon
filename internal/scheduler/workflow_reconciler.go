@@ -1028,7 +1028,7 @@ func (r *WorkflowReconciler) readProjectContextFiles(ctx context.Context, tx pgx
 	}
 	var sb strings.Builder
 	sb.WriteString("# File context\n\n")
-	sb.WriteString("The following files are provided as context. Read them from disk when you need their contents.\n\n")
+	sb.WriteString("File context: The following files and directories are provided as context. Please read the files from disk and any files that are also contained within the directories listed before starting your work.\n\n")
 	for _, relPath := range files {
 		fullPath := filepath.Join(p.ProjectDir, relPath)
 		if !strings.HasPrefix(filepath.Clean(fullPath), filepath.Clean(p.ProjectDir)) {

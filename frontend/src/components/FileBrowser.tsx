@@ -26,12 +26,14 @@ interface FileBrowserProps {
   projectId: string;
   projectDir: string;
   initialSelectedFiles: string[];
+  readOnly?: boolean;
 }
 
 export function FileBrowser({
   projectId,
   projectDir,
   initialSelectedFiles,
+  readOnly = false,
 }: FileBrowserProps) {
   const [showDirPicker, setShowDirPicker] = useState(false);
   const [browsePath, setBrowsePath] = useState("");
@@ -130,7 +132,8 @@ export function FileBrowser({
             placeholder="Search files and folders…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full rounded-md border bg-background pl-8 pr-8 py-1.5 text-sm outline-none focus:ring-2 focus:ring-ring"
+            disabled={readOnly}
+            className="w-full rounded-md border bg-background pl-8 pr-8 py-1.5 text-sm outline-none focus:ring-2 focus:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
           />
           {searchQuery && (
             <button
@@ -158,6 +161,7 @@ export function FileBrowser({
             variant="outline"
             size="sm"
             className="text-xs h-7 shrink-0"
+            disabled={readOnly && !showDirPicker}
             onClick={() => { setShowDirPicker(!showDirPicker); setBrowsePath(projectDir || "~"); }}
           >
             {showDirPicker ? "Cancel" : hasDir ? "Change" : "Set directory"}
@@ -191,6 +195,7 @@ export function FileBrowser({
               onToggleEntry={toggleEntry}
               onSelectAll={selectAll}
               onDeselectAll={deselectAll}
+              readOnly={readOnly}
             />
 
             {/* Selected files summary */}
@@ -374,6 +379,7 @@ interface FileTreeContainerProps {
   onToggleEntry: (path: string) => void;
   onSelectAll: (entries: FileTreeEntry[]) => void;
   onDeselectAll: (entries: FileTreeEntry[]) => void;
+  readOnly?: boolean;
 }
 
 function FileTreeContainer({
@@ -388,6 +394,7 @@ function FileTreeContainer({
   onToggleEntry,
   onSelectAll,
   onDeselectAll,
+  readOnly = false,
 }: FileTreeContainerProps) {
   const projectResult = useListProjectDir(projectId, subpath);
   const dirResult = useListDirPath(dirPath ? `${dirPath}${subpath ? `/${subpath}` : ""}` : "");
@@ -421,21 +428,25 @@ function FileTreeContainer({
           <span className="text-xs text-muted-foreground mr-auto">
             {data?.dirName || ""}
           </span>
-          <button
-            type="button"
-            className="text-xs text-muted-foreground hover:text-foreground"
-            onClick={() => onSelectAll(entries)}
-          >
-            Select all
-          </button>
-          <span className="text-xs text-muted-foreground">·</span>
-          <button
-            type="button"
-            className="text-xs text-muted-foreground hover:text-foreground"
-            onClick={() => onDeselectAll(entries)}
-          >
-            Deselect all
-          </button>
+          {!readOnly && (
+            <>
+              <button
+                type="button"
+                className="text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => onSelectAll(entries)}
+              >
+                Select all
+              </button>
+              <span className="text-xs text-muted-foreground">·</span>
+              <button
+                type="button"
+                className="text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => onDeselectAll(entries)}
+              >
+                Deselect all
+              </button>
+            </>
+          )}
         </div>
       )}
       {entries.map((entry) => (
@@ -452,6 +463,7 @@ function FileTreeContainer({
           onToggleEntry={onToggleEntry}
           onSelectAll={onSelectAll}
           onDeselectAll={onDeselectAll}
+          readOnly={readOnly}
         />
       ))}
     </div>
@@ -472,6 +484,7 @@ interface FileRowProps {
   onToggleEntry: (path: string) => void;
   onSelectAll: (entries: FileTreeEntry[]) => void;
   onDeselectAll: (entries: FileTreeEntry[]) => void;
+  readOnly?: boolean;
 }
 
 function FileRow({
@@ -486,6 +499,7 @@ function FileRow({
   onToggleEntry,
   onSelectAll,
   onDeselectAll,
+  readOnly = false,
 }: FileRowProps) {
   const isExpanded = expandedPaths.has(entry.path);
   const isSelected = selectedSet.has(entry.path);
@@ -497,28 +511,36 @@ function FileRow({
           className="flex items-center gap-1 px-2 py-1.5 text-sm hover:bg-muted/40 cursor-pointer"
           style={{ paddingLeft: depth * 20 + 8 }}
         >
-          <button
-            type="button"
-            className="text-muted-foreground hover:text-foreground shrink-0"
-            onClick={(e) => { e.stopPropagation(); onToggleExpanded(entry.path); }}
-          >
-            {isExpanded ? (
-              <ChevronDown className="h-4 w-4" />
-            ) : (
-              <ChevronRight className="h-4 w-4" />
-            )}
-          </button>
-          <button
-            type="button"
-            className="text-muted-foreground hover:text-foreground shrink-0"
-            onClick={() => onToggleEntry(entry.path)}
-          >
-            {isSelected ? (
-              <CheckSquare className="h-4 w-4" />
-            ) : (
-              <Square className="h-4 w-4" />
-            )}
-          </button>
+          {readOnly ? (
+            <span className="w-8 shrink-0" />
+          ) : (
+            <button
+              type="button"
+              className="text-muted-foreground hover:text-foreground shrink-0"
+              onClick={(e) => { e.stopPropagation(); onToggleExpanded(entry.path); }}
+            >
+              {isExpanded ? (
+                <ChevronDown className="h-4 w-4" />
+              ) : (
+                <ChevronRight className="h-4 w-4" />
+              )}
+            </button>
+          )}
+          {readOnly ? (
+            <span className="w-4 shrink-0" />
+          ) : (
+            <button
+              type="button"
+              className="text-muted-foreground hover:text-foreground shrink-0"
+              onClick={() => onToggleEntry(entry.path)}
+            >
+              {isSelected ? (
+                <CheckSquare className="h-4 w-4" />
+              ) : (
+                <Square className="h-4 w-4" />
+              )}
+            </button>
+          )}
           <Folder className="h-4 w-4 text-amber-500 shrink-0" />
           <span className="truncate" onClick={() => onToggleExpanded(entry.path)}>
             {entry.name}
@@ -537,6 +559,7 @@ function FileRow({
             onToggleEntry={onToggleEntry}
             onSelectAll={onSelectAll}
             onDeselectAll={onDeselectAll}
+            readOnly={readOnly}
           />
         )}
       </div>
@@ -548,17 +571,21 @@ function FileRow({
       className="flex items-center gap-1 px-2 py-1.5 text-sm hover:bg-muted/40 cursor-pointer"
       style={{ paddingLeft: depth * 20 + 8 }}
     >
-      <button
-        type="button"
-        className="text-muted-foreground hover:text-foreground shrink-0"
-        onClick={() => onToggleEntry(entry.path)}
-      >
-        {isSelected ? (
-          <CheckSquare className="h-4 w-4" />
-        ) : (
-          <Square className="h-4 w-4" />
-        )}
-      </button>
+      {readOnly ? (
+        <span className="w-4 shrink-0" />
+      ) : (
+        <button
+          type="button"
+          className="text-muted-foreground hover:text-foreground shrink-0"
+          onClick={() => onToggleEntry(entry.path)}
+        >
+          {isSelected ? (
+            <CheckSquare className="h-4 w-4" />
+          ) : (
+            <Square className="h-4 w-4" />
+          )}
+        </button>
+      )}
       <File className="h-4 w-4 text-sky-500 shrink-0" />
       <span className="truncate">{entry.name}</span>
     </div>

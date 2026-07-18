@@ -226,6 +226,7 @@ function ProjectDetailPage() {
           projectId={project.id}
           projectDir={project.projectDir || ""}
           initialSelectedFiles={project.contextFiles || []}
+          readOnly={!editing}
         />
       )}
 
