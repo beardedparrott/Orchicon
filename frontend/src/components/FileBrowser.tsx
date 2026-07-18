@@ -254,14 +254,24 @@ function BrowseTree({ path, searchQuery, onSelect, onSelectFile, onNavigate }: B
   const files = q ? allFiles.filter((e) => e.name.toLowerCase().includes(q)) : allFiles;
 
   const joinPath = (base: string, name: string) => {
-    const p = base === "~" || base === "" ? `~/${name}` : `${base}/${name}`;
-    return p.replace(/\/\//g, "/");
+    if (!base || base === "~") return `~/${name}`;
+    if (base.endsWith("/")) return `${base}${name}`;
+    return `${base}/${name}`;
   };
 
   const parentOf = (p: string) => {
-    const parts = p.replace(/^~\/?/, "").split("/").filter(Boolean);
+    const parts = p.split("/").filter(Boolean);
     if (parts.length === 0) return "~";
-    return joinPath("~", parts.slice(0, -1).join("/"));
+    if (p.startsWith("~")) {
+      const rel = parts.slice(1, -1).join("/");
+      return rel ? `~/${rel}` : "~";
+    }
+    // Absolute path: /a/b/c → /a/b
+    if (p.startsWith("/")) {
+      const parent = "/" + parts.slice(0, -1).join("/");
+      return parent === "" ? "/" : parent;
+    }
+    return parts.slice(0, -1).join("/") || "~";
   };
 
   const goUp = () => {
