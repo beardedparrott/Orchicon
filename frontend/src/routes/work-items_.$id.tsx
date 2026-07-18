@@ -10,6 +10,7 @@ import {
   useGetDependencyGraph,
 } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
+import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -266,9 +267,7 @@ function WorkItemDetailPage() {
               className="min-h-[80px]"
             />
           ) : (
-            <p className="text-sm whitespace-pre-wrap">
-              {item.description || "—"}
-            </p>
+            <Markdown>{item.description}</Markdown>
           )}
         </CardContent>
       </Card>
@@ -286,9 +285,7 @@ function WorkItemDetailPage() {
               className="min-h-[80px]"
             />
           ) : (
-            <p className="text-sm whitespace-pre-wrap">
-              {item.acceptanceCriteria || "—"}
-            </p>
+            <Markdown>{item.acceptanceCriteria}</Markdown>
           )}
         </CardContent>
       </Card>

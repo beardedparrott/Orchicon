@@ -67,12 +67,12 @@ message CreateWorkerRequest {
   string tenant_id = 1;
   string name = 2;
   string slug = 3;
-  string description = 4;
+  string description = 4; // Markdown
   string purpose = 5;
   // First-version snapshot fields (docs/05 §3):
   string runtime_ref = 6;
   string model_ref = 7;
-  string system_prompt = 8;
+  string system_prompt = 8; // Markdown + template variables (docs/05 §11)
   string context_sources = 9; // JSON
   string permissions = 10; // JSON
   string gated_tools = 11; // JSON

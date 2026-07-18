@@ -19,7 +19,7 @@ message Worker {
   string tenant_id = 2;
   string name = 3;
   string slug = 4;
-  string description = 5;
+  string description = 5; // Markdown: long-form description of the worker
   string purpose = 6; // short statement of the worker's role
   WorkerStatus status = 7;
   int32 current_version = 8; // latest version number
@@ -40,7 +40,7 @@ message WorkerVersion {
   WorkerVersionStatus status = 5;
   string runtime_ref = 6; // adapter kind, e.g. "opencode"
   string model_ref = 7; // exact provider + model id; no failover (docs/05 §11)
-  string system_prompt = 8; // supports template variables (docs/05 §11)
+  string system_prompt = 8; // Markdown + template variables (docs/05 §11); rendered inline in the composite prompt
   string context_sources = 9; // JSON: ordered list of context source refs
   string permissions = 10; // JSON: capability allowlist (docs/05 §7)
   string gated_tools = 11; // JSON: per-call gated tool set (docs/05 §7.1)

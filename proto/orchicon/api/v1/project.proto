@@ -32,7 +32,7 @@ message Project {
   string name = 3;
   string slug = 4;
   ProjectStatus status = 5;
-  string goals = 6; // JSON-encoded goals document
+  string goals = 6; // JSON-encoded goals document (values support Markdown)
   int32 version = 7;
   google.protobuf.Timestamp created_at = 8;
   google.protobuf.Timestamp updated_at = 9;

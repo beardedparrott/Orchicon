@@ -56,7 +56,7 @@ message RecoveryExecution {
   bool needs_human_approval = 17;    // true when >150% of original
   string continuation_plan_id = 18; // set when plan step completes
   string reviewer_worker_id = 19;   // the Reviewer Worker for steps 2/4
-  string summary = 20;              // the captured/summarized context
+  string summary = 20;              // Markdown: the captured/summarized context
   int32 version = 21;              // optimistic concurrency (docs/09 §5)
   google.protobuf.Timestamp triggered_at = 22;
   google.protobuf.Timestamp ended_at = 23;
@@ -76,7 +76,7 @@ message RecoveryStepRun {
   string step_name = 5;
   RecoveryStepStatus status = 6;
   int32 attempt = 7;       // retry count
-  string result = 8;      // JSON: step output (summary, verdict, plan ref)
+  string result = 8;      // Markdown + JSON: step output (summary, verdict, plan ref)
   string worker_execution_id = 9; // for Reviewer-driven steps
   // Rich narrative fields (docs/06 §11): each step records the
   // why/what/how/where/when so the timeline answers "what went wrong,
@@ -105,7 +105,7 @@ message ContinuationPlan {
   string in_progress = 6;     // JSON: what was mid-flight at capture
   string remaining = 7;       // JSON: outstanding work vs acceptance criteria
   string corrections = 8;    // JSON: changes the Reviewer/Architect require
-  string context_summary = 9; // the compacted context to seed the replacement
+  string context_summary = 9; // Markdown: the compacted context to seed the replacement
   string checkpoint_ref = 10; // opaque blob ref (when direct replay intended)
   string assumptions = 11;   // JSON: explicit assumptions to verify
   PlanStatus status = 12;    // pending | approved | rejected

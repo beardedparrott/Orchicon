@@ -50,8 +50,8 @@ message WorkItem {
   string parent_id = 4; // empty for top-level (epic)
   WorkItemKind kind = 5;
   string title = 6;
-  string description = 7;
-  string acceptance_criteria = 8;
+  string description = 7; // Markdown: feeds into the worker's composite prompt as context
+  string acceptance_criteria = 8; // Markdown: included in the composite prompt as the task's success definition
   WorkItemStatus status = 9;
   string assigned_worker_ref = 10; // JSON: {worker_id, version} (docs/02 §2.2)
   string workflow_id = 11;
