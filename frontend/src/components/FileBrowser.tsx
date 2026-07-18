@@ -93,6 +93,25 @@ export function FileBrowser({
     );
   };
 
+  // Browse mode: select a file — sets project_dir to the current browse
+  // directory and adds the file to context_files.
+  const handleSelectFile = (fileRelPath: string) => {
+    const browseDir = browsePath || "~";
+    const nextFiles = selectedFiles.includes(fileRelPath)
+      ? selectedFiles
+      : [...selectedFiles, fileRelPath];
+    setSelectedFiles(nextFiles);
+    updateDir.mutate(
+      { id: projectId, projectDir: browseDir },
+      {
+        onSuccess: () => {
+          setBrowsing(false);
+          updateFiles.mutate({ id: projectId, contextFiles: nextFiles });
+        },
+      },
+    );
+  };
+
   // Initial browse path: home directory
   const initialBrowsePath = browsePath || "~";
 
@@ -147,6 +166,7 @@ export function FileBrowser({
               path={initialBrowsePath}
               searchQuery={searchQuery}
               onSelect={handleBrowseSelect}
+              onSelectFile={handleSelectFile}
               onNavigate={setBrowsePath}
             />
             {updateDir.isPending && (
@@ -229,10 +249,11 @@ interface BrowseTreeProps {
   path: string;
   searchQuery: string;
   onSelect: (path: string) => void;
+  onSelectFile: (path: string) => void;
   onNavigate: (path: string) => void;
 }
 
-function BrowseTree({ path, searchQuery, onSelect, onNavigate }: BrowseTreeProps) {
+function BrowseTree({ path, searchQuery, onSelect, onSelectFile, onNavigate }: BrowseTreeProps) {
   const { data, isLoading, error } = useListDirPath(path);
 
   const q = searchQuery.toLowerCase().trim();
@@ -301,18 +322,31 @@ function BrowseTree({ path, searchQuery, onSelect, onNavigate }: BrowseTreeProps
         </div>
       ))}
 
-      {files.slice(0, 10).map((entry) => (
+      {files.slice(0, 20).map((entry) => (
         <div
           key={entry.path}
-          className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground"
+          className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b last:border-0"
         >
           <File className="h-4 w-4 shrink-0" />
-          <span className="truncate">{entry.name}</span>
+          <span
+            className="flex-1 truncate"
+            onClick={() => onSelectFile(entry.path)}
+          >
+            {entry.name}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-xs h-7 shrink-0"
+            onClick={() => onSelectFile(entry.path)}
+          >
+            Select
+          </Button>
         </div>
       ))}
-      {files.length > 10 && (
+      {files.length > 20 && (
         <p className="px-3 py-1 text-xs text-muted-foreground">
-          …{files.length - 10} more files
+          …{files.length - 20} more files
         </p>
       )}
     </div>
