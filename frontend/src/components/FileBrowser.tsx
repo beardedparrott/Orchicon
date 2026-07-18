@@ -20,7 +20,6 @@ import {
 } from "@/api/projectFiles";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
 import type { FileTreeEntry } from "@/api/gen/orchicon/api/v1/project_pb";
 
 interface FileBrowserProps {
@@ -34,7 +33,7 @@ export function FileBrowser({
   projectDir,
   initialSelectedFiles,
 }: FileBrowserProps) {
-  const [browsing, setBrowsing] = useState(!projectDir);
+  const [showDirPicker, setShowDirPicker] = useState(false);
   const [browsePath, setBrowsePath] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<string[]>(initialSelectedFiles);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
@@ -85,16 +84,13 @@ export function FileBrowser({
     persistSelection(selectedFiles.filter((f) => !allSet.has(f)));
   };
 
-  // Browse mode: pick a project directory by navigating the filesystem
   const handleBrowseSelect = (path: string) => {
     updateDir.mutate(
       { id: projectId, projectDir: path },
-      { onSuccess: () => setBrowsing(false) },
+      { onSuccess: () => setShowDirPicker(false) },
     );
   };
 
-  // Browse mode: select a file — sets project_dir to the current browse
-  // directory and adds the file to context_files.
   const handleSelectFile = (fileRelPath: string) => {
     const browseDir = browsePath || "~";
     const nextFiles = selectedFiles.includes(fileRelPath)
@@ -105,24 +101,24 @@ export function FileBrowser({
       { id: projectId, projectDir: browseDir },
       {
         onSuccess: () => {
-          setBrowsing(false);
+          setShowDirPicker(false);
           updateFiles.mutate({ id: projectId, contextFiles: nextFiles });
         },
       },
     );
   };
 
-  // Initial browse path: home directory
-  const initialBrowsePath = browsePath || "~";
+  const rootDir = browsePath || projectDir || "~";
+  const hasDir = !!projectDir;
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>Project Context Files</CardTitle>
         <CardDescription>
-          {browsing
-            ? "Navigate to your project directory and click \"Select this folder\"."
-            : "Select files and folders to include as context for AI workers. Click a folder to expand it."}
+          {showDirPicker
+            ? "Navigate to a directory and click \"Select this folder\" to set it as the project root."
+            : "Expand folders and check files to include as context for AI workers."}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -147,23 +143,26 @@ export function FileBrowser({
           )}
         </div>
 
-        {browsing ? (
+        {/* Directory bar */}
+        <div className="flex items-center gap-2 text-sm">
+          <span className="text-muted-foreground shrink-0">Root:</span>
+          <span className="flex-1 truncate rounded-md border bg-muted/30 px-2 py-1 font-mono text-xs text-muted-foreground">
+            {hasDir ? projectDir : "~ (not set)"}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-xs h-7 shrink-0"
+            onClick={() => { setShowDirPicker(!showDirPicker); setBrowsePath(projectDir || "~"); }}
+          >
+            {showDirPicker ? "Cancel" : hasDir ? "Change" : "Set directory"}
+          </Button>
+        </div>
+
+        {showDirPicker ? (
           <>
-            {/* Breadcrumb */}
-            <div className="flex items-center gap-2 text-sm">
-              <span className="text-muted-foreground">Browse:</span>
-              <span className="font-mono text-xs truncate">{initialBrowsePath}</span>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-xs h-6"
-                onClick={() => setBrowsePath("")}
-              >
-                Home
-              </Button>
-            </div>
             <BrowseTree
-              path={initialBrowsePath}
+              path={browsePath || "~"}
               searchQuery={searchQuery}
               onSelect={handleBrowseSelect}
               onSelectFile={handleSelectFile}
@@ -175,35 +174,19 @@ export function FileBrowser({
           </>
         ) : (
           <>
-            {/* Set directory */}
-            <div className="flex items-center gap-2">
-              <Label className="shrink-0 text-sm">Project directory</Label>
-              <span className="flex-1 truncate rounded-md border bg-muted/30 px-3 py-1.5 text-xs font-mono text-muted-foreground">
-                {projectDir}
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setBrowsing(true)}
-              >
-                Change
-              </Button>
-            </div>
-
             {/* File tree with checkboxes */}
-            {projectDir && (
-              <FileTreeContainer
-                projectId={projectId}
-                subpath=""
-                searchQuery={searchQuery}
-                selectedSet={new Set(selectedFiles)}
-                expandedPaths={expandedPaths}
-                onToggleExpanded={toggleExpanded}
-                onToggleEntry={toggleEntry}
-                onSelectAll={selectAll}
-                onDeselectAll={deselectAll}
-              />
-            )}
+            <FileTreeContainer
+              projectId={projectId}
+              dirPath={hasDir ? undefined : rootDir}
+              subpath=""
+              searchQuery={searchQuery}
+              selectedSet={new Set(selectedFiles)}
+              expandedPaths={expandedPaths}
+              onToggleExpanded={toggleExpanded}
+              onToggleEntry={toggleEntry}
+              onSelectAll={selectAll}
+              onDeselectAll={deselectAll}
+            />
 
             {/* Selected files summary */}
             {selectedFiles.length > 0 && (
@@ -262,7 +245,6 @@ function BrowseTree({ path, searchQuery, onSelect, onSelectFile, onNavigate }: B
   const dirs = q ? allDirs.filter((e) => e.name.toLowerCase().includes(q)) : allDirs;
   const files = q ? allFiles.filter((e) => e.name.toLowerCase().includes(q)) : allFiles;
 
-  // Parent directory for "go up"
   const goUp = () => {
     const parts = path.replace(/^~/, "").split("/").filter(Boolean);
     if (parts.length === 0) return;
@@ -285,7 +267,6 @@ function BrowseTree({ path, searchQuery, onSelect, onSelectFile, onNavigate }: B
 
   return (
     <div className="rounded-md border max-h-[400px] overflow-y-auto">
-      {/* Go up */}
       <div
         className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b"
         onClick={goUp}
@@ -294,7 +275,6 @@ function BrowseTree({ path, searchQuery, onSelect, onSelectFile, onNavigate }: B
         <span className="text-muted-foreground">..</span>
       </div>
 
-      {/* Directories first */}
       {dirs.length === 0 && files.length === 0 && (
         <p className="px-3 py-4 text-sm text-muted-foreground">Empty directory</p>
       )}
@@ -353,10 +333,11 @@ function BrowseTree({ path, searchQuery, onSelect, onSelectFile, onNavigate }: B
   );
 }
 
-// ─── File tree with checkboxes (after project_dir is set) ──────────
+// ─── File tree with checkboxes (default view) ─────────────────────
 
 interface FileTreeContainerProps {
   projectId: string;
+  dirPath?: string;
   subpath: string;
   depth?: number;
   searchQuery: string;
@@ -370,6 +351,7 @@ interface FileTreeContainerProps {
 
 function FileTreeContainer({
   projectId,
+  dirPath,
   subpath,
   depth = 0,
   searchQuery,
@@ -380,7 +362,10 @@ function FileTreeContainer({
   onSelectAll,
   onDeselectAll,
 }: FileTreeContainerProps) {
-  const { data, isLoading, error } = useListProjectDir(projectId, subpath);
+  const projectResult = useListProjectDir(projectId, subpath);
+  const dirResult = useListDirPath(dirPath ? `${dirPath}${subpath ? `/${subpath}` : ""}` : "");
+  const { data, isLoading, error } = dirPath ? dirResult : projectResult;
+
   const q = searchQuery.toLowerCase().trim();
   const allEntries = data?.entries ?? [];
   const entries = q ? allEntries.filter((e) => e.name.toLowerCase().includes(q)) : allEntries;
@@ -399,7 +384,7 @@ function FileTreeContainer({
   }
 
   if (entries.length === 0 && depth === 0) {
-    return <p className="text-sm text-muted-foreground">The project directory is empty.</p>;
+    return <p className="text-sm text-muted-foreground">The directory is empty.</p>;
   }
 
   return (
@@ -432,6 +417,7 @@ function FileTreeContainer({
           entry={entry}
           depth={depth}
           projectId={projectId}
+          dirPath={dirPath}
           searchQuery={searchQuery}
           selectedSet={selectedSet}
           expandedPaths={expandedPaths}
@@ -451,6 +437,7 @@ interface FileRowProps {
   entry: FileTreeEntry;
   depth: number;
   projectId: string;
+  dirPath?: string;
   searchQuery: string;
   selectedSet: Set<string>;
   expandedPaths: Set<string>;
@@ -464,6 +451,7 @@ function FileRow({
   entry,
   depth,
   projectId,
+  dirPath,
   searchQuery,
   selectedSet,
   expandedPaths,
@@ -512,6 +500,7 @@ function FileRow({
         {isExpanded && (
           <FileTreeContainer
             projectId={projectId}
+            dirPath={dirPath}
             subpath={entry.path}
             depth={depth + 1}
             searchQuery={searchQuery}
