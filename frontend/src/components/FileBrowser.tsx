@@ -142,6 +142,11 @@ export function FileBrowser({
             </button>
           )}
         </div>
+        {!showDirPicker && searchQuery && (
+          <p className="text-xs text-muted-foreground -mt-2">
+            Search filters the current directory — expand subdirectories to search within them.
+          </p>
+        )}
 
         {/* Directory bar */}
         <div className="flex items-center gap-2 text-sm">
@@ -195,22 +200,25 @@ export function FileBrowser({
                   {selectedFiles.length} path{selectedFiles.length !== 1 ? "s" : ""} selected:
                 </p>
                 <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
-                  {selectedFiles.slice(0, 30).map((f) => (
-                    <span
-                      key={f}
-                      className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-xs font-mono"
-                    >
-                      <File className="h-3 w-3 shrink-0" />
-                      <span className="truncate max-w-[200px]">{f}</span>
-                      <button
-                        type="button"
-                        className="hover:text-destructive shrink-0"
-                        onClick={() => toggleEntry(f)}
+                  {selectedFiles.slice(0, 30).map((f) => {
+                    const displayPath = projectDir ? `${projectDir}/${f}` : f;
+                    return (
+                      <span
+                        key={f}
+                        className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-xs font-mono"
                       >
-                        ×
-                      </button>
-                    </span>
-                  ))}
+                        <File className="h-3 w-3 shrink-0" />
+                        <span className="truncate max-w-[300px]">{displayPath}</span>
+                        <button
+                          type="button"
+                          className="hover:text-destructive shrink-0"
+                          onClick={() => toggleEntry(f)}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    );
+                  })}
                   {selectedFiles.length > 30 && (
                     <span className="text-xs text-muted-foreground">
                       …and {selectedFiles.length - 30} more
@@ -245,11 +253,20 @@ function BrowseTree({ path, searchQuery, onSelect, onSelectFile, onNavigate }: B
   const dirs = q ? allDirs.filter((e) => e.name.toLowerCase().includes(q)) : allDirs;
   const files = q ? allFiles.filter((e) => e.name.toLowerCase().includes(q)) : allFiles;
 
+  const joinPath = (base: string, name: string) => {
+    const p = base === "~" || base === "" ? `~/${name}` : `${base}/${name}`;
+    return p.replace(/\/\//g, "/");
+  };
+
+  const parentOf = (p: string) => {
+    const parts = p.replace(/^~\/?/, "").split("/").filter(Boolean);
+    if (parts.length === 0) return "~";
+    return joinPath("~", parts.slice(0, -1).join("/"));
+  };
+
   const goUp = () => {
-    const parts = path.replace(/^~/, "").split("/").filter(Boolean);
-    if (parts.length === 0) return;
-    const parent = parts.slice(0, -1).join("/");
-    onNavigate(parent ? `~/${parent}` : "~");
+    const parent = parentOf(path);
+    onNavigate(parent);
   };
 
   if (isLoading) {
@@ -287,7 +304,7 @@ function BrowseTree({ path, searchQuery, onSelect, onSelectFile, onNavigate }: B
           <Folder className="h-4 w-4 text-amber-500 shrink-0" />
           <span
             className="flex-1 truncate"
-            onClick={() => onNavigate(entry.path.startsWith("~") ? entry.path : `~/${entry.path}`)}
+            onClick={() => onNavigate(joinPath(path, entry.path))}
           >
             {entry.name}/
           </span>
@@ -295,7 +312,7 @@ function BrowseTree({ path, searchQuery, onSelect, onSelectFile, onNavigate }: B
             variant="outline"
             size="sm"
             className="text-xs h-7 shrink-0"
-            onClick={() => onSelect(entry.path.startsWith("~") ? entry.path : `~/${entry.path}`)}
+            onClick={() => onSelect(joinPath(path, entry.path))}
           >
             Select this folder
           </Button>
@@ -310,7 +327,7 @@ function BrowseTree({ path, searchQuery, onSelect, onSelectFile, onNavigate }: B
           <File className="h-4 w-4 shrink-0" />
           <span
             className="flex-1 truncate"
-            onClick={() => onSelectFile(entry.path)}
+            onClick={() => onSelectFile(joinPath(path, entry.path))}
           >
             {entry.name}
           </span>
@@ -318,7 +335,7 @@ function BrowseTree({ path, searchQuery, onSelect, onSelectFile, onNavigate }: B
             variant="outline"
             size="sm"
             className="text-xs h-7 shrink-0"
-            onClick={() => onSelectFile(entry.path)}
+            onClick={() => onSelectFile(joinPath(path, entry.path))}
           >
             Select
           </Button>
