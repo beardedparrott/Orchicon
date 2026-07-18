@@ -17,3 +17,4 @@
 | 10 | Project context files | done | `project_dir` + `context_files`, FileBrowser component, `ListProjectFiles` RPC, file injection into composite prompt |
 | 11 | Feature adds | active | Ongoing feature additions for gaps identified after initial build-out |
 | 12 | Bug fixes | active | Ongoing bug fixes and polish |
+| 13 | Polish: docs + website | done | README and landing page overhaul (--clean flag, commands, installed files, custom LICENSE). AGENTS.md restructured with concise Git Workflow, Phases, UPDATES.md tracking. Playwright MCP added for browser testing. |
