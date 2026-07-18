@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"time"
 
 	"connectrpc.com/connect"
@@ -445,10 +444,9 @@ func (s *Service) StreamProjectEvents(ctx context.Context, req *connect.Request[
 	}
 }
 
-// ListProjectFiles returns the recursive file tree of the project's
-// configured project_dir. The project_dir must be set on the project
-// first. Returns a tree of entries rooted at project_dir, respecting
-// max_depth for recursion control.
+// ListProjectFiles returns the immediate children of a directory
+// within the project's configured project_dir. Use subpath for lazy
+// directory expansion — each call returns one level.
 func (s *Service) ListProjectFiles(ctx context.Context, req *connect.Request[apiv1.ListProjectFilesRequest]) (*connect.Response[apiv1.ListProjectFilesResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -475,26 +473,15 @@ func (s *Service) ListProjectFiles(ctx context.Context, req *connect.Request[api
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
 
-	maxDepth := int(req.Msg.MaxDepth)
-	if maxDepth <= 0 {
-		maxDepth = 5
-	}
-	if maxDepth > maxFileTreeDepth {
-		maxDepth = maxFileTreeDepth
-	}
-	var counter int
-	root, err := buildFileTree(p.ProjectDir, req.Msg.Subpath, 0, maxDepth, &counter)
+	parentPath, dirName, entries, err := listDirectory(p.ProjectDir, req.Msg.Subpath)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("build file tree: %w", err))
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list directory: %w", err))
 	}
-	if root == nil {
-		root = &apiv1.FileTreeEntry{
-			Name:  filepath.Base(p.ProjectDir),
-			Path:  "",
-			IsDir: true,
-		}
-	}
-	return connect.NewResponse(&apiv1.ListProjectFilesResponse{Root: root}), nil
+	return connect.NewResponse(&apiv1.ListProjectFilesResponse{
+		ParentPath: parentPath,
+		DirName:    dirName,
+		Entries:    entries,
+	}), nil
 }
 
 // parseProjectEvent decodes the JSON event payload from the outbox/NATS

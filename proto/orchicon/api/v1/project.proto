@@ -112,15 +112,19 @@ message UpdateProjectRequest {
 
 message ListProjectFilesRequest {
   string id = 1; // project id (resolves project_dir)
-  // Optional subpath within project_dir to list. Empty string lists
-  // the root. Use for lazy directory expansion.
+  // Subpath within project_dir to list. Empty string lists the root.
+  // Use for lazy directory expansion — each call returns the immediate
+  // children of the given subpath.
   string subpath = 2;
-  // Max depth for recursive listing. 0 returns only immediate children.
-  int32 max_depth = 3;
 }
 
 message ListProjectFilesResponse {
-  FileTreeEntry root = 1;
+  // The path that was listed (mirrors the request subpath).
+  string parent_path = 1;
+  // Human-readable name of the directory at parent_path.
+  string dir_name = 2;
+  // Immediate children of the requested subpath.
+  repeated FileTreeEntry entries = 3;
 }
 
 message ArchiveProjectRequest {

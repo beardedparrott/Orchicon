@@ -798,11 +798,10 @@ func (x *UpdateProjectRequest) GetContextFiles() *ContextFiles {
 type ListProjectFilesRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"` // project id (resolves project_dir)
-	// Optional subpath within project_dir to list. Empty string lists
-	// the root. Use for lazy directory expansion.
-	Subpath string `protobuf:"bytes,2,opt,name=subpath,proto3" json:"subpath,omitempty"`
-	// Max depth for recursive listing. 0 returns only immediate children.
-	MaxDepth      int32 `protobuf:"varint,3,opt,name=max_depth,json=maxDepth,proto3" json:"max_depth,omitempty"`
+	// Subpath within project_dir to list. Empty string lists the root.
+	// Use for lazy directory expansion — each call returns the immediate
+	// children of the given subpath.
+	Subpath       string `protobuf:"bytes,2,opt,name=subpath,proto3" json:"subpath,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -851,16 +850,14 @@ func (x *ListProjectFilesRequest) GetSubpath() string {
 	return ""
 }
 
-func (x *ListProjectFilesRequest) GetMaxDepth() int32 {
-	if x != nil {
-		return x.MaxDepth
-	}
-	return 0
-}
-
 type ListProjectFilesResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Root          *FileTreeEntry         `protobuf:"bytes,1,opt,name=root,proto3" json:"root,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The path that was listed (mirrors the request subpath).
+	ParentPath string `protobuf:"bytes,1,opt,name=parent_path,json=parentPath,proto3" json:"parent_path,omitempty"`
+	// Human-readable name of the directory at parent_path.
+	DirName string `protobuf:"bytes,2,opt,name=dir_name,json=dirName,proto3" json:"dir_name,omitempty"`
+	// Immediate children of the requested subpath.
+	Entries       []*FileTreeEntry `protobuf:"bytes,3,rep,name=entries,proto3" json:"entries,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -895,9 +892,23 @@ func (*ListProjectFilesResponse) Descriptor() ([]byte, []int) {
 	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{11}
 }
 
-func (x *ListProjectFilesResponse) GetRoot() *FileTreeEntry {
+func (x *ListProjectFilesResponse) GetParentPath() string {
 	if x != nil {
-		return x.Root
+		return x.ParentPath
+	}
+	return ""
+}
+
+func (x *ListProjectFilesResponse) GetDirName() string {
+	if x != nil {
+		return x.DirName
+	}
+	return ""
+}
+
+func (x *ListProjectFilesResponse) GetEntries() []*FileTreeEntry {
+	if x != nil {
+		return x.Entries
 	}
 	return nil
 }
@@ -1147,13 +1158,15 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\x05_slugB\b\n" +
 	"\x06_goalsB\x0e\n" +
 	"\f_project_dirB\x10\n" +
-	"\x0e_context_files\"`\n" +
+	"\x0e_context_files\"C\n" +
 	"\x17ListProjectFilesRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
-	"\asubpath\x18\x02 \x01(\tR\asubpath\x12\x1b\n" +
-	"\tmax_depth\x18\x03 \x01(\x05R\bmaxDepth\"N\n" +
-	"\x18ListProjectFilesResponse\x122\n" +
-	"\x04root\x18\x01 \x01(\v2\x1e.orchicon.api.v1.FileTreeEntryR\x04root\"'\n" +
+	"\asubpath\x18\x02 \x01(\tR\asubpath\"\x90\x01\n" +
+	"\x18ListProjectFilesResponse\x12\x1f\n" +
+	"\vparent_path\x18\x01 \x01(\tR\n" +
+	"parentPath\x12\x19\n" +
+	"\bdir_name\x18\x02 \x01(\tR\adirName\x128\n" +
+	"\aentries\x18\x03 \x03(\v2\x1e.orchicon.api.v1.FileTreeEntryR\aentries\"'\n" +
 	"\x15ArchiveProjectRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"%\n" +
 	"\x13PauseProjectRequest\x12\x0e\n" +
@@ -1221,7 +1234,7 @@ var file_orchicon_api_v1_project_proto_depIdxs = []int32{
 	3,  // 7: orchicon.api.v1.ListProjectsResponse.projects:type_name -> orchicon.api.v1.Project
 	2,  // 8: orchicon.api.v1.UpdateProjectRequest.goals:type_name -> orchicon.api.v1.GoalFields
 	4,  // 9: orchicon.api.v1.UpdateProjectRequest.context_files:type_name -> orchicon.api.v1.ContextFiles
-	5,  // 10: orchicon.api.v1.ListProjectFilesResponse.root:type_name -> orchicon.api.v1.FileTreeEntry
+	5,  // 10: orchicon.api.v1.ListProjectFilesResponse.entries:type_name -> orchicon.api.v1.FileTreeEntry
 	16, // 11: orchicon.api.v1.ProjectEvent.occurred_at:type_name -> google.protobuf.Timestamp
 	12, // [12:12] is the sub-list for method output_type
 	12, // [12:12] is the sub-list for method input_type
