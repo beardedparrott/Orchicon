@@ -4,16 +4,21 @@ import { projectClient } from "@/api/clients";
 import { projectKeys } from "@/api/projects";
 import type { FileTreeEntry, Project } from "@/api/gen/orchicon/api/v1/project_pb";
 
-// useListProjectDir fetches the immediate children of a directory
-// within the project's directory. Subpath "" lists the root.
-// Each subpath fetches ONE level — the frontend drives expansion.
-export function useListProjectDir(projectId: string, subpath: string) {
+// useListProjectDir fetches the immediate children of a directory.
+// If dirPath is provided, lists that path directly (filesystem browse).
+// Otherwise uses projectId + subpath.
+export function useListProjectDir(
+  projectId: string,
+  subpath: string,
+  dirPath?: string,
+) {
   return useQuery({
-    queryKey: [...projectKeys.all, "files", projectId, subpath] as const,
+    queryKey: [...projectKeys.all, "files", projectId, subpath, dirPath] as const,
     queryFn: async () => {
       const res = await projectClient.listProjectFiles({
         id: projectId,
         subpath,
+        dirPath,
       });
       return {
         parentPath: res.parentPath,
@@ -21,8 +26,30 @@ export function useListProjectDir(projectId: string, subpath: string) {
         entries: (res.entries || []) as FileTreeEntry[],
       };
     },
-    enabled: !!projectId,
-    staleTime: 30_000, // refetch after 30s
+    enabled: !!projectId || !!dirPath,
+    staleTime: 30_000,
+  });
+}
+
+// useListDirPath fetches children of an arbitrary directory path
+// (filesystem browse mode — no project needed).
+export function useListDirPath(dirPath: string) {
+  return useQuery({
+    queryKey: ["filesystem", dirPath] as const,
+    queryFn: async () => {
+      const res = await projectClient.listProjectFiles({
+        id: "",
+        subpath: "",
+        dirPath,
+      });
+      return {
+        parentPath: res.parentPath,
+        dirName: res.dirName,
+        entries: (res.entries || []) as FileTreeEntry[],
+      };
+    },
+    enabled: !!dirPath,
+    staleTime: 30_000,
   });
 }
 

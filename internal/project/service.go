@@ -444,36 +444,47 @@ func (s *Service) StreamProjectEvents(ctx context.Context, req *connect.Request[
 	}
 }
 
-// ListProjectFiles returns the immediate children of a directory
-// within the project's configured project_dir. Use subpath for lazy
-// directory expansion — each call returns one level.
+// ListProjectFiles returns the immediate children of a directory.
+// When dir_path is set, lists that directory directly (filesystem
+// browsing mode). Otherwise uses the project's project_dir + subpath.
 func (s *Service) ListProjectFiles(ctx context.Context, req *connect.Request[apiv1.ListProjectFilesRequest]) (*connect.Response[apiv1.ListProjectFilesResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if req.Msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+
+	var rootDir string
+
+	// dir_path bypasses project lookup — direct filesystem browse mode.
+	if req.Msg.DirPath != "" {
+		rootDir, err = validateProjectDir(req.Msg.DirPath)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+	} else {
+		if req.Msg.Id == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+		}
+		ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		defer ttx.Rollback(ctx)
+
+		p, err := db.GetProject(ctx, ttx.Tx, tenantID, req.Msg.Id)
+		if err != nil {
+			return nil, mapDBError(err)
+		}
+		if p.ProjectDir == "" {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("project_dir is not set on this project"))
+		}
+		if err := ttx.Commit(ctx); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+		}
+		rootDir = p.ProjectDir
 	}
 
-	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	defer ttx.Rollback(ctx)
-
-	p, err := db.GetProject(ctx, ttx.Tx, tenantID, req.Msg.Id)
-	if err != nil {
-		return nil, mapDBError(err)
-	}
-	if p.ProjectDir == "" {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("project_dir is not set on this project"))
-	}
-	if err := ttx.Commit(ctx); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
-	}
-
-	parentPath, dirName, entries, err := listDirectory(p.ProjectDir, req.Msg.Subpath)
+	parentPath, dirName, entries, err := listDirectory(rootDir, req.Msg.Subpath)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list directory: %w", err))
 	}

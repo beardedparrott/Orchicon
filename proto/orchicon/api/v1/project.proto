@@ -111,11 +111,15 @@ message UpdateProjectRequest {
 }
 
 message ListProjectFilesRequest {
-  string id = 1; // project id (resolves project_dir)
+  string id = 1; // project id (resolves project_dir); ignored if dir_path is set
   // Subpath within project_dir to list. Empty string lists the root.
   // Use for lazy directory expansion — each call returns the immediate
   // children of the given subpath.
   string subpath = 2;
+  // Direct path to list on the filesystem. When set, id and subpath are
+  // ignored. Used by the frontend to browse the filesystem before the
+  // project_dir is configured.
+  string dir_path = 3;
 }
 
 message ListProjectFilesResponse {
