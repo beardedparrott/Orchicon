@@ -118,119 +118,157 @@ export function FileBrowser({
       <CardHeader>
         <CardTitle>Project Context Files</CardTitle>
         <CardDescription>
-          {showDirPicker
-            ? "Navigate to a directory and click \"Select this folder\" to set it as the project root."
-            : "Expand folders and check files to include as context for AI workers."}
+          {readOnly
+            ? "Context files selected for this project. Click Edit to modify."
+            : showDirPicker
+              ? "Navigate to a directory and click \"Select this folder\" to set it as the project root."
+              : "Expand folders and check files to include as context for AI workers."}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Search bar */}
-        <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <input
-            type="text"
-            placeholder="Search files and folders…"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            disabled={readOnly}
-            className="w-full rounded-md border bg-background pl-8 pr-8 py-1.5 text-sm outline-none focus:ring-2 focus:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
-          />
-          {searchQuery && (
-            <button
-              type="button"
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              onClick={() => setSearchQuery("")}
-            >
-              <X className="h-4 w-4" />
-            </button>
-          )}
-        </div>
-        {!showDirPicker && searchQuery && (
-          <p className="text-xs text-muted-foreground -mt-2">
-            Search filters the current directory — expand subdirectories to search within them.
-          </p>
-        )}
-
-        {/* Directory bar */}
-        <div className="flex items-center gap-2 text-sm">
-          <span className="text-muted-foreground shrink-0">Root:</span>
-          <span className="flex-1 truncate rounded-md border bg-muted/30 px-2 py-1 font-mono text-xs text-muted-foreground">
-            {hasDir ? projectDir : "~ (not set)"}
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-xs h-7 shrink-0"
-            disabled={readOnly && !showDirPicker}
-            onClick={() => { setShowDirPicker(!showDirPicker); setBrowsePath(projectDir || "~"); }}
-          >
-            {showDirPicker ? "Cancel" : hasDir ? "Change" : "Set directory"}
-          </Button>
-        </div>
-
-        {showDirPicker ? (
+        {readOnly ? (
           <>
-            <BrowseTree
-              path={browsePath || "~"}
-              searchQuery={searchQuery}
-              onSelect={handleBrowseSelect}
-              onSelectFile={handleSelectFile}
-              onNavigate={setBrowsePath}
-            />
-            {updateDir.isPending && (
-              <p className="text-xs text-muted-foreground">Saving directory…</p>
+            {/* Read-only: just list the selected files */}
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground shrink-0">Root:</span>
+              <span className="flex-1 truncate rounded-md border bg-muted/30 px-2 py-1 font-mono text-xs text-muted-foreground">
+                {hasDir ? projectDir : "~ (not set)"}
+              </span>
+            </div>
+            {selectedFiles.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No context files selected. Click Edit to configure.
+              </p>
+            ) : (
+              <div className="space-y-1">
+                <p className="text-xs text-muted-foreground">
+                  {selectedFiles.length} file{selectedFiles.length !== 1 ? "s" : ""} selected as context:
+                </p>
+                <div className="rounded-md border divide-y max-h-[300px] overflow-y-auto">
+                  {selectedFiles.map((f) => {
+                    const displayPath = projectDir ? `${projectDir}/${f}` : f;
+                    return (
+                      <div
+                        key={f}
+                        className="flex items-center gap-2 px-3 py-2 text-xs font-mono"
+                      >
+                        <File className="h-3 w-3 shrink-0 text-sky-500" />
+                        <span className="truncate">{displayPath}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             )}
           </>
         ) : (
           <>
-            {/* File tree with checkboxes */}
-            <FileTreeContainer
-              projectId={projectId}
-              dirPath={hasDir ? undefined : rootDir}
-              subpath=""
-              searchQuery={searchQuery}
-              selectedSet={new Set(selectedFiles)}
-              expandedPaths={expandedPaths}
-              onToggleExpanded={toggleExpanded}
-              onToggleEntry={toggleEntry}
-              onSelectAll={selectAll}
-              onDeselectAll={deselectAll}
-              readOnly={readOnly}
-            />
+            {/* Search bar */}
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <input
+                type="text"
+                placeholder="Search files and folders…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full rounded-md border bg-background pl-8 pr-8 py-1.5 text-sm outline-none focus:ring-2 focus:ring-ring"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  onClick={() => setSearchQuery("")}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+            {!showDirPicker && searchQuery && (
+              <p className="text-xs text-muted-foreground -mt-2">
+                Search filters the current directory — expand subdirectories to search within them.
+              </p>
+            )}
 
-            {/* Selected files summary */}
-            {selectedFiles.length > 0 && (
-              <div>
-                <p className="text-xs text-muted-foreground mb-1">
-                  {selectedFiles.length} path{selectedFiles.length !== 1 ? "s" : ""} selected:
-                </p>
-                <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
-                  {selectedFiles.slice(0, 30).map((f) => {
-                    const displayPath = projectDir ? `${projectDir}/${f}` : f;
-                    return (
-                      <span
-                        key={f}
-                        className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-xs font-mono"
-                      >
-                        <File className="h-3 w-3 shrink-0" />
-                        <span className="truncate max-w-[300px]">{displayPath}</span>
-                        <button
-                          type="button"
-                          className="hover:text-destructive shrink-0"
-                          onClick={() => toggleEntry(f)}
-                        >
-                          ×
-                        </button>
-                      </span>
-                    );
-                  })}
-                  {selectedFiles.length > 30 && (
-                    <span className="text-xs text-muted-foreground">
-                      …and {selectedFiles.length - 30} more
-                    </span>
-                  )}
-                </div>
-              </div>
+            {/* Directory bar */}
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground shrink-0">Root:</span>
+              <span className="flex-1 truncate rounded-md border bg-muted/30 px-2 py-1 font-mono text-xs text-muted-foreground">
+                {hasDir ? projectDir : "~ (not set)"}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs h-7 shrink-0"
+                onClick={() => { setShowDirPicker(!showDirPicker); setBrowsePath(projectDir || "~"); }}
+              >
+                {showDirPicker ? "Cancel" : hasDir ? "Change" : "Set directory"}
+              </Button>
+            </div>
+
+            {showDirPicker ? (
+              <>
+                <BrowseTree
+                  path={browsePath || "~"}
+                  searchQuery={searchQuery}
+                  onSelect={handleBrowseSelect}
+                  onSelectFile={handleSelectFile}
+                  onNavigate={setBrowsePath}
+                />
+                {updateDir.isPending && (
+                  <p className="text-xs text-muted-foreground">Saving directory…</p>
+                )}
+              </>
+            ) : (
+              <>
+                {/* File tree with checkboxes */}
+                <FileTreeContainer
+                  projectId={projectId}
+                  dirPath={hasDir ? undefined : rootDir}
+                  subpath=""
+                  searchQuery={searchQuery}
+                  selectedSet={new Set(selectedFiles)}
+                  expandedPaths={expandedPaths}
+                  onToggleExpanded={toggleExpanded}
+                  onToggleEntry={toggleEntry}
+                  onSelectAll={selectAll}
+                  onDeselectAll={deselectAll}
+                />
+
+                {/* Selected files summary with remove buttons */}
+                {selectedFiles.length > 0 && (
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">
+                      {selectedFiles.length} path{selectedFiles.length !== 1 ? "s" : ""} selected:
+                    </p>
+                    <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
+                      {selectedFiles.slice(0, 30).map((f) => {
+                        const displayPath = projectDir ? `${projectDir}/${f}` : f;
+                        return (
+                          <span
+                            key={f}
+                            className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-xs font-mono"
+                          >
+                            <File className="h-3 w-3 shrink-0" />
+                            <span className="truncate max-w-[300px]">{displayPath}</span>
+                            <button
+                              type="button"
+                              className="hover:text-destructive shrink-0"
+                              onClick={() => toggleEntry(f)}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        );
+                      })}
+                      {selectedFiles.length > 30 && (
+                        <span className="text-xs text-muted-foreground">
+                          …and {selectedFiles.length - 30} more
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </>
         )}
