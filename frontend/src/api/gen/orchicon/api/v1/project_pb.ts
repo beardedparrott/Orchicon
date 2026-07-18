@@ -677,19 +677,13 @@ export class ListProjectFilesRequest extends Message<ListProjectFilesRequest> {
   id = "";
 
   /**
-   * Optional subpath within project_dir to list. Empty string lists
-   * the root. Use for lazy directory expansion.
+   * Subpath within project_dir to list. Empty string lists the root.
+   * Use for lazy directory expansion — each call returns the immediate
+   * children of the given subpath.
    *
    * @generated from field: string subpath = 2;
    */
   subpath = "";
-
-  /**
-   * Max depth for recursive listing. 0 returns only immediate children.
-   *
-   * @generated from field: int32 max_depth = 3;
-   */
-  maxDepth = 0;
 
   constructor(data?: PartialMessage<ListProjectFilesRequest>) {
     super();
@@ -701,7 +695,6 @@ export class ListProjectFilesRequest extends Message<ListProjectFilesRequest> {
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "subpath", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 3, name: "max_depth", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListProjectFilesRequest {
@@ -726,9 +719,25 @@ export class ListProjectFilesRequest extends Message<ListProjectFilesRequest> {
  */
 export class ListProjectFilesResponse extends Message<ListProjectFilesResponse> {
   /**
-   * @generated from field: orchicon.api.v1.FileTreeEntry root = 1;
+   * The path that was listed (mirrors the request subpath).
+   *
+   * @generated from field: string parent_path = 1;
    */
-  root?: FileTreeEntry;
+  parentPath = "";
+
+  /**
+   * Human-readable name of the directory at parent_path.
+   *
+   * @generated from field: string dir_name = 2;
+   */
+  dirName = "";
+
+  /**
+   * Immediate children of the requested subpath.
+   *
+   * @generated from field: repeated orchicon.api.v1.FileTreeEntry entries = 3;
+   */
+  entries: FileTreeEntry[] = [];
 
   constructor(data?: PartialMessage<ListProjectFilesResponse>) {
     super();
@@ -738,7 +747,9 @@ export class ListProjectFilesResponse extends Message<ListProjectFilesResponse> 
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "orchicon.api.v1.ListProjectFilesResponse";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "root", kind: "message", T: FileTreeEntry },
+    { no: 1, name: "parent_path", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "dir_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "entries", kind: "message", T: FileTreeEntry, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListProjectFilesResponse {

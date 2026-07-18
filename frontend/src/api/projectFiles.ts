@@ -2,26 +2,27 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { projectClient } from "@/api/clients";
 import { projectKeys } from "@/api/projects";
-import type {
-  FileTreeEntry,
-  Project,
-} from "@/api/gen/orchicon/api/v1/project_pb";
+import type { FileTreeEntry, Project } from "@/api/gen/orchicon/api/v1/project_pb";
 
-// useListProjectFiles fetches the file tree for a project's directory.
-export function useListProjectFiles(
-  projectId: string,
-  maxDepth = 5,
-) {
+// useListProjectDir fetches the immediate children of a directory
+// within the project's directory. Subpath "" lists the root.
+// Each subpath fetches ONE level — the frontend drives expansion.
+export function useListProjectDir(projectId: string, subpath: string) {
   return useQuery({
-    queryKey: [...projectKeys.all, "files", projectId] as const,
+    queryKey: [...projectKeys.all, "files", projectId, subpath] as const,
     queryFn: async () => {
       const res = await projectClient.listProjectFiles({
         id: projectId,
-        maxDepth,
+        subpath,
       });
-      return res.root as FileTreeEntry | undefined;
+      return {
+        parentPath: res.parentPath,
+        dirName: res.dirName,
+        entries: (res.entries || []) as FileTreeEntry[],
+      };
     },
     enabled: !!projectId,
+    staleTime: 30_000, // refetch after 30s
   });
 }
 
@@ -29,10 +30,7 @@ export function useListProjectFiles(
 export function useUpdateProjectDir() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: {
-      id: string;
-      projectDir: string;
-    }) => {
+    mutationFn: async (input: { id: string; projectDir: string }) => {
       const res = await projectClient.updateProject({
         id: input.id,
         projectDir: input.projectDir,
@@ -53,10 +51,7 @@ export function useUpdateProjectDir() {
 export function useUpdateContextFiles() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: {
-      id: string;
-      contextFiles: string[];
-    }) => {
+    mutationFn: async (input: { id: string; contextFiles: string[] }) => {
       const res = await projectClient.updateProject({
         id: input.id,
         contextFiles: { files: input.contextFiles },
@@ -68,23 +63,4 @@ export function useUpdateContextFiles() {
       qc.invalidateQueries({ queryKey: projectKeys.detail(project.id) });
     },
   });
-}
-
-// collectAllFilePaths recursively collects all file paths from a
-// FileTreeEntry tree, returning the relative paths.
-export function collectAllFilePaths(root?: FileTreeEntry): string[] {
-  if (!root) return [];
-  const paths: string[] = [];
-  function walk(node: FileTreeEntry) {
-    if (!node.isDir && node.path) {
-      paths.push(node.path);
-    }
-    if (node.children) {
-      for (const child of node.children) {
-        walk(child);
-      }
-    }
-  }
-  walk(root);
-  return paths;
 }

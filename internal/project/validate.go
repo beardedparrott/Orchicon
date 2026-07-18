@@ -41,8 +41,7 @@ const (
 	maxGoalsLen       = 1 << 20 // 1 MiB; goals is a JSON document
 	maxContextFiles   = 1000   // max number of context files
 	maxFilePathLen    = 4096   // max length of a single file path
-	maxFileTreeDepth  = 20     // max depth for recursive file tree listing
-	maxFileTreeSize   = 10000  // max total entries in a file tree listing
+	maxDirEntries     = 10000  // max entries returned by listDirectory
 )
 
 // slugRE defines the canonical slug character set: lowercase alphanumerics
@@ -331,52 +330,45 @@ func contextFilesFromJSON(data []byte) ([]string, error) {
 	return files, nil
 }
 
-// buildFileTree recursively builds a FileTreeEntry from a directory path.
-// Returns a tree rooted at the given path, limited by maxDepth and maxTotal.
-func buildFileTree(root string, relPath string, depth int, maxDepth int, counter *int) (*apiv1.FileTreeEntry, error) {
-	if depth > maxDepth {
-		return nil, nil
-	}
-	if counter != nil && *counter > maxFileTreeSize {
-		return nil, nil
-	}
-	fullPath := filepath.Join(root, relPath)
+// listDirectory returns the immediate children of a directory path.
+// Skips entries that fail to stat (permission denied, deleted, etc.).
+func listDirectory(rootDir string, relPath string) (string, string, []*apiv1.FileTreeEntry, error) {
+	fullPath := filepath.Join(rootDir, relPath)
 	info, err := os.Stat(fullPath)
 	if err != nil {
-		return nil, nil // skip inaccessible entries
+		return "", "", nil, fmt.Errorf("stat %q: %w", fullPath, err)
 	}
-	name := filepath.Base(relPath)
+	if !info.IsDir() {
+		return "", "", nil, fmt.Errorf("%q is not a directory", fullPath)
+	}
+	dirName := filepath.Base(fullPath)
 	if relPath == "" {
-		name = filepath.Base(root)
+		dirName = filepath.Base(rootDir)
 	}
-	entry := &apiv1.FileTreeEntry{
-		Name:  name,
-		Path:  relPath,
-		IsDir: info.IsDir(),
+	osEntries, err := os.ReadDir(fullPath)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("read dir %q: %w", fullPath, err)
 	}
-	if counter != nil {
-		*counter++
-	}
-	if info.IsDir() {
-		entries, err := os.ReadDir(fullPath)
+	var out []*apiv1.FileTreeEntry
+	for _, e := range osEntries {
+		if len(out) >= maxDirEntries {
+			break
+		}
+		childRel := e.Name()
+		if relPath != "" {
+			childRel = filepath.Join(relPath, e.Name())
+		}
+		childInfo, err := os.Stat(filepath.Join(rootDir, childRel))
 		if err != nil {
-			return entry, nil // directory exists but can't read contents
+			continue
 		}
-		for _, e := range entries {
-			childRel := filepath.Join(relPath, e.Name())
-			if relPath == "" {
-				childRel = e.Name()
-			}
-			child, err := buildFileTree(root, childRel, depth+1, maxDepth, counter)
-			if err != nil {
-				continue
-			}
-			if child != nil {
-				entry.Children = append(entry.Children, child)
-			}
-		}
+		out = append(out, &apiv1.FileTreeEntry{
+			Name:  e.Name(),
+			Path:  childRel,
+			IsDir: childInfo.IsDir(),
+		})
 	}
-	return entry, nil
+	return relPath, dirName, out, nil
 }
 
 // rowToProto maps a db.ProjectRow to the generated proto Project type.
