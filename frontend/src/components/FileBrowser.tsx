@@ -8,6 +8,8 @@ import {
   Square,
   Loader2,
   ArrowUp,
+  Search,
+  X,
 } from "lucide-react";
 
 import {
@@ -36,6 +38,7 @@ export function FileBrowser({
   const [browsePath, setBrowsePath] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<string[]>(initialSelectedFiles);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
+  const [searchQuery, setSearchQuery] = useState("");
 
   const updateDir = useUpdateProjectDir();
   const updateFiles = useUpdateContextFiles();
@@ -104,6 +107,27 @@ export function FileBrowser({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Search bar */}
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <input
+            type="text"
+            placeholder="Search files and folders…"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full rounded-md border bg-background pl-8 pr-8 py-1.5 text-sm outline-none focus:ring-2 focus:ring-ring"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              onClick={() => setSearchQuery("")}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+
         {browsing ? (
           <>
             {/* Breadcrumb */}
@@ -121,6 +145,7 @@ export function FileBrowser({
             </div>
             <BrowseTree
               path={initialBrowsePath}
+              searchQuery={searchQuery}
               onSelect={handleBrowseSelect}
               onNavigate={setBrowsePath}
             />
@@ -150,6 +175,7 @@ export function FileBrowser({
               <FileTreeContainer
                 projectId={projectId}
                 subpath=""
+                searchQuery={searchQuery}
                 selectedSet={new Set(selectedFiles)}
                 expandedPaths={expandedPaths}
                 onToggleExpanded={toggleExpanded}
@@ -201,15 +227,19 @@ export function FileBrowser({
 
 interface BrowseTreeProps {
   path: string;
+  searchQuery: string;
   onSelect: (path: string) => void;
   onNavigate: (path: string) => void;
 }
 
-function BrowseTree({ path, onSelect, onNavigate }: BrowseTreeProps) {
+function BrowseTree({ path, searchQuery, onSelect, onNavigate }: BrowseTreeProps) {
   const { data, isLoading, error } = useListDirPath(path);
 
-  const dirs = (data?.entries ?? []).filter((e) => e.isDir);
-  const files = (data?.entries ?? []).filter((e) => !e.isDir);
+  const q = searchQuery.toLowerCase().trim();
+  const allDirs = (data?.entries ?? []).filter((e) => e.isDir);
+  const allFiles = (data?.entries ?? []).filter((e) => !e.isDir);
+  const dirs = q ? allDirs.filter((e) => e.name.toLowerCase().includes(q)) : allDirs;
+  const files = q ? allFiles.filter((e) => e.name.toLowerCase().includes(q)) : allFiles;
 
   // Parent directory for "go up"
   const goUp = () => {
@@ -295,6 +325,7 @@ interface FileTreeContainerProps {
   projectId: string;
   subpath: string;
   depth?: number;
+  searchQuery: string;
   selectedSet: Set<string>;
   expandedPaths: Set<string>;
   onToggleExpanded: (path: string) => void;
@@ -307,6 +338,7 @@ function FileTreeContainer({
   projectId,
   subpath,
   depth = 0,
+  searchQuery,
   selectedSet,
   expandedPaths,
   onToggleExpanded,
@@ -315,7 +347,9 @@ function FileTreeContainer({
   onDeselectAll,
 }: FileTreeContainerProps) {
   const { data, isLoading, error } = useListProjectDir(projectId, subpath);
-  const entries = data?.entries ?? [];
+  const q = searchQuery.toLowerCase().trim();
+  const allEntries = data?.entries ?? [];
+  const entries = q ? allEntries.filter((e) => e.name.toLowerCase().includes(q)) : allEntries;
 
   if (isLoading) {
     return (
@@ -364,6 +398,7 @@ function FileTreeContainer({
           entry={entry}
           depth={depth}
           projectId={projectId}
+          searchQuery={searchQuery}
           selectedSet={selectedSet}
           expandedPaths={expandedPaths}
           onToggleExpanded={onToggleExpanded}
@@ -382,6 +417,7 @@ interface FileRowProps {
   entry: FileTreeEntry;
   depth: number;
   projectId: string;
+  searchQuery: string;
   selectedSet: Set<string>;
   expandedPaths: Set<string>;
   onToggleExpanded: (path: string) => void;
@@ -394,6 +430,7 @@ function FileRow({
   entry,
   depth,
   projectId,
+  searchQuery,
   selectedSet,
   expandedPaths,
   onToggleExpanded,
@@ -443,6 +480,7 @@ function FileRow({
             projectId={projectId}
             subpath={entry.path}
             depth={depth + 1}
+            searchQuery={searchQuery}
             selectedSet={selectedSet}
             expandedPaths={expandedPaths}
             onToggleExpanded={onToggleExpanded}
