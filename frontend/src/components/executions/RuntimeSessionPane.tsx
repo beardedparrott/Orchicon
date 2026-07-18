@@ -512,7 +512,7 @@ function PromptCard({ prompt }: { prompt: string }) {
         <summary className="cursor-pointer select-none text-xs font-medium uppercase tracking-wide text-amber-700 dark:text-amber-400">
           System prompt {long ? "(click to expand)" : ""}
         </summary>
-        <div className="mt-2 max-h-72 overflow-auto text-xs leading-relaxed text-foreground/80">
+        <div className="mt-2 max-h-72 overflow-auto">
           <Markdown>{prompt}</Markdown>
         </div>
       </details>
