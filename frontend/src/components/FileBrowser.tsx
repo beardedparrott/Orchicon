@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState } from "react";
 import {
   File,
   Folder,
@@ -7,16 +7,17 @@ import {
   CheckSquare,
   Square,
   Loader2,
+  ArrowUp,
 } from "lucide-react";
 
 import {
   useListProjectDir,
+  useListDirPath,
   useUpdateProjectDir,
   useUpdateContextFiles,
 } from "@/api/projectFiles";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { FileTreeEntry } from "@/api/gen/orchicon/api/v1/project_pb";
 
@@ -31,216 +32,196 @@ export function FileBrowser({
   projectDir,
   initialSelectedFiles,
 }: FileBrowserProps) {
-  const [editDir, setEditDir] = useState(false);
-  const [dirInput, setDirInput] = useState(projectDir || "");
+  const [browsing, setBrowsing] = useState(!projectDir);
+  const [browsePath, setBrowsePath] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<string[]>(initialSelectedFiles);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
-  const selectedSet = useRef(new Set(selectedFiles));
-
-  // Keep the ref in sync
-  selectedSet.current = new Set(selectedFiles);
 
   const updateDir = useUpdateProjectDir();
   const updateFiles = useUpdateContextFiles();
 
-  const persistSelection = useCallback((next: string[]) => {
+  const persistSelection = (next: string[]) => {
     setSelectedFiles(next);
     updateFiles.mutate({ id: projectId, contextFiles: next });
-  }, [projectId, updateFiles]);
-
-  // Directory input
-  const handleSaveDir = () => {
-    updateDir.mutate(
-      { id: projectId, projectDir: dirInput },
-      { onSuccess: () => setEditDir(false) },
-    );
   };
 
-  // Expand/collapse a directory
   const toggleExpanded = (path: string) => {
     setExpandedPaths((prev) => {
       const next = new Set(prev);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
-      }
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
       return next;
     });
   };
 
-  // Toggle selection of a single entry
   const toggleEntry = (path: string) => {
-    const set = selectedSet.current;
+    const set = new Set(selectedFiles);
     const next = set.has(path)
       ? selectedFiles.filter((f) => f !== path)
       : [...selectedFiles, path];
     persistSelection(next);
   };
 
-  // Select all / deselect all
-  const selectAll = (entries: FileTreeEntry[], loadedDirs: Map<string, FileTreeEntry[]>) => {
+  const selectAll = (entries: FileTreeEntry[]) => {
     const all: string[] = [];
     const walk = (e: FileTreeEntry) => {
-      if (!e.isDir) {
-        if (e.path) all.push(e.path);
-        return;
-      }
-      const children = loadedDirs.get(e.path);
-      if (children) {
-        for (const c of children) walk(c);
-      }
+      if (!e.isDir && e.path) all.push(e.path);
+      if (e.children) for (const c of e.children) walk(c);
     };
     for (const e of entries) walk(e);
-    const next = [...new Set([...selectedFiles, ...all])];
-    persistSelection(next);
+    persistSelection([...new Set([...selectedFiles, ...all])]);
   };
 
-  const deselectAll = (entries: FileTreeEntry[], loadedDirs: Map<string, FileTreeEntry[]>) => {
+  const deselectAll = (entries: FileTreeEntry[]) => {
     const allSet = new Set<string>();
     const walk = (e: FileTreeEntry) => {
-      if (!e.isDir) {
-        if (e.path) allSet.add(e.path);
-        return;
-      }
-      const children = loadedDirs.get(e.path);
-      if (children) {
-        for (const c of children) walk(c);
-      }
+      if (!e.isDir && e.path) allSet.add(e.path);
+      if (e.children) for (const c of e.children) walk(c);
     };
     for (const e of entries) walk(e);
-    const next = selectedFiles.filter((f) => !allSet.has(f));
-    persistSelection(next);
+    persistSelection(selectedFiles.filter((f) => !allSet.has(f)));
   };
+
+  // Browse mode: pick a project directory by navigating the filesystem
+  const handleBrowseSelect = (path: string) => {
+    updateDir.mutate(
+      { id: projectId, projectDir: path },
+      { onSuccess: () => setBrowsing(false) },
+    );
+  };
+
+  // Initial browse path: home directory
+  const initialBrowsePath = browsePath || "~";
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>Project Context Files</CardTitle>
         <CardDescription>
-          Select files and folders from the project directory to include as
-          context for AI workers. Click a folder to expand it. Checked file
-          paths are listed in the worker's prompt.
+          {browsing
+            ? "Navigate to your project directory and click \"Select this folder\"."
+            : "Select files and folders to include as context for AI workers. Click a folder to expand it."}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Project directory input */}
-        <div className="space-y-2">
-          <Label htmlFor="project-dir">Project directory</Label>
-          <div className="flex gap-2">
-            {editDir ? (
-              <>
-                <Input
-                  id="project-dir"
-                  value={dirInput}
-                  onChange={(e) => setDirInput(e.target.value)}
-                  placeholder="/path/to/your/project"
-                  className="flex-1 font-mono"
-                />
-                <Button onClick={handleSaveDir} disabled={updateDir.isPending}>
-                  {updateDir.isPending ? "Saving…" : "Save"}
-                </Button>
-                <Button variant="outline" onClick={() => { setEditDir(false); setDirInput(projectDir); }}>
-                  Cancel
-                </Button>
-              </>
-            ) : (
-              <>
-                <div className="flex-1 rounded-md border bg-muted/30 px-3 py-2 text-sm font-mono text-muted-foreground truncate">
-                  {projectDir || "Not set"}
-                </div>
-                <Button variant="outline" onClick={() => setEditDir(true)}>
-                  {projectDir ? "Change" : "Set directory"}
-                </Button>
-              </>
-            )}
-          </div>
-        </div>
-
-        {/* File tree */}
-        {projectDir && (
-          <DirectoryTree
-            projectId={projectId}
-            subpath=""
-            depth={0}
-            selectedSet={selectedSet.current}
-            expandedPaths={expandedPaths}
-            onToggleExpanded={toggleExpanded}
-            onToggleEntry={toggleEntry}
-            onSelectAll={selectAll}
-            onDeselectAll={deselectAll}
-          />
-        )}
-
-        {/* Selected files summary */}
-        {selectedFiles.length > 0 && (
-          <div>
-            <p className="text-xs text-muted-foreground mb-1">
-              {selectedFiles.length} path{selectedFiles.length !== 1 ? "s" : ""} selected:
-            </p>
-            <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
-              {selectedFiles.slice(0, 30).map((f) => (
-                <span
-                  key={f}
-                  className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-xs font-mono"
-                >
-                  <File className="h-3 w-3 shrink-0" />
-                  <span className="truncate max-w-[200px]">{f}</span>
-                  <button
-                    type="button"
-                    className="hover:text-destructive shrink-0"
-                    onClick={() => toggleEntry(f)}
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
-              {selectedFiles.length > 30 && (
-                <span className="text-xs text-muted-foreground">
-                  …and {selectedFiles.length - 30} more
-                </span>
-              )}
+        {browsing ? (
+          <>
+            {/* Breadcrumb */}
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground">Browse:</span>
+              <span className="font-mono text-xs truncate">{initialBrowsePath}</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-xs h-6"
+                onClick={() => setBrowsePath("")}
+              >
+                Home
+              </Button>
             </div>
-          </div>
+            <BrowseTree
+              path={initialBrowsePath}
+              onSelect={handleBrowseSelect}
+              onNavigate={setBrowsePath}
+            />
+            {updateDir.isPending && (
+              <p className="text-xs text-muted-foreground">Saving directory…</p>
+            )}
+          </>
+        ) : (
+          <>
+            {/* Set directory */}
+            <div className="flex items-center gap-2">
+              <Label className="shrink-0 text-sm">Project directory</Label>
+              <span className="flex-1 truncate rounded-md border bg-muted/30 px-3 py-1.5 text-xs font-mono text-muted-foreground">
+                {projectDir}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setBrowsing(true)}
+              >
+                Change
+              </Button>
+            </div>
+
+            {/* File tree with checkboxes */}
+            {projectDir && (
+              <FileTreeContainer
+                projectId={projectId}
+                subpath=""
+                selectedSet={new Set(selectedFiles)}
+                expandedPaths={expandedPaths}
+                onToggleExpanded={toggleExpanded}
+                onToggleEntry={toggleEntry}
+                onSelectAll={selectAll}
+                onDeselectAll={deselectAll}
+              />
+            )}
+
+            {/* Selected files summary */}
+            {selectedFiles.length > 0 && (
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">
+                  {selectedFiles.length} path{selectedFiles.length !== 1 ? "s" : ""} selected:
+                </p>
+                <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
+                  {selectedFiles.slice(0, 30).map((f) => (
+                    <span
+                      key={f}
+                      className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-xs font-mono"
+                    >
+                      <File className="h-3 w-3 shrink-0" />
+                      <span className="truncate max-w-[200px]">{f}</span>
+                      <button
+                        type="button"
+                        className="hover:text-destructive shrink-0"
+                        onClick={() => toggleEntry(f)}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                  {selectedFiles.length > 30 && (
+                    <span className="text-xs text-muted-foreground">
+                      …and {selectedFiles.length - 30} more
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+          </>
         )}
       </CardContent>
     </Card>
   );
 }
 
-// ─── Directory tree node ────────────────────────────────────────────
+// ─── Browse filesystem tree (pick a directory) ────────────────────
 
-interface DirectoryTreeProps {
-  projectId: string;
-  subpath: string;
-  depth: number;
-  selectedSet: Set<string>;
-  expandedPaths: Set<string>;
-  onToggleExpanded: (path: string) => void;
-  onToggleEntry: (path: string) => void;
-  onSelectAll: (entries: FileTreeEntry[], loadedDirs: Map<string, FileTreeEntry[]>) => void;
-  onDeselectAll: (entries: FileTreeEntry[], loadedDirs: Map<string, FileTreeEntry[]>) => void;
+interface BrowseTreeProps {
+  path: string;
+  onSelect: (path: string) => void;
+  onNavigate: (path: string) => void;
 }
 
-function DirectoryTree({
-  projectId,
-  subpath,
-  depth,
-  selectedSet,
-  expandedPaths,
-  onToggleExpanded,
-  onToggleEntry,
-  onSelectAll,
-  onDeselectAll,
-}: DirectoryTreeProps) {
-  const { data, isLoading, error } = useListProjectDir(projectId, subpath);
-  const entries = data?.entries ?? [];
+function BrowseTree({ path, onSelect, onNavigate }: BrowseTreeProps) {
+  const { data, isLoading, error } = useListDirPath(path);
 
-  const loadedDirs = new Map<string, FileTreeEntry[]>();
+  const dirs = (data?.entries ?? []).filter((e) => e.isDir);
+  const files = (data?.entries ?? []).filter((e) => !e.isDir);
+
+  // Parent directory for "go up"
+  const goUp = () => {
+    const parts = path.replace(/^~/, "").split("/").filter(Boolean);
+    if (parts.length === 0) return;
+    const parent = parts.slice(0, -1).join("/");
+    onNavigate(parent ? `~/${parent}` : "~");
+  };
 
   if (isLoading) {
     return (
-      <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground" style={{ paddingLeft: depth * 20 }}>
+      <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
         Loading…
       </div>
@@ -248,11 +229,105 @@ function DirectoryTree({
   }
 
   if (error) {
+    return <p className="text-sm text-destructive">Error: {String(error)}</p>;
+  }
+
+  return (
+    <div className="rounded-md border max-h-[400px] overflow-y-auto">
+      {/* Go up */}
+      <div
+        className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b"
+        onClick={goUp}
+      >
+        <ArrowUp className="h-4 w-4 text-muted-foreground" />
+        <span className="text-muted-foreground">..</span>
+      </div>
+
+      {/* Directories first */}
+      {dirs.length === 0 && files.length === 0 && (
+        <p className="px-3 py-4 text-sm text-muted-foreground">Empty directory</p>
+      )}
+
+      {dirs.map((entry) => (
+        <div
+          key={entry.path}
+          className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b last:border-0"
+        >
+          <Folder className="h-4 w-4 text-amber-500 shrink-0" />
+          <span
+            className="flex-1 truncate"
+            onClick={() => onNavigate(entry.path.startsWith("~") ? entry.path : `~/${entry.path}`)}
+          >
+            {entry.name}/
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-xs h-7 shrink-0"
+            onClick={() => onSelect(entry.path.startsWith("~") ? entry.path : `~/${entry.path}`)}
+          >
+            Select this folder
+          </Button>
+        </div>
+      ))}
+
+      {files.slice(0, 10).map((entry) => (
+        <div
+          key={entry.path}
+          className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground"
+        >
+          <File className="h-4 w-4 shrink-0" />
+          <span className="truncate">{entry.name}</span>
+        </div>
+      ))}
+      {files.length > 10 && (
+        <p className="px-3 py-1 text-xs text-muted-foreground">
+          …{files.length - 10} more files
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ─── File tree with checkboxes (after project_dir is set) ──────────
+
+interface FileTreeContainerProps {
+  projectId: string;
+  subpath: string;
+  depth?: number;
+  selectedSet: Set<string>;
+  expandedPaths: Set<string>;
+  onToggleExpanded: (path: string) => void;
+  onToggleEntry: (path: string) => void;
+  onSelectAll: (entries: FileTreeEntry[]) => void;
+  onDeselectAll: (entries: FileTreeEntry[]) => void;
+}
+
+function FileTreeContainer({
+  projectId,
+  subpath,
+  depth = 0,
+  selectedSet,
+  expandedPaths,
+  onToggleExpanded,
+  onToggleEntry,
+  onSelectAll,
+  onDeselectAll,
+}: FileTreeContainerProps) {
+  const { data, isLoading, error } = useListProjectDir(projectId, subpath);
+  const entries = data?.entries ?? [];
+
+  if (isLoading) {
     return (
-      <p className="text-sm text-destructive" style={{ paddingLeft: depth * 20 }}>
-        Error: {String(error)}
-      </p>
+      <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Loading…
+      </div>
     );
+  }
+
+  if (error) {
+    return <p className="text-sm text-destructive">Error: {String(error)}</p>;
   }
 
   if (entries.length === 0 && depth === 0) {
@@ -261,7 +336,7 @@ function DirectoryTree({
 
   return (
     <div className="rounded-md border divide-y max-h-[400px] overflow-y-auto">
-      {depth === 0 && entries.length > 1 && (
+      {depth === 0 && entries.length > 0 && (
         <div className="flex items-center gap-2 px-3 py-1.5 bg-muted/20 sticky top-0 border-b">
           <span className="text-xs text-muted-foreground mr-auto">
             {data?.dirName || ""}
@@ -269,7 +344,7 @@ function DirectoryTree({
           <button
             type="button"
             className="text-xs text-muted-foreground hover:text-foreground"
-            onClick={() => onSelectAll(entries, loadedDirs)}
+            onClick={() => onSelectAll(entries)}
           >
             Select all
           </button>
@@ -277,14 +352,14 @@ function DirectoryTree({
           <button
             type="button"
             className="text-xs text-muted-foreground hover:text-foreground"
-            onClick={() => onDeselectAll(entries, loadedDirs)}
+            onClick={() => onDeselectAll(entries)}
           >
             Deselect all
           </button>
         </div>
       )}
       {entries.map((entry) => (
-        <DirEntryRow
+        <FileRow
           key={entry.path}
           entry={entry}
           depth={depth}
@@ -301,9 +376,9 @@ function DirectoryTree({
   );
 }
 
-// ─── Single directory entry row ─────────────────────────────────────
+// ─── Single row in the file tree ──────────────────────────────────
 
-interface DirEntryRowProps {
+interface FileRowProps {
   entry: FileTreeEntry;
   depth: number;
   projectId: string;
@@ -311,11 +386,11 @@ interface DirEntryRowProps {
   expandedPaths: Set<string>;
   onToggleExpanded: (path: string) => void;
   onToggleEntry: (path: string) => void;
-  onSelectAll: (entries: FileTreeEntry[], loadedDirs: Map<string, FileTreeEntry[]>) => void;
-  onDeselectAll: (entries: FileTreeEntry[], loadedDirs: Map<string, FileTreeEntry[]>) => void;
+  onSelectAll: (entries: FileTreeEntry[]) => void;
+  onDeselectAll: (entries: FileTreeEntry[]) => void;
 }
 
-function DirEntryRow({
+function FileRow({
   entry,
   depth,
   projectId,
@@ -325,7 +400,7 @@ function DirEntryRow({
   onToggleEntry,
   onSelectAll,
   onDeselectAll,
-}: DirEntryRowProps) {
+}: FileRowProps) {
   const isExpanded = expandedPaths.has(entry.path);
   const isSelected = selectedSet.has(entry.path);
 
@@ -336,7 +411,6 @@ function DirEntryRow({
           className="flex items-center gap-1 px-2 py-1.5 text-sm hover:bg-muted/40 cursor-pointer"
           style={{ paddingLeft: depth * 20 + 8 }}
         >
-          {/* Expand/collapse arrow */}
           <button
             type="button"
             className="text-muted-foreground hover:text-foreground shrink-0"
@@ -348,8 +422,6 @@ function DirEntryRow({
               <ChevronRight className="h-4 w-4" />
             )}
           </button>
-
-          {/* Checkbox */}
           <button
             type="button"
             className="text-muted-foreground hover:text-foreground shrink-0"
@@ -361,22 +433,13 @@ function DirEntryRow({
               <Square className="h-4 w-4" />
             )}
           </button>
-
-          {/* Folder icon */}
           <Folder className="h-4 w-4 text-amber-500 shrink-0" />
-
-          {/* Name */}
-          <span
-            className="truncate"
-            onClick={() => onToggleExpanded(entry.path)}
-          >
+          <span className="truncate" onClick={() => onToggleExpanded(entry.path)}>
             {entry.name}
           </span>
         </div>
-
-        {/* Children (lazy loaded when expanded) */}
         {isExpanded && (
-          <DirectoryTree
+          <FileTreeContainer
             projectId={projectId}
             subpath={entry.path}
             depth={depth + 1}
@@ -392,13 +455,11 @@ function DirEntryRow({
     );
   }
 
-  // File entry
   return (
     <div
       className="flex items-center gap-1 px-2 py-1.5 text-sm hover:bg-muted/40 cursor-pointer"
       style={{ paddingLeft: depth * 20 + 8 }}
     >
-      {/* Checkbox */}
       <button
         type="button"
         className="text-muted-foreground hover:text-foreground shrink-0"
@@ -410,11 +471,7 @@ function DirEntryRow({
           <Square className="h-4 w-4" />
         )}
       </button>
-
-      {/* File icon */}
       <File className="h-4 w-4 text-sky-500 shrink-0" />
-
-      {/* Name */}
       <span className="truncate">{entry.name}</span>
     </div>
   );

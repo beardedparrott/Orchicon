@@ -670,7 +670,7 @@ export class UpdateProjectRequest extends Message<UpdateProjectRequest> {
  */
 export class ListProjectFilesRequest extends Message<ListProjectFilesRequest> {
   /**
-   * project id (resolves project_dir)
+   * project id (resolves project_dir); ignored if dir_path is set
    *
    * @generated from field: string id = 1;
    */
@@ -685,6 +685,15 @@ export class ListProjectFilesRequest extends Message<ListProjectFilesRequest> {
    */
   subpath = "";
 
+  /**
+   * Direct path to list on the filesystem. When set, id and subpath are
+   * ignored. Used by the frontend to browse the filesystem before the
+   * project_dir is configured.
+   *
+   * @generated from field: string dir_path = 3;
+   */
+  dirPath = "";
+
   constructor(data?: PartialMessage<ListProjectFilesRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -695,6 +704,7 @@ export class ListProjectFilesRequest extends Message<ListProjectFilesRequest> {
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "subpath", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "dir_path", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListProjectFilesRequest {

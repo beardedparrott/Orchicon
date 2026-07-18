@@ -797,11 +797,15 @@ func (x *UpdateProjectRequest) GetContextFiles() *ContextFiles {
 
 type ListProjectFilesRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"` // project id (resolves project_dir)
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"` // project id (resolves project_dir); ignored if dir_path is set
 	// Subpath within project_dir to list. Empty string lists the root.
 	// Use for lazy directory expansion — each call returns the immediate
 	// children of the given subpath.
-	Subpath       string `protobuf:"bytes,2,opt,name=subpath,proto3" json:"subpath,omitempty"`
+	Subpath string `protobuf:"bytes,2,opt,name=subpath,proto3" json:"subpath,omitempty"`
+	// Direct path to list on the filesystem. When set, id and subpath are
+	// ignored. Used by the frontend to browse the filesystem before the
+	// project_dir is configured.
+	DirPath       string `protobuf:"bytes,3,opt,name=dir_path,json=dirPath,proto3" json:"dir_path,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -846,6 +850,13 @@ func (x *ListProjectFilesRequest) GetId() string {
 func (x *ListProjectFilesRequest) GetSubpath() string {
 	if x != nil {
 		return x.Subpath
+	}
+	return ""
+}
+
+func (x *ListProjectFilesRequest) GetDirPath() string {
+	if x != nil {
+		return x.DirPath
 	}
 	return ""
 }
@@ -1158,10 +1169,11 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\x05_slugB\b\n" +
 	"\x06_goalsB\x0e\n" +
 	"\f_project_dirB\x10\n" +
-	"\x0e_context_files\"C\n" +
+	"\x0e_context_files\"^\n" +
 	"\x17ListProjectFilesRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
-	"\asubpath\x18\x02 \x01(\tR\asubpath\"\x90\x01\n" +
+	"\asubpath\x18\x02 \x01(\tR\asubpath\x12\x19\n" +
+	"\bdir_path\x18\x03 \x01(\tR\adirPath\"\x90\x01\n" +
 	"\x18ListProjectFilesResponse\x12\x1f\n" +
 	"\vparent_path\x18\x01 \x01(\tR\n" +
 	"parentPath\x12\x19\n" +
