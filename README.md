@@ -40,25 +40,16 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 - **Runtime adapters**: gRPC sidecars (OpenCode first)
 - **Frontend**: TypeScript + React + Vite + Connect-ES
 
-## Status
+## Last Release Changes
 
-**v0.1 — scaffolding.** Architecture documents are direction-level.
-Phases 1–9 have landed: foundation, projects, realtime + infrastructure,
-workers + work items, scheduling + adapters, workflows, recovery +
-policy, telemetry + cost, and auth + webhooks + polish. The full
-end-to-end user journey (login → project creation → workflow building →
-dispatch → telemetry → recovery → cost review) is verifiable locally
-with the built-in dev IdP.
+**v0.1.95** — README and website overhaul: updated installation section
+with `--clean` flag, added orchicon commands and installed files list.
+Custom LICENSE file added (proprietary, free for non-commercial use).
+AGENTS.md restructured with concise Git Workflow, Phases, and UPDATES.md
+tracking. Playwright MCP added for browser testing. Landing page updated
+with version bar, commands reference, and new license link.
 
 ## Installation
-
-The landing page and the install scripts (`scripts/install.sh`,
-`scripts/install.ps1`) are served from `orchicon.dev` by a
-CloudFlare Pages project bound to the repo. The Pages build step
-(`scripts/build-site.sh`) copies the canonical install scripts into
-the deployed bundle — no CloudFlare redirect rules to maintain. See
-[`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time
-setup, and [`site/`](./site/) for the landing page source.
 
 ### One-line install (Linux / macOS)
 
@@ -79,6 +70,9 @@ irm https://orchicon.dev/install.ps1 | iex
 | `--version <tag>` | Install a specific version (e.g. `v0.2.0`). Default: latest. |
 | `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). |
 | `--uninstall` | Remove Orchicon from the install directory. |
+| `--dry-run` | Print what would happen without making changes. |
+| `--clean` | Stop dev containers, remove old binary, then install latest. All user data preserved. |
+| `--force-clean` / `--nuke` | Wipe everything: destroy Docker volumes, remove blob store data and runtime state, then install latest. **All data lost.** |
 
 ```bash
 # Install a specific version
@@ -86,16 +80,37 @@ curl -fsSL https://orchicon.dev/install | bash -s -- --version v0.2.0
 
 # Uninstall
 curl -fsSL https://orchicon.dev/install | bash -s -- --uninstall
+
+# Clean upgrade (preserves data)
+curl -fsSL https://orchicon.dev/install | bash -s -- --clean
+
+# Force clean and reinstall (destroys all data)
+curl -fsSL https://orchicon.dev/install | bash -s -- --force-clean
 ```
 
 After installation, verify with `orchicon version` and start the dev
-environment with `orchicon dev start` — the binary embeds the Docker
-Compose stack, migrations, and frontend bundle, so it's the complete
-one-command experience (requires Docker).
+environment with `orchicon dev start`.
 
 > **Note:** Pre-built binaries are published to [GitHub
 > Releases](https://github.com/beardedparrott/Orchicon/releases). If no
 > releases exist yet (pre-v1), build from source instead:
+
+### What gets installed
+
+| Path | Contents |
+|---|---|
+| `<install-dir>/orchicon` | The `orchicon` binary (control plane + embedded frontend) |
+| `~/.local/share/orchicon/` | Runtime state, PID files, logs (`.dev/`), blob store (`data/`) |
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `orchicon dev start` | Start full dev stack: Docker Compose services, migrations, control plane, frontend |
+| `orchicon dev stop` | Stop everything (SIGTERM + Docker Compose down) |
+| `orchicon dev status` | Show status of all components + endpoint checks |
+| `orchicon dev logs` | Tail control-plane and frontend logs |
+| `orchicon version` | Print the installed version |
 
 ```bash
 git clone https://github.com/beardedparrott/Orchicon.git
@@ -174,4 +189,10 @@ lacks the `tenant_isolation` policy.
 
 ## License
 
-TBD
+Copyright © 2026 beardedparrott. All rights reserved.
+
+This software is provided free of charge for personal and non-commercial
+use. You may use, copy, and modify it for your own non-commercial
+purposes. Redistribution, sublicensing, or integration into commercial
+products that generate revenue requires explicit written permission from
+the owner. See the [LICENSE](./LICENSE) file for the full terms.

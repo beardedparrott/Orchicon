@@ -143,12 +143,16 @@
         <h3>macOS / Linux</h3>
         <pre class="cmd"><code><span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --version v0.2.0
 <span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --install-dir /usr/local/bin
-<span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --uninstall</code></pre>
+<span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --uninstall
+<span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --clean
+<span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --force-clean</code></pre>
 
         <h3>Windows</h3>
         <pre class="cmd"><code><span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Version v0.2.0
 <span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -InstallDir "C:\bin"
-<span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Uninstall</code></pre>
+<span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Uninstall
+<span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Clean
+<span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -ForceClean</code></pre>
 
         <table class="flags">
           <thead><tr><th>Flag</th><th>Description</th></tr></thead>
@@ -157,8 +161,26 @@
             <tr><td><code>--install-dir &lt;dir&gt;</code></td><td>Where to drop the binary. Default: <code>~/.local/bin</code>.</td></tr>
             <tr><td><code>--uninstall</code></td><td>Remove Orchicon from the install directory.</td></tr>
             <tr><td><code>--dry-run</code></td><td>Print what would happen without making changes.</td></tr>
+            <tr><td><code>--clean</code> / <code>-Clean</code></td><td>Stop dev containers, remove old binary, then install latest. All user data preserved.</td></tr>
+            <tr><td><code>--force-clean</code> / <code>-ForceClean</code></td><td>Nuke Docker volumes, remove local data, then install latest. All data lost.</td></tr>
           </tbody>
         </table>
+
+        <h3>What gets installed</h3>
+        <table class="flags">
+          <thead><tr><th>Path</th><th>Contents</th></tr></thead>
+          <tbody>
+            <tr><td><code>&lt;install-dir&gt;/orchicon</code></td><td>The <code>orchicon</code> binary (control plane + embedded frontend)</td></tr>
+            <tr><td><code>~/.local/share/orchicon/</code></td><td>Runtime state, PID files, logs, blob store</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Commands</h3>
+        <pre class="cmd"><code><span class="prompt">$</span> orchicon dev start     <span class="cmt"># start full dev stack</span>
+<span class="prompt">$</span> orchicon dev stop      <span class="cmt"># stop everything</span>
+<span class="prompt">$</span> orchicon dev status    <span class="cmt"># show component status</span>
+<span class="prompt">$</span> orchicon dev logs      <span class="cmt"># tail control-plane + frontend logs</span>
+<span class="prompt">$</span> orchicon version       <span class="cmt"># print installed version</span></code></pre>
       </div>
     </section>
 
@@ -183,11 +205,17 @@
         <a class="btn primary" href="https://github.com/beardedparrott/Orchicon#documentation" rel="noopener">Open the docs →</a>
       </div>
     </section>
+
+    <section class="version-bar">
+      <div class="container">
+        <p class="muted small">Latest release: <strong>v0.1.94</strong> — <a href="https://github.com/beardedparrott/Orchicon/releases" rel="noopener">release notes</a></p>
+      </div>
+    </section>
   </main>
 
   <footer class="foot">
     <div class="container foot-inner">
-      <span class="muted small">Apache-2.0 (TBD) · built by <a href="https://github.com/beardedparrott" rel="noopener">@beardedparrott</a></span>
+      <span class="muted small">v0.1.94 · <a href="https://github.com/beardedparrott/Orchicon?tab=License-1-ov-file" rel="noopener">License</a> · built by <a href="https://github.com/beardedparrott" rel="noopener">@beardedparrott</a></span>
       <span class="muted small">
         <a href="https://github.com/beardedparrott/Orchicon" rel="noopener">Source</a>
         ·

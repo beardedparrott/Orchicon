@@ -306,6 +306,14 @@ section:first-of-type { border-top: 0; }
 }
 .btn.primary:hover { background: var(--accent-2); }
 
+/* version bar */
+.version-bar {
+  padding: 18px 0;
+  border-top: 0;
+  background: var(--bg-elev-2);
+}
+.version-bar p { margin: 0; text-align: center; }
+
 /* footer */
 .foot {
   border-top: 1px solid var(--line);
