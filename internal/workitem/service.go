@@ -741,12 +741,10 @@ func rowToProto(w db.WorkItemRow) *apiv1.WorkItem {
 		Budgets:             string(w.Budgets),
 		ContextWindow:       int32(w.ContextWindow),
 		Results:             string(w.Results),
-		// PR B (context propagation): carry the composite prompt
-		// the worker should see when dispatched. Empty string
-		// when the WorkflowReconciler hasn't populated it (the
-		// task was dispatched without a workflow, e.g. direct
-		// Kanban dispatch).
-		PromptContext:       string(w.PromptContext),
+		// PR B (context propagation): carries the composite prompt.
+		// Stored as JSONB {"composite": "# Task\n..."} — extract the
+		// inner text so the frontend gets plain markdown.
+		PromptContext:       extractCompositePrompt(w.PromptContext),
 		Version:             int32(w.Version),
 		CreatedAt:           timestamppb.New(w.CreatedAt),
 		UpdatedAt:           timestamppb.New(w.UpdatedAt),
@@ -773,6 +771,19 @@ func depRowToProto(d db.DependencyRow) *apiv1.WorkItemDependency {
 		Type:      depTypeToProto(d.Type),
 		CreatedAt: timestamppb.New(d.CreatedAt),
 	}
+}
+
+func extractCompositePrompt(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var pc struct {
+		Composite string `json:"composite"`
+	}
+	if err := json.Unmarshal(raw, &pc); err == nil && pc.Composite != "" {
+		return pc.Composite
+	}
+	return string(raw)
 }
 
 func strPtr(s string) *string { return &s }
