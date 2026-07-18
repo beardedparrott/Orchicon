@@ -39,7 +39,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -1009,13 +1008,9 @@ func upstreamStepSummaries(ctx context.Context, allSteps []workflow.StepWire, ru
 	return out
 }
 
-const maxContextFileSize = 1 << 20 // 1 MiB — skip files larger than this
-
-// readProjectContextFiles reads the project's context_files and returns
-// a formatted string with file contents suitable for inclusion in the
-// composite prompt. Each file is prefixed by its path as a header.
-// Silent on missing/empty project_dir or context_files (best-effort).
-// Files larger than maxContextFileSize are skipped with a warning logged.
+// readProjectContextFiles lists the project's context_files as full
+// absolute paths so the worker can read them from disk. No file contents
+// are sent — only the paths.
 func (r *WorkflowReconciler) readProjectContextFiles(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (string, error) {
 	p, err := db.GetProject(ctx, tx, tenantID, projectID)
 	if err != nil {
@@ -1033,30 +1028,15 @@ func (r *WorkflowReconciler) readProjectContextFiles(ctx context.Context, tx pgx
 	}
 	var sb strings.Builder
 	sb.WriteString("# File context\n\n")
-	sb.WriteString("The following files from the project directory are provided as context:\n\n")
+	sb.WriteString("The following files are provided as context. Read them from disk when you need their contents.\n\n")
 	for _, relPath := range files {
 		fullPath := filepath.Join(p.ProjectDir, relPath)
-		// Prevent path traversal
 		if !strings.HasPrefix(filepath.Clean(fullPath), filepath.Clean(p.ProjectDir)) {
 			continue
 		}
-		info, err := os.Stat(fullPath)
-		if err != nil {
-			continue
-		}
-		if info.Size() > maxContextFileSize {
-			r.log.Warn("skipping context file: too large", "path", relPath, "size", info.Size(), "max", maxContextFileSize)
-			continue
-		}
-		data, err := os.ReadFile(fullPath)
-		if err != nil {
-			continue
-		}
-		fmt.Fprintf(&sb, "## File: %s\n\n```\n%s\n```\n\n", relPath, string(data))
+		fmt.Fprintf(&sb, "- `%s`\n", fullPath)
 	}
-	if sb.Len() == 0 {
-		return "", nil
-	}
+	sb.WriteString("\n")
 	return sb.String(), nil
 }
 
