@@ -42,13 +42,14 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-**v0.1.98** — Fixed telemetry root cause (SigNoz v0.132 API incompatibility),
-cost explorer, and added credits panel. Telemetry now queries ClickHouse
-directly (bypassing SigNoz query-service which moved to a different API
-with mandatory auth). SigNoz iframe conditionally renders with working
-/signoz reverse proxy. Cost Explorer shows human-readable names via
-per-task lookups, working drill-down. New Credits tab with provider/model
-spend.
+**v0.1.98** — Telemetry fixes, OTel log export, workflow editor enhancements.
+Telemetry queries ClickHouse directly bypassing SigNoz API incompatibility.
+OTel log exporter sends adapter stderr to ClickHouse as structured logs.
+Workflow editor: uniform node sizing, Clone button, Save Draft fixed after
+creating new versions, Delete version button, YAML code view toggle with
+`connections` format (from_<pos>/to_<pos>). Cost Explorer shows names via
+per-task lookups. Credits tab with provider/model spend. /signoz reverse
+proxy. composeDown force-removes orphaned containers on start/stop.
 
 ## Installation
 
