@@ -158,7 +158,10 @@ services:
       CLICKHOUSE_USER: signoz
       CLICKHOUSE_PASSWORD: signoz
       SIGNOZ_TOKENIZER_JWT_SECRET: "dev-secret-not-for-production"
-      SIGNOZ_AUTH_ENABLED: "false"
+      # Disable auth for embedded iframe (enterprise version requires these three):
+      SIGNOZ_IDENTN_IMPERSONATION_ENABLED: "true"
+      SIGNOZ_IDENTN_TOKENIZER_ENABLED: "false"
+      SIGNOZ_IDENTN_APIKEY_ENABLED: "false"
     volumes:
       - ./signoz-config.yaml:/root/config.yaml:ro
       - signoz-data:/var/lib/signoz
