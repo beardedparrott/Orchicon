@@ -6,10 +6,13 @@
 package api
 
 import (
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
+	"strings"
 
 	"connectrpc.com/connect"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
@@ -134,12 +137,31 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// same-origin under /signoz so the embedded iframe in the Telemetry
 	// page works in all deployment modes (not just Vite dev proxy).
 	// Mirrors the Vite config: strips /signoz prefix, forwards to the
-	// SigNoz query-service (default localhost:3301).
+	// SigNoz query-service (default localhost:3301). The ModifyResponse
+	// rewrites absolute asset paths in HTML so the SPA loads correctly:
+	// SigNoz v0.132 uses <base href="/"> and absolute /assets/ paths
+	// which must be rewritten to /signoz/assets/ when proxied.
 	if deps.SigNozURL != "" {
 		signozTarget, err := url.Parse(deps.SigNozURL)
 		if err == nil {
 			signozProxy := httputil.NewSingleHostReverseProxy(signozTarget)
-			signozProxy.ErrorLog = nil // use default error handling (502)
+			signozProxy.ErrorLog = nil
+			signozProxy.ModifyResponse = func(r *http.Response) error {
+				ct := r.Header.Get("Content-Type")
+				if strings.HasPrefix(ct, "text/html") || strings.HasPrefix(ct, "text/css") {
+					body, readErr := io.ReadAll(r.Body)
+					if readErr != nil {
+						return readErr
+					}
+					r.Body.Close()
+					rewritten := strings.ReplaceAll(string(body), `/assets/`, `/signoz/assets/`)
+					rewritten = strings.ReplaceAll(rewritten, `/css/`, `/signoz/css/`)
+					rewritten = strings.ReplaceAll(rewritten, `href="/"`, `href="/signoz/"`)
+					r.Body = io.NopCloser(strings.NewReader(rewritten))
+					r.Header.Set("Content-Length", strconv.Itoa(len(rewritten)))
+				}
+				return nil
+			}
 			mux.Handle("/signoz", http.StripPrefix("/signoz", signozProxy))
 			mux.Handle("/signoz/", http.StripPrefix("/signoz", signozProxy))
 		}
