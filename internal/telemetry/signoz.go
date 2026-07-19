@@ -120,18 +120,28 @@ func (c *SigNozClient) QueryTraces(ctx context.Context, tenantID string, f Trace
 		return TraceResult{Degraded: true}, nil
 	}
 
-	where := fmt.Sprintf(`resourceTagsMap['orchicon.tenant_id']='%s'`, tenantID)
+	var conditions []string
+	// NOTE: tenant_id is not stored as a span attribute yet (the OTel
+	// middleware creates spans before the auth middleware resolves the
+	// tenant). In single-tenant dev this is harmless; for production
+	// multi-tenant support, add tenant_id as a resource attribute in
+	// the OTel middleware (docs/10 §8: span enrichment).
 	if f.ProjectID != "" {
-		where += fmt.Sprintf(` AND resourceTagsMap['orchicon.project_id']='%s'`, f.ProjectID)
+		conditions = append(conditions, fmt.Sprintf(`attributes_string['orchicon.project_id']='%s'`, f.ProjectID))
 	}
 	if f.ExecutionID != "" {
-		where += fmt.Sprintf(` AND stringTagMap['orchicon.execution_id']='%s'`, f.ExecutionID)
+		conditions = append(conditions, fmt.Sprintf(`attributes_string['orchicon.execution_id']='%s'`, f.ExecutionID))
 	}
 	if f.TraceID != "" {
-		where += fmt.Sprintf(` AND traceID='%s'`, f.TraceID)
+		conditions = append(conditions, fmt.Sprintf(`trace_id='%s'`, f.TraceID))
 	}
 	if f.Service != "" {
-		where += fmt.Sprintf(` AND serviceName='%s'`, f.Service)
+		conditions = append(conditions, fmt.Sprintf(`serviceName='%s'`, f.Service))
+	}
+
+	where := "1=1"
+	if len(conditions) > 0 {
+		where = strings.Join(conditions, " AND ")
 	}
 
 	limit := f.Limit
@@ -141,12 +151,12 @@ func (c *SigNozClient) QueryTraces(ctx context.Context, tenantID string, f Trace
 
 	sql := fmt.Sprintf(`
 		SELECT
-			traceID,
+			trace_id,
 			serviceName,
 			name,
-			durationNano,
+			duration_nano,
 			timestamp
-		FROM signoz_traces.signoz_index_v2
+		FROM signoz_traces.signoz_index_v3
 		WHERE %s
 		ORDER BY timestamp DESC
 		LIMIT %d
@@ -157,13 +167,16 @@ func (c *SigNozClient) QueryTraces(ctx context.Context, tenantID string, f Trace
 		return TraceResult{Degraded: true}, nil
 	}
 
-	// Group rows by traceID to build summaries.
+	// Group rows by trace_id to build summaries.
+	// NOTE: ClickHouse returns timestamps as "2006-01-02 15:04:05.999999"
+	// (space separator, no timezone) which Go's time.Time cannot parse
+	// via json.Unmarshal (expects RFC3339). Use string + manual parse.
 	type spanRow struct {
-		TraceID     string    `json:"traceID"`
-		ServiceName string    `json:"serviceName"`
-		Name        string    `json:"name"`
-		DurationNano uint64    `json:"durationNano"`
-		Timestamp   time.Time `json:"timestamp"`
+		TraceID      string `json:"trace_id"`
+		ServiceName  string `json:"serviceName"`
+		Name         string `json:"name"`
+		DurationNano uint64 `json:"duration_nano"`
+		TimestampStr string `json:"timestamp"`
 	}
 	type traceAccum struct {
 		Service   string
@@ -180,20 +193,21 @@ func (c *SigNozClient) QueryTraces(ctx context.Context, tenantID string, f Trace
 		if err := json.Unmarshal(row, &r); err != nil {
 			continue
 		}
+		ts, _ := parseClickHouseTS(r.TimestampStr)
 		tid := r.TraceID
 		if _, ok := acc[tid]; !ok {
 			acc[tid] = &traceAccum{
 				Service:   r.ServiceName,
 				Name:      r.Name,
 				Duration:  int64(r.DurationNano / 1000),
-				StartTime: r.Timestamp,
+				StartTime: ts,
 			}
 			order = append(order, tid)
 		}
 		a := acc[tid]
 		a.SpanCount++
-		if r.Timestamp.Before(a.StartTime) {
-			a.StartTime = r.Timestamp
+		if ts.Before(a.StartTime) {
+			a.StartTime = ts
 		}
 		d := int64(r.DurationNano / 1000)
 		if d > a.Duration {
@@ -228,14 +242,13 @@ func (c *SigNozClient) QueryMetrics(ctx context.Context, tenantID string, f Metr
 	for _, name := range f.Names {
 		sql := fmt.Sprintf(`
 			SELECT
-				timestamp,
+				unix_milli,
 				value
 			FROM signoz_metrics.samples_v4
 			WHERE metric_name = '%s'
-				AND JSONExtractString(labels, 'orchicon_tenant_id') = '%s'
-			ORDER BY timestamp DESC
+			ORDER BY unix_milli DESC
 			LIMIT 100
-		`, name, tenantID)
+		`, name)
 
 		rows, err := c.queryClickHouse(ctx, sql)
 		if err != nil {
@@ -244,8 +257,8 @@ func (c *SigNozClient) QueryMetrics(ctx context.Context, tenantID string, f Metr
 		}
 
 		type metricRow struct {
-			Timestamp time.Time `json:"timestamp"`
-			Value     float64   `json:"value"`
+			UnixMilli int64   `json:"unix_milli"`
+			Value     float64 `json:"value"`
 		}
 
 		pts := make([]MetricPoint, 0, len(rows))
@@ -255,7 +268,7 @@ func (c *SigNozClient) QueryMetrics(ctx context.Context, tenantID string, f Metr
 				continue
 			}
 			pts = append(pts, MetricPoint{
-				Timestamp: r.Timestamp,
+				Timestamp: time.UnixMilli(r.UnixMilli),
 				Value:     r.Value,
 			})
 		}
@@ -338,6 +351,12 @@ func (c *SigNozClient) QueryLogs(ctx context.Context, tenantID string, f LogFilt
 
 // queryClickHouse sends a SQL query to ClickHouse via its HTTP interface
 // and returns parsed JSON rows.
+// parseClickHouseTS parses a ClickHouse DateTime64 string ("2006-01-02 15:04:05.999999")
+// which Go's json.Unmarshal cannot handle natively (it expects RFC3339).
+func parseClickHouseTS(s string) (time.Time, error) {
+	return time.Parse("2006-01-02 15:04:05.999999", s)
+}
+
 func (c *SigNozClient) queryClickHouse(ctx context.Context, sql string) ([]json.RawMessage, error) {
 	u := c.chURL + "/?default_format=JSONEachRow"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(sql))
