@@ -162,6 +162,7 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		PolicyEngine:      policyEngine,
 		RecoveryEngine:    recoveryEngine,
 		SigNozClient:      signozClient,
+		SigNozURL:         cfg.SigNozURL,
 		AuthHandler:       authHandler,
 		WebhookDispatcher: webhookDisp,
 		Mode:              cfg.Mode,

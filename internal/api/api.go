@@ -8,6 +8,8 @@ package api
 import (
 	"log/slog"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 
 	"connectrpc.com/connect"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
@@ -31,7 +33,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workitem"
 )
 
-// Dependencies bundles the resources the API layer needs. Constructed
+// 	Dependencies bundles the resources the API layer needs. Constructed
 // once by the server and passed to Mount.
 type Dependencies struct {
 	Pool           *db.Pool
@@ -40,6 +42,10 @@ type Dependencies struct {
 	PolicyEngine   *policy.Engine
 	RecoveryEngine *recovery.Engine
 	SigNozClient   *telemetry.SigNozClient
+	// SigNozUIURL is the base URL for the SigNoz query-service UI + API
+	// (default http://localhost:3301). Used by the /signoz reverse proxy
+	// so the embedded iframe works same-origin (docs/10 §11).
+	SigNozURL string
 	// Phase 9: auth + webhooks + blobstore.
 	AuthHandler          *auth.Handler
 	WebhookDispatcher    *webhook.Dispatcher
@@ -123,6 +129,21 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// Phase 9: WebhookService (docs/07 §3.11) — subscriptions + deliveries.
 	webhookSvc := webhook.NewService(deps.Pool, deps.Log, deps.WebhookDispatcher, deps.Subscriber)
 	mux.Handle(apiv1connect.NewWebhookServiceHandler(webhookSvc, interceptorOpt))
+
+	// SigNoz UI reverse proxy (docs/10 §11): serves the SigNoz frontend
+	// same-origin under /signoz so the embedded iframe in the Telemetry
+	// page works in all deployment modes (not just Vite dev proxy).
+	// Mirrors the Vite config: strips /signoz prefix, forwards to the
+	// SigNoz query-service (default localhost:3301).
+	if deps.SigNozURL != "" {
+		signozTarget, err := url.Parse(deps.SigNozURL)
+		if err == nil {
+			signozProxy := httputil.NewSingleHostReverseProxy(signozTarget)
+			signozProxy.ErrorLog = nil // use default error handling (502)
+			mux.Handle("/signoz", http.StripPrefix("/signoz", signozProxy))
+			mux.Handle("/signoz/", http.StripPrefix("/signoz", signozProxy))
+		}
+	}
 
 	// Phase 9: wrap with the auth-resolution middleware. It resolves the
 	// caller's identity from the bearer token (OIDC access token or API
