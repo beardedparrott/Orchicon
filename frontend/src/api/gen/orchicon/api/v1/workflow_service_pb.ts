@@ -767,6 +767,80 @@ export class CreateWorkflowVersionResponse extends Message<CreateWorkflowVersion
 }
 
 /**
+ * @generated from message orchicon.api.v1.DeleteWorkflowVersionRequest
+ */
+export class DeleteWorkflowVersionRequest extends Message<DeleteWorkflowVersionRequest> {
+  /**
+   * @generated from field: string workflow_id = 1;
+   */
+  workflowId = "";
+
+  /**
+   * @generated from field: string version_id = 2;
+   */
+  versionId = "";
+
+  constructor(data?: PartialMessage<DeleteWorkflowVersionRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DeleteWorkflowVersionRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "workflow_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "version_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteWorkflowVersionRequest {
+    return new DeleteWorkflowVersionRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteWorkflowVersionRequest {
+    return new DeleteWorkflowVersionRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteWorkflowVersionRequest {
+    return new DeleteWorkflowVersionRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteWorkflowVersionRequest | PlainMessage<DeleteWorkflowVersionRequest> | undefined, b: DeleteWorkflowVersionRequest | PlainMessage<DeleteWorkflowVersionRequest> | undefined): boolean {
+    return proto3.util.equals(DeleteWorkflowVersionRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.DeleteWorkflowVersionResponse
+ */
+export class DeleteWorkflowVersionResponse extends Message<DeleteWorkflowVersionResponse> {
+  constructor(data?: PartialMessage<DeleteWorkflowVersionResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DeleteWorkflowVersionResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteWorkflowVersionResponse {
+    return new DeleteWorkflowVersionResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteWorkflowVersionResponse {
+    return new DeleteWorkflowVersionResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteWorkflowVersionResponse {
+    return new DeleteWorkflowVersionResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteWorkflowVersionResponse | PlainMessage<DeleteWorkflowVersionResponse> | undefined, b: DeleteWorkflowVersionResponse | PlainMessage<DeleteWorkflowVersionResponse> | undefined): boolean {
+    return proto3.util.equals(DeleteWorkflowVersionResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.UpdateWorkflowVersionRequest
  */
 export class UpdateWorkflowVersionRequest extends Message<UpdateWorkflowVersionRequest> {

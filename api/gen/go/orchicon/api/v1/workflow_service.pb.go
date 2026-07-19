@@ -908,6 +908,94 @@ func (x *CreateWorkflowVersionResponse) GetVersion() *WorkflowVersion {
 	return nil
 }
 
+type DeleteWorkflowVersionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkflowId    string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	VersionId     string                 `protobuf:"bytes,2,opt,name=version_id,json=versionId,proto3" json:"version_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteWorkflowVersionRequest) Reset() {
+	*x = DeleteWorkflowVersionRequest{}
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteWorkflowVersionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteWorkflowVersionRequest) ProtoMessage() {}
+
+func (x *DeleteWorkflowVersionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteWorkflowVersionRequest.ProtoReflect.Descriptor instead.
+func (*DeleteWorkflowVersionRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *DeleteWorkflowVersionRequest) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
+}
+
+func (x *DeleteWorkflowVersionRequest) GetVersionId() string {
+	if x != nil {
+		return x.VersionId
+	}
+	return ""
+}
+
+type DeleteWorkflowVersionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteWorkflowVersionResponse) Reset() {
+	*x = DeleteWorkflowVersionResponse{}
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteWorkflowVersionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteWorkflowVersionResponse) ProtoMessage() {}
+
+func (x *DeleteWorkflowVersionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteWorkflowVersionResponse.ProtoReflect.Descriptor instead.
+func (*DeleteWorkflowVersionResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{17}
+}
+
 type UpdateWorkflowVersionRequest struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	WorkflowId        string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
@@ -922,7 +1010,7 @@ type UpdateWorkflowVersionRequest struct {
 
 func (x *UpdateWorkflowVersionRequest) Reset() {
 	*x = UpdateWorkflowVersionRequest{}
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[16]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -934,7 +1022,7 @@ func (x *UpdateWorkflowVersionRequest) String() string {
 func (*UpdateWorkflowVersionRequest) ProtoMessage() {}
 
 func (x *UpdateWorkflowVersionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[16]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -947,7 +1035,7 @@ func (x *UpdateWorkflowVersionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateWorkflowVersionRequest.ProtoReflect.Descriptor instead.
 func (*UpdateWorkflowVersionRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{16}
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *UpdateWorkflowVersionRequest) GetWorkflowId() string {
@@ -1001,7 +1089,7 @@ type UpdateWorkflowVersionResponse struct {
 
 func (x *UpdateWorkflowVersionResponse) Reset() {
 	*x = UpdateWorkflowVersionResponse{}
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[17]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1013,7 +1101,7 @@ func (x *UpdateWorkflowVersionResponse) String() string {
 func (*UpdateWorkflowVersionResponse) ProtoMessage() {}
 
 func (x *UpdateWorkflowVersionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[17]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1026,7 +1114,7 @@ func (x *UpdateWorkflowVersionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateWorkflowVersionResponse.ProtoReflect.Descriptor instead.
 func (*UpdateWorkflowVersionResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{17}
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *UpdateWorkflowVersionResponse) GetVersion() *WorkflowVersion {
@@ -1047,7 +1135,7 @@ type StartWorkflowRequest struct {
 
 func (x *StartWorkflowRequest) Reset() {
 	*x = StartWorkflowRequest{}
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[18]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1059,7 +1147,7 @@ func (x *StartWorkflowRequest) String() string {
 func (*StartWorkflowRequest) ProtoMessage() {}
 
 func (x *StartWorkflowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[18]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1072,7 +1160,7 @@ func (x *StartWorkflowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartWorkflowRequest.ProtoReflect.Descriptor instead.
 func (*StartWorkflowRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{18}
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *StartWorkflowRequest) GetWorkflowId() string {
@@ -1105,7 +1193,7 @@ type StartWorkflowResponse struct {
 
 func (x *StartWorkflowResponse) Reset() {
 	*x = StartWorkflowResponse{}
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[19]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1117,7 +1205,7 @@ func (x *StartWorkflowResponse) String() string {
 func (*StartWorkflowResponse) ProtoMessage() {}
 
 func (x *StartWorkflowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[19]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1130,7 +1218,7 @@ func (x *StartWorkflowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartWorkflowResponse.ProtoReflect.Descriptor instead.
 func (*StartWorkflowResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{19}
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *StartWorkflowResponse) GetRun() *WorkflowRun {
@@ -1150,7 +1238,7 @@ type AbortWorkflowRequest struct {
 
 func (x *AbortWorkflowRequest) Reset() {
 	*x = AbortWorkflowRequest{}
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[20]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1162,7 +1250,7 @@ func (x *AbortWorkflowRequest) String() string {
 func (*AbortWorkflowRequest) ProtoMessage() {}
 
 func (x *AbortWorkflowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[20]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1175,7 +1263,7 @@ func (x *AbortWorkflowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AbortWorkflowRequest.ProtoReflect.Descriptor instead.
 func (*AbortWorkflowRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{20}
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *AbortWorkflowRequest) GetRunId() string {
@@ -1201,7 +1289,7 @@ type AbortWorkflowResponse struct {
 
 func (x *AbortWorkflowResponse) Reset() {
 	*x = AbortWorkflowResponse{}
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[21]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1213,7 +1301,7 @@ func (x *AbortWorkflowResponse) String() string {
 func (*AbortWorkflowResponse) ProtoMessage() {}
 
 func (x *AbortWorkflowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[21]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1226,7 +1314,7 @@ func (x *AbortWorkflowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AbortWorkflowResponse.ProtoReflect.Descriptor instead.
 func (*AbortWorkflowResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{21}
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *AbortWorkflowResponse) GetRun() *WorkflowRun {
@@ -1245,7 +1333,7 @@ type GetWorkflowRunRequest struct {
 
 func (x *GetWorkflowRunRequest) Reset() {
 	*x = GetWorkflowRunRequest{}
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[22]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1257,7 +1345,7 @@ func (x *GetWorkflowRunRequest) String() string {
 func (*GetWorkflowRunRequest) ProtoMessage() {}
 
 func (x *GetWorkflowRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[22]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1270,7 +1358,7 @@ func (x *GetWorkflowRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWorkflowRunRequest.ProtoReflect.Descriptor instead.
 func (*GetWorkflowRunRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{22}
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *GetWorkflowRunRequest) GetId() string {
@@ -1289,7 +1377,7 @@ type GetWorkflowRunResponse struct {
 
 func (x *GetWorkflowRunResponse) Reset() {
 	*x = GetWorkflowRunResponse{}
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[23]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1301,7 +1389,7 @@ func (x *GetWorkflowRunResponse) String() string {
 func (*GetWorkflowRunResponse) ProtoMessage() {}
 
 func (x *GetWorkflowRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[23]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1314,7 +1402,7 @@ func (x *GetWorkflowRunResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWorkflowRunResponse.ProtoReflect.Descriptor instead.
 func (*GetWorkflowRunResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{23}
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *GetWorkflowRunResponse) GetRun() *WorkflowRun {
@@ -1336,7 +1424,7 @@ type ListWorkflowRunsRequest struct {
 
 func (x *ListWorkflowRunsRequest) Reset() {
 	*x = ListWorkflowRunsRequest{}
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[24]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1348,7 +1436,7 @@ func (x *ListWorkflowRunsRequest) String() string {
 func (*ListWorkflowRunsRequest) ProtoMessage() {}
 
 func (x *ListWorkflowRunsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[24]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1361,7 +1449,7 @@ func (x *ListWorkflowRunsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWorkflowRunsRequest.ProtoReflect.Descriptor instead.
 func (*ListWorkflowRunsRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{24}
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ListWorkflowRunsRequest) GetWorkflowId() string {
@@ -1402,7 +1490,7 @@ type ListWorkflowRunsResponse struct {
 
 func (x *ListWorkflowRunsResponse) Reset() {
 	*x = ListWorkflowRunsResponse{}
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[25]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1414,7 +1502,7 @@ func (x *ListWorkflowRunsResponse) String() string {
 func (*ListWorkflowRunsResponse) ProtoMessage() {}
 
 func (x *ListWorkflowRunsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[25]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1427,7 +1515,7 @@ func (x *ListWorkflowRunsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWorkflowRunsResponse.ProtoReflect.Descriptor instead.
 func (*ListWorkflowRunsResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{25}
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ListWorkflowRunsResponse) GetRuns() []*WorkflowRun {
@@ -1453,7 +1541,7 @@ type GetWorkflowStepRunsRequest struct {
 
 func (x *GetWorkflowStepRunsRequest) Reset() {
 	*x = GetWorkflowStepRunsRequest{}
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[26]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1465,7 +1553,7 @@ func (x *GetWorkflowStepRunsRequest) String() string {
 func (*GetWorkflowStepRunsRequest) ProtoMessage() {}
 
 func (x *GetWorkflowStepRunsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[26]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1478,7 +1566,7 @@ func (x *GetWorkflowStepRunsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWorkflowStepRunsRequest.ProtoReflect.Descriptor instead.
 func (*GetWorkflowStepRunsRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{26}
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *GetWorkflowStepRunsRequest) GetRunId() string {
@@ -1497,7 +1585,7 @@ type GetWorkflowStepRunsResponse struct {
 
 func (x *GetWorkflowStepRunsResponse) Reset() {
 	*x = GetWorkflowStepRunsResponse{}
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[27]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1509,7 +1597,7 @@ func (x *GetWorkflowStepRunsResponse) String() string {
 func (*GetWorkflowStepRunsResponse) ProtoMessage() {}
 
 func (x *GetWorkflowStepRunsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[27]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1522,7 +1610,7 @@ func (x *GetWorkflowStepRunsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWorkflowStepRunsResponse.ProtoReflect.Descriptor instead.
 func (*GetWorkflowStepRunsResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{27}
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *GetWorkflowStepRunsResponse) GetStepRuns() []*WorkflowStepRun {
@@ -1544,7 +1632,7 @@ type StreamWorkflowEventsRequest struct {
 
 func (x *StreamWorkflowEventsRequest) Reset() {
 	*x = StreamWorkflowEventsRequest{}
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[28]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1556,7 +1644,7 @@ func (x *StreamWorkflowEventsRequest) String() string {
 func (*StreamWorkflowEventsRequest) ProtoMessage() {}
 
 func (x *StreamWorkflowEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[28]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1569,7 +1657,7 @@ func (x *StreamWorkflowEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamWorkflowEventsRequest.ProtoReflect.Descriptor instead.
 func (*StreamWorkflowEventsRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{28}
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *StreamWorkflowEventsRequest) GetTenantId() string {
@@ -1610,7 +1698,7 @@ type StreamWorkflowEventsResponse struct {
 
 func (x *StreamWorkflowEventsResponse) Reset() {
 	*x = StreamWorkflowEventsResponse{}
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[29]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1622,7 +1710,7 @@ func (x *StreamWorkflowEventsResponse) String() string {
 func (*StreamWorkflowEventsResponse) ProtoMessage() {}
 
 func (x *StreamWorkflowEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[29]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1635,7 +1723,7 @@ func (x *StreamWorkflowEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamWorkflowEventsResponse.ProtoReflect.Descriptor instead.
 func (*StreamWorkflowEventsResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{29}
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *StreamWorkflowEventsResponse) GetEvent() *WorkflowEvent {
@@ -1662,7 +1750,7 @@ type AcquireWorkflowEditLockRequest struct {
 
 func (x *AcquireWorkflowEditLockRequest) Reset() {
 	*x = AcquireWorkflowEditLockRequest{}
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[30]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1674,7 +1762,7 @@ func (x *AcquireWorkflowEditLockRequest) String() string {
 func (*AcquireWorkflowEditLockRequest) ProtoMessage() {}
 
 func (x *AcquireWorkflowEditLockRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[30]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1687,7 +1775,7 @@ func (x *AcquireWorkflowEditLockRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AcquireWorkflowEditLockRequest.ProtoReflect.Descriptor instead.
 func (*AcquireWorkflowEditLockRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{30}
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *AcquireWorkflowEditLockRequest) GetWorkflowId() string {
@@ -1714,7 +1802,7 @@ type AcquireWorkflowEditLockResponse struct {
 
 func (x *AcquireWorkflowEditLockResponse) Reset() {
 	*x = AcquireWorkflowEditLockResponse{}
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[31]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1726,7 +1814,7 @@ func (x *AcquireWorkflowEditLockResponse) String() string {
 func (*AcquireWorkflowEditLockResponse) ProtoMessage() {}
 
 func (x *AcquireWorkflowEditLockResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[31]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1739,7 +1827,7 @@ func (x *AcquireWorkflowEditLockResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AcquireWorkflowEditLockResponse.ProtoReflect.Descriptor instead.
 func (*AcquireWorkflowEditLockResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{31}
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *AcquireWorkflowEditLockResponse) GetLock() *EditLock {
@@ -1766,7 +1854,7 @@ type ReleaseWorkflowEditLockRequest struct {
 
 func (x *ReleaseWorkflowEditLockRequest) Reset() {
 	*x = ReleaseWorkflowEditLockRequest{}
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[32]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1778,7 +1866,7 @@ func (x *ReleaseWorkflowEditLockRequest) String() string {
 func (*ReleaseWorkflowEditLockRequest) ProtoMessage() {}
 
 func (x *ReleaseWorkflowEditLockRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[32]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1791,7 +1879,7 @@ func (x *ReleaseWorkflowEditLockRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseWorkflowEditLockRequest.ProtoReflect.Descriptor instead.
 func (*ReleaseWorkflowEditLockRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{32}
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ReleaseWorkflowEditLockRequest) GetWorkflowId() string {
@@ -1816,7 +1904,7 @@ type ReleaseWorkflowEditLockResponse struct {
 
 func (x *ReleaseWorkflowEditLockResponse) Reset() {
 	*x = ReleaseWorkflowEditLockResponse{}
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[33]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1828,7 +1916,7 @@ func (x *ReleaseWorkflowEditLockResponse) String() string {
 func (*ReleaseWorkflowEditLockResponse) ProtoMessage() {}
 
 func (x *ReleaseWorkflowEditLockResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[33]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1841,7 +1929,7 @@ func (x *ReleaseWorkflowEditLockResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseWorkflowEditLockResponse.ProtoReflect.Descriptor instead.
 func (*ReleaseWorkflowEditLockResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{33}
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{35}
 }
 
 type GetWorkflowEditLockRequest struct {
@@ -1853,7 +1941,7 @@ type GetWorkflowEditLockRequest struct {
 
 func (x *GetWorkflowEditLockRequest) Reset() {
 	*x = GetWorkflowEditLockRequest{}
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[34]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1865,7 +1953,7 @@ func (x *GetWorkflowEditLockRequest) String() string {
 func (*GetWorkflowEditLockRequest) ProtoMessage() {}
 
 func (x *GetWorkflowEditLockRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[34]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1878,7 +1966,7 @@ func (x *GetWorkflowEditLockRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWorkflowEditLockRequest.ProtoReflect.Descriptor instead.
 func (*GetWorkflowEditLockRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{34}
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *GetWorkflowEditLockRequest) GetWorkflowId() string {
@@ -1897,7 +1985,7 @@ type GetWorkflowEditLockResponse struct {
 
 func (x *GetWorkflowEditLockResponse) Reset() {
 	*x = GetWorkflowEditLockResponse{}
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[35]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1909,7 +1997,7 @@ func (x *GetWorkflowEditLockResponse) String() string {
 func (*GetWorkflowEditLockResponse) ProtoMessage() {}
 
 func (x *GetWorkflowEditLockResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[35]
+	mi := &file_orchicon_api_v1_workflow_service_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1922,7 +2010,7 @@ func (x *GetWorkflowEditLockResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWorkflowEditLockResponse.ProtoReflect.Descriptor instead.
 func (*GetWorkflowEditLockResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{35}
+	return file_orchicon_api_v1_workflow_service_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *GetWorkflowEditLockResponse) GetLock() *EditLock {
@@ -1999,7 +2087,13 @@ const file_orchicon_api_v1_workflow_service_proto_rawDesc = "" +
 	"\fversion_note\x18\x02 \x01(\tR\vversionNote\"\x92\x01\n" +
 	"\x1dCreateWorkflowVersionResponse\x125\n" +
 	"\bworkflow\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkflowR\bworkflow\x12:\n" +
-	"\aversion\x18\x02 \x01(\v2 .orchicon.api.v1.WorkflowVersionR\aversion\"\xda\x01\n" +
+	"\aversion\x18\x02 \x01(\v2 .orchicon.api.v1.WorkflowVersionR\aversion\"^\n" +
+	"\x1cDeleteWorkflowVersionRequest\x12\x1f\n" +
+	"\vworkflow_id\x18\x01 \x01(\tR\n" +
+	"workflowId\x12\x1d\n" +
+	"\n" +
+	"version_id\x18\x02 \x01(\tR\tversionId\"\x1f\n" +
+	"\x1dDeleteWorkflowVersionResponse\"\xda\x01\n" +
 	"\x1cUpdateWorkflowVersionRequest\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
 	"workflowId\x12\x14\n" +
@@ -2069,7 +2163,7 @@ const file_orchicon_api_v1_workflow_service_proto_rawDesc = "" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
 	"workflowId\"L\n" +
 	"\x1bGetWorkflowEditLockResponse\x12-\n" +
-	"\x04lock\x18\x01 \x01(\v2\x19.orchicon.api.v1.EditLockR\x04lock2\x93\x0f\n" +
+	"\x04lock\x18\x01 \x01(\v2\x19.orchicon.api.v1.EditLockR\x04lock2\x8b\x10\n" +
 	"\x0fWorkflowService\x12a\n" +
 	"\x0eCreateWorkflow\x12&.orchicon.api.v1.CreateWorkflowRequest\x1a'.orchicon.api.v1.CreateWorkflowResponse\x12d\n" +
 	"\x0fPublishWorkflow\x12'.orchicon.api.v1.PublishWorkflowRequest\x1a(.orchicon.api.v1.PublishWorkflowResponse\x12j\n" +
@@ -2079,6 +2173,7 @@ const file_orchicon_api_v1_workflow_service_proto_rawDesc = "" +
 	"\rListWorkflows\x12%.orchicon.api.v1.ListWorkflowsRequest\x1a&.orchicon.api.v1.ListWorkflowsResponse\x12s\n" +
 	"\x14ListWorkflowVersions\x12,.orchicon.api.v1.ListWorkflowVersionsRequest\x1a-.orchicon.api.v1.ListWorkflowVersionsResponse\x12v\n" +
 	"\x15CreateWorkflowVersion\x12-.orchicon.api.v1.CreateWorkflowVersionRequest\x1a..orchicon.api.v1.CreateWorkflowVersionResponse\x12v\n" +
+	"\x15DeleteWorkflowVersion\x12-.orchicon.api.v1.DeleteWorkflowVersionRequest\x1a..orchicon.api.v1.DeleteWorkflowVersionResponse\x12v\n" +
 	"\x15UpdateWorkflowVersion\x12-.orchicon.api.v1.UpdateWorkflowVersionRequest\x1a..orchicon.api.v1.UpdateWorkflowVersionResponse\x12^\n" +
 	"\rStartWorkflow\x12%.orchicon.api.v1.StartWorkflowRequest\x1a&.orchicon.api.v1.StartWorkflowResponse\x12^\n" +
 	"\rAbortWorkflow\x12%.orchicon.api.v1.AbortWorkflowRequest\x1a&.orchicon.api.v1.AbortWorkflowResponse\x12a\n" +
@@ -2103,7 +2198,7 @@ func file_orchicon_api_v1_workflow_service_proto_rawDescGZIP() []byte {
 	return file_orchicon_api_v1_workflow_service_proto_rawDescData
 }
 
-var file_orchicon_api_v1_workflow_service_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
+var file_orchicon_api_v1_workflow_service_proto_msgTypes = make([]protoimpl.MessageInfo, 38)
 var file_orchicon_api_v1_workflow_service_proto_goTypes = []any{
 	(*CreateWorkflowRequest)(nil),           // 0: orchicon.api.v1.CreateWorkflowRequest
 	(*CreateWorkflowResponse)(nil),          // 1: orchicon.api.v1.CreateWorkflowResponse
@@ -2121,58 +2216,60 @@ var file_orchicon_api_v1_workflow_service_proto_goTypes = []any{
 	(*ListWorkflowVersionsResponse)(nil),    // 13: orchicon.api.v1.ListWorkflowVersionsResponse
 	(*CreateWorkflowVersionRequest)(nil),    // 14: orchicon.api.v1.CreateWorkflowVersionRequest
 	(*CreateWorkflowVersionResponse)(nil),   // 15: orchicon.api.v1.CreateWorkflowVersionResponse
-	(*UpdateWorkflowVersionRequest)(nil),    // 16: orchicon.api.v1.UpdateWorkflowVersionRequest
-	(*UpdateWorkflowVersionResponse)(nil),   // 17: orchicon.api.v1.UpdateWorkflowVersionResponse
-	(*StartWorkflowRequest)(nil),            // 18: orchicon.api.v1.StartWorkflowRequest
-	(*StartWorkflowResponse)(nil),           // 19: orchicon.api.v1.StartWorkflowResponse
-	(*AbortWorkflowRequest)(nil),            // 20: orchicon.api.v1.AbortWorkflowRequest
-	(*AbortWorkflowResponse)(nil),           // 21: orchicon.api.v1.AbortWorkflowResponse
-	(*GetWorkflowRunRequest)(nil),           // 22: orchicon.api.v1.GetWorkflowRunRequest
-	(*GetWorkflowRunResponse)(nil),          // 23: orchicon.api.v1.GetWorkflowRunResponse
-	(*ListWorkflowRunsRequest)(nil),         // 24: orchicon.api.v1.ListWorkflowRunsRequest
-	(*ListWorkflowRunsResponse)(nil),        // 25: orchicon.api.v1.ListWorkflowRunsResponse
-	(*GetWorkflowStepRunsRequest)(nil),      // 26: orchicon.api.v1.GetWorkflowStepRunsRequest
-	(*GetWorkflowStepRunsResponse)(nil),     // 27: orchicon.api.v1.GetWorkflowStepRunsResponse
-	(*StreamWorkflowEventsRequest)(nil),     // 28: orchicon.api.v1.StreamWorkflowEventsRequest
-	(*StreamWorkflowEventsResponse)(nil),    // 29: orchicon.api.v1.StreamWorkflowEventsResponse
-	(*AcquireWorkflowEditLockRequest)(nil),  // 30: orchicon.api.v1.AcquireWorkflowEditLockRequest
-	(*AcquireWorkflowEditLockResponse)(nil), // 31: orchicon.api.v1.AcquireWorkflowEditLockResponse
-	(*ReleaseWorkflowEditLockRequest)(nil),  // 32: orchicon.api.v1.ReleaseWorkflowEditLockRequest
-	(*ReleaseWorkflowEditLockResponse)(nil), // 33: orchicon.api.v1.ReleaseWorkflowEditLockResponse
-	(*GetWorkflowEditLockRequest)(nil),      // 34: orchicon.api.v1.GetWorkflowEditLockRequest
-	(*GetWorkflowEditLockResponse)(nil),     // 35: orchicon.api.v1.GetWorkflowEditLockResponse
-	(*Workflow)(nil),                        // 36: orchicon.api.v1.Workflow
-	(*WorkflowVersion)(nil),                 // 37: orchicon.api.v1.WorkflowVersion
-	(WorkflowStatus)(0),                     // 38: orchicon.api.v1.WorkflowStatus
-	(*WorkflowRun)(nil),                     // 39: orchicon.api.v1.WorkflowRun
-	(WorkflowRunStatus)(0),                  // 40: orchicon.api.v1.WorkflowRunStatus
-	(*WorkflowStepRun)(nil),                 // 41: orchicon.api.v1.WorkflowStepRun
-	(*WorkflowEvent)(nil),                   // 42: orchicon.api.v1.WorkflowEvent
-	(*EditLock)(nil),                        // 43: orchicon.api.v1.EditLock
+	(*DeleteWorkflowVersionRequest)(nil),    // 16: orchicon.api.v1.DeleteWorkflowVersionRequest
+	(*DeleteWorkflowVersionResponse)(nil),   // 17: orchicon.api.v1.DeleteWorkflowVersionResponse
+	(*UpdateWorkflowVersionRequest)(nil),    // 18: orchicon.api.v1.UpdateWorkflowVersionRequest
+	(*UpdateWorkflowVersionResponse)(nil),   // 19: orchicon.api.v1.UpdateWorkflowVersionResponse
+	(*StartWorkflowRequest)(nil),            // 20: orchicon.api.v1.StartWorkflowRequest
+	(*StartWorkflowResponse)(nil),           // 21: orchicon.api.v1.StartWorkflowResponse
+	(*AbortWorkflowRequest)(nil),            // 22: orchicon.api.v1.AbortWorkflowRequest
+	(*AbortWorkflowResponse)(nil),           // 23: orchicon.api.v1.AbortWorkflowResponse
+	(*GetWorkflowRunRequest)(nil),           // 24: orchicon.api.v1.GetWorkflowRunRequest
+	(*GetWorkflowRunResponse)(nil),          // 25: orchicon.api.v1.GetWorkflowRunResponse
+	(*ListWorkflowRunsRequest)(nil),         // 26: orchicon.api.v1.ListWorkflowRunsRequest
+	(*ListWorkflowRunsResponse)(nil),        // 27: orchicon.api.v1.ListWorkflowRunsResponse
+	(*GetWorkflowStepRunsRequest)(nil),      // 28: orchicon.api.v1.GetWorkflowStepRunsRequest
+	(*GetWorkflowStepRunsResponse)(nil),     // 29: orchicon.api.v1.GetWorkflowStepRunsResponse
+	(*StreamWorkflowEventsRequest)(nil),     // 30: orchicon.api.v1.StreamWorkflowEventsRequest
+	(*StreamWorkflowEventsResponse)(nil),    // 31: orchicon.api.v1.StreamWorkflowEventsResponse
+	(*AcquireWorkflowEditLockRequest)(nil),  // 32: orchicon.api.v1.AcquireWorkflowEditLockRequest
+	(*AcquireWorkflowEditLockResponse)(nil), // 33: orchicon.api.v1.AcquireWorkflowEditLockResponse
+	(*ReleaseWorkflowEditLockRequest)(nil),  // 34: orchicon.api.v1.ReleaseWorkflowEditLockRequest
+	(*ReleaseWorkflowEditLockResponse)(nil), // 35: orchicon.api.v1.ReleaseWorkflowEditLockResponse
+	(*GetWorkflowEditLockRequest)(nil),      // 36: orchicon.api.v1.GetWorkflowEditLockRequest
+	(*GetWorkflowEditLockResponse)(nil),     // 37: orchicon.api.v1.GetWorkflowEditLockResponse
+	(*Workflow)(nil),                        // 38: orchicon.api.v1.Workflow
+	(*WorkflowVersion)(nil),                 // 39: orchicon.api.v1.WorkflowVersion
+	(WorkflowStatus)(0),                     // 40: orchicon.api.v1.WorkflowStatus
+	(*WorkflowRun)(nil),                     // 41: orchicon.api.v1.WorkflowRun
+	(WorkflowRunStatus)(0),                  // 42: orchicon.api.v1.WorkflowRunStatus
+	(*WorkflowStepRun)(nil),                 // 43: orchicon.api.v1.WorkflowStepRun
+	(*WorkflowEvent)(nil),                   // 44: orchicon.api.v1.WorkflowEvent
+	(*EditLock)(nil),                        // 45: orchicon.api.v1.EditLock
 }
 var file_orchicon_api_v1_workflow_service_proto_depIdxs = []int32{
-	36, // 0: orchicon.api.v1.CreateWorkflowResponse.workflow:type_name -> orchicon.api.v1.Workflow
-	37, // 1: orchicon.api.v1.CreateWorkflowResponse.version:type_name -> orchicon.api.v1.WorkflowVersion
-	36, // 2: orchicon.api.v1.PublishWorkflowResponse.workflow:type_name -> orchicon.api.v1.Workflow
-	37, // 3: orchicon.api.v1.PublishWorkflowResponse.version:type_name -> orchicon.api.v1.WorkflowVersion
-	36, // 4: orchicon.api.v1.DeprecateWorkflowResponse.workflow:type_name -> orchicon.api.v1.Workflow
-	36, // 5: orchicon.api.v1.GetWorkflowResponse.workflow:type_name -> orchicon.api.v1.Workflow
-	37, // 6: orchicon.api.v1.GetWorkflowResponse.latest_version:type_name -> orchicon.api.v1.WorkflowVersion
-	38, // 7: orchicon.api.v1.ListWorkflowsRequest.status:type_name -> orchicon.api.v1.WorkflowStatus
-	36, // 8: orchicon.api.v1.ListWorkflowsResponse.workflows:type_name -> orchicon.api.v1.Workflow
-	37, // 9: orchicon.api.v1.ListWorkflowVersionsResponse.versions:type_name -> orchicon.api.v1.WorkflowVersion
-	36, // 10: orchicon.api.v1.CreateWorkflowVersionResponse.workflow:type_name -> orchicon.api.v1.Workflow
-	37, // 11: orchicon.api.v1.CreateWorkflowVersionResponse.version:type_name -> orchicon.api.v1.WorkflowVersion
-	37, // 12: orchicon.api.v1.UpdateWorkflowVersionResponse.version:type_name -> orchicon.api.v1.WorkflowVersion
-	39, // 13: orchicon.api.v1.StartWorkflowResponse.run:type_name -> orchicon.api.v1.WorkflowRun
-	39, // 14: orchicon.api.v1.AbortWorkflowResponse.run:type_name -> orchicon.api.v1.WorkflowRun
-	39, // 15: orchicon.api.v1.GetWorkflowRunResponse.run:type_name -> orchicon.api.v1.WorkflowRun
-	40, // 16: orchicon.api.v1.ListWorkflowRunsRequest.status:type_name -> orchicon.api.v1.WorkflowRunStatus
-	39, // 17: orchicon.api.v1.ListWorkflowRunsResponse.runs:type_name -> orchicon.api.v1.WorkflowRun
-	41, // 18: orchicon.api.v1.GetWorkflowStepRunsResponse.step_runs:type_name -> orchicon.api.v1.WorkflowStepRun
-	42, // 19: orchicon.api.v1.StreamWorkflowEventsResponse.event:type_name -> orchicon.api.v1.WorkflowEvent
-	43, // 20: orchicon.api.v1.AcquireWorkflowEditLockResponse.lock:type_name -> orchicon.api.v1.EditLock
-	43, // 21: orchicon.api.v1.GetWorkflowEditLockResponse.lock:type_name -> orchicon.api.v1.EditLock
+	38, // 0: orchicon.api.v1.CreateWorkflowResponse.workflow:type_name -> orchicon.api.v1.Workflow
+	39, // 1: orchicon.api.v1.CreateWorkflowResponse.version:type_name -> orchicon.api.v1.WorkflowVersion
+	38, // 2: orchicon.api.v1.PublishWorkflowResponse.workflow:type_name -> orchicon.api.v1.Workflow
+	39, // 3: orchicon.api.v1.PublishWorkflowResponse.version:type_name -> orchicon.api.v1.WorkflowVersion
+	38, // 4: orchicon.api.v1.DeprecateWorkflowResponse.workflow:type_name -> orchicon.api.v1.Workflow
+	38, // 5: orchicon.api.v1.GetWorkflowResponse.workflow:type_name -> orchicon.api.v1.Workflow
+	39, // 6: orchicon.api.v1.GetWorkflowResponse.latest_version:type_name -> orchicon.api.v1.WorkflowVersion
+	40, // 7: orchicon.api.v1.ListWorkflowsRequest.status:type_name -> orchicon.api.v1.WorkflowStatus
+	38, // 8: orchicon.api.v1.ListWorkflowsResponse.workflows:type_name -> orchicon.api.v1.Workflow
+	39, // 9: orchicon.api.v1.ListWorkflowVersionsResponse.versions:type_name -> orchicon.api.v1.WorkflowVersion
+	38, // 10: orchicon.api.v1.CreateWorkflowVersionResponse.workflow:type_name -> orchicon.api.v1.Workflow
+	39, // 11: orchicon.api.v1.CreateWorkflowVersionResponse.version:type_name -> orchicon.api.v1.WorkflowVersion
+	39, // 12: orchicon.api.v1.UpdateWorkflowVersionResponse.version:type_name -> orchicon.api.v1.WorkflowVersion
+	41, // 13: orchicon.api.v1.StartWorkflowResponse.run:type_name -> orchicon.api.v1.WorkflowRun
+	41, // 14: orchicon.api.v1.AbortWorkflowResponse.run:type_name -> orchicon.api.v1.WorkflowRun
+	41, // 15: orchicon.api.v1.GetWorkflowRunResponse.run:type_name -> orchicon.api.v1.WorkflowRun
+	42, // 16: orchicon.api.v1.ListWorkflowRunsRequest.status:type_name -> orchicon.api.v1.WorkflowRunStatus
+	41, // 17: orchicon.api.v1.ListWorkflowRunsResponse.runs:type_name -> orchicon.api.v1.WorkflowRun
+	43, // 18: orchicon.api.v1.GetWorkflowStepRunsResponse.step_runs:type_name -> orchicon.api.v1.WorkflowStepRun
+	44, // 19: orchicon.api.v1.StreamWorkflowEventsResponse.event:type_name -> orchicon.api.v1.WorkflowEvent
+	45, // 20: orchicon.api.v1.AcquireWorkflowEditLockResponse.lock:type_name -> orchicon.api.v1.EditLock
+	45, // 21: orchicon.api.v1.GetWorkflowEditLockResponse.lock:type_name -> orchicon.api.v1.EditLock
 	0,  // 22: orchicon.api.v1.WorkflowService.CreateWorkflow:input_type -> orchicon.api.v1.CreateWorkflowRequest
 	2,  // 23: orchicon.api.v1.WorkflowService.PublishWorkflow:input_type -> orchicon.api.v1.PublishWorkflowRequest
 	4,  // 24: orchicon.api.v1.WorkflowService.DeprecateWorkflow:input_type -> orchicon.api.v1.DeprecateWorkflowRequest
@@ -2181,36 +2278,38 @@ var file_orchicon_api_v1_workflow_service_proto_depIdxs = []int32{
 	10, // 27: orchicon.api.v1.WorkflowService.ListWorkflows:input_type -> orchicon.api.v1.ListWorkflowsRequest
 	12, // 28: orchicon.api.v1.WorkflowService.ListWorkflowVersions:input_type -> orchicon.api.v1.ListWorkflowVersionsRequest
 	14, // 29: orchicon.api.v1.WorkflowService.CreateWorkflowVersion:input_type -> orchicon.api.v1.CreateWorkflowVersionRequest
-	16, // 30: orchicon.api.v1.WorkflowService.UpdateWorkflowVersion:input_type -> orchicon.api.v1.UpdateWorkflowVersionRequest
-	18, // 31: orchicon.api.v1.WorkflowService.StartWorkflow:input_type -> orchicon.api.v1.StartWorkflowRequest
-	20, // 32: orchicon.api.v1.WorkflowService.AbortWorkflow:input_type -> orchicon.api.v1.AbortWorkflowRequest
-	22, // 33: orchicon.api.v1.WorkflowService.GetWorkflowRun:input_type -> orchicon.api.v1.GetWorkflowRunRequest
-	24, // 34: orchicon.api.v1.WorkflowService.ListWorkflowRuns:input_type -> orchicon.api.v1.ListWorkflowRunsRequest
-	26, // 35: orchicon.api.v1.WorkflowService.GetWorkflowStepRuns:input_type -> orchicon.api.v1.GetWorkflowStepRunsRequest
-	28, // 36: orchicon.api.v1.WorkflowService.StreamWorkflowEvents:input_type -> orchicon.api.v1.StreamWorkflowEventsRequest
-	30, // 37: orchicon.api.v1.WorkflowService.AcquireEditLock:input_type -> orchicon.api.v1.AcquireWorkflowEditLockRequest
-	32, // 38: orchicon.api.v1.WorkflowService.ReleaseEditLock:input_type -> orchicon.api.v1.ReleaseWorkflowEditLockRequest
-	34, // 39: orchicon.api.v1.WorkflowService.GetEditLock:input_type -> orchicon.api.v1.GetWorkflowEditLockRequest
-	1,  // 40: orchicon.api.v1.WorkflowService.CreateWorkflow:output_type -> orchicon.api.v1.CreateWorkflowResponse
-	3,  // 41: orchicon.api.v1.WorkflowService.PublishWorkflow:output_type -> orchicon.api.v1.PublishWorkflowResponse
-	5,  // 42: orchicon.api.v1.WorkflowService.DeprecateWorkflow:output_type -> orchicon.api.v1.DeprecateWorkflowResponse
-	7,  // 43: orchicon.api.v1.WorkflowService.DeleteWorkflow:output_type -> orchicon.api.v1.DeleteWorkflowResponse
-	9,  // 44: orchicon.api.v1.WorkflowService.GetWorkflow:output_type -> orchicon.api.v1.GetWorkflowResponse
-	11, // 45: orchicon.api.v1.WorkflowService.ListWorkflows:output_type -> orchicon.api.v1.ListWorkflowsResponse
-	13, // 46: orchicon.api.v1.WorkflowService.ListWorkflowVersions:output_type -> orchicon.api.v1.ListWorkflowVersionsResponse
-	15, // 47: orchicon.api.v1.WorkflowService.CreateWorkflowVersion:output_type -> orchicon.api.v1.CreateWorkflowVersionResponse
-	17, // 48: orchicon.api.v1.WorkflowService.UpdateWorkflowVersion:output_type -> orchicon.api.v1.UpdateWorkflowVersionResponse
-	19, // 49: orchicon.api.v1.WorkflowService.StartWorkflow:output_type -> orchicon.api.v1.StartWorkflowResponse
-	21, // 50: orchicon.api.v1.WorkflowService.AbortWorkflow:output_type -> orchicon.api.v1.AbortWorkflowResponse
-	23, // 51: orchicon.api.v1.WorkflowService.GetWorkflowRun:output_type -> orchicon.api.v1.GetWorkflowRunResponse
-	25, // 52: orchicon.api.v1.WorkflowService.ListWorkflowRuns:output_type -> orchicon.api.v1.ListWorkflowRunsResponse
-	27, // 53: orchicon.api.v1.WorkflowService.GetWorkflowStepRuns:output_type -> orchicon.api.v1.GetWorkflowStepRunsResponse
-	29, // 54: orchicon.api.v1.WorkflowService.StreamWorkflowEvents:output_type -> orchicon.api.v1.StreamWorkflowEventsResponse
-	31, // 55: orchicon.api.v1.WorkflowService.AcquireEditLock:output_type -> orchicon.api.v1.AcquireWorkflowEditLockResponse
-	33, // 56: orchicon.api.v1.WorkflowService.ReleaseEditLock:output_type -> orchicon.api.v1.ReleaseWorkflowEditLockResponse
-	35, // 57: orchicon.api.v1.WorkflowService.GetEditLock:output_type -> orchicon.api.v1.GetWorkflowEditLockResponse
-	40, // [40:58] is the sub-list for method output_type
-	22, // [22:40] is the sub-list for method input_type
+	16, // 30: orchicon.api.v1.WorkflowService.DeleteWorkflowVersion:input_type -> orchicon.api.v1.DeleteWorkflowVersionRequest
+	18, // 31: orchicon.api.v1.WorkflowService.UpdateWorkflowVersion:input_type -> orchicon.api.v1.UpdateWorkflowVersionRequest
+	20, // 32: orchicon.api.v1.WorkflowService.StartWorkflow:input_type -> orchicon.api.v1.StartWorkflowRequest
+	22, // 33: orchicon.api.v1.WorkflowService.AbortWorkflow:input_type -> orchicon.api.v1.AbortWorkflowRequest
+	24, // 34: orchicon.api.v1.WorkflowService.GetWorkflowRun:input_type -> orchicon.api.v1.GetWorkflowRunRequest
+	26, // 35: orchicon.api.v1.WorkflowService.ListWorkflowRuns:input_type -> orchicon.api.v1.ListWorkflowRunsRequest
+	28, // 36: orchicon.api.v1.WorkflowService.GetWorkflowStepRuns:input_type -> orchicon.api.v1.GetWorkflowStepRunsRequest
+	30, // 37: orchicon.api.v1.WorkflowService.StreamWorkflowEvents:input_type -> orchicon.api.v1.StreamWorkflowEventsRequest
+	32, // 38: orchicon.api.v1.WorkflowService.AcquireEditLock:input_type -> orchicon.api.v1.AcquireWorkflowEditLockRequest
+	34, // 39: orchicon.api.v1.WorkflowService.ReleaseEditLock:input_type -> orchicon.api.v1.ReleaseWorkflowEditLockRequest
+	36, // 40: orchicon.api.v1.WorkflowService.GetEditLock:input_type -> orchicon.api.v1.GetWorkflowEditLockRequest
+	1,  // 41: orchicon.api.v1.WorkflowService.CreateWorkflow:output_type -> orchicon.api.v1.CreateWorkflowResponse
+	3,  // 42: orchicon.api.v1.WorkflowService.PublishWorkflow:output_type -> orchicon.api.v1.PublishWorkflowResponse
+	5,  // 43: orchicon.api.v1.WorkflowService.DeprecateWorkflow:output_type -> orchicon.api.v1.DeprecateWorkflowResponse
+	7,  // 44: orchicon.api.v1.WorkflowService.DeleteWorkflow:output_type -> orchicon.api.v1.DeleteWorkflowResponse
+	9,  // 45: orchicon.api.v1.WorkflowService.GetWorkflow:output_type -> orchicon.api.v1.GetWorkflowResponse
+	11, // 46: orchicon.api.v1.WorkflowService.ListWorkflows:output_type -> orchicon.api.v1.ListWorkflowsResponse
+	13, // 47: orchicon.api.v1.WorkflowService.ListWorkflowVersions:output_type -> orchicon.api.v1.ListWorkflowVersionsResponse
+	15, // 48: orchicon.api.v1.WorkflowService.CreateWorkflowVersion:output_type -> orchicon.api.v1.CreateWorkflowVersionResponse
+	17, // 49: orchicon.api.v1.WorkflowService.DeleteWorkflowVersion:output_type -> orchicon.api.v1.DeleteWorkflowVersionResponse
+	19, // 50: orchicon.api.v1.WorkflowService.UpdateWorkflowVersion:output_type -> orchicon.api.v1.UpdateWorkflowVersionResponse
+	21, // 51: orchicon.api.v1.WorkflowService.StartWorkflow:output_type -> orchicon.api.v1.StartWorkflowResponse
+	23, // 52: orchicon.api.v1.WorkflowService.AbortWorkflow:output_type -> orchicon.api.v1.AbortWorkflowResponse
+	25, // 53: orchicon.api.v1.WorkflowService.GetWorkflowRun:output_type -> orchicon.api.v1.GetWorkflowRunResponse
+	27, // 54: orchicon.api.v1.WorkflowService.ListWorkflowRuns:output_type -> orchicon.api.v1.ListWorkflowRunsResponse
+	29, // 55: orchicon.api.v1.WorkflowService.GetWorkflowStepRuns:output_type -> orchicon.api.v1.GetWorkflowStepRunsResponse
+	31, // 56: orchicon.api.v1.WorkflowService.StreamWorkflowEvents:output_type -> orchicon.api.v1.StreamWorkflowEventsResponse
+	33, // 57: orchicon.api.v1.WorkflowService.AcquireEditLock:output_type -> orchicon.api.v1.AcquireWorkflowEditLockResponse
+	35, // 58: orchicon.api.v1.WorkflowService.ReleaseEditLock:output_type -> orchicon.api.v1.ReleaseWorkflowEditLockResponse
+	37, // 59: orchicon.api.v1.WorkflowService.GetEditLock:output_type -> orchicon.api.v1.GetWorkflowEditLockResponse
+	41, // [41:60] is the sub-list for method output_type
+	22, // [22:41] is the sub-list for method input_type
 	22, // [22:22] is the sub-list for extension type_name
 	22, // [22:22] is the sub-list for extension extendee
 	0,  // [0:22] is the sub-list for field type_name
@@ -2224,15 +2323,15 @@ func file_orchicon_api_v1_workflow_service_proto_init() {
 	file_orchicon_api_v1_workflow_proto_init()
 	file_orchicon_api_v1_worker_proto_init()
 	file_orchicon_api_v1_workflow_service_proto_msgTypes[10].OneofWrappers = []any{}
-	file_orchicon_api_v1_workflow_service_proto_msgTypes[24].OneofWrappers = []any{}
-	file_orchicon_api_v1_workflow_service_proto_msgTypes[28].OneofWrappers = []any{}
+	file_orchicon_api_v1_workflow_service_proto_msgTypes[26].OneofWrappers = []any{}
+	file_orchicon_api_v1_workflow_service_proto_msgTypes[30].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_workflow_service_proto_rawDesc), len(file_orchicon_api_v1_workflow_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   36,
+			NumMessages:   38,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

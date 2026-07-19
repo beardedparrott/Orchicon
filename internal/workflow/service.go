@@ -889,6 +889,38 @@ func (s *Service) GetEditLock(ctx context.Context, req *connect.Request[apiv1.Ge
 	return connect.NewResponse(&apiv1.GetWorkflowEditLockResponse{Lock: lockRowToProto(lock)}), nil
 }
 
+// DeleteWorkflowVersion hard-deletes a single draft version. Published
+// versions are immutable; use CreateWorkflowVersion to iterate. At least
+// one version must remain (docs/02 §2.4).
+func (s *Service) DeleteWorkflowVersion(ctx context.Context, req *connect.Request[apiv1.DeleteWorkflowVersionRequest]) (*connect.Response[apiv1.DeleteWorkflowVersionResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.WorkflowId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("workflow_id must not be empty"))
+	}
+	if req.Msg.VersionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("version_id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	if _, err := db.GetWorkflow(ctx, ttx.Tx, tenantID, req.Msg.WorkflowId); err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := db.DeleteWorkflowVersion(ctx, ttx.Tx, tenantID, req.Msg.WorkflowId, req.Msg.VersionId); err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("workflow version deleted", "workflow_id", req.Msg.WorkflowId, "version_id", req.Msg.VersionId, "tenant", tenantID)
+	return connect.NewResponse(&apiv1.DeleteWorkflowVersionResponse{}), nil
+}
+
 // --- helpers ---------------------------------------------------------------
 
 // StepWire is the JSON shape of a Step stored in workflow_versions.steps

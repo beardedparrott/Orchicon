@@ -402,6 +402,39 @@ func ListWorkflowVersions(ctx context.Context, tx pgx.Tx, tenantID, workflowID s
 	return out, rows.Err()
 }
 
+// DeleteWorkflowVersion hard-deletes a single workflow version. Only
+// draft versions may be deleted. At least one version must remain after
+// deletion, and the version is identified by its ULID id (not version
+// number).
+func DeleteWorkflowVersion(ctx context.Context, tx pgx.Tx, tenantID, workflowID, versionID string) error {
+	// Verify the version exists, is a draft, and that at least one other
+	// version would remain.
+	var status string
+	var count int
+	if err := tx.QueryRow(ctx,
+		`SELECT wv.status, (SELECT count(*) FROM workflow_versions WHERE tenant_id = $1 AND workflow_id = $2) AS cnt
+		 FROM workflow_versions WHERE tenant_id = $1 AND id = $4 AND workflow_id = $2`,
+		tenantID, workflowID, versionID).Scan(&status, &count); err != nil {
+		return fmt.Errorf("db: get workflow version: %w", err)
+	}
+	if status != "draft" {
+		return fmt.Errorf("db: cannot delete %s version", status)
+	}
+	if count < 2 {
+		return fmt.Errorf("db: cannot delete the last version")
+	}
+	tag, err := tx.Exec(ctx,
+		`DELETE FROM workflow_versions WHERE tenant_id = $1 AND id = $3 AND workflow_id = $2`,
+		tenantID, workflowID, versionID)
+	if err != nil {
+		return fmt.Errorf("db: delete workflow version: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // NextWorkflowVersionNumber returns the next version number for a
 // workflow (max existing version + 1, or 1 if no versions exist).
 func NextWorkflowVersionNumber(ctx context.Context, tx pgx.Tx, tenantID, workflowID string) (int, error) {

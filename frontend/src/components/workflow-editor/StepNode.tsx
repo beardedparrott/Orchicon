@@ -62,7 +62,7 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
   return (
     <div
       className={cn(
-        "group relative min-w-[180px] max-w-[240px] rounded-md border px-3 py-2 shadow-sm",
+        "group relative min-w-[180px] max-w-[240px] min-h-[76px] rounded-md border px-3 py-2 shadow-sm",
         stepKindClasses[kind] ?? "border-border bg-card text-card-foreground",
         selected && "ring-2 ring-primary ring-offset-2 ring-offset-background",
         !hasBinding && needsBinding && "border-dashed border-rose-400",

@@ -71,6 +71,9 @@ const (
 	// WorkflowServiceCreateWorkflowVersionProcedure is the fully-qualified name of the
 	// WorkflowService's CreateWorkflowVersion RPC.
 	WorkflowServiceCreateWorkflowVersionProcedure = "/orchicon.api.v1.WorkflowService/CreateWorkflowVersion"
+	// WorkflowServiceDeleteWorkflowVersionProcedure is the fully-qualified name of the
+	// WorkflowService's DeleteWorkflowVersion RPC.
+	WorkflowServiceDeleteWorkflowVersionProcedure = "/orchicon.api.v1.WorkflowService/DeleteWorkflowVersion"
 	// WorkflowServiceUpdateWorkflowVersionProcedure is the fully-qualified name of the
 	// WorkflowService's UpdateWorkflowVersion RPC.
 	WorkflowServiceUpdateWorkflowVersionProcedure = "/orchicon.api.v1.WorkflowService/UpdateWorkflowVersion"
@@ -131,6 +134,10 @@ type WorkflowServiceClient interface {
 	// configuration. The new version is editable; once published it becomes
 	// immutable (docs/02 §2.4).
 	CreateWorkflowVersion(context.Context, *connect.Request[v1.CreateWorkflowVersionRequest]) (*connect.Response[v1.CreateWorkflowVersionResponse], error)
+	// DeleteWorkflowVersion hard-deletes a single workflow version. Only
+	// draft versions can be deleted; published/deprecated versions are
+	// immutable. At least one version must remain.
+	DeleteWorkflowVersion(context.Context, *connect.Request[v1.DeleteWorkflowVersionRequest]) (*connect.Response[v1.DeleteWorkflowVersionResponse], error)
 	// UpdateWorkflowVersion saves edits to a draft version's steps (and
 	// inputs/outputs/recovery_policy_ref). Only draft versions are mutable;
 	// published versions are immutable (docs/02 §2.4). This is the "save"
@@ -222,6 +229,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("CreateWorkflowVersion")),
 			connect.WithClientOptions(opts...),
 		),
+		deleteWorkflowVersion: connect.NewClient[v1.DeleteWorkflowVersionRequest, v1.DeleteWorkflowVersionResponse](
+			httpClient,
+			baseURL+WorkflowServiceDeleteWorkflowVersionProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("DeleteWorkflowVersion")),
+			connect.WithClientOptions(opts...),
+		),
 		updateWorkflowVersion: connect.NewClient[v1.UpdateWorkflowVersionRequest, v1.UpdateWorkflowVersionResponse](
 			httpClient,
 			baseURL+WorkflowServiceUpdateWorkflowVersionProcedure,
@@ -295,6 +308,7 @@ type workflowServiceClient struct {
 	listWorkflows         *connect.Client[v1.ListWorkflowsRequest, v1.ListWorkflowsResponse]
 	listWorkflowVersions  *connect.Client[v1.ListWorkflowVersionsRequest, v1.ListWorkflowVersionsResponse]
 	createWorkflowVersion *connect.Client[v1.CreateWorkflowVersionRequest, v1.CreateWorkflowVersionResponse]
+	deleteWorkflowVersion *connect.Client[v1.DeleteWorkflowVersionRequest, v1.DeleteWorkflowVersionResponse]
 	updateWorkflowVersion *connect.Client[v1.UpdateWorkflowVersionRequest, v1.UpdateWorkflowVersionResponse]
 	startWorkflow         *connect.Client[v1.StartWorkflowRequest, v1.StartWorkflowResponse]
 	abortWorkflow         *connect.Client[v1.AbortWorkflowRequest, v1.AbortWorkflowResponse]
@@ -345,6 +359,11 @@ func (c *workflowServiceClient) ListWorkflowVersions(ctx context.Context, req *c
 // CreateWorkflowVersion calls orchicon.api.v1.WorkflowService.CreateWorkflowVersion.
 func (c *workflowServiceClient) CreateWorkflowVersion(ctx context.Context, req *connect.Request[v1.CreateWorkflowVersionRequest]) (*connect.Response[v1.CreateWorkflowVersionResponse], error) {
 	return c.createWorkflowVersion.CallUnary(ctx, req)
+}
+
+// DeleteWorkflowVersion calls orchicon.api.v1.WorkflowService.DeleteWorkflowVersion.
+func (c *workflowServiceClient) DeleteWorkflowVersion(ctx context.Context, req *connect.Request[v1.DeleteWorkflowVersionRequest]) (*connect.Response[v1.DeleteWorkflowVersionResponse], error) {
+	return c.deleteWorkflowVersion.CallUnary(ctx, req)
 }
 
 // UpdateWorkflowVersion calls orchicon.api.v1.WorkflowService.UpdateWorkflowVersion.
@@ -425,6 +444,10 @@ type WorkflowServiceHandler interface {
 	// configuration. The new version is editable; once published it becomes
 	// immutable (docs/02 §2.4).
 	CreateWorkflowVersion(context.Context, *connect.Request[v1.CreateWorkflowVersionRequest]) (*connect.Response[v1.CreateWorkflowVersionResponse], error)
+	// DeleteWorkflowVersion hard-deletes a single workflow version. Only
+	// draft versions can be deleted; published/deprecated versions are
+	// immutable. At least one version must remain.
+	DeleteWorkflowVersion(context.Context, *connect.Request[v1.DeleteWorkflowVersionRequest]) (*connect.Response[v1.DeleteWorkflowVersionResponse], error)
 	// UpdateWorkflowVersion saves edits to a draft version's steps (and
 	// inputs/outputs/recovery_policy_ref). Only draft versions are mutable;
 	// published versions are immutable (docs/02 §2.4). This is the "save"
@@ -512,6 +535,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("CreateWorkflowVersion")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceDeleteWorkflowVersionHandler := connect.NewUnaryHandler(
+		WorkflowServiceDeleteWorkflowVersionProcedure,
+		svc.DeleteWorkflowVersion,
+		connect.WithSchema(workflowServiceMethods.ByName("DeleteWorkflowVersion")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workflowServiceUpdateWorkflowVersionHandler := connect.NewUnaryHandler(
 		WorkflowServiceUpdateWorkflowVersionProcedure,
 		svc.UpdateWorkflowVersion,
@@ -590,6 +619,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceListWorkflowVersionsHandler.ServeHTTP(w, r)
 		case WorkflowServiceCreateWorkflowVersionProcedure:
 			workflowServiceCreateWorkflowVersionHandler.ServeHTTP(w, r)
+		case WorkflowServiceDeleteWorkflowVersionProcedure:
+			workflowServiceDeleteWorkflowVersionHandler.ServeHTTP(w, r)
 		case WorkflowServiceUpdateWorkflowVersionProcedure:
 			workflowServiceUpdateWorkflowVersionHandler.ServeHTTP(w, r)
 		case WorkflowServiceStartWorkflowProcedure:
@@ -649,6 +680,10 @@ func (UnimplementedWorkflowServiceHandler) ListWorkflowVersions(context.Context,
 
 func (UnimplementedWorkflowServiceHandler) CreateWorkflowVersion(context.Context, *connect.Request[v1.CreateWorkflowVersionRequest]) (*connect.Response[v1.CreateWorkflowVersionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.CreateWorkflowVersion is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) DeleteWorkflowVersion(context.Context, *connect.Request[v1.DeleteWorkflowVersionRequest]) (*connect.Response[v1.DeleteWorkflowVersionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.DeleteWorkflowVersion is not implemented"))
 }
 
 func (UnimplementedWorkflowServiceHandler) UpdateWorkflowVersion(context.Context, *connect.Request[v1.UpdateWorkflowVersionRequest]) (*connect.Response[v1.UpdateWorkflowVersionResponse], error) {
