@@ -44,6 +44,7 @@ import {
   RunStatusBadge,
   VersionStatusBadge,
 } from "@/components/workflow-editor/EditLockBanner";
+import { CodeView } from "@/components/workflow-editor/CodeView";
 import { Palette } from "@/components/workflow-editor/Palette";
 import { PropertiesPanel } from "@/components/workflow-editor/PropertiesPanel";
 import { StepNode } from "@/components/workflow-editor/StepNode";
@@ -126,6 +127,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   );
   const [edges, setEdges, onEdgesChange] = useEdgesState([] as Edge[]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"canvas" | "code">("canvas");
   const [dirty, setDirty] = useState(false);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [dropActive, setDropActive] = useState(false);
@@ -774,6 +776,13 @@ function EditorInner({ workflowId }: { workflowId: string }) {
             >
               {deleteMutation.isPending ? "Deleting…" : "Delete"}
             </Button>
+            <Button
+              variant="outline"
+              onClick={() => setViewMode(viewMode === "canvas" ? "code" : "canvas")}
+              title={viewMode === "canvas" ? "Switch to code view" : "Switch to canvas view"}
+            >
+              {viewMode === "canvas" ? "Code" : "Canvas"}
+            </Button>
           </div>
         </div>
 
@@ -796,71 +805,88 @@ function EditorInner({ workflowId }: { workflowId: string }) {
           </div>
         )}
 
-        {/* main editor layout: palette | canvas | properties */}
+        {/* main editor layout: palette | canvas/code | properties */}
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[240px_1fr_300px]">
-          <Palette readOnly={readOnly} />
+          {viewMode === "canvas" && <Palette readOnly={readOnly} />}
 
-          {/* canvas */}
-          <div
-            className={cn(
-              "relative h-[640px] rounded-lg border bg-card transition-colors",
-              dropActive &&
-                "border-primary bg-primary/5 ring-2 ring-primary/30 ring-offset-1",
-            )}
-            onDragEnter={onDragEnter}
-            onDragOver={onDragOver}
-            onDragLeave={onDragLeave}
-            onDrop={onDrop}
-          >
-            <ReactFlow
-              nodes={nodes}
-              edges={edges}
-              onNodesChange={handleNodesChange}
-              onEdgesChange={handleEdgesChange}
-              onConnect={onConnect}
-              onNodeClick={(_, n) => setSelectedId(n.id)}
-              onPaneClick={() => setSelectedId(null)}
-              nodeTypes={NODE_TYPES}
-              edgeTypes={EDGE_TYPES}
-              fitView
-              minZoom={0.2}
-              maxZoom={2}
-              nodesConnectable={!readOnly}
-              nodesDraggable={!readOnly}
-              elementsSelectable
-              proOptions={{ hideAttribution: true }}
+          {viewMode === "canvas" ? (
+            /* canvas */
+            <div
+              className={cn(
+                "relative h-[640px] rounded-lg border bg-card transition-colors",
+                dropActive &&
+                  "border-primary bg-primary/5 ring-2 ring-primary/30 ring-offset-1",
+              )}
+              onDragEnter={onDragEnter}
+              onDragOver={onDragOver}
+              onDragLeave={onDragLeave}
+              onDrop={onDrop}
             >
-              <Background gap={20} size={1} />
-              <Controls showInteractive={!readOnly} />
-              <MiniMap
-                pannable
-                zoomable
-                className="!bg-background/80 !border-border"
-              />
-            </ReactFlow>
-            {dropActive && (
-              <div
-                className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center"
-                aria-hidden
+              <ReactFlow
+                nodes={nodes}
+                edges={edges}
+                onNodesChange={handleNodesChange}
+                onEdgesChange={handleEdgesChange}
+                onConnect={onConnect}
+                onNodeClick={(_, n) => setSelectedId(n.id)}
+                onPaneClick={() => setSelectedId(null)}
+                nodeTypes={NODE_TYPES}
+                edgeTypes={EDGE_TYPES}
+                fitView
+                minZoom={0.2}
+                maxZoom={2}
+                nodesConnectable={!readOnly}
+                nodesDraggable={!readOnly}
+                elementsSelectable
+                proOptions={{ hideAttribution: true }}
               >
-                <div className="rounded-md border-2 border-dashed border-primary bg-primary/10 px-6 py-3 text-sm font-medium text-primary shadow-sm">
-                  Drop to add step
+                <Background gap={20} size={1} />
+                <Controls showInteractive={!readOnly} />
+                <MiniMap
+                  pannable
+                  zoomable
+                  className="!bg-background/80 !border-border"
+                />
+              </ReactFlow>
+              {dropActive && (
+                <div
+                  className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center"
+                  aria-hidden
+                >
+                  <div className="rounded-md border-2 border-dashed border-primary bg-primary/10 px-6 py-3 text-sm font-medium text-primary shadow-sm">
+                    Drop to add step
+                  </div>
                 </div>
-              </div>
-            )}
-            {nodes.length === 0 && !dropActive && (
-              <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
-                Drag a tile from the palette to begin.
-              </div>
-            )}
-          </div>
+              )}
+              {nodes.length === 0 && !dropActive && (
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
+                  Drag a tile from the palette to begin.
+                </div>
+              )}
+            </div>
+          ) : (
+            /* code view */
+            <div className="h-[640px] rounded-lg border bg-card">
+              <CodeView
+                nodes={nodes}
+                edges={edges}
+                onUpdate={(n, e) => {
+                  setNodes(n);
+                  setEdges(e);
+                  setDirty(true);
+                }}
+              />
+            </div>
+          )}
 
-          <PropertiesPanel
-            node={selectedNode}
-            onChange={updateSelected}
-            readOnly={readOnly}
-            projectId={effectiveProjectId}
-          />
+          {viewMode === "canvas" && (
+            <PropertiesPanel
+              node={selectedNode}
+              onChange={updateSelected}
+              readOnly={readOnly}
+              projectId={effectiveProjectId}
+            />
+          )}
         </div>
 
         {/* version history + runs */}
