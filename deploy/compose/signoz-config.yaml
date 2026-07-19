@@ -14,3 +14,9 @@ clickhouse:
 http:
   host: 0.0.0.0
   port: 3301
+
+# Disable authentication for local dev (enterprise version ignores
+# SIGNOZ_AUTH_ENABLED env var). Without this, the embedded iframe
+# shows a login page because the iframe can't share the auth cookie.
+auth:
+  enabled: false

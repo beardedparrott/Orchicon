@@ -42,14 +42,10 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-**v0.1.98** — Telemetry fixes, OTel log export, workflow editor enhancements.
-Telemetry queries ClickHouse directly bypassing SigNoz API incompatibility.
-OTel log exporter sends adapter stderr to ClickHouse as structured logs.
-Workflow editor: uniform node sizing, Clone button, Save Draft fixed after
-creating new versions, Delete version button, YAML code view toggle with
-`connections` format (from_<pos>/to_<pos>). Cost Explorer shows names via
-per-task lookups. Credits tab with provider/model spend. /signoz reverse
-proxy. composeDown force-removes orphaned containers on start/stop.
+**v0.1.116** — SigNoz iframe asset loading, workflow prompt context enrichment, telemetry log streaming.
+SigNoz proxy rewrites asset URLs to absolute `/signoz/...` paths so Firefox's sandboxed iframe loads JS/CSS correctly.
+Workflow composite prompt now includes a chronological "Workflow context" timeline: TASK full output + summary, RECOVER strategy + narrative, WORK_ITEM/PROJECT markers, with a `→ Next task (you are here)` block naming the dispatch target.
+Telemetry logs panel streams control-plane slog records via new Slog→OTel bridge: outbox, reconciler, dispatch, workflow run progressed, task dispatched, opencode step started/finished, recovery events — all at INFO severity (opencode adapter smart-parses stderr severity tags). Fixes ClickHouse logs timestamp (ns not μs) and tenant filter so control-plane logs appear in "Recent logs" panel.
 
 ## Installation
 
