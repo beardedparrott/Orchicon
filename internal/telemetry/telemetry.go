@@ -85,9 +85,17 @@ func (s *Shutdowner) Shutdown(ctx context.Context) {
 // collector to be reachable at startup (prevents the 20s startup delay
 // when the telemetry stack is still initializing).
 func Setup(ctx context.Context, cfg config.Config, log *slog.Logger) (*Shutdowner, error) {
+	// v0.1: single dev tenant. Multi-tenant will thread the tenant
+	// id from the request context into both the log resource and
+	// the per-record attribute set. For now, mark every
+	// control-plane log with orchicon.tenant_id=tnt_dev so the
+	// SigNozClient QueryLogs tenant filter (docs/08 §5.1) doesn't
+	// drop our own bootstrap / reconciliation / recovery records
+	// when the operator opens the Telemetry logs tab.
 	res, err := resource.Merge(resource.Default(), resource.NewWithAttributes(
 		semconv.SchemaURL,
 		semconv.ServiceName("orchicon-control-plane"),
+		attribute.String("orchicon.tenant_id", "tnt_dev"),
 	))
 	if err != nil {
 		return nil, fmt.Errorf("telemetry: resource: %w", err)

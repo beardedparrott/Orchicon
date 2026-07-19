@@ -22,11 +22,20 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/server"
+	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
 )
 
 func main() {
-	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// Wire the OTel slog bridge so the default-mode control plane
+	// (not just the dev subcommand) also streams its structured log
+	// records into the Telemetry logs tab. The OTel handler is a
+	// no-op until telemetry.Setup binds the global LoggerProvider
+	// inside server.New.
+	log := slog.New(telemetry.MultiHandler(
+		slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}),
+		telemetry.NewOtelSlogHandler(),
+	))
 
 	// Subcommand dispatch. If the first arg matches a known subcommand,
 	// dispatch to it; otherwise run the control plane (default).
