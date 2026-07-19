@@ -42,12 +42,12 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-**v0.1.95** — README and website overhaul: updated installation section
-with `--clean` flag, added orchicon commands and installed files list.
-Custom LICENSE file added (proprietary, free for non-commercial use).
-AGENTS.md restructured with concise Git Workflow, Phases, and UPDATES.md
-tracking. Playwright MCP added for browser testing. Landing page updated
-with version bar, commands reference, and new license link.
+**v0.1.98** — Fixed telemetry page, cost explorer, and added credits panel.
+SigNoz iframe now conditionally renders (avoiding app-in-frame when
+backend is down). Cost Explorer shows human-readable names, has working
+drill-down with Back/Clear navigation. New Credits tab shows provider and
+model spend. Added /signoz reverse proxy in Go server so embedded SigNoz
+UI works in all deployment modes (not just Vite dev proxy).
 
 ## Installation
 
