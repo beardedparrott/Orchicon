@@ -561,7 +561,7 @@ function MetricsPanel() {
               {series.map((s) => {
                 const pts = s.points ?? [];
                 const latest = pts[0];
-                const name = s.name || "unknown";
+                const name = s.metricName || "unknown";
                 const display = name === "orchicon_tokens_consumed"
                   ? `${fmtInt(latest?.value ?? 0)} tokens`
                   : name === "orchicon_cost_usd"
