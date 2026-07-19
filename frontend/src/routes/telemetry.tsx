@@ -1,10 +1,13 @@
 import { createRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 
+import { useQueries } from "@tanstack/react-query";
+
 import { useGetCost, useGetUsage, useListProviders } from "@/api/aigateway";
 import { useGetDashboard, useQueryLogs, useQueryMetrics, useQueryTraces } from "@/api/telemetry";
 import { useListProjects } from "@/api/projects";
-import { useListWorkItems } from "@/api/workItems";
+import { workItemClient } from "@/api/clients";
+import { workItemKeys } from "@/api/workItems";
 import { SIGNOZ_UI_URL } from "@/api/clients";
 import type { UsageRollup } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import { UsageRollup as UsageRollupEnum } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
@@ -165,7 +168,6 @@ function CostExplorer() {
   });
 
   const { data: projects } = useListProjects();
-  const { data: workItems } = useListWorkItems(projectId || "__none__");
 
   const projectNameMap = useMemo(() => {
     const m = new Map<string, string>();
@@ -173,14 +175,34 @@ function CostExplorer() {
     return m;
   }, [projects]);
 
-  const workItemNameMap = useMemo(() => {
+  // Look up individual work item names for task-level summaries.
+  const taskIds = useMemo(() => {
+    if (!data?.summaries || rollup !== UsageRollupEnum.TASK) return [];
+    return [...new Set(data.summaries.map((s) => s.groupKey).filter(Boolean))];
+  }, [data, rollup]);
+
+  const taskQueries = useQueries({
+    queries: taskIds.map((id) => ({
+      queryKey: workItemKeys.detail(id),
+      queryFn: async () => {
+        const res = await workItemClient.getWorkItem({ id });
+        return { id, title: res.workItem?.title || id.slice(0, 12) };
+      },
+      enabled: !!id,
+      staleTime: 5 * 60 * 1000,
+    })),
+  });
+
+  const taskNameMap = useMemo(() => {
     const m = new Map<string, string>();
-    if (workItems) for (const w of workItems) m.set(w.id, w.title);
+    for (const q of taskQueries) {
+      if (q.data) m.set(q.data.id, q.data.title);
+    }
     return m;
-  }, [workItems]);
+  }, [taskQueries]);
 
   function scopeLabel(): string | null {
-    if (taskId) return `Task: ${workItemNameMap.get(taskId) || taskId.slice(0, 12)}`;
+    if (taskId) return `Task: ${taskNameMap.get(taskId) || taskId.slice(0, 12)}`;
     if (projectId) return `Project: ${projectNameMap.get(projectId) || projectId.slice(0, 12)}`;
     return null;
   }
@@ -223,7 +245,7 @@ function CostExplorer() {
 
   function displayName(s: { groupBy: string; groupKey: string }): string {
     if (s.groupBy === "project") return projectNameMap.get(s.groupKey) || s.groupKey.slice(0, 12);
-    if (s.groupBy === "task") return workItemNameMap.get(s.groupKey) || s.groupKey.slice(0, 12);
+    if (s.groupBy === "task") return taskNameMap.get(s.groupKey) || s.groupKey.slice(0, 12);
     if (s.groupBy === "execution") return s.groupKey.slice(0, 12);
     return s.groupKey;
   }
@@ -661,8 +683,8 @@ function SigNozEmbed({
       <CardContent>
         {degraded ? (
           <div className="flex h-[160px] items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground">
-            SigNoz backend unavailable — start the dev stack (`make up`) to
-            explore {title.toLowerCase()}.
+            SigNoz is starting up — check back in a moment. The dev stack
+            starts automatically with `orchicon start` / `orchicon dev start`.
           </div>
         ) : (
           <iframe

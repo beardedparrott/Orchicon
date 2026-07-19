@@ -40,6 +40,11 @@ export function useQueryTraces(opts?: {
       });
       return { traces: (res.traces ?? []) as Trace[], degraded: res.degraded };
     },
+    // Poll while degraded so the view auto-recovers when SigNoz starts.
+    refetchInterval: (query) => {
+      const d = query.state.data as { degraded?: boolean } | undefined;
+      return d?.degraded ? 10_000 : false;
+    },
   });
 }
 
@@ -56,6 +61,11 @@ export function useQueryMetrics(opts: {
       });
       return { series: (res.series ?? []) as MetricSeries[], degraded: res.degraded };
     },
+    // Poll while degraded so the view auto-recovers when SigNoz starts.
+    refetchInterval: (query) => {
+      const d = query.state.data as { degraded?: boolean } | undefined;
+      return d?.degraded ? 10_000 : false;
+    },
   });
 }
 
@@ -68,6 +78,11 @@ export function useQueryLogs(opts?: { projectId?: string; severity?: string }) {
         severity: opts?.severity ?? "",
       });
       return { logs: (res.logs ?? []) as LogRecord[], degraded: res.degraded };
+    },
+    // Poll while degraded so the view auto-recovers when SigNoz starts.
+    refetchInterval: (query) => {
+      const d = query.state.data as { degraded?: boolean } | undefined;
+      return d?.degraded ? 10_000 : false;
     },
   });
 }
