@@ -18,4 +18,4 @@
 | 11 | Feature adds | active | Ongoing feature additions for gaps identified after initial build-out |
 | 12 | Bug fixes | active | Ongoing bug fixes and polish |
 | 13 | Polish: docs + website | done | README and landing page overhaul (--clean flag, commands, installed files, custom LICENSE). AGENTS.md restructured with concise Git Workflow, Phases, UPDATES.md tracking. Playwright MCP added for browser testing. |
-| 14 | Telemetry fixes | done | SigNoz iframe now conditional (avoids app-in-frame when degraded). Cost Explorer: fixed rollup enum, shows names, working drill-down. Added Credits tab with provider/model spend breakdown. Added /signoz reverse proxy in Go server for same-origin SigNoz UI in all modes. |
+| 14 | Telemetry fixes | done | SigNoz iframe now conditional (avoids app-in-frame when degraded). Telemetry hooks poll every 10s while degraded (auto-recover when SigNoz starts). Cost Explorer: fixed rollup enum, per-task API lookups for names, working drill-down with Back/Clear. Credits tab with provider/model spend. /signoz reverse proxy in Go server. |
