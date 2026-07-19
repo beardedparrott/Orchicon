@@ -538,8 +538,12 @@ func runComposeFromTemp(ctx context.Context, log *slog.Logger, args ...string) e
 }
 
 // composeUp extracts the embedded compose tree to a temp dir and runs
-// `docker compose up -d` from there. The dir is removed on return.
+// `docker compose up -d` from there. Before starting it preemptively
+// force-removes any leftover orchicon containers so that a prior
+// incomplete shutdown, a failed composeDown, or a stale container from
+// an earlier session never blocks "Conflict: container name already in use".
 func composeUp(ctx context.Context) error {
+	forceRemoveOrchiconContainers(ctx)
 	if err := runComposeFromTemp(ctx, nil, "up", "-d"); err != nil {
 		return fmt.Errorf("docker compose up: %w", err)
 	}
@@ -550,26 +554,30 @@ func composeUp(ctx context.Context) error {
 // approaches in order of preference so that a subsequent `orchicon start`
 // never fails with "Conflict: container name already in use".
 func composeDown(ctx context.Context) error {
-	// 1. Polite: docker compose down with the embedded compose file.
 	err := runComposeFromTemp(ctx, nil, "down", "--remove-orphans")
 	if err == nil {
 		return nil
 	}
 	fmt.Fprintf(os.Stderr, "  ! compose down failed, force-removing containers: %v\n", err)
+	forceRemoveOrchiconContainers(ctx)
+	return fmt.Errorf("docker compose down failed (containers force-removed): %w", err)
+}
 
-	// 2. Forceful: remove every container belonging to the orchicon
-	// compose project by label. This catches containers that were
-	// started outside the compose file or have irregular names.
+// forceRemoveOrchiconContainers removes every container belonging to the
+// orchicon compose project (prune by label) plus a known-name fallback
+// for any that lack the compose label. Idempotent and safe to call
+// repeatedly: docker rm -f is a no-op for a container that does not exist.
+func forceRemoveOrchiconContainers(ctx context.Context) {
+	// Prune by compose project label — catches all containers regardless
+	// of whether they were started by this binary or by a different tool.
 	prune := exec.CommandContext(ctx, "docker", "container", "prune",
 		"--force", "--filter", "label=com.docker.compose.project=orchicon")
 	prune.Stderr = os.Stderr
 	prune.Stdout = os.Stdout
 	_ = prune.Run()
 
-	// 3. Nuclear: any container whose name starts with "orchicon-" that
-	// might have slipped through (e.g. from a legacy run without compose
-	// labels). Idempotent — `docker rm -f` is a no-op if the container
-	// does not exist.
+	// Nuclear fallback by known container name — catches containers that
+	// may lack the compose label (e.g. from very old compose versions).
 	known := []string{
 		"orchicon-postgres", "orchicon-nats", "orchicon-clickhouse",
 		"orchicon-signoz-schema-migrator", "orchicon-otel-collector", "orchicon-signoz",
@@ -580,8 +588,6 @@ func composeDown(ctx context.Context) error {
 		rm.Stdout = os.Stdout
 		_ = rm.Run()
 	}
-
-	return fmt.Errorf("docker compose down failed (containers force-removed): %w", err)
 }
 
 // waitForContainer polls `docker inspect` for the container's health
