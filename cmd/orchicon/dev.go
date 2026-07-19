@@ -546,12 +546,26 @@ func composeUp(ctx context.Context) error {
 	return nil
 }
 
-// composeDown runs `docker compose down` with the embedded compose file.
+// composeDown runs `docker compose down` with the embedded compose file,
+// then force-removes any remaining known containers as a fallback.
 func composeDown(ctx context.Context) error {
-	if err := runComposeFromTemp(ctx, nil, "down"); err != nil {
-		return fmt.Errorf("docker compose down: %w", err)
+	err := runComposeFromTemp(ctx, nil, "down", "--remove-orphans")
+	if err == nil {
+		return nil
 	}
-	return nil
+
+	// Fallback: force-remove each known container individually so a
+	// subsequent `orchicon start` / `compose up` does not fail with
+	// "Conflict: container name already in use" (docs/10 §12.4).
+	containers := []string{
+		"orchicon-postgres", "orchicon-nats", "orchicon-clickhouse",
+		"orchicon-signoz-schema-migrator", "orchicon-otel-collector", "orchicon-signoz",
+	}
+	for _, name := range containers {
+		cmd := exec.CommandContext(ctx, "docker", "rm", "-f", name)
+		_ = cmd.Run()
+	}
+	return fmt.Errorf("docker compose down: %w (containers force-removed as fallback)", err)
 }
 
 // waitForContainer polls `docker inspect` for the container's health
