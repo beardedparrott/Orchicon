@@ -106,11 +106,12 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	// through the default 6-step workflow (docs/06).
 	policyEngine := policy.New(pool, log)
 	recoveryEngine := recovery.New(pool, log)
-	// Phase 8: SigNoz proxy client (docs/08 §5). Proxies tenant-scoped
-	// queries to SigNoz/ClickHouse for the TelemetryService. Empty URL
-	// disables proxying (queries degrade gracefully — docs/08 §8).
-	signozClient := telemetry.NewSigNozClient(cfg.SigNozURL)
-	log.Info("signoz proxy configured", "url", cfg.SigNozURL)
+	// Phase 8: Telemetry query client (docs/08 §5). Queries ClickHouse
+	// directly for tenant-scoped traces/metrics/logs — bypasses the SigNoz
+	// query-service REST API (which changed incompatibly in SigNoz v0.132).
+	// Empty ClickHouse DSN disables queries (degrade gracefully — docs/08 §8).
+	signozClient := telemetry.NewSigNozClient(cfg.ClickHouseDSN)
+	log.Info("telemetry client configured", "clickhouse", cfg.ClickHouseDSN)
 
 	// Phase 9: BlobStore abstraction (docs/01 §2). The local filesystem
 	// store is production-viable; S3 is the cloud backend.

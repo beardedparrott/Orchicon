@@ -158,6 +158,7 @@ services:
       CLICKHOUSE_USER: signoz
       CLICKHOUSE_PASSWORD: signoz
       SIGNOZ_TOKENIZER_JWT_SECRET: "dev-secret-not-for-production"
+      SIGNOZ_AUTH_ENABLED: "false"
     volumes:
       - ./signoz-config.yaml:/root/config.yaml:ro
       - signoz-data:/var/lib/signoz

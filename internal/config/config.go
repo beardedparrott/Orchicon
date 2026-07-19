@@ -56,8 +56,9 @@ type Config struct {
 	PostgresDSN  string
 	NATSURL       string
 	OTelEndpoint  string
-	SigNozURL     string // SigNoz query-service root (UI + API) — docs/08 §5
-	BlobStoreDir  string
+	SigNozURL       string // SigNoz query-service root (UI + API) — docs/08 §5
+	ClickHouseDSN   string // ClickHouse HTTP DSN (user:pass@host:port) for direct queries
+	BlobStoreDir    string
 	MigrateOnBoot bool
 
 	Mode       DeploymentMode
@@ -78,6 +79,7 @@ func Default() Config {
 		NATSURL:           env("ORCHICON_NATS_URL", "nats://localhost:4222"),
 		OTelEndpoint:      env("ORCHICON_OTEL_ENDPOINT", "localhost:4317"),
 		SigNozURL:         env("ORCHICON_SIGNOZ_URL", "http://localhost:3301"),
+		ClickHouseDSN:     env("ORCHICON_CLICKHOUSE_DSN", "http://signoz:signoz@localhost:8123"),
 		BlobStoreDir:      env("ORCHICON_BLOB_DIR", "./data/blobs"),
 		MigrateOnBoot:     envBool("ORCHICON_MIGRATE_ON_BOOT", true),
 		Mode:              DeploymentMode(env("ORCHICON_MODE", "local")),

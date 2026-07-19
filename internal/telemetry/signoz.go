@@ -1,54 +1,51 @@
 package telemetry
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 )
 
-// SigNozClient proxies tenant-scoped telemetry queries to the SigNoz
-// query-service API (docs/07 §3.9, docs/08 §5). SigNoz reads telemetry
-// from ClickHouse and exposes a REST query API. The proxy injects the
-// tenant_id attribute filter so a client cannot read another tenant's
-// telemetry (AGENTS.md tenant isolation).
+// SigNozClient queries tenant-scoped telemetry from ClickHouse directly
+// (docs/07 §3.9, docs/08 §5). It bypasses the SigNoz query-service REST
+// API (which changed incompatibly in v0.132) and reads ClickHouse tables
+// directly via its HTTP interface (localhost:8123 by default).
 //
-// If the SigNoz backend is unreachable, query methods return a
-// Degraded=true response rather than an error, so the UI degrades
-// gracefully ("backend unavailable") without breaking the Orchicon
-// shell (docs/08 §8: telemetry loss never blocks control flow).
+// If ClickHouse is unreachable, query methods return a Degraded=true
+// response rather than an error, so the UI degrades gracefully without
+// breaking the Orchicon shell (docs/08 §8).
 type SigNozClient struct {
-	baseURL    string
+	chURL      string
 	httpClient *http.Client
 }
 
-// NewSigNozClient constructs a proxy client. baseURL is the SigNoz
-// query-service root (e.g. http://localhost:3301 for the dev stack).
-// An empty baseURL disables proxying (queries return degraded empty).
-func NewSigNozClient(baseURL string) *SigNozClient {
+// NewSigNozClient constructs a client. clickhouseDSN is the ClickHouse
+// HTTP endpoint with credentials, e.g. "http://signoz:signoz@localhost:8123".
+// An empty DSN disables queries (returns degraded empty).
+func NewSigNozClient(clickhouseDSN string) *SigNozClient {
 	return &SigNozClient{
-		baseURL: strings.TrimRight(baseURL, "/"),
+		chURL:      strings.TrimRight(clickhouseDSN, "/"),
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
-// Available reports whether a SigNoz backend is configured.
-func (c *SigNozClient) Available() bool { return c.baseURL != "" }
+// Available reports whether ClickHouse is configured.
+func (c *SigNozClient) Available() bool { return c.chURL != "" }
 
-// TraceResult is the projected trace query result.
+// ----- Types -----
+
 type TraceResult struct {
-	Traces      []TraceSummary
-	NextPage    string
-	Degraded    bool
+	Traces   []TraceSummary
+	NextPage string
+	Degraded bool
 }
 
-// TraceSummary is a lightweight trace reference (the full span tree is
-// fetched on demand). Joined by trace_id across the OTel pipeline
-// (docs/08 §5.1).
 type TraceSummary struct {
 	TraceID       string
 	RootSpanName  string
@@ -61,143 +58,27 @@ type TraceSummary struct {
 	CorrelationID string
 }
 
-// QueryTraces proxies a tenant-scoped trace search to SigNoz. The
-// tenant_id filter is injected from the resolved tenant so the client
-// cannot escape tenant isolation. Returns Degraded=true if the backend
-// is unreachable.
-func (c *SigNozClient) QueryTraces(ctx context.Context, tenantID string, f TraceFilter) (TraceResult, error) {
-	if !c.Available() {
-		return TraceResult{Degraded: true}, nil
-	}
-	// SigNoz's trace search API: /api/v1/traces with a ClickHouse SQL
-	// expression. We build a minimal query that filters by the
-	// orchicon tenant_id resource attribute and the optional scopes.
-	q := buildTraceSQL(tenantID, f)
-	params := url.Values{}
-	params.Set("start", strconvFormat(f.Start))
-	params.Set("end", strconvFormat(f.End))
-	params.Set("limit", fmt.Sprintf("%d", f.Limit))
-	params.Set("query", q)
-
-	body, err := c.get(ctx, "/api/v1/traces?"+params.Encode())
-	if err != nil {
-		return TraceResult{Degraded: true}, nil
-	}
-	var resp struct {
-		Status string                 `json:"status"`
-		Data   []struct {
-			TraceID    string `json:"traceID"`
-			ServiceName string `json:"serviceName"`
-			RootServiceName string `json:"rootServiceName"`
-			RootName   string `json:"rootName"`
-			Duration   int64  `json:"duration"`
-			Timestamp  int64  `json:"timestamp"`
-			NumSpans   int    `json:"numSpans"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return TraceResult{Degraded: true}, nil
-	}
-	out := TraceResult{}
-	for _, t := range resp.Data {
-		out.Traces = append(out.Traces, TraceSummary{
-			TraceID:      t.TraceID,
-			RootSpanName: t.RootName,
-			Service:      t.RootServiceName,
-			DurationUS:   t.Duration,
-			StartTime:    time.UnixMicro(t.Timestamp),
-			SpanCount:    t.NumSpans,
-			TenantID:     tenantID,
-		})
-	}
-	return out, nil
-}
-
-// MetricResult is the projected metric query result.
 type MetricResult struct {
 	Series   []MetricSeriesPoint
 	Degraded bool
 }
 
-// MetricSeriesPoint is a flattened metric series sample.
 type MetricSeriesPoint struct {
-	Name      string
-	Labels    map[string]string
-	Points    []MetricPoint
+	Name   string
+	Labels map[string]string
+	Points []MetricPoint
 }
 
-// MetricPoint is one sample.
 type MetricPoint struct {
 	Timestamp time.Time
 	Value     float64
 }
 
-// QueryMetrics proxies a tenant-scoped metric query to SigNoz
-// (docs/08 §5.2). Returns Degraded=true if the backend is unreachable.
-func (c *SigNozClient) QueryMetrics(ctx context.Context, tenantID string, f MetricFilter) (MetricResult, error) {
-	if !c.Available() {
-		return MetricResult{Degraded: true}, nil
-	}
-	// SigNoz metric query API: /api/v1/metrics with a PromQL/ClickHouse
-	// expression. We query each requested metric name with the tenant
-	// label filter.
-	out := MetricResult{}
-	for _, name := range f.Names {
-		q := fmt.Sprintf(`%s{orchicon_tenant_id="%s"}`, name, tenantID)
-		params := url.Values{}
-		params.Set("start", strconvFormat(f.Start))
-		params.Set("end", strconvFormat(f.End))
-		params.Set("query", q)
-		body, err := c.get(ctx, "/api/v1/metrics?"+params.Encode())
-		if err != nil {
-			out.Degraded = true
-			continue
-		}
-		var resp struct {
-			Status string `json:"status"`
-			Data   struct {
-				Result []struct {
-					Metric map[string]string `json:"metric"`
-					Values [][]any            `json:"values"`
-				} `json:"result"`
-			} `json:"data"`
-		}
-		if err := json.Unmarshal(body, &resp); err != nil {
-			out.Degraded = true
-			continue
-		}
-		for _, r := range resp.Data.Result {
-			pts := make([]MetricPoint, 0, len(r.Values))
-			for _, v := range r.Values {
-				if len(v) < 2 {
-					continue
-				}
-				ts, _ := v[0].(float64)
-				val, _ := v[1].(string)
-				var fval float64
-				_, _ = fmt.Sscanf(val, "%f", &fval)
-				pts = append(pts, MetricPoint{
-					Timestamp: time.Unix(int64(ts), 0),
-					Value:     fval,
-				})
-			}
-			out.Series = append(out.Series, MetricSeriesPoint{
-				Name:   name,
-				Labels: r.Metric,
-				Points: pts,
-			})
-		}
-	}
-	return out, nil
-}
-
-// LogResult is the projected log query result.
 type LogResult struct {
 	Logs     []LogEntry
 	Degraded bool
 }
 
-// LogEntry is a projected OTel log record (docs/08 §5.3).
 type LogEntry struct {
 	TraceID       string
 	SpanID        string
@@ -209,47 +90,6 @@ type LogEntry struct {
 	CorrelationID string
 }
 
-// QueryLogs proxies a tenant-scoped log query to SigNoz
-// (docs/08 §5.3). Returns Degraded=true if the backend is unreachable.
-func (c *SigNozClient) QueryLogs(ctx context.Context, tenantID string, f LogFilter) (LogResult, error) {
-	if !c.Available() {
-		return LogResult{Degraded: true}, nil
-	}
-	q := fmt.Sprintf(`{"query":"SELECT trace_id, span_id, timestamp, severity_text, body, service_name, attributes FROM signoz_logs WHERE attributes['orchicon.tenant_id']='%s' ORDER BY timestamp DESC LIMIT %d"}`, tenantID, f.Limit)
-	body, err := c.post(ctx, "/api/v1/logs", q)
-	if err != nil {
-		return LogResult{Degraded: true}, nil
-	}
-	var resp struct {
-		Status string `json:"status"`
-		Data   []struct {
-			TraceID  string `json:"trace_id"`
-			SpanID   string `json:"span_id"`
-			Timestamp int64  `json:"timestamp"`
-			Severity string `json:"severity_text"`
-			Body     string `json:"body"`
-			Service  string `json:"service_name"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return LogResult{Degraded: true}, nil
-	}
-	out := LogResult{}
-	for _, l := range resp.Data {
-		out.Logs = append(out.Logs, LogEntry{
-			TraceID:   l.TraceID,
-			SpanID:    l.SpanID,
-			Timestamp: time.UnixMicro(l.Timestamp),
-			Severity:  l.Severity,
-			Body:      l.Body,
-			Service:   l.Service,
-			TenantID:  tenantID,
-		})
-	}
-	return out, nil
-}
-
-// TraceFilter scopes a trace query.
 type TraceFilter struct {
 	ProjectID     string
 	ExecutionID   string
@@ -260,14 +100,12 @@ type TraceFilter struct {
 	Limit         int
 }
 
-// MetricFilter scopes a metric query.
 type MetricFilter struct {
 	Names      []string
 	ProjectID  string
 	Start, End time.Time
 }
 
-// LogFilter scopes a log query.
 type LogFilter struct {
 	ProjectID string
 	Severity  string
@@ -275,68 +113,260 @@ type LogFilter struct {
 	Limit     int
 }
 
-// buildTraceSQL constructs a ClickHouse trace search expression scoped
-// to the tenant. The tenant_id attribute is always injected; client
-// scopes are ANDed in. This is the tenant-isolation enforcement point
-// for the proxy (AGENTS.md tenant isolation).
-func buildTraceSQL(tenantID string, f TraceFilter) string {
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf(`resource_attributes['orchicon.tenant_id']='%s'`, tenantID))
+// ----- QueryTraces -----
+
+func (c *SigNozClient) QueryTraces(ctx context.Context, tenantID string, f TraceFilter) (TraceResult, error) {
+	if !c.Available() {
+		return TraceResult{Degraded: true}, nil
+	}
+
+	where := fmt.Sprintf(`resourceTagsMap['orchicon.tenant_id']='%s'`, tenantID)
 	if f.ProjectID != "" {
-		b.WriteString(fmt.Sprintf(` AND resource_attributes['orchicon.project_id']='%s'`, f.ProjectID))
+		where += fmt.Sprintf(` AND resourceTagsMap['orchicon.project_id']='%s'`, f.ProjectID)
 	}
 	if f.ExecutionID != "" {
-		b.WriteString(fmt.Sprintf(` AND span_attributes['orchicon.execution_id']='%s'`, f.ExecutionID))
+		where += fmt.Sprintf(` AND stringTagMap['orchicon.execution_id']='%s'`, f.ExecutionID)
 	}
 	if f.TraceID != "" {
-		b.WriteString(fmt.Sprintf(` AND trace_id='%s'`, f.TraceID))
-	}
-	if f.CorrelationID != "" {
-		b.WriteString(fmt.Sprintf(` AND span_attributes['orchicon.correlation_id']='%s'`, f.CorrelationID))
+		where += fmt.Sprintf(` AND traceID='%s'`, f.TraceID)
 	}
 	if f.Service != "" {
-		b.WriteString(fmt.Sprintf(` AND service_name='%s'`, f.Service))
+		where += fmt.Sprintf(` AND serviceName='%s'`, f.Service)
 	}
-	return b.String()
-}
 
-func (c *SigNozClient) get(ctx context.Context, path string) ([]byte, error) {
-	return c.do(ctx, http.MethodGet, path, "")
-}
-
-func (c *SigNozClient) post(ctx context.Context, path, body string) ([]byte, error) {
-	return c.do(ctx, http.MethodPost, path, body)
-}
-
-func (c *SigNozClient) do(ctx context.Context, method, path, body string) ([]byte, error) {
-	u := c.baseURL + path
-	var rdr io.Reader
-	if body != "" {
-		rdr = strings.NewReader(body)
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 50
 	}
-	req, err := http.NewRequestWithContext(ctx, method, u, rdr)
+
+	sql := fmt.Sprintf(`
+		SELECT
+			traceID,
+			serviceName,
+			name,
+			durationNano,
+			timestamp
+		FROM signoz_traces.signoz_index_v2
+		WHERE %s
+		ORDER BY timestamp DESC
+		LIMIT %d
+	`, where, limit)
+
+	rows, err := c.queryClickHouse(ctx, sql)
 	if err != nil {
-		return nil, fmt.Errorf("signoz: build request: %w", err)
+		return TraceResult{Degraded: true}, nil
 	}
-	if body != "" {
-		req.Header.Set("Content-Type", "application/json")
+
+	// Group rows by traceID to build summaries.
+	type spanRow struct {
+		TraceID     string    `json:"traceID"`
+		ServiceName string    `json:"serviceName"`
+		Name        string    `json:"name"`
+		DurationNano uint64    `json:"durationNano"`
+		Timestamp   time.Time `json:"timestamp"`
 	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("signoz: request: %w", err)
+	type traceAccum struct {
+		Service   string
+		Name      string
+		Duration  int64
+		StartTime time.Time
+		SpanCount int
 	}
-	defer resp.Body.Close()
-	out, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("signoz: status %d", resp.StatusCode)
+	acc := make(map[string]*traceAccum)
+	var order []string
+
+	for _, row := range rows {
+		var r spanRow
+		if err := json.Unmarshal(row, &r); err != nil {
+			continue
+		}
+		tid := r.TraceID
+		if _, ok := acc[tid]; !ok {
+			acc[tid] = &traceAccum{
+				Service:   r.ServiceName,
+				Name:      r.Name,
+				Duration:  int64(r.DurationNano / 1000),
+				StartTime: r.Timestamp,
+			}
+			order = append(order, tid)
+		}
+		a := acc[tid]
+		a.SpanCount++
+		if r.Timestamp.Before(a.StartTime) {
+			a.StartTime = r.Timestamp
+		}
+		d := int64(r.DurationNano / 1000)
+		if d > a.Duration {
+			a.Duration = d
+		}
+	}
+
+	out := TraceResult{}
+	for _, tid := range order {
+		a := acc[tid]
+		out.Traces = append(out.Traces, TraceSummary{
+			TraceID:      tid,
+			RootSpanName: a.Name,
+			Service:      a.Service,
+			DurationUS:   a.Duration,
+			StartTime:    a.StartTime,
+			SpanCount:    a.SpanCount,
+			TenantID:     tenantID,
+		})
 	}
 	return out, nil
 }
 
-// strconvFormat formats a time as a Unix-second string for SigNoz APIs.
-func strconvFormat(t time.Time) string {
-	if t.IsZero() {
-		return ""
+// ----- QueryMetrics -----
+
+func (c *SigNozClient) QueryMetrics(ctx context.Context, tenantID string, f MetricFilter) (MetricResult, error) {
+	if !c.Available() {
+		return MetricResult{Degraded: true}, nil
 	}
-	return fmt.Sprintf("%d", t.Unix())
+
+	out := MetricResult{}
+	for _, name := range f.Names {
+		sql := fmt.Sprintf(`
+			SELECT
+				timestamp,
+				value
+			FROM signoz_metrics.samples_v4
+			WHERE metric_name = '%s'
+				AND JSONExtractString(labels, 'orchicon_tenant_id') = '%s'
+			ORDER BY timestamp DESC
+			LIMIT 100
+		`, name, tenantID)
+
+		rows, err := c.queryClickHouse(ctx, sql)
+		if err != nil {
+			out.Degraded = true
+			continue
+		}
+
+		type metricRow struct {
+			Timestamp time.Time `json:"timestamp"`
+			Value     float64   `json:"value"`
+		}
+
+		pts := make([]MetricPoint, 0, len(rows))
+		for _, row := range rows {
+			var r metricRow
+			if err := json.Unmarshal(row, &r); err != nil {
+				continue
+			}
+			pts = append(pts, MetricPoint{
+				Timestamp: r.Timestamp,
+				Value:     r.Value,
+			})
+		}
+		if len(pts) > 0 {
+			out.Series = append(out.Series, MetricSeriesPoint{
+				Name:   name,
+				Labels: map[string]string{"tenant_id": tenantID},
+				Points: pts,
+			})
+		}
+	}
+	return out, nil
+}
+
+// ----- QueryLogs -----
+
+func (c *SigNozClient) QueryLogs(ctx context.Context, tenantID string, f LogFilter) (LogResult, error) {
+	if !c.Available() {
+		return LogResult{Degraded: true}, nil
+	}
+
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+
+	where := fmt.Sprintf(`resources_string['orchicon.tenant_id']='%s'`, tenantID)
+	if f.Severity != "" && f.Severity != "UNSPECIFIED" {
+		where += fmt.Sprintf(` AND severity_text='%s'`, f.Severity)
+	}
+
+	sql := fmt.Sprintf(`
+		SELECT
+			trace_id,
+			span_id,
+			timestamp,
+			severity_text,
+			body,
+			resources_string['service.name'] AS service_name
+		FROM signoz_logs.logs_v2
+		WHERE %s
+		ORDER BY timestamp DESC
+		LIMIT %d
+	`, where, limit)
+
+	rows, err := c.queryClickHouse(ctx, sql)
+	if err != nil {
+		return LogResult{Degraded: true}, nil
+	}
+
+	type logRow struct {
+		TraceID    string `json:"trace_id"`
+		SpanID     string `json:"span_id"`
+		Timestamp  uint64 `json:"timestamp"`
+		Severity   string `json:"severity_text"`
+		Body       string `json:"body"`
+		Service    string `json:"service_name"`
+	}
+
+	out := LogResult{}
+	for _, row := range rows {
+		var r logRow
+		if err := json.Unmarshal(row, &r); err != nil {
+			continue
+		}
+		out.Logs = append(out.Logs, LogEntry{
+			TraceID:   r.TraceID,
+			SpanID:    r.SpanID,
+			Timestamp: time.UnixMicro(int64(r.Timestamp)),
+			Severity:  r.Severity,
+			Body:      r.Body,
+			Service:   r.Service,
+			TenantID:  tenantID,
+		})
+	}
+	return out, nil
+}
+
+// ----- ClickHouse HTTP query -----
+
+// queryClickHouse sends a SQL query to ClickHouse via its HTTP interface
+// and returns parsed JSON rows.
+func (c *SigNozClient) queryClickHouse(ctx context.Context, sql string) ([]json.RawMessage, error) {
+	u := c.chURL + "/?default_format=JSONEachRow"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(sql))
+	if err != nil {
+		return nil, fmt.Errorf("clickhouse: build request: %w", err)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("clickhouse: request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("clickhouse: read body: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("clickhouse: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	// Each line is a JSON object (JSONEachRow format).
+	var rows []json.RawMessage
+	sc := bufio.NewScanner(bytes.NewReader(body))
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		rows = append(rows, json.RawMessage(line))
+	}
+	return rows, sc.Err()
 }
