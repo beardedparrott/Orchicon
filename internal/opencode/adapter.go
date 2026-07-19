@@ -27,6 +27,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/beardedparrott/orchicon/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -162,15 +165,39 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		cmd.Env = append(cmd.Env, "OPENCODE_SYSTEM_PROMPT="+manifest.SystemPrompt)
 	}
 
-	// Capture stdout + stderr. Stderr is both logged to the control
-	// plane's stderr AND captured into a buffer so the error message
-	// includes the actual opencode error text (not just "exit status 1").
+	// Capture stdout + stderr. Stderr is logged to the control plane's
+	// stderr, captured into a buffer for error reporting, AND emitted
+	// as OTel log records into ClickHouse so execution stderr appears
+	// in the telemetry logs tab (docs/08 §5.3).
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("opencode: stdout pipe: %w", err)
 	}
 	var stderrBuf bytes.Buffer
-	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
+	stderrReader, stderrWriter := io.Pipe()
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf, stderrWriter)
+
+	// Goroutine: read stderr lines and emit as OTel log records.
+	// Each line carries the execution context (execution_id, project_id,
+	// task_id, worker_id, trace_id) so it correlates with the execution
+	// span in the SigNoz UI.
+	go func() {
+		defer stderrReader.Close()
+		sc := bufio.NewScanner(stderrReader)
+		sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+		baseAttrs := []attribute.KeyValue{
+			attribute.String("execution_id", execRow.ID),
+			attribute.String("project_id", manifest.ProjectID),
+			attribute.String("task_id", manifest.TaskID),
+		}
+		for sc.Scan() {
+			line := strings.TrimRight(sc.Text(), "\n\r")
+			if line == "" {
+				continue
+			}
+			telemetry.EmitLog(ctx, "ERROR", line, baseAttrs...)
+		}
+	}()
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("opencode: start: %w", err)

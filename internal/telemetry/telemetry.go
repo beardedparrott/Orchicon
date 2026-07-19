@@ -1,7 +1,8 @@
 // Package telemetry sets up the OpenTelemetry pipeline: tracer,
-// meter, and OTLP exporter (→ SigNoz/ClickHouse via the OTel collector
-// in deploy/compose). Per docs/08 §5, telemetry flows from the producer
-// to the OTel collector to SigNoz — it does not flow through NATS.
+// meter, log exporter, and OTLP gRPC exporter (→ SigNoz/ClickHouse
+// via the OTel collector in deploy/compose). Per docs/08 §5,
+// telemetry flows from the producer to the OTel collector to SigNoz
+// — it does not flow through NATS.
 //
 // The pipeline is best-effort: if the collector is unreachable,
 // telemetry is dropped with bounded in-process buffering and control
@@ -23,8 +24,12 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	otel_log "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/log/global"
+	sdk_log "go.opentelemetry.io/otel/sdk/log"
 	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/metric"
@@ -40,11 +45,12 @@ import (
 type Shutdowner struct {
 	tracerShutdown func(context.Context) error
 	meterShutdown  func(context.Context) error
+	logShutdown    func(context.Context) error
 	conn           *grpc.ClientConn
 	log            *slog.Logger
 }
 
-// Shutdown flushes and shuts down the tracer and meter exporters.
+// Shutdown flushes and shuts down all exporters.
 func (s *Shutdowner) Shutdown(ctx context.Context) {
 	if s == nil {
 		return
@@ -57,6 +63,11 @@ func (s *Shutdowner) Shutdown(ctx context.Context) {
 	if s.meterShutdown != nil {
 		if err := s.meterShutdown(ctx); err != nil {
 			s.log.Warn("meter shutdown failed", "error", err)
+		}
+	}
+	if s.logShutdown != nil {
+		if err := s.logShutdown(ctx); err != nil {
+			s.log.Warn("log exporter shutdown failed", "error", err)
 		}
 	}
 	if s.conn != nil {
@@ -132,6 +143,26 @@ func Setup(ctx context.Context, cfg config.Config, log *slog.Logger) (*Shutdowne
 		shutdown.meterShutdown = mp.Shutdown
 	}
 
+	// Log exporter (same non-blocking connection). The OTel log SDK is
+	// still experimental (v0.x) but the gRPC exporter follows the same
+	// pattern as the stable trace/metric exporters. If it fails, logs
+	// are silently dropped — execution telemetry is not blocked.
+	logExporter, err := otlploggrpc.New(ctx,
+		otlploggrpc.WithGRPCConn(conn),
+		otlploggrpc.WithTimeout(10*time.Second),
+	)
+	if err != nil {
+		log.Warn("log exporter unavailable (logs disabled)", "error", err)
+	} else {
+		lp := sdk_log.NewLoggerProvider(
+			sdk_log.WithProcessor(sdk_log.NewBatchProcessor(logExporter)),
+			sdk_log.WithResource(res),
+		)
+		global.SetLoggerProvider(lp)
+		shutdown.logShutdown = lp.Shutdown
+		log.Info("log exporter initialized")
+	}
+
 	// W3C TraceContext + Baggage propagation (docs/08 §6).
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
@@ -150,6 +181,57 @@ func Tracer() trace.Tracer {
 // Meter returns the global meter for creating instruments.
 func Meter() otelmetric.Meter {
 	return otel.Meter("orchicon")
+}
+
+// Logger returns the global OTel log provider logger for emitting
+// structured log records to the telemetry pipeline. The logger is
+// best-effort: log records are queued in-process and dropped when
+// the OTel collector is unreachable (docs/08 §8).
+func Logger() otel_log.Logger {
+	return global.GetLoggerProvider().Logger("orchicon")
+}
+
+// EmitLog creates and dispatches a log record through the OTel pipeline.
+// severity is a standard OTel severity string (e.g. "ERROR", "INFO").
+// body is the text content. attrs are key-value attribute pairs.
+func EmitLog(ctx context.Context, severity string, body string, attrs ...attribute.KeyValue) {
+	logger := Logger()
+	if logger == nil {
+		return
+	}
+	r := otel_log.Record{}
+	r.SetTimestamp(time.Now())
+	r.SetSeverity(otel_log.Severity(severityLevel(severity)))
+	r.SetBody(otel_log.StringValue(body))
+
+	// Convert otel attribute.KeyValue pairs to log attributes.
+	var logAttrs []otel_log.KeyValue
+	for _, a := range attrs {
+		logAttrs = append(logAttrs, otel_log.KeyValueFromAttribute(a))
+	}
+	r.AddAttributes(logAttrs...)
+
+	logger.Emit(ctx, r)
+}
+
+// severityLevel maps standard severity strings to OTel severity levels.
+func severityLevel(s string) int {
+	switch s {
+	case "TRACE":
+		return int(otel_log.SeverityTrace)
+	case "DEBUG":
+		return int(otel_log.SeverityDebug)
+	case "INFO":
+		return int(otel_log.SeverityInfo)
+	case "WARN":
+		return int(otel_log.SeverityWarn)
+	case "ERROR":
+		return int(otel_log.SeverityError)
+	case "FATAL":
+		return int(otel_log.SeverityFatal)
+	default:
+		return int(otel_log.SeverityInfo)
+	}
 }
 
 // Middleware wraps an http.Handler with OTel trace extraction and span
