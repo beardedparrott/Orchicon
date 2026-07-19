@@ -928,6 +928,22 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 			fmt.Fprintf(&sb, "## Stage %d\n%s\n\n", i+1, s)
 		}
 	}
+	// 3b. Recovery context — this work item may have been recovered from
+	// a previous execution failure. The recovery engine writes
+	// _recovery_summary into the work item's results when it transitions
+	// the task back to ready; inject it here so the replacement
+	// execution knows what went wrong and what was recovered.
+	if len(wi.Results) > 0 {
+		var wiParsed map[string]any
+		if err := json.Unmarshal(wi.Results, &wiParsed); err == nil {
+			if rSummary, ok := wiParsed["_recovery_summary"].(string); ok && rSummary != "" {
+				sb.WriteString("# Recovery context\n\n")
+				sb.WriteString("The previous execution for this task failed and was automatically recovered. The following is a summary of what happened:\n\n")
+				sb.WriteString(rSummary)
+				sb.WriteString("\n\n")
+			}
+		}
+	}
 	// 4. File context — selected project files (PR: project context files).
 	if wi.ProjectID != "" {
 		fileCtx, err := r.readProjectContextFiles(ctx, tx, tenantID, wi.ProjectID)
