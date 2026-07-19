@@ -645,10 +645,26 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 		}
 		rec = updated
 		// Transition the task recovering → ready (scheduler dispatches).
+		// Also append the recovery summary to the work item's results so:
+		// (a) the replacement execution's prompt includes recovery context
+		//     (the WorkflowReconciler reads _recovery_summary into
+		//     the composite prompt — fixes the "same failure twice" loop);
+		// (b) downstream steps that read upstream summaries see the
+		//     recovery narrative alongside the worker's output
+		//     (docs/02 §2.2 context propagation).
 		task, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, rec.TaskID)
 		if err == nil {
+			wiResults := map[string]any{}
+			if len(task.Results) > 0 {
+				_ = json.Unmarshal(task.Results, &wiResults)
+			}
+			if rec.Summary != "" {
+				wiResults["_recovery_summary"] = rec.Summary
+			}
+			wiResultsJSON, _ := json.Marshal(wiResults)
 			_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, rec.TaskID, task.Version, db.UpdateWorkItemFields{
-				Status: strPtr(domain.WorkItemReady),
+				Status:  strPtr(domain.WorkItemReady),
+				Results: &wiResultsJSON,
 			})
 		}
 		_ = enqueueRecoveryEvent(ctx, ttx.Tx, domain.RecoveryEventResumed, rec, "", "", rec.TriggerReason, "recovery completed; task resumed to ready", "")
