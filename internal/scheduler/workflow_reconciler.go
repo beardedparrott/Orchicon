@@ -1113,18 +1113,21 @@ func (r *WorkflowReconciler) upstreamContext(ctx context.Context, tx pgx.Tx, ten
 	}
 
 	// If a current step is known, append a brief "next task" reminder
-	// so the worker can see at a glance what is expected of them.
+	// so the worker can see at a glance what is expected of them. The
+	// "→ you are here" marker lives here rather than in the timeline
+	// because the current dispatch is the NEXT step to run — the
+	// timeline only contains prior steps that have already started.
 	if currentStepID != "" {
 		for _, s := range allSteps {
 			if s.ID != currentStepID {
 				continue
 			}
-			sb.WriteString("\n## Next task\n\n")
+			sb.WriteString("## → Next task (you are here)\n\n")
 			fmt.Fprintf(&sb, "You are executing **%s** (%s", strings.TrimSpace(s.Name), stepKindLabel(s.Kind))
 			if s.Kind == domain.StepKindTask && s.Ref != "" {
 				fmt.Fprintf(&sb, ", worker `%s`", s.Ref)
 			}
-			sb.WriteString("). Complete the work in the *Task* section above, then end your response with the `ORCHICON WORKER SUMMARY:` marker so the next stage can read your result.\n")
+			sb.WriteString("). Complete the work in the *Task* section above, then end your response with the `ORCHICON WORKER SUMMARY:` marker so the next stage can read your result.\n\n")
 			break
 		}
 	}
