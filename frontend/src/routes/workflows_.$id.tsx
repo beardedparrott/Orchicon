@@ -237,7 +237,10 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   useEffect(() => {
     if (!latestVersion) return;
     // Load once per version id (avoid clobbering in-progress edits).
-    if (loadedRef.current === latestVersion.id && !dirty) return;
+    // The dirty flag is intentionally excluded — when the same version is
+    // already loaded, we never overwrite the canvas regardless of dirty
+    // state, otherwise a refetch after createVersion would clobber edits.
+    if (loadedRef.current === latestVersion.id) return;
     const { nodes: n, edges: e } = stepsToCanvas(latestVersion.steps);
     setNodes(n);
     setEdges(e);
@@ -685,7 +688,11 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                 onClick={async () => {
                   const note = window.prompt("Version note (optional):");
                   if (note === null) return; // cancelled
-                  await createVersion.mutateAsync({ workflowId, versionNote: note });
+                  const result = await createVersion.mutateAsync({ workflowId, versionNote: note });
+                  // Mark the new version as loaded immediately so the
+                  // version-loading useEffect does not re-fire after the
+                  // query refetch and clobber any in-progress edits.
+                  loadedRef.current = result.version.id;
                 }}
                 disabled={createVersion.isPending}
               >
