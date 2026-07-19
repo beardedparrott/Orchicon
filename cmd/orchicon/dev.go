@@ -546,26 +546,42 @@ func composeUp(ctx context.Context) error {
 	return nil
 }
 
-// composeDown runs `docker compose down` with the embedded compose file,
-// then force-removes any remaining known containers as a fallback.
+// composeDown tears down all orchicon Docker containers. It tries three
+// approaches in order of preference so that a subsequent `orchicon start`
+// never fails with "Conflict: container name already in use".
 func composeDown(ctx context.Context) error {
+	// 1. Polite: docker compose down with the embedded compose file.
 	err := runComposeFromTemp(ctx, nil, "down", "--remove-orphans")
 	if err == nil {
 		return nil
 	}
+	fmt.Fprintf(os.Stderr, "  ! compose down failed, force-removing containers: %v\n", err)
 
-	// Fallback: force-remove each known container individually so a
-	// subsequent `orchicon start` / `compose up` does not fail with
-	// "Conflict: container name already in use" (docs/10 §12.4).
-	containers := []string{
+	// 2. Forceful: remove every container belonging to the orchicon
+	// compose project by label. This catches containers that were
+	// started outside the compose file or have irregular names.
+	prune := exec.CommandContext(ctx, "docker", "container", "prune",
+		"--force", "--filter", "label=com.docker.compose.project=orchicon")
+	prune.Stderr = os.Stderr
+	prune.Stdout = os.Stdout
+	_ = prune.Run()
+
+	// 3. Nuclear: any container whose name starts with "orchicon-" that
+	// might have slipped through (e.g. from a legacy run without compose
+	// labels). Idempotent — `docker rm -f` is a no-op if the container
+	// does not exist.
+	known := []string{
 		"orchicon-postgres", "orchicon-nats", "orchicon-clickhouse",
 		"orchicon-signoz-schema-migrator", "orchicon-otel-collector", "orchicon-signoz",
 	}
-	for _, name := range containers {
-		cmd := exec.CommandContext(ctx, "docker", "rm", "-f", name)
-		_ = cmd.Run()
+	for _, name := range known {
+		rm := exec.CommandContext(ctx, "docker", "rm", "-f", name)
+		rm.Stderr = os.Stderr
+		rm.Stdout = os.Stdout
+		_ = rm.Run()
 	}
-	return fmt.Errorf("docker compose down: %w (containers force-removed as fallback)", err)
+
+	return fmt.Errorf("docker compose down failed (containers force-removed): %w", err)
 }
 
 // waitForContainer polls `docker inspect` for the container's health

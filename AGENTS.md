@@ -14,6 +14,10 @@
 > **STOP!** Are you in a custom branch or are you on `main`? If you are on `main`. **DO NOT proceed.**
 > Instead, create a new branch and continue. Keep this in your memory context **AT ALL TIMES**.
 > This is **RULE number 1**.
+>
+> Check your branch at the very start of every task, before reading files,
+> before writing code, before anything. `git branch --show-current` is the
+> first command you run on every new task.
 
 ## Token discipline
 
