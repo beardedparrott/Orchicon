@@ -877,16 +877,37 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 
 // buildCompositePrompt assembles the prompt text the worker should see
 // when this work item is dispatched (PR B — context propagation). It
-// has three sections:
+// has the following sections:
 //
 //   1. # Task — the work item itself: title, description, acceptance
 //      criteria. This is THE task; everything else is context.
 //   2. # Project context — the ancestor chain walked via
 //      work_items.parent_id (oldest first).
-//   3. # Upstream context — summaries from prior TASK step runs in
-//      this workflow. Each upstream step's results._summary (set by
-//      the TaskReconciler via ORCHICON WORKER SUMMARY extraction) is
-//      included verbatim, in upstream order.
+//   3. # Workflow context — a chronological timeline of every step in
+//      this run, in DAG order, with each step's status and the
+//      execution results it produced. The current step is marked so
+//      the worker can see what has come before and what is expected
+//      next. Includes:
+//        - TASK steps: worker's full output (truncated if huge) and
+//          the extracted ORCHICON WORKER SUMMARY.
+//        - RECOVER steps: recovery execution summary, status, and
+//          strategy. Tells the next worker what went wrong on a
+//          prior failure and what was tried.
+//        - WORK_ITEM / PROJECT steps: linked work item title + short
+//          description (passive context markers).
+//        - DECISION / APPROVAL / PARALLEL steps: status only.
+//
+//   4. # Recovery context (this task) — if THIS work item was
+//      recovered from a previous execution failure, the recovery
+//      summary is included here verbatim (recovery engine writes it
+//      to the work item's results). Distinct from the per-step
+//      recovery timeline above: this is the recovery for the task
+//      the worker is about to execute, not for prior steps.
+//   5. # File context — selected project files (PR: project context
+//      files).
+//   6. # Instructions — the worker's contract: emit the
+//      ORCHICON WORKER SUMMARY marker at the end of the response so
+//      the next stage can read it as upstream context.
 //
 // The composite is the opencode adapter's "message" (passed via the
 // manifest Goal). The worker is instructed via the prompt's footer to
@@ -919,32 +940,36 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 			sb.WriteString("\n")
 		}
 	}
-	// 3. Upstream context — prior TASK step runs that have completed.
-	upstream := upstreamStepSummaries(ctx, allSteps, runs)
-	if len(upstream) > 0 {
-		sb.WriteString("# Upstream context\n\n")
-		sb.WriteString("Summaries from prior worker steps in this workflow. Each summary is the worker's final output for that stage.\n\n")
-		for i, s := range upstream {
-			fmt.Fprintf(&sb, "## Stage %d\n%s\n\n", i+1, s)
-		}
+	// 3. Workflow context — full timeline of every step in this run.
+	// Walks allSteps in DAG order, inlines the result of every step
+	// (TASK full output + summary, RECOVER narrative, WORK_ITEM
+	// title, etc.) and marks the current step so the worker can
+	// orient itself. See upstreamContext for the per-step rendering.
+	wctx, err := r.upstreamContext(ctx, tx, tenantID, wi, allSteps, runs)
+	if err != nil {
+		return "", fmt.Errorf("build workflow context: %w", err)
 	}
-	// 3b. Recovery context — this work item may have been recovered from
-	// a previous execution failure. The recovery engine writes
-	// _recovery_summary into the work item's results when it transitions
-	// the task back to ready; inject it here so the replacement
-	// execution knows what went wrong and what was recovered.
+	if wctx != "" {
+		sb.WriteString(wctx)
+	}
+	// 4. Recovery context (this task) — this work item may have been
+	// recovered from a previous execution failure. The recovery engine
+	// writes _recovery_summary into the work item's results when it
+	// transitions the task back to ready; inject it here so the
+	// replacement execution knows what went wrong and what was
+	// recovered.
 	if len(wi.Results) > 0 {
 		var wiParsed map[string]any
 		if err := json.Unmarshal(wi.Results, &wiParsed); err == nil {
 			if rSummary, ok := wiParsed["_recovery_summary"].(string); ok && rSummary != "" {
-				sb.WriteString("# Recovery context\n\n")
+				sb.WriteString("# Recovery context (this task)\n\n")
 				sb.WriteString("The previous execution for this task failed and was automatically recovered. The following is a summary of what happened:\n\n")
 				sb.WriteString(rSummary)
 				sb.WriteString("\n\n")
 			}
 		}
 	}
-	// 4. File context — selected project files (PR: project context files).
+	// 5. File context — selected project files (PR: project context files).
 	if wi.ProjectID != "" {
 		fileCtx, err := r.readProjectContextFiles(ctx, tx, tenantID, wi.ProjectID)
 		if err != nil {
@@ -953,7 +978,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 			sb.WriteString(fileCtx)
 		}
 	}
-	// Footer: instruction for the worker to emit the summary marker.
+	// 6. Footer: instruction for the worker to emit the summary marker.
 	sb.WriteString("# Instructions\n\n")
 	sb.WriteString("Complete the task above. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one short paragraph summarizing what you did. Everything from that marker to the end of your output is passed to the next stage of the workflow as upstream context.\n\n")
 	sb.WriteString("If you produce an output file (an essay, report, configuration, generated code, or any structured artifact), use the `write` tool to save it instead of `bash` with a heredoc. The `write` tool saves the file and orchicon automatically captures its content as an inline artifact visible in the execution log. Using `write` (not bash heredoc) makes your output visible to the operator without them having to click through tool input.\n")
@@ -989,39 +1014,335 @@ func walkAncestors(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkIt
 	return out, nil
 }
 
-// upstreamStepSummaries collects the `_summary` field from each prior
-// TASK step run that is succeeded. Order: topological — the function
-// walks the DAG in step-id order via allSteps (which is in the order
-// the author placed them; for a linear chain that's left-to-right).
-// Cycles are the caller's responsibility to prevent (validated at save
-// time, docs/10 §11).
-func upstreamStepSummaries(ctx context.Context, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) []string {
-	var out []string
-	for _, s := range allSteps {
-		if s.Kind != domain.StepKindTask {
-			continue
+// upstreamContext renders a chronological "Workflow context" section
+// for the worker: a numbered list of every step in this run, in DAG
+// order, with each step's status and the execution results it
+// produced. The current step is marked so the worker can see what has
+// come before and what is expected next.
+//
+// Per-step rendering (see renderUpstreamStep):
+//
+//   - TASK: linked work item (loaded from DB) — its title, the
+//     worker's full output (truncated to upstreamOutputMaxChars if
+//     huge), the extracted ORCHICON WORKER SUMMARY, and any
+//     _recovery_summary on the work item.
+//   - RECOVER: linked recovery execution (loaded from DB) — its
+//     status, strategy, summary narrative, and trigger reason.
+//   - WORK_ITEM: linked work item title + a short description
+//     excerpt. These are passive context markers on the canvas, not
+//     executed by a worker.
+//   - PROJECT: project name only.
+//   - DECISION / APPROVAL / PARALLEL: status only (they're branching
+//     and gating primitives, not result-bearing).
+//
+// Returns "" when the run has no step runs yet (first step) so the
+// caller can omit the section entirely rather than render an empty
+// header. The function walks the DAG by step-id order via allSteps
+// (the order the author placed them on the canvas — for a linear
+// chain that's left-to-right; for a diamond, the source order
+// approximates topological order, which is the best the reconciler
+// can do without a full topological sort). Cycles are the caller's
+// responsibility to prevent (validated at save time, docs/10 §11).
+func (r *WorkflowReconciler) upstreamContext(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, error) {
+	// Find the current step (the one being dispatched). The worker
+	// step whose result will eventually hold this work item's id is
+	// the step we're building the prompt for.
+	currentStepID := ""
+	if wi.WorkflowStepID != "" {
+		currentStepID = wi.WorkflowStepID
+	} else {
+		// Fallback: scan for the step run that referenced this work
+		// item. The reconciler stores _work_item_id on the step run
+		// when dispatching; if the work item is being created fresh
+		// the field may not be set yet, in which case the prompt
+		// builder is being called speculatively — treat as "no
+		// current step" so we don't mark the wrong stage.
+		for sid, sr := range runs {
+			var parsed struct {
+				WorkItemID string `json:"_work_item_id"`
+			}
+			if json.Unmarshal(sr.Result, &parsed) == nil && parsed.WorkItemID == wi.ID {
+				currentStepID = sid
+				break
+			}
 		}
+	}
+
+	// Count terminal (succeeded/failed/skipped) prior steps to know
+	// whether to render the section at all. A run with zero
+	// completed steps is a single-step workflow — the task section
+	// already conveys what the worker should do.
+	hasAnyTerminal := false
+	for _, s := range allSteps {
 		sr, ok := runs[s.ID]
 		if !ok {
 			continue
 		}
-		if sr.Status != domain.StepRunSucceeded {
-			continue
+		if sr.Status == domain.StepRunSucceeded || sr.Status == domain.StepRunFailed || sr.Status == domain.StepRunSkipped {
+			hasAnyTerminal = true
+			break
 		}
-		if len(sr.Result) == 0 {
-			continue
-		}
-		var parsed map[string]any
-		if err := json.Unmarshal(sr.Result, &parsed); err != nil {
-			continue
-		}
-		s, _ := parsed["_summary"].(string)
-		if s == "" {
-			continue
-		}
-		out = append(out, s)
 	}
-	return out
+	if !hasAnyTerminal {
+		return "", nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("# Workflow context\n\n")
+	sb.WriteString("This is a chronological view of every step in the workflow run, in DAG order. The current step is marked `→ you are here`. Use prior step results as input to your work and produce the output the next stage will read.\n\n")
+
+	stage := 0
+	for _, s := range allSteps {
+		sr, ok := runs[s.ID]
+		if !ok {
+			// Step hasn't been visited yet — skip. (Steps scheduled
+			// in the future will appear when they run; the timeline
+			// only shows what's already happened.)
+			continue
+		}
+		// Only show steps that have actually started. A pending
+		// step is invisible to the worker.
+		if sr.Status == domain.StepRunPending || sr.Status == domain.StepRunReady {
+			continue
+		}
+		stage++
+		isCurrent := s.ID == currentStepID
+		if err := r.renderUpstreamStep(ctx, tx, tenantID, &sb, stage, s, sr, isCurrent); err != nil {
+			return "", err
+		}
+	}
+
+	// If a current step is known, append a brief "next task" reminder
+	// so the worker can see at a glance what is expected of them. The
+	// "→ you are here" marker lives here rather than in the timeline
+	// because the current dispatch is the NEXT step to run — the
+	// timeline only contains prior steps that have already started.
+	if currentStepID != "" {
+		for _, s := range allSteps {
+			if s.ID != currentStepID {
+				continue
+			}
+			sb.WriteString("## → Next task (you are here)\n\n")
+			fmt.Fprintf(&sb, "You are executing **%s** (%s", strings.TrimSpace(s.Name), stepKindLabel(s.Kind))
+			if s.Kind == domain.StepKindTask && s.Ref != "" {
+				fmt.Fprintf(&sb, ", worker `%s`", s.Ref)
+			}
+			sb.WriteString("). Complete the work in the *Task* section above, then end your response with the `ORCHICON WORKER SUMMARY:` marker so the next stage can read your result.\n\n")
+			break
+		}
+	}
+
+	return sb.String(), nil
+}
+
+// renderUpstreamStep writes one step's entry to the workflow context
+// timeline. See upstreamContext for the per-kind format. Errors are
+// returned for genuine DB failures (ErrNotFound is treated as
+// "no data available" and the section is rendered with whatever we
+// have, so a transient inconsistency doesn't poison the prompt).
+func (r *WorkflowReconciler) renderUpstreamStep(ctx context.Context, tx pgx.Tx, tenantID string, sb *strings.Builder, stage int, s workflow.StepWire, sr db.WorkflowStepRunRow, isCurrent bool) error {
+	marker := ""
+	if isCurrent {
+		marker = "  → you are here"
+	}
+	fmt.Fprintf(sb, "## Stage %d — %s (%s)%s\n", stage, strings.TrimSpace(s.Name), stepKindLabel(s.Kind), marker)
+
+	// Step status. For everything but TASK, this is usually the only
+	// information we have; render it inline.
+	switch sr.Status {
+	case domain.StepRunSucceeded:
+		fmt.Fprintf(sb, "Status: succeeded\n")
+	case domain.StepRunFailed:
+		fmt.Fprintf(sb, "Status: **failed**\n")
+	case domain.StepRunSkipped:
+		fmt.Fprintf(sb, "Status: skipped\n")
+	case domain.StepRunRunning:
+		fmt.Fprintf(sb, "Status: running\n")
+	case domain.StepRunBlocked:
+		fmt.Fprintf(sb, "Status: blocked\n")
+	case domain.StepRunApprovalPending:
+		fmt.Fprintf(sb, "Status: awaiting approval\n")
+	default:
+		fmt.Fprintf(sb, "Status: %s\n", sr.Status)
+	}
+
+	// Per-kind body. Failures to load referenced rows (e.g. the linked
+	// work item for a TASK that was never dispatched) are logged and
+	// skipped — the timeline still has the status, which is what the
+	// worker most needs.
+	switch s.Kind {
+	case domain.StepKindTask:
+		// Linked work item id is stored in the step run's result
+		// JSON when the task was dispatched. We then load the work
+		// item to get its full _output + _summary + _recovery_summary
+		// from the results JSONB.
+		var ref struct {
+			WorkItemID string `json:"_work_item_id"`
+		}
+		if err := json.Unmarshal(sr.Result, &ref); err != nil || ref.WorkItemID == "" {
+			break
+		}
+		wi, err := db.GetWorkItem(ctx, tx, tenantID, ref.WorkItemID)
+		if err != nil {
+			if err == db.ErrNotFound {
+				r.log.Debug("upstream step: work item missing", "step", s.ID, "work_item_id", ref.WorkItemID)
+				break
+			}
+			return fmt.Errorf("load work item for upstream step %s: %w", s.ID, err)
+		}
+		fmt.Fprintf(sb, "Work item: %s (%s)\n", strings.TrimSpace(wi.Title), workItemKindLabel(wi.Kind))
+		// Per-work-item results: _output (worker's full text),
+		// _summary (extracted by TaskReconciler), _recovery_summary
+		// (set when the recovery engine resumes a failed task).
+		var parsed map[string]any
+		if len(wi.Results) > 0 {
+			_ = json.Unmarshal(wi.Results, &parsed)
+		}
+		if output, ok := parsed["_output"].(string); ok && output != "" {
+			r.writeCappedText(sb, "Output", output, upstreamOutputMaxChars)
+		}
+		if summary, ok := parsed["_summary"].(string); ok && summary != "" {
+			// _summary is the canonical "what the worker did" line
+			// the next stage reads; it may already appear in the
+			// output block above, but we surface it again as a
+			// clear "Summary" field so the worker doesn't have to
+			// hunt for the marker.
+			fmt.Fprintf(sb, "\nSummary: %s\n", summary)
+		}
+		if recSummary, ok := parsed["_recovery_summary"].(string); ok && recSummary != "" {
+			fmt.Fprintf(sb, "\nRecovery narrative (for this task):\n%s\n", recSummary)
+		}
+
+	case domain.StepKindRecover:
+		// Look up the recovery execution that this step was waiting
+		// on. The step's result JSON carries the work item id of the
+		// failed dep (the one being recovered). We then read the
+		// latest recovery for that work item.
+		var ref struct {
+			WorkItemID string `json:"_work_item_id"`
+		}
+		if err := json.Unmarshal(sr.Result, &ref); err != nil || ref.WorkItemID == "" {
+			break
+		}
+		rec, err := db.GetLatestRecoveryForTask(ctx, tx, tenantID, ref.WorkItemID)
+		if err != nil {
+			if err == db.ErrNotFound {
+				r.log.Debug("upstream step: recovery missing", "step", s.ID, "work_item_id", ref.WorkItemID)
+				break
+			}
+			return fmt.Errorf("load recovery for upstream step %s: %w", s.ID, err)
+		}
+		if rec.Strategy != "" {
+			fmt.Fprintf(sb, "Recovery strategy: %s\n", rec.Strategy)
+		}
+		if rec.TriggerReason != "" {
+			fmt.Fprintf(sb, "Trigger reason: %s\n", rec.TriggerReason)
+		}
+		if rec.Summary != "" {
+			fmt.Fprintf(sb, "\nRecovery narrative:\n%s\n", rec.Summary)
+		} else if rec.Status != "" {
+			fmt.Fprintf(sb, "\nRecovery status: %s (no narrative recorded).\n", rec.Status)
+		}
+
+	case domain.StepKindWorkItem:
+		// Passive marker. Pull the work item title + a short
+		// description snippet so the worker knows what this work
+		// item represents (often: the input the downstream TASK is
+		// processing).
+		wid := readConfigWorkItemID(s.Config)
+		if wid == "" {
+			break
+		}
+		wi, err := db.GetWorkItem(ctx, tx, tenantID, wid)
+		if err != nil {
+			if err == db.ErrNotFound {
+				break
+			}
+			return fmt.Errorf("load work item for work_item step %s: %w", s.ID, err)
+		}
+		fmt.Fprintf(sb, "Linked work item: %s (%s)\n", strings.TrimSpace(wi.Title), workItemKindLabel(wi.Kind))
+		if d := strings.TrimSpace(wi.Description); d != "" {
+			r.writeCappedText(sb, "Description", d, upstreamDescriptionMaxChars)
+		}
+
+	case domain.StepKindProject:
+		// Passive marker. The project id is in the step config.
+		pid := readConfigProjectID(s.Config)
+		if pid == "" {
+			break
+		}
+		p, err := db.GetProject(ctx, tx, tenantID, pid)
+		if err != nil {
+			if err == db.ErrNotFound {
+				break
+			}
+			return fmt.Errorf("load project for project step %s: %w", s.ID, err)
+		}
+		fmt.Fprintf(sb, "Project: %s\n", strings.TrimSpace(p.Name))
+	}
+
+	sb.WriteString("\n")
+	return nil
+}
+
+// upstreamOutputMaxChars caps the worker's full output inline in the
+// workflow context. Beyond this size, the trailing portion is
+// truncated with an ellipsis and the worker is told to use the
+// ORCHICON WORKER SUMMARY line for the canonical downstream input.
+// 16K is roughly 4K tokens — large enough for an essay or chapter,
+// small enough that four such stages in a row stay under 64K tokens
+// of prompt overhead.
+const upstreamOutputMaxChars = 16 * 1024
+
+// upstreamDescriptionMaxChars caps descriptions from passive
+// context markers (WORK_ITEM, PROJECT). Smaller than the output cap
+// because descriptions are short by design.
+const upstreamDescriptionMaxChars = 1024
+
+// writeCappedText writes a label + body to the buffer, truncating
+// body to maxChars with a clear "truncated" marker if it would
+// otherwise blow the budget. The marker names the marker the worker
+// should look at for the canonical downstream input.
+func (r *WorkflowReconciler) writeCappedText(sb *strings.Builder, label, body string, maxChars int) {
+	fmt.Fprintf(sb, "\n%s:\n", label)
+	if len(body) <= maxChars {
+		sb.WriteString(body)
+		if !strings.HasSuffix(body, "\n") {
+			sb.WriteString("\n")
+		}
+		return
+	}
+	// Truncate at a sensible boundary: find the last newline before
+	// the cap so we don't slice a word in half.
+	cut := maxChars
+	if nl := strings.LastIndex(body[:cut], "\n"); nl > cut/2 {
+		cut = nl
+	}
+	sb.WriteString(body[:cut])
+	sb.WriteString("\n…[truncated — see the ORCHICON WORKER SUMMARY below for the canonical downstream input]\n")
+}
+
+// stepKindLabel returns a human-readable label for a workflow step's
+// kind. Used in the workflow-context timeline header.
+func stepKindLabel(kind string) string {
+	switch kind {
+	case domain.StepKindTask:
+		return "task"
+	case domain.StepKindDecision:
+		return "decision"
+	case domain.StepKindApproval:
+		return "approval"
+	case domain.StepKindParallel:
+		return "parallel"
+	case domain.StepKindRecover:
+		return "recovery"
+	case domain.StepKindWorkItem:
+		return "work item"
+	case domain.StepKindProject:
+		return "project"
+	default:
+		return kind
+	}
 }
 
 // readProjectContextFiles lists the project's context_files as full

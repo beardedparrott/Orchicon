@@ -180,7 +180,11 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// Goroutine: read stderr lines and emit as OTel log records.
 	// Each line carries the execution context (execution_id, project_id,
 	// task_id, worker_id, trace_id) so it correlates with the execution
-	// span in the SigNoz UI.
+	// span in the SigNoz UI. The severity is smart-parsed from the line:
+	// a leading "[ERROR]" / "[WARN]" / "[INFO]" / "[DEBUG]" tag is
+	// honoured; anything else defaults to INFO so the telemetry logs
+	// tab reflects the worker's actual progress (tool calls, step
+	// boundaries, model responses) rather than only hard errors.
 	go func() {
 		defer stderrReader.Close()
 		sc := bufio.NewScanner(stderrReader)
@@ -195,7 +199,17 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 			if line == "" {
 				continue
 			}
-			telemetry.EmitLog(ctx, "ERROR", line, baseAttrs...)
+			severity := "INFO"
+			upper := strings.ToUpper(line)
+			switch {
+			case strings.HasPrefix(upper, "[ERROR]"), strings.HasPrefix(upper, "ERROR:"), strings.HasPrefix(upper, "ERROR "):
+				severity = "ERROR"
+			case strings.HasPrefix(upper, "[WARN]"), strings.HasPrefix(upper, "WARN:"), strings.HasPrefix(upper, "WARN "):
+				severity = "WARN"
+			case strings.HasPrefix(upper, "[DEBUG]"), strings.HasPrefix(upper, "DEBUG:"), strings.HasPrefix(upper, "DEBUG "):
+				severity = "DEBUG"
+			}
+			telemetry.EmitLog(ctx, severity, line, baseAttrs...)
 		}
 	}()
 

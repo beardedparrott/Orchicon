@@ -138,9 +138,16 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// page works in all deployment modes (not just Vite dev proxy).
 	// Mirrors the Vite config: strips /signoz prefix, forwards to the
 	// SigNoz query-service (default localhost:3301). The ModifyResponse
-	// rewrites absolute asset paths in HTML so the SPA loads correctly:
-	// SigNoz v0.132 uses <base href="/"> and absolute /assets/ paths
-	// which must be rewritten to /signoz/assets/ when proxied.
+	// rewrites ONLY the document's <base href="/"> to <base href="/signoz/">.
+	// SigNoz v0.132 ships its asset <link>/<script> tags with relative
+	// paths (./assets/..., css/..., favicon.ico) so the base href is
+	// sufficient — every relative URL in the document resolves against
+	// /signoz/ and lands back inside the proxied path. The earlier
+	// /assets/ -> /signoz/assets/ rewrite was a footgun: it matched the
+	// substring inside the already-relative ./assets/ paths and produced
+	// ./signoz/assets/..., which the base href then double-prefixed into
+	// /signoz/signoz/assets/... — the SPA loaded its own HTML repeatedly
+	// instead of the JS bundle, leaving the iframe blank.
 	if deps.SigNozURL != "" {
 		signozTarget, err := url.Parse(deps.SigNozURL)
 		if err == nil {
@@ -148,18 +155,17 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 			signozProxy.ErrorLog = nil
 			signozProxy.ModifyResponse = func(r *http.Response) error {
 				ct := r.Header.Get("Content-Type")
-				if strings.HasPrefix(ct, "text/html") || strings.HasPrefix(ct, "text/css") {
-					body, readErr := io.ReadAll(r.Body)
-					if readErr != nil {
-						return readErr
-					}
-					r.Body.Close()
-					rewritten := strings.ReplaceAll(string(body), `/assets/`, `/signoz/assets/`)
-					rewritten = strings.ReplaceAll(rewritten, `/css/`, `/signoz/css/`)
-					rewritten = strings.ReplaceAll(rewritten, `href="/"`, `href="/signoz/"`)
-					r.Body = io.NopCloser(strings.NewReader(rewritten))
-					r.Header.Set("Content-Length", strconv.Itoa(len(rewritten)))
+				if !strings.HasPrefix(ct, "text/html") {
+					return nil
 				}
+				body, readErr := io.ReadAll(r.Body)
+				if readErr != nil {
+					return readErr
+				}
+				r.Body.Close()
+				rewritten := rewriteSigNozHTML(string(body), "/signoz")
+				r.Body = io.NopCloser(strings.NewReader(rewritten))
+				r.Header.Set("Content-Length", strconv.Itoa(len(rewritten)))
 				return nil
 			}
 			mux.Handle("/signoz", http.StripPrefix("/signoz", signozProxy))

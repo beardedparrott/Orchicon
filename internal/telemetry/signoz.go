@@ -337,7 +337,10 @@ func (c *SigNozClient) QueryLogs(ctx context.Context, tenantID string, f LogFilt
 		out.Logs = append(out.Logs, LogEntry{
 			TraceID:   r.TraceID,
 			SpanID:    r.SpanID,
-			Timestamp: time.UnixMicro(int64(r.Timestamp)),
+			// ClickHouse logs_v2.timestamp is UInt64 nanoseconds since
+			// the epoch. Unix(0, ns) takes nanoseconds; UnixMicro
+			// would need microseconds and overflow on current dates.
+			Timestamp: time.Unix(0, int64(r.Timestamp)),
 			Severity:  r.Severity,
 			Body:      r.Body,
 			Service:   r.Service,

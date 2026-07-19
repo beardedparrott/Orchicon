@@ -41,6 +41,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/migrate"
+	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/server"
 	"github.com/beardedparrott/orchicon/internal/version"
 )
@@ -111,7 +112,14 @@ func devStartChild() int {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// Wrap the JSON handler with the OTel slog bridge so every
+	// control-plane log record (workflow transitions, reconciler
+	// outcomes, dispatch events, recovery progress) also lands in
+	// the ClickHouse-backed Telemetry logs tab. The OTel handler
+	// is a no-op until telemetry.Setup binds the global
+	// LoggerProvider below.
+	jsonHandler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})
+	log := slog.New(telemetry.MultiHandler(jsonHandler, telemetry.NewOtelSlogHandler()))
 	log.Info("orchicon control plane starting", "version", version.Current().String())
 
 	cfg := config.Default()
