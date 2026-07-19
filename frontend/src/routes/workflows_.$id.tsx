@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactFlow, {
@@ -31,6 +32,7 @@ import {
   useReleaseWorkflowEditLock,
   useStartWorkflow,
   useUpdateWorkflowVersion,
+  workflowKeys,
 } from "@/api/workflows";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -113,6 +115,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const abortWorkflow = useAbortWorkflow();
   const deleteMutation = useDeleteWorkflow();
   const createVersion = useCreateWorkflowVersion();
+  const qc = useQueryClient();
 
   const [nodes, setNodes, onNodesChange] = useNodesState(
     [] as Node<StepData>[],
@@ -689,9 +692,14 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                   const note = window.prompt("Version note (optional):");
                   if (note === null) return; // cancelled
                   const result = await createVersion.mutateAsync({ workflowId, versionNote: note });
-                  // Mark the new version as loaded immediately so the
-                  // version-loading useEffect does not re-fire after the
-                  // query refetch and clobber any in-progress edits.
+                  // Immediately seed the versions cache so latestVersion
+                  // reflects the new draft — otherwise latestIsDraft
+                  // stays false until the async refetch completes.
+                  qc.setQueryData(
+                    workflowKeys.versions(workflowId),
+                    (old: typeof versions) =>
+                      old ? [result.version, ...old] : [result.version],
+                  );
                   loadedRef.current = result.version.id;
                 }}
                 disabled={createVersion.isPending}
