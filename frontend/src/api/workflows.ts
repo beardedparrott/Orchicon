@@ -204,6 +204,21 @@ export function useDeleteWorkflow() {
   });
 }
 
+// useDeleteWorkflowVersion deletes a single draft version and
+// invalidates the versions list.
+export function useDeleteWorkflowVersion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { workflowId: string; versionId: string }) => {
+      await workflowClient.deleteWorkflowVersion(input);
+    },
+    onSuccess: (_data, input) => {
+      qc.invalidateQueries({ queryKey: workflowKeys.versions(input.workflowId) });
+      qc.invalidateQueries({ queryKey: workflowKeys.detail(input.workflowId) });
+    },
+  });
+}
+
 // useAbortWorkflow aborts a running workflow run.
 export function useAbortWorkflow() {
   const qc = useQueryClient();

@@ -23,6 +23,7 @@ import {
   useAcquireWorkflowEditLock,
   useCreateWorkflowVersion,
   useDeleteWorkflow,
+  useDeleteWorkflowVersion,
   useDeprecateWorkflow,
   useGetWorkflow,
   useGetWorkflowEditLock,
@@ -114,6 +115,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const startWorkflow = useStartWorkflow();
   const abortWorkflow = useAbortWorkflow();
   const deleteMutation = useDeleteWorkflow();
+  const deleteVersion = useDeleteWorkflowVersion();
   const createVersion = useCreateWorkflowVersion();
   const qc = useQueryClient();
 
@@ -875,6 +877,20 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                     >
                       Restore
                     </button>
+                    {v.status === 1 && (
+                      <button
+                        type="button"
+                        className="rounded px-1.5 py-0.5 text-[11px] font-medium text-destructive hover:bg-destructive/10"
+                        title="Delete this draft version"
+                        onClick={() => {
+                          if (window.confirm(`Delete v${v.version}? This cannot be undone.`)) {
+                            deleteVersion.mutate({ workflowId, versionId: v.id });
+                          }
+                        }}
+                      >
+                        Delete
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>

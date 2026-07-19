@@ -53,6 +53,11 @@ service WorkflowService {
   // immutable (docs/02 §2.4).
   rpc CreateWorkflowVersion(CreateWorkflowVersionRequest) returns (CreateWorkflowVersionResponse);
 
+  // DeleteWorkflowVersion hard-deletes a single workflow version. Only
+  // draft versions can be deleted; published/deprecated versions are
+  // immutable. At least one version must remain.
+  rpc DeleteWorkflowVersion(DeleteWorkflowVersionRequest) returns (DeleteWorkflowVersionResponse);
+
   // UpdateWorkflowVersion saves edits to a draft version's steps (and
   // inputs/outputs/recovery_policy_ref). Only draft versions are mutable;
   // published versions are immutable (docs/02 §2.4). This is the "save"
@@ -178,6 +183,13 @@ message CreateWorkflowVersionResponse {
   Workflow workflow = 1;
   WorkflowVersion version = 2;
 }
+
+message DeleteWorkflowVersionRequest {
+  string workflow_id = 1;
+  string version_id = 2;
+}
+
+message DeleteWorkflowVersionResponse {}
 
 message UpdateWorkflowVersionRequest {
   string workflow_id = 1;
