@@ -675,14 +675,14 @@ type StartExecution struct {
 	ProjectId            string                 `protobuf:"bytes,3,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
 	WorkerId             string                 `protobuf:"bytes,4,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
 	WorkerVersion        int32                  `protobuf:"varint,5,opt,name=worker_version,json=workerVersion,proto3" json:"worker_version,omitempty"`
-	SystemPrompt         string                 `protobuf:"bytes,6,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"`
-	Goal                 string                 `protobuf:"bytes,7,opt,name=goal,proto3" json:"goal,omitempty"`
-	AcceptanceCriteria   string                 `protobuf:"bytes,8,opt,name=acceptance_criteria,json=acceptanceCriteria,proto3" json:"acceptance_criteria,omitempty"`
-	ModelRef             string                 `protobuf:"bytes,9,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`                          // human-defined; no auto-failover (docs/05 §11)
-	ContextSources       []byte                 `protobuf:"bytes,10,opt,name=context_sources,json=contextSources,proto3" json:"context_sources,omitempty"`       // JSON refs
-	ContinuationPlan     []byte                 `protobuf:"bytes,11,opt,name=continuation_plan,json=continuationPlan,proto3" json:"continuation_plan,omitempty"` // present on recovery resume (docs/06 §8)
-	Budgets              []byte                 `protobuf:"bytes,12,opt,name=budgets,proto3" json:"budgets,omitempty"`                                           // JSON token/cost/wall-clock ceilings
-	Permissions          []byte                 `protobuf:"bytes,13,opt,name=permissions,proto3" json:"permissions,omitempty"`                                   // JSON capability allowlist
+	SystemPrompt         string                 `protobuf:"bytes,6,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"`                   // Markdown: the worker's system prompt, resolved with template variables
+	Goal                 string                 `protobuf:"bytes,7,opt,name=goal,proto3" json:"goal,omitempty"`                                                       // Markdown: the composite prompt (task + context + upstream summaries + file context)
+	AcceptanceCriteria   string                 `protobuf:"bytes,8,opt,name=acceptance_criteria,json=acceptanceCriteria,proto3" json:"acceptance_criteria,omitempty"` // Markdown: the task's success definition
+	ModelRef             string                 `protobuf:"bytes,9,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`                               // human-defined; no auto-failover (docs/05 §11)
+	ContextSources       []byte                 `protobuf:"bytes,10,opt,name=context_sources,json=contextSources,proto3" json:"context_sources,omitempty"`            // JSON refs
+	ContinuationPlan     []byte                 `protobuf:"bytes,11,opt,name=continuation_plan,json=continuationPlan,proto3" json:"continuation_plan,omitempty"`      // present on recovery resume (docs/06 §8)
+	Budgets              []byte                 `protobuf:"bytes,12,opt,name=budgets,proto3" json:"budgets,omitempty"`                                                // JSON token/cost/wall-clock ceilings
+	Permissions          []byte                 `protobuf:"bytes,13,opt,name=permissions,proto3" json:"permissions,omitempty"`                                        // JSON capability allowlist
 	CapabilitiesRequired []byte                 `protobuf:"bytes,14,opt,name=capabilities_required,json=capabilitiesRequired,proto3" json:"capabilities_required,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache

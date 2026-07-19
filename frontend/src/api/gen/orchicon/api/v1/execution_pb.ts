@@ -324,14 +324,14 @@ export class WorkerExecution extends Message<WorkerExecution> {
   workflowName = "";
 
   /**
-   * human-readable failure reason (docs/02 §2.7)
+   * Markdown: human-readable failure reason (docs/02 §2.7)
    *
    * @generated from field: string error_message = 20;
    */
   errorMessage = "";
 
   /**
-   * accumulated model text output (docs/02 §2.7)
+   * Markdown: accumulated model text output (docs/02 §2.7)
    *
    * @generated from field: string output = 21;
    */

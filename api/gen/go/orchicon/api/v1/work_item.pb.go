@@ -251,8 +251,8 @@ type WorkItem struct {
 	ParentId           string                 `protobuf:"bytes,4,opt,name=parent_id,json=parentId,proto3" json:"parent_id,omitempty"` // empty for top-level (epic)
 	Kind               WorkItemKind           `protobuf:"varint,5,opt,name=kind,proto3,enum=orchicon.api.v1.WorkItemKind" json:"kind,omitempty"`
 	Title              string                 `protobuf:"bytes,6,opt,name=title,proto3" json:"title,omitempty"`
-	Description        string                 `protobuf:"bytes,7,opt,name=description,proto3" json:"description,omitempty"`
-	AcceptanceCriteria string                 `protobuf:"bytes,8,opt,name=acceptance_criteria,json=acceptanceCriteria,proto3" json:"acceptance_criteria,omitempty"`
+	Description        string                 `protobuf:"bytes,7,opt,name=description,proto3" json:"description,omitempty"`                                         // Markdown: feeds into the worker's composite prompt as context
+	AcceptanceCriteria string                 `protobuf:"bytes,8,opt,name=acceptance_criteria,json=acceptanceCriteria,proto3" json:"acceptance_criteria,omitempty"` // Markdown: included in the composite prompt as the task's success definition
 	Status             WorkItemStatus         `protobuf:"varint,9,opt,name=status,proto3,enum=orchicon.api.v1.WorkItemStatus" json:"status,omitempty"`
 	AssignedWorkerRef  string                 `protobuf:"bytes,10,opt,name=assigned_worker_ref,json=assignedWorkerRef,proto3" json:"assigned_worker_ref,omitempty"` // JSON: {worker_id, version} (docs/02 §2.2)
 	WorkflowId         string                 `protobuf:"bytes,11,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`

@@ -34,12 +34,12 @@ type CreateWorkerRequest struct {
 	TenantId    string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	Name        string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
 	Slug        string                 `protobuf:"bytes,3,opt,name=slug,proto3" json:"slug,omitempty"`
-	Description string                 `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`
+	Description string                 `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"` // Markdown
 	Purpose     string                 `protobuf:"bytes,5,opt,name=purpose,proto3" json:"purpose,omitempty"`
 	// First-version snapshot fields (docs/05 §3):
 	RuntimeRef          string `protobuf:"bytes,6,opt,name=runtime_ref,json=runtimeRef,proto3" json:"runtime_ref,omitempty"`
 	ModelRef            string `protobuf:"bytes,7,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`
-	SystemPrompt        string `protobuf:"bytes,8,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"`
+	SystemPrompt        string `protobuf:"bytes,8,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"`           // Markdown + template variables (docs/05 §11)
 	ContextSources      string `protobuf:"bytes,9,opt,name=context_sources,json=contextSources,proto3" json:"context_sources,omitempty"`     // JSON
 	Permissions         string `protobuf:"bytes,10,opt,name=permissions,proto3" json:"permissions,omitempty"`                                // JSON
 	GatedTools          string `protobuf:"bytes,11,opt,name=gated_tools,json=gatedTools,proto3" json:"gated_tools,omitempty"`                // JSON

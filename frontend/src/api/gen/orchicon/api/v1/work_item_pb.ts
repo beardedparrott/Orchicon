@@ -240,11 +240,15 @@ export class WorkItem extends Message<WorkItem> {
   title = "";
 
   /**
+   * Markdown: feeds into the worker's composite prompt as context
+   *
    * @generated from field: string description = 7;
    */
   description = "";
 
   /**
+   * Markdown: included in the composite prompt as the task's success definition
+   *
    * @generated from field: string acceptance_criteria = 8;
    */
   acceptanceCriteria = "";

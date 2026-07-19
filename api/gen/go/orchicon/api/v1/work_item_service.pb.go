@@ -37,8 +37,8 @@ type CreateWorkItemRequest struct {
 	ParentId           string                 `protobuf:"bytes,3,opt,name=parent_id,json=parentId,proto3" json:"parent_id,omitempty"` // empty for top-level (epic)
 	Kind               WorkItemKind           `protobuf:"varint,4,opt,name=kind,proto3,enum=orchicon.api.v1.WorkItemKind" json:"kind,omitempty"`
 	Title              string                 `protobuf:"bytes,5,opt,name=title,proto3" json:"title,omitempty"`
-	Description        string                 `protobuf:"bytes,6,opt,name=description,proto3" json:"description,omitempty"`
-	AcceptanceCriteria string                 `protobuf:"bytes,7,opt,name=acceptance_criteria,json=acceptanceCriteria,proto3" json:"acceptance_criteria,omitempty"`
+	Description        string                 `protobuf:"bytes,6,opt,name=description,proto3" json:"description,omitempty"`                                         // Markdown
+	AcceptanceCriteria string                 `protobuf:"bytes,7,opt,name=acceptance_criteria,json=acceptanceCriteria,proto3" json:"acceptance_criteria,omitempty"` // Markdown
 	Priority           int32                  `protobuf:"varint,8,opt,name=priority,proto3" json:"priority,omitempty"`
 	Budgets            string                 `protobuf:"bytes,9,opt,name=budgets,proto3" json:"budgets,omitempty"` // JSON
 	ContextWindow      int32                  `protobuf:"varint,10,opt,name=context_window,json=contextWindow,proto3" json:"context_window,omitempty"`

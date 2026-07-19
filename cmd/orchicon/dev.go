@@ -605,6 +605,7 @@ func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 		path := r.URL.Path
 		if strings.HasPrefix(path, "/orchicon.api.v1") ||
 			strings.HasPrefix(path, "/auth/") ||
+			strings.HasPrefix(path, "/signoz") ||
 			path == "/healthz" || path == "/versionz" {
 			apiHandler.ServeHTTP(w, r)
 			return

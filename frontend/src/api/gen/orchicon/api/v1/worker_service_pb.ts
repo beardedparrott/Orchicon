@@ -35,6 +35,8 @@ export class CreateWorkerRequest extends Message<CreateWorkerRequest> {
   slug = "";
 
   /**
+   * Markdown
+   *
    * @generated from field: string description = 4;
    */
   description = "";
@@ -57,6 +59,8 @@ export class CreateWorkerRequest extends Message<CreateWorkerRequest> {
   modelRef = "";
 
   /**
+   * Markdown + template variables (docs/05 §11)
+   *
    * @generated from field: string system_prompt = 8;
    */
   systemPrompt = "";

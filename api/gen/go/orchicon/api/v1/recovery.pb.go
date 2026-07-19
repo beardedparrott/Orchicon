@@ -315,7 +315,7 @@ type RecoveryExecution struct {
 	NeedsHumanApproval  bool                   `protobuf:"varint,17,opt,name=needs_human_approval,json=needsHumanApproval,proto3" json:"needs_human_approval,omitempty"`     // true when >150% of original
 	ContinuationPlanId  string                 `protobuf:"bytes,18,opt,name=continuation_plan_id,json=continuationPlanId,proto3" json:"continuation_plan_id,omitempty"`      // set when plan step completes
 	ReviewerWorkerId    string                 `protobuf:"bytes,19,opt,name=reviewer_worker_id,json=reviewerWorkerId,proto3" json:"reviewer_worker_id,omitempty"`            // the Reviewer Worker for steps 2/4
-	Summary             string                 `protobuf:"bytes,20,opt,name=summary,proto3" json:"summary,omitempty"`                                                        // the captured/summarized context
+	Summary             string                 `protobuf:"bytes,20,opt,name=summary,proto3" json:"summary,omitempty"`                                                        // Markdown: the captured/summarized context
 	Version             int32                  `protobuf:"varint,21,opt,name=version,proto3" json:"version,omitempty"`                                                       // optimistic concurrency (docs/09 §5)
 	TriggeredAt         *timestamppb.Timestamp `protobuf:"bytes,22,opt,name=triggered_at,json=triggeredAt,proto3" json:"triggered_at,omitempty"`
 	EndedAt             *timestamppb.Timestamp `protobuf:"bytes,23,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`
@@ -543,7 +543,7 @@ type RecoveryStepRun struct {
 	StepName          string                 `protobuf:"bytes,5,opt,name=step_name,json=stepName,proto3" json:"step_name,omitempty"`
 	Status            RecoveryStepStatus     `protobuf:"varint,6,opt,name=status,proto3,enum=orchicon.api.v1.RecoveryStepStatus" json:"status,omitempty"`
 	Attempt           int32                  `protobuf:"varint,7,opt,name=attempt,proto3" json:"attempt,omitempty"`                                               // retry count
-	Result            string                 `protobuf:"bytes,8,opt,name=result,proto3" json:"result,omitempty"`                                                  // JSON: step output (summary, verdict, plan ref)
+	Result            string                 `protobuf:"bytes,8,opt,name=result,proto3" json:"result,omitempty"`                                                  // Markdown + JSON: step output (summary, verdict, plan ref)
 	WorkerExecutionId string                 `protobuf:"bytes,9,opt,name=worker_execution_id,json=workerExecutionId,proto3" json:"worker_execution_id,omitempty"` // for Reviewer-driven steps
 	// Rich narrative fields (docs/06 §11): each step records the
 	// why/what/how/where/when so the timeline answers "what went wrong,
@@ -731,7 +731,7 @@ type ContinuationPlan struct {
 	InProgress     string                 `protobuf:"bytes,6,opt,name=in_progress,json=inProgress,proto3" json:"in_progress,omitempty"`             // JSON: what was mid-flight at capture
 	Remaining      string                 `protobuf:"bytes,7,opt,name=remaining,proto3" json:"remaining,omitempty"`                                 // JSON: outstanding work vs acceptance criteria
 	Corrections    string                 `protobuf:"bytes,8,opt,name=corrections,proto3" json:"corrections,omitempty"`                             // JSON: changes the Reviewer/Architect require
-	ContextSummary string                 `protobuf:"bytes,9,opt,name=context_summary,json=contextSummary,proto3" json:"context_summary,omitempty"` // the compacted context to seed the replacement
+	ContextSummary string                 `protobuf:"bytes,9,opt,name=context_summary,json=contextSummary,proto3" json:"context_summary,omitempty"` // Markdown: the compacted context to seed the replacement
 	CheckpointRef  string                 `protobuf:"bytes,10,opt,name=checkpoint_ref,json=checkpointRef,proto3" json:"checkpoint_ref,omitempty"`   // opaque blob ref (when direct replay intended)
 	Assumptions    string                 `protobuf:"bytes,11,opt,name=assumptions,proto3" json:"assumptions,omitempty"`                            // JSON: explicit assumptions to verify
 	Status         PlanStatus             `protobuf:"varint,12,opt,name=status,proto3,enum=orchicon.api.v1.PlanStatus" json:"status,omitempty"`     // pending | approved | rejected

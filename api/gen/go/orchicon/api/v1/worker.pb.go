@@ -151,8 +151,8 @@ type Worker struct {
 	TenantId       string                 `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	Name           string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
 	Slug           string                 `protobuf:"bytes,4,opt,name=slug,proto3" json:"slug,omitempty"`
-	Description    string                 `protobuf:"bytes,5,opt,name=description,proto3" json:"description,omitempty"`
-	Purpose        string                 `protobuf:"bytes,6,opt,name=purpose,proto3" json:"purpose,omitempty"` // short statement of the worker's role
+	Description    string                 `protobuf:"bytes,5,opt,name=description,proto3" json:"description,omitempty"` // Markdown: long-form description of the worker
+	Purpose        string                 `protobuf:"bytes,6,opt,name=purpose,proto3" json:"purpose,omitempty"`         // short statement of the worker's role
 	Status         WorkerStatus           `protobuf:"varint,7,opt,name=status,proto3,enum=orchicon.api.v1.WorkerStatus" json:"status,omitempty"`
 	CurrentVersion int32                  `protobuf:"varint,8,opt,name=current_version,json=currentVersion,proto3" json:"current_version,omitempty"` // latest version number
 	CreatedBy      string                 `protobuf:"bytes,9,opt,name=created_by,json=createdBy,proto3" json:"created_by,omitempty"`
@@ -289,7 +289,7 @@ type WorkerVersion struct {
 	Status              WorkerVersionStatus    `protobuf:"varint,5,opt,name=status,proto3,enum=orchicon.api.v1.WorkerVersionStatus" json:"status,omitempty"`
 	RuntimeRef          string                 `protobuf:"bytes,6,opt,name=runtime_ref,json=runtimeRef,proto3" json:"runtime_ref,omitempty"`                 // adapter kind, e.g. "opencode"
 	ModelRef            string                 `protobuf:"bytes,7,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`                       // exact provider + model id; no failover (docs/05 §11)
-	SystemPrompt        string                 `protobuf:"bytes,8,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"`           // supports template variables (docs/05 §11)
+	SystemPrompt        string                 `protobuf:"bytes,8,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"`           // Markdown + template variables (docs/05 §11); rendered inline in the composite prompt
 	ContextSources      string                 `protobuf:"bytes,9,opt,name=context_sources,json=contextSources,proto3" json:"context_sources,omitempty"`     // JSON: ordered list of context source refs
 	Permissions         string                 `protobuf:"bytes,10,opt,name=permissions,proto3" json:"permissions,omitempty"`                                // JSON: capability allowlist (docs/05 §7)
 	GatedTools          string                 `protobuf:"bytes,11,opt,name=gated_tools,json=gatedTools,proto3" json:"gated_tools,omitempty"`                // JSON: per-call gated tool set (docs/05 §7.1)
