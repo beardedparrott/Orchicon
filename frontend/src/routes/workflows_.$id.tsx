@@ -806,11 +806,10 @@ function EditorInner({ workflowId }: { workflowId: string }) {
         )}
 
         {/* main editor layout: palette | canvas/code | properties */}
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[240px_1fr_300px]">
-          {viewMode === "canvas" && <Palette readOnly={readOnly} />}
+        {viewMode === "canvas" ? (
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[240px_1fr_300px]">
+            <Palette readOnly={readOnly} />
 
-          {viewMode === "canvas" ? (
-            /* canvas */
             <div
               className={cn(
                 "relative h-[640px] rounded-lg border bg-card transition-colors",
@@ -864,30 +863,28 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                 </div>
               )}
             </div>
-          ) : (
-            /* code view */
-            <div className="h-[640px] rounded-lg border bg-card">
-              <CodeView
-                nodes={nodes}
-                edges={edges}
-                onUpdate={(n, e) => {
-                  setNodes(n);
-                  setEdges(e);
-                  setDirty(true);
-                }}
-              />
-            </div>
-          )}
 
-          {viewMode === "canvas" && (
             <PropertiesPanel
               node={selectedNode}
               onChange={updateSelected}
               readOnly={readOnly}
               projectId={effectiveProjectId}
             />
-          )}
-        </div>
+          </div>
+        ) : (
+          /* code view: full-width editor */
+          <div className="h-[640px] rounded-lg border bg-card">
+            <CodeView
+              nodes={nodes}
+              edges={edges}
+              onUpdate={(n, e) => {
+                setNodes(n);
+                setEdges(e);
+                setDirty(true);
+              }}
+            />
+          </div>
+        )}
 
         {/* version history + runs */}
         <div className="grid gap-4 md:grid-cols-2">
