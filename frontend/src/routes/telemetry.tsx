@@ -531,12 +531,61 @@ function LogsPanel() {
   );
 }
 
-// MetricsPanel checks SigNoz availability and renders the embedded metrics
-// view only when the backend is healthy.
+// MetricsPanel shows live metric values from ClickHouse plus the
+// embedded SigNoz metrics explorer for raw drill-down.
 function MetricsPanel() {
-  const { data } = useQueryMetrics({ metricNames: ["orchicon_cost_usd"] });
-  const degraded = data?.degraded ?? true;
-  return <SigNozEmbed title="Metrics" degraded={degraded} />;
+  const { data, isLoading } = useQueryMetrics({
+    metricNames: ["orchicon_tokens_consumed", "orchicon_cost_usd", "orchicon_outbox_lag"],
+  });
+  const degraded = data?.degraded ?? false;
+  const series = data?.series ?? [];
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Metric values</CardTitle>
+          <CardDescription>
+            Latest samples from ClickHouse (signoz_metrics.samples_v4).
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+          {!isLoading && series.length === 0 && !degraded && (
+            <p className="text-sm text-muted-foreground">
+              No metric data yet. Run an execution to populate metrics.
+            </p>
+          )}
+          {series.length > 0 && (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {series.map((s) => {
+                const pts = s.points ?? [];
+                const latest = pts[0];
+                const name = s.name || "unknown";
+                const display = name === "orchicon_tokens_consumed"
+                  ? `${fmtInt(latest?.value ?? 0)} tokens`
+                  : name === "orchicon_cost_usd"
+                    ? `$${(latest?.value ?? 0).toFixed(4)}`
+                    : name === "orchicon_outbox_lag"
+                      ? `${fmtInt(latest?.value ?? 0)} lag`
+                      : String(latest?.value ?? 0);
+                return (
+                  <div key={name} className="rounded-md border p-3">
+                    <div className="text-xs text-muted-foreground">{name}</div>
+                    <div className="mt-1 text-lg font-semibold">{display}</div>
+                    <div className="mt-0.5 text-[10px] text-muted-foreground">
+                      {pts.length} samples
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+      <SigNozEmbed title="Metrics Explorer" degraded={degraded} />
+    </div>
+  );
 }
 
 // CreditsPanel shows total credits available and spent by provider, with
