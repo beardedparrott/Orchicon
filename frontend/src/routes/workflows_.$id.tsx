@@ -21,6 +21,7 @@ import ReactFlow, {
 import {
   useAbortWorkflow,
   useAcquireWorkflowEditLock,
+  useCreateWorkflow,
   useCreateWorkflowVersion,
   useDeleteWorkflow,
   useDeleteWorkflowVersion,
@@ -117,6 +118,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const deleteMutation = useDeleteWorkflow();
   const deleteVersion = useDeleteWorkflowVersion();
   const createVersion = useCreateWorkflowVersion();
+  const createWorkflow = useCreateWorkflow();
   const qc = useQueryClient();
 
   const [nodes, setNodes, onNodesChange] = useNodesState(
@@ -721,6 +723,24 @@ function EditorInner({ workflowId }: { workflowId: string }) {
             {(isPublished || isDeprecated) && (
               <Button onClick={handleStart} disabled={startWorkflow.isPending}>
                 {startWorkflow.isPending ? "Starting…" : "Start run"}
+              </Button>
+            )}
+            {(isPublished || isDeprecated) && (
+              <Button
+                variant="outline"
+                onClick={async () => {
+                  const name = window.prompt("Clone name:", `Clone of ${wf.name}`);
+                  if (!name) return;
+                  const result = await createWorkflow.mutateAsync({
+                    name,
+                    projectId: wf.projectId,
+                    steps: data.latestVersion?.steps ?? "[]",
+                  });
+                  navigate({ to: `/workflows/${result.workflow.id}` });
+                }}
+                disabled={createWorkflow.isPending}
+              >
+                {createWorkflow.isPending ? "Cloning…" : "Clone"}
               </Button>
             )}
             {/* PR D: inline Stop for the most recent active run. The
