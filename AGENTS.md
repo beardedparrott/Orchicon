@@ -11,8 +11,11 @@
 
 ## Token discipline
 
-The project's model spend is rising. Be economical:
+The project's model spend is rising. Be economical but **never at the expense of rigor**:
 
+- **Efficiency is not an excuse for shortcuts.** Never patch around a symptom without first identifying the root cause through proper troubleshooting. Verbose investigation is cheaper than a second pass that has to undo incorrect assumptions.
+- **Do not assume.** Test every hypothesis. When a user reports a bug, reproduce it, read the relevant code path, and verify the fix actually resolves the issue at the system level — not just in a typecheck or unit test.
+- **Every answer must explain the full picture:** *why* it was broken, *where* the fault lived, *who* caused it (which component), *when* it triggers (startup, every request, only after certain conditions), and *what* the fix does at a mechanical level.
 - Prefer parallel tool calls when independent (one message, many tools) to cut round-trips.
 - Read only the slice of a file you need; avoid re-reading whole files.
 - Keep edits surgical — match surrounding style, don't reflow untouched code.
