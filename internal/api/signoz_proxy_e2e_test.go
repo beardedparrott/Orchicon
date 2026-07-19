@@ -14,8 +14,9 @@ import (
 // upstream that returns SigNoz v0.132's index.html, the reverse proxy
 // with our rewrite, and a client that fetches /signoz/logs. The
 // resulting HTML must be a usable SPA shell — base href is rewritten,
-// asset paths are relative, and the JS/CSS asset requests route
-// correctly through the proxy to the upstream.
+// asset paths are rewritten to absolute /signoz/... so the iframe
+// loads them without relying on the document <base>, and the JS/CSS
+// asset requests route correctly through the proxy to the upstream.
 func TestSigNozProxyEndToEnd(t *testing.T) {
 	const signozHTML = `<!doctype html>
 <html lang="en">
@@ -35,13 +36,13 @@ func TestSigNozProxyEndToEnd(t *testing.T) {
 	// the actual route).
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasPrefix(r.URL.Path, "/assets/"):
+		case strings.HasPrefix(r.URL.Path, "/assets/") || strings.HasPrefix(r.URL.Path, "/signoz/assets/"):
 			w.Header().Set("Content-Type", "application/javascript")
 			w.Write([]byte("// fake js bundle: " + r.URL.Path))
-		case strings.HasPrefix(r.URL.Path, "/css/"):
+		case strings.HasPrefix(r.URL.Path, "/css/") || strings.HasPrefix(r.URL.Path, "/signoz/css/"):
 			w.Header().Set("Content-Type", "text/css")
 			w.Write([]byte("/* fake css: " + r.URL.Path + " */"))
-		case r.URL.Path == "/favicon.ico":
+		case r.URL.Path == "/favicon.ico" || r.URL.Path == "/signoz/favicon.ico":
 			w.Header().Set("Content-Type", "image/x-icon")
 			w.Write([]byte("FAVICON"))
 		default:
@@ -100,25 +101,25 @@ func TestSigNozProxyEndToEnd(t *testing.T) {
 	}
 	html := string(body)
 	mustContain(t, html, `<base href="/signoz/" />`)
-	mustContain(t, html, `src="./assets/index-XXXXX.js"`)
-	mustContain(t, html, `href="css/uPlot.min.css"`)
+	// Asset paths are now rewritten to absolute /signoz/... so the
+	// iframe loads them without relying on the document <base>.
+	mustContain(t, html, `src="/signoz/assets/index-XXXXX.js"`)
+	mustContain(t, html, `href="/signoz/css/uPlot.min.css"`)
 	// Guard against the previous bug: the HTML must not produce any
 	// URL that the browser would resolve to /signoz/signoz/... —
 	// that's the double-prefix that made the SPA recursively fetch
 	// itself instead of the JS bundle.
 	mustNotContain(t, html, `/signoz/signoz/`)
 
-	// 2. The script src is relative. With the base href /signoz/, the
-	// browser will request /signoz/assets/index-XXXXX.js. The proxy
-	// must forward that to upstream /assets/index-XXXXX.js and return
-	// the JS bundle (not the SPA HTML).
+	// 2. The script src is absolute. The proxy must forward that to
+	// upstream /assets/... and return the JS bundle (not the SPA HTML).
 	jsResp, err := http.Get(controlPlane.URL + "/signoz/assets/index-XXXXX.js")
 	if err != nil {
 		t.Fatal(err)
 	}
 	jsBody, _ := io.ReadAll(jsResp.Body)
 	jsResp.Body.Close()
-	if resp.StatusCode != 200 {
+	if jsResp.StatusCode != 200 {
 		t.Fatalf("expected 200 from /signoz/assets/index-XXXXX.js, got %d", jsResp.StatusCode)
 	}
 	if !strings.Contains(string(jsBody), "fake js bundle") {
@@ -128,8 +129,7 @@ func TestSigNozProxyEndToEnd(t *testing.T) {
 		t.Fatalf("expected JS content type, got %q", got)
 	}
 
-	// 3. The CSS link is a bare relative path. With the base href
-	// /signoz/, the browser requests /signoz/css/uPlot.min.css.
+	// 3. The CSS link is absolute. Same check.
 	cssResp, err := http.Get(controlPlane.URL + "/signoz/css/uPlot.min.css")
 	if err != nil {
 		t.Fatal(err)
@@ -138,5 +138,19 @@ func TestSigNozProxyEndToEnd(t *testing.T) {
 	cssResp.Body.Close()
 	if !strings.Contains(string(cssBody), "fake css") {
 		t.Fatalf("expected upstream to serve CSS, got:\n%s", string(cssBody))
+	}
+
+	// 4. The previous (buggy) rewrite would have produced this URL
+	// (double-prefix), which the proxy would have routed to the SPA
+	// shell — guard against a regression by asserting the broken URL
+	// serves JS, not HTML.
+	doubleResp, err := http.Get(controlPlane.URL + "/signoz/signoz/assets/index-XXXXX.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doubleBody, _ := io.ReadAll(doubleResp.Body)
+	doubleResp.Body.Close()
+	if strings.Contains(string(doubleBody), "<!doctype") {
+		t.Fatalf("double-prefix URL is serving SPA HTML — regression of the old bug:\n%s", string(doubleBody))
 	}
 }

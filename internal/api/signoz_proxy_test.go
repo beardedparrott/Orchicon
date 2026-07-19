@@ -33,14 +33,15 @@ func TestRewriteSigNozHTML_BaseHrefOnly(t *testing.T) {
 
 	got := rewriteSigNozHTML(input, "/signoz")
 
-	// Base href is the ONLY attribute that should be rewritten. The
-	// relative asset paths stay relative — the base href causes the
-	// browser to resolve them against /signoz/.
+	// Base href is rewritten. Asset paths are now rewritten to absolute
+	// /signoz/... paths so the iframe loads them without relying on the
+	// document <base> (which Firefox's sandboxed iframe ignores for
+	// relative URL resolution).
 	mustContain(t, got, `<base href="/signoz/" />`)
-	mustContain(t, got, `src="./assets/index-CiBb5ZTE.js"`)
-	mustContain(t, got, `href="./assets/index-OjjtrzeA.css"`)
-	mustContain(t, got, `href="css/uPlot.min.css"`)
-	mustContain(t, got, `href="favicon.ico"`)
+	mustContain(t, got, `src="/signoz/assets/index-CiBb5ZTE.js"`)
+	mustContain(t, got, `href="/signoz/assets/index-OjjtrzeA.css"`)
+	mustContain(t, got, `href="/signoz/css/uPlot.min.css"`)
+	mustContain(t, got, `href="/signoz/favicon.ico"`)
 	mustContain(t, got, `content="/images/signoz-hero-image.webp"`)
 
 	// The previous (buggy) implementation would have produced these —

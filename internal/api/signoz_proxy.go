@@ -1,38 +1,47 @@
 package api
 
-import "strings"
+import (
+	"strings"
+)
 
-// rewriteSigNozHTML rewrites the SigNoz SPA's document base href so the
-// page resolves its relative URLs against the proxied prefix instead of
-// the SigNoz origin. The SigNoz v0.132 index.html looks like:
+// rewriteSigNozHTML rewrites the SigNoz SPA's document so all asset
+// URLs become absolute /signoz/... paths. The SigNoz v0.132 index.html
+// looks like:
 //
 //	<base href="/" />
 //	<script src="./assets/index-XXXXX.js"></script>
 //	<link href="css/uPlot.min.css" />
 //
-// All asset tags use relative paths, so a single base-href rewrite is
-// sufficient — every relative URL in the document (./assets/..., css/...,
-// favicon.ico) resolves against /signoz/ and lands back at
-// /signoz/assets/..., /signoz/css/..., /signoz/favicon.ico which the
-// reverse proxy already strips-and-forwards to SigNoz.
-//
-// A previous implementation also rewrote /assets/ -> /signoz/assets/
-// and /css/ -> /signoz/css/ directly, but that operation matched the
-// substring inside the already-relative ./assets/ paths and produced
-// ./signoz/assets/... which the base href then double-prefixed into
-// /signoz/signoz/assets/... — the SPA ended up recursively fetching
-// its own HTML instead of the JS bundle, leaving the iframe blank.
-//
-// proxyPrefix is the URL prefix the SPA is mounted under (e.g. "/signoz"
-// in the embedded-Iframe case, "" for the un-proxied origin). The base
-// href in the rewritten HTML is set to "{prefix}/" so all relative
-// URLs resolve from the proxied root.
+// Relative paths like ./assets/... and css/... would normally resolve
+// against <base href="/signoz/">, but Firefox's sandboxed iframe
+// ignores the base href for relative URL resolution. So we rewrite
+// every asset reference to an absolute /signoz/... path. The proxy
+// at /signoz/ strips the prefix and forwards to SigNoz as /assets/...,
+// /css/..., etc.
 func rewriteSigNozHTML(body, proxyPrefix string) string {
-	baseHref := "href=\"/\""
-	rewrittenBaseHref := "href=\"" + proxyPrefix + "/\""
 	if proxyPrefix == "" {
-		// Unmounted case: the document already has href="/"; nothing to do.
+		// Unmounted case: nothing to do.
 		return body
 	}
-	return strings.ReplaceAll(body, baseHref, rewrittenBaseHref)
+
+	// 1. Rewrite the document base href so non-asset relative URLs
+	// (e.g. internal SPA navigation links) still work.
+	body = strings.ReplaceAll(body, `href="/"`, `href="`+proxyPrefix+`/"`)
+
+	// 2. Rewrite all relative asset paths to absolute /signoz/... paths.
+	// This bypasses Firefox's sandboxed-iframe base-href bug.
+	// Script src: ./assets/... -> /signoz/assets/...
+	body = strings.ReplaceAll(body, `src="./assets/`, `src="`+proxyPrefix+`/assets/`)
+	body = strings.ReplaceAll(body, `src='./assets/`, `src='`+proxyPrefix+`/assets/`)
+	// Link href: ./assets/... -> /signoz/assets/...
+	body = strings.ReplaceAll(body, `href="./assets/`, `href="`+proxyPrefix+`/assets/`)
+	body = strings.ReplaceAll(body, `href='./assets/`, `href='`+proxyPrefix+`/assets/`)
+	// Link href: css/... -> /signoz/css/...
+	body = strings.ReplaceAll(body, `href="css/`, `href="`+proxyPrefix+`/css/`)
+	body = strings.ReplaceAll(body, `href='css/`, `href='`+proxyPrefix+`/css/`)
+	// Favicon and other root-relative assets
+	body = strings.ReplaceAll(body, `href="favicon.ico`, `href="`+proxyPrefix+`/favicon.ico`)
+	body = strings.ReplaceAll(body, `href='favicon.ico`, `href='`+proxyPrefix+`/favicon.ico`)
+
+	return body
 }
