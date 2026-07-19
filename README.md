@@ -42,14 +42,13 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-**v0.1.98** — Fixed telemetry page, cost explorer, and added credits panel.
-SigNoz iframe now conditionally renders (avoiding app-in-frame when
-backend is down). Telemetry hooks poll every 10s while degraded so they
-auto-recover when SigNoz starts. Cost Explorer shows human-readable names
-via per-task API lookups, has working drill-down with Back/Clear
-navigation. New Credits tab shows provider and model spend. Added /signoz
-reverse proxy in Go server so embedded SigNoz UI works in all deployment
-modes (not just Vite dev proxy).
+**v0.1.98** — Fixed telemetry root cause (SigNoz v0.132 API incompatibility),
+cost explorer, and added credits panel. Telemetry now queries ClickHouse
+directly (bypassing SigNoz query-service which moved to a different API
+with mandatory auth). SigNoz iframe conditionally renders with working
+/signoz reverse proxy. Cost Explorer shows human-readable names via
+per-task lookups, working drill-down. New Credits tab with provider/model
+spend.
 
 ## Installation
 
