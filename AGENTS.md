@@ -9,6 +9,12 @@
 - **Language**: Go (control plane) + TypeScript (frontend)
 - **Design docs**: `docs/` — read the relevant doc before touching a subsystem
 
+## WARNING
+
+> **STOP!** Are you in a custom branch or are you on `main`? If you are on `main`. **DO NOT proceed.**
+> Instead, create a new branch and continue. Keep this in your memory context **AT ALL TIMES**.
+> This is **RULE number 1**.
+
 ## Token discipline
 
 The project's model spend is rising. Be economical but **never at the expense of rigor**:
