@@ -47,10 +47,22 @@ The project's model spend is rising. Be economical but **never at the expense of
   ```
 - Branch naming: `<type>/<short-description>` (e.g. `feat/project-crud`, `fix/outbox-relay-dedup`, `chore/docker-compose-setup`). Types: `feat`, `fix`, `chore`, `refactor`, `docs`, `test`.
 - Commit early and often on your branch. Write clear commit messages in present tense: `Add project CRUD service and data-access layer`. Stage only the files relevant to the commit.
+- **Never create a pull request without asking the user for approval first.** Ask, wait for a yes, then proceed.
 - Once work is complete and properly tested, ask the user to verify.
 - After the user confirms, create a PR and merge. PRs MUST carry the `release` label to kick off the release creation on GitHub.
 - **Before every PR merge**, update the "Last Release Changes" section in `README.md` with the new version tag and a one-paragraph summary of the most recent changes.
 - Before starting work, always `git pull origin main` to get the latest. Before pushing, `git fetch origin && git rebase origin/main` if the branch has been open for a while.
+
+## Local development loop
+
+During active development, iterate locally without creating PRs or releases:
+
+```bash
+scripts/install-local.sh    # builds frontend + Go binary, installs to ~/.local/bin/orchicon
+orchicon stop && orchicon start   # restart with the new binary
+```
+
+The binary embeds everything (docker-compose.yml, frontend dist, migrations) via `go:embed` in `assets.go`. Any change to source files, docker-compose, or frontend code is included in the next build. No branches, commits, or PRs needed during the day — just build and test.
 
 ## Phases
 
