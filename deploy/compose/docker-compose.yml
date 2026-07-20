@@ -112,6 +112,14 @@ services:
       CLICKHOUSE_USER: signoz
       CLICKHOUSE_PASSWORD: signoz
       SIGNOZ_TOKENIZER_JWT_SECRET: "dev-secret-not-for-production"
+      # Impersonation mode: no login page (docs/08 §5). Root user config below.
+      SIGNOZ_IDENTN_IMPERSONATION_ENABLED: "true"
+      SIGNOZ_IDENTN_TOKENIZER_ENABLED: "false"
+      SIGNOZ_IDENTN_APIKEY_ENABLED: "false"
+      SIGNOZ_USER_ROOT_ENABLED: "true"
+      SIGNOZ_USER_ROOT_EMAIL: "admin@orchicon.local"
+      SIGNOZ_USER_ROOT_PASSWORD: "Orchicon-Dev-42!"
+      SIGNOZ_USER_ROOT_ORG_NAME: "default"
     ports:
       - "3301:8080"
     depends_on:

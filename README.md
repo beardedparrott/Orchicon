@@ -42,8 +42,8 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-**v0.1.121** — Document pre-commit hook and fix main-commit habit.
-Added the pre-commit hook script to AGENTS.md so agents can recreate it. The hook rejects any commit on `main` or `master`, preventing the accidental direct commits that happened during v0.1.119–v0.1.120.
+**v0.1.122** — Fix SigNoz impersonation mode: password complexity requirement.
+`orchicon-dev` failed Signoz's `IsPasswordValid` which requires ≥12 chars, uppercase, lowercase, number, and a symbol. Changed to `Orchicon-Dev-42!`. Re-added impersonation env vars and root user config so the SigNoz UI runs without a login page (no-auth embedded iframe).
 
 ## Installation
 
