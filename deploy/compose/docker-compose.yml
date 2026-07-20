@@ -1,33 +1,9 @@
-# Orchicon local development stack.
-#
-# Per docs/01_Architecture_Vision.md §3, the local-dev deployment runs
-# the control plane plus all dependencies on one machine:
-#   - PostgreSQL 16 (source of truth, RLS, advisory locks)
-#   - NATS JetStream (event bus, docs/08 §2)
-#   - OTel collector → SigNoz/ClickHouse (fully separated telemetry
-#     plane, docs/01 §3, docs/08 §5)
-#
-# Key optimizations vs the standard SigNoz stack:
-#   - ZooKeeper eliminated: ClickHouse's built-in Keeper (embedded
-#     RAFT-based coordination) replaces the separate ZooKeeper
-#     container, cutting container count from 7 to 6.
-#   - Depends_on chains relaxed: the schema migrator, OTel collector,
-#     and SigNoz query-service all start asynchronously — no container
-#     waits on the schema migrator completing before starting. The
-#     control plane's OTel gRPC connection is non-blocking, so the
-#     app becomes usable before telemetry is fully ready.
-#
-# Start:      make up
-# Stop:       make down
-# Reset:      make nuke
-#
-# The control plane itself runs from source (`make run`) and connects
-# to these services. SigNoz UI: http://localhost:3301
-#
-# NOTE: SigNoz's internal API uses :8081 here to avoid clashing with
-# the Orchicon control plane on :8080.
+# Docker Compose for Orchicon local development stack.
+# Services: postgres, nats, clickhouse, signoz-schema-migrator, otel-collector, signoz
+# Usage: docker compose -f deploy/compose/docker-compose.yml up -d
 
 services:
+  # PostgreSQL — primary state store (control plane + tenant data).
   postgres:
     image: postgres:16-alpine
     container_name: orchicon-postgres
@@ -39,38 +15,32 @@ services:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./init-postgres.sql:/docker-entrypoint-initdb.d/init-postgres.sql:ro
+      - ./init-postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U orchicon -d orchicon"]
       interval: 5s
-      timeout: 3s
-      retries: 20
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
+  # NATS JetStream — event bus for outbox relay, telemetry streams, webhooks.
   nats:
     image: nats:2.10-alpine
     container_name: orchicon-nats
-    command: >
-      nats-server
-      --js
-      --store_dir /data
-      -m 8222
+    command: ["-js", "-sd", "/data/jetstream"]
     ports:
-      - "4222:4222"   # client
-      - "8222:8222"   # monitoring
+      - "4222:4222"
+      - "8222:8222"
     volumes:
-      - nats-data:/data
+      - nats-data:/data/jetstream
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8222/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
+      test: ["CMD", "nats", "server", "check", "jetstream"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
-  # ClickHouse is the storage backend for SigNoz (telemetry plane).
-  # Uses its built-in ClickHouse Keeper (embedded RAFT coordination)
-  # instead of a separate ZooKeeper container, reducing the stack by
-  # one container and avoiding the ZooKeeper startup delay.
+  # ClickHouse — telemetry storage (traces, metrics, logs) for SigNoz.
   clickhouse:
     image: clickhouse/clickhouse-server:25.8
     container_name: orchicon-clickhouse
@@ -78,50 +48,40 @@ services:
       CLICKHOUSE_DB: signoz
       CLICKHOUSE_USER: signoz
       CLICKHOUSE_PASSWORD: signoz
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     ports:
-      - "9000:9000"   # native
-      - "8123:8123"   # http
+      - "8123:8123"
+      - "9000:9000"
     volumes:
       - clickhouse-data:/var/lib/clickhouse
-      # The `00-` prefix orders this file before any image-default config
-      # files in config.d/ (e.g. docker_related_config.xml) and avoids
-      # path collisions with anything the image might create. The cluster
-      # "cluster" defined here is what the schema migrator and query-
-      # service reference via --dsn on CLUSTER 'cluster'.
-      - ./clickhouse-cluster.xml:/etc/clickhouse-server/config.d/00-cluster.xml:ro
+      - ./clickhouse-cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
     ulimits:
       nofile:
         soft: 262144
         hard: 262144
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
+      test: ["CMD", "clickhouse-client", "-u", "signoz", "--password", "signoz", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
-  # SigNoz schema migrator — one-shot init container that creates the
-  # ClickHouse databases (signoz_traces, signoz_metrics, signoz_logs)
-  # before the collector and query-service start. The default
-  # --cluster-name "cluster" matches what 00-cluster.xml defines in
-  # ClickHouse, so DDL with ON CLUSTER 'cluster' resolves correctly.
+  # SigNoz schema migrator — runs once per ClickHouse version upgrade.
   signoz-schema-migrator:
     image: signoz/signoz-schema-migrator:latest
     container_name: orchicon-signoz-schema-migrator
-    command: ["--dev", "sync", "--dsn=tcp://signoz:signoz@clickhouse:9000", "--up="]
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 9000
+      CLICKHOUSE_USER: signoz
+      CLICKHOUSE_PASSWORD: signoz
+      CLICKHOUSE_DATABASE: signoz
     depends_on:
       clickhouse:
         condition: service_healthy
     restart: "no"
 
-  # OTel collector receives OTLP from the control plane (and frontend)
-  # and exports to ClickHouse. This is the boundary of the telemetry
-  # plane (docs/08 §5). Control plane connects OTLP gRPC to :4317.
-  #
-  # The schema migrator is NOT in the depends_on chain — the collector
-  # has retry_on_failure enabled and will reconnect once the schema is
-  # ready. This lets the stack start asynchronously instead of waiting
-  # on schema creation.
+  # OTel collector — receives OTLP from control plane, exports to ClickHouse.
   otel-collector:
     image: signoz/signoz-otel-collector:latest
     container_name: orchicon-otel-collector
@@ -139,34 +99,21 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/13133' || exit 1"]
       interval: 10s
-      timeout: 3s
-      retries: 10
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
-  # SigNoz query-service — reads telemetry from ClickHouse and serves
-  # the SigNoz UI (bundled frontend) on :3301 and the API on :8080.
-  # The API is mapped to host :8081 to avoid clashing with the
-  # Orchicon control plane on :8080.
-  #
-  # No hard depends_on on otel-collector — SigNoz will retry until
-  # the collector is healthy and the schema is ready.
+  # SigNoz query-service — reads telemetry from ClickHouse, serves UI on :3301
   signoz:
-    image: signoz/signoz:latest
+    image: signoz/signoz-community:v0.132.2
     container_name: orchicon-signoz
-    command: ["--config=/root/config.yaml", "-DSTORAGE=clickhouse"]
+    command: ["-DSTORAGE=clickhouse"]
     environment:
       CLICKHOUSE_USER: signoz
       CLICKHOUSE_PASSWORD: signoz
       SIGNOZ_TOKENIZER_JWT_SECRET: "dev-secret-not-for-production"
-      # Disable auth for embedded iframe (enterprise version requires these three):
-      SIGNOZ_IDENTN_IMPERSONATION_ENABLED: "true"
-      SIGNOZ_IDENTN_TOKENIZER_ENABLED: "false"
-      SIGNOZ_IDENTN_APIKEY_ENABLED: "false"
-    volumes:
-      - ./signoz-config.yaml:/root/config.yaml:ro
-      - signoz-data:/var/lib/signoz
     ports:
-      - "3301:8080"   # SigNoz UI + API (frontend bundled, remapped to avoid control-plane clash on :8080)
+      - "3301:8080"
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -176,6 +123,8 @@ services:
       timeout: 3s
       retries: 30
     restart: unless-stopped
+    volumes:
+      - signoz-data:/var/lib/signoz
 
 volumes:
   postgres-data:
