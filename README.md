@@ -42,8 +42,8 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-**v0.1.119** — Switch SigNoz to community edition, fix frontend lint errors.
-SigNoz no longer crashes at startup: replaced `signoz/signoz:latest` (enterprise, configured via env vars) with `signoz/signoz-community:v0.132.2` to work around the enterprise edition's `"failed to validate config user"` validation bug across v0.100.0–v0.133.0. The OTel collector was failing because `signoz_traces`/`signoz_logs` databases didn't exist — the signoz-schema-migrator must run before the collector starts. Fixed two frontend lint errors: React hooks after early return in PropertiesPanel.tsx, and `any` → `Record<string, unknown>` in ExecutionContextSidebar.tsx.
+**v0.1.121** — Document pre-commit hook and fix main-commit habit.
+Added the pre-commit hook script to AGENTS.md so agents can recreate it. The hook rejects any commit on `main` or `master`, preventing the accidental direct commits that happened during v0.1.119–v0.1.120.
 
 ## Installation
 
