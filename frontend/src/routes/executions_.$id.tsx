@@ -133,6 +133,7 @@ function ExecutionDetailPage() {
   const isPaused = exec.status === 6;
   const isTerminal = exec.status === 7 || exec.status === 8 || exec.status === 9 || exec.status === 10;
   const isFailed = exec.status === 10 || exec.status === 8;
+  const hasConversation = conversation.length > 0;
 
   return (
     <div className="space-y-4">
@@ -159,6 +160,12 @@ function ExecutionDetailPage() {
             {exec.id}
           </span>
           <ExecutionLiveBadge status={exec.status} isLive={status === "open"} />
+          {hasConversation && (
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900 dark:text-violet-200">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-violet-500" />
+              conversation
+            </span>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           {isRunning && (

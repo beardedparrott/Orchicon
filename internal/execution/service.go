@@ -564,12 +564,8 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("marshal conversation: %w", err))
 	}
-	now := time.Now().UTC()
 	if _, err := db.UpdateExecution(ctx, ttx.Tx, tenantID, msg.ExecutionId, prevExec.Version, db.UpdateExecutionFields{
 		Conversation: &updatedConv,
-		Status:       strPtr(domain.ExecutionRunning),
-		HealthState:  strPtr(domain.HealthHealthy),
-		StartedAt:    &now,
 	}); err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("execution not found or version conflict"))
