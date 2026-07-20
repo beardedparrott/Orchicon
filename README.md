@@ -42,7 +42,8 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-**v0.1.123** — Fix NATS healthcheck: `nats` CLI not found in `nats:2.10-alpine`. The healthcheck always failed because the alpine image doesn't ship the `nats` CLI binary. Added `-m 8222` flag to enable NATS HTTP monitor and switched healthcheck to `wget http://127.0.0.1:8222/healthz`.
+**v0.1.124** — Fix blank SigNoz iframes: gzip compression broke the HTML proxy rewrite.
+Browsers send `Accept-Encoding: gzip`; Go's reverse proxy passed compressed bodies to `ModifyResponse` without decompressing. The string-based `rewriteSigNozHTML` silently failed on gzip bytes, so the iframe received the original un-rewritten SigNoz HTML — assets loaded at `/assets/...` (missing `/signoz/` prefix), returned the Orchicon SPA shell as `text/html`, causing MIME-type errors and blank iframes. Added gzip decompression in `ModifyResponse` before rewriting.
 
 ## Installation
 
