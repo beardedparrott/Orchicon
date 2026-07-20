@@ -42,7 +42,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -252,17 +251,14 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, tr
 	// Bounded retry: count how many previous recovery attempts exist
 	// across this task's ancestor chain. If the limit is exceeded,
 	// escalate to human (L3) instead of retrying indefinitely.
-	// The max_retries is read from the most recent terminal recovery
-	// execution's summary (set from the workflow step config by the
-	// RECOVER step handler), falling back to defaultMaxRetries.
 	maxRetries := defaultMaxRetries
-	prevCount, err := countTaskChainRecoveries(ctx, ttx.Tx, tenantID, taskID)
+	retryCount, err := countTaskChainRecoveries(ctx, ttx.Tx, tenantID, taskID)
 	if err != nil {
 		e.log.Warn("recovery trigger: count retries", "task", taskID, "error", err)
 	}
-	if prevCount >= maxRetries && level < domain.RecoveryLevelL3 {
+	if retryCount >= maxRetries && level < domain.RecoveryLevelL3 {
 		e.log.Warn("recovery retry limit exceeded, escalating to L3",
-			"task", taskID, "retry_count", prevCount, "max_retries", maxRetries)
+			"task", taskID, "retry_count", retryCount, "max_retries", maxRetries)
 		level = domain.RecoveryLevelL3
 	}
 
@@ -284,8 +280,6 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, tr
 
 	recoveryID := db.NewID()
 	now := time.Now().UTC()
-	summary := fmt.Sprintf("strategy=%s max_retries=%d retry_delay_seconds=%d",
-		strategyForWorkItem(task.Kind), defaultMaxRetries, defaultRetryDelaySeconds)
 	row := db.RecoveryExecutionRow{
 		ID:                 recoveryID,
 		TenantID:           tenantID,
@@ -295,11 +289,10 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, tr
 		TriggerReason:      triggerReason,
 		Level:              level,
 		Status:             domain.RecoveryPending,
-		Strategy:           strategyForWorkItem(task.Kind),
+		Strategy:           strategyForWorkItem(task.Kind), // PR C — work item kind drives the strategy
 		ResumptionPath:     resumptionPath,
 		BudgetTokensLimit:  budgetTokensLimit,
 		BudgetCostLimitUSD: budgetCostLimit,
-		Summary:            summary,
 		TriggeredAt:        now,
 	}
 	created, err := db.CreateRecoveryExecution(ctx, ttx.Tx, row)
@@ -1127,10 +1120,8 @@ func int32Ptr(i int32) *int32 { return &i }
 // countTaskChainRecoveries walks the work item's parent chain to find
 // all ancestor task IDs, then counts terminal recovery executions for
 // any task in the chain. This prevents unbounded retry loops.
-// The max_retries is read from the most recent recovery execution's
-// summary (set from the workflow step config), falling back to
-// defaultMaxRetries.
 func countTaskChainRecoveries(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (int, error) {
+	// Collect all task IDs in the chain.
 	taskIDs := []string{taskID}
 	cur := taskID
 	const maxDepth = 32
@@ -1147,6 +1138,7 @@ func countTaskChainRecoveries(ctx context.Context, tx pgx.Tx, tenantID, taskID s
 		taskIDs = append(taskIDs, *parentID)
 		cur = *parentID
 	}
+	// Count terminal recovery executions for any task in the chain.
 	var count int
 	err := tx.QueryRow(ctx,
 		`SELECT COUNT(*) FROM recovery_executions
@@ -1157,24 +1149,4 @@ func countTaskChainRecoveries(ctx context.Context, tx pgx.Tx, tenantID, taskID s
 		return 0, err
 	}
 	return count, nil
-}
-
-// readSummaryMaxRetries parses the recovery's summary field for the
-// max_retries value (format: "strategy=... max_retries=N ...").
-// Returns 0 if not found.
-func readSummaryMaxRetries(summary string) int {
-	const prefix = "max_retries="
-	i := strings.Index(summary, prefix)
-	if i < 0 {
-		return 0
-	}
-	val := summary[i+len(prefix):]
-	if j := strings.IndexByte(val, ' '); j > 0 {
-		val = val[:j]
-	}
-	var n int
-	if _, err := fmt.Sscanf(val, "%d", &n); err != nil {
-		return 0
-	}
-	return n
 }
