@@ -42,8 +42,7 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-**v0.1.122** — Fix SigNoz impersonation mode: password complexity requirement.
-`orchicon-dev` failed Signoz's `IsPasswordValid` which requires ≥12 chars, uppercase, lowercase, number, and a symbol. Changed to `Orchicon-Dev-42!`. Re-added impersonation env vars and root user config so the SigNoz UI runs without a login page (no-auth embedded iframe).
+**v0.1.123** — Fix NATS healthcheck: `nats` CLI not found in `nats:2.10-alpine`. The healthcheck always failed because the alpine image doesn't ship the `nats` CLI binary. Added `-m 8222` flag to enable NATS HTTP monitor and switched healthcheck to `wget http://127.0.0.1:8222/healthz`.
 
 ## Installation
 
