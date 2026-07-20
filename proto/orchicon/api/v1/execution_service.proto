@@ -51,6 +51,9 @@ service ExecutionService {
   // running, it is cancelled first.
   rpc DeleteExecution(DeleteExecutionRequest) returns (DeleteExecutionResponse);
 
+  // BatchDeleteExecutions hard-deletes multiple executions by id.
+  rpc BatchDeleteExecutions(BatchDeleteExecutionsRequest) returns (BatchDeleteExecutionsResponse);
+
   // CreateFollowUpExecution creates a new execution that continues from a
   // completed execution. The new execution includes the previous context
   // (composite prompt + output) plus the user's follow-up message.

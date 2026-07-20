@@ -135,6 +135,9 @@ message ListExecutionsRequest {
   string page_token = 5;
   int32 page_size = 6;
   optional string workflow_run_id = 7;
+  string search = 8; // free-text search across worker_id, task_id, workflow_name
+  string sort_by = 9; // field name: "status", "created_at", "worker_id" (default "created_at")
+  string sort_order = 10; // "asc" or "desc" (default "desc")
 }
 
 message DeleteExecutionRequest {
@@ -142,6 +145,14 @@ message DeleteExecutionRequest {
 }
 
 message DeleteExecutionResponse {}
+
+message BatchDeleteExecutionsRequest {
+  repeated string ids = 1;
+}
+
+message BatchDeleteExecutionsResponse {
+  int32 deleted_count = 1;
+}
 
 message ListExecutionsResponse {
   repeated WorkerExecution executions = 1;

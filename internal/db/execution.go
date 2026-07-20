@@ -111,13 +111,17 @@ func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (Executio
 }
 
 // ListExecutionsFilter scopes a list query to a tenant, optionally
-// filtered by project/task/status/workflow_run_id.
+// filtered by project/task/status/workflow_run_id, with free-text
+// search and sort.
 type ListExecutionsFilter struct {
 	TenantID      string
 	ProjectID     string
 	TaskID        string
 	Status        string
 	WorkflowRunID string
+	Search        string
+	SortBy        string
+	SortOrder     string
 	PageSize      int
 	AfterID       string
 }
@@ -127,6 +131,12 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 	if f.PageSize <= 0 || f.PageSize > 1000 {
 		f.PageSize = 100
 	}
+	if f.SortBy == "" {
+		f.SortBy = "created_at"
+	}
+	if f.SortOrder == "" {
+		f.SortOrder = "desc"
+	}
 	q := `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
@@ -135,26 +145,57 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 		FROM worker_executions we
 		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
 		LEFT JOIN workflows w ON w.id = wr.workflow_id
-		WHERE we.tenant_id = $1 AND ($2 = '' OR we.id > $2)`
-	args := []any{f.TenantID, f.AfterID}
+		WHERE we.tenant_id = $1`
+	args := []any{f.TenantID}
+	argIdx := 2
+	if f.AfterID != "" {
+		q += fmt.Sprintf(` AND ($%d = '' OR we.id > $%[1]d)`, argIdx)
+		args = append(args, f.AfterID)
+		argIdx++
+	}
 	if f.ProjectID != "" {
-		q += fmt.Sprintf(` AND we.project_id = $%d`, len(args)+1)
+		q += fmt.Sprintf(` AND we.project_id = $%d`, argIdx)
 		args = append(args, f.ProjectID)
+		argIdx++
 	}
 	if f.TaskID != "" {
-		q += fmt.Sprintf(` AND we.task_id = $%d`, len(args)+1)
+		q += fmt.Sprintf(` AND we.task_id = $%d`, argIdx)
 		args = append(args, f.TaskID)
+		argIdx++
 	}
 	if f.Status != "" {
-		q += fmt.Sprintf(` AND we.status = $%d`, len(args)+1)
+		q += fmt.Sprintf(` AND we.status = $%d`, argIdx)
 		args = append(args, f.Status)
+		argIdx++
 	}
 	if f.WorkflowRunID != "" {
-		q += fmt.Sprintf(` AND we.workflow_run_id = $%d`, len(args)+1)
+		q += fmt.Sprintf(` AND we.workflow_run_id = $%d`, argIdx)
 		args = append(args, f.WorkflowRunID)
+		argIdx++
 	}
-	q += ` ORDER BY we.id DESC LIMIT $` + fmt.Sprint(len(args)+1)
+	if f.Search != "" {
+		q += fmt.Sprintf(` AND (we.worker_id ILIKE '%%' || $%d || '%%' OR we.task_id ILIKE '%%' || $%[1]d || '%%' OR COALESCE(w.name, '') ILIKE '%%' || $%[1]d || '%%')`, argIdx)
+		args = append(args, f.Search)
+		argIdx++
+	}
+	// Validate sort column to prevent SQL injection.
+	sortColumn := "we.created_at"
+	switch f.SortBy {
+	case "status":
+		sortColumn = "we.status"
+	case "worker_id":
+		sortColumn = "we.worker_id"
+	case "created_at":
+		sortColumn = "we.created_at"
+	}
+	sortDir := "DESC"
+	if f.SortOrder == "asc" {
+		sortDir = "ASC"
+	}
+	q += fmt.Sprintf(` ORDER BY %s %s`, sortColumn, sortDir)
+	q += fmt.Sprintf(` LIMIT $%d`, argIdx)
 	args = append(args, f.PageSize)
+	argIdx++
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("db: list executions: %w", err)

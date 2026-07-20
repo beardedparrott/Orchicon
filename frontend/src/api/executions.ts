@@ -62,16 +62,22 @@ export function useListExecutions(opts?: {
   taskId?: string;
   status?: number;
   workflowRunId?: string;
+  search?: string;
+  sortBy?: string;
+  sortOrder?: string;
 }) {
   return useQuery({
     queryKey: executionKeys.list(opts?.projectId, opts?.status),
     queryFn: async () => {
       const res = await executionClient.listExecutions({
-        pageSize: 100,
+        pageSize: 200,
         projectId: opts?.projectId ?? undefined,
         taskId: opts?.taskId ?? undefined,
         status: opts?.status ?? undefined,
         workflowRunId: opts?.workflowRunId ?? undefined,
+        search: opts?.search ?? "",
+        sortBy: opts?.sortBy ?? "created_at",
+        sortOrder: opts?.sortOrder ?? "desc",
       });
       return res.executions as WorkerExecution[];
     },
@@ -189,6 +195,19 @@ export function useDeleteExecution() {
   return useMutation({
     mutationFn: async (id: string) => {
       await executionClient.deleteExecution({ id });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: executionKeys.all });
+    },
+  });
+}
+
+export function useBatchDeleteExecutions() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (ids: string[]) => {
+      const res = await executionClient.batchDeleteExecutions({ ids });
+      return res;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: executionKeys.all });

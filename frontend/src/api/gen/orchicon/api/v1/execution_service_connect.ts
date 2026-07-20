@@ -9,7 +9,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { ApproveToolCallRequest, ApproveToolCallResponse, CancelExecutionRequest, CancelExecutionResponse, CheckpointNowRequest, CheckpointNowResponse, CreateFollowUpExecutionRequest, CreateFollowUpExecutionResponse, DeleteExecutionRequest, DeleteExecutionResponse, GetExecutionRequest, GetExecutionResponse, ListExecutionsRequest, ListExecutionsResponse, ListPendingApprovalsRequest, ListPendingApprovalsResponse, PauseExecutionRequest, PauseExecutionResponse, ResumeExecutionRequest, ResumeExecutionResponse, StreamExecutionEventsRequest, StreamExecutionEventsResponse } from "./execution_pb.js";
+import { ApproveToolCallRequest, ApproveToolCallResponse, BatchDeleteExecutionsRequest, BatchDeleteExecutionsResponse, CancelExecutionRequest, CancelExecutionResponse, CheckpointNowRequest, CheckpointNowResponse, CreateFollowUpExecutionRequest, CreateFollowUpExecutionResponse, DeleteExecutionRequest, DeleteExecutionResponse, GetExecutionRequest, GetExecutionResponse, ListExecutionsRequest, ListExecutionsResponse, ListPendingApprovalsRequest, ListPendingApprovalsResponse, PauseExecutionRequest, PauseExecutionResponse, ResumeExecutionRequest, ResumeExecutionResponse, StreamExecutionEventsRequest, StreamExecutionEventsResponse } from "./execution_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -137,6 +137,17 @@ export const ExecutionService = {
       name: "DeleteExecution",
       I: DeleteExecutionRequest,
       O: DeleteExecutionResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * BatchDeleteExecutions hard-deletes multiple executions by id.
+     *
+     * @generated from rpc orchicon.api.v1.ExecutionService.BatchDeleteExecutions
+     */
+    batchDeleteExecutions: {
+      name: "BatchDeleteExecutions",
+      I: BatchDeleteExecutionsRequest,
+      O: BatchDeleteExecutionsResponse,
       kind: MethodKind.Unary,
     },
     /**

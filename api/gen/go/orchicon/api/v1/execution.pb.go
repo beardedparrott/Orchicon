@@ -751,6 +751,9 @@ type ListExecutionsRequest struct {
 	PageToken     string                 `protobuf:"bytes,5,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
 	PageSize      int32                  `protobuf:"varint,6,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
 	WorkflowRunId *string                `protobuf:"bytes,7,opt,name=workflow_run_id,json=workflowRunId,proto3,oneof" json:"workflow_run_id,omitempty"`
+	Search        string                 `protobuf:"bytes,8,opt,name=search,proto3" json:"search,omitempty"`                         // free-text search across worker_id, task_id, workflow_name
+	SortBy        string                 `protobuf:"bytes,9,opt,name=sort_by,json=sortBy,proto3" json:"sort_by,omitempty"`           // field name: "status", "created_at", "worker_id" (default "created_at")
+	SortOrder     string                 `protobuf:"bytes,10,opt,name=sort_order,json=sortOrder,proto3" json:"sort_order,omitempty"` // "asc" or "desc" (default "desc")
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -830,6 +833,27 @@ func (x *ListExecutionsRequest) GetPageSize() int32 {
 func (x *ListExecutionsRequest) GetWorkflowRunId() string {
 	if x != nil && x.WorkflowRunId != nil {
 		return *x.WorkflowRunId
+	}
+	return ""
+}
+
+func (x *ListExecutionsRequest) GetSearch() string {
+	if x != nil {
+		return x.Search
+	}
+	return ""
+}
+
+func (x *ListExecutionsRequest) GetSortBy() string {
+	if x != nil {
+		return x.SortBy
+	}
+	return ""
+}
+
+func (x *ListExecutionsRequest) GetSortOrder() string {
+	if x != nil {
+		return x.SortOrder
 	}
 	return ""
 }
@@ -914,6 +938,94 @@ func (*DeleteExecutionResponse) Descriptor() ([]byte, []int) {
 	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{7}
 }
 
+type BatchDeleteExecutionsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ids           []string               `protobuf:"bytes,1,rep,name=ids,proto3" json:"ids,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BatchDeleteExecutionsRequest) Reset() {
+	*x = BatchDeleteExecutionsRequest{}
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BatchDeleteExecutionsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BatchDeleteExecutionsRequest) ProtoMessage() {}
+
+func (x *BatchDeleteExecutionsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BatchDeleteExecutionsRequest.ProtoReflect.Descriptor instead.
+func (*BatchDeleteExecutionsRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *BatchDeleteExecutionsRequest) GetIds() []string {
+	if x != nil {
+		return x.Ids
+	}
+	return nil
+}
+
+type BatchDeleteExecutionsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	DeletedCount  int32                  `protobuf:"varint,1,opt,name=deleted_count,json=deletedCount,proto3" json:"deleted_count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BatchDeleteExecutionsResponse) Reset() {
+	*x = BatchDeleteExecutionsResponse{}
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BatchDeleteExecutionsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BatchDeleteExecutionsResponse) ProtoMessage() {}
+
+func (x *BatchDeleteExecutionsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BatchDeleteExecutionsResponse.ProtoReflect.Descriptor instead.
+func (*BatchDeleteExecutionsResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *BatchDeleteExecutionsResponse) GetDeletedCount() int32 {
+	if x != nil {
+		return x.DeletedCount
+	}
+	return 0
+}
+
 type ListExecutionsResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Executions    []*WorkerExecution     `protobuf:"bytes,1,rep,name=executions,proto3" json:"executions,omitempty"`
@@ -924,7 +1036,7 @@ type ListExecutionsResponse struct {
 
 func (x *ListExecutionsResponse) Reset() {
 	*x = ListExecutionsResponse{}
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[8]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -936,7 +1048,7 @@ func (x *ListExecutionsResponse) String() string {
 func (*ListExecutionsResponse) ProtoMessage() {}
 
 func (x *ListExecutionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[8]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -949,7 +1061,7 @@ func (x *ListExecutionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListExecutionsResponse.ProtoReflect.Descriptor instead.
 func (*ListExecutionsResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{8}
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ListExecutionsResponse) GetExecutions() []*WorkerExecution {
@@ -977,7 +1089,7 @@ type StreamExecutionEventsRequest struct {
 
 func (x *StreamExecutionEventsRequest) Reset() {
 	*x = StreamExecutionEventsRequest{}
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[9]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -989,7 +1101,7 @@ func (x *StreamExecutionEventsRequest) String() string {
 func (*StreamExecutionEventsRequest) ProtoMessage() {}
 
 func (x *StreamExecutionEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[9]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1002,7 +1114,7 @@ func (x *StreamExecutionEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamExecutionEventsRequest.ProtoReflect.Descriptor instead.
 func (*StreamExecutionEventsRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{9}
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *StreamExecutionEventsRequest) GetTenantId() string {
@@ -1036,7 +1148,7 @@ type StreamExecutionEventsResponse struct {
 
 func (x *StreamExecutionEventsResponse) Reset() {
 	*x = StreamExecutionEventsResponse{}
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[10]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1048,7 +1160,7 @@ func (x *StreamExecutionEventsResponse) String() string {
 func (*StreamExecutionEventsResponse) ProtoMessage() {}
 
 func (x *StreamExecutionEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[10]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1061,7 +1173,7 @@ func (x *StreamExecutionEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamExecutionEventsResponse.ProtoReflect.Descriptor instead.
 func (*StreamExecutionEventsResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{10}
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *StreamExecutionEventsResponse) GetEvent() *ExecutionEvent {
@@ -1087,7 +1199,7 @@ type PauseExecutionRequest struct {
 
 func (x *PauseExecutionRequest) Reset() {
 	*x = PauseExecutionRequest{}
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[11]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1099,7 +1211,7 @@ func (x *PauseExecutionRequest) String() string {
 func (*PauseExecutionRequest) ProtoMessage() {}
 
 func (x *PauseExecutionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[11]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1112,7 +1224,7 @@ func (x *PauseExecutionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseExecutionRequest.ProtoReflect.Descriptor instead.
 func (*PauseExecutionRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{11}
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *PauseExecutionRequest) GetId() string {
@@ -1131,7 +1243,7 @@ type PauseExecutionResponse struct {
 
 func (x *PauseExecutionResponse) Reset() {
 	*x = PauseExecutionResponse{}
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[12]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1143,7 +1255,7 @@ func (x *PauseExecutionResponse) String() string {
 func (*PauseExecutionResponse) ProtoMessage() {}
 
 func (x *PauseExecutionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[12]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1156,7 +1268,7 @@ func (x *PauseExecutionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseExecutionResponse.ProtoReflect.Descriptor instead.
 func (*PauseExecutionResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{12}
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *PauseExecutionResponse) GetExecution() *WorkerExecution {
@@ -1175,7 +1287,7 @@ type ResumeExecutionRequest struct {
 
 func (x *ResumeExecutionRequest) Reset() {
 	*x = ResumeExecutionRequest{}
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[13]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1187,7 +1299,7 @@ func (x *ResumeExecutionRequest) String() string {
 func (*ResumeExecutionRequest) ProtoMessage() {}
 
 func (x *ResumeExecutionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[13]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1200,7 +1312,7 @@ func (x *ResumeExecutionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeExecutionRequest.ProtoReflect.Descriptor instead.
 func (*ResumeExecutionRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{13}
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ResumeExecutionRequest) GetId() string {
@@ -1219,7 +1331,7 @@ type ResumeExecutionResponse struct {
 
 func (x *ResumeExecutionResponse) Reset() {
 	*x = ResumeExecutionResponse{}
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[14]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1231,7 +1343,7 @@ func (x *ResumeExecutionResponse) String() string {
 func (*ResumeExecutionResponse) ProtoMessage() {}
 
 func (x *ResumeExecutionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[14]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1244,7 +1356,7 @@ func (x *ResumeExecutionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeExecutionResponse.ProtoReflect.Descriptor instead.
 func (*ResumeExecutionResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{14}
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ResumeExecutionResponse) GetExecution() *WorkerExecution {
@@ -1264,7 +1376,7 @@ type CancelExecutionRequest struct {
 
 func (x *CancelExecutionRequest) Reset() {
 	*x = CancelExecutionRequest{}
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[15]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1276,7 +1388,7 @@ func (x *CancelExecutionRequest) String() string {
 func (*CancelExecutionRequest) ProtoMessage() {}
 
 func (x *CancelExecutionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[15]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1289,7 +1401,7 @@ func (x *CancelExecutionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelExecutionRequest.ProtoReflect.Descriptor instead.
 func (*CancelExecutionRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{15}
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *CancelExecutionRequest) GetId() string {
@@ -1315,7 +1427,7 @@ type CancelExecutionResponse struct {
 
 func (x *CancelExecutionResponse) Reset() {
 	*x = CancelExecutionResponse{}
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[16]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1327,7 +1439,7 @@ func (x *CancelExecutionResponse) String() string {
 func (*CancelExecutionResponse) ProtoMessage() {}
 
 func (x *CancelExecutionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[16]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1340,7 +1452,7 @@ func (x *CancelExecutionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelExecutionResponse.ProtoReflect.Descriptor instead.
 func (*CancelExecutionResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{16}
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *CancelExecutionResponse) GetExecution() *WorkerExecution {
@@ -1359,7 +1471,7 @@ type CheckpointNowRequest struct {
 
 func (x *CheckpointNowRequest) Reset() {
 	*x = CheckpointNowRequest{}
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[17]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1371,7 +1483,7 @@ func (x *CheckpointNowRequest) String() string {
 func (*CheckpointNowRequest) ProtoMessage() {}
 
 func (x *CheckpointNowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[17]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1384,7 +1496,7 @@ func (x *CheckpointNowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CheckpointNowRequest.ProtoReflect.Descriptor instead.
 func (*CheckpointNowRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{17}
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *CheckpointNowRequest) GetId() string {
@@ -1404,7 +1516,7 @@ type CheckpointNowResponse struct {
 
 func (x *CheckpointNowResponse) Reset() {
 	*x = CheckpointNowResponse{}
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[18]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1416,7 +1528,7 @@ func (x *CheckpointNowResponse) String() string {
 func (*CheckpointNowResponse) ProtoMessage() {}
 
 func (x *CheckpointNowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[18]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1429,7 +1541,7 @@ func (x *CheckpointNowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CheckpointNowResponse.ProtoReflect.Descriptor instead.
 func (*CheckpointNowResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{18}
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *CheckpointNowResponse) GetExecution() *WorkerExecution {
@@ -1457,7 +1569,7 @@ type ApproveToolCallRequest struct {
 
 func (x *ApproveToolCallRequest) Reset() {
 	*x = ApproveToolCallRequest{}
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[19]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1469,7 +1581,7 @@ func (x *ApproveToolCallRequest) String() string {
 func (*ApproveToolCallRequest) ProtoMessage() {}
 
 func (x *ApproveToolCallRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[19]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1482,7 +1594,7 @@ func (x *ApproveToolCallRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApproveToolCallRequest.ProtoReflect.Descriptor instead.
 func (*ApproveToolCallRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{19}
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ApproveToolCallRequest) GetRequestId() string {
@@ -1515,7 +1627,7 @@ type ApproveToolCallResponse struct {
 
 func (x *ApproveToolCallResponse) Reset() {
 	*x = ApproveToolCallResponse{}
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[20]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1527,7 +1639,7 @@ func (x *ApproveToolCallResponse) String() string {
 func (*ApproveToolCallResponse) ProtoMessage() {}
 
 func (x *ApproveToolCallResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[20]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1540,7 +1652,7 @@ func (x *ApproveToolCallResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApproveToolCallResponse.ProtoReflect.Descriptor instead.
 func (*ApproveToolCallResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{20}
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ApproveToolCallResponse) GetApproval() *ApprovalRequest {
@@ -1560,7 +1672,7 @@ type ListPendingApprovalsRequest struct {
 
 func (x *ListPendingApprovalsRequest) Reset() {
 	*x = ListPendingApprovalsRequest{}
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[21]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1572,7 +1684,7 @@ func (x *ListPendingApprovalsRequest) String() string {
 func (*ListPendingApprovalsRequest) ProtoMessage() {}
 
 func (x *ListPendingApprovalsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[21]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1585,7 +1697,7 @@ func (x *ListPendingApprovalsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPendingApprovalsRequest.ProtoReflect.Descriptor instead.
 func (*ListPendingApprovalsRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{21}
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ListPendingApprovalsRequest) GetTenantId() string {
@@ -1611,7 +1723,7 @@ type ListPendingApprovalsResponse struct {
 
 func (x *ListPendingApprovalsResponse) Reset() {
 	*x = ListPendingApprovalsResponse{}
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[22]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1623,7 +1735,7 @@ func (x *ListPendingApprovalsResponse) String() string {
 func (*ListPendingApprovalsResponse) ProtoMessage() {}
 
 func (x *ListPendingApprovalsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[22]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1636,7 +1748,7 @@ func (x *ListPendingApprovalsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPendingApprovalsResponse.ProtoReflect.Descriptor instead.
 func (*ListPendingApprovalsResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{22}
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ListPendingApprovalsResponse) GetApprovals() []*ApprovalRequest {
@@ -1656,7 +1768,7 @@ type CreateFollowUpExecutionRequest struct {
 
 func (x *CreateFollowUpExecutionRequest) Reset() {
 	*x = CreateFollowUpExecutionRequest{}
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[23]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1668,7 +1780,7 @@ func (x *CreateFollowUpExecutionRequest) String() string {
 func (*CreateFollowUpExecutionRequest) ProtoMessage() {}
 
 func (x *CreateFollowUpExecutionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[23]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1681,7 +1793,7 @@ func (x *CreateFollowUpExecutionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateFollowUpExecutionRequest.ProtoReflect.Descriptor instead.
 func (*CreateFollowUpExecutionRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{23}
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CreateFollowUpExecutionRequest) GetExecutionId() string {
@@ -1708,7 +1820,7 @@ type CreateFollowUpExecutionResponse struct {
 
 func (x *CreateFollowUpExecutionResponse) Reset() {
 	*x = CreateFollowUpExecutionResponse{}
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[24]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1720,7 +1832,7 @@ func (x *CreateFollowUpExecutionResponse) String() string {
 func (*CreateFollowUpExecutionResponse) ProtoMessage() {}
 
 func (x *CreateFollowUpExecutionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_execution_proto_msgTypes[24]
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1733,7 +1845,7 @@ func (x *CreateFollowUpExecutionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateFollowUpExecutionResponse.ProtoReflect.Descriptor instead.
 func (*CreateFollowUpExecutionResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{24}
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *CreateFollowUpExecutionResponse) GetExecutionId() string {
@@ -1806,7 +1918,7 @@ const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"\x13GetExecutionRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"V\n" +
 	"\x14GetExecutionResponse\x12>\n" +
-	"\texecution\x18\x01 \x01(\v2 .orchicon.api.v1.WorkerExecutionR\texecution\"\xd8\x02\n" +
+	"\texecution\x18\x01 \x01(\v2 .orchicon.api.v1.WorkerExecutionR\texecution\"\xa8\x03\n" +
 	"\x15ListExecutionsRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\"\n" +
 	"\n" +
@@ -1816,7 +1928,12 @@ const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"\n" +
 	"page_token\x18\x05 \x01(\tR\tpageToken\x12\x1b\n" +
 	"\tpage_size\x18\x06 \x01(\x05R\bpageSize\x12+\n" +
-	"\x0fworkflow_run_id\x18\a \x01(\tH\x03R\rworkflowRunId\x88\x01\x01B\r\n" +
+	"\x0fworkflow_run_id\x18\a \x01(\tH\x03R\rworkflowRunId\x88\x01\x01\x12\x16\n" +
+	"\x06search\x18\b \x01(\tR\x06search\x12\x17\n" +
+	"\asort_by\x18\t \x01(\tR\x06sortBy\x12\x1d\n" +
+	"\n" +
+	"sort_order\x18\n" +
+	" \x01(\tR\tsortOrderB\r\n" +
 	"\v_project_idB\n" +
 	"\n" +
 	"\b_task_idB\t\n" +
@@ -1824,7 +1941,11 @@ const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"\x10_workflow_run_id\"(\n" +
 	"\x16DeleteExecutionRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x19\n" +
-	"\x17DeleteExecutionResponse\"\x82\x01\n" +
+	"\x17DeleteExecutionResponse\"0\n" +
+	"\x1cBatchDeleteExecutionsRequest\x12\x10\n" +
+	"\x03ids\x18\x01 \x03(\tR\x03ids\"D\n" +
+	"\x1dBatchDeleteExecutionsResponse\x12#\n" +
+	"\rdeleted_count\x18\x01 \x01(\x05R\fdeletedCount\"\x82\x01\n" +
 	"\x16ListExecutionsResponse\x12@\n" +
 	"\n" +
 	"executions\x18\x01 \x03(\v2 .orchicon.api.v1.WorkerExecutionR\n" +
@@ -1923,7 +2044,7 @@ func file_orchicon_api_v1_execution_proto_rawDescGZIP() []byte {
 }
 
 var file_orchicon_api_v1_execution_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_orchicon_api_v1_execution_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
+var file_orchicon_api_v1_execution_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
 var file_orchicon_api_v1_execution_proto_goTypes = []any{
 	(ExecutionStatus)(0),                    // 0: orchicon.api.v1.ExecutionStatus
 	(HealthState)(0),                        // 1: orchicon.api.v1.HealthState
@@ -1936,33 +2057,35 @@ var file_orchicon_api_v1_execution_proto_goTypes = []any{
 	(*ListExecutionsRequest)(nil),           // 8: orchicon.api.v1.ListExecutionsRequest
 	(*DeleteExecutionRequest)(nil),          // 9: orchicon.api.v1.DeleteExecutionRequest
 	(*DeleteExecutionResponse)(nil),         // 10: orchicon.api.v1.DeleteExecutionResponse
-	(*ListExecutionsResponse)(nil),          // 11: orchicon.api.v1.ListExecutionsResponse
-	(*StreamExecutionEventsRequest)(nil),    // 12: orchicon.api.v1.StreamExecutionEventsRequest
-	(*StreamExecutionEventsResponse)(nil),   // 13: orchicon.api.v1.StreamExecutionEventsResponse
-	(*PauseExecutionRequest)(nil),           // 14: orchicon.api.v1.PauseExecutionRequest
-	(*PauseExecutionResponse)(nil),          // 15: orchicon.api.v1.PauseExecutionResponse
-	(*ResumeExecutionRequest)(nil),          // 16: orchicon.api.v1.ResumeExecutionRequest
-	(*ResumeExecutionResponse)(nil),         // 17: orchicon.api.v1.ResumeExecutionResponse
-	(*CancelExecutionRequest)(nil),          // 18: orchicon.api.v1.CancelExecutionRequest
-	(*CancelExecutionResponse)(nil),         // 19: orchicon.api.v1.CancelExecutionResponse
-	(*CheckpointNowRequest)(nil),            // 20: orchicon.api.v1.CheckpointNowRequest
-	(*CheckpointNowResponse)(nil),           // 21: orchicon.api.v1.CheckpointNowResponse
-	(*ApproveToolCallRequest)(nil),          // 22: orchicon.api.v1.ApproveToolCallRequest
-	(*ApproveToolCallResponse)(nil),         // 23: orchicon.api.v1.ApproveToolCallResponse
-	(*ListPendingApprovalsRequest)(nil),     // 24: orchicon.api.v1.ListPendingApprovalsRequest
-	(*ListPendingApprovalsResponse)(nil),    // 25: orchicon.api.v1.ListPendingApprovalsResponse
-	(*CreateFollowUpExecutionRequest)(nil),  // 26: orchicon.api.v1.CreateFollowUpExecutionRequest
-	(*CreateFollowUpExecutionResponse)(nil), // 27: orchicon.api.v1.CreateFollowUpExecutionResponse
-	(*timestamppb.Timestamp)(nil),           // 28: google.protobuf.Timestamp
+	(*BatchDeleteExecutionsRequest)(nil),    // 11: orchicon.api.v1.BatchDeleteExecutionsRequest
+	(*BatchDeleteExecutionsResponse)(nil),   // 12: orchicon.api.v1.BatchDeleteExecutionsResponse
+	(*ListExecutionsResponse)(nil),          // 13: orchicon.api.v1.ListExecutionsResponse
+	(*StreamExecutionEventsRequest)(nil),    // 14: orchicon.api.v1.StreamExecutionEventsRequest
+	(*StreamExecutionEventsResponse)(nil),   // 15: orchicon.api.v1.StreamExecutionEventsResponse
+	(*PauseExecutionRequest)(nil),           // 16: orchicon.api.v1.PauseExecutionRequest
+	(*PauseExecutionResponse)(nil),          // 17: orchicon.api.v1.PauseExecutionResponse
+	(*ResumeExecutionRequest)(nil),          // 18: orchicon.api.v1.ResumeExecutionRequest
+	(*ResumeExecutionResponse)(nil),         // 19: orchicon.api.v1.ResumeExecutionResponse
+	(*CancelExecutionRequest)(nil),          // 20: orchicon.api.v1.CancelExecutionRequest
+	(*CancelExecutionResponse)(nil),         // 21: orchicon.api.v1.CancelExecutionResponse
+	(*CheckpointNowRequest)(nil),            // 22: orchicon.api.v1.CheckpointNowRequest
+	(*CheckpointNowResponse)(nil),           // 23: orchicon.api.v1.CheckpointNowResponse
+	(*ApproveToolCallRequest)(nil),          // 24: orchicon.api.v1.ApproveToolCallRequest
+	(*ApproveToolCallResponse)(nil),         // 25: orchicon.api.v1.ApproveToolCallResponse
+	(*ListPendingApprovalsRequest)(nil),     // 26: orchicon.api.v1.ListPendingApprovalsRequest
+	(*ListPendingApprovalsResponse)(nil),    // 27: orchicon.api.v1.ListPendingApprovalsResponse
+	(*CreateFollowUpExecutionRequest)(nil),  // 28: orchicon.api.v1.CreateFollowUpExecutionRequest
+	(*CreateFollowUpExecutionResponse)(nil), // 29: orchicon.api.v1.CreateFollowUpExecutionResponse
+	(*timestamppb.Timestamp)(nil),           // 30: google.protobuf.Timestamp
 }
 var file_orchicon_api_v1_execution_proto_depIdxs = []int32{
 	0,  // 0: orchicon.api.v1.WorkerExecution.status:type_name -> orchicon.api.v1.ExecutionStatus
 	1,  // 1: orchicon.api.v1.WorkerExecution.health_state:type_name -> orchicon.api.v1.HealthState
-	28, // 2: orchicon.api.v1.WorkerExecution.started_at:type_name -> google.protobuf.Timestamp
-	28, // 3: orchicon.api.v1.WorkerExecution.ended_at:type_name -> google.protobuf.Timestamp
+	30, // 2: orchicon.api.v1.WorkerExecution.started_at:type_name -> google.protobuf.Timestamp
+	30, // 3: orchicon.api.v1.WorkerExecution.ended_at:type_name -> google.protobuf.Timestamp
 	2,  // 4: orchicon.api.v1.ExecutionEvent.event_type:type_name -> orchicon.api.v1.ExecutionEventType
-	28, // 5: orchicon.api.v1.ExecutionEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	28, // 6: orchicon.api.v1.ApprovalRequest.requested_at:type_name -> google.protobuf.Timestamp
+	30, // 5: orchicon.api.v1.ExecutionEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	30, // 6: orchicon.api.v1.ApprovalRequest.requested_at:type_name -> google.protobuf.Timestamp
 	3,  // 7: orchicon.api.v1.GetExecutionResponse.execution:type_name -> orchicon.api.v1.WorkerExecution
 	0,  // 8: orchicon.api.v1.ListExecutionsRequest.status:type_name -> orchicon.api.v1.ExecutionStatus
 	3,  // 9: orchicon.api.v1.ListExecutionsResponse.executions:type_name -> orchicon.api.v1.WorkerExecution
@@ -1986,15 +2109,15 @@ func file_orchicon_api_v1_execution_proto_init() {
 		return
 	}
 	file_orchicon_api_v1_execution_proto_msgTypes[5].OneofWrappers = []any{}
-	file_orchicon_api_v1_execution_proto_msgTypes[9].OneofWrappers = []any{}
-	file_orchicon_api_v1_execution_proto_msgTypes[21].OneofWrappers = []any{}
+	file_orchicon_api_v1_execution_proto_msgTypes[11].OneofWrappers = []any{}
+	file_orchicon_api_v1_execution_proto_msgTypes[23].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_execution_proto_rawDesc), len(file_orchicon_api_v1_execution_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   25,
+			NumMessages:   27,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

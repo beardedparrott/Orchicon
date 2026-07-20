@@ -126,6 +126,9 @@ func (s *Service) ListExecutions(ctx context.Context, req *connect.Request[apiv1
 	if req.Msg.WorkflowRunId != nil {
 		f.WorkflowRunID = *req.Msg.WorkflowRunId
 	}
+	f.Search = req.Msg.Search
+	f.SortBy = req.Msg.SortBy
+	f.SortOrder = req.Msg.SortOrder
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -183,6 +186,55 @@ func (s *Service) DeleteExecution(ctx context.Context, req *connect.Request[apiv
 	}
 	s.log.Info("execution deleted", "id", req.Msg.Id)
 	return connect.NewResponse(&apiv1.DeleteExecutionResponse{}), nil
+}
+
+// BatchDeleteExecutions hard-deletes multiple executions by id.
+func (s *Service) BatchDeleteExecutions(ctx context.Context, req *connect.Request[apiv1.BatchDeleteExecutionsRequest]) (*connect.Response[apiv1.BatchDeleteExecutionsResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if len(req.Msg.Ids) == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("ids must not be empty"))
+	}
+	if len(req.Msg.Ids) > 100 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("max 100 executions per batch"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	var deleted int32
+	for _, id := range req.Msg.Ids {
+		if id == "" {
+			continue
+		}
+		current, err := db.GetExecution(ctx, ttx.Tx, tenantID, id)
+		if err != nil {
+			continue
+		}
+		if current.Status != domain.ExecutionTerminated && current.Status != domain.ExecutionFailedToStart {
+			now := time.Now().UTC()
+			_, err := db.UpdateExecution(ctx, ttx.Tx, tenantID, id, current.Version, db.UpdateExecutionFields{
+				Status:      strPtr(domain.ExecutionTerminated),
+				HealthState: strPtr(domain.HealthTerminating),
+				EndedAt:     &now,
+			})
+			if err != nil {
+				continue
+			}
+		}
+		if err := db.DeleteExecution(ctx, ttx.Tx, tenantID, id); err != nil {
+			continue
+		}
+		deleted++
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("batch executions deleted", "count", deleted)
+	return connect.NewResponse(&apiv1.BatchDeleteExecutionsResponse{DeletedCount: deleted}), nil
 }
 
 // StreamExecutionEvents is the server-stream RPC that fans out execution

@@ -69,6 +69,9 @@ const (
 	// ExecutionServiceDeleteExecutionProcedure is the fully-qualified name of the ExecutionService's
 	// DeleteExecution RPC.
 	ExecutionServiceDeleteExecutionProcedure = "/orchicon.api.v1.ExecutionService/DeleteExecution"
+	// ExecutionServiceBatchDeleteExecutionsProcedure is the fully-qualified name of the
+	// ExecutionService's BatchDeleteExecutions RPC.
+	ExecutionServiceBatchDeleteExecutionsProcedure = "/orchicon.api.v1.ExecutionService/BatchDeleteExecutions"
 	// ExecutionServiceCreateFollowUpExecutionProcedure is the fully-qualified name of the
 	// ExecutionService's CreateFollowUpExecution RPC.
 	ExecutionServiceCreateFollowUpExecutionProcedure = "/orchicon.api.v1.ExecutionService/CreateFollowUpExecution"
@@ -107,6 +110,8 @@ type ExecutionServiceClient interface {
 	// DeleteExecution hard-deletes an execution. If the execution is still
 	// running, it is cancelled first.
 	DeleteExecution(context.Context, *connect.Request[v1.DeleteExecutionRequest]) (*connect.Response[v1.DeleteExecutionResponse], error)
+	// BatchDeleteExecutions hard-deletes multiple executions by id.
+	BatchDeleteExecutions(context.Context, *connect.Request[v1.BatchDeleteExecutionsRequest]) (*connect.Response[v1.BatchDeleteExecutionsResponse], error)
 	// CreateFollowUpExecution creates a new execution that continues from a
 	// completed execution. The new execution includes the previous context
 	// (composite prompt + output) plus the user's follow-up message.
@@ -184,6 +189,12 @@ func NewExecutionServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(executionServiceMethods.ByName("DeleteExecution")),
 			connect.WithClientOptions(opts...),
 		),
+		batchDeleteExecutions: connect.NewClient[v1.BatchDeleteExecutionsRequest, v1.BatchDeleteExecutionsResponse](
+			httpClient,
+			baseURL+ExecutionServiceBatchDeleteExecutionsProcedure,
+			connect.WithSchema(executionServiceMethods.ByName("BatchDeleteExecutions")),
+			connect.WithClientOptions(opts...),
+		),
 		createFollowUpExecution: connect.NewClient[v1.CreateFollowUpExecutionRequest, v1.CreateFollowUpExecutionResponse](
 			httpClient,
 			baseURL+ExecutionServiceCreateFollowUpExecutionProcedure,
@@ -205,6 +216,7 @@ type executionServiceClient struct {
 	approveToolCall         *connect.Client[v1.ApproveToolCallRequest, v1.ApproveToolCallResponse]
 	listPendingApprovals    *connect.Client[v1.ListPendingApprovalsRequest, v1.ListPendingApprovalsResponse]
 	deleteExecution         *connect.Client[v1.DeleteExecutionRequest, v1.DeleteExecutionResponse]
+	batchDeleteExecutions   *connect.Client[v1.BatchDeleteExecutionsRequest, v1.BatchDeleteExecutionsResponse]
 	createFollowUpExecution *connect.Client[v1.CreateFollowUpExecutionRequest, v1.CreateFollowUpExecutionResponse]
 }
 
@@ -258,6 +270,11 @@ func (c *executionServiceClient) DeleteExecution(ctx context.Context, req *conne
 	return c.deleteExecution.CallUnary(ctx, req)
 }
 
+// BatchDeleteExecutions calls orchicon.api.v1.ExecutionService.BatchDeleteExecutions.
+func (c *executionServiceClient) BatchDeleteExecutions(ctx context.Context, req *connect.Request[v1.BatchDeleteExecutionsRequest]) (*connect.Response[v1.BatchDeleteExecutionsResponse], error) {
+	return c.batchDeleteExecutions.CallUnary(ctx, req)
+}
+
 // CreateFollowUpExecution calls orchicon.api.v1.ExecutionService.CreateFollowUpExecution.
 func (c *executionServiceClient) CreateFollowUpExecution(ctx context.Context, req *connect.Request[v1.CreateFollowUpExecutionRequest]) (*connect.Response[v1.CreateFollowUpExecutionResponse], error) {
 	return c.createFollowUpExecution.CallUnary(ctx, req)
@@ -296,6 +313,8 @@ type ExecutionServiceHandler interface {
 	// DeleteExecution hard-deletes an execution. If the execution is still
 	// running, it is cancelled first.
 	DeleteExecution(context.Context, *connect.Request[v1.DeleteExecutionRequest]) (*connect.Response[v1.DeleteExecutionResponse], error)
+	// BatchDeleteExecutions hard-deletes multiple executions by id.
+	BatchDeleteExecutions(context.Context, *connect.Request[v1.BatchDeleteExecutionsRequest]) (*connect.Response[v1.BatchDeleteExecutionsResponse], error)
 	// CreateFollowUpExecution creates a new execution that continues from a
 	// completed execution. The new execution includes the previous context
 	// (composite prompt + output) plus the user's follow-up message.
@@ -369,6 +388,12 @@ func NewExecutionServiceHandler(svc ExecutionServiceHandler, opts ...connect.Han
 		connect.WithSchema(executionServiceMethods.ByName("DeleteExecution")),
 		connect.WithHandlerOptions(opts...),
 	)
+	executionServiceBatchDeleteExecutionsHandler := connect.NewUnaryHandler(
+		ExecutionServiceBatchDeleteExecutionsProcedure,
+		svc.BatchDeleteExecutions,
+		connect.WithSchema(executionServiceMethods.ByName("BatchDeleteExecutions")),
+		connect.WithHandlerOptions(opts...),
+	)
 	executionServiceCreateFollowUpExecutionHandler := connect.NewUnaryHandler(
 		ExecutionServiceCreateFollowUpExecutionProcedure,
 		svc.CreateFollowUpExecution,
@@ -397,6 +422,8 @@ func NewExecutionServiceHandler(svc ExecutionServiceHandler, opts ...connect.Han
 			executionServiceListPendingApprovalsHandler.ServeHTTP(w, r)
 		case ExecutionServiceDeleteExecutionProcedure:
 			executionServiceDeleteExecutionHandler.ServeHTTP(w, r)
+		case ExecutionServiceBatchDeleteExecutionsProcedure:
+			executionServiceBatchDeleteExecutionsHandler.ServeHTTP(w, r)
 		case ExecutionServiceCreateFollowUpExecutionProcedure:
 			executionServiceCreateFollowUpExecutionHandler.ServeHTTP(w, r)
 		default:
@@ -446,6 +473,10 @@ func (UnimplementedExecutionServiceHandler) ListPendingApprovals(context.Context
 
 func (UnimplementedExecutionServiceHandler) DeleteExecution(context.Context, *connect.Request[v1.DeleteExecutionRequest]) (*connect.Response[v1.DeleteExecutionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.ExecutionService.DeleteExecution is not implemented"))
+}
+
+func (UnimplementedExecutionServiceHandler) BatchDeleteExecutions(context.Context, *connect.Request[v1.BatchDeleteExecutionsRequest]) (*connect.Response[v1.BatchDeleteExecutionsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.ExecutionService.BatchDeleteExecutions is not implemented"))
 }
 
 func (UnimplementedExecutionServiceHandler) CreateFollowUpExecution(context.Context, *connect.Request[v1.CreateFollowUpExecutionRequest]) (*connect.Response[v1.CreateFollowUpExecutionResponse], error) {
