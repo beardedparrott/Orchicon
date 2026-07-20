@@ -35,10 +35,12 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -1345,9 +1347,17 @@ func stepKindLabel(kind string) string {
 	}
 }
 
-// readProjectContextFiles lists the project's context_files as full
-// absolute paths so the worker can read them from disk. No file contents
-// are sent — only the paths.
+const (
+	maxFileReadSize    = 50 * 1024  // 50KB per file content
+	maxTotalReadSize   = 512 * 1024 // 512KB total across all files
+	maxWalkDepth       = 32         // max directory recursion depth
+)
+
+// readProjectContextFiles reads the project's context_files from disk
+// and embeds their contents directly into the prompt as markdown sections.
+// Directories are walked recursively (up to maxWalkDepth), and each file's
+// content is included up to maxFileReadSize per file. Binary files are
+// detected by content-type sniffing and noted as binary rather than read.
 func (r *WorkflowReconciler) readProjectContextFiles(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (string, error) {
 	p, err := db.GetProject(ctx, tx, tenantID, projectID)
 	if err != nil {
@@ -1365,16 +1375,92 @@ func (r *WorkflowReconciler) readProjectContextFiles(ctx context.Context, tx pgx
 	}
 	var sb strings.Builder
 	sb.WriteString("# File context\n\n")
-	sb.WriteString("File context: The following files and directories are provided as context. Please read the files from disk and any files that are also contained within the directories listed before starting your work.\n\n")
+	sb.WriteString("The following files are provided as project context. Their contents are inlined below.\n\n")
+
+	var totalRead int
 	for _, relPath := range files {
+		if totalRead >= maxTotalReadSize {
+			sb.WriteString("\n*(remaining files omitted — total context size limit reached)*\n")
+			break
+		}
 		fullPath := filepath.Join(p.ProjectDir, relPath)
 		if !strings.HasPrefix(filepath.Clean(fullPath), filepath.Clean(p.ProjectDir)) {
 			continue
 		}
-		fmt.Fprintf(&sb, "- `%s`\n", fullPath)
+		n, err := r.readFileOrDir(&sb, fullPath, relPath, 0, &totalRead)
+		if err != nil {
+			r.log.Warn("error reading context file", "path", fullPath, "error", err)
+			fmt.Fprintf(&sb, "\n> ⚠ Error reading `%s`: %s\n\n", relPath, err)
+		}
+		_ = n
 	}
 	sb.WriteString("\n")
 	return sb.String(), nil
+}
+
+// readFileOrDir walks a single context_files entry (file or directory),
+// reading file contents and appending them to sb. Returns the number of
+// bytes read. depth tracks recursion depth for directory walking.
+func (r *WorkflowReconciler) readFileOrDir(sb *strings.Builder, absPath, relPath string, depth int, totalRead *int) (int, error) {
+	if depth > maxWalkDepth {
+		fmt.Fprintf(sb, "\n> ⚠ `%s`: directory too deep (max %d levels), skipping\n\n", relPath, maxWalkDepth)
+		return 0, nil
+	}
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return 0, fmt.Errorf("stat: %w", err)
+	}
+	if info.IsDir() {
+		entries, err := os.ReadDir(absPath)
+		if err != nil {
+			return 0, fmt.Errorf("read dir: %w", err)
+		}
+		var total int
+		for _, entry := range entries {
+			if *totalRead >= maxTotalReadSize {
+				sb.WriteString("\n*(remaining files omitted — total context size limit reached)*\n")
+				break
+			}
+			childRel := filepath.Join(relPath, entry.Name())
+			childAbs := filepath.Join(absPath, entry.Name())
+			n, err := r.readFileOrDir(sb, childAbs, childRel, depth+1, totalRead)
+			if err != nil {
+				r.log.Warn("error reading context file", "path", childAbs, "error", err)
+				fmt.Fprintf(sb, "\n> ⚠ Error reading `%s`: %s\n\n", childRel, err)
+			}
+			total += n
+		}
+		return total, nil
+	}
+	// Regular file.
+	if *totalRead >= maxTotalReadSize {
+		return 0, nil
+	}
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return 0, fmt.Errorf("read file: %w", err)
+	}
+	// Detect binary files by checking for a null byte in the first 8KB.
+	sniff := data
+	if len(sniff) > 8192 {
+		sniff = sniff[:8192]
+	}
+	if bytes.IndexByte(sniff, 0) != -1 {
+		fmt.Fprintf(sb, "### `%s`\n\n_Binary file (%d bytes) — content not inlined._\n\n", relPath, len(data))
+		*totalRead += len(data)
+		return len(data), nil
+	}
+	// Truncate if too large.
+	content := data
+	if len(content) > maxFileReadSize {
+		content = content[:maxFileReadSize]
+	}
+	fmt.Fprintf(sb, "### `%s`\n\n```\n%s\n```\n\n", relPath, string(content))
+	if len(data) > maxFileReadSize {
+		fmt.Fprintf(sb, "_File truncated: %d of %d bytes shown._\n\n", maxFileReadSize, len(data))
+	}
+	*totalRead += len(data)
+	return len(data), nil
 }
 
 // workItemKindLabel returns a human-readable label for a work item's

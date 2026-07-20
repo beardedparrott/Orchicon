@@ -156,37 +156,6 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		mcpDiscoverer = aigateway.MockMCPDiscoverer(log)
 	}
 
-	deps := api.Dependencies{
-		Pool:              pool,
-		Log:               log,
-		Subscriber:        sub,
-		PolicyEngine:      policyEngine,
-		RecoveryEngine:    recoveryEngine,
-		SigNozClient:      signozClient,
-		SigNozURL:         cfg.SigNozURL,
-		AuthHandler:       authHandler,
-		WebhookDispatcher: webhookDisp,
-		Mode:              cfg.Mode,
-		ModelDiscoverer:   modelDiscoverer,
-		MCPDiscoverer:     mcpDiscoverer,
-	}
-	handler := api.Mount(mux, deps)
-
-	// Wrap with OTel tracing interceptor (spans on every API call).
-	handler = telemetry.Middleware(handler)
-
-	httpSrv := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           handler,
-		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
-	}
-
-	s := &Server{cfg: cfg, log: log, pool: pool, httpSrv: httpSrv, otel: otelShutdown,
-		blobs: blobs, authH: authHandler, webhookD: webhookDisp}
-	if pub != nil {
-		s.relay = outbox.NewRelay(pool, pub, log)
-	}
-
 	// Reconciler framework (docs/03 §2). Phase 5 registers the
 	// TaskReconciler — the control loop that dispatches ready tasks to
 	// runtime adapters (docs/03 §4). The OpenCode adapter bridge is the
@@ -223,6 +192,39 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	// RecoveryTrigger interface (loose coupling — no scheduler→recovery
 	// import).
 	taskRec.SetRecoveryTrigger(recoveryEngine)
+
+	deps := api.Dependencies{
+		Pool:              pool,
+		Log:               log,
+		Subscriber:        sub,
+		PolicyEngine:      policyEngine,
+		RecoveryEngine:    recoveryEngine,
+		SigNozClient:      signozClient,
+		SigNozURL:         cfg.SigNozURL,
+		AuthHandler:       authHandler,
+		WebhookDispatcher: webhookDisp,
+		Mode:              cfg.Mode,
+		ModelDiscoverer:   modelDiscoverer,
+		MCPDiscoverer:     mcpDiscoverer,
+		TaskDispatcher:    taskRec,
+	}
+	handler := api.Mount(mux, deps)
+
+	// Wrap with OTel tracing interceptor (spans on every API call).
+	handler = telemetry.Middleware(handler)
+
+	httpSrv := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+	}
+
+	s := &Server{cfg: cfg, log: log, pool: pool, httpSrv: httpSrv, otel: otelShutdown,
+		blobs: blobs, authH: authHandler, webhookD: webhookDisp}
+	if pub != nil {
+		s.relay = outbox.NewRelay(pool, pub, log)
+	}
+
 	// Wire the direct NATS publisher for low-latency execution event
 	// streaming. When set, the reconciler publishes streaming events
 	// (text, tool_call, artifact, status changes) directly to NATS

@@ -9,7 +9,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { ApproveToolCallRequest, ApproveToolCallResponse, CancelExecutionRequest, CancelExecutionResponse, CheckpointNowRequest, CheckpointNowResponse, DeleteExecutionRequest, DeleteExecutionResponse, GetExecutionRequest, GetExecutionResponse, ListExecutionsRequest, ListExecutionsResponse, ListPendingApprovalsRequest, ListPendingApprovalsResponse, PauseExecutionRequest, PauseExecutionResponse, ResumeExecutionRequest, ResumeExecutionResponse, StreamExecutionEventsRequest, StreamExecutionEventsResponse } from "./execution_pb.js";
+import { ApproveToolCallRequest, ApproveToolCallResponse, CancelExecutionRequest, CancelExecutionResponse, CheckpointNowRequest, CheckpointNowResponse, CreateFollowUpExecutionRequest, CreateFollowUpExecutionResponse, DeleteExecutionRequest, DeleteExecutionResponse, GetExecutionRequest, GetExecutionResponse, ListExecutionsRequest, ListExecutionsResponse, ListPendingApprovalsRequest, ListPendingApprovalsResponse, PauseExecutionRequest, PauseExecutionResponse, ResumeExecutionRequest, ResumeExecutionResponse, StreamExecutionEventsRequest, StreamExecutionEventsResponse } from "./execution_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -137,6 +137,19 @@ export const ExecutionService = {
       name: "DeleteExecution",
       I: DeleteExecutionRequest,
       O: DeleteExecutionResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * CreateFollowUpExecution creates a new execution that continues from a
+     * completed execution. The new execution includes the previous context
+     * (composite prompt + output) plus the user's follow-up message.
+     *
+     * @generated from rpc orchicon.api.v1.ExecutionService.CreateFollowUpExecution
+     */
+    createFollowUpExecution: {
+      name: "CreateFollowUpExecution",
+      I: CreateFollowUpExecutionRequest,
+      O: CreateFollowUpExecutionResponse,
       kind: MethodKind.Unary,
     },
   }

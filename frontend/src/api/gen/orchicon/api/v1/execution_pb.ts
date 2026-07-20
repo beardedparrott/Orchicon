@@ -1375,3 +1375,95 @@ export class ListPendingApprovalsResponse extends Message<ListPendingApprovalsRe
   }
 }
 
+/**
+ * @generated from message orchicon.api.v1.CreateFollowUpExecutionRequest
+ */
+export class CreateFollowUpExecutionRequest extends Message<CreateFollowUpExecutionRequest> {
+  /**
+   * @generated from field: string execution_id = 1;
+   */
+  executionId = "";
+
+  /**
+   * The follow-up message from the user
+   *
+   * @generated from field: string message = 2;
+   */
+  message = "";
+
+  constructor(data?: PartialMessage<CreateFollowUpExecutionRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.CreateFollowUpExecutionRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "execution_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "message", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateFollowUpExecutionRequest {
+    return new CreateFollowUpExecutionRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateFollowUpExecutionRequest {
+    return new CreateFollowUpExecutionRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateFollowUpExecutionRequest {
+    return new CreateFollowUpExecutionRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateFollowUpExecutionRequest | PlainMessage<CreateFollowUpExecutionRequest> | undefined, b: CreateFollowUpExecutionRequest | PlainMessage<CreateFollowUpExecutionRequest> | undefined): boolean {
+    return proto3.util.equals(CreateFollowUpExecutionRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.CreateFollowUpExecutionResponse
+ */
+export class CreateFollowUpExecutionResponse extends Message<CreateFollowUpExecutionResponse> {
+  /**
+   * The new execution ID
+   *
+   * @generated from field: string execution_id = 1;
+   */
+  executionId = "";
+
+  /**
+   * The new work item ID
+   *
+   * @generated from field: string work_item_id = 2;
+   */
+  workItemId = "";
+
+  constructor(data?: PartialMessage<CreateFollowUpExecutionResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.CreateFollowUpExecutionResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "execution_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "work_item_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateFollowUpExecutionResponse {
+    return new CreateFollowUpExecutionResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateFollowUpExecutionResponse {
+    return new CreateFollowUpExecutionResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateFollowUpExecutionResponse {
+    return new CreateFollowUpExecutionResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateFollowUpExecutionResponse | PlainMessage<CreateFollowUpExecutionResponse> | undefined, b: CreateFollowUpExecutionResponse | PlainMessage<CreateFollowUpExecutionResponse> | undefined): boolean {
+    return proto3.util.equals(CreateFollowUpExecutionResponse, a, b);
+  }
+}
+

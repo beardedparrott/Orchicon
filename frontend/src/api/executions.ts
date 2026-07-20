@@ -11,6 +11,7 @@ import type { ExecutionEvent } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { ApprovalRequest } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { StreamExecutionEventsRequest } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { StreamExecutionEventsResponse } from "@/api/gen/orchicon/api/v1/execution_pb";
+import type { CreateFollowUpExecutionResponse } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { PartialMessage } from "@bufbuild/protobuf";
 
 // --- adapter keys ---
@@ -207,6 +208,21 @@ export function useListPendingApprovals(executionId?: string) {
       return res.approvals as ApprovalRequest[];
     },
     refetchInterval: 5_000, // poll every 5s for pending approvals
+  });
+}
+
+// --- follow-up execution ---
+
+export function useCreateFollowUpExecution() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { executionId: string; message: string }) => {
+      const res = await executionClient.createFollowUpExecution(input);
+      return res as CreateFollowUpExecutionResponse;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: executionKeys.all });
+    },
   });
 }
 

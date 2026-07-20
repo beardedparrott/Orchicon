@@ -10,10 +10,11 @@
 // stack of cards was replaced because it buried the live session under
 // metadata — the new layout makes the live chat the primary surface
 // and the context sidebar the secondary reference.
-import { createRoute, useNavigate } from "@tanstack/react-router";
+import { createRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { Pause, Play, Square, Save, Trash2, ArrowLeft } from "lucide-react";
+import { Pause, Play, Square, Save, Trash2, ArrowLeft, SendHorizontal } from "lucide-react";
 
+import { useState } from "react";
 import {
   useGetExecution,
   useStreamExecutionEvents,
@@ -24,6 +25,7 @@ import {
   useDeleteExecution,
   useListPendingApprovals,
   useApproveToolCall,
+  useCreateFollowUpExecution,
 } from "@/api/executions";
 import { executionKeys } from "@/api/executions";
 import { useGetUsage } from "@/api/aigateway";
@@ -208,6 +210,11 @@ function ExecutionDetailPage() {
               structured metadata (worker, adapter, task, workflow)
               since that data doesn't fit naturally in the sidebar. */}
           <ExecutionContextFooter exec={exec} />
+
+          {/* Follow-up chat input — shown when the execution is
+              complete, allowing the user to send a follow-up message
+              that creates a new execution with the previous context. */}
+          {isTerminal && <FollowUpInput executionId={exec.id} />}
         </div>
 
         <ExecutionContextSidebar
@@ -336,6 +343,77 @@ function ExecutionContextFooter({
           </div>
         ))}
       </dl>
+    </div>
+  );
+}
+
+function FollowUpInput({ executionId }: { executionId: string }) {
+  const [message, setMessage] = useState("");
+  const createFollowUp = useCreateFollowUpExecution();
+  const navigate = useNavigate();
+
+  const handleSend = () => {
+    const trimmed = message.trim();
+    if (!trimmed || createFollowUp.isPending) return;
+    createFollowUp.mutate(
+      { executionId, message: trimmed },
+      {
+        onSuccess: (res) => {
+          setMessage("");
+        },
+      },
+    );
+  };
+
+  return (
+    <div className="rounded-xl border bg-card p-3 shadow-sm">
+      <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <SendHorizontal className="h-3.5 w-3.5" />
+        <span>Follow up</span>
+      </div>
+      <p className="mb-2 text-xs text-muted-foreground">
+        Send a follow-up message. A new execution will be created with this
+        message plus the previous context.
+      </p>
+      <div className="flex gap-2">
+        <textarea
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          placeholder="Ask the worker to continue or refine the result..."
+          className="min-h-[60px] flex-1 resize-none rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              handleSend();
+            }
+          }}
+        />
+        <Button
+          size="sm"
+          onClick={handleSend}
+          disabled={!message.trim() || createFollowUp.isPending}
+          className="self-end"
+        >
+          {createFollowUp.isPending ? "Sending…" : "Send"}
+        </Button>
+      </div>
+      {createFollowUp.data && (
+        <div className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">
+          Follow-up work item created.{" "}
+          <Link
+            to="/executions"
+            className="underline underline-offset-2 hover:text-emerald-700"
+          >
+            View executions
+          </Link>{" "}
+          to track the new execution.
+        </div>
+      )}
+      {createFollowUp.error && (
+        <div className="mt-2 text-xs text-destructive">
+          Failed to create follow-up: {String(createFollowUp.error)}
+        </div>
+      )}
     </div>
   );
 }

@@ -1638,6 +1638,110 @@ func (x *ListPendingApprovalsResponse) GetApprovals() []*ApprovalRequest {
 	return nil
 }
 
+type CreateFollowUpExecutionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ExecutionId   string                 `protobuf:"bytes,1,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"` // The follow-up message from the user
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateFollowUpExecutionRequest) Reset() {
+	*x = CreateFollowUpExecutionRequest{}
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateFollowUpExecutionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateFollowUpExecutionRequest) ProtoMessage() {}
+
+func (x *CreateFollowUpExecutionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateFollowUpExecutionRequest.ProtoReflect.Descriptor instead.
+func (*CreateFollowUpExecutionRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *CreateFollowUpExecutionRequest) GetExecutionId() string {
+	if x != nil {
+		return x.ExecutionId
+	}
+	return ""
+}
+
+func (x *CreateFollowUpExecutionRequest) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+type CreateFollowUpExecutionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ExecutionId   string                 `protobuf:"bytes,1,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"` // The new execution ID
+	WorkItemId    string                 `protobuf:"bytes,2,opt,name=work_item_id,json=workItemId,proto3" json:"work_item_id,omitempty"`  // The new work item ID
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateFollowUpExecutionResponse) Reset() {
+	*x = CreateFollowUpExecutionResponse{}
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateFollowUpExecutionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateFollowUpExecutionResponse) ProtoMessage() {}
+
+func (x *CreateFollowUpExecutionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateFollowUpExecutionResponse.ProtoReflect.Descriptor instead.
+func (*CreateFollowUpExecutionResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *CreateFollowUpExecutionResponse) GetExecutionId() string {
+	if x != nil {
+		return x.ExecutionId
+	}
+	return ""
+}
+
+func (x *CreateFollowUpExecutionResponse) GetWorkItemId() string {
+	if x != nil {
+		return x.WorkItemId
+	}
+	return ""
+}
+
 var File_orchicon_api_v1_execution_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_execution_proto_rawDesc = "" +
@@ -1755,7 +1859,14 @@ const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"\fexecution_id\x18\x02 \x01(\tH\x00R\vexecutionId\x88\x01\x01B\x0f\n" +
 	"\r_execution_id\"^\n" +
 	"\x1cListPendingApprovalsResponse\x12>\n" +
-	"\tapprovals\x18\x01 \x03(\v2 .orchicon.api.v1.ApprovalRequestR\tapprovals*\xf5\x02\n" +
+	"\tapprovals\x18\x01 \x03(\v2 .orchicon.api.v1.ApprovalRequestR\tapprovals\"]\n" +
+	"\x1eCreateFollowUpExecutionRequest\x12!\n" +
+	"\fexecution_id\x18\x01 \x01(\tR\vexecutionId\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"f\n" +
+	"\x1fCreateFollowUpExecutionResponse\x12!\n" +
+	"\fexecution_id\x18\x01 \x01(\tR\vexecutionId\x12 \n" +
+	"\fwork_item_id\x18\x02 \x01(\tR\n" +
+	"workItemId*\xf5\x02\n" +
 	"\x0fExecutionStatus\x12 \n" +
 	"\x1cEXECUTION_STATUS_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cEXECUTION_STATUS_DISPATCHING\x10\x01\x12\x1c\n" +
@@ -1803,44 +1914,46 @@ func file_orchicon_api_v1_execution_proto_rawDescGZIP() []byte {
 }
 
 var file_orchicon_api_v1_execution_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_orchicon_api_v1_execution_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
+var file_orchicon_api_v1_execution_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
 var file_orchicon_api_v1_execution_proto_goTypes = []any{
-	(ExecutionStatus)(0),                  // 0: orchicon.api.v1.ExecutionStatus
-	(HealthState)(0),                      // 1: orchicon.api.v1.HealthState
-	(ExecutionEventType)(0),               // 2: orchicon.api.v1.ExecutionEventType
-	(*WorkerExecution)(nil),               // 3: orchicon.api.v1.WorkerExecution
-	(*ExecutionEvent)(nil),                // 4: orchicon.api.v1.ExecutionEvent
-	(*ApprovalRequest)(nil),               // 5: orchicon.api.v1.ApprovalRequest
-	(*GetExecutionRequest)(nil),           // 6: orchicon.api.v1.GetExecutionRequest
-	(*GetExecutionResponse)(nil),          // 7: orchicon.api.v1.GetExecutionResponse
-	(*ListExecutionsRequest)(nil),         // 8: orchicon.api.v1.ListExecutionsRequest
-	(*DeleteExecutionRequest)(nil),        // 9: orchicon.api.v1.DeleteExecutionRequest
-	(*DeleteExecutionResponse)(nil),       // 10: orchicon.api.v1.DeleteExecutionResponse
-	(*ListExecutionsResponse)(nil),        // 11: orchicon.api.v1.ListExecutionsResponse
-	(*StreamExecutionEventsRequest)(nil),  // 12: orchicon.api.v1.StreamExecutionEventsRequest
-	(*StreamExecutionEventsResponse)(nil), // 13: orchicon.api.v1.StreamExecutionEventsResponse
-	(*PauseExecutionRequest)(nil),         // 14: orchicon.api.v1.PauseExecutionRequest
-	(*PauseExecutionResponse)(nil),        // 15: orchicon.api.v1.PauseExecutionResponse
-	(*ResumeExecutionRequest)(nil),        // 16: orchicon.api.v1.ResumeExecutionRequest
-	(*ResumeExecutionResponse)(nil),       // 17: orchicon.api.v1.ResumeExecutionResponse
-	(*CancelExecutionRequest)(nil),        // 18: orchicon.api.v1.CancelExecutionRequest
-	(*CancelExecutionResponse)(nil),       // 19: orchicon.api.v1.CancelExecutionResponse
-	(*CheckpointNowRequest)(nil),          // 20: orchicon.api.v1.CheckpointNowRequest
-	(*CheckpointNowResponse)(nil),         // 21: orchicon.api.v1.CheckpointNowResponse
-	(*ApproveToolCallRequest)(nil),        // 22: orchicon.api.v1.ApproveToolCallRequest
-	(*ApproveToolCallResponse)(nil),       // 23: orchicon.api.v1.ApproveToolCallResponse
-	(*ListPendingApprovalsRequest)(nil),   // 24: orchicon.api.v1.ListPendingApprovalsRequest
-	(*ListPendingApprovalsResponse)(nil),  // 25: orchicon.api.v1.ListPendingApprovalsResponse
-	(*timestamppb.Timestamp)(nil),         // 26: google.protobuf.Timestamp
+	(ExecutionStatus)(0),                    // 0: orchicon.api.v1.ExecutionStatus
+	(HealthState)(0),                        // 1: orchicon.api.v1.HealthState
+	(ExecutionEventType)(0),                 // 2: orchicon.api.v1.ExecutionEventType
+	(*WorkerExecution)(nil),                 // 3: orchicon.api.v1.WorkerExecution
+	(*ExecutionEvent)(nil),                  // 4: orchicon.api.v1.ExecutionEvent
+	(*ApprovalRequest)(nil),                 // 5: orchicon.api.v1.ApprovalRequest
+	(*GetExecutionRequest)(nil),             // 6: orchicon.api.v1.GetExecutionRequest
+	(*GetExecutionResponse)(nil),            // 7: orchicon.api.v1.GetExecutionResponse
+	(*ListExecutionsRequest)(nil),           // 8: orchicon.api.v1.ListExecutionsRequest
+	(*DeleteExecutionRequest)(nil),          // 9: orchicon.api.v1.DeleteExecutionRequest
+	(*DeleteExecutionResponse)(nil),         // 10: orchicon.api.v1.DeleteExecutionResponse
+	(*ListExecutionsResponse)(nil),          // 11: orchicon.api.v1.ListExecutionsResponse
+	(*StreamExecutionEventsRequest)(nil),    // 12: orchicon.api.v1.StreamExecutionEventsRequest
+	(*StreamExecutionEventsResponse)(nil),   // 13: orchicon.api.v1.StreamExecutionEventsResponse
+	(*PauseExecutionRequest)(nil),           // 14: orchicon.api.v1.PauseExecutionRequest
+	(*PauseExecutionResponse)(nil),          // 15: orchicon.api.v1.PauseExecutionResponse
+	(*ResumeExecutionRequest)(nil),          // 16: orchicon.api.v1.ResumeExecutionRequest
+	(*ResumeExecutionResponse)(nil),         // 17: orchicon.api.v1.ResumeExecutionResponse
+	(*CancelExecutionRequest)(nil),          // 18: orchicon.api.v1.CancelExecutionRequest
+	(*CancelExecutionResponse)(nil),         // 19: orchicon.api.v1.CancelExecutionResponse
+	(*CheckpointNowRequest)(nil),            // 20: orchicon.api.v1.CheckpointNowRequest
+	(*CheckpointNowResponse)(nil),           // 21: orchicon.api.v1.CheckpointNowResponse
+	(*ApproveToolCallRequest)(nil),          // 22: orchicon.api.v1.ApproveToolCallRequest
+	(*ApproveToolCallResponse)(nil),         // 23: orchicon.api.v1.ApproveToolCallResponse
+	(*ListPendingApprovalsRequest)(nil),     // 24: orchicon.api.v1.ListPendingApprovalsRequest
+	(*ListPendingApprovalsResponse)(nil),    // 25: orchicon.api.v1.ListPendingApprovalsResponse
+	(*CreateFollowUpExecutionRequest)(nil),  // 26: orchicon.api.v1.CreateFollowUpExecutionRequest
+	(*CreateFollowUpExecutionResponse)(nil), // 27: orchicon.api.v1.CreateFollowUpExecutionResponse
+	(*timestamppb.Timestamp)(nil),           // 28: google.protobuf.Timestamp
 }
 var file_orchicon_api_v1_execution_proto_depIdxs = []int32{
 	0,  // 0: orchicon.api.v1.WorkerExecution.status:type_name -> orchicon.api.v1.ExecutionStatus
 	1,  // 1: orchicon.api.v1.WorkerExecution.health_state:type_name -> orchicon.api.v1.HealthState
-	26, // 2: orchicon.api.v1.WorkerExecution.started_at:type_name -> google.protobuf.Timestamp
-	26, // 3: orchicon.api.v1.WorkerExecution.ended_at:type_name -> google.protobuf.Timestamp
+	28, // 2: orchicon.api.v1.WorkerExecution.started_at:type_name -> google.protobuf.Timestamp
+	28, // 3: orchicon.api.v1.WorkerExecution.ended_at:type_name -> google.protobuf.Timestamp
 	2,  // 4: orchicon.api.v1.ExecutionEvent.event_type:type_name -> orchicon.api.v1.ExecutionEventType
-	26, // 5: orchicon.api.v1.ExecutionEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	26, // 6: orchicon.api.v1.ApprovalRequest.requested_at:type_name -> google.protobuf.Timestamp
+	28, // 5: orchicon.api.v1.ExecutionEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	28, // 6: orchicon.api.v1.ApprovalRequest.requested_at:type_name -> google.protobuf.Timestamp
 	3,  // 7: orchicon.api.v1.GetExecutionResponse.execution:type_name -> orchicon.api.v1.WorkerExecution
 	0,  // 8: orchicon.api.v1.ListExecutionsRequest.status:type_name -> orchicon.api.v1.ExecutionStatus
 	3,  // 9: orchicon.api.v1.ListExecutionsResponse.executions:type_name -> orchicon.api.v1.WorkerExecution
@@ -1872,7 +1985,7 @@ func file_orchicon_api_v1_execution_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_execution_proto_rawDesc), len(file_orchicon_api_v1_execution_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   23,
+			NumMessages:   25,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

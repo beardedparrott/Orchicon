@@ -50,4 +50,9 @@ service ExecutionService {
   // DeleteExecution hard-deletes an execution. If the execution is still
   // running, it is cancelled first.
   rpc DeleteExecution(DeleteExecutionRequest) returns (DeleteExecutionResponse);
+
+  // CreateFollowUpExecution creates a new execution that continues from a
+  // completed execution. The new execution includes the previous context
+  // (composite prompt + output) plus the user's follow-up message.
+  rpc CreateFollowUpExecution(CreateFollowUpExecutionRequest) returns (CreateFollowUpExecutionResponse);
 }

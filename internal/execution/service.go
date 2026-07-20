@@ -38,11 +38,19 @@ const (
 	approvalTimeout = 5 * time.Minute
 )
 
+// TaskDispatcher dispatches a ready work item synchronously. Injected
+// from the scheduler so CreateFollowUpExecution can dispatch immediately
+// instead of waiting for the next reconciler scan pass.
+type TaskDispatcher interface {
+	DispatchTask(ctx context.Context, taskID string) error
+}
+
 // Service implements the ExecutionService Connect handler.
 type Service struct {
 	pool       *db.Pool
 	log        *slog.Logger
 	subscriber eventbus.Subscriber
+	dispatcher TaskDispatcher // optional, for follow-up dispatch
 	apiv1connect.UnimplementedExecutionServiceHandler
 
 	// In-memory approval registry: pending Tier 2 per-tool-call approval
@@ -53,6 +61,11 @@ type Service struct {
 	mu        sync.Mutex
 	approvals map[string]*pendingApproval
 }
+
+// SetDispatcher injects the task dispatcher for follow-up execution
+// dispatch. Called by the server after constructing both the execution
+// service and the TaskReconciler.
+func (s *Service) SetDispatcher(d TaskDispatcher) { s.dispatcher = d }
 
 // pendingApproval tracks a Tier 2 approval request awaiting a human
 // decision (docs/05 §7.1, docs/07 §3.8).
@@ -446,6 +459,124 @@ func (s *Service) ListPendingApprovals(ctx context.Context, req *connect.Request
 		resp.Approvals = append(resp.Approvals, p.request)
 	}
 	return connect.NewResponse(resp), nil
+}
+
+// CreateFollowUpExecution creates a new work item that continues from a
+// completed execution. The new work item includes the previous context
+// (composite prompt + output) plus the user's follow-up message, and is
+// marked as ready for the TaskReconciler to dispatch.
+func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Request[apiv1.CreateFollowUpExecutionRequest]) (*connect.Response[apiv1.CreateFollowUpExecutionResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	msg := req.Msg
+	if msg.ExecutionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("execution_id must not be empty"))
+	}
+	q := strings.TrimSpace(msg.Message)
+	if q == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message must not be empty"))
+	}
+	if utf8.RuneCountInString(q) > 10000 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message too long (max 10000 characters)"))
+	}
+
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	// 1. Get the previous execution.
+	prevExec, err := db.GetExecution(ctx, ttx.Tx, tenantID, msg.ExecutionId)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+
+	// 2. Get the task (work item) for that execution.
+	task, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, prevExec.TaskID)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+
+	// 3. Build the follow-up composite prompt.
+	var prevComposite string
+	if len(task.PromptContext) > 0 {
+		var pc struct {
+			Composite string `json:"composite"`
+		}
+		if err := json.Unmarshal(task.PromptContext, &pc); err == nil {
+			prevComposite = strings.TrimSpace(pc.Composite)
+		}
+	}
+	var followUpPrompt strings.Builder
+	followUpPrompt.WriteString("# Follow-up task\n\n")
+	followUpPrompt.WriteString("This is a follow-up to a previous execution. Continue from where the previous work left off.\n\n")
+	if prevComposite != "" {
+		followUpPrompt.WriteString("## Previous context\n\n")
+		followUpPrompt.WriteString(prevComposite)
+		followUpPrompt.WriteString("\n\n")
+	}
+	output := strings.TrimSpace(prevExec.Output)
+	if output != "" {
+		followUpPrompt.WriteString("## Previous execution output\n\n")
+		if len(output) > 32000 {
+			output = output[:32000] + "\n\n*(truncated — previous output was longer)*"
+		}
+		followUpPrompt.WriteString(output)
+		followUpPrompt.WriteString("\n\n")
+	}
+	followUpPrompt.WriteString("## Follow-up question\n\n")
+	followUpPrompt.WriteString(q)
+	followUpPrompt.WriteString("\n\n")
+	followUpPrompt.WriteString("# Instructions\n\n")
+	followUpPrompt.WriteString("Complete the follow-up task above. Continue from where the previous execution left off. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one short paragraph summarizing what you did.\n\n")
+
+	promptCtx, err := json.Marshal(map[string]string{"composite": followUpPrompt.String()})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("marshal prompt context: %w", err))
+	}
+
+	// 4. Create a new work item as a child of the original task.
+	newWIID := db.NewID()
+	newWI := db.WorkItemRow{
+		ID:        newWIID,
+		TenantID:  tenantID,
+		ProjectID: task.ProjectID,
+		ParentID:  &task.ID,
+		Kind:      domain.WorkItemKindTask,
+		Title:     fmt.Sprintf("Follow-up: %s", strings.TrimSpace(task.Title)),
+		Status:    domain.WorkItemReady,
+		AssignedWorkerRef: task.AssignedWorkerRef,
+		Priority:  task.Priority,
+		PromptContext: promptCtx,
+	}
+	created, err := db.CreateWorkItem(ctx, ttx.Tx, newWI)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create follow-up work item: %w", err))
+	}
+
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+
+	// 5. If we have a dispatcher, dispatch immediately so the execution
+	// appears right away instead of waiting for the next reconciler scan.
+	if s.dispatcher != nil {
+		if err := s.dispatcher.DispatchTask(ctx, created.ID); err != nil {
+			s.log.Warn("follow-up dispatch failed (will be picked up by scan)", "work_item", created.ID, "error", err)
+		}
+	}
+
+	s.log.Info("follow-up execution created",
+		"original_execution", msg.ExecutionId,
+		"new_work_item", created.ID,
+	)
+
+	return connect.NewResponse(&apiv1.CreateFollowUpExecutionResponse{
+		WorkItemId: created.ID,
+	}), nil
 }
 
 // RegisterApproval creates a pending Tier 2 approval request in the
