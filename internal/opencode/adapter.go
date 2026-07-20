@@ -147,9 +147,12 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		"run",
 		"--format", "json",
 	}
-	if manifest.ModelRef != "" {
-		args = append(args, "--model", manifest.ModelRef)
+	modelRef := manifest.ModelRef
+	if modelRef == "" {
+		modelRef = "opencode/deepseek-v4-flash-free"
+		a.log.Info("no model_ref specified, defaulting to free model", "model", modelRef, "execution", execRow.ID)
 	}
+	args = append(args, "--model", modelRef)
 	// The goal (task title) is the positional message. Auto-approve
 	// permissions so the non-interactive run doesn't block on prompts
 	// (docs/04 §6.1: non-interactive mode).
