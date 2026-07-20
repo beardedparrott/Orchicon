@@ -90,7 +90,7 @@ function ExecutionDetailPage() {
 
   const isRunning = exec.status === 2 || exec.status === 3;
   const isPaused = exec.status === 6;
-  const isTerminal = exec.status === 7 || exec.status === 8;
+  const isTerminal = exec.status === 7 || exec.status === 8 || exec.status === 9 || exec.status === 10;
   const isFailed = exec.status === 10 || exec.status === 8;
 
   return (

@@ -72,6 +72,16 @@ interface ParsedArtifact {
   occurredAt: Date;
 }
 
+// RenderedBlockWithArtifacts is a text-group that may carry inline
+// artifacts that were emitted between text chunks. This avoids breaking
+// the assistant message into separate bubbles when a `write` tool
+// produces an artifact mid-response.
+interface RenderedBlockWithArtifacts {
+  kind: "text-group";
+  chunks: ParsedTextChunk[];
+  artifacts: ParsedArtifact[];
+}
+
 // ChatMessage is the unified type the renderer iterates over. The
 // streaming array of events is collapsed into an ordered list of
 // messages so the timeline reads top-to-bottom like a chat log.
@@ -353,13 +363,13 @@ export function RuntimeSessionPane({ events, prompt, streamStatus, storedOutput 
 const rendered = useMemo<
   Array<
     | ChatMessage
-    | { kind: "text-group"; chunks: ParsedTextChunk[] }
+    | RenderedBlockWithArtifacts
     | { kind: "reasoning-group"; chunks: ParsedReasoningChunk[] }
   >
 >(() => {
     const blocks: Array<
       | ChatMessage
-      | { kind: "text-group"; chunks: ParsedTextChunk[] }
+      | RenderedBlockWithArtifacts
       | { kind: "reasoning-group"; chunks: ParsedReasoningChunk[] }
     > = [];
     for (const m of messages) {
@@ -368,7 +378,7 @@ const rendered = useMemo<
         if (last && "kind" in last && last.kind === "text-group") {
           last.chunks.push(m.chunk);
         } else {
-          blocks.push({ kind: "text-group", chunks: [m.chunk] });
+          blocks.push({ kind: "text-group", chunks: [m.chunk], artifacts: [] });
         }
       } else if (m.kind === "reasoning") {
         const last = blocks[blocks.length - 1];
@@ -376,6 +386,15 @@ const rendered = useMemo<
           last.chunks.push(m.chunk);
         } else {
           blocks.push({ kind: "reasoning-group", chunks: [m.chunk] });
+        }
+      } else if (m.kind === "artifact") {
+        // Absorb artifact into the preceding text group so it doesn't
+        // break the assistant message into separate bubbles.
+        const last = blocks[blocks.length - 1];
+        if (last && "kind" in last && last.kind === "text-group") {
+          last.artifacts.push(m.artifact);
+        } else {
+          blocks.push(m);
         }
       } else {
         blocks.push(m);
@@ -447,7 +466,11 @@ const rendered = useMemo<
                 );
               }
               return (
-                <AssistantBubble key={`tg-${idx}`} chunks={block.chunks} />
+                <AssistantBubble
+                  key={`tg-${idx}`}
+                  chunks={block.chunks}
+                  artifacts={block.artifacts ?? []}
+                />
               );
             }
             const m = block as ChatMessage;
@@ -533,10 +556,7 @@ function SystemNote({ text, ts }: { text: string; ts: Date }) {
   );
 }
 
-function AssistantBubble({ chunks }: { chunks: ParsedTextChunk[] }) {
-  // Concatenate consecutive text chunks — opencode emits one
-  // `text` event per streaming token chunk; the user sees one
-  // assistant message, not N bubbles per token.
+function AssistantBubble({ chunks, artifacts }: { chunks: ParsedTextChunk[]; artifacts: ParsedArtifact[] }) {
   const text = chunks.map((c) => c.text).join("");
   const lastTs = chunks[chunks.length - 1].occurredAt;
   return (
@@ -552,6 +572,35 @@ function AssistantBubble({ chunks }: { chunks: ParsedTextChunk[] }) {
         <div className="break-words [overflow-wrap:anywhere]">
           <Markdown>{text}</Markdown>
         </div>
+        {/* Inline artifacts: write-tool outputs are embedded inside the
+            assistant bubble so they don't break the message flow. */}
+        {artifacts.length > 0 && (
+          <div className="mt-3 space-y-2 border-t border-border/50 pt-3">
+            {artifacts.map((a, i) => (
+              <InlineArtifactCard key={i} artifact={a} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function InlineArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
+  const fileName = artifact.name.split("/").pop() || artifact.name;
+  return (
+    <div className="rounded-lg border border-sky-300/40 bg-sky-50/30 p-2 dark:bg-sky-950/20">
+      <div className="flex items-center gap-2">
+        <span className="inline-flex items-center rounded bg-sky-200 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-sky-800 dark:bg-sky-900 dark:text-sky-200">
+          artifact
+        </span>
+        <span className="truncate font-mono text-[11px] font-medium">{fileName}</span>
+        <span className="shrink-0 text-[10px] text-muted-foreground">
+          {artifact.content.length.toLocaleString()} bytes
+        </span>
+        <span className="ml-auto">
+          <CopyButton text={artifact.content} />
+        </span>
       </div>
     </div>
   );
