@@ -38,19 +38,11 @@ const (
 	approvalTimeout = 5 * time.Minute
 )
 
-// TaskDispatcher dispatches a ready work item synchronously. Injected
-// from the scheduler so CreateFollowUpExecution can dispatch immediately
-// instead of waiting for the next reconciler scan pass.
-type TaskDispatcher interface {
-	DispatchTask(ctx context.Context, taskID string) error
-}
-
 // Service implements the ExecutionService Connect handler.
 type Service struct {
 	pool       *db.Pool
 	log        *slog.Logger
 	subscriber eventbus.Subscriber
-	dispatcher TaskDispatcher // optional, for follow-up dispatch
 	apiv1connect.UnimplementedExecutionServiceHandler
 
 	// In-memory approval registry: pending Tier 2 per-tool-call approval
@@ -61,11 +53,6 @@ type Service struct {
 	mu        sync.Mutex
 	approvals map[string]*pendingApproval
 }
-
-// SetDispatcher injects the task dispatcher for follow-up execution
-// dispatch. Called by the server after constructing both the execution
-// service and the TaskReconciler.
-func (s *Service) SetDispatcher(d TaskDispatcher) { s.dispatcher = d }
 
 // pendingApproval tracks a Tier 2 approval request awaiting a human
 // decision (docs/05 §7.1, docs/07 §3.8).
@@ -559,14 +546,6 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
-	}
-
-	// 5. If we have a dispatcher, dispatch immediately so the execution
-	// appears right away instead of waiting for the next reconciler scan.
-	if s.dispatcher != nil {
-		if err := s.dispatcher.DispatchTask(ctx, created.ID); err != nil {
-			s.log.Warn("follow-up dispatch failed (will be picked up by scan)", "work_item", created.ID, "error", err)
-		}
 	}
 
 	s.log.Info("follow-up execution created",

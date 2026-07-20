@@ -56,9 +56,6 @@ type Dependencies struct {
 	// ModelDiscoverer enumerates models from opencode CLI.
 	ModelDiscoverer   *aigateway.ModelDiscoverer
 	MCPDiscoverer     *aigateway.MCPDiscoverer
-	// TaskDispatcher dispatches ready work items synchronously, injected
-	// from the scheduler for follow-up execution dispatch.
-	TaskDispatcher execution.TaskDispatcher
 }
 
 // Mount returns an http.Handler serving the Orchicon API. Generated
@@ -105,9 +102,6 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 
 	// ExecutionService (docs/07 §3.8).
 	execSvc := execution.New(deps.Pool, deps.Log, deps.Subscriber)
-	if deps.TaskDispatcher != nil {
-		execSvc.SetDispatcher(deps.TaskDispatcher)
-	}
 	mux.Handle(apiv1connect.NewExecutionServiceHandler(execSvc, interceptorOpt))
 
 	// WorkflowService (docs/07 §3.4).

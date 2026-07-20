@@ -206,7 +206,6 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		Mode:              cfg.Mode,
 		ModelDiscoverer:   modelDiscoverer,
 		MCPDiscoverer:     mcpDiscoverer,
-		TaskDispatcher:    taskRec,
 	}
 	handler := api.Mount(mux, deps)
 

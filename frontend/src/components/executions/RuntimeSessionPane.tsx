@@ -588,21 +588,30 @@ function AssistantBubble({ chunks, artifacts }: { chunks: ParsedTextChunk[]; art
 
 function InlineArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
   const fileName = artifact.name.split("/").pop() || artifact.name;
+  const isMarkdown = artifact.artifactType === "markdown" || fileName.endsWith(".md");
   return (
-    <div className="rounded-lg border border-sky-300/40 bg-sky-50/30 p-2 dark:bg-sky-950/20">
-      <div className="flex items-center gap-2">
-        <span className="inline-flex items-center rounded bg-sky-200 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-sky-800 dark:bg-sky-900 dark:text-sky-200">
+    <details className="rounded-lg border border-sky-300/40 bg-sky-50/30 p-2 dark:bg-sky-950/20">
+      <summary className="flex cursor-pointer items-center gap-2 text-[11px] font-medium text-sky-800 dark:text-sky-200">
+        <span className="inline-flex items-center rounded bg-sky-200 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide dark:bg-sky-900">
           artifact
         </span>
-        <span className="truncate font-mono text-[11px] font-medium">{fileName}</span>
+        <span className="truncate font-mono">{fileName}</span>
         <span className="shrink-0 text-[10px] text-muted-foreground">
           {artifact.content.length.toLocaleString()} bytes
         </span>
         <span className="ml-auto">
           <CopyButton text={artifact.content} />
         </span>
-      </div>
-    </div>
+      </summary>
+      {isMarkdown ? (
+        <div className="mt-2 max-h-48 overflow-auto rounded bg-background/70 p-2 text-xs leading-relaxed">
+          <Markdown>{artifact.content}</Markdown>
+        </div>
+      ) : (
+        <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-background/70 p-2 font-mono text-xs leading-relaxed">
+          {artifact.content}</pre>
+      )}
+    </details>
   );
 }
 

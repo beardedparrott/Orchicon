@@ -10,11 +10,11 @@
 // stack of cards was replaced because it buried the live session under
 // metadata — the new layout makes the live chat the primary surface
 // and the context sidebar the secondary reference.
-import { createRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { Pause, Play, Square, Save, Trash2, ArrowLeft, SendHorizontal } from "lucide-react";
+import { Pause, Play, Square, Save, Trash2, ArrowLeft, SendHorizontal, Loader2 } from "lucide-react";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import {
   useGetExecution,
   useStreamExecutionEvents,
@@ -26,6 +26,7 @@ import {
   useListPendingApprovals,
   useApproveToolCall,
   useCreateFollowUpExecution,
+  useListExecutions,
 } from "@/api/executions";
 import { executionKeys } from "@/api/executions";
 import { useGetUsage } from "@/api/aigateway";
@@ -43,6 +44,12 @@ export const Route = createRoute({
   component: ExecutionDetailPage,
 });
 
+interface FollowUpEntry {
+  message: string;
+  workItemId: string;
+  createdAt: Date;
+}
+
 function ExecutionDetailPage() {
   const { id } = Route.useParams();
   const qc = useQueryClient();
@@ -56,7 +63,26 @@ function ExecutionDetailPage() {
   const checkpointNow = useCheckpointNow();
   const deleteExec = useDeleteExecution();
 
+  // Track follow-up conversations inline.
+  const [followUps, setFollowUps] = useState<FollowUpEntry[]>([]);
+
   const navigate = useNavigate();
+
+  // Poll for the most recent follow-up execution's events so they can
+  // be shown inline below the original conversation.
+  const latestFollowUp = followUps.length > 0 ? followUps[followUps.length - 1] : null;
+  const { data: followUpExecs } = useListExecutions({
+    taskId: latestFollowUp?.workItemId ?? undefined,
+  });
+  const followUpExec = followUpExecs && followUpExecs.length > 0 ? followUpExecs[0] : null;
+  const { events: followUpEvents, status: followUpStatus } = useStreamExecutionEvents({
+    executionId: followUpExec?.id ?? "",
+    enabled: !!followUpExec,
+  });
+
+  const handleFollowUpSent = useCallback((entry: FollowUpEntry) => {
+    setFollowUps((prev) => [...prev, entry]);
+  }, []);
 
   // Live event stream (docs/10 §4). Subscribes to
   // StreamExecutionEvents filtered to this execution. onEvent
@@ -211,10 +237,42 @@ function ExecutionDetailPage() {
               since that data doesn't fit naturally in the sidebar. */}
           <ExecutionContextFooter exec={exec} />
 
+          {/* Follow-up conversations — shown inline below the original
+              execution so the conversation feels continuous. */}
+          {followUps.map((fu, i) => (
+            <div key={fu.workItemId} className="space-y-3">
+              {/* User message bubble */}
+              <div className="flex justify-end">
+                <div className="max-w-[80%] rounded-lg rounded-tr-sm border border-primary/20 bg-primary/5 px-3 py-2 text-sm leading-relaxed shadow-sm">
+                  <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                    follow-up
+                  </div>
+                  <Markdown>{fu.message}</Markdown>
+                </div>
+              </div>
+              {/* Follow-up execution events (streaming)*/}
+              {i === followUps.length - 1 && followUpExec && (
+                <RuntimeSessionPane
+                  events={followUpEvents}
+                  streamStatus={followUpStatus}
+                  storedOutput={followUpExec.output}
+                />
+              )}
+              {i === followUps.length - 1 && !followUpExec && (
+                <div className="flex items-center gap-2 rounded-lg border border-muted bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Dispatching worker…
+                </div>
+              )}
+            </div>
+          ))}
+
           {/* Follow-up chat input — shown when the execution is
               complete, allowing the user to send a follow-up message
               that creates a new execution with the previous context. */}
-          {isTerminal && <FollowUpInput executionId={exec.id} />}
+          {isTerminal && (
+            <FollowUpInput executionId={exec.id} onFollowUpSent={handleFollowUpSent} />
+          )}
         </div>
 
         <ExecutionContextSidebar
@@ -347,7 +405,13 @@ function ExecutionContextFooter({
   );
 }
 
-function FollowUpInput({ executionId }: { executionId: string }) {
+function FollowUpInput({
+  executionId,
+  onFollowUpSent,
+}: {
+  executionId: string;
+  onFollowUpSent: (entry: FollowUpEntry) => void;
+}) {
   const [message, setMessage] = useState("");
   const createFollowUp = useCreateFollowUpExecution();
 
@@ -357,7 +421,12 @@ function FollowUpInput({ executionId }: { executionId: string }) {
     createFollowUp.mutate(
       { executionId, message: trimmed },
       {
-        onSuccess: () => {
+        onSuccess: (res) => {
+          onFollowUpSent({
+            message: trimmed,
+            workItemId: res.workItemId,
+            createdAt: new Date(),
+          });
           setMessage("");
         },
       },
@@ -371,8 +440,8 @@ function FollowUpInput({ executionId }: { executionId: string }) {
         <span>Follow up</span>
       </div>
       <p className="mb-2 text-xs text-muted-foreground">
-        Send a follow-up message. A new execution will be created with this
-        message plus the previous context.
+        Send a follow-up message. A new execution will be created inline
+        with the previous context as a continuation of this conversation.
       </p>
       <div className="flex gap-2">
         <textarea
@@ -396,18 +465,6 @@ function FollowUpInput({ executionId }: { executionId: string }) {
           {createFollowUp.isPending ? "Sending…" : "Send"}
         </Button>
       </div>
-      {createFollowUp.data && (
-        <div className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">
-          Follow-up work item created.{" "}
-          <Link
-            to="/executions"
-            className="underline underline-offset-2 hover:text-emerald-700"
-          >
-            View executions
-          </Link>{" "}
-          to track the new execution.
-        </div>
-      )}
       {createFollowUp.error && (
         <div className="mt-2 text-xs text-destructive">
           Failed to create follow-up: {String(createFollowUp.error)}
