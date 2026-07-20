@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, createRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import { Trash2, SearchX } from "lucide-react";
@@ -27,7 +27,8 @@ export const Route = createRoute({
 });
 
 const EXEC_STATUS_OPTIONS = [
-  { value: "", label: "Running (default)" },
+  { value: "running", label: "Running" },
+  { value: "all", label: "All" },
   { value: "1", label: "Dispatching" },
   { value: "2", label: "Running" },
   { value: "3", label: "Healthy" },
@@ -40,23 +41,36 @@ const EXEC_STATUS_OPTIONS = [
   { value: "10", label: "Failed" },
 ];
 
+// Statuses that indicate an execution is actively running.
+const ACTIVE_STATUSES = new Set([1, 2, 3, 4, 5, 6]);
+
 function ExecutionsPage() {
   const { workflowRunId } = Route.useSearch();
   const [search, setSearch] = useState("");
-  const [status, setStatus] = useState(""); // "" defaults to running
+  const [status, setStatus] = useState("running"); // default: active executions
   const [sortBy, setSortBy] = useState("created_at");
   const [sortOrder, setSortOrder] = useState("desc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  const statusFilter = status ? Number(status) as number : undefined;
+  const statusIsSpecific = status && status !== "running" && status !== "all";
+  const statusFilter = statusIsSpecific ? Number(status) as number : undefined;
 
-  const { data: executions, isLoading, error } = useListExecutions({
+  const { data: allExecutions, isLoading, error } = useListExecutions({
     workflowRunId,
     search,
     status: statusFilter,
     sortBy,
     sortOrder,
   });
+
+  // Client-side filtering: "running" shows statuses 1-6, "all" shows everything.
+  const executions = useMemo(() => {
+    if (!allExecutions) return undefined;
+    if (status === "running") {
+      return allExecutions.filter((e) => ACTIVE_STATUSES.has(e.status));
+    }
+    return allExecutions;
+  }, [allExecutions, status]);
   const batchDelete = useBatchDeleteExecutions();
 
   const toggleSelect = (id: string) => {
