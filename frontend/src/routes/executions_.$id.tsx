@@ -14,7 +14,7 @@ import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { Pause, Play, Square, Save, Trash2, ArrowLeft, SendHorizontal, Loader2 } from "lucide-react";
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   useGetExecution,
   useStreamExecutionEvents,
@@ -44,10 +44,15 @@ export const Route = createRoute({
   component: ExecutionDetailPage,
 });
 
-interface FollowUpEntry {
-  message: string;
+interface ConversationEntry {
+  role: string;
+  content: string;
+  type: string;
+  created_at: string;
+}
+
+interface FollowUpState {
   workItemId: string;
-  createdAt: Date;
 }
 
 function ExecutionDetailPage() {
@@ -63,16 +68,26 @@ function ExecutionDetailPage() {
   const checkpointNow = useCheckpointNow();
   const deleteExec = useDeleteExecution();
 
-  // Track follow-up conversations inline.
-  const [followUps, setFollowUps] = useState<FollowUpEntry[]>([]);
+  // Persisted conversation from the execution record — survives page reload.
+  const conversation = useMemo<ConversationEntry[]>(() => {
+    if (!exec?.conversation?.length) return [];
+    try {
+      const dec = new TextDecoder().decode(exec.conversation);
+      return JSON.parse(dec) as ConversationEntry[];
+    } catch {
+      return [];
+    }
+  }, [exec?.conversation]);
+
+  // Track latest follow-up work item so we can poll for its execution.
+  const [followUp, setFollowUp] = useState<FollowUpState | null>(null);
 
   const navigate = useNavigate();
 
-  // Poll for the most recent follow-up execution's events so they can
-  // be shown inline below the original conversation.
-  const latestFollowUp = followUps.length > 0 ? followUps[followUps.length - 1] : null;
+  // Poll for the follow-up execution's events so they stream inline.
   const { data: followUpExecs } = useListExecutions({
-    taskId: latestFollowUp?.workItemId ?? undefined,
+    taskId: followUp?.workItemId ?? undefined,
+    enabled: !!followUp,
   });
   const followUpExec = followUpExecs && followUpExecs.length > 0 ? followUpExecs[0] : null;
   const { events: followUpEvents, status: followUpStatus } = useStreamExecutionEvents({
@@ -80,8 +95,8 @@ function ExecutionDetailPage() {
     enabled: !!followUpExec,
   });
 
-  const handleFollowUpSent = useCallback((entry: FollowUpEntry) => {
-    setFollowUps((prev) => [...prev, entry]);
+  const handleFollowUpSent = useCallback((workItemId: string) => {
+    setFollowUp({ workItemId });
   }, []);
 
   // Live event stream (docs/10 §4). Subscribes to
@@ -237,35 +252,48 @@ function ExecutionDetailPage() {
               since that data doesn't fit naturally in the sidebar. */}
           <ExecutionContextFooter exec={exec} />
 
-          {/* Follow-up conversations — shown inline below the original
-              execution so the conversation feels continuous. */}
-          {followUps.map((fu, i) => (
-            <div key={fu.workItemId} className="space-y-3">
-              {/* User message bubble */}
-              <div className="flex justify-end">
-                <div className="max-w-[80%] rounded-lg rounded-tr-sm border border-primary/20 bg-primary/5 px-3 py-2 text-sm leading-relaxed shadow-sm">
-                  <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                    follow-up
+          {/* Follow-up conversation — rendered from the persisted
+              execution.conversation field so it survives page reload. */}
+          {conversation.length > 0 && (
+            <div className="space-y-3 border-t border-border/50 pt-3">
+              {conversation.map((entry, i) => (
+                <div key={i} className={cn("flex", entry.role === "user" ? "justify-end" : "justify-start")}>
+                  <div
+                    className={cn(
+                      "max-w-[85%] rounded-lg px-3 py-2 text-sm leading-relaxed shadow-sm",
+                      entry.role === "user"
+                        ? "rounded-tr-sm border border-primary/20 bg-primary/5"
+                        : "rounded-tl-sm border border-border bg-card",
+                    )}
+                  >
+                    <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                      {entry.role === "user" ? "follow-up" : "assistant"}
+                    </div>
+                    <Markdown>{entry.content}</Markdown>
                   </div>
-                  <Markdown>{fu.message}</Markdown>
                 </div>
-              </div>
-              {/* Follow-up execution events (streaming)*/}
-              {i === followUps.length - 1 && followUpExec && (
+              ))}
+            </div>
+          )}
+
+          {/* Follow-up execution events (streaming inline) */}
+          {followUp && (
+            <div className="space-y-3">
+              {followUpExec && (
                 <RuntimeSessionPane
                   events={followUpEvents}
                   streamStatus={followUpStatus}
                   storedOutput={followUpExec.output}
                 />
               )}
-              {i === followUps.length - 1 && !followUpExec && (
+              {!followUpExec && (
                 <div className="flex items-center gap-2 rounded-lg border border-muted bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Dispatching worker…
                 </div>
               )}
             </div>
-          ))}
+          )}
 
           {/* Follow-up chat input — shown when the execution is
               complete, allowing the user to send a follow-up message
@@ -410,7 +438,7 @@ function FollowUpInput({
   onFollowUpSent,
 }: {
   executionId: string;
-  onFollowUpSent: (entry: FollowUpEntry) => void;
+  onFollowUpSent: (workItemId: string) => void;
 }) {
   const [message, setMessage] = useState("");
   const createFollowUp = useCreateFollowUpExecution();
@@ -422,11 +450,7 @@ function FollowUpInput({
       { executionId, message: trimmed },
       {
         onSuccess: (res) => {
-          onFollowUpSent({
-            message: trimmed,
-            workItemId: res.workItemId,
-            createdAt: new Date(),
-          });
+          onFollowUpSent(res.workItemId);
           setMessage("");
         },
       },

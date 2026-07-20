@@ -41,6 +41,7 @@ message WorkerExecution {
   string workflow_name = 19;
   string error_message = 20; // Markdown: human-readable failure reason (docs/02 §2.7)
   string output = 21; // Markdown: accumulated model text output (docs/02 §2.7)
+  bytes conversation = 22; // JSONB: follow-up conversation array [{role, content, type, created_at}]
 }
 
 // ExecutionStatus — lifecycle of a WorkerExecution

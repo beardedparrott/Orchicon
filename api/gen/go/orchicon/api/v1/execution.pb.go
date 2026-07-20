@@ -272,6 +272,7 @@ type WorkerExecution struct {
 	WorkflowName   string                 `protobuf:"bytes,19,opt,name=workflow_name,json=workflowName,proto3" json:"workflow_name,omitempty"`
 	ErrorMessage   string                 `protobuf:"bytes,20,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"` // Markdown: human-readable failure reason (docs/02 §2.7)
 	Output         string                 `protobuf:"bytes,21,opt,name=output,proto3" json:"output,omitempty"`                                 // Markdown: accumulated model text output (docs/02 §2.7)
+	Conversation   []byte                 `protobuf:"bytes,22,opt,name=conversation,proto3" json:"conversation,omitempty"`                     // JSONB: follow-up conversation array [{role, content, type, created_at}]
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -451,6 +452,13 @@ func (x *WorkerExecution) GetOutput() string {
 		return x.Output
 	}
 	return ""
+}
+
+func (x *WorkerExecution) GetConversation() []byte {
+	if x != nil {
+		return x.Conversation
+	}
+	return nil
 }
 
 // ExecutionEvent is a single telemetry/control/health signal from an
@@ -1746,7 +1754,7 @@ var File_orchicon_api_v1_execution_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"\n" +
-	"\x1forchicon/api/v1/execution.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x98\x06\n" +
+	"\x1forchicon/api/v1/execution.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xbc\x06\n" +
 	"\x0fWorkerExecution\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -1774,7 +1782,8 @@ const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"\x10workflow_step_id\x18\x12 \x01(\tR\x0eworkflowStepId\x12#\n" +
 	"\rworkflow_name\x18\x13 \x01(\tR\fworkflowName\x12#\n" +
 	"\rerror_message\x18\x14 \x01(\tR\ferrorMessage\x12\x16\n" +
-	"\x06output\x18\x15 \x01(\tR\x06output\"\x86\x02\n" +
+	"\x06output\x18\x15 \x01(\tR\x06output\x12\"\n" +
+	"\fconversation\x18\x16 \x01(\fR\fconversation\"\x86\x02\n" +
 	"\x0eExecutionEvent\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12!\n" +
 	"\fexecution_id\x18\x02 \x01(\tR\vexecutionId\x12\x1b\n" +

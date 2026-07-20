@@ -544,6 +544,39 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create follow-up work item: %w", err))
 	}
 
+	// 5. Persist the user's message in the original execution's
+	// conversation so it survives page navigation.
+	conv := prevExec.Conversation
+	if len(conv) == 0 {
+		conv = []byte("[]")
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(conv, &entries); err != nil {
+		entries = []map[string]any{}
+	}
+	entries = append(entries, map[string]any{
+		"role":       "user",
+		"content":    q,
+		"type":       "follow_up",
+		"created_at": time.Now().UTC().Format(time.RFC3339),
+	})
+	updatedConv, err := json.Marshal(entries)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("marshal conversation: %w", err))
+	}
+	now := time.Now().UTC()
+	if _, err := db.UpdateExecution(ctx, ttx.Tx, tenantID, msg.ExecutionId, prevExec.Version, db.UpdateExecutionFields{
+		Conversation: &updatedConv,
+		Status:       strPtr(domain.ExecutionRunning),
+		HealthState:  strPtr(domain.HealthHealthy),
+		StartedAt:    &now,
+	}); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("execution not found or version conflict"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update execution conversation: %w", err))
+	}
+
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -800,6 +833,9 @@ func rowToProto(e db.ExecutionRow) *apiv1.WorkerExecution {
 	}
 	if e.Output != "" {
 		p.Output = e.Output
+	}
+	if len(e.Conversation) > 0 {
+		p.Conversation = e.Conversation
 	}
 	return p
 }

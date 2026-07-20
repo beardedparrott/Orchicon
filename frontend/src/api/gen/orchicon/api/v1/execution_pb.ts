@@ -337,6 +337,13 @@ export class WorkerExecution extends Message<WorkerExecution> {
    */
   output = "";
 
+  /**
+   * JSONB: follow-up conversation array [{role, content, type, created_at}]
+   *
+   * @generated from field: bytes conversation = 22;
+   */
+  conversation = new Uint8Array(0);
+
   constructor(data?: PartialMessage<WorkerExecution>) {
     super();
     proto3.util.initPartial(data, this);
@@ -366,6 +373,7 @@ export class WorkerExecution extends Message<WorkerExecution> {
     { no: 19, name: "workflow_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 20, name: "error_message", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 21, name: "output", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 22, name: "conversation", kind: "scalar", T: 12 /* ScalarType.BYTES */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkerExecution {
