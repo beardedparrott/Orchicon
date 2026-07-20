@@ -105,7 +105,7 @@ export function ExecutionContextSidebar({
       let payload: Record<string, unknown> = {};
       if (evt.payload?.length) {
         try {
-          payload = JSON.parse(new TextDecoder().decode(evt.payload));
+          payload = JSON.parse(new TextDecoder().decode(evt.payload)) as Record<string, unknown>;
         } catch {
           /* unparseable — ignore */
         }
@@ -125,14 +125,14 @@ export function ExecutionContextSidebar({
         case ET.TELEMETRY:
           if (payload.text) {
             s.assistantCount++;
-            s.lastAssistantText = payload.text;
+            s.lastAssistantText = payload.text as string;
             s.lastAssistantAt = ts;
           }
           break;
         case ET.TOOL_CALL: {
-          const toolName = payload.tool_name || "tool";
-          const input = payload.input || "";
-          const output = payload.output || "";
+          const toolName = (payload.tool_name as string) || "tool";
+          const input = (payload.input as string) || "";
+          const output = (payload.output as string) || "";
           if (input && !output) {
             s.toolCount++;
             s.lastToolName = toolName;
@@ -149,7 +149,7 @@ export function ExecutionContextSidebar({
       s.recentTypes.push({
         type: eventType,
         ts,
-        label: payload.event_type || "",
+        label: (payload.event_type as string) || "",
       });
       if (s.recentTypes.length > 12) s.recentTypes.shift();
     }
