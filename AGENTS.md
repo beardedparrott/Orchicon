@@ -35,6 +35,16 @@ The project's model spend is rising. Be economical but **never at the expense of
 ## Git Workflow
 
 - ALWAYS create a new branch before starting work. NEVER commit to main.
+- A local pre-commit hook (`.git/hooks/pre-commit`) rejects any commit on `main` or `master`. If the hook is missing, re-create it:
+
+  ```bash
+  #!/bin/sh
+  branch="$(git symbolic-ref --short HEAD)"
+  if [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
+    echo "❌ ERROR: Direct commits to $branch are blocked!"
+    exit 1
+  fi
+  ```
 - Branch naming: `<type>/<short-description>` (e.g. `feat/project-crud`, `fix/outbox-relay-dedup`, `chore/docker-compose-setup`). Types: `feat`, `fix`, `chore`, `refactor`, `docs`, `test`.
 - Commit early and often on your branch. Write clear commit messages in present tense: `Add project CRUD service and data-access layer`. Stage only the files relevant to the commit.
 - Once work is complete and properly tested, ask the user to verify.

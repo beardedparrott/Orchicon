@@ -42,8 +42,8 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-**v0.1.120** — Fix TypeScript build: unknown → string assignments.
-After switching `payload` from `any` to `Record<string, unknown>` in PR #133, property reads like `payload.text` returned `unknown` which isn't assignable to `string`. Added `as string` type assertions on all payload property accesses to fix the frontend build.
+**v0.1.121** — Document pre-commit hook and fix main-commit habit.
+Added the pre-commit hook script to AGENTS.md so agents can recreate it. The hook rejects any commit on `main` or `master`, preventing the accidental direct commits that happened during v0.1.119–v0.1.120.
 
 ## Installation
 
