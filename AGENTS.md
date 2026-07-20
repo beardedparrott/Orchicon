@@ -50,9 +50,9 @@ Every task follows this sequence:
 2. Read any docs or code necessary to perform the work.
 3. Create a branch and do the work, committing changes often.
 4. Fully test and verify.
-5. Follow the Git Workflow above.
- 6. Once the PR is merged, update `UPDATES.md` with what was done in the same table format as existing entries.
- 7. Inform the user every time UPDATES have been made. Show them in a tabled format what was changed and updated.
+5. Before the final commit on your branch, update **both** `README.md` (Last Release Changes section) and `UPDATES.md` (new table row) with a one-paragraph summary describing the changes in this PR. This is the commit that will be PR'd and merged.
+6. Follow the Git Workflow above.
+7. Inform the user every time UPDATES have been made. Show them in a tabled format what was changed and updated.
 
 If architecture or anything referenced in AGENTS.md has changed, update this file for future agent runs.
 
