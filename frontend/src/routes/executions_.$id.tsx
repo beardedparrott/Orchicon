@@ -350,7 +350,6 @@ function ExecutionContextFooter({
 function FollowUpInput({ executionId }: { executionId: string }) {
   const [message, setMessage] = useState("");
   const createFollowUp = useCreateFollowUpExecution();
-  const navigate = useNavigate();
 
   const handleSend = () => {
     const trimmed = message.trim();
@@ -358,7 +357,7 @@ function FollowUpInput({ executionId }: { executionId: string }) {
     createFollowUp.mutate(
       { executionId, message: trimmed },
       {
-        onSuccess: (res) => {
+        onSuccess: () => {
           setMessage("");
         },
       },
