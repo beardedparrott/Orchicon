@@ -293,6 +293,8 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, tr
 		ResumptionPath:     resumptionPath,
 		BudgetTokensLimit:  budgetTokensLimit,
 		BudgetCostLimitUSD: budgetCostLimit,
+		MaxRetries:         defaultMaxRetries,
+		RetryDelaySeconds:  defaultRetryDelaySeconds,
 		TriggeredAt:        now,
 	}
 	created, err := db.CreateRecoveryExecution(ctx, ttx.Tx, row)

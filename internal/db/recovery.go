@@ -38,6 +38,8 @@ type RecoveryExecutionRow struct {
 	NeedsHumanApproval bool
 	ContinuationPlanID  string
 	ReviewerWorkerID    string
+	MaxRetries         int
+	RetryDelaySeconds  int
 	Summary            string
 	Version            int
 	TriggeredAt        time.Time
@@ -107,70 +109,72 @@ type ContinuationPlanRow struct {
 // been silently failing on every failed execution, so recovery never
 // actually started. Renumber contiguously to fix it.
 func CreateRecoveryExecution(ctx context.Context, tx pgx.Tx, r RecoveryExecutionRow) (RecoveryExecutionRow, error) {
-	const q = `INSERT INTO recovery_executions
+	if r.MaxRetries <= 0 {
+		r.MaxRetries = 5
+	}
+	if r.RetryDelaySeconds <= 0 {
+		r.RetryDelaySeconds = 10
+	}
+	q := `INSERT INTO recovery_executions
 		(id, tenant_id, project_id, task_id, failed_execution_id,
 		 recovery_workflow_id, trigger_reason, level, status, current_step,
 		 resumption_path, budget_tokens_limit, budget_tokens_used,
 		 budget_cost_limit_usd, budget_cost_used_usd, budget_relax_fraction,
 		 needs_human_approval, continuation_plan_id, reviewer_worker_id,
-		 summary, triggered_at)
+		 max_retries, retry_delay_seconds, summary, triggered_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-		 $15, $16, $17, $18, $19, $20, $21)
-		RETURNING id, tenant_id, project_id, task_id, failed_execution_id,
-			recovery_workflow_id, trigger_reason, level, status, current_step,
-			resumption_path, budget_tokens_limit, budget_tokens_used,
-			budget_cost_limit_usd, budget_cost_used_usd, budget_relax_fraction,
-			needs_human_approval, continuation_plan_id, reviewer_worker_id,
-			summary, version, triggered_at, ended_at, created_at, updated_at`
+		 $15, $16, $17, $18, $19, $20, $21, $22, $23)
+		RETURNING ` + recoveryExecutionCols
 	row := r
 	if row.TriggeredAt.IsZero() {
 		row.TriggeredAt = time.Now().UTC()
 	}
-	err := tx.QueryRow(ctx, q,
+	if err := scanRecoveryExecution(&row, tx.QueryRow(ctx, q,
 		row.ID, row.TenantID, row.ProjectID, row.TaskID, row.FailedExecutionID,
 		row.RecoveryWorkflowID, row.TriggerReason, row.Level, row.Status,
 		row.CurrentStep, row.ResumptionPath, row.BudgetTokensLimit,
 		row.BudgetTokensUsed, row.BudgetCostLimitUSD, row.BudgetCostUsedUSD,
 		row.BudgetRelaxFraction, row.NeedsHumanApproval,
-		row.ContinuationPlanID, row.ReviewerWorkerID, row.Summary, row.TriggeredAt,
-	).Scan(
-		&row.ID, &row.TenantID, &row.ProjectID, &row.TaskID, &row.FailedExecutionID,
-		&row.RecoveryWorkflowID, &row.TriggerReason, &row.Level, &row.Status,
-		&row.CurrentStep, &row.ResumptionPath, &row.BudgetTokensLimit,
-		&row.BudgetTokensUsed, &row.BudgetCostLimitUSD, &row.BudgetCostUsedUSD,
-		&row.BudgetRelaxFraction, &row.NeedsHumanApproval,
-		&row.ContinuationPlanID, &row.ReviewerWorkerID, &row.Summary,
-		&row.Version, &row.TriggeredAt, &row.EndedAt, &row.CreatedAt, &row.UpdatedAt,
-	)
-	if err != nil {
+		row.ContinuationPlanID, row.ReviewerWorkerID,
+		row.MaxRetries, row.RetryDelaySeconds, row.Summary, row.TriggeredAt,
+	)); err != nil {
 		return RecoveryExecutionRow{}, fmt.Errorf("db: create recovery execution: %w", err)
 	}
 	return row, nil
 }
 
-// GetRecoveryExecution fetches a single recovery by id within the tenant.
-func GetRecoveryExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (RecoveryExecutionRow, error) {
-	const q = `SELECT id, tenant_id, project_id, task_id, failed_execution_id,
-		recovery_workflow_id, trigger_reason, level, status, current_step, strategy,
-		resumption_path, budget_tokens_limit, budget_tokens_used,
-		budget_cost_limit_usd, budget_cost_used_usd, budget_relax_fraction,
-		needs_human_approval, continuation_plan_id, reviewer_worker_id,
-		summary, version, triggered_at, ended_at, created_at, updated_at
-		FROM recovery_executions WHERE id = $1 AND tenant_id = $2`
-	var r RecoveryExecutionRow
-	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
+// recoveryExecutionCols is the shared column list for SELECT and
+// RETURNING on recovery_executions queries.
+const recoveryExecutionCols = `id, tenant_id, project_id, task_id, failed_execution_id,
+	recovery_workflow_id, trigger_reason, level, status, current_step, strategy,
+	resumption_path, budget_tokens_limit, budget_tokens_used,
+	budget_cost_limit_usd, budget_cost_used_usd, budget_relax_fraction,
+	needs_human_approval, continuation_plan_id, reviewer_worker_id,
+	max_retries, retry_delay_seconds, summary, version,
+	triggered_at, ended_at, created_at, updated_at`
+
+// scanRecoveryExecution scans a single row into a RecoveryExecutionRow.
+func scanRecoveryExecution(r *RecoveryExecutionRow, s pgx.Row) error {
+	return s.Scan(
 		&r.ID, &r.TenantID, &r.ProjectID, &r.TaskID, &r.FailedExecutionID,
 		&r.RecoveryWorkflowID, &r.TriggerReason, &r.Level, &r.Status,
 		&r.CurrentStep, &r.Strategy, &r.ResumptionPath, &r.BudgetTokensLimit,
 		&r.BudgetTokensUsed, &r.BudgetCostLimitUSD, &r.BudgetCostUsedUSD,
 		&r.BudgetRelaxFraction, &r.NeedsHumanApproval,
-		&r.ContinuationPlanID, &r.ReviewerWorkerID, &r.Summary,
+		&r.ContinuationPlanID, &r.ReviewerWorkerID,
+		&r.MaxRetries, &r.RetryDelaySeconds, &r.Summary,
 		&r.Version, &r.TriggeredAt, &r.EndedAt, &r.CreatedAt, &r.UpdatedAt,
 	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return RecoveryExecutionRow{}, ErrNotFound
-	}
-	if err != nil {
+}
+
+// GetRecoveryExecution fetches a single recovery by id within the tenant.
+func GetRecoveryExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (RecoveryExecutionRow, error) {
+	const q = `SELECT ` + recoveryExecutionCols + ` FROM recovery_executions WHERE id = $1 AND tenant_id = $2`
+	var r RecoveryExecutionRow
+	if err := scanRecoveryExecution(&r, tx.QueryRow(ctx, q, id, tenantID)); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return RecoveryExecutionRow{}, ErrNotFound
+		}
 		return RecoveryExecutionRow{}, fmt.Errorf("db: get recovery execution: %w", err)
 	}
 	return r, nil
@@ -191,13 +195,7 @@ func ListRecoveries(ctx context.Context, tx pgx.Tx, f ListRecoveriesFilter) ([]R
 	if f.PageSize <= 0 || f.PageSize > 1000 {
 		f.PageSize = 100
 	}
-	q := `SELECT id, tenant_id, project_id, task_id, failed_execution_id,
-		recovery_workflow_id, trigger_reason, level, status, current_step, strategy,
-		resumption_path, budget_tokens_limit, budget_tokens_used,
-		budget_cost_limit_usd, budget_cost_used_usd, budget_relax_fraction,
-		needs_human_approval, continuation_plan_id, reviewer_worker_id,
-		summary, version, triggered_at, ended_at, created_at, updated_at
-		FROM recovery_executions WHERE tenant_id = $1 AND ($2 = '' OR id < $2)`
+	q := `SELECT ` + recoveryExecutionCols + ` FROM recovery_executions WHERE tenant_id = $1 AND ($2 = '' OR id < $2)`
 	args := []any{f.TenantID, f.AfterID}
 	if f.ProjectID != "" {
 		q += fmt.Sprintf(` AND project_id = $%d`, len(args)+1)
@@ -221,15 +219,7 @@ func ListRecoveries(ctx context.Context, tx pgx.Tx, f ListRecoveriesFilter) ([]R
 	var out []RecoveryExecutionRow
 	for rows.Next() {
 		var r RecoveryExecutionRow
-		if err := rows.Scan(
-			&r.ID, &r.TenantID, &r.ProjectID, &r.TaskID, &r.FailedExecutionID,
-			&r.RecoveryWorkflowID, &r.TriggerReason, &r.Level, &r.Status,
-			&r.CurrentStep, &r.Strategy, &r.ResumptionPath, &r.BudgetTokensLimit,
-			&r.BudgetTokensUsed, &r.BudgetCostLimitUSD, &r.BudgetCostUsedUSD,
-			&r.BudgetRelaxFraction, &r.NeedsHumanApproval,
-			&r.ContinuationPlanID, &r.ReviewerWorkerID, &r.Summary,
-			&r.Version, &r.TriggeredAt, &r.EndedAt, &r.CreatedAt, &r.UpdatedAt,
-		); err != nil {
+		if err := scanRecoveryExecution(&r, rows); err != nil {
 			return nil, fmt.Errorf("db: scan recovery: %w", err)
 		}
 		out = append(out, r)
@@ -240,13 +230,7 @@ func ListRecoveries(ctx context.Context, tx pgx.Tx, f ListRecoveriesFilter) ([]R
 // ListPendingRecoveries returns recoveries in a non-terminal state
 // (pending/running/blocked) for the reconciler to progress (docs/06 §9).
 func ListPendingRecoveries(ctx context.Context, tx pgx.Tx, tenantID string) ([]RecoveryExecutionRow, error) {
-	const q = `SELECT id, tenant_id, project_id, task_id, failed_execution_id,
-		recovery_workflow_id, trigger_reason, level, status, current_step,
-		strategy, resumption_path, budget_tokens_limit, budget_tokens_used,
-		budget_cost_limit_usd, budget_cost_used_usd, budget_relax_fraction,
-		needs_human_approval, continuation_plan_id, reviewer_worker_id,
-		summary, version, triggered_at, ended_at, created_at, updated_at
-		FROM recovery_executions
+	q := `SELECT ` + recoveryExecutionCols + ` FROM recovery_executions
 		WHERE tenant_id = $1 AND status IN ('pending', 'running', 'blocked')
 		ORDER BY triggered_at ASC`
 	rows, err := tx.Query(ctx, q, tenantID)
@@ -257,15 +241,7 @@ func ListPendingRecoveries(ctx context.Context, tx pgx.Tx, tenantID string) ([]R
 	var out []RecoveryExecutionRow
 	for rows.Next() {
 		var r RecoveryExecutionRow
-		if err := rows.Scan(
-			&r.ID, &r.TenantID, &r.ProjectID, &r.TaskID, &r.FailedExecutionID,
-			&r.RecoveryWorkflowID, &r.TriggerReason, &r.Level, &r.Status,
-			&r.CurrentStep, &r.Strategy, &r.ResumptionPath, &r.BudgetTokensLimit,
-			&r.BudgetTokensUsed, &r.BudgetCostLimitUSD, &r.BudgetCostUsedUSD,
-			&r.BudgetRelaxFraction, &r.NeedsHumanApproval,
-			&r.ContinuationPlanID, &r.ReviewerWorkerID, &r.Summary,
-			&r.Version, &r.TriggeredAt, &r.EndedAt, &r.CreatedAt, &r.UpdatedAt,
-		); err != nil {
+		if err := scanRecoveryExecution(&r, rows); err != nil {
 			return nil, fmt.Errorf("db: scan recovery: %w", err)
 		}
 		out = append(out, r)
@@ -277,29 +253,14 @@ func ListPendingRecoveries(ctx context.Context, tx pgx.Tx, tenantID string) ([]R
 // if one exists. Used to avoid duplicate recoveries (docs/06 §9
 // idempotency).
 func GetActiveRecoveryForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (RecoveryExecutionRow, error) {
-	const q = `SELECT id, tenant_id, project_id, task_id, failed_execution_id,
-		recovery_workflow_id, trigger_reason, level, status, current_step,
-		resumption_path, budget_tokens_limit, budget_tokens_used,
-		budget_cost_limit_usd, budget_cost_used_usd, budget_relax_fraction,
-		needs_human_approval, continuation_plan_id, reviewer_worker_id,
-		summary, version, triggered_at, ended_at, created_at, updated_at
-		FROM recovery_executions
+	q := `SELECT ` + recoveryExecutionCols + ` FROM recovery_executions
 		WHERE tenant_id = $1 AND task_id = $2 AND status IN ('pending', 'running', 'blocked')
 		ORDER BY triggered_at DESC LIMIT 1`
 	var r RecoveryExecutionRow
-	err := tx.QueryRow(ctx, q, tenantID, taskID).Scan(
-		&r.ID, &r.TenantID, &r.ProjectID, &r.TaskID, &r.FailedExecutionID,
-		&r.RecoveryWorkflowID, &r.TriggerReason, &r.Level, &r.Status,
-		&r.CurrentStep, &r.Strategy, &r.ResumptionPath, &r.BudgetTokensLimit,
-		&r.BudgetTokensUsed, &r.BudgetCostLimitUSD, &r.BudgetCostUsedUSD,
-		&r.BudgetRelaxFraction, &r.NeedsHumanApproval,
-		&r.ContinuationPlanID, &r.ReviewerWorkerID, &r.Summary,
-		&r.Version, &r.TriggeredAt, &r.EndedAt, &r.CreatedAt, &r.UpdatedAt,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return RecoveryExecutionRow{}, ErrNotFound
-	}
-	if err != nil {
+	if err := scanRecoveryExecution(&r, tx.QueryRow(ctx, q, tenantID, taskID)); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return RecoveryExecutionRow{}, ErrNotFound
+		}
 		return RecoveryExecutionRow{}, fmt.Errorf("db: get active recovery for task: %w", err)
 	}
 	return r, nil
@@ -310,29 +271,14 @@ func GetActiveRecoveryForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID s
 // determine whether a recovery has completed (terminal) or is still
 // in flight.
 func GetLatestRecoveryForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (RecoveryExecutionRow, error) {
-	const q = `SELECT id, tenant_id, project_id, task_id, failed_execution_id,
-		recovery_workflow_id, trigger_reason, level, status, current_step,
-		strategy, resumption_path, budget_tokens_limit, budget_tokens_used,
-		budget_cost_limit_usd, budget_cost_used_usd, budget_relax_fraction,
-		needs_human_approval, continuation_plan_id, reviewer_worker_id,
-		summary, version, triggered_at, ended_at, created_at, updated_at
-		FROM recovery_executions
+	q := `SELECT ` + recoveryExecutionCols + ` FROM recovery_executions
 		WHERE tenant_id = $1 AND task_id = $2
 		ORDER BY triggered_at DESC LIMIT 1`
 	var r RecoveryExecutionRow
-	err := tx.QueryRow(ctx, q, tenantID, taskID).Scan(
-		&r.ID, &r.TenantID, &r.ProjectID, &r.TaskID, &r.FailedExecutionID,
-		&r.RecoveryWorkflowID, &r.TriggerReason, &r.Level, &r.Status,
-		&r.CurrentStep, &r.Strategy, &r.ResumptionPath, &r.BudgetTokensLimit,
-		&r.BudgetTokensUsed, &r.BudgetCostLimitUSD, &r.BudgetCostUsedUSD,
-		&r.BudgetRelaxFraction, &r.NeedsHumanApproval,
-		&r.ContinuationPlanID, &r.ReviewerWorkerID, &r.Summary,
-		&r.Version, &r.TriggeredAt, &r.EndedAt, &r.CreatedAt, &r.UpdatedAt,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return RecoveryExecutionRow{}, ErrNotFound
-	}
-	if err != nil {
+	if err := scanRecoveryExecution(&r, tx.QueryRow(ctx, q, tenantID, taskID)); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return RecoveryExecutionRow{}, ErrNotFound
+		}
 		return RecoveryExecutionRow{}, fmt.Errorf("db: get latest recovery for task: %w", err)
 	}
 	return r, nil
@@ -357,6 +303,8 @@ type UpdateRecoveryExecutionFields struct {
 	// Strategy is the recovery strategy routed on by the engine. PR C
 	// routes per row; left nil on updates that don't change strategy.
 	Strategy             *string
+	MaxRetries           *int
+	RetryDelaySeconds    *int
 	EndedAt              *time.Time
 }
 
@@ -436,35 +384,31 @@ func UpdateRecoveryExecution(ctx context.Context, tx pgx.Tx, tenantID, id string
 		args = append(args, *f.Strategy)
 		setIdx++
 	}
+	if f.MaxRetries != nil {
+		q += fmt.Sprintf(`, max_retries = $%d`, setIdx)
+		args = append(args, *f.MaxRetries)
+		setIdx++
+	}
+	if f.RetryDelaySeconds != nil {
+		q += fmt.Sprintf(`, retry_delay_seconds = $%d`, setIdx)
+		args = append(args, *f.RetryDelaySeconds)
+		setIdx++
+	}
 	if f.EndedAt != nil {
 		q += fmt.Sprintf(`, ended_at = $%d`, setIdx)
 		args = append(args, *f.EndedAt)
 		setIdx++
 	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
-	q += ` RETURNING id, tenant_id, project_id, task_id, failed_execution_id,
-		recovery_workflow_id, trigger_reason, level, status, current_step, strategy,
-		resumption_path, budget_tokens_limit, budget_tokens_used,
-		budget_cost_limit_usd, budget_cost_used_usd, budget_relax_fraction,
-		needs_human_approval, continuation_plan_id, reviewer_worker_id,
-		summary, version, triggered_at, ended_at, created_at, updated_at`
-	var r RecoveryExecutionRow
-	err := tx.QueryRow(ctx, q, args...).Scan(
-		&r.ID, &r.TenantID, &r.ProjectID, &r.TaskID, &r.FailedExecutionID,
-		&r.RecoveryWorkflowID, &r.TriggerReason, &r.Level, &r.Status,
-		&r.CurrentStep, &r.Strategy, &r.ResumptionPath, &r.BudgetTokensLimit,
-		&r.BudgetTokensUsed, &r.BudgetCostLimitUSD, &r.BudgetCostUsedUSD,
-		&r.BudgetRelaxFraction, &r.NeedsHumanApproval,
-		&r.ContinuationPlanID, &r.ReviewerWorkerID, &r.Summary,
-		&r.Version, &r.TriggeredAt, &r.EndedAt, &r.CreatedAt, &r.UpdatedAt,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return RecoveryExecutionRow{}, ErrNotFound
-	}
-	if err != nil {
+	q += ` RETURNING ` + recoveryExecutionCols
+	var e RecoveryExecutionRow
+	if err := scanRecoveryExecution(&e, tx.QueryRow(ctx, q, args...)); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return RecoveryExecutionRow{}, ErrNotFound
+		}
 		return RecoveryExecutionRow{}, fmt.Errorf("db: update recovery execution: %w", err)
 	}
-	return r, nil
+	return e, nil
 }
 
 // --- RecoveryStepRun ------------------------------------------------------
