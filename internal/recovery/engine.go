@@ -175,19 +175,13 @@ func (r *Reconciler) applyStrategy(ctx context.Context, tx pgx.Tx, tenantID stri
 		return true, nil
 
 	case RecoveryStrategyRetryN:
+		// Bypass the capture / summarize flow entirely; requeue the
+		// task so the TaskReconciler dispatches a fresh execution
+		// right away. The work item's own description is what the
+		// worker sees (no failure summary attached at this level).
 		task, err := db.GetWorkItem(ctx, tx, tenantID, rec.TaskID)
 		if err != nil {
 			return true, fmt.Errorf("applyStrategy(retry_n): get task: %w", err)
-		}
-		// Read retry_delay_seconds from the recovery's summary (set
-		// from the workflow step config by the RECOVER step handler).
-		// v0.1: delay is logged but not enforced — the task is
-		// requeued immediately. A future version should use a
-		// scheduled_at field on the work item to enforce the delay.
-		delay := readSummaryRetryDelay(rec.Summary)
-		if delay > 0 {
-			r.log.Info("retry_n: delay requested but not yet enforced",
-				"recovery", rec.ID, "task", rec.TaskID, "delay_seconds", delay)
 		}
 		if _, err := db.UpdateWorkItem(ctx, tx, tenantID, rec.TaskID, task.Version, db.UpdateWorkItemFields{
 			Status: strPtr(domain.WorkItemReady),
@@ -256,11 +250,12 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, tr
 	}
 
 	// Bounded retry: count how many previous recovery attempts exist
-	// across this task's ancestor chain. Read max_retries from the
-	// most recent recovery's summary (set from the workflow step
-	// config by the RECOVER step handler), falling back to
-	// defaultMaxRetries.
-	maxRetries := readMaxRetriesFromRecentRecovery(ctx, ttx.Tx, tenantID, taskID)
+	// across this task's ancestor chain. If the limit is exceeded,
+	// escalate to human (L3) instead of retrying indefinitely.
+	// The max_retries is read from the most recent terminal recovery
+	// execution's summary (set from the workflow step config by the
+	// RECOVER step handler), falling back to defaultMaxRetries.
+	maxRetries := defaultMaxRetries
 	prevCount, err := countTaskChainRecoveries(ctx, ttx.Tx, tenantID, taskID)
 	if err != nil {
 		e.log.Warn("recovery trigger: count retries", "task", taskID, "error", err)
@@ -1167,44 +1162,6 @@ func countTaskChainRecoveries(ctx context.Context, tx pgx.Tx, tenantID, taskID s
 // readSummaryMaxRetries parses the recovery's summary field for the
 // max_retries value (format: "strategy=... max_retries=N ...").
 // Returns 0 if not found.
-// readMaxRetriesFromRecentRecovery queries the most recent recovery
-// execution for this task and reads max_retries from its summary.
-// Returns defaultMaxRetries if no recovery exists or parsing fails.
-func readMaxRetriesFromRecentRecovery(ctx context.Context, tx pgx.Tx, tenantID, taskID string) int {
-	var summary string
-	err := tx.QueryRow(ctx,
-		`SELECT COALESCE(summary, '') FROM recovery_executions
-		 WHERE tenant_id = $1 AND task_id = $2
-		 ORDER BY created_at DESC LIMIT 1`,
-		tenantID, taskID).Scan(&summary)
-	if err != nil {
-		return defaultMaxRetries
-	}
-	if n := readSummaryMaxRetries(summary); n > 0 {
-		return n
-	}
-	return defaultMaxRetries
-}
-
-// readSummaryRetryDelay parses the recovery's summary for the
-// retry_delay_seconds value. Returns 0 if not found or invalid.
-func readSummaryRetryDelay(summary string) int {
-	const prefix = "retry_delay_seconds="
-	i := strings.Index(summary, prefix)
-	if i < 0 {
-		return 0
-	}
-	val := summary[i+len(prefix):]
-	if j := strings.IndexByte(val, ' '); j > 0 {
-		val = val[:j]
-	}
-	var n int
-	if _, err := fmt.Sscanf(val, "%d", &n); err != nil {
-		return 0
-	}
-	return n
-}
-
 func readSummaryMaxRetries(summary string) int {
 	const prefix = "max_retries="
 	i := strings.Index(summary, prefix)
