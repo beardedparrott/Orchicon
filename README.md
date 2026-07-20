@@ -42,10 +42,8 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-**v0.1.116** — SigNoz iframe asset loading, workflow prompt context enrichment, telemetry log streaming.
-SigNoz proxy rewrites asset URLs to absolute `/signoz/...` paths so Firefox's sandboxed iframe loads JS/CSS correctly.
-Workflow composite prompt now includes a chronological "Workflow context" timeline: TASK full output + summary, RECOVER strategy + narrative, WORK_ITEM/PROJECT markers, with a `→ Next task (you are here)` block naming the dispatch target.
-Telemetry logs panel streams control-plane slog records via new Slog→OTel bridge: outbox, reconciler, dispatch, workflow run progressed, task dispatched, opencode step started/finished, recovery events — all at INFO severity (opencode adapter smart-parses stderr severity tags). Fixes ClickHouse logs timestamp (ns not μs) and tenant filter so control-plane logs appear in "Recent logs" panel.
+**v0.1.119** — Switch SigNoz to community edition, fix frontend lint errors.
+SigNoz no longer crashes at startup: replaced `signoz/signoz:latest` (enterprise, configured via env vars) with `signoz/signoz-community:v0.132.2` to work around the enterprise edition's `"failed to validate config user"` validation bug across v0.100.0–v0.133.0. The OTel collector was failing because `signoz_traces`/`signoz_logs` databases didn't exist — the signoz-schema-migrator must run before the collector starts. Fixed two frontend lint errors: React hooks after early return in PropertiesPanel.tsx, and `any` → `Record<string, unknown>` in ExecutionContextSidebar.tsx.
 
 ## Installation
 
