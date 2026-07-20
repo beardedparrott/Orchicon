@@ -14,7 +14,7 @@ import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { Pause, Play, Square, Save, Trash2, ArrowLeft, SendHorizontal, Loader2 } from "lucide-react";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   useGetExecution,
   useStreamExecutionEvents,
