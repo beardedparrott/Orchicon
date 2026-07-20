@@ -500,10 +500,10 @@ func (s *Service) ListPendingApprovals(ctx context.Context, req *connect.Request
 	return connect.NewResponse(resp), nil
 }
 
-// CreateFollowUpExecution creates a new work item that continues from a
-// completed execution. The new work item includes the previous context
-// (composite prompt + output) plus the user's follow-up message, and is
-// marked as ready for the TaskReconciler to dispatch.
+// CreateFollowUpExecution appends the user's follow-up message to the
+// execution's conversation field. No new work item or execution is created
+// — the follow-up is purely a record appended to the original execution
+// so the conversation persists across page navigation.
 func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Request[apiv1.CreateFollowUpExecutionRequest]) (*connect.Response[apiv1.CreateFollowUpExecutionResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -527,85 +527,11 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 	}
 	defer ttx.Rollback(ctx)
 
-	// 1. Get the previous execution.
 	prevExec, err := db.GetExecution(ctx, ttx.Tx, tenantID, msg.ExecutionId)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
 
-	// 2. Get the task (work item) for that execution.
-	task, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, prevExec.TaskID)
-	if err != nil {
-		return nil, mapDBError(err)
-	}
-
-	// 3. Build the follow-up composite prompt.
-	var prevComposite string
-	if len(task.PromptContext) > 0 {
-		var pc struct {
-			Composite string `json:"composite"`
-		}
-		if err := json.Unmarshal(task.PromptContext, &pc); err == nil {
-			prevComposite = strings.TrimSpace(pc.Composite)
-		}
-	}
-	var followUpPrompt strings.Builder
-	followUpPrompt.WriteString("# Follow-up task\n\n")
-	followUpPrompt.WriteString("This is a follow-up to a previous execution. Continue from where the previous work left off.\n\n")
-	if prevComposite != "" {
-		followUpPrompt.WriteString("## Previous context\n\n")
-		followUpPrompt.WriteString(prevComposite)
-		followUpPrompt.WriteString("\n\n")
-	}
-	output := strings.TrimSpace(prevExec.Output)
-	if output != "" {
-		followUpPrompt.WriteString("## Previous execution output\n\n")
-		if len(output) > 32000 {
-			output = output[:32000] + "\n\n*(truncated — previous output was longer)*"
-		}
-		followUpPrompt.WriteString(output)
-		followUpPrompt.WriteString("\n\n")
-	}
-	followUpPrompt.WriteString("## Follow-up question\n\n")
-	followUpPrompt.WriteString(q)
-	followUpPrompt.WriteString("\n\n")
-	followUpPrompt.WriteString("# Instructions\n\n")
-	followUpPrompt.WriteString("Complete the follow-up task above. Continue from where the previous execution left off. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one short paragraph summarizing what you did.\n\n")
-
-	promptCtx, err := json.Marshal(map[string]string{"composite": followUpPrompt.String()})
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("marshal prompt context: %w", err))
-	}
-
-	// 4. Create a new work item as a child of the original task.
-	// Store _parent_execution_id and _follow_up_message in results so
-	// the TaskReconciler can write the assistant response back to the
-	// original execution's conversation on completion.
-	resultsJSON, _ := json.Marshal(map[string]string{
-		"_parent_execution_id": msg.ExecutionId,
-		"_follow_up_message":   q,
-	})
-	newWIID := db.NewID()
-	newWI := db.WorkItemRow{
-		ID:        newWIID,
-		TenantID:  tenantID,
-		ProjectID: task.ProjectID,
-		ParentID:  &task.ID,
-		Kind:      domain.WorkItemKindTask,
-		Title:     fmt.Sprintf("Follow-up: %s", strings.TrimSpace(task.Title)),
-		Status:    domain.WorkItemReady,
-		AssignedWorkerRef: task.AssignedWorkerRef,
-		Priority:  task.Priority,
-		PromptContext: promptCtx,
-		Results:   resultsJSON,
-	}
-	created, err := db.CreateWorkItem(ctx, ttx.Tx, newWI)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create follow-up work item: %w", err))
-	}
-
-	// 5. Persist the user's message in the original execution's
-	// conversation so it survives page navigation.
 	conv := prevExec.Conversation
 	if len(conv) == 0 {
 		conv = []byte("[]")
@@ -637,14 +563,11 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
 
-	s.log.Info("follow-up execution created",
-		"original_execution", msg.ExecutionId,
-		"new_work_item", created.ID,
+	s.log.Info("follow-up message appended",
+		"execution", msg.ExecutionId,
 	)
 
-	return connect.NewResponse(&apiv1.CreateFollowUpExecutionResponse{
-		WorkItemId: created.ID,
-	}), nil
+	return connect.NewResponse(&apiv1.CreateFollowUpExecutionResponse{}), nil
 }
 
 // RegisterApproval creates a pending Tier 2 approval request in the

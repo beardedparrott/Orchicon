@@ -228,7 +228,4 @@ message CreateFollowUpExecutionRequest {
   string message = 2; // The follow-up message from the user
 }
 
-message CreateFollowUpExecutionResponse {
-  string execution_id = 1; // The new execution ID
-  string work_item_id = 2; // The new work item ID
-}
+message CreateFollowUpExecutionResponse {} // Follow-up appended to conversation; no new execution created

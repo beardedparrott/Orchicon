@@ -1812,8 +1812,6 @@ func (x *CreateFollowUpExecutionRequest) GetMessage() string {
 
 type CreateFollowUpExecutionResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	ExecutionId   string                 `protobuf:"bytes,1,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"` // The new execution ID
-	WorkItemId    string                 `protobuf:"bytes,2,opt,name=work_item_id,json=workItemId,proto3" json:"work_item_id,omitempty"`  // The new work item ID
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1846,20 +1844,6 @@ func (x *CreateFollowUpExecutionResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use CreateFollowUpExecutionResponse.ProtoReflect.Descriptor instead.
 func (*CreateFollowUpExecutionResponse) Descriptor() ([]byte, []int) {
 	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{26}
-}
-
-func (x *CreateFollowUpExecutionResponse) GetExecutionId() string {
-	if x != nil {
-		return x.ExecutionId
-	}
-	return ""
-}
-
-func (x *CreateFollowUpExecutionResponse) GetWorkItemId() string {
-	if x != nil {
-		return x.WorkItemId
-	}
-	return ""
 }
 
 var File_orchicon_api_v1_execution_proto protoreflect.FileDescriptor
@@ -1992,11 +1976,8 @@ const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"\tapprovals\x18\x01 \x03(\v2 .orchicon.api.v1.ApprovalRequestR\tapprovals\"]\n" +
 	"\x1eCreateFollowUpExecutionRequest\x12!\n" +
 	"\fexecution_id\x18\x01 \x01(\tR\vexecutionId\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"f\n" +
-	"\x1fCreateFollowUpExecutionResponse\x12!\n" +
-	"\fexecution_id\x18\x01 \x01(\tR\vexecutionId\x12 \n" +
-	"\fwork_item_id\x18\x02 \x01(\tR\n" +
-	"workItemId*\xf5\x02\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"!\n" +
+	"\x1fCreateFollowUpExecutionResponse*\xf5\x02\n" +
 	"\x0fExecutionStatus\x12 \n" +
 	"\x1cEXECUTION_STATUS_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cEXECUTION_STATUS_DISPATCHING\x10\x01\x12\x1c\n" +

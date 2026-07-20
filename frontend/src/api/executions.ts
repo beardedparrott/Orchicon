@@ -11,7 +11,7 @@ import type { ExecutionEvent } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { ApprovalRequest } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { StreamExecutionEventsRequest } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { StreamExecutionEventsResponse } from "@/api/gen/orchicon/api/v1/execution_pb";
-import type { CreateFollowUpExecutionResponse } from "@/api/gen/orchicon/api/v1/execution_pb";
+
 import type { PartialMessage } from "@bufbuild/protobuf";
 
 // --- adapter keys ---
