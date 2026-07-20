@@ -86,9 +86,6 @@ function ExecutionsPage() {
     });
   };
 
-  // Default filter: show all running (dispatching, running, healthy, stalled, unhealthy, terminating)
-  const resolvedStatus = statusFilter ?? undefined;
-
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">

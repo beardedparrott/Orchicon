@@ -65,6 +65,7 @@ export function useListExecutions(opts?: {
   search?: string;
   sortBy?: string;
   sortOrder?: string;
+  enabled?: boolean;
 }) {
   return useQuery({
     queryKey: executionKeys.list(opts?.projectId, opts?.status),
@@ -81,6 +82,7 @@ export function useListExecutions(opts?: {
       });
       return res.executions as WorkerExecution[];
     },
+    enabled: opts?.enabled,
     refetchInterval: 3_000,
   });
 }
