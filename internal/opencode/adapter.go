@@ -290,34 +290,25 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// Wait for the process to exit.
 	err = cmd.Wait()
 	succeeded := err == nil
-	errorMsg := ""
-	if err != nil {
-		errorMsg = err.Error()
-	}
-	if scanErr != nil {
-		if errorMsg != "" {
-			errorMsg += "; "
-		}
-		errorMsg += "stdout scan: " + scanErr.Error()
+
+	// Build the error message from most specific to least. The
+	// JSON-stream error (extracted from opencode's structured error
+	// event) is the real cause — e.g. a provider 401 or rate-limit.
+	// Stderr has surrounding context. Exit status is the fallback.
+	var parts []string
+	if lastStreamErr != "" {
+		parts = append(parts, lastStreamErr)
 	}
 	if stderrBuf.Len() > 0 {
-		if errorMsg != "" {
-			errorMsg += "; "
-		}
-		errorMsg += strings.TrimSpace(stderrBuf.String())
+		parts = append(parts, strings.TrimSpace(stderrBuf.String()))
 	}
-	// Fold in the most recent JSON-stream error (if any). This is
-	// what the user actually wants to see: opencode's structured
-	// error like `{"code":500,"message":"Internal Server Error",...}`
-	// instead of the opaque "exit status 1" from cmd.Wait(). When
-	// both are present we keep both — the JSON message gives the
-	// cause, the stderr line gives the surrounding log context.
-	if lastStreamErr != "" {
-		if errorMsg != "" {
-			errorMsg += "; "
-		}
-		errorMsg += lastStreamErr
+	if err != nil {
+		parts = append(parts, err.Error())
 	}
+	if scanErr != nil {
+		parts = append(parts, "stdout scan: "+scanErr.Error())
+	}
+	errorMsg := strings.Join(parts, "; ")
 	callbacks.OnResult(ctx, execRow.ID, succeeded, output.String(), errorMsg)
 	return nil
 }
