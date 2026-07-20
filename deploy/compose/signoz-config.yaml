@@ -15,8 +15,25 @@ http:
   host: 0.0.0.0
   port: 3301
 
-# Disable authentication for local dev (enterprise version ignores
-# SIGNOZ_AUTH_ENABLED env var). Without this, the embedded iframe
-# shows a login page because the iframe can't share the auth cookie.
+# Disable authentication for local dev (handled via env vars in docker-compose).
 auth:
   enabled: false
+
+# Root user config for impersonation auth (no login screen).
+user:
+  root:
+    enabled: true
+    email: "admin@orchicon.local"
+    password: "orchicon-dev"
+    org:
+      name: "default"
+      id: ""
+
+# IdentN config for impersonation auth.
+identn:
+  impersonation:
+    enabled: true
+  tokenizer:
+    enabled: false
+  apikey:
+    enabled: false

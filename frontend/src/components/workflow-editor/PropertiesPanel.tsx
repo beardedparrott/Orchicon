@@ -34,15 +34,15 @@ export function PropertiesPanel({
   readOnly: boolean;
   projectId?: string;
 }) {
-  if (!node) return <EmptyProperties />;
-  const d = node.data;
-  const Icon = STEP_KIND_ICONS[d.kind] ?? STEP_KIND_ICONS[1];
-  const cfg = parseConfig(d.config);
-
   const { data: projects } = useListProjects();
   const { data: workItems } = useListWorkItems(projectId || "", {});
   const { data: workers } = useListWorkers();
   const { data: policies } = useListPolicies({ status: PolicyStatus.PUBLISHED });
+
+  if (!node) return <EmptyProperties />;
+  const d = node.data;
+  const Icon = STEP_KIND_ICONS[d.kind] ?? STEP_KIND_ICONS[1];
+  const cfg = parseConfig(d.config);
 
   const publishedWorkers = (workers ?? []).filter(
     (w) => w.status === WorkerStatus.PUBLISHED,

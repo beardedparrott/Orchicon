@@ -102,7 +102,7 @@ export function ExecutionContextSidebar({
         ? new Date(Number(evt.occurredAt.seconds) * 1000)
         : new Date();
       const eventType = evt.eventType;
-      let payload: any = {};
+      let payload: Record<string, unknown> = {};
       if (evt.payload?.length) {
         try {
           payload = JSON.parse(new TextDecoder().decode(evt.payload));
