@@ -26,7 +26,6 @@ import {
   useListPendingApprovals,
   useApproveToolCall,
   useCreateFollowUpExecution,
-  useListExecutions,
 } from "@/api/executions";
 import { executionKeys } from "@/api/executions";
 import { useGetUsage } from "@/api/aigateway";
@@ -49,10 +48,6 @@ interface ConversationEntry {
   content: string;
   type: string;
   created_at: string;
-}
-
-interface FollowUpState {
-  workItemId: string;
 }
 
 function ExecutionDetailPage() {
@@ -79,24 +74,26 @@ function ExecutionDetailPage() {
     }
   }, [exec?.conversation]);
 
-  // Track latest follow-up work item so we can poll for its execution.
-  const [followUp, setFollowUp] = useState<FollowUpState | null>(null);
+  // Track whether a follow-up is pending (waiting for worker response).
+  const [followUpPending, setFollowUpPending] = useState(false);
 
   const navigate = useNavigate();
 
-  // Poll for the follow-up execution's events so they stream inline.
-  const { data: followUpExecs } = useListExecutions({
-    taskId: followUp?.workItemId ?? undefined,
-    enabled: !!followUp,
-  });
-  const followUpExec = followUpExecs && followUpExecs.length > 0 ? followUpExecs[0] : null;
-  const { events: followUpEvents, status: followUpStatus } = useStreamExecutionEvents({
-    executionId: followUpExec?.id ?? "",
-    enabled: !!followUpExec,
-  });
+  // Check if the last conversation entry is from the user with no
+  // assistant response yet.
+  const lastEntry = conversation[conversation.length - 1];
+  const awaitingResponse = followUpPending && lastEntry?.role !== "assistant";
 
-  const handleFollowUpSent = useCallback((workItemId: string) => {
-    setFollowUp({ workItemId });
+  // When the assistant response arrives in the conversation (written by
+  // TaskReconciler.appendToParentConversation), clear the pending state.
+  useEffect(() => {
+    if (followUpPending && lastEntry?.role === "assistant") {
+      setFollowUpPending(false);
+    }
+  }, [followUpPending, lastEntry?.role]);
+
+  const handleFollowUpSent = useCallback(() => {
+    setFollowUpPending(true);
   }, []);
 
   // Live event stream (docs/10 §4). Subscribes to
@@ -283,22 +280,14 @@ function ExecutionDetailPage() {
             </div>
           )}
 
-          {/* Follow-up execution events (streaming inline) */}
-          {followUp && (
-            <div className="space-y-3">
-              {followUpExec && (
-                <RuntimeSessionPane
-                  events={followUpEvents}
-                  streamStatus={followUpStatus}
-                  storedOutput={followUpExec.output}
-                />
-              )}
-              {!followUpExec && (
-                <div className="flex items-center gap-2 rounded-lg border border-muted bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  Dispatching worker…
-                </div>
-              )}
+          {/* Pending indicator: shown while waiting for the worker to
+              respond to the latest follow-up. The response appears in
+              the conversation above once TaskReconciler writes it
+              back to the original execution's conversation field. */}
+          {awaitingResponse && (
+            <div className="flex items-center gap-2 rounded-lg border border-muted bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Worker is responding…
             </div>
           )}
 
@@ -445,7 +434,7 @@ function FollowUpInput({
   onFollowUpSent,
 }: {
   executionId: string;
-  onFollowUpSent: (workItemId: string) => void;
+  onFollowUpSent: () => void;
 }) {
   const [message, setMessage] = useState("");
   const createFollowUp = useCreateFollowUpExecution();
@@ -456,8 +445,8 @@ function FollowUpInput({
     createFollowUp.mutate(
       { executionId, message: trimmed },
       {
-        onSuccess: (res) => {
-          onFollowUpSent(res.workItemId);
+        onSuccess: () => {
+          onFollowUpSent();
           setMessage("");
         },
       },

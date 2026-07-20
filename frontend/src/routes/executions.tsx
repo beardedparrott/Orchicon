@@ -47,7 +47,7 @@ const ACTIVE_STATUSES = new Set([1, 2, 3, 4, 5, 6]);
 function ExecutionsPage() {
   const { workflowRunId } = Route.useSearch();
   const [search, setSearch] = useState("");
-  const [status, setStatus] = useState("running"); // default: active executions
+  const [status, setStatus] = useState("all"); // default: show all executions
   const [sortBy, setSortBy] = useState("created_at");
   const [sortOrder, setSortOrder] = useState("desc");
   const [selected, setSelected] = useState<Set<string>>(new Set());

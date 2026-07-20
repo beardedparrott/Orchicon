@@ -578,6 +578,13 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 	}
 
 	// 4. Create a new work item as a child of the original task.
+	// Store _parent_execution_id and _follow_up_message in results so
+	// the TaskReconciler can write the assistant response back to the
+	// original execution's conversation on completion.
+	resultsJSON, _ := json.Marshal(map[string]string{
+		"_parent_execution_id": msg.ExecutionId,
+		"_follow_up_message":   q,
+	})
 	newWIID := db.NewID()
 	newWI := db.WorkItemRow{
 		ID:        newWIID,
@@ -590,6 +597,7 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 		AssignedWorkerRef: task.AssignedWorkerRef,
 		Priority:  task.Priority,
 		PromptContext: promptCtx,
+		Results:   resultsJSON,
 	}
 	created, err := db.CreateWorkItem(ctx, ttx.Tx, newWI)
 	if err != nil {

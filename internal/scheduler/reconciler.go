@@ -488,6 +488,19 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	if succeeded && output != "" {
 		summary = extractWorkerSummary(output)
 	}
+	// Check if this work item is a follow-up with a parent execution
+	// to write back to. Read _parent_execution_id from the raw results
+	// before we overwrite them with the worker output.
+	var parentExecID string
+	if len(wi.Results) > 0 {
+		var rawResults map[string]any
+		if err := json.Unmarshal(wi.Results, &rawResults); err == nil {
+			if pid, ok := rawResults["_parent_execution_id"].(string); ok {
+				parentExecID = pid
+			}
+		}
+	}
+
 	// Persist output + summary on the work item's results JSON so the
 	// audit trail shows what the worker produced. The summary is the
 	// canonical downstream input.
@@ -542,6 +555,15 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 		r.log.Error("transition work item: commit", "execution", execID, "error", err)
 		return
 	}
+
+	// Follow-up write-back: if this work item has a parent execution
+	// (created via CreateFollowUpExecution), append the assistant's
+	// output to the parent execution's conversation so the follow-up
+	// feels like a continuation of the same conversation.
+	if parentExecID != "" && succeeded && output != "" {
+		r.appendToParentConversation(context.Background(), "tnt_dev", parentExecID, output)
+	}
+
 	// Notify the WorkflowReconciler that this task completed so it
 	// can progress the step DAG immediately (docs/03 §2). Done after
 	// commit so the work item status is visible. No-op when the work
@@ -747,6 +769,59 @@ func (r *TaskReconciler) updateExecStatus(ctx context.Context, execID, status, h
 		return
 	}
 	r.publishExecEvent(ctx, eventType, updated, nil)
+}
+
+// appendToParentConversation appends the assistant's output to the parent
+// execution's conversation field so follow-up messages and responses appear
+// as one continuous thread on the original execution detail page.
+func (r *TaskReconciler) appendToParentConversation(ctx context.Context, tenantID, parentExecID, output string) {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		r.log.Error("append to parent conversation: begin tx", "parent_execution", parentExecID, "error", err)
+		return
+	}
+	defer ttx.Rollback(ctx)
+
+	parent, err := db.GetExecution(ctx, ttx.Tx, tenantID, parentExecID)
+	if err != nil {
+		r.log.Error("append to parent conversation: get parent", "parent_execution", parentExecID, "error", err)
+		return
+	}
+	conv := parent.Conversation
+	if len(conv) == 0 {
+		conv = []byte("[]")
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(conv, &entries); err != nil {
+		entries = []map[string]any{}
+	}
+	truncated := output
+	if len(truncated) > 32000 {
+		truncated = truncated[:32000]
+	}
+	entries = append(entries, map[string]any{
+		"role":       "assistant",
+		"content":    truncated,
+		"type":       "follow_up_response",
+		"created_at": time.Now().UTC().Format(time.RFC3339),
+	})
+	updatedConv, err := json.Marshal(entries)
+	if err != nil {
+		r.log.Error("append to parent conversation: marshal", "parent_execution", parentExecID, "error", err)
+		return
+	}
+	if _, err := db.UpdateExecution(ctx, ttx.Tx, tenantID, parentExecID, parent.Version, db.UpdateExecutionFields{
+		Conversation: &updatedConv,
+	}); err != nil {
+		r.log.Error("append to parent conversation: update", "parent_execution", parentExecID, "error", err)
+		return
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		r.log.Error("append to parent conversation: commit", "parent_execution", parentExecID, "error", err)
+		return
+	}
+	r.log.Info("follow-up response appended to parent conversation",
+		"parent_execution", parentExecID, "output_len", len(truncated))
 }
 
 // --- helpers ---------------------------------------------------------------
