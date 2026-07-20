@@ -105,13 +105,14 @@ services:
 
   # SigNoz query-service — reads telemetry from ClickHouse, serves UI on :3301
   signoz:
-    image: signoz/signoz-community:v0.132.2
+    image: signoz/signoz-community:latest
     container_name: orchicon-signoz
     command: ["-DSTORAGE=clickhouse"]
     environment:
       CLICKHOUSE_USER: signoz
       CLICKHOUSE_PASSWORD: signoz
       SIGNOZ_TOKENIZER_JWT_SECRET: "dev-secret-not-for-production"
+      SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN: "tcp://signoz:signoz@clickhouse:9000/signoz"
       # Impersonation mode: no login page (docs/08 §5). Root user config below.
       SIGNOZ_IDENTN_IMPERSONATION_ENABLED: "true"
       SIGNOZ_IDENTN_TOKENIZER_ENABLED: "false"

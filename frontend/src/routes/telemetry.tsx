@@ -444,6 +444,7 @@ function TracesPanel() {
   const degraded = data?.degraded ?? false;
   return (
     <div className="space-y-6">
+      <SigNozEmbed title="Trace Explorer" path="/traces-explorer" degraded={degraded} />
       <Card>
         <CardHeader>
           <CardTitle>Recent traces</CardTitle>
@@ -452,7 +453,7 @@ function TracesPanel() {
             (docs/08 §5.1). Open the embedded SigNoz UI for full drill-down.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="max-h-[200px] overflow-y-auto">
           {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
           {data?.traces && data.traces.length === 0 && !data.degraded && (
             <p className="text-sm text-muted-foreground">No traces yet.</p>
@@ -484,7 +485,6 @@ function TracesPanel() {
           )}
         </CardContent>
       </Card>
-      <SigNozEmbed title="Trace Explorer" path="/trace" degraded={degraded} />
     </div>
   );
 }
@@ -494,6 +494,7 @@ function LogsPanel() {
   const degraded = data?.degraded ?? false;
   return (
     <div className="space-y-6">
+      <SigNozEmbed title="Log Explorer" path="/logs/logs-explorer" degraded={degraded} />
       <Card>
         <CardHeader>
           <CardTitle>Recent logs</CardTitle>
@@ -502,7 +503,7 @@ function LogsPanel() {
             (docs/08 §5.3).
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="max-h-[200px] overflow-y-auto">
           {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
           {data?.logs && data.logs.length === 0 && !data.degraded && (
             <p className="text-sm text-muted-foreground">No logs yet.</p>
@@ -526,7 +527,6 @@ function LogsPanel() {
           )}
         </CardContent>
       </Card>
-      <SigNozEmbed title="Log Explorer" path="/logs" degraded={degraded} />
     </div>
   );
 }
@@ -542,6 +542,7 @@ function MetricsPanel() {
 
   return (
     <div className="space-y-6">
+      <SigNozEmbed title="Metrics Explorer" path="/metrics-explorer/explorer" degraded={degraded} />
       <Card>
         <CardHeader>
           <CardTitle>Metric values</CardTitle>
@@ -557,7 +558,7 @@ function MetricsPanel() {
             </p>
           )}
           {series.length > 0 && (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 max-h-[200px] overflow-y-auto">
               {series.map((s) => {
                 const pts = s.points ?? [];
                 const latest = pts[0];
@@ -583,7 +584,6 @@ function MetricsPanel() {
           )}
         </CardContent>
       </Card>
-      <SigNozEmbed title="Metrics Explorer" degraded={degraded} />
     </div>
   );
 }
@@ -759,11 +759,11 @@ function StatCard({
 }) {
   return (
     <Card>
-      <CardHeader className="pb-2">
-        <CardDescription>{label}</CardDescription>
+      <CardHeader className="pb-0">
+        <CardDescription className="text-xs">{label}</CardDescription>
       </CardHeader>
-      <CardContent>
-        <div className="text-2xl font-semibold">
+      <CardContent className="pb-3 pt-1">
+        <div className="text-xl font-semibold">
           {loading ? "…" : value}
         </div>
       </CardContent>
