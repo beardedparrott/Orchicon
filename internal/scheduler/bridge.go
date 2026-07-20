@@ -85,6 +85,14 @@ type RecoveryTrigger interface {
 	TriggerOnFailure(ctx context.Context, tenantID, taskID, failedExecID, triggerReason string) error
 }
 
+// RecoveryConfig carries optional per-step recovery configuration (max
+// retries, retry delay). Passed to TriggerOnFailureWithConfig when the
+// caller has step-level config available; otherwise defaults are used.
+type RecoveryConfig struct {
+	MaxRetries        int
+	RetryDelaySeconds int
+}
+
 // PolicyEvaluator is the interface the WorkflowReconciler uses to
 // evaluate gate policies (docs/02 §2.5 Tier 1). Satisfied by the
 // policy.Engine; declared here to avoid a scheduler→policy import for
