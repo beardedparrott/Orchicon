@@ -27,14 +27,14 @@ services:
   nats:
     image: nats:2.10-alpine
     container_name: orchicon-nats
-    command: ["-js", "-sd", "/data/jetstream"]
+    command: ["-js", "-sd", "/data/jetstream", "-m", "8222"]
     ports:
       - "4222:4222"
       - "8222:8222"
     volumes:
       - nats-data:/data/jetstream
     healthcheck:
-      test: ["CMD", "nats", "server", "check", "jetstream"]
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8222/healthz >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
