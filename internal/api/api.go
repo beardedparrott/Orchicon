@@ -6,12 +6,12 @@
 package api
 
 import (
+	"compress/gzip"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strconv"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -158,14 +158,29 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 				if !strings.HasPrefix(ct, "text/html") {
 					return nil
 				}
-				body, readErr := io.ReadAll(r.Body)
+				// The upstream (SigNoz) may send gzip-compressed bodies.
+				// Decompress so the string-based rewrite functions work.
+				var reader io.ReadCloser
+				switch r.Header.Get("Content-Encoding") {
+				case "gzip":
+					gr, err := gzip.NewReader(r.Body)
+					if err != nil {
+						return err
+					}
+					defer gr.Close()
+					reader = gr
+				default:
+					reader = r.Body
+				}
+				body, readErr := io.ReadAll(reader)
 				if readErr != nil {
 					return readErr
 				}
 				r.Body.Close()
 				rewritten := rewriteSigNozHTML(string(body), "/signoz")
 				r.Body = io.NopCloser(strings.NewReader(rewritten))
-				r.Header.Set("Content-Length", strconv.Itoa(len(rewritten)))
+				r.Header.Del("Content-Encoding")
+				r.Header.Del("Content-Length")
 				return nil
 			}
 			mux.Handle("/signoz", http.StripPrefix("/signoz", signozProxy))

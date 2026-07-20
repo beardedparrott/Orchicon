@@ -28,10 +28,14 @@ export default defineConfig({
       // SigNoz UI proxy (docs/10 §11): seamless embedding — the SigNoz
       // iframe is served same-origin under /signoz so it shares the
       // Orchicon shell's auth + visual language, not a separate tool.
+      // Proxy through the Go control plane so the ModifyResponse applied
+      // by the /signoz reverse proxy rewrites the HTML's <base href> and
+      // asset paths to include the /signoz/ prefix (docs/10 §11, AGENTS.md
+      // verification: blank-iframe regression). Direct-to-SigNoz proxying
+      // would bypass this rewrite and cause MIME-type errors on assets.
       "/signoz": {
-        target: "http://localhost:3301",
+        target: "http://localhost:8080",
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/signoz/, ""),
       },
     },
   },
