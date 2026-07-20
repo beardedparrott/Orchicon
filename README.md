@@ -42,8 +42,8 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-**v0.1.124** — Fix blank SigNoz iframes: gzip compression broke the HTML proxy rewrite.
-Browsers send `Accept-Encoding: gzip`; Go's reverse proxy passed compressed bodies to `ModifyResponse` without decompressing. The string-based `rewriteSigNozHTML` silently failed on gzip bytes, so the iframe received the original un-rewritten SigNoz HTML — assets loaded at `/assets/...` (missing `/signoz/` prefix), returned the Orchicon SPA shell as `text/html`, causing MIME-type errors and blank iframes. Added gzip decompression in `ModifyResponse` before rewriting.
+**v0.1.125** — Fix SigNoz ClickHouse DSN, blank iframes, telemetry explorer paths.
+The query-service was defaulting to `localhost:9000` (IPv6 `[::1]:9000` — connection refused); added `SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN` env var pointing to `clickhouse:9000`. The HTML proxy rewrite was silently failing on gzip-compressed responses from browsers — added decompression in `ModifyResponse`. Fixed SigNoz iframe paths to the correct explorer routes (`/traces-explorer`, `/logs/logs-explorer`, `/metrics-explorer/explorer`). Compacted StatCards, added scrollbars to detail panels, moved iframes to the top of each tab. Moved exploration windows to top of each telemetry page. Added `scripts/install-local.sh` for day-long local iteration without commits/PRs.
 
 ## Installation
 
