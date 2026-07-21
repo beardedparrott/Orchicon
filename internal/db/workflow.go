@@ -715,10 +715,6 @@ func CreateWorkflowStepRun(ctx context.Context, tx pgx.Tx, s WorkflowStepRunRow)
 		row.SupersededBy = *supBy
 	}
 	return row, nil
-	if err != nil {
-		return WorkflowStepRunRow{}, fmt.Errorf("db: create workflow step run: %w", err)
-	}
-	return row, nil
 }
 
 // iterSupersededBy returns nil for empty string (SQL NULL).
