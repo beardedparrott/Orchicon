@@ -1127,8 +1127,9 @@ func (x *UpdateWorkflowVersionResponse) GetVersion() *WorkflowVersion {
 type StartWorkflowRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	WorkflowId    string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
-	ProjectId     string                 `protobuf:"bytes,2,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`    // run scoped to this project (workflow may be a template)
-	RunContext    string                 `protobuf:"bytes,3,opt,name=run_context,json=runContext,proto3" json:"run_context,omitempty"` // JSON: input values for this run
+	ProjectId     string                 `protobuf:"bytes,2,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`      // run scoped to this project (workflow may be a template)
+	RunContext    string                 `protobuf:"bytes,3,opt,name=run_context,json=runContext,proto3" json:"run_context,omitempty"`   // JSON: input values for this run
+	WorkItemId    string                 `protobuf:"bytes,4,opt,name=work_item_id,json=workItemId,proto3" json:"work_item_id,omitempty"` // bind run to this work item (template binding); empty for one-shot runs
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1180,6 +1181,13 @@ func (x *StartWorkflowRequest) GetProjectId() string {
 func (x *StartWorkflowRequest) GetRunContext() string {
 	if x != nil {
 		return x.RunContext
+	}
+	return ""
+}
+
+func (x *StartWorkflowRequest) GetWorkItemId() string {
+	if x != nil {
+		return x.WorkItemId
 	}
 	return ""
 }
@@ -2103,14 +2111,16 @@ const file_orchicon_api_v1_workflow_service_proto_rawDesc = "" +
 	"\x13recovery_policy_ref\x18\x05 \x01(\tR\x11recoveryPolicyRef\x12!\n" +
 	"\fversion_note\x18\x06 \x01(\tR\vversionNote\"[\n" +
 	"\x1dUpdateWorkflowVersionResponse\x12:\n" +
-	"\aversion\x18\x01 \x01(\v2 .orchicon.api.v1.WorkflowVersionR\aversion\"w\n" +
+	"\aversion\x18\x01 \x01(\v2 .orchicon.api.v1.WorkflowVersionR\aversion\"\x99\x01\n" +
 	"\x14StartWorkflowRequest\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
 	"workflowId\x12\x1d\n" +
 	"\n" +
 	"project_id\x18\x02 \x01(\tR\tprojectId\x12\x1f\n" +
 	"\vrun_context\x18\x03 \x01(\tR\n" +
-	"runContext\"G\n" +
+	"runContext\x12 \n" +
+	"\fwork_item_id\x18\x04 \x01(\tR\n" +
+	"workItemId\"G\n" +
 	"\x15StartWorkflowResponse\x12.\n" +
 	"\x03run\x18\x01 \x01(\v2\x1c.orchicon.api.v1.WorkflowRunR\x03run\"E\n" +
 	"\x14AbortWorkflowRequest\x12\x15\n" +

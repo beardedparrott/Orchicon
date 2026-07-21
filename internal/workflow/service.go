@@ -577,6 +577,7 @@ func (s *Service) StartWorkflow(ctx context.Context, req *connect.Request[apiv1.
 		ProjectID:       req.Msg.ProjectId,
 		Status:          domain.WorkflowRunPending,
 		RunContext:      runContext,
+		WorkItemID:      req.Msg.WorkItemId,
 		StartedAt:       &now,
 	}
 	createdRun, err := db.CreateWorkflowRun(ctx, ttx.Tx, runRow)
@@ -1240,6 +1241,7 @@ func runRowToProto(r db.WorkflowRunRow) *apiv1.WorkflowRun {
 		Status:          workflowRunStatusToProto(r.Status),
 		CurrentStep:     r.CurrentStep,
 		RunContext:      string(r.RunContext),
+		WorkItemId:      r.WorkItemID,
 		Version:         int32(r.Version),
 		CreatedAt:       timestamppb.New(r.CreatedAt),
 		UpdatedAt:       timestamppb.New(r.UpdatedAt),

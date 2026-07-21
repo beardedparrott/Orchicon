@@ -90,6 +90,7 @@ message WorkflowRun {
   google.protobuf.Timestamp ended_at = 11;
   google.protobuf.Timestamp created_at = 12;
   google.protobuf.Timestamp updated_at = 13;
+  string work_item_id = 14; // bound work item id, if any; empty for one-shot runs
 }
 
 // WorkflowStepRun is the runtime state of a single step within a

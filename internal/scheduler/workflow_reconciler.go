@@ -566,7 +566,13 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		// input to dispatch. (Multi-input fan-in: dispatch all in
 		// series, track the last one on the step run — the previous
 		// ones still complete on their own assigned worker.)
+		// Bound runs (docs/11 §2.1): when the run has a work_item_id
+		// and no canvas work-item markers are upstream, operate directly
+		// on the bound work item.
 		upstream := upstreamWorkItemIDs(step, allSteps)
+		if len(upstream) == 0 && run.WorkItemID != "" {
+			upstream = []string{run.WorkItemID}
+		}
 		if len(upstream) == 0 {
 			return r.failStep(ctx, tx, tenantID, run, sr, runs,
 				fmt.Errorf("worker step %q has no upstream work_item", step.Name))

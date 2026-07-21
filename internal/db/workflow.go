@@ -50,20 +50,24 @@ type WorkflowVersionRow struct {
 // WorkflowRunRow is the data-access shape of a workflow_runs table row
 // (docs/02 §2.4, docs/09 §3.4). A single execution of a published
 // Workflow version, progressed by the WorkflowReconciler.
+// work_item_id and bound_worker_ref are populated for template-bound
+// runs (docs/11 §5.1).
 type WorkflowRunRow struct {
-	ID             string
-	TenantID       string
-	WorkflowID     string
+	ID              string
+	TenantID        string
+	WorkflowID      string
 	WorkflowVersion int
-	ProjectID      string
-	Status         string
-	CurrentStep    string
-	RunContext     []byte // jsonb
-	Version        int
-	StartedAt      *time.Time
-	EndedAt        *time.Time
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ProjectID       string
+	Status          string
+	CurrentStep     string
+	RunContext      []byte // jsonb
+	WorkItemID      string // bound work item id; empty for one-shot runs
+	BoundWorkerRef  []byte // jsonb; reserved for future use
+	Version         int
+	StartedAt       *time.Time
+	EndedAt         *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // WorkflowStepRunRow is the data-access shape of a workflow_step_runs
@@ -456,18 +460,20 @@ func NextWorkflowVersionNumber(ctx context.Context, tx pgx.Tx, tenantID, workflo
 func CreateWorkflowRun(ctx context.Context, tx pgx.Tx, r WorkflowRunRow) (WorkflowRunRow, error) {
 	const q = `INSERT INTO workflow_runs
 		(id, tenant_id, workflow_id, workflow_version, project_id, status,
-		 current_step, run_context, started_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		 current_step, run_context, work_item_id, bound_worker_ref, started_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING id, tenant_id, workflow_id, workflow_version, project_id, status,
-			current_step, run_context, version, started_at, ended_at,
-			created_at, updated_at`
+			current_step, run_context, work_item_id, bound_worker_ref,
+			version, started_at, ended_at, created_at, updated_at`
 	row := r
 	err := tx.QueryRow(ctx, q,
 		r.ID, r.TenantID, r.WorkflowID, r.WorkflowVersion, r.ProjectID,
-		r.Status, r.CurrentStep, r.RunContext, r.StartedAt,
+		r.Status, r.CurrentStep, r.RunContext, r.WorkItemID, r.BoundWorkerRef,
+		r.StartedAt,
 	).Scan(
 		&row.ID, &row.TenantID, &row.WorkflowID, &row.WorkflowVersion,
 		&row.ProjectID, &row.Status, &row.CurrentStep, &row.RunContext,
+		&row.WorkItemID, &row.BoundWorkerRef,
 		&row.Version, &row.StartedAt, &row.EndedAt,
 		&row.CreatedAt, &row.UpdatedAt,
 	)
@@ -480,13 +486,14 @@ func CreateWorkflowRun(ctx context.Context, tx pgx.Tx, r WorkflowRunRow) (Workfl
 // GetWorkflowRun fetches a single workflow run by id within the tenant.
 func GetWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkflowRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
-		current_step, run_context, version, started_at, ended_at,
-		created_at, updated_at
+		current_step, run_context, work_item_id, bound_worker_ref,
+		version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs WHERE id = $1 AND tenant_id = $2`
 	var r WorkflowRunRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 		&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
+		&r.WorkItemID, &r.BoundWorkerRef,
 		&r.Version, &r.StartedAt, &r.EndedAt,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -515,8 +522,8 @@ func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) 
 		f.PageSize = 100
 	}
 	q := `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
-		current_step, run_context, version, started_at, ended_at,
-		created_at, updated_at
+		current_step, run_context, work_item_id, bound_worker_ref,
+		version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND ($2 = '' OR id > $2)`
 	args := []any{f.TenantID, f.AfterID}
@@ -541,6 +548,7 @@ func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) 
 		if err := rows.Scan(
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
+			&r.WorkItemID, &r.BoundWorkerRef,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
@@ -562,6 +570,9 @@ type UpdateWorkflowRunFields struct {
 	// ProjectID lets a workflow step bind the run to a project on the
 	// first dispatch (PROJECT kind steps write this; idempotent).
 	ProjectID *string
+	// WorkItemID links a bound run to its work item (docs/11 §2.1).
+	WorkItemID     *string
+	BoundWorkerRef *[]byte
 }
 
 // UpdateWorkflowRun applies a partial update with optimistic concurrency.
@@ -599,14 +610,25 @@ func UpdateWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string, expe
 		args = append(args, *f.ProjectID)
 		setIdx++
 	}
+	if f.WorkItemID != nil {
+		q += fmt.Sprintf(`, work_item_id = $%d`, setIdx)
+		args = append(args, *f.WorkItemID)
+		setIdx++
+	}
+	if f.BoundWorkerRef != nil {
+		q += fmt.Sprintf(`, bound_worker_ref = $%d`, setIdx)
+		args = append(args, *f.BoundWorkerRef)
+		setIdx++
+	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, workflow_id, workflow_version, project_id, status,
-		current_step, run_context, version, started_at, ended_at,
-		created_at, updated_at`
+		current_step, run_context, work_item_id, bound_worker_ref,
+		version, started_at, ended_at, created_at, updated_at`
 	var r WorkflowRunRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 		&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
+		&r.WorkItemID, &r.BoundWorkerRef,
 		&r.Version, &r.StartedAt, &r.EndedAt,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -799,8 +821,8 @@ func UpdateWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string, 
 // by the WorkflowReconciler to find runs to progress (docs/03 §2).
 func ListPendingWorkflowRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkflowRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
-		current_step, run_context, version, started_at, ended_at,
-		created_at, updated_at
+		current_step, run_context, work_item_id, bound_worker_ref,
+		version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND status IN ('pending', 'running', 'paused')
 		ORDER BY created_at ASC`
@@ -815,6 +837,7 @@ func ListPendingWorkflowRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([
 		if err := rows.Scan(
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
+			&r.WorkItemID, &r.BoundWorkerRef,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {

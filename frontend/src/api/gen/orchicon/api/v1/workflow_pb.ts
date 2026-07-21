@@ -700,6 +700,13 @@ export class WorkflowRun extends Message<WorkflowRun> {
    */
   updatedAt?: Timestamp;
 
+  /**
+   * bound work item id, if any; empty for one-shot runs
+   *
+   * @generated from field: string work_item_id = 14;
+   */
+  workItemId = "";
+
   constructor(data?: PartialMessage<WorkflowRun>) {
     super();
     proto3.util.initPartial(data, this);
@@ -721,6 +728,7 @@ export class WorkflowRun extends Message<WorkflowRun> {
     { no: 11, name: "ended_at", kind: "message", T: Timestamp },
     { no: 12, name: "created_at", kind: "message", T: Timestamp },
     { no: 13, name: "updated_at", kind: "message", T: Timestamp },
+    { no: 14, name: "work_item_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowRun {
