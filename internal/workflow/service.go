@@ -14,6 +14,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
+	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -1307,6 +1308,9 @@ func StartWorkflowDirect(ctx context.Context, pool *db.Pool, log *slog.Logger, t
 		WorkItemId:  workItemID,
 		RunContext:  "{}",
 	})
+	// Set the tenant in context so requireTenant works (the reconciler
+	// context does not carry a tenant from the auth middleware).
+	ctx = tenant.WithID(ctx, tenantID)
 	_, err := s.StartWorkflow(ctx, req)
 	return err
 }
