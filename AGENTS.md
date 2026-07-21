@@ -231,6 +231,43 @@ Verify by running the installer against a draft release at minimum (`bash script
 | `docs/10_Frontend_Architecture.md` | React, Connect-ES, workflow editor |
 | `docs/11_Workflow_Templates_and_Binding.md` | Repeatable workflow templates, work-item binding, loop decision step |
 
+## E2E Testing & Cleanup
+
+Every E2E test creates real data (projects, workers, work items, workflow runs) in the database. This data leaks into the dev environment and causes:
+
+- **Log spam**: The TaskReconciler finds stale `ready` work items and retries dispatch every ~200ms, logging `WARN no suitable worker for task` indefinitely.
+- **FK violations**: Hard-deleting work items fails if bound `workflow_runs` reference them. All new FK constraints **must** use `ON DELETE SET NULL` or `ON DELETE CASCADE` — never the default `NO ACTION`.
+- **Silent failures**: The `HardDeleteWorkItem` RPC can fail silently when blocked by FK constraints. Always check the API response for errors.
+
+### Cleanup checklist — every agent must run this after any E2E session
+
+1. **Cancel stale work items**: The TaskReconciler scans for `ready` items. Any test work item left in `ready` status with a deleted worker will spam logs forever.
+
+   ```sql
+   UPDATE work_items SET status = 'cancelled', updated_at = now()
+   WHERE status = 'ready'
+     AND assigned_worker_ref IS NOT NULL
+     AND NOT EXISTS (
+       SELECT 1 FROM workers w WHERE w.id = assigned_worker_ref::jsonb->>'worker_id'
+     );
+   ```
+
+2. **Verify FK constraints on new migrations**: Every `REFERENCES` column must carry `ON DELETE SET NULL` or `ON DELETE CASCADE`. The default (`NO ACTION`) blocks deletes and causes silent UI failures.
+
+3. **Reset the dev database**: Between unrelated E2E sessions, run `make nuke && make up` to destroy and recreate all volumes. This is the only reliable way to guarantee a clean slate.
+
+4. **Check for orphaned runs**: After deleting work items, verify no `workflow_runs` reference non-existent work items:
+
+   ```sql
+   SELECT wr.id FROM workflow_runs wr
+   WHERE wr.work_item_id IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM work_items wi WHERE wi.id = wr.work_item_id);
+   ```
+
+5. **Verify migration idempotency**: Every `ALTER TABLE ADD COLUMN` must use `ADD COLUMN IF NOT EXISTS`. Without it, re-running migrations on an existing database errors with "column already exists". This is mandatory for all new migrations (docs/11 §9).
+
+6. **Delete test resources via the API**: After creating test workers, workflows, etc. during E2E, delete them through the UI or API. Do not leave published workers, workflows, or work items behind.
+
 ## Things you need to know
 
 - **Landing page + install deploy**: `site/` holds the static landing page deployed to CloudFlare Pages (`orchicon-site`). The build step copies `scripts/install.{sh,ps1}` into the deployed bundle so the one-liner install commands work. `site/install` and `site/install.ps1` are git-ignored build artifacts. Full setup in `CLOUDFLARE_SETUP.md`.
