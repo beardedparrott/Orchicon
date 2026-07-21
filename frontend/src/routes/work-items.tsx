@@ -242,6 +242,8 @@ function TreeView({
   projectId,
   search,
   statusFilter,
+  sortBy,
+  sortOrder,
   selected,
   onToggleSelect,
   onToggleSelectAll,
