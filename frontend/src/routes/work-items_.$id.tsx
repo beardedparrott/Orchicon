@@ -12,6 +12,7 @@ import {
   useGetDependencyGraph,
 } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
+import { useListWorkflows } from "@/api/workflows";
 import { EntityYamlView } from "@/components/EntityYamlView";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
@@ -26,6 +27,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { Timestamp } from "@bufbuild/protobuf";
 import { Route as rootRoute } from "@/routes/__root";
 
 // Work item detail (docs/10 §5, docs/02 §2.2). Shows the item's kind,
@@ -59,6 +61,11 @@ function WorkItemDetailPage() {
   const [contextWindow, setContextWindow] = useState(0);
   const [status, setStatus] = useState(0);
   const [editProjectId, setEditProjectId] = useState("");
+  const [editWorkflowId, setEditWorkflowId] = useState("");
+  const [editScheduledStartAt, setEditScheduledStartAt] = useState("");
+  const [editAutoStartWorkflow, setEditAutoStartWorkflow] = useState(true);
+
+  const { data: workflows } = useListWorkflows({ status: 2 }); // published only
 
   const [depTarget, setDepTarget] = useState("");
   const [depType, setDepType] = useState(1); // BLOCKS
@@ -165,6 +172,9 @@ function WorkItemDetailPage() {
                 setPriority(item.priority);
                 setContextWindow(item.contextWindow ?? 0);
                 setEditProjectId(item.projectId);
+                setEditWorkflowId(item.workflowId ?? "");
+                setEditScheduledStartAt("");
+                setEditAutoStartWorkflow(item.autoStartWorkflow ?? true);
                 setStatus(item.status);
                 setEditing(true);
               }}
@@ -227,6 +237,8 @@ function WorkItemDetailPage() {
             priority: item.priority,
             description: item.description || undefined,
             acceptance_criteria: item.acceptanceCriteria || undefined,
+            workflow_id: item.workflowId || undefined,
+            workflow_run_id: item.workflowRunId || undefined,
             assigned_worker_ref: item.assignedWorkerRef || undefined,
             context_window: item.contextWindow || undefined,
             version: item.version,
@@ -259,6 +271,39 @@ function WorkItemDetailPage() {
         />
       ) : (
       <>
+
+      {editing && editWorkflowId && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Scheduled start</CardTitle>
+            <CardDescription>
+              Leave empty to start immediately on save (if auto-start is enabled).
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div>
+              <Label htmlFor="scheduledStart">Scheduled start time</Label>
+              <input
+                id="scheduledStart"
+                type="datetime-local"
+                value={editScheduledStartAt}
+                onChange={(e) => setEditScheduledStartAt(e.target.value)}
+                className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="autoStart"
+                checked={editAutoStartWorkflow}
+                onChange={(e) => setEditAutoStartWorkflow(e.target.checked)}
+                className="h-4 w-4 rounded border-input"
+              />
+              <Label htmlFor="autoStart">Auto-start workflow on save</Label>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid gap-4 md:grid-cols-4">
         <Card>
@@ -333,10 +378,33 @@ function WorkItemDetailPage() {
         </Card>
         <Card>
           <CardHeader>
-            <CardDescription>Worker ref</CardDescription>
-            <CardTitle className="text-base font-mono text-xs">
-              {item.assignedWorkerRef || "unassigned"}
+            <CardDescription>Workflow template</CardDescription>
+            <CardTitle className="text-base">
+              {editing ? (
+                <select
+                  value={editWorkflowId}
+                  onChange={(e) => setEditWorkflowId(e.target.value)}
+                  className="w-full rounded-md border bg-background px-2 py-1 text-sm"
+                >
+                  <option value="">-- No workflow --</option>
+                  {(workflows ?? []).map((wf) => (
+                    <option key={wf.id} value={wf.id}>
+                      {wf.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                (() => {
+                  const wf = workflows?.find((w) => w.id === item.workflowId);
+                  return wf ? wf.name : "none (unbound)";
+                })()
+              )}
             </CardTitle>
+            {item.workflowRunId && (
+              <CardDescription className="mt-1 text-xs">
+                Active run: {item.workflowRunId.slice(0, 12)}…
+              </CardDescription>
+            )}
           </CardHeader>
         </Card>
       </div>
@@ -417,6 +485,11 @@ function WorkItemDetailPage() {
                   contextWindow,
                   status,
                   projectId: editProjectId,
+                  workflowId: editWorkflowId || undefined,
+                  scheduledStartAt: editScheduledStartAt
+                    ? Timestamp.fromDate(new Date(editScheduledStartAt))
+                    : undefined,
+                  autoStartWorkflow: editWorkflowId ? editAutoStartWorkflow : undefined,
                 },
                 { onSuccess: () => setEditing(false) },
               )
