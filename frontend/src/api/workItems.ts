@@ -147,7 +147,7 @@ export function useBatchDeleteWorkItems(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (ids: string[]) => {
-      await Promise.allSettled(ids.map((id) => workItemClient.hardDeleteWorkItem({ id })));
+      await Promise.all(ids.map((id) => workItemClient.hardDeleteWorkItem({ id })));
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: workItemKeys.list(projectId) });

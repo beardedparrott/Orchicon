@@ -17,7 +17,8 @@ import type { CreateWorkerRequest, UpdateWorkerVersionRequest, CreateWorkerVersi
 // refactor-proof.
 export const workerKeys = {
   all: ["workers"] as const,
-  list: (status?: number) => [...workerKeys.all, "list", status] as const,
+  list: (opts?: { status?: number; search?: string; sortBy?: string; sortOrder?: string }) =>
+    [...workerKeys.all, "list", opts] as const,
   detail: (id: string) => [...workerKeys.all, "detail", id] as const,
   versions: (id: string) => [...workerKeys.all, "versions", id] as const,
   editLock: (id: string) => [...workerKeys.all, "edit-lock", id] as const,
@@ -26,7 +27,7 @@ export const workerKeys = {
 // useListWorkers fetches a page of workers for the resolved tenant.
 export function useListWorkers(opts?: { status?: WorkerStatus; search?: string; sortBy?: string; sortOrder?: string }) {
   return useQuery({
-    queryKey: workerKeys.list(opts?.status),
+    queryKey: workerKeys.list(opts ? { status: opts.status, search: opts.search, sortBy: opts.sortBy, sortOrder: opts.sortOrder } : undefined),
     queryFn: async () => {
       const res = await workerClient.listWorkers({
         pageSize: 100,
@@ -131,7 +132,7 @@ export function useBatchDeleteWorkers() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (ids: string[]) => {
-      await Promise.allSettled(ids.map((id) => workerClient.deleteWorker({ id })));
+      await Promise.all(ids.map((id) => workerClient.deleteWorker({ id })));
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: workerKeys.list() });
