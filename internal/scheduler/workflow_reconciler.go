@@ -1390,6 +1390,11 @@ func (r *WorkflowReconciler) readProjectContextFiles(ctx context.Context, tx pgx
 	sb.WriteString("The following files are provided as project context. Their contents are inlined below.\n\n")
 
 	var totalRead int
+	if len(files) > 0 {
+		r.log.Info("reading project context files",
+			"project_id", projectID, "project_dir", p.ProjectDir,
+			"files", files, "count", len(files))
+	}
 	for _, relPath := range files {
 		if totalRead >= maxTotalReadSize {
 			sb.WriteString("\n*(remaining files omitted — total context size limit reached)*\n")
@@ -1397,8 +1402,10 @@ func (r *WorkflowReconciler) readProjectContextFiles(ctx context.Context, tx pgx
 		}
 		fullPath := filepath.Join(p.ProjectDir, relPath)
 		if !strings.HasPrefix(filepath.Clean(fullPath), filepath.Clean(p.ProjectDir)) {
+			r.log.Warn("skipping path outside project dir", "path", fullPath, "project_dir", p.ProjectDir)
 			continue
 		}
+		r.log.Info("processing context file", "rel", relPath, "abs", fullPath)
 		n, err := r.readFileOrDir(&sb, fullPath, relPath, 0, &totalRead)
 		if err != nil {
 			r.log.Warn("error reading context file", "path", fullPath, "error", err)
