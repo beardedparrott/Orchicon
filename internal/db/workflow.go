@@ -457,6 +457,24 @@ func NextWorkflowVersionNumber(ctx context.Context, tx pgx.Tx, tenantID, workflo
 
 // CreateWorkflowRun inserts a new workflow run row within the given
 // tenant transaction (docs/03 §2: StartWorkflow).
+// workItemVal returns nil for empty string (SQL NULL) so FK constraints
+// are not violated by the zero value. Used by CreateWorkflowRun and
+// UpdateWorkflowRun for work_item_id.
+func workItemVal(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// boundWorkerRefVal returns nil for empty slice (SQL NULL).
+func boundWorkerRefVal(b []byte) []byte {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
+}
+
 func CreateWorkflowRun(ctx context.Context, tx pgx.Tx, r WorkflowRunRow) (WorkflowRunRow, error) {
 	const q = `INSERT INTO workflow_runs
 		(id, tenant_id, workflow_id, workflow_version, project_id, status,
@@ -466,19 +484,24 @@ func CreateWorkflowRun(ctx context.Context, tx pgx.Tx, r WorkflowRunRow) (Workfl
 			current_step, run_context, work_item_id, bound_worker_ref,
 			version, started_at, ended_at, created_at, updated_at`
 	row := r
+	var wiID *string
 	err := tx.QueryRow(ctx, q,
 		r.ID, r.TenantID, r.WorkflowID, r.WorkflowVersion, r.ProjectID,
-		r.Status, r.CurrentStep, r.RunContext, r.WorkItemID, r.BoundWorkerRef,
+		r.Status, r.CurrentStep, r.RunContext,
+		workItemVal(r.WorkItemID), boundWorkerRefVal(r.BoundWorkerRef),
 		r.StartedAt,
 	).Scan(
 		&row.ID, &row.TenantID, &row.WorkflowID, &row.WorkflowVersion,
 		&row.ProjectID, &row.Status, &row.CurrentStep, &row.RunContext,
-		&row.WorkItemID, &row.BoundWorkerRef,
+		&wiID, &row.BoundWorkerRef,
 		&row.Version, &row.StartedAt, &row.EndedAt,
 		&row.CreatedAt, &row.UpdatedAt,
 	)
 	if err != nil {
 		return WorkflowRunRow{}, fmt.Errorf("db: create workflow run: %w", err)
+	}
+	if wiID != nil {
+		row.WorkItemID = *wiID
 	}
 	return row, nil
 }
@@ -490,10 +513,11 @@ func GetWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (Workfl
 		version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs WHERE id = $1 AND tenant_id = $2`
 	var r WorkflowRunRow
+	var wiID *string
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 		&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
-		&r.WorkItemID, &r.BoundWorkerRef,
+		&wiID, &r.BoundWorkerRef,
 		&r.Version, &r.StartedAt, &r.EndedAt,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -502,6 +526,9 @@ func GetWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (Workfl
 	}
 	if err != nil {
 		return WorkflowRunRow{}, fmt.Errorf("db: get workflow run: %w", err)
+	}
+	if wiID != nil {
+		r.WorkItemID = *wiID
 	}
 	return r, nil
 }
@@ -545,14 +572,18 @@ func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) 
 	var out []WorkflowRunRow
 	for rows.Next() {
 		var r WorkflowRunRow
+		var wiID *string
 		if err := rows.Scan(
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
-			&r.WorkItemID, &r.BoundWorkerRef,
+			&wiID, &r.BoundWorkerRef,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan workflow run: %w", err)
+		}
+		if wiID != nil {
+			r.WorkItemID = *wiID
 		}
 		out = append(out, r)
 	}
@@ -612,12 +643,12 @@ func UpdateWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string, expe
 	}
 	if f.WorkItemID != nil {
 		q += fmt.Sprintf(`, work_item_id = $%d`, setIdx)
-		args = append(args, *f.WorkItemID)
+		args = append(args, workItemVal(*f.WorkItemID))
 		setIdx++
 	}
 	if f.BoundWorkerRef != nil {
 		q += fmt.Sprintf(`, bound_worker_ref = $%d`, setIdx)
-		args = append(args, *f.BoundWorkerRef)
+		args = append(args, boundWorkerRefVal(*f.BoundWorkerRef))
 		setIdx++
 	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
@@ -625,10 +656,11 @@ func UpdateWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string, expe
 		current_step, run_context, work_item_id, bound_worker_ref,
 		version, started_at, ended_at, created_at, updated_at`
 	var r WorkflowRunRow
+	var wiID *string
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 		&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
-		&r.WorkItemID, &r.BoundWorkerRef,
+		&wiID, &r.BoundWorkerRef,
 		&r.Version, &r.StartedAt, &r.EndedAt,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -637,6 +669,9 @@ func UpdateWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string, expe
 	}
 	if err != nil {
 		return WorkflowRunRow{}, fmt.Errorf("db: update workflow run: %w", err)
+	}
+	if wiID != nil {
+		r.WorkItemID = *wiID
 	}
 	return r, nil
 }
@@ -834,14 +869,18 @@ func ListPendingWorkflowRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([
 	var out []WorkflowRunRow
 	for rows.Next() {
 		var r WorkflowRunRow
+		var wiID *string
 		if err := rows.Scan(
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
-			&r.WorkItemID, &r.BoundWorkerRef,
+			&wiID, &r.BoundWorkerRef,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan workflow run: %w", err)
+		}
+		if wiID != nil {
+			r.WorkItemID = *wiID
 		}
 		out = append(out, r)
 	}
