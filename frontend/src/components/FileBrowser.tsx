@@ -145,18 +145,15 @@ export function FileBrowser({
                   {selectedFiles.length} file{selectedFiles.length !== 1 ? "s" : ""} selected as context:
                 </p>
                 <div className="rounded-md border divide-y max-h-[300px] overflow-y-auto">
-                  {selectedFiles.map((f) => {
-                    const displayPath = projectDir ? `${projectDir}/${f}` : f;
-                    return (
-                      <div
-                        key={f}
-                        className="flex items-center gap-2 px-3 py-2 text-xs font-mono"
-                      >
-                        <File className="h-3 w-3 shrink-0 text-sky-500" />
-                        <span className="truncate">{displayPath}</span>
-                      </div>
-                    );
-                  })}
+                  {selectedFiles.map((f) => (
+                    <div
+                      key={f}
+                      className="flex items-center gap-2 px-3 py-2 text-xs font-mono"
+                    >
+                      <File className="h-3 w-3 shrink-0 text-sky-500" />
+                      <span className="truncate">{f}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -241,25 +238,22 @@ export function FileBrowser({
                       {selectedFiles.length} path{selectedFiles.length !== 1 ? "s" : ""} selected:
                     </p>
                     <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
-                      {selectedFiles.slice(0, 30).map((f) => {
-                        const displayPath = projectDir ? `${projectDir}/${f}` : f;
-                        return (
-                          <span
-                            key={f}
-                            className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-xs font-mono"
+                      {selectedFiles.slice(0, 30).map((f) => (
+                        <span
+                          key={f}
+                          className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-xs font-mono"
+                        >
+                          <File className="h-3 w-3 shrink-0" />
+                          <span className="truncate max-w-[300px]">{f}</span>
+                          <button
+                            type="button"
+                            className="hover:text-destructive shrink-0"
+                            onClick={() => toggleEntry(f)}
                           >
-                            <File className="h-3 w-3 shrink-0" />
-                            <span className="truncate max-w-[300px]">{displayPath}</span>
-                            <button
-                              type="button"
-                              className="hover:text-destructive shrink-0"
-                              onClick={() => toggleEntry(f)}
-                            >
-                              ×
-                            </button>
-                          </span>
-                        );
-                      })}
+                            ×
+                          </button>
+                        </span>
+                      ))}
                       {selectedFiles.length > 30 && (
                         <span className="text-xs text-muted-foreground">
                           …and {selectedFiles.length - 30} more
@@ -295,12 +289,6 @@ function BrowseTree({ path, searchQuery, onSelect, onSelectFile, onNavigate }: B
   const allFiles = (data?.entries ?? []).filter((e) => !e.isDir);
   const dirs = q ? allDirs.filter((e) => e.name.toLowerCase().includes(q)) : allDirs;
   const files = q ? allFiles.filter((e) => e.name.toLowerCase().includes(q)) : allFiles;
-
-  const joinPath = (base: string, name: string) => {
-    if (!base || base === "~") return `~/${name}`;
-    if (base.endsWith("/")) return `${base}${name}`;
-    return `${base}/${name}`;
-  };
 
   const parentOf = (p: string) => {
     const parts = p.split("/").filter(Boolean);
@@ -349,51 +337,51 @@ function BrowseTree({ path, searchQuery, onSelect, onSelectFile, onNavigate }: B
         <p className="px-3 py-4 text-sm text-muted-foreground">Empty directory</p>
       )}
 
-      {dirs.map((entry) => (
-        <div
-          key={entry.path}
-          className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b last:border-0"
-        >
-          <Folder className="h-4 w-4 text-amber-500 shrink-0" />
-          <span
-            className="flex-1 truncate"
-            onClick={() => onNavigate(joinPath(path, entry.path))}
-          >
-            {entry.name}/
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-xs h-7 shrink-0"
-            onClick={() => onSelect(joinPath(path, entry.path))}
-          >
-            Select this folder
-          </Button>
-        </div>
-      ))}
+          {dirs.map((entry) => (
+            <div
+              key={entry.path}
+              className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b last:border-0"
+            >
+              <Folder className="h-4 w-4 text-amber-500 shrink-0" />
+              <span
+                className="flex-1 truncate"
+                onClick={() => onNavigate(entry.path)}
+              >
+                {entry.name}/
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs h-7 shrink-0"
+                onClick={() => onSelect(entry.path)}
+              >
+                Select this folder
+              </Button>
+            </div>
+          ))}
 
-      {files.slice(0, 20).map((entry) => (
-        <div
-          key={entry.path}
-          className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b last:border-0"
-        >
-          <File className="h-4 w-4 shrink-0" />
-          <span
-            className="flex-1 truncate"
-            onClick={() => onSelectFile(joinPath(path, entry.path))}
-          >
-            {entry.name}
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-xs h-7 shrink-0"
-            onClick={() => onSelectFile(joinPath(path, entry.path))}
-          >
-            Select
-          </Button>
-        </div>
-      ))}
+          {files.slice(0, 20).map((entry) => (
+            <div
+              key={entry.path}
+              className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b last:border-0"
+            >
+              <File className="h-4 w-4 shrink-0" />
+              <span
+                className="flex-1 truncate"
+                onClick={() => onSelectFile(entry.path)}
+              >
+                {entry.name}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs h-7 shrink-0"
+                onClick={() => onSelectFile(entry.path)}
+              >
+                Select
+              </Button>
+            </div>
+          ))}
       {files.length > 20 && (
         <p className="px-3 py-1 text-xs text-muted-foreground">
           …{files.length - 20} more files
@@ -435,7 +423,7 @@ function FileTreeContainer({
   readOnly = false,
 }: FileTreeContainerProps) {
   const projectResult = useListProjectDir(projectId, subpath);
-  const dirResult = useListDirPath(dirPath ? `${dirPath}${subpath ? `/${subpath}` : ""}` : "");
+  const dirResult = useListDirPath(dirPath ? (subpath || dirPath) : "");
   const { data, isLoading, error } = dirPath ? dirResult : projectResult;
 
   const q = searchQuery.toLowerCase().trim();

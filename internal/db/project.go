@@ -24,7 +24,7 @@ type ProjectRow struct {
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 	ProjectDir   string
-	ContextFiles []byte // jsonb: relative file paths selected as context
+	ContextFiles []byte // jsonb: absolute file paths selected as context
 }
 
 // ErrNotFound is returned when a single-row query matches no rows. The

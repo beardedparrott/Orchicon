@@ -12,4 +12,4 @@ ALTER TABLE "projects"
   ADD COLUMN "context_files" jsonb NOT NULL DEFAULT '[]'::jsonb;
 
 COMMENT ON COLUMN "projects"."project_dir" IS 'Root directory of the project on the local filesystem (docs/02 §2.1).';
-COMMENT ON COLUMN "projects"."context_files" IS 'Relative file paths selected as context for workers (docs/02 §2.1).';
+COMMENT ON COLUMN "projects"."context_files" IS 'Absolute file paths selected as context for workers (docs/02 §2.1).';

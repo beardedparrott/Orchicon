@@ -283,8 +283,8 @@ func validateProjectDir(dir string) (string, error) {
 }
 
 // validateContextFiles validates a list of context file paths. Each path
-// must be non-empty, not exceed the max length, and must not be absolute
-// or contain path-traversal components like "..".
+// must be non-empty, not exceed the max length, must be absolute, and
+// must not contain path-traversal components like "..".
 func validateContextFiles(files []string) error {
 	if len(files) > maxContextFiles {
 		return fmt.Errorf("context_files exceeds max of %d entries", maxContextFiles)
@@ -297,14 +297,11 @@ func validateContextFiles(files []string) error {
 		if len(f) > maxFilePathLen {
 			return fmt.Errorf("context_files[%d] exceeds max length of %d characters", i, maxFilePathLen)
 		}
-		if filepath.IsAbs(f) {
-			return fmt.Errorf("context_files[%d] must be a relative path", i)
+		if !filepath.IsAbs(f) {
+			return fmt.Errorf("context_files[%d] must be an absolute path", i)
 		}
 		if strings.Contains(f, "..") {
 			return fmt.Errorf("context_files[%d] must not contain path-traversal components", i)
-		}
-		if strings.HasPrefix(f, "/") || strings.HasPrefix(f, "\\") {
-			return fmt.Errorf("context_files[%d] must be a relative path", i)
 		}
 	}
 	return nil
@@ -358,13 +355,14 @@ func listDirectory(rootDir string, relPath string) (string, string, []*apiv1.Fil
 		if relPath != "" {
 			childRel = filepath.Join(relPath, e.Name())
 		}
-		childInfo, err := os.Stat(filepath.Join(rootDir, childRel))
+		abs := filepath.Join(rootDir, childRel)
+		childInfo, err := os.Stat(abs)
 		if err != nil {
 			continue
 		}
 		out = append(out, &apiv1.FileTreeEntry{
 			Name:  e.Name(),
-			Path:  childRel,
+			Path:  abs,
 			IsDir: childInfo.IsDir(),
 		})
 	}

@@ -1,5 +1,6 @@
-import { createRoute, useSearch } from "@tanstack/react-router";
+import { createRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import { useMemo } from "react";
+import { ArrowLeft } from "lucide-react";
 import ReactFlow, {
   Background,
   Controls,
@@ -9,6 +10,7 @@ import ReactFlow, {
 } from "reactflow";
 
 import { useGetDependencyGraph } from "@/api/workItems";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -28,6 +30,7 @@ export const Route = createRoute({
 });
 
 function DependencyGraphPage() {
+  const navigate = useNavigate();
   const search = useSearch({ from: "/work-items_/graph" });
   const { data: graph, isLoading, error } = useGetDependencyGraph(
     search.projectId,
@@ -105,7 +108,16 @@ function DependencyGraphPage() {
 
   return (
     <div className="space-y-4">
-      <div>
+      <div className="flex items-center gap-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => navigate({ to: "/work-items" })}
+          className="shrink-0"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          <span className="ml-1 hidden sm:inline">Back</span>
+        </Button>
         <h1 className="text-2xl font-semibold tracking-tight">
           Dependency Graph
         </h1>

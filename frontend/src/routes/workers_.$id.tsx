@@ -1,8 +1,10 @@
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
+import { ArrowLeft } from "lucide-react";
 
 import {
+  useCreateWorker,
   useCreateWorkerVersion,
   useDeleteWorker,
   useDeprecateWorker,
@@ -12,6 +14,7 @@ import {
   useRetireWorker,
   useUpdateWorkerVersion,
 } from "@/api/workers";
+import { EntityYamlView } from "@/components/EntityYamlView";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import {
@@ -79,12 +82,14 @@ function WorkerDetailPage() {
   const retireWorker = useRetireWorker();
   const updateVersion = useUpdateWorkerVersion();
   const createVersion = useCreateWorkerVersion();
+  const createWorker = useCreateWorker();
   const navigate = useNavigate();
   const deleteMutation = useDeleteWorker();
 
   const { data: latestData } = useGetWorker(id);
   const latestVersion = latestData?.latestVersion;
   const [editing, setEditing] = useState(false);
+  const [viewMode, setViewMode] = useState<"detail" | "code">("detail");
 
   const { register, handleSubmit, setValue, watch, formState: { errors } } = useForm<EditFormData>({
     defaultValues: {
@@ -137,23 +142,34 @@ function WorkerDetailPage() {
     <div className="mx-auto max-w-6xl space-y-6">
       {/* Header + lifecycle actions */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight">
-            {worker.name}
-          </h1>
-          <p className="font-mono text-xs break-all text-muted-foreground">
-            {worker.slug}
-          </p>
+        <div className="flex min-w-0 items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate({ to: "/workers" })}
+            className="shrink-0"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            <span className="ml-1 hidden sm:inline">Back</span>
+          </Button>
+          <div className="min-w-0">
+            <h1 className="text-lg font-semibold tracking-tight sm:text-2xl">
+              {worker.name}
+            </h1>
+            <p className="truncate font-mono text-xs text-muted-foreground">
+              {worker.slug}
+            </p>
+          </div>
         </div>
         {/* Action buttons: wrap on narrow viewports so the row doesn't
             force a horizontal scroll on phones. Each button stays its
             natural width; gap-2 + flex-wrap drops them onto multiple
             lines cleanly. */}
         <div className="flex flex-wrap items-center gap-2">
-          {draftVersion && !editing && (
+          {draftVersion && !editing && viewMode === "detail" && (
             <Button onClick={() => setEditing(true)}>Edit</Button>
           )}
-          {draftVersion && (
+          {draftVersion && viewMode === "detail" && (
             <Button
               onClick={() => publishVersion.mutateAsync(id)}
               disabled={publishVersion.isPending}
@@ -163,7 +179,7 @@ function WorkerDetailPage() {
                 : "Publish v" + (draftVersion.version)}
             </Button>
           )}
-          {isPublished && !draftVersion && (
+          {isPublished && !draftVersion && viewMode === "detail" && (
             <Button
               onClick={() =>
                 createVersion.mutate(
@@ -178,7 +194,7 @@ function WorkerDetailPage() {
               {createVersion.isPending ? "Creating…" : "New version"}
             </Button>
           )}
-          {isPublished && (
+          {isPublished && viewMode === "detail" && (
             <Button
               variant="outline"
               onClick={() => deprecateWorker.mutateAsync(id)}
@@ -187,7 +203,7 @@ function WorkerDetailPage() {
               {deprecateWorker.isPending ? "Deprecating…" : "Deprecate"}
             </Button>
           )}
-          {isDeprecated && (
+          {isDeprecated && viewMode === "detail" && (
             <Button
               variant="destructive"
               onClick={() => retireWorker.mutateAsync(id)}
@@ -215,9 +231,74 @@ function WorkerDetailPage() {
               {deleteMutation.isPending ? "Deleting…" : "Delete"}
             </Button>
           )}
+          <Button
+            variant="outline"
+            onClick={() =>
+              setViewMode(viewMode === "detail" ? "code" : "detail")
+            }
+            title={
+              viewMode === "detail"
+                ? "Switch to code view"
+                : "Switch to detail view"
+            }
+          >
+            {viewMode === "detail" ? "Code" : "Detail"}
+          </Button>
         </div>
       </div>
 
+      {viewMode === "code" ? (
+        <EntityYamlView
+          data={{
+            id: worker.id,
+            name: worker.name,
+            slug: worker.slug,
+            description: worker.description || undefined,
+            purpose: worker.purpose || undefined,
+            status: statusLabel(worker.status),
+            current_version: worker.currentVersion,
+            ...(latestVersion
+              ? {
+                  latest_version: {
+                    version: latestVersion.version,
+                    status: versionStatusLabel(latestVersion.status),
+                    runtime_ref: latestVersion.runtimeRef,
+                    model_ref: latestVersion.modelRef,
+                    system_prompt: latestVersion.systemPrompt || undefined,
+                    permissions: safeParseJson(latestVersion.permissions),
+                    gated_tools: safeParseJson(latestVersion.gatedTools),
+                    budget_overrides: safeParseJson(
+                      latestVersion.budgetOverrides,
+                    ),
+                    context_sources: safeParseJson(
+                      latestVersion.contextSources,
+                    ),
+                    concurrency_limit: latestVersion.concurrencyLimit,
+                    execution_policy_ref:
+                      latestVersion.executionPolicyRef || undefined,
+                  },
+                }
+              : {}),
+          }}
+          title="Worker YAML"
+          onClone={async () => {
+            const name = window.prompt(
+              "Clone name:",
+              `Clone of ${worker.name}`,
+            );
+            if (!name) return;
+            const result = await createWorker.mutateAsync({
+              name,
+              slug: worker.slug,
+              description: worker.description,
+              purpose: worker.purpose,
+            });
+            navigate({ to: `/workers/${result.worker.id}` });
+          }}
+          cloneDisabled={createWorker.isPending}
+        />
+      ) : (
+      <>
       {/* Status cards: scale column count with viewport so phones
           don't get a horizontally-scrolling 5-column row. */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
@@ -496,8 +577,18 @@ function WorkerDetailPage() {
           )}
         </CardContent>
       </Card>
+        </>
+      )}
     </div>
   );
+}
+
+function safeParseJson(s: string): unknown {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return s;
+  }
 }
 
 function VersionStatusBadge({ status }: { status: number }) {

@@ -40,10 +40,10 @@ message Project {
   // filesystem. Files within this directory can be selected as context
   // for workers (context_files).
   string project_dir = 10;
-  // context_files are relative file paths (from project_dir) selected
-  // to be included as context when workers are dispatched for this
-  // project. The contents of these files are injected into the
-  // composite prompt (buildCompositePrompt).
+  // context_files are absolute file paths selected to be included as
+  // context when workers are dispatched for this project. The contents
+  // of these files are injected into the composite prompt
+  // (buildCompositePrompt).
   repeated string context_files = 11;
 }
 
@@ -56,7 +56,7 @@ message ContextFiles {
 // FileTreeEntry represents a file or directory in the project file tree.
 message FileTreeEntry {
   string name = 1;
-  string path = 2; // relative path from project_dir
+  string path = 2; // absolute path
   bool is_dir = 3;
   repeated FileTreeEntry children = 4;
 }

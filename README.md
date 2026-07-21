@@ -42,8 +42,8 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-**v0.1.126** — Execution UI overhaul, follow-up conversations, recovery retry configuration, execution list filters.
-Fixed assistant bubble text truncation and added copy-to-clipboard buttons on all message bubbles. Added follow-up chat on the execution detail page — user messages are persisted in a new `conversation jsonb` column and a child work item is dispatched for AI processing; the assistant response is written back to the original execution's conversation so the full thread lives on one page. Reverted project context files to a simple path-list approach (no more file content reading). Added search, status filter, sort, and bulk delete to the executions list. Added max_retries/retry_delay_seconds configuration UI to recovery workflow steps with proper DB columns on `recovery_executions`. Recovery retries are now bounded (default 5 max, escalates to L3 human approval). Follow-up executions are hidden from the main list via an `is_follow_up` flag. Default model falls back to `opencode/deepseek-v4-flash-free` when the worker has no `model_ref`. Added cache-control headers to the embedded SPA. Fixed `DeleteWorkflowVersion` SQL alias bug.
+**v0.1.127** — Unified page patterns: back buttons, YAML code view + clone, bulk delete, absolute paths for context files.
+Added ArrowLeft back buttons to all detail pages and the dependency graph view. Added Code/Detail toggle with YAML view + Clone button to projects, work items, and workers detail pages. Added bulk delete with select-all checkboxes to projects, work items, workers, workflows, and recovery list pages. Added status/decision point filters to policies. Converted all list pages to vertical list format. Switched `context_files` from relative paths to absolute paths end-to-end — validation now requires `filepath.IsAbs`, `listDirectory` returns absolute `FileTreeEntry.Path`, and worker dispatch uses paths directly with a backward-compat fallback for old relative data.
 
 ## Installation
 

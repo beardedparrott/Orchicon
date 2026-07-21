@@ -1,7 +1,8 @@
 import { createRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
+import { Trash2, SearchX } from "lucide-react";
 
-import { useListWorkItems } from "@/api/workItems";
+import { useBatchDeleteWorkItems, useListWorkItems } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
 import { Button } from "@/components/ui/button";
 import {
@@ -34,8 +35,36 @@ function WorkItemsPage() {
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [sortBy, setSortBy] = useState("created_at");
   const [sortOrder, setSortOrder] = useState("desc");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const activeProjectId = projectId || projects?.[0]?.id || "";
+  const batchDelete = useBatchDeleteWorkItems(activeProjectId);
+
+  const toggleSelect = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = (items: WorkItemProto[]) => {
+    if (selected.size === items.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(items.map((i) => i.id)));
+    }
+  };
+
+  const handleBatchDelete = () => {
+    if (selected.size === 0) return;
+    const count = selected.size;
+    if (!window.confirm(`Permanently delete ${count} work item${count === 1 ? "" : "s"}? This cannot be undone.`)) return;
+    batchDelete.mutate(Array.from(selected), {
+      onSuccess: () => setSelected(new Set()),
+    });
+  };
 
   return (
     <div className="space-y-6">
@@ -65,7 +94,10 @@ function WorkItemsPage() {
         <select
           className="rounded-md border bg-background px-3 py-1.5 text-sm"
           value={activeProjectId}
-          onChange={(e) => setProjectId(e.target.value)}
+          onChange={(e) => {
+            setProjectId(e.target.value);
+            setSelected(new Set());
+          }}
           disabled={!projects || projects.length === 0}
         >
           {projects && projects.length > 0 ? (
@@ -155,6 +187,18 @@ function WorkItemsPage() {
             </Link>
           </Button>
         )}
+
+        {selected.size > 0 && (
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={handleBatchDelete}
+            disabled={batchDelete.isPending}
+          >
+            <Trash2 className="mr-1 h-3.5 w-3.5" />
+            Delete {selected.size} selected
+          </Button>
+        )}
       </div>
 
       {!activeProjectId && (
@@ -175,6 +219,9 @@ function WorkItemsPage() {
           statusFilter={statusFilter}
           sortBy={sortBy}
           sortOrder={sortOrder}
+          selected={selected}
+          onToggleSelect={toggleSelect}
+          onToggleSelectAll={toggleSelectAll}
         />
       )}
       {activeProjectId && view === "board" && (
@@ -183,6 +230,8 @@ function WorkItemsPage() {
           search={search}
           sortBy={sortBy}
           sortOrder={sortOrder}
+          selected={selected}
+          onToggleSelect={toggleSelect}
         />
       )}
     </div>
@@ -193,12 +242,18 @@ function TreeView({
   projectId,
   search,
   statusFilter,
+  selected,
+  onToggleSelect,
+  onToggleSelectAll,
 }: {
   projectId: string;
   search: string;
   statusFilter: string;
   sortBy: string;
   sortOrder: string;
+  selected: Set<string>;
+  onToggleSelect: (id: string) => void;
+  onToggleSelectAll: (items: WorkItemProto[]) => void;
 }) {
   const { data: items, isLoading, error } = useListWorkItems(projectId, {
     search: search || undefined,
@@ -219,7 +274,10 @@ function TreeView({
     return (
       <Card>
         <CardHeader>
-          <CardTitle>No work items yet</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            <SearchX className="h-5 w-5 text-muted-foreground" />
+            No work items yet
+          </CardTitle>
           <CardDescription>
             Create an epic to start building the work hierarchy.
           </CardDescription>
@@ -235,12 +293,27 @@ function TreeView({
 
   return (
     <div className="space-y-2">
+      <div className="flex items-center gap-2 px-2 py-1">
+        <input
+          type="checkbox"
+          checked={items.length > 0 && selected.size === items.length}
+          onChange={() => onToggleSelectAll(items)}
+          className="h-4 w-4 rounded border-input"
+        />
+        <span className="text-xs text-muted-foreground">
+          {selected.size > 0
+            ? `${selected.size} of ${items.length} selected`
+            : `${items.length} work item${items.length === 1 ? "" : "s"}`}
+        </span>
+      </div>
       {epics.map((epic) => (
         <TreeNode
           key={epic.id}
           item={epic}
           childrenOf={childrenOf}
           depth={0}
+          selected={selected}
+          onToggleSelect={onToggleSelect}
         />
       ))}
     </div>
@@ -251,10 +324,14 @@ function TreeNode({
   item,
   childrenOf,
   depth,
+  selected,
+  onToggleSelect,
 }: {
   item: WorkItemProto;
   childrenOf: (parentId: string) => WorkItemProto[];
   depth: number;
+  selected: Set<string>;
+  onToggleSelect: (id: string) => void;
 }) {
   const [expanded, setExpanded] = useState(depth < 2);
   const children = childrenOf(item.id);
@@ -266,6 +343,12 @@ function TreeNode({
         className="flex items-center gap-2 rounded-md border p-2 hover:bg-accent/50"
         style={{ marginLeft: `${depth * 20}px` }}
       >
+        <input
+          type="checkbox"
+          checked={selected.has(item.id)}
+          onChange={() => onToggleSelect(item.id)}
+          className="h-4 w-4 rounded border-input"
+        />
         {hasChildren ? (
           <button
             onClick={() => setExpanded(!expanded)}
@@ -293,6 +376,8 @@ function TreeNode({
             item={child}
             childrenOf={childrenOf}
             depth={depth + 1}
+            selected={selected}
+            onToggleSelect={onToggleSelect}
           />
         ))}
     </div>
@@ -304,11 +389,15 @@ function KanbanBoard({
   search,
   sortBy,
   sortOrder,
+  selected,
+  onToggleSelect,
 }: {
   projectId: string;
   search: string;
   sortBy: string;
   sortOrder: string;
+  selected: Set<string>;
+  onToggleSelect: (id: string) => void;
 }) {
   const { data: items, isLoading, error } = useListWorkItems(projectId, {
     search: search || undefined,
@@ -353,20 +442,28 @@ function KanbanBoard({
               </span>
             </div>
             {colItems.map((item) => (
-              <Link
-                key={item.id}
-                to="/work-items/$id"
-                params={{ id: item.id }}
-              >
-                <Card className="transition-colors hover:bg-accent">
-                  <CardContent className="p-3">
-                    <KindBadge kind={item.kind} />
-                    <p className="mt-1 text-sm font-medium line-clamp-2">
-                      {item.title}
-                    </p>
-                  </CardContent>
-                </Card>
-              </Link>
+              <div key={item.id} className="group flex items-start gap-1">
+                <input
+                  type="checkbox"
+                  checked={selected.has(item.id)}
+                  onChange={() => onToggleSelect(item.id)}
+                  className="mt-2 shrink-0 h-3.5 w-3.5 rounded border-input"
+                />
+                <Link
+                  to="/work-items/$id"
+                  params={{ id: item.id }}
+                  className="min-w-0 flex-1"
+                >
+                  <Card className="transition-colors hover:bg-accent">
+                    <CardContent className="p-3">
+                      <KindBadge kind={item.kind} />
+                      <p className="mt-1 text-sm font-medium line-clamp-2">
+                        {item.title}
+                      </p>
+                    </CardContent>
+                  </Card>
+                </Link>
+              </div>
             ))}
             {colItems.length === 0 && (
               <p className="text-xs text-muted-foreground">—</p>

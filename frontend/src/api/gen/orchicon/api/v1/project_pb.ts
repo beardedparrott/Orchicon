@@ -210,10 +210,10 @@ export class Project extends Message<Project> {
   projectDir = "";
 
   /**
-   * context_files are relative file paths (from project_dir) selected
-   * to be included as context when workers are dispatched for this
-   * project. The contents of these files are injected into the
-   * composite prompt (buildCompositePrompt).
+   * context_files are absolute file paths selected to be included as
+   * context when workers are dispatched for this project. The contents
+   * of these files are injected into the composite prompt
+   * (buildCompositePrompt).
    *
    * @generated from field: repeated string context_files = 11;
    */
@@ -309,7 +309,7 @@ export class FileTreeEntry extends Message<FileTreeEntry> {
   name = "";
 
   /**
-   * relative path from project_dir
+   * absolute path
    *
    * @generated from field: string path = 2;
    */
