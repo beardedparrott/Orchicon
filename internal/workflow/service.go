@@ -1165,6 +1165,8 @@ func stepKindToProto(kind string) apiv1.StepKind {
 		return apiv1.StepKind_STEP_KIND_PARALLEL
 	case domain.StepKindRecover:
 		return apiv1.StepKind_STEP_KIND_RECOVER
+	case domain.StepKindLoopDecision:
+		return apiv1.StepKind_STEP_KIND_LOOP_DECISION
 	default:
 		return apiv1.StepKind_STEP_KIND_UNSPECIFIED
 	}

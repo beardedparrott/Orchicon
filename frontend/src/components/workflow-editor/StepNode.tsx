@@ -22,6 +22,8 @@ export const stepKindClasses: Record<number, string> = {
     "border-indigo-400/70 bg-indigo-50 text-indigo-950 dark:bg-indigo-950/40 dark:text-indigo-100",
   [STEP_KIND.POLICY]:
     "border-amber-400/70 bg-amber-50 text-amber-950 dark:bg-amber-950/40 dark:text-amber-100",
+  [STEP_KIND.LOOP_DECISION]:
+    "border-cyan-400/70 bg-cyan-50 text-cyan-950 dark:bg-cyan-950/40 dark:text-cyan-100",
 };
 
 export const stepKindHandleClasses: Record<number, string> = {
@@ -33,6 +35,7 @@ export const stepKindHandleClasses: Record<number, string> = {
   [STEP_KIND.WORK_ITEM]: "!bg-emerald-500",
   [STEP_KIND.PROJECT]: "!bg-indigo-500",
   [STEP_KIND.POLICY]: "!bg-amber-500",
+  [STEP_KIND.LOOP_DECISION]: "!bg-cyan-500",
 };
 
 export function StepNode({ data, selected }: NodeProps<StepData>) {
@@ -142,6 +145,19 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
               · {String(cfg.max_retries ?? 5)}× × {String(cfg.retry_delay_seconds ?? 10)}s
             </span>
           ) : null}
+        </div>
+      )}
+
+      {kind === STEP_KIND.LOOP_DECISION && (
+        <div className="mt-1 flex items-center gap-1 truncate rounded px-1 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-300">
+          {typeof cfg.max_iterations === "number" ? (
+            <span>max {cfg.max_iterations} iterations</span>
+          ) : (
+            <span className="italic opacity-60">no max iterations set</span>
+          )}
+          {typeof cfg.loop_branch === "string" && cfg.loop_branch && (
+            <span className="ml-1 opacity-70">→ loop: {cfg.loop_branch.slice(0, 12)}</span>
+          )}
         </div>
       )}
 

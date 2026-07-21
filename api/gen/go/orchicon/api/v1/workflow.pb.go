@@ -163,14 +163,15 @@ func (WorkflowVersionStatus) EnumDescriptor() ([]byte, []int) {
 type StepKind int32
 
 const (
-	StepKind_STEP_KIND_UNSPECIFIED StepKind = 0
-	StepKind_STEP_KIND_TASK        StepKind = 1
-	StepKind_STEP_KIND_DECISION    StepKind = 2
-	StepKind_STEP_KIND_APPROVAL    StepKind = 3
-	StepKind_STEP_KIND_PARALLEL    StepKind = 4
-	StepKind_STEP_KIND_RECOVER     StepKind = 5
-	StepKind_STEP_KIND_WORK_ITEM   StepKind = 6
-	StepKind_STEP_KIND_PROJECT     StepKind = 7
+	StepKind_STEP_KIND_UNSPECIFIED   StepKind = 0
+	StepKind_STEP_KIND_TASK          StepKind = 1
+	StepKind_STEP_KIND_DECISION      StepKind = 2
+	StepKind_STEP_KIND_APPROVAL      StepKind = 3
+	StepKind_STEP_KIND_PARALLEL      StepKind = 4
+	StepKind_STEP_KIND_RECOVER       StepKind = 5
+	StepKind_STEP_KIND_WORK_ITEM     StepKind = 6
+	StepKind_STEP_KIND_PROJECT       StepKind = 7
+	StepKind_STEP_KIND_LOOP_DECISION StepKind = 8 // loop decision: inspect upstream result, branch to loop or success
 )
 
 // Enum value maps for StepKind.
@@ -184,16 +185,18 @@ var (
 		5: "STEP_KIND_RECOVER",
 		6: "STEP_KIND_WORK_ITEM",
 		7: "STEP_KIND_PROJECT",
+		8: "STEP_KIND_LOOP_DECISION",
 	}
 	StepKind_value = map[string]int32{
-		"STEP_KIND_UNSPECIFIED": 0,
-		"STEP_KIND_TASK":        1,
-		"STEP_KIND_DECISION":    2,
-		"STEP_KIND_APPROVAL":    3,
-		"STEP_KIND_PARALLEL":    4,
-		"STEP_KIND_RECOVER":     5,
-		"STEP_KIND_WORK_ITEM":   6,
-		"STEP_KIND_PROJECT":     7,
+		"STEP_KIND_UNSPECIFIED":   0,
+		"STEP_KIND_TASK":          1,
+		"STEP_KIND_DECISION":      2,
+		"STEP_KIND_APPROVAL":      3,
+		"STEP_KIND_PARALLEL":      4,
+		"STEP_KIND_RECOVER":       5,
+		"STEP_KIND_WORK_ITEM":     6,
+		"STEP_KIND_PROJECT":       7,
+		"STEP_KIND_LOOP_DECISION": 8,
 	}
 )
 
@@ -1276,7 +1279,7 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"#WORKFLOW_VERSION_STATUS_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dWORKFLOW_VERSION_STATUS_DRAFT\x10\x01\x12%\n" +
 	"!WORKFLOW_VERSION_STATUS_PUBLISHED\x10\x02\x12&\n" +
-	"\"WORKFLOW_VERSION_STATUS_DEPRECATED\x10\x03*\xc8\x01\n" +
+	"\"WORKFLOW_VERSION_STATUS_DEPRECATED\x10\x03*\xe5\x01\n" +
 	"\bStepKind\x12\x19\n" +
 	"\x15STEP_KIND_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eSTEP_KIND_TASK\x10\x01\x12\x16\n" +
@@ -1285,7 +1288,8 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"\x12STEP_KIND_PARALLEL\x10\x04\x12\x15\n" +
 	"\x11STEP_KIND_RECOVER\x10\x05\x12\x17\n" +
 	"\x13STEP_KIND_WORK_ITEM\x10\x06\x12\x15\n" +
-	"\x11STEP_KIND_PROJECT\x10\a*\xfe\x01\n" +
+	"\x11STEP_KIND_PROJECT\x10\a\x12\x1b\n" +
+	"\x17STEP_KIND_LOOP_DECISION\x10\b*\xfe\x01\n" +
 	"\x11WorkflowRunStatus\x12#\n" +
 	"\x1fWORKFLOW_RUN_STATUS_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bWORKFLOW_RUN_STATUS_PENDING\x10\x01\x12\x1f\n" +

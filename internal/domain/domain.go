@@ -188,7 +188,8 @@ const (
 	StepKindParallel = "parallel"
 	StepKindRecover  = "recover"
 	StepKindWorkItem = "work_item"
-	StepKindProject  = "project"
+	StepKindProject       = "project"
+	StepKindLoopDecision  = "loop_decision"
 )
 
 // StepRun lifecycle states (docs/03 §2, docs/09 §3.4):

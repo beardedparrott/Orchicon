@@ -199,8 +199,11 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		// pending check AND the dependency check so steps progressed
 		// by Phase 2/3 in a prior outer iteration are not re-processed
 		// with a stale version (fix: "db: not found" on re-update).
+		// Loop re-entry: a step run with iteration > 0 is a fresh
+		// re-entry run and must be processed even if runByID has a
+		// non-pending entry for the same StepID from a prior iteration.
 		for _, sr := range stepRuns {
-			if cur, ok := runByID[sr.StepID]; ok && cur.Status != domain.StepRunPending {
+			if cur, ok := runByID[sr.StepID]; ok && cur.Status != domain.StepRunPending && sr.Iteration == 0 {
 				r.log.Debug("DEBUG: skipping step run (not pending in runByID)", "stepID", sr.StepID, "id", sr.ID, "status", cur.Status)
 				continue
 			}
@@ -447,6 +450,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 // failed deps are also acceptable — they trigger the recovery wait path.
 func (r *WorkflowReconciler) depsSatisfied(step workflow.StepWire, runs map[string]db.WorkflowStepRunRow) bool {
 	isRecover := step.Kind == domain.StepKindRecover
+	isLoopDecision := step.Kind == domain.StepKindLoopDecision
 	for _, dep := range step.DependsOn {
 		sr, ok := runs[dep]
 		if !ok {
@@ -460,6 +464,11 @@ func (r *WorkflowReconciler) depsSatisfied(step workflow.StepWire, runs map[stri
 		}
 		if isRecover && sr.Status == domain.StepRunFailed {
 			r.log.Debug("DEBUG: depsSatisfied recover dep satisfied (failed)", "step", step.ID, "dep", dep)
+			continue
+		}
+		// Loop decision: a failed upstream triggers the loop/exit evaluation.
+		if isLoopDecision && sr.Status == domain.StepRunFailed {
+			r.log.Debug("DEBUG: depsSatisfied loop_decision dep satisfied (failed)", "step", step.ID, "dep", dep)
 			continue
 		}
 		r.log.Debug("DEBUG: depsSatisfied not satisfied yet", "step", step.ID, "dep", dep, "status", sr.Status)
@@ -665,6 +674,121 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		runs[step.ID] = updated
 		if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
 			return fmt.Errorf("enqueue decision step_succeeded: %w", err)
+		}
+
+	case domain.StepKindLoopDecision:
+		// Loop decision step (docs/11 §3): inspect the upstream step's
+		// result. If upstream succeeded → continue forward (success_branch).
+		// If upstream failed → loop back to loop_branch (if iterations <
+		// max_iterations) or fail the loop node (exhausted).
+		cfg := parseLoopDecisionConfig(step.Config)
+		if cfg.LoopBranch == "" || cfg.SuccessBranch == "" || cfg.MaxIterations < 1 {
+			return r.failStep(ctx, tx, tenantID, run, sr, runs,
+				fmt.Errorf("loop_decision step %q: missing or invalid config (loop_branch=%q, success_branch=%q, max_iterations=%d)",
+					step.Name, cfg.LoopBranch, cfg.SuccessBranch, cfg.MaxIterations))
+		}
+
+		// Find the upstream step run (the one we branch from).
+		var upResult struct {
+			WorkItemID string `json:"_work_item_id"`
+		}
+		var upstreamStatus string
+		for _, dep := range step.DependsOn {
+			if s, ok := runs[dep]; ok {
+				upstreamStatus = s.Status
+				json.Unmarshal(s.Result, &upResult)
+				break
+			}
+		}
+		if upstreamStatus == "" {
+			return r.failStep(ctx, tx, tenantID, run, sr, runs,
+				fmt.Errorf("loop_decision step %q: no upstream step result found", step.Name))
+		}
+
+		if upstreamStatus == domain.StepRunSucceeded {
+			// Upstream succeeded → mark loop node succeeded, follow
+			// success_branch. The reconciler will find the success branch
+			// step ready on the next pass (its deps are now satisfied).
+			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:    strPtr(domain.StepRunSucceeded),
+				StartedAt: &now,
+				EndedAt:   &now,
+			})
+			if err != nil {
+				return fmt.Errorf("mark loop_decision step succeeded: %w", err)
+			}
+			runs[step.ID] = updated
+			if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
+				return fmt.Errorf("enqueue loop_decision step_succeeded: %w", err)
+			}
+		} else {
+			// Upstream failed. Check iteration count.
+			currentIter := currentLoopIteration(runs, cfg.LoopBranch)
+			if currentIter >= cfg.MaxIterations {
+				// Exhausted → fail the loop node. The run will fail and
+				// opt-out recovery engages on the last failed task step.
+				return r.failStep(ctx, tx, tenantID, run, sr, runs,
+					fmt.Errorf("loop_decision step %q: max_iterations (%d) exhausted", step.Name, cfg.MaxIterations))
+			}
+			// Re-enter the loop branch: create a fresh step run for the
+			// target step with iteration = currentIter + 1, supersede the
+			// previous run of that step, and mark the loop node itself as
+			// succeeded (the re-entered step will be dispatched on the next
+			// reconcile pass when its deps are satisfied).
+			nextIter := currentIter + 1
+
+			// Supersede the previous run of the loop branch step.
+			srList, err := listStepRunsByStepID(ctx, tx, tenantID, run.ID, cfg.LoopBranch)
+			if err != nil {
+				return fmt.Errorf("loop_decision step %q: list prior runs: %w", step.Name, err)
+			}
+			for _, prior := range srList {
+				if prior.SupersededBy == "" {
+					if _, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, prior.ID, prior.Version, db.UpdateWorkflowStepRunFields{
+						SupersededBy: &sr.ID,
+					}); err != nil {
+						return fmt.Errorf("loop_decision step %q: supersede prior run: %w", step.Name, err)
+					}
+				}
+			}
+
+			// Create a new step run for the loop branch target with the
+			// next iteration number. The new run starts in pending status;
+			// the reconciler will transition it to ready on the next pass
+			// (its deps, which include the loop decision step just
+			// completed, are satisfied).
+			newStepRun := db.WorkflowStepRunRow{
+				ID:            db.NewID(),
+				TenantID:      tenantID,
+				WorkflowRunID: run.ID,
+				StepID:        cfg.LoopBranch,
+				StepName:      sr.StepName + " (loop)",
+				StepKind:      domain.StepKindTask,
+				Status:        domain.StepRunPending,
+				Iteration:     nextIter,
+			}
+			if _, err := db.CreateWorkflowStepRun(ctx, tx, newStepRun); err != nil {
+				return fmt.Errorf("loop_decision step %q: create re-entry run: %w", step.Name, err)
+			}
+
+			// Mark the loop node succeeded so the loop-back occurs on the
+			// next reconcile pass.
+			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:    strPtr(domain.StepRunSucceeded),
+				StartedAt: &now,
+				EndedAt:   &now,
+				Result:    func() *[]byte { r := []byte(`{"loop":"re-entered"}`); return &r }(),
+			})
+			if err != nil {
+				return fmt.Errorf("mark loop_decision step re-entered: %w", err)
+			}
+			runs[step.ID] = updated
+			if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
+				return fmt.Errorf("enqueue loop_decision step_succeeded (re-entry): %w", err)
+			}
+			r.log.Info("loop_decision re-entered",
+				"run", run.ID, "step", step.ID, "loop_branch", cfg.LoopBranch,
+				"iteration", nextIter, "max_iterations", cfg.MaxIterations)
 		}
 
 	case domain.StepKindParallel:
@@ -1652,6 +1776,51 @@ func (r *WorkflowReconciler) enqueueStepEvent(ctx context.Context, tx pgx.Tx, ev
 }
 
 // nowPtr returns a pointer to t (helper for optional timestamp fields).
+// --- loop decision helpers (docs/11 §3) -----------------------------------
+
+// loopDecisionConfig is the step config for a loop_decision node.
+type loopDecisionConfig struct {
+	BranchFrom    string `json:"branch_from"`
+	SuccessBranch string `json:"success_branch"`
+	LoopBranch    string `json:"loop_branch"`
+	MaxIterations int    `json:"max_iterations"`
+}
+
+func parseLoopDecisionConfig(config string) loopDecisionConfig {
+	var cfg loopDecisionConfig
+	json.Unmarshal([]byte(config), &cfg)
+	return cfg
+}
+
+// currentLoopIteration returns the current iteration count for a step
+// within a run. This is MAX(iteration) over all step runs for the step
+// where superseded_by IS NULL (the active run).
+func currentLoopIteration(runs map[string]db.WorkflowStepRunRow, stepID string) int {
+	// Find the active (non-superseded) step run with this stepID.
+	var maxIter int
+	for _, sr := range runs {
+		if sr.StepID == stepID && sr.SupersededBy == "" && sr.Iteration > maxIter {
+			maxIter = sr.Iteration
+		}
+	}
+	return maxIter
+}
+
+// listStepRunsByStepID fetches all step runs for a given run+step.
+func listStepRunsByStepID(ctx context.Context, tx pgx.Tx, tenantID, runID, stepID string) ([]db.WorkflowStepRunRow, error) {
+	all, err := db.ListWorkflowStepRuns(ctx, tx, tenantID, runID)
+	if err != nil {
+		return nil, err
+	}
+	var out []db.WorkflowStepRunRow
+	for _, sr := range all {
+		if sr.StepID == stepID {
+			out = append(out, sr)
+		}
+	}
+	return out, nil
+}
+
 func nowPtr(t time.Time) *time.Time { return &t }
 
 // (nowPtr currently unused after refactor; retained for step-run

@@ -184,6 +184,40 @@ export function PropertiesPanel({
           </Field>
         )}
 
+        {d.kind === STEP_KIND.LOOP_DECISION && (
+          <>
+          <Field label="Max iterations" hint="How many times to loop back before failing the run. Once exhausted, recovery engages (invariant #8).">
+            <input
+              type="number"
+              min={1}
+              max={100}
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              value={typeof cfg.max_iterations === "number" ? cfg.max_iterations : 3}
+              disabled={readOnly}
+              onChange={(e) => {
+                const maxIter = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 3));
+                const next = { ...cfg, max_iterations: maxIter };
+                onChange({ config: JSON.stringify(next) });
+              }}
+            />
+          </Field>
+          <Field label="Loop branch" hint="The step id to loop back to on failure. Create an edge from this node's loop outlet to the target step.">
+            <p className="text-xs text-muted-foreground">
+              {typeof cfg.loop_branch === "string" && cfg.loop_branch
+                ? `Loop target: ${cfg.loop_branch}`
+                : "Connect the loop outlet (bottom handle) to a topologically-prior step to set the loop branch."}
+            </p>
+          </Field>
+          <Field label="Success branch" hint="The step id to continue to when the upstream succeeds.">
+            <p className="text-xs text-muted-foreground">
+              {typeof cfg.success_branch === "string" && cfg.success_branch
+                ? `Success target: ${cfg.success_branch}`
+                : "Connect the success outlet (right handle) to the next step."}
+            </p>
+          </Field>
+          </>
+        )}
+
         {d.kind === STEP_KIND.RECOVER && (
           <>
           <Field label="Recovery strategy" hint="What happens when the upstream worker fails.">

@@ -72,7 +72,8 @@ type WorkflowRunRow struct {
 
 // WorkflowStepRunRow is the data-access shape of a workflow_step_runs
 // table row (docs/09 §3.4). The runtime state of a single step within
-// a WorkflowRun.
+// a WorkflowRun. iteration and superseded_by track loop decision
+// re-entry (docs/11 §3.4).
 type WorkflowStepRunRow struct {
 	ID                 string
 	TenantID           string
@@ -84,6 +85,8 @@ type WorkflowStepRunRow struct {
 	Attempt            int
 	Result             []byte // jsonb
 	WorkerExecutionID  string
+	Iteration          int    // re-entry count (0 for first dispatch)
+	SupersededBy       string // step run id that superseded this one
 	StartedAt          *time.Time
 	EndedAt            *time.Time
 	Version            int
@@ -686,19 +689,22 @@ func CreateWorkflowStepRun(ctx context.Context, tx pgx.Tx, s WorkflowStepRunRow)
 	}
 	const q = `INSERT INTO workflow_step_runs
 		(id, tenant_id, workflow_run_id, step_id, step_name, step_kind,
-		 status, attempt, result, worker_execution_id, started_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		 status, attempt, result, worker_execution_id, iteration, superseded_by, started_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING id, tenant_id, workflow_run_id, step_id, step_name, step_kind,
-			status, attempt, result, 		worker_execution_id, started_at, ended_at, version,
-			created_at, updated_at`
+			status, attempt, result, worker_execution_id, iteration, superseded_by,
+			started_at, ended_at, version, created_at, updated_at`
 	row := s
 	err := tx.QueryRow(ctx, q,
 		s.ID, s.TenantID, s.WorkflowRunID, s.StepID, s.StepName, s.StepKind,
-		s.Status, s.Attempt, s.Result, s.WorkerExecutionID, s.StartedAt,
+		s.Status, s.Attempt, s.Result, s.WorkerExecutionID,
+		s.Iteration, iterSupersededBy(s.SupersededBy),
+		s.StartedAt,
 	).Scan(
 		&row.ID, &row.TenantID, &row.WorkflowRunID, &row.StepID, &row.StepName,
 		&row.StepKind, &row.Status, &row.Attempt, &row.Result,
-		&row.WorkerExecutionID, &row.StartedAt, &row.EndedAt, &row.Version,
+		&row.WorkerExecutionID, &row.Iteration, &row.SupersededBy,
+		&row.StartedAt, &row.EndedAt, &row.Version,
 		&row.CreatedAt, &row.UpdatedAt,
 	)
 	if err != nil {
@@ -707,17 +713,27 @@ func CreateWorkflowStepRun(ctx context.Context, tx pgx.Tx, s WorkflowStepRunRow)
 	return row, nil
 }
 
+// iterSupersededBy returns nil for empty string (SQL NULL).
+func iterSupersededBy(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
 // GetWorkflowStepRun fetches a single step run by id within the tenant.
 func GetWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkflowStepRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_run_id, step_id, step_name, step_kind,
-		status, attempt, result, 		worker_execution_id, started_at, ended_at, version,
+		status, attempt, result, 		worker_execution_id,
+		iteration, superseded_by, started_at, ended_at, version,
 		created_at, updated_at
 		FROM workflow_step_runs WHERE id = $1 AND tenant_id = $2`
 	var s WorkflowStepRunRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&s.ID, &s.TenantID, &s.WorkflowRunID, &s.StepID, &s.StepName,
 		&s.StepKind, &s.Status, &s.Attempt, &s.Result,
-		&s.WorkerExecutionID, &s.StartedAt, &s.EndedAt, &s.Version,
+		&s.WorkerExecutionID,
+		&s.Iteration, &s.SupersededBy, &s.StartedAt, &s.EndedAt, &s.Version,
 		&s.CreatedAt, &s.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -734,7 +750,8 @@ func GetWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (Wo
 // the runtime state of a step within a run.
 func GetWorkflowStepRunByStep(ctx context.Context, tx pgx.Tx, tenantID, runID, stepID string) (WorkflowStepRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_run_id, step_id, step_name, step_kind,
-		status, attempt, result, 		worker_execution_id, started_at, ended_at, version,
+		status, attempt, result, 		worker_execution_id,
+		iteration, superseded_by, started_at, ended_at, version,
 		created_at, updated_at
 		FROM workflow_step_runs
 		WHERE tenant_id = $1 AND workflow_run_id = $2 AND step_id = $3
@@ -743,7 +760,8 @@ func GetWorkflowStepRunByStep(ctx context.Context, tx pgx.Tx, tenantID, runID, s
 	err := tx.QueryRow(ctx, q, tenantID, runID, stepID).Scan(
 		&s.ID, &s.TenantID, &s.WorkflowRunID, &s.StepID, &s.StepName,
 		&s.StepKind, &s.Status, &s.Attempt, &s.Result,
-		&s.WorkerExecutionID, &s.StartedAt, &s.EndedAt, &s.Version,
+		&s.WorkerExecutionID,
+		&s.Iteration, &s.SupersededBy, &s.StartedAt, &s.EndedAt, &s.Version,
 		&s.CreatedAt, &s.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -758,7 +776,8 @@ func GetWorkflowStepRunByStep(ctx context.Context, tx pgx.Tx, tenantID, runID, s
 // ListWorkflowStepRuns returns all step runs for a workflow run.
 func ListWorkflowStepRuns(ctx context.Context, tx pgx.Tx, tenantID, runID string) ([]WorkflowStepRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_run_id, step_id, step_name, step_kind,
-		status, attempt, result, 		worker_execution_id, started_at, ended_at, version,
+		status, attempt, result, 		worker_execution_id,
+		iteration, superseded_by, started_at, ended_at, version,
 		created_at, updated_at
 		FROM workflow_step_runs
 		WHERE tenant_id = $1 AND workflow_run_id = $2
@@ -774,7 +793,8 @@ func ListWorkflowStepRuns(ctx context.Context, tx pgx.Tx, tenantID, runID string
 		if err := rows.Scan(
 			&s.ID, &s.TenantID, &s.WorkflowRunID, &s.StepID, &s.StepName,
 			&s.StepKind, &s.Status, &s.Attempt, &s.Result,
-			&s.WorkerExecutionID, &s.StartedAt, &s.EndedAt, &s.Version,
+			&s.WorkerExecutionID,
+			&s.Iteration, &s.SupersededBy, &s.StartedAt, &s.EndedAt, &s.Version,
 			&s.CreatedAt, &s.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan workflow step run: %w", err)
@@ -791,6 +811,8 @@ type UpdateWorkflowStepRunFields struct {
 	Attempt           *int
 	Result            *[]byte
 	WorkerExecutionID *string
+	Iteration         *int
+	SupersededBy      *string
 	StartedAt         *time.Time
 	EndedAt           *time.Time
 }
@@ -821,6 +843,16 @@ func UpdateWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string, 
 		args = append(args, *f.WorkerExecutionID)
 		setIdx++
 	}
+	if f.Iteration != nil {
+		q += fmt.Sprintf(`, iteration = $%d`, setIdx)
+		args = append(args, *f.Iteration)
+		setIdx++
+	}
+	if f.SupersededBy != nil {
+		q += fmt.Sprintf(`, superseded_by = $%d`, setIdx)
+		args = append(args, iterSupersededBy(*f.SupersededBy))
+		setIdx++
+	}
 	if f.StartedAt != nil {
 		q += fmt.Sprintf(`, started_at = $%d`, setIdx)
 		args = append(args, *f.StartedAt)
@@ -833,13 +865,15 @@ func UpdateWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string, 
 	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, workflow_run_id, step_id, step_name, step_kind,
-		status, attempt, result, 		worker_execution_id, started_at, ended_at, version,
+		status, attempt, result, worker_execution_id,
+		iteration, superseded_by, started_at, ended_at, version,
 		created_at, updated_at`
 	var s WorkflowStepRunRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&s.ID, &s.TenantID, &s.WorkflowRunID, &s.StepID, &s.StepName,
 		&s.StepKind, &s.Status, &s.Attempt, &s.Result,
-		&s.WorkerExecutionID, &s.StartedAt, &s.EndedAt, &s.Version,
+		&s.WorkerExecutionID,
+		&s.Iteration, &s.SupersededBy, &s.StartedAt, &s.EndedAt, &s.Version,
 		&s.CreatedAt, &s.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

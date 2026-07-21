@@ -490,15 +490,27 @@ function EditorInner({ workflowId }: { workflowId: string }) {
           `Step "${d.name || n.id}" is a recovery step but has no strategy selected.`,
         );
       }
+      if (d.kind === STEP_KIND.LOOP_DECISION && !cfg.max_iterations) {
+        errs.push(
+          `Step "${d.name || n.id}" is a loop decision but has no max iterations set.`,
+        );
+      }
       if (!d.name) {
         errs.push(`Step ${n.id} has no name.`);
       }
     }
-    // Cycle detection (depends_on must form a DAG). Edges source→target
-    // mean target depends on source; a cycle is a closed loop.
+    // Cycle detection (depends_on must form a DAG), except for back-edges
+    // from loop_decision steps (docs/11 §3.1). A loop_decision node may
+    // have an edge to a topologically-prior step; that edge is the loop
+    // back-edge and is permitted.
+    const loopNodeIds = new Set(
+      nodes.filter((n) => n.data.kind === STEP_KIND.LOOP_DECISION).map((n) => n.id),
+    );
     const adj = new Map<string, string[]>();
     for (const n of nodes) adj.set(n.id, []);
     for (const e of edges) {
+      // Skip back-edges that originate from a loop_decision node.
+      if (loopNodeIds.has(e.source)) continue;
       adj.get(e.source)?.push(e.target);
     }
     const color = new Map<string, number>(); // 0=white,1=gray,2=black
