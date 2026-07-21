@@ -38,6 +38,7 @@ export function useListWorkers(opts?: { status?: WorkerStatus; search?: string; 
       });
       return res.workers as Worker[];
     },
+    refetchInterval: 5_000,
   });
 }
 
@@ -135,7 +136,7 @@ export function useBatchDeleteWorkers() {
       await Promise.all(ids.map((id) => workerClient.deleteWorker({ id })));
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: workerKeys.list() });
+      qc.invalidateQueries({ queryKey: workerKeys.all });
     },
   });
 }

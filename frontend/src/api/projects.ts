@@ -33,6 +33,7 @@ export function useListProjects(opts?: { search?: string; status?: ProjectStatus
       });
       return res.projects as Project[];
     },
+    refetchInterval: 5_000,
   });
 }
 
@@ -131,10 +132,10 @@ export function useBatchDeleteProjects() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (ids: string[]) => {
-      await Promise.allSettled(ids.map((id) => projectClient.deleteProject({ id })));
+      await Promise.all(ids.map((id) => projectClient.deleteProject({ id })));
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: projectKeys.list() });
+      qc.invalidateQueries({ queryKey: projectKeys.all });
     },
   });
 }

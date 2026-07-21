@@ -53,6 +53,7 @@ export function useListWorkflows(opts?: { projectId?: string; status?: WorkflowS
       });
       return res.workflows as Workflow[];
     },
+    refetchInterval: 5_000,
   });
 }
 
@@ -209,10 +210,10 @@ export function useBatchDeleteWorkflows() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (ids: string[]) => {
-      await Promise.allSettled(ids.map((id) => workflowClient.deleteWorkflow({ id })));
+      await Promise.all(ids.map((id) => workflowClient.deleteWorkflow({ id })));
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: workflowKeys.list() });
+      qc.invalidateQueries({ queryKey: workflowKeys.all });
     },
   });
 }
@@ -273,6 +274,7 @@ export function useListWorkflowRuns(workflowId: string, status?: WorkflowRunStat
       return res.runs as WorkflowRun[];
     },
     enabled: !!workflowId,
+    refetchInterval: 5_000,
   });
 }
 
