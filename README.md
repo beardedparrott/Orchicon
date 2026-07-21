@@ -42,8 +42,8 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-**v0.1.127** — Unified page patterns: back buttons, YAML code view + clone, bulk delete.
-Added consistent back buttons (ArrowLeft icon + label) to all detail pages. Added Code/Detail toggle with YAML view + Clone button to projects, work items, and workers detail pages, matching the workflow editor pattern. Added bulk delete with select-all checkboxes to projects, work items, workers, and workflows list pages. Added decision point filter to policies list. Created a reusable `EntityYamlView` component and batch-delete API hooks for all entity types using `Promise.allSettled`.
+**v0.1.127** — Unified page patterns: back buttons, YAML code view + clone, bulk delete, absolute paths for context files.
+Added ArrowLeft back buttons to all detail pages and the dependency graph view. Added Code/Detail toggle with YAML view + Clone button to projects, work items, and workers detail pages. Added bulk delete with select-all checkboxes to projects, work items, workers, workflows, and recovery list pages. Added status/decision point filters to policies. Converted all list pages to vertical list format. Switched `context_files` from relative paths to absolute paths end-to-end — validation now requires `filepath.IsAbs`, `listDirectory` returns absolute `FileTreeEntry.Path`, and worker dispatch uses paths directly with a backward-compat fallback for old relative data.
 
 ## Installation
 

@@ -290,12 +290,6 @@ function BrowseTree({ path, searchQuery, onSelect, onSelectFile, onNavigate }: B
   const dirs = q ? allDirs.filter((e) => e.name.toLowerCase().includes(q)) : allDirs;
   const files = q ? allFiles.filter((e) => e.name.toLowerCase().includes(q)) : allFiles;
 
-  const joinPath = (base: string, name: string) => {
-    if (!base || base === "~") return `~/${name}`;
-    if (base.endsWith("/")) return `${base}${name}`;
-    return `${base}/${name}`;
-  };
-
   const parentOf = (p: string) => {
     const parts = p.split("/").filter(Boolean);
     if (parts.length === 0) return "~";
@@ -343,51 +337,51 @@ function BrowseTree({ path, searchQuery, onSelect, onSelectFile, onNavigate }: B
         <p className="px-3 py-4 text-sm text-muted-foreground">Empty directory</p>
       )}
 
-      {dirs.map((entry) => (
-        <div
-          key={entry.path}
-          className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b last:border-0"
-        >
-          <Folder className="h-4 w-4 text-amber-500 shrink-0" />
-          <span
-            className="flex-1 truncate"
-            onClick={() => onNavigate(joinPath(path, entry.path))}
-          >
-            {entry.name}/
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-xs h-7 shrink-0"
-            onClick={() => onSelect(joinPath(path, entry.path))}
-          >
-            Select this folder
-          </Button>
-        </div>
-      ))}
+          {dirs.map((entry) => (
+            <div
+              key={entry.path}
+              className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b last:border-0"
+            >
+              <Folder className="h-4 w-4 text-amber-500 shrink-0" />
+              <span
+                className="flex-1 truncate"
+                onClick={() => onNavigate(entry.path)}
+              >
+                {entry.name}/
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs h-7 shrink-0"
+                onClick={() => onSelect(entry.path)}
+              >
+                Select this folder
+              </Button>
+            </div>
+          ))}
 
-      {files.slice(0, 20).map((entry) => (
-        <div
-          key={entry.path}
-          className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b last:border-0"
-        >
-          <File className="h-4 w-4 shrink-0" />
-          <span
-            className="flex-1 truncate"
-            onClick={() => onSelectFile(joinPath(path, entry.path))}
-          >
-            {entry.name}
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-xs h-7 shrink-0"
-            onClick={() => onSelectFile(joinPath(path, entry.path))}
-          >
-            Select
-          </Button>
-        </div>
-      ))}
+          {files.slice(0, 20).map((entry) => (
+            <div
+              key={entry.path}
+              className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b last:border-0"
+            >
+              <File className="h-4 w-4 shrink-0" />
+              <span
+                className="flex-1 truncate"
+                onClick={() => onSelectFile(entry.path)}
+              >
+                {entry.name}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs h-7 shrink-0"
+                onClick={() => onSelectFile(entry.path)}
+              >
+                Select
+              </Button>
+            </div>
+          ))}
       {files.length > 20 && (
         <p className="px-3 py-1 text-xs text-muted-foreground">
           …{files.length - 20} more files
@@ -429,7 +423,7 @@ function FileTreeContainer({
   readOnly = false,
 }: FileTreeContainerProps) {
   const projectResult = useListProjectDir(projectId, subpath);
-  const dirResult = useListDirPath(dirPath ? `${dirPath}${subpath ? `/${subpath}` : ""}` : "");
+  const dirResult = useListDirPath(dirPath ? (subpath || dirPath) : "");
   const { data, isLoading, error } = dirPath ? dirResult : projectResult;
 
   const q = searchQuery.toLowerCase().trim();
