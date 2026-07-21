@@ -164,33 +164,29 @@ function WorkersPage() {
                 : `${workers.length} worker${workers.length === 1 ? "" : "s"}`}
             </span>
           </div>
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <div className="space-y-1">
             {workers.map((w) => (
-              <div key={w.id} className="group flex items-start gap-2">
+              <div key={w.id} className="group flex items-center gap-2">
                 <input
                   type="checkbox"
                   checked={selected.has(w.id)}
                   onChange={() => toggleSelect(w.id)}
-                  className="mt-4 shrink-0 h-4 w-4 rounded border-input"
+                  className="ml-2 h-4 w-4 shrink-0 rounded border-input"
                 />
                 <Link to="/workers/$id" params={{ id: w.id }} className="min-w-0 flex-1">
                   <Card className="transition-colors hover:bg-accent">
-                    <CardHeader>
-                      <CardTitle className="flex items-center justify-between">
-                        <span className="truncate">{w.name}</span>
+                    <CardContent className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex min-w-0 items-center gap-3">
                         <WorkerStatusBadge status={w.status} />
-                      </CardTitle>
-                      <CardDescription className="font-mono text-xs">
-                        {w.slug}
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      {w.purpose && (
-                        <p className="text-xs text-muted-foreground line-clamp-2">
-                          {w.purpose}
-                        </p>
-                      )}
-                      <div className="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
+                        <div className="min-w-0 flex-1 overflow-hidden">
+                          <p className="truncate text-sm font-medium">{w.name}</p>
+                          <p className="break-all font-mono text-xs text-muted-foreground">{w.slug}</p>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground sm:shrink-0">
+                        {w.purpose && (
+                          <span className="max-w-[200px] truncate">{w.purpose}</span>
+                        )}
                         <span>v{w.currentVersion}</span>
                       </div>
                     </CardContent>
@@ -202,7 +198,7 @@ function WorkersPage() {
                       batchDelete.mutate([w.id]);
                     }
                   }}
-                  className="mt-3 shrink-0 opacity-0 group-hover:opacity-100 rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground hover:text-destructive hover:bg-accent transition-all"
+                  className="opacity-0 group-hover:opacity-100 rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground hover:text-destructive hover:bg-accent transition-all shrink-0"
                   title="Delete worker"
                 >
                   ✕

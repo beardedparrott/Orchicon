@@ -442,16 +442,17 @@ function KanbanBoard({
               </span>
             </div>
             {colItems.map((item) => (
-              <div key={item.id} className="group relative">
+              <div key={item.id} className="group flex items-start gap-1">
                 <input
                   type="checkbox"
                   checked={selected.has(item.id)}
                   onChange={() => onToggleSelect(item.id)}
-                  className="absolute left-1 top-1 z-10 h-3.5 w-3.5 rounded border-input"
+                  className="mt-2 shrink-0 h-3.5 w-3.5 rounded border-input"
                 />
                 <Link
                   to="/work-items/$id"
                   params={{ id: item.id }}
+                  className="min-w-0 flex-1"
                 >
                   <Card className="transition-colors hover:bg-accent">
                     <CardContent className="p-3">

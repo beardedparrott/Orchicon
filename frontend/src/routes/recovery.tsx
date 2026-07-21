@@ -140,34 +140,33 @@ function RecoveryPage() {
                 : `${recoveries.length} recover${recoveries.length === 1 ? "y" : "ies"}`}
             </span>
           </div>
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <div className="space-y-1">
             {recoveries.map((r) => (
-              <div key={r.id} className="group flex items-start gap-2">
+              <div key={r.id} className="group flex items-center gap-2">
                 <input
                   type="checkbox"
                   checked={selected.has(r.id)}
                   onChange={() => toggleSelect(r.id)}
-                  className="mt-4 shrink-0 h-4 w-4 rounded border-input"
+                  className="ml-2 h-4 w-4 shrink-0 rounded border-input"
                 />
                 <Link to="/recovery/$id" params={{ id: r.id }} className="min-w-0 flex-1">
                   <Card className="transition-colors hover:bg-accent">
-                    <CardHeader>
-                      <CardTitle className="flex items-center justify-between">
-                        <span className="font-mono text-sm">
-                          {r.id.slice(0, 12)}…
-                        </span>
+                    <CardContent className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex min-w-0 items-center gap-3">
                         <StatusBadge status={r.status} />
-                      </CardTitle>
-                      <CardDescription>
-                        <span className="font-mono text-xs">
-                          task: {r.taskId.slice(0, 12)}… · L{r.level}
-                        </span>
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <p className="text-xs text-muted-foreground">
-                        {r.triggerReason} · {r.resumptionPath}
-                      </p>
+                        <div className="min-w-0 flex-1 overflow-hidden">
+                          <p className="truncate text-sm font-medium font-mono">
+                            {r.id.slice(0, 12)}…
+                          </p>
+                          <p className="break-all font-mono text-xs text-muted-foreground">
+                            task: {r.taskId.slice(0, 12)}… · L{r.level}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground sm:shrink-0">
+                        <span>{r.triggerReason}</span>
+                        <span>{r.resumptionPath}</span>
+                      </div>
                     </CardContent>
                   </Card>
                 </Link>
@@ -177,7 +176,7 @@ function RecoveryPage() {
                       batchCancel.mutate([r.id]);
                     }
                   }}
-                  className="mt-3 shrink-0 opacity-0 group-hover:opacity-100 rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground hover:text-destructive hover:bg-accent transition-all"
+                  className="opacity-0 group-hover:opacity-100 rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground hover:text-destructive hover:bg-accent transition-all shrink-0"
                   title="Cancel recovery"
                 >
                   ✕
