@@ -207,36 +207,42 @@ export function PropertiesPanel({
               ))}
             </select>
           </Field>
-          <Field label="Max retries" hint="How many times to retry before escalating to human (L3).">
-            <input
-              type="number"
-              min={1}
-              max={100}
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-              value={typeof cfg.max_retries === "number" ? cfg.max_retries : 5}
-              disabled={readOnly}
-              onChange={(e) => {
-                const maxRetries = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 5));
-                const next = { ...cfg, max_retries: maxRetries };
-                onChange({ config: JSON.stringify(next) });
-              }}
-            />
-          </Field>
-          <Field label="Retry delay (seconds)" hint="Time to wait between retries.">
-            <input
-              type="number"
-              min={0}
-              max={3600}
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-              value={typeof cfg.retry_delay_seconds === "number" ? cfg.retry_delay_seconds : 10}
-              disabled={readOnly}
-              onChange={(e) => {
-                const delay = Math.max(0, Math.min(3600, parseInt(e.target.value, 10) || 10));
-                const next = { ...cfg, retry_delay_seconds: delay };
-                onChange({ config: JSON.stringify(next) });
-              }}
-            />
-          </Field>
+          {/* Retry config only applies to non-"stop" strategies.
+              "Stop" means abandon cleanly — no retries needed. */}
+          {(typeof cfg.strategy !== "string" || cfg.strategy !== "stop") && (
+            <>
+            <Field label="Max retries" hint="How many times to retry before escalating to human (L3).">
+              <input
+                type="number"
+                min={1}
+                max={100}
+                className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+                value={typeof cfg.max_retries === "number" ? cfg.max_retries : 5}
+                disabled={readOnly}
+                onChange={(e) => {
+                  const maxRetries = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 5));
+                  const next = { ...cfg, max_retries: maxRetries };
+                  onChange({ config: JSON.stringify(next) });
+                }}
+              />
+            </Field>
+            <Field label="Retry delay (seconds)" hint="Time to wait between retries.">
+              <input
+                type="number"
+                min={0}
+                max={3600}
+                className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+                value={typeof cfg.retry_delay_seconds === "number" ? cfg.retry_delay_seconds : 10}
+                disabled={readOnly}
+                onChange={(e) => {
+                  const delay = Math.max(0, Math.min(3600, parseInt(e.target.value, 10) || 10));
+                  const next = { ...cfg, retry_delay_seconds: delay };
+                  onChange({ config: JSON.stringify(next) });
+                }}
+              />
+            </Field>
+            </>
+          )}
           </>
         )}
 
