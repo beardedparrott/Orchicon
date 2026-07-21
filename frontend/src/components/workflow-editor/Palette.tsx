@@ -7,6 +7,7 @@ import {
   GitFork,
   Info,
   LifeBuoy,
+  Repeat2,
   ShieldCheck,
   UserCheck,
   type LucideIcon,
@@ -102,6 +103,15 @@ export function Palette({ readOnly }: { readOnly: boolean }) {
           kindAccent="violet"
           payload={{ kind: STEP_KIND.PARALLEL, name: "Parallel" }}
           description="Fans out to every directly-connected downstream step, running them concurrently. Steps further downstream still wait for their own dependencies."
+          readOnly={readOnly}
+        />
+        <DraggableTile
+          label="Loop Decision"
+          sublabel="Iterate on failure, up to N times"
+          icon={Repeat2}
+          kindAccent="cyan"
+          payload={{ kind: STEP_KIND.LOOP_DECISION, name: "Loop Decision" }}
+          description="Inspects the upstream step result. On success, continues forward. On failure, loops back to a prior step (up to max_iterations). After exhausting attempts, the run fails and recovery engages."
           readOnly={readOnly}
         />
       </Section>
@@ -272,6 +282,7 @@ const ACCENT_BORDER: Record<string, string> = {
   yellow: "border-yellow-300/70 dark:border-yellow-800/60",
   violet: "border-violet-300/70 dark:border-violet-800/60",
   indigo: "border-indigo-300/70 dark:border-indigo-800/60",
+  cyan: "border-cyan-300/70 dark:border-cyan-800/60",
 };
 
 const ACCENT_BG: Record<string, string> = {
@@ -282,4 +293,5 @@ const ACCENT_BG: Record<string, string> = {
   yellow: "bg-yellow-100 text-yellow-700 dark:bg-yellow-950/60 dark:text-yellow-300",
   violet: "bg-violet-100 text-violet-700 dark:bg-violet-950/60 dark:text-violet-300",
   indigo: "bg-indigo-100 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300",
+  cyan: "bg-cyan-100 text-cyan-700 dark:bg-cyan-950/60 dark:text-cyan-300",
 };

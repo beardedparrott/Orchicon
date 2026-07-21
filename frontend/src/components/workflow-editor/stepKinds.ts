@@ -4,6 +4,7 @@ import {
   GitBranch,
   GitFork,
   LifeBuoy,
+  Repeat2,
   ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
@@ -19,6 +20,7 @@ export const STEP_KIND = {
   WORK_ITEM: 6,
   PROJECT: 7,
   POLICY: 8,
+  LOOP_DECISION: 9,
 } as const;
 
 // Wire-format kind strings — must match Go domain constants exactly.
@@ -33,6 +35,7 @@ export const STEP_KIND_WIRE: Record<number, string> = {
   [STEP_KIND.WORK_ITEM]: "work_item",
   [STEP_KIND.PROJECT]: "project",
   [STEP_KIND.POLICY]: "policy",
+  [STEP_KIND.LOOP_DECISION]: "loop_decision",
 };
 
 // Display labels (capitalized, user-facing).
@@ -45,6 +48,7 @@ export const STEP_KIND_DISPLAY_LABELS: Record<number, string> = {
   6: "Work Item",
   7: "Project",
   8: "Policy",
+  9: "Loop Decision",
 };
 
 // Backward-compatible short labels for the run view and legacy use.
@@ -57,6 +61,7 @@ export const STEP_KIND_LABELS: Record<number, string> = {
   6: "work_item",
   7: "project",
   8: "policy",
+  9: "loop_decision",
 };
 
 export const STEP_KIND_TO_ENUM: Record<number, StepKind> = {
@@ -67,6 +72,7 @@ export const STEP_KIND_TO_ENUM: Record<number, StepKind> = {
   5: StepKind.RECOVER,
   6: StepKind.WORK_ITEM,
   7: StepKind.PROJECT,
+  9: StepKind.LOOP_DECISION,
 };
 
 export const STR_TO_KIND: Record<string, number> = {
@@ -78,6 +84,7 @@ export const STR_TO_KIND: Record<string, number> = {
   work_item: 6,
   project: 7,
   policy: 8,
+  loop_decision: 9,
 };
 
 export const KIND_TO_STR = (k: number): string => STEP_KIND_WIRE[k] ?? "task";
@@ -91,6 +98,7 @@ export const STEP_KIND_ICONS: Record<number, LucideIcon> = {
   6: FileText,
   7: FileText,
   8: ShieldCheck,
+  9: Repeat2,
 };
 
 export const KIND_ACCENT: Record<number, string> = {
@@ -102,6 +110,7 @@ export const KIND_ACCENT: Record<number, string> = {
   [STEP_KIND.WORK_ITEM]: "emerald",
   [STEP_KIND.PROJECT]: "indigo",
   [STEP_KIND.POLICY]: "amber",
+  [STEP_KIND.LOOP_DECISION]: "cyan",
 };
 
 export const ACCENT_STROKE: Record<string, string> = {
@@ -112,6 +121,7 @@ export const ACCENT_STROKE: Record<string, string> = {
   rose: "stroke-rose-400",
   emerald: "stroke-emerald-400",
   indigo: "stroke-indigo-400",
+  cyan: "stroke-cyan-400",
 };
 
 export const RECOVERY_STRATEGY_LABELS: Record<string, string> = {

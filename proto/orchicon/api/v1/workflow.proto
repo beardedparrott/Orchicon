@@ -157,6 +157,7 @@ enum StepKind {
   STEP_KIND_RECOVER = 5;
   STEP_KIND_WORK_ITEM = 6;
   STEP_KIND_PROJECT = 7;
+  STEP_KIND_LOOP_DECISION = 8; // loop decision: inspect upstream result, branch to loop or success
 }
 
 // WorkflowRun lifecycle states (docs/02 §2.4, docs/03 §2):

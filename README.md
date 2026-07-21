@@ -42,8 +42,8 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-**v0.1.131** — Bound-run dispatch path (PR-A of Workflow Templates & Binding).
-Added `work_item_id` to `StartWorkflowRequest` and `WorkflowRun` proto messages. New DB migration adds nullable `work_item_id` and `bound_worker_ref` columns to `workflow_runs` (FK to work_items). The `WorkflowReconciler.dispatchStep` now checks for a bound run: when `run.WorkItemID` is set and no canvas work-item markers are upstream, it operates directly on the bound work item. One-shot (unbound) runs are unchanged — zero behavioral regression verified via curl E2E.
+**v0.1.132** — Loop decision step + iteration tracking (PR-B of Workflow Templates & Binding).
+Added `StepKindLoopDecision` to proto/domain/reconciler. The loop decision step inspects its upstream step result: on success it advances forward; on failure it loops back to a prior step (up to `max_iterations`). Iteration tracking uses new `iteration` and `superseded_by` columns on `workflow_step_runs` — re-entry creates a fresh step run with `iteration = N+1` and marks the prior run as superseded (audit trail preserved). Frontend adds a Loop Decision palette node with cyan accent, `max_iterations` config in PropertiesPanel, and cycle-detection relaxation for loop back-edges. Once `max_iterations` is exhausted the run fails and opt-out recovery engages (invariant #8).
 
 ## Installation
 

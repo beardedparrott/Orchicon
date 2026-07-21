@@ -150,6 +150,13 @@ export enum StepKind {
    * @generated from enum value: STEP_KIND_PROJECT = 7;
    */
   PROJECT = 7,
+
+  /**
+   * loop decision: inspect upstream result, branch to loop or success
+   *
+   * @generated from enum value: STEP_KIND_LOOP_DECISION = 8;
+   */
+  LOOP_DECISION = 8,
 }
 // Retrieve enum metadata with: proto3.getEnumType(StepKind)
 proto3.util.setEnumType(StepKind, "orchicon.api.v1.StepKind", [
@@ -161,6 +168,7 @@ proto3.util.setEnumType(StepKind, "orchicon.api.v1.StepKind", [
   { no: 5, name: "STEP_KIND_RECOVER" },
   { no: 6, name: "STEP_KIND_WORK_ITEM" },
   { no: 7, name: "STEP_KIND_PROJECT" },
+  { no: 8, name: "STEP_KIND_LOOP_DECISION" },
 ]);
 
 /**
