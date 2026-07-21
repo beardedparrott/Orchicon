@@ -42,8 +42,8 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-**v0.1.125** — Fix SigNoz ClickHouse DSN, blank iframes, telemetry explorer paths.
-The query-service was defaulting to `localhost:9000` (IPv6 `[::1]:9000` — connection refused); added `SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN` env var pointing to `clickhouse:9000`. The HTML proxy rewrite was silently failing on gzip-compressed responses from browsers — added decompression in `ModifyResponse`. Fixed SigNoz iframe paths to the correct explorer routes (`/traces-explorer`, `/logs/logs-explorer`, `/metrics-explorer/explorer`). Compacted StatCards, added scrollbars to detail panels, moved iframes to the top of each tab. Moved exploration windows to top of each telemetry page. Added `scripts/install-local.sh` for day-long local iteration without commits/PRs.
+**v0.1.126** — Execution UI overhaul, follow-up conversations, recovery retry configuration, execution list filters.
+Fixed assistant bubble text truncation and added copy-to-clipboard buttons on all message bubbles. Added follow-up chat on the execution detail page — user messages are persisted in a new `conversation jsonb` column and a child work item is dispatched for AI processing; the assistant response is written back to the original execution's conversation so the full thread lives on one page. Reverted project context files to a simple path-list approach (no more file content reading). Added search, status filter, sort, and bulk delete to the executions list. Added max_retries/retry_delay_seconds configuration UI to recovery workflow steps with proper DB columns on `recovery_executions`. Recovery retries are now bounded (default 5 max, escalates to L3 human approval). Follow-up executions are hidden from the main list via an `is_follow_up` flag. Default model falls back to `opencode/deepseek-v4-flash-free` when the worker has no `model_ref`. Added cache-control headers to the embedded SPA. Fixed `DeleteWorkflowVersion` SQL alias bug.
 
 ## Installation
 
