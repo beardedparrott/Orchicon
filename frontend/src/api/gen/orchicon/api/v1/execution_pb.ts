@@ -337,6 +337,13 @@ export class WorkerExecution extends Message<WorkerExecution> {
    */
   output = "";
 
+  /**
+   * JSONB: follow-up conversation array [{role, content, type, created_at}]
+   *
+   * @generated from field: bytes conversation = 22;
+   */
+  conversation = new Uint8Array(0);
+
   constructor(data?: PartialMessage<WorkerExecution>) {
     super();
     proto3.util.initPartial(data, this);
@@ -366,6 +373,7 @@ export class WorkerExecution extends Message<WorkerExecution> {
     { no: 19, name: "workflow_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 20, name: "error_message", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 21, name: "output", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 22, name: "conversation", kind: "scalar", T: 12 /* ScalarType.BYTES */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkerExecution {
@@ -662,6 +670,27 @@ export class ListExecutionsRequest extends Message<ListExecutionsRequest> {
    */
   workflowRunId?: string;
 
+  /**
+   * free-text search across worker_id, task_id, workflow_name
+   *
+   * @generated from field: string search = 8;
+   */
+  search = "";
+
+  /**
+   * field name: "status", "created_at", "worker_id" (default "created_at")
+   *
+   * @generated from field: string sort_by = 9;
+   */
+  sortBy = "";
+
+  /**
+   * "asc" or "desc" (default "desc")
+   *
+   * @generated from field: string sort_order = 10;
+   */
+  sortOrder = "";
+
   constructor(data?: PartialMessage<ListExecutionsRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -677,6 +706,9 @@ export class ListExecutionsRequest extends Message<ListExecutionsRequest> {
     { no: 5, name: "page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 6, name: "page_size", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 7, name: "workflow_run_id", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 8, name: "search", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 9, name: "sort_by", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 10, name: "sort_order", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListExecutionsRequest {
@@ -761,6 +793,80 @@ export class DeleteExecutionResponse extends Message<DeleteExecutionResponse> {
 
   static equals(a: DeleteExecutionResponse | PlainMessage<DeleteExecutionResponse> | undefined, b: DeleteExecutionResponse | PlainMessage<DeleteExecutionResponse> | undefined): boolean {
     return proto3.util.equals(DeleteExecutionResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.BatchDeleteExecutionsRequest
+ */
+export class BatchDeleteExecutionsRequest extends Message<BatchDeleteExecutionsRequest> {
+  /**
+   * @generated from field: repeated string ids = 1;
+   */
+  ids: string[] = [];
+
+  constructor(data?: PartialMessage<BatchDeleteExecutionsRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.BatchDeleteExecutionsRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): BatchDeleteExecutionsRequest {
+    return new BatchDeleteExecutionsRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): BatchDeleteExecutionsRequest {
+    return new BatchDeleteExecutionsRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): BatchDeleteExecutionsRequest {
+    return new BatchDeleteExecutionsRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: BatchDeleteExecutionsRequest | PlainMessage<BatchDeleteExecutionsRequest> | undefined, b: BatchDeleteExecutionsRequest | PlainMessage<BatchDeleteExecutionsRequest> | undefined): boolean {
+    return proto3.util.equals(BatchDeleteExecutionsRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.BatchDeleteExecutionsResponse
+ */
+export class BatchDeleteExecutionsResponse extends Message<BatchDeleteExecutionsResponse> {
+  /**
+   * @generated from field: int32 deleted_count = 1;
+   */
+  deletedCount = 0;
+
+  constructor(data?: PartialMessage<BatchDeleteExecutionsResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.BatchDeleteExecutionsResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "deleted_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): BatchDeleteExecutionsResponse {
+    return new BatchDeleteExecutionsResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): BatchDeleteExecutionsResponse {
+    return new BatchDeleteExecutionsResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): BatchDeleteExecutionsResponse {
+    return new BatchDeleteExecutionsResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: BatchDeleteExecutionsResponse | PlainMessage<BatchDeleteExecutionsResponse> | undefined, b: BatchDeleteExecutionsResponse | PlainMessage<BatchDeleteExecutionsResponse> | undefined): boolean {
+    return proto3.util.equals(BatchDeleteExecutionsResponse, a, b);
   }
 }
 
@@ -1372,6 +1478,82 @@ export class ListPendingApprovalsResponse extends Message<ListPendingApprovalsRe
 
   static equals(a: ListPendingApprovalsResponse | PlainMessage<ListPendingApprovalsResponse> | undefined, b: ListPendingApprovalsResponse | PlainMessage<ListPendingApprovalsResponse> | undefined): boolean {
     return proto3.util.equals(ListPendingApprovalsResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.CreateFollowUpExecutionRequest
+ */
+export class CreateFollowUpExecutionRequest extends Message<CreateFollowUpExecutionRequest> {
+  /**
+   * @generated from field: string execution_id = 1;
+   */
+  executionId = "";
+
+  /**
+   * The follow-up message from the user
+   *
+   * @generated from field: string message = 2;
+   */
+  message = "";
+
+  constructor(data?: PartialMessage<CreateFollowUpExecutionRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.CreateFollowUpExecutionRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "execution_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "message", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateFollowUpExecutionRequest {
+    return new CreateFollowUpExecutionRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateFollowUpExecutionRequest {
+    return new CreateFollowUpExecutionRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateFollowUpExecutionRequest {
+    return new CreateFollowUpExecutionRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateFollowUpExecutionRequest | PlainMessage<CreateFollowUpExecutionRequest> | undefined, b: CreateFollowUpExecutionRequest | PlainMessage<CreateFollowUpExecutionRequest> | undefined): boolean {
+    return proto3.util.equals(CreateFollowUpExecutionRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.CreateFollowUpExecutionResponse
+ */
+export class CreateFollowUpExecutionResponse extends Message<CreateFollowUpExecutionResponse> {
+  constructor(data?: PartialMessage<CreateFollowUpExecutionResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.CreateFollowUpExecutionResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateFollowUpExecutionResponse {
+    return new CreateFollowUpExecutionResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateFollowUpExecutionResponse {
+    return new CreateFollowUpExecutionResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateFollowUpExecutionResponse {
+    return new CreateFollowUpExecutionResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateFollowUpExecutionResponse | PlainMessage<CreateFollowUpExecutionResponse> | undefined, b: CreateFollowUpExecutionResponse | PlainMessage<CreateFollowUpExecutionResponse> | undefined): boolean {
+    return proto3.util.equals(CreateFollowUpExecutionResponse, a, b);
   }
 }
 

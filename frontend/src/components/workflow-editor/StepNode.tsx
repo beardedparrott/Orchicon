@@ -137,6 +137,11 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
       {kind === STEP_KIND.RECOVER && typeof cfg.strategy === "string" && (
         <div className="mt-1 flex items-center gap-1 truncate rounded px-1 py-0.5 text-[10px] font-medium text-rose-600 dark:text-rose-300">
           <span>{RECOVERY_STRATEGY_LABELS[cfg.strategy] ?? cfg.strategy}</span>
+          {typeof cfg.max_retries === "number" || typeof cfg.retry_delay_seconds === "number" ? (
+            <span className="ml-1 opacity-70">
+              · {String(cfg.max_retries ?? 5)}× × {String(cfg.retry_delay_seconds ?? 10)}s
+            </span>
+          ) : null}
         </div>
       )}
 

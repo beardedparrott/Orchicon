@@ -415,7 +415,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
       const id = `step-${Math.random().toString(36).slice(2, 10)}`;
       const initialConfig =
         kind === STEP_KIND.RECOVER
-          ? JSON.stringify({ strategy: "summarize_restart" })
+          ? JSON.stringify({ strategy: "summarize_restart", max_retries: 5, retry_delay_seconds: 10 })
           : "{}";
       const data: StepData = {
         kind,

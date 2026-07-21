@@ -12,8 +12,9 @@
 // and the context sidebar the secondary reference.
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { Pause, Play, Square, Save, Trash2, ArrowLeft } from "lucide-react";
+import { Pause, Play, Square, Save, Trash2, ArrowLeft, SendHorizontal, Loader2 } from "lucide-react";
 
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   useGetExecution,
   useStreamExecutionEvents,
@@ -24,6 +25,7 @@ import {
   useDeleteExecution,
   useListPendingApprovals,
   useApproveToolCall,
+  useCreateFollowUpExecution,
 } from "@/api/executions";
 import { executionKeys } from "@/api/executions";
 import { useGetUsage } from "@/api/aigateway";
@@ -41,6 +43,13 @@ export const Route = createRoute({
   component: ExecutionDetailPage,
 });
 
+interface ConversationEntry {
+  role: string;
+  content: string;
+  type: string;
+  created_at: string;
+}
+
 function ExecutionDetailPage() {
   const { id } = Route.useParams();
   const qc = useQueryClient();
@@ -54,7 +63,38 @@ function ExecutionDetailPage() {
   const checkpointNow = useCheckpointNow();
   const deleteExec = useDeleteExecution();
 
+  // Persisted conversation from the execution record — survives page reload.
+  const conversation = useMemo<ConversationEntry[]>(() => {
+    if (!exec?.conversation?.length) return [];
+    try {
+      const dec = new TextDecoder().decode(exec.conversation);
+      return JSON.parse(dec) as ConversationEntry[];
+    } catch {
+      return [];
+    }
+  }, [exec?.conversation]);
+
+  // Track whether a follow-up is pending (waiting for worker response).
+  const [followUpPending, setFollowUpPending] = useState(false);
+
   const navigate = useNavigate();
+
+  // Check if the last conversation entry is from the user with no
+  // assistant response yet.
+  const lastEntry = conversation[conversation.length - 1];
+  const awaitingResponse = followUpPending && lastEntry?.role !== "assistant";
+
+  // When the assistant response arrives in the conversation (written by
+  // TaskReconciler.appendToParentConversation), clear the pending state.
+  useEffect(() => {
+    if (followUpPending && lastEntry?.role === "assistant") {
+      setFollowUpPending(false);
+    }
+  }, [followUpPending, lastEntry?.role]);
+
+  const handleFollowUpSent = useCallback(() => {
+    setFollowUpPending(true);
+  }, []);
 
   // Live event stream (docs/10 §4). Subscribes to
   // StreamExecutionEvents filtered to this execution. onEvent
@@ -88,8 +128,9 @@ function ExecutionDetailPage() {
 
   const isRunning = exec.status === 2 || exec.status === 3;
   const isPaused = exec.status === 6;
-  const isTerminal = exec.status === 7 || exec.status === 8;
+  const isTerminal = exec.status === 7 || exec.status === 8 || exec.status === 9 || exec.status === 10;
   const isFailed = exec.status === 10 || exec.status === 8;
+  const hasConversation = conversation.length > 0;
 
   return (
     <div className="space-y-4">
@@ -116,6 +157,12 @@ function ExecutionDetailPage() {
             {exec.id}
           </span>
           <ExecutionLiveBadge status={exec.status} isLive={status === "open"} />
+          {hasConversation && (
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900 dark:text-violet-200">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-violet-500" />
+              conversation
+            </span>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           {isRunning && (
@@ -208,6 +255,48 @@ function ExecutionDetailPage() {
               structured metadata (worker, adapter, task, workflow)
               since that data doesn't fit naturally in the sidebar. */}
           <ExecutionContextFooter exec={exec} />
+
+          {/* Follow-up conversation — rendered from the persisted
+              execution.conversation field so it survives page reload. */}
+          {conversation.length > 0 && (
+            <div className="space-y-3 border-t border-border/50 pt-3">
+              {conversation.map((entry, i) => (
+                <div key={i} className={cn("flex", entry.role === "user" ? "justify-end" : "justify-start")}>
+                  <div
+                    className={cn(
+                      "max-w-[85%] rounded-lg px-3 py-2 text-sm leading-relaxed shadow-sm",
+                      entry.role === "user"
+                        ? "rounded-tr-sm border border-primary/20 bg-primary/5"
+                        : "rounded-tl-sm border border-border bg-card",
+                    )}
+                  >
+                    <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                      {entry.role === "user" ? "follow-up" : "assistant"}
+                    </div>
+                    <Markdown>{entry.content}</Markdown>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Pending indicator: shown while waiting for the worker to
+              respond to the latest follow-up. The response appears in
+              the conversation above once TaskReconciler writes it
+              back to the original execution's conversation field. */}
+          {awaitingResponse && (
+            <div className="flex items-center gap-2 rounded-lg border border-muted bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Worker is responding…
+            </div>
+          )}
+
+          {/* Follow-up chat input — shown when the execution is
+              complete, allowing the user to send a follow-up message
+              that creates a new execution with the previous context. */}
+          {isTerminal && (
+            <FollowUpInput executionId={exec.id} onFollowUpSent={handleFollowUpSent} />
+          )}
         </div>
 
         <ExecutionContextSidebar
@@ -336,6 +425,71 @@ function ExecutionContextFooter({
           </div>
         ))}
       </dl>
+    </div>
+  );
+}
+
+function FollowUpInput({
+  executionId,
+  onFollowUpSent,
+}: {
+  executionId: string;
+  onFollowUpSent: () => void;
+}) {
+  const [message, setMessage] = useState("");
+  const createFollowUp = useCreateFollowUpExecution();
+
+  const handleSend = () => {
+    const trimmed = message.trim();
+    if (!trimmed || createFollowUp.isPending) return;
+    createFollowUp.mutate(
+      { executionId, message: trimmed },
+      {
+        onSuccess: () => {
+          onFollowUpSent();
+          setMessage("");
+        },
+      },
+    );
+  };
+
+  return (
+    <div className="rounded-xl border bg-card p-3 shadow-sm">
+      <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <SendHorizontal className="h-3.5 w-3.5" />
+        <span>Follow up</span>
+      </div>
+      <p className="mb-2 text-xs text-muted-foreground">
+        Send a follow-up message. A new execution will be created inline
+        with the previous context as a continuation of this conversation.
+      </p>
+      <div className="flex gap-2">
+        <textarea
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          placeholder="Ask the worker to continue or refine the result..."
+          className="min-h-[60px] flex-1 resize-none rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              handleSend();
+            }
+          }}
+        />
+        <Button
+          size="sm"
+          onClick={handleSend}
+          disabled={!message.trim() || createFollowUp.isPending}
+          className="self-end"
+        >
+          {createFollowUp.isPending ? "Sending…" : "Send"}
+        </Button>
+      </div>
+      {createFollowUp.error && (
+        <div className="mt-2 text-xs text-destructive">
+          Failed to create follow-up: {String(createFollowUp.error)}
+        </div>
+      )}
     </div>
   );
 }

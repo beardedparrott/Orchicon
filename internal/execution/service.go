@@ -110,9 +110,10 @@ func (s *Service) ListExecutions(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	f := db.ListExecutionsFilter{
-		TenantID:  tenantID,
-		PageSize:  int(req.Msg.PageSize),
-		AfterID:   req.Msg.PageToken,
+		TenantID:       tenantID,
+		PageSize:       int(req.Msg.PageSize),
+		AfterID:        req.Msg.PageToken,
+		ExcludeFollowUp: true, // hide follow-up executions from the main list
 	}
 	if req.Msg.ProjectId != nil {
 		f.ProjectID = *req.Msg.ProjectId
@@ -126,6 +127,9 @@ func (s *Service) ListExecutions(ctx context.Context, req *connect.Request[apiv1
 	if req.Msg.WorkflowRunId != nil {
 		f.WorkflowRunID = *req.Msg.WorkflowRunId
 	}
+	f.Search = req.Msg.Search
+	f.SortBy = req.Msg.SortBy
+	f.SortOrder = req.Msg.SortOrder
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -183,6 +187,55 @@ func (s *Service) DeleteExecution(ctx context.Context, req *connect.Request[apiv
 	}
 	s.log.Info("execution deleted", "id", req.Msg.Id)
 	return connect.NewResponse(&apiv1.DeleteExecutionResponse{}), nil
+}
+
+// BatchDeleteExecutions hard-deletes multiple executions by id.
+func (s *Service) BatchDeleteExecutions(ctx context.Context, req *connect.Request[apiv1.BatchDeleteExecutionsRequest]) (*connect.Response[apiv1.BatchDeleteExecutionsResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if len(req.Msg.Ids) == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("ids must not be empty"))
+	}
+	if len(req.Msg.Ids) > 100 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("max 100 executions per batch"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	var deleted int32
+	for _, id := range req.Msg.Ids {
+		if id == "" {
+			continue
+		}
+		current, err := db.GetExecution(ctx, ttx.Tx, tenantID, id)
+		if err != nil {
+			continue
+		}
+		if current.Status != domain.ExecutionTerminated && current.Status != domain.ExecutionFailedToStart {
+			now := time.Now().UTC()
+			_, err := db.UpdateExecution(ctx, ttx.Tx, tenantID, id, current.Version, db.UpdateExecutionFields{
+				Status:      strPtr(domain.ExecutionTerminated),
+				HealthState: strPtr(domain.HealthTerminating),
+				EndedAt:     &now,
+			})
+			if err != nil {
+				continue
+			}
+		}
+		if err := db.DeleteExecution(ctx, ttx.Tx, tenantID, id); err != nil {
+			continue
+		}
+		deleted++
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("batch executions deleted", "count", deleted)
+	return connect.NewResponse(&apiv1.BatchDeleteExecutionsResponse{DeletedCount: deleted}), nil
 }
 
 // StreamExecutionEvents is the server-stream RPC that fans out execution
@@ -448,6 +501,148 @@ func (s *Service) ListPendingApprovals(ctx context.Context, req *connect.Request
 	return connect.NewResponse(resp), nil
 }
 
+// CreateFollowUpExecution appends the user's follow-up message to the
+// execution's conversation and creates a child work item so the worker
+// processes the follow-up. The assistant's response is written back to
+// the original execution's conversation by the TaskReconciler
+// (appendToParentConversation) when the child execution completes, so
+// the full thread appears on the original execution detail page.
+func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Request[apiv1.CreateFollowUpExecutionRequest]) (*connect.Response[apiv1.CreateFollowUpExecutionResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	msg := req.Msg
+	if msg.ExecutionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("execution_id must not be empty"))
+	}
+	q := strings.TrimSpace(msg.Message)
+	if q == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message must not be empty"))
+	}
+	if utf8.RuneCountInString(q) > 10000 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message too long (max 10000 characters)"))
+	}
+
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	// 1. Get the previous execution and its task.
+	prevExec, err := db.GetExecution(ctx, ttx.Tx, tenantID, msg.ExecutionId)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	task, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, prevExec.TaskID)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+
+	// 2. Build the follow-up composite prompt.
+	var prevComposite string
+	if len(task.PromptContext) > 0 {
+		var pc struct {
+			Composite string `json:"composite"`
+		}
+		if err := json.Unmarshal(task.PromptContext, &pc); err == nil {
+			prevComposite = strings.TrimSpace(pc.Composite)
+		}
+	}
+	var followUpPrompt strings.Builder
+	followUpPrompt.WriteString("# Follow-up task\n\n")
+	followUpPrompt.WriteString("This is a follow-up to a previous execution. Continue from where the previous work left off.\n\n")
+	if prevComposite != "" {
+		followUpPrompt.WriteString("## Previous context\n\n")
+		followUpPrompt.WriteString(prevComposite)
+		followUpPrompt.WriteString("\n\n")
+	}
+	output := strings.TrimSpace(prevExec.Output)
+	if output != "" {
+		followUpPrompt.WriteString("## Previous execution output\n\n")
+		if len(output) > 32000 {
+			output = output[:32000] + "\n\n*(truncated — previous output was longer)*"
+		}
+		followUpPrompt.WriteString(output)
+		followUpPrompt.WriteString("\n\n")
+	}
+	followUpPrompt.WriteString("## Follow-up question\n\n")
+	followUpPrompt.WriteString(q)
+	followUpPrompt.WriteString("\n\n")
+	followUpPrompt.WriteString("# Instructions\n\n")
+	followUpPrompt.WriteString("Complete the follow-up task above. Continue from where the previous execution left off. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one short paragraph summarizing what you did.\n\n")
+
+	promptCtx, err := json.Marshal(map[string]string{"composite": followUpPrompt.String()})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("marshal prompt context: %w", err))
+	}
+
+	// 3. Create a child work item with _parent_execution_id so the
+	// TaskReconciler's transitionWorkItemOnResult writes the assistant
+	// response back to the original execution's conversation.
+	resultsJSON, _ := json.Marshal(map[string]string{
+		"_parent_execution_id": msg.ExecutionId,
+		"_follow_up_message":   q,
+		"_is_follow_up":        "true",
+	})
+	newWI := db.WorkItemRow{
+		ID:        db.NewID(),
+		TenantID:  tenantID,
+		ProjectID: task.ProjectID,
+		ParentID:  &task.ID,
+		Kind:      domain.WorkItemKindTask,
+		Title:     fmt.Sprintf("Follow-up: %s", strings.TrimSpace(task.Title)),
+		Status:    domain.WorkItemReady,
+		AssignedWorkerRef: task.AssignedWorkerRef,
+		Priority:  task.Priority,
+		PromptContext: promptCtx,
+		Results:   resultsJSON,
+	}
+	if _, err := db.CreateWorkItem(ctx, ttx.Tx, newWI); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create follow-up work item: %w", err))
+	}
+
+	// 4. Append the user's message to the original execution's
+	// conversation so it appears immediately in the UI.
+	conv := prevExec.Conversation
+	if len(conv) == 0 {
+		conv = []byte("[]")
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(conv, &entries); err != nil {
+		entries = []map[string]any{}
+	}
+	entries = append(entries, map[string]any{
+		"role":       "user",
+		"content":    q,
+		"type":       "follow_up",
+		"created_at": time.Now().UTC().Format(time.RFC3339),
+	})
+	updatedConv, err := json.Marshal(entries)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("marshal conversation: %w", err))
+	}
+	if _, err := db.UpdateExecution(ctx, ttx.Tx, tenantID, msg.ExecutionId, prevExec.Version, db.UpdateExecutionFields{
+		Conversation: &updatedConv,
+	}); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("execution not found or version conflict"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update execution conversation: %w", err))
+	}
+
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+
+	s.log.Info("follow-up created",
+		"execution", msg.ExecutionId,
+	)
+
+	return connect.NewResponse(&apiv1.CreateFollowUpExecutionResponse{}), nil
+}
+
 // RegisterApproval creates a pending Tier 2 approval request in the
 // in-memory registry. Called by the TaskReconciler/adapter bridge when
 // the adapter emits an ApprovalRequest on its Execute stream. Returns a
@@ -690,6 +885,9 @@ func rowToProto(e db.ExecutionRow) *apiv1.WorkerExecution {
 	}
 	if e.Output != "" {
 		p.Output = e.Output
+	}
+	if len(e.Conversation) > 0 {
+		p.Conversation = e.Conversation
 	}
 	return p
 }

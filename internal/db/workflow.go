@@ -413,7 +413,7 @@ func DeleteWorkflowVersion(ctx context.Context, tx pgx.Tx, tenantID, workflowID,
 	var count int
 	if err := tx.QueryRow(ctx,
 		`SELECT wv.status, (SELECT count(*) FROM workflow_versions WHERE tenant_id = $1 AND workflow_id = $2) AS cnt
-		 FROM workflow_versions WHERE tenant_id = $1 AND id = $4 AND workflow_id = $2`,
+		 FROM workflow_versions wv WHERE tenant_id = $1 AND id = $3 AND workflow_id = $2`,
 		tenantID, workflowID, versionID).Scan(&status, &count); err != nil {
 		return fmt.Errorf("db: get workflow version: %w", err)
 	}

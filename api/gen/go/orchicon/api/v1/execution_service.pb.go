@@ -30,7 +30,8 @@ var File_orchicon_api_v1_execution_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_execution_service_proto_rawDesc = "" +
 	"\n" +
-	"'orchicon/api/v1/execution_service.proto\x12\x0forchicon.api.v1\x1a\x1forchicon/api/v1/execution.proto2\x9c\b\n" +
+	"'orchicon/api/v1/execution_service.proto\x12\x0forchicon.api.v1\x1a\x1forchicon/api/v1/execution.proto2\x92\n" +
+	"\n" +
 	"\x10ExecutionService\x12[\n" +
 	"\fGetExecution\x12$.orchicon.api.v1.GetExecutionRequest\x1a%.orchicon.api.v1.GetExecutionResponse\x12a\n" +
 	"\x0eListExecutions\x12&.orchicon.api.v1.ListExecutionsRequest\x1a'.orchicon.api.v1.ListExecutionsResponse\x12x\n" +
@@ -41,30 +42,36 @@ const file_orchicon_api_v1_execution_service_proto_rawDesc = "" +
 	"\rCheckpointNow\x12%.orchicon.api.v1.CheckpointNowRequest\x1a&.orchicon.api.v1.CheckpointNowResponse\x12d\n" +
 	"\x0fApproveToolCall\x12'.orchicon.api.v1.ApproveToolCallRequest\x1a(.orchicon.api.v1.ApproveToolCallResponse\x12s\n" +
 	"\x14ListPendingApprovals\x12,.orchicon.api.v1.ListPendingApprovalsRequest\x1a-.orchicon.api.v1.ListPendingApprovalsResponse\x12d\n" +
-	"\x0fDeleteExecution\x12'.orchicon.api.v1.DeleteExecutionRequest\x1a(.orchicon.api.v1.DeleteExecutionResponseB\xcf\x01\n" +
+	"\x0fDeleteExecution\x12'.orchicon.api.v1.DeleteExecutionRequest\x1a(.orchicon.api.v1.DeleteExecutionResponse\x12v\n" +
+	"\x15BatchDeleteExecutions\x12-.orchicon.api.v1.BatchDeleteExecutionsRequest\x1a..orchicon.api.v1.BatchDeleteExecutionsResponse\x12|\n" +
+	"\x17CreateFollowUpExecution\x12/.orchicon.api.v1.CreateFollowUpExecutionRequest\x1a0.orchicon.api.v1.CreateFollowUpExecutionResponseB\xcf\x01\n" +
 	"\x13com.orchicon.api.v1B\x15ExecutionServiceProtoP\x01ZCgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1;apiv1\xa2\x02\x03OAX\xaa\x02\x0fOrchicon.Api.V1\xca\x02\x0fOrchicon\\Api\\V1\xe2\x02\x1bOrchicon\\Api\\V1\\GPBMetadata\xea\x02\x11Orchicon::Api::V1b\x06proto3"
 
 var file_orchicon_api_v1_execution_service_proto_goTypes = []any{
-	(*GetExecutionRequest)(nil),           // 0: orchicon.api.v1.GetExecutionRequest
-	(*ListExecutionsRequest)(nil),         // 1: orchicon.api.v1.ListExecutionsRequest
-	(*StreamExecutionEventsRequest)(nil),  // 2: orchicon.api.v1.StreamExecutionEventsRequest
-	(*PauseExecutionRequest)(nil),         // 3: orchicon.api.v1.PauseExecutionRequest
-	(*ResumeExecutionRequest)(nil),        // 4: orchicon.api.v1.ResumeExecutionRequest
-	(*CancelExecutionRequest)(nil),        // 5: orchicon.api.v1.CancelExecutionRequest
-	(*CheckpointNowRequest)(nil),          // 6: orchicon.api.v1.CheckpointNowRequest
-	(*ApproveToolCallRequest)(nil),        // 7: orchicon.api.v1.ApproveToolCallRequest
-	(*ListPendingApprovalsRequest)(nil),   // 8: orchicon.api.v1.ListPendingApprovalsRequest
-	(*DeleteExecutionRequest)(nil),        // 9: orchicon.api.v1.DeleteExecutionRequest
-	(*GetExecutionResponse)(nil),          // 10: orchicon.api.v1.GetExecutionResponse
-	(*ListExecutionsResponse)(nil),        // 11: orchicon.api.v1.ListExecutionsResponse
-	(*StreamExecutionEventsResponse)(nil), // 12: orchicon.api.v1.StreamExecutionEventsResponse
-	(*PauseExecutionResponse)(nil),        // 13: orchicon.api.v1.PauseExecutionResponse
-	(*ResumeExecutionResponse)(nil),       // 14: orchicon.api.v1.ResumeExecutionResponse
-	(*CancelExecutionResponse)(nil),       // 15: orchicon.api.v1.CancelExecutionResponse
-	(*CheckpointNowResponse)(nil),         // 16: orchicon.api.v1.CheckpointNowResponse
-	(*ApproveToolCallResponse)(nil),       // 17: orchicon.api.v1.ApproveToolCallResponse
-	(*ListPendingApprovalsResponse)(nil),  // 18: orchicon.api.v1.ListPendingApprovalsResponse
-	(*DeleteExecutionResponse)(nil),       // 19: orchicon.api.v1.DeleteExecutionResponse
+	(*GetExecutionRequest)(nil),             // 0: orchicon.api.v1.GetExecutionRequest
+	(*ListExecutionsRequest)(nil),           // 1: orchicon.api.v1.ListExecutionsRequest
+	(*StreamExecutionEventsRequest)(nil),    // 2: orchicon.api.v1.StreamExecutionEventsRequest
+	(*PauseExecutionRequest)(nil),           // 3: orchicon.api.v1.PauseExecutionRequest
+	(*ResumeExecutionRequest)(nil),          // 4: orchicon.api.v1.ResumeExecutionRequest
+	(*CancelExecutionRequest)(nil),          // 5: orchicon.api.v1.CancelExecutionRequest
+	(*CheckpointNowRequest)(nil),            // 6: orchicon.api.v1.CheckpointNowRequest
+	(*ApproveToolCallRequest)(nil),          // 7: orchicon.api.v1.ApproveToolCallRequest
+	(*ListPendingApprovalsRequest)(nil),     // 8: orchicon.api.v1.ListPendingApprovalsRequest
+	(*DeleteExecutionRequest)(nil),          // 9: orchicon.api.v1.DeleteExecutionRequest
+	(*BatchDeleteExecutionsRequest)(nil),    // 10: orchicon.api.v1.BatchDeleteExecutionsRequest
+	(*CreateFollowUpExecutionRequest)(nil),  // 11: orchicon.api.v1.CreateFollowUpExecutionRequest
+	(*GetExecutionResponse)(nil),            // 12: orchicon.api.v1.GetExecutionResponse
+	(*ListExecutionsResponse)(nil),          // 13: orchicon.api.v1.ListExecutionsResponse
+	(*StreamExecutionEventsResponse)(nil),   // 14: orchicon.api.v1.StreamExecutionEventsResponse
+	(*PauseExecutionResponse)(nil),          // 15: orchicon.api.v1.PauseExecutionResponse
+	(*ResumeExecutionResponse)(nil),         // 16: orchicon.api.v1.ResumeExecutionResponse
+	(*CancelExecutionResponse)(nil),         // 17: orchicon.api.v1.CancelExecutionResponse
+	(*CheckpointNowResponse)(nil),           // 18: orchicon.api.v1.CheckpointNowResponse
+	(*ApproveToolCallResponse)(nil),         // 19: orchicon.api.v1.ApproveToolCallResponse
+	(*ListPendingApprovalsResponse)(nil),    // 20: orchicon.api.v1.ListPendingApprovalsResponse
+	(*DeleteExecutionResponse)(nil),         // 21: orchicon.api.v1.DeleteExecutionResponse
+	(*BatchDeleteExecutionsResponse)(nil),   // 22: orchicon.api.v1.BatchDeleteExecutionsResponse
+	(*CreateFollowUpExecutionResponse)(nil), // 23: orchicon.api.v1.CreateFollowUpExecutionResponse
 }
 var file_orchicon_api_v1_execution_service_proto_depIdxs = []int32{
 	0,  // 0: orchicon.api.v1.ExecutionService.GetExecution:input_type -> orchicon.api.v1.GetExecutionRequest
@@ -77,18 +84,22 @@ var file_orchicon_api_v1_execution_service_proto_depIdxs = []int32{
 	7,  // 7: orchicon.api.v1.ExecutionService.ApproveToolCall:input_type -> orchicon.api.v1.ApproveToolCallRequest
 	8,  // 8: orchicon.api.v1.ExecutionService.ListPendingApprovals:input_type -> orchicon.api.v1.ListPendingApprovalsRequest
 	9,  // 9: orchicon.api.v1.ExecutionService.DeleteExecution:input_type -> orchicon.api.v1.DeleteExecutionRequest
-	10, // 10: orchicon.api.v1.ExecutionService.GetExecution:output_type -> orchicon.api.v1.GetExecutionResponse
-	11, // 11: orchicon.api.v1.ExecutionService.ListExecutions:output_type -> orchicon.api.v1.ListExecutionsResponse
-	12, // 12: orchicon.api.v1.ExecutionService.StreamExecutionEvents:output_type -> orchicon.api.v1.StreamExecutionEventsResponse
-	13, // 13: orchicon.api.v1.ExecutionService.PauseExecution:output_type -> orchicon.api.v1.PauseExecutionResponse
-	14, // 14: orchicon.api.v1.ExecutionService.ResumeExecution:output_type -> orchicon.api.v1.ResumeExecutionResponse
-	15, // 15: orchicon.api.v1.ExecutionService.CancelExecution:output_type -> orchicon.api.v1.CancelExecutionResponse
-	16, // 16: orchicon.api.v1.ExecutionService.CheckpointNow:output_type -> orchicon.api.v1.CheckpointNowResponse
-	17, // 17: orchicon.api.v1.ExecutionService.ApproveToolCall:output_type -> orchicon.api.v1.ApproveToolCallResponse
-	18, // 18: orchicon.api.v1.ExecutionService.ListPendingApprovals:output_type -> orchicon.api.v1.ListPendingApprovalsResponse
-	19, // 19: orchicon.api.v1.ExecutionService.DeleteExecution:output_type -> orchicon.api.v1.DeleteExecutionResponse
-	10, // [10:20] is the sub-list for method output_type
-	0,  // [0:10] is the sub-list for method input_type
+	10, // 10: orchicon.api.v1.ExecutionService.BatchDeleteExecutions:input_type -> orchicon.api.v1.BatchDeleteExecutionsRequest
+	11, // 11: orchicon.api.v1.ExecutionService.CreateFollowUpExecution:input_type -> orchicon.api.v1.CreateFollowUpExecutionRequest
+	12, // 12: orchicon.api.v1.ExecutionService.GetExecution:output_type -> orchicon.api.v1.GetExecutionResponse
+	13, // 13: orchicon.api.v1.ExecutionService.ListExecutions:output_type -> orchicon.api.v1.ListExecutionsResponse
+	14, // 14: orchicon.api.v1.ExecutionService.StreamExecutionEvents:output_type -> orchicon.api.v1.StreamExecutionEventsResponse
+	15, // 15: orchicon.api.v1.ExecutionService.PauseExecution:output_type -> orchicon.api.v1.PauseExecutionResponse
+	16, // 16: orchicon.api.v1.ExecutionService.ResumeExecution:output_type -> orchicon.api.v1.ResumeExecutionResponse
+	17, // 17: orchicon.api.v1.ExecutionService.CancelExecution:output_type -> orchicon.api.v1.CancelExecutionResponse
+	18, // 18: orchicon.api.v1.ExecutionService.CheckpointNow:output_type -> orchicon.api.v1.CheckpointNowResponse
+	19, // 19: orchicon.api.v1.ExecutionService.ApproveToolCall:output_type -> orchicon.api.v1.ApproveToolCallResponse
+	20, // 20: orchicon.api.v1.ExecutionService.ListPendingApprovals:output_type -> orchicon.api.v1.ListPendingApprovalsResponse
+	21, // 21: orchicon.api.v1.ExecutionService.DeleteExecution:output_type -> orchicon.api.v1.DeleteExecutionResponse
+	22, // 22: orchicon.api.v1.ExecutionService.BatchDeleteExecutions:output_type -> orchicon.api.v1.BatchDeleteExecutionsResponse
+	23, // 23: orchicon.api.v1.ExecutionService.CreateFollowUpExecution:output_type -> orchicon.api.v1.CreateFollowUpExecutionResponse
+	12, // [12:24] is the sub-list for method output_type
+	0,  // [0:12] is the sub-list for method input_type
 	0,  // [0:0] is the sub-list for extension type_name
 	0,  // [0:0] is the sub-list for extension extendee
 	0,  // [0:0] is the sub-list for field type_name

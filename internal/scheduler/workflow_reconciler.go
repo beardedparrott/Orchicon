@@ -785,6 +785,18 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			}
 		default:
 			// Recovery still in progress — stay in running, retry next pass.
+			// On first encounter, write the step-level recovery config
+			// (max_retries, retry_delay_seconds) into the recovery execution's
+			// DB fields so the engine observes them.
+			if recovery.Status == domain.RecoveryPending && recovery.MaxRetries == 5 {
+				_, mr, rd := readRecoveryConfig(step.Config)
+				if _, err := db.UpdateRecoveryExecution(ctx, tx, tenantID, recovery.ID, recovery.Version, db.UpdateRecoveryExecutionFields{
+					MaxRetries:        &mr,
+					RetryDelaySeconds: &rd,
+				}); err != nil {
+					r.log.Warn("recover step: update recovery config", "recovery", recovery.ID, "error", err)
+				}
+			}
 			if sr.Status != domain.StepRunRunning {
 				updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 					Status:    strPtr(domain.StepRunRunning),
@@ -1345,9 +1357,10 @@ func stepKindLabel(kind string) string {
 	}
 }
 
-// readProjectContextFiles lists the project's context_files as full
-// absolute paths so the worker can read them from disk. No file contents
-// are sent — only the paths.
+// readProjectContextFiles lists the project's context_files as absolute
+// paths so the worker can read them from disk. No file contents are sent
+// — only the paths. Directories are listed as-is; the worker is instructed
+// to read them.
 func (r *WorkflowReconciler) readProjectContextFiles(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (string, error) {
 	p, err := db.GetProject(ctx, tx, tenantID, projectID)
 	if err != nil {
@@ -1365,7 +1378,7 @@ func (r *WorkflowReconciler) readProjectContextFiles(ctx context.Context, tx pgx
 	}
 	var sb strings.Builder
 	sb.WriteString("# File context\n\n")
-	sb.WriteString("File context: The following files and directories are provided as context. Please read the files from disk and any files that are also contained within the directories listed before starting your work.\n\n")
+	sb.WriteString("The following files and directories are provided as project context. Please fully read the contents of each file, and for directories, read all files within them, before starting your work.\n\n")
 	for _, relPath := range files {
 		fullPath := filepath.Join(p.ProjectDir, relPath)
 		if !strings.HasPrefix(filepath.Clean(fullPath), filepath.Clean(p.ProjectDir)) {
@@ -1441,6 +1454,36 @@ func readConfigStrategy(config string) string {
 		return ""
 	}
 	return parsed.Strategy
+}
+
+// readRecoveryConfig extracts strategy, max_retries and
+// retry_delay_seconds from the step config JSON. Returns defaults
+// for any missing field.
+func readRecoveryConfig(config string) (strategy string, maxRetries, retryDelay int) {
+	strategy = "summarize_restart"
+	maxRetries = 5
+	retryDelay = 10
+	if config == "" {
+		return
+	}
+	var parsed struct {
+		Strategy          string `json:"strategy"`
+		MaxRetries        int    `json:"max_retries"`
+		RetryDelaySeconds int    `json:"retry_delay_seconds"`
+	}
+	if err := json.Unmarshal([]byte(config), &parsed); err != nil {
+		return
+	}
+	if parsed.Strategy != "" {
+		strategy = parsed.Strategy
+	}
+	if parsed.MaxRetries > 0 {
+		maxRetries = parsed.MaxRetries
+	}
+	if parsed.RetryDelaySeconds > 0 {
+		retryDelay = parsed.RetryDelaySeconds
+	}
+	return
 }
 
 // upstreamWorkItemIDs walks step.DependsOn looking for WORK_ITEM steps

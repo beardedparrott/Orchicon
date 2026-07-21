@@ -659,12 +659,19 @@ func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 		f, err := spaFS.Open(cleanPath)
 		if err == nil {
 			f.Close()
+			// Hashed assets (JS, CSS, images) have unique filenames and
+			// can be cached. HTML files must never be cached so the SPA
+			// picks up new JS bundles on deployment.
+			if strings.HasSuffix(path, ".html") || strings.HasSuffix(path, "/") || !strings.Contains(path, ".") {
+				w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			}
 			fileServer.ServeHTTP(w, r)
 			return
 		}
 
 		if len(indexHTML) > 0 {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			w.Write(indexHTML)
 			return
 		}

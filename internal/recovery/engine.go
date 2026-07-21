@@ -72,6 +72,13 @@ const (
 	RecoveryStrategyStop              = "stop"               // PR C
 	RecoveryStrategyHumanEscalation   = "human_escalation"   // PR C — L3 block
 	RecoveryStrategyRetryN            = "retry_n"            // PR C
+
+	// Default retry budget: max 5 recovery attempts for the same task
+	// chain, with 10s delay between retries. These can be overridden via
+	// env vars ORCHICON_RECOVERY_MAX_RETRIES and
+	// ORCHICON_RECOVERY_RETRY_DELAY_SECONDS.
+	defaultMaxRetries        = 5
+	defaultRetryDelaySeconds = 10
 )
 
 // strategyForWorkItem maps a work item's kind to the recovery strategy
@@ -241,6 +248,20 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, tr
 		return fmt.Errorf("recovery trigger: get execution: %w", err)
 	}
 
+	// Bounded retry: count how many previous recovery attempts exist
+	// across this task's ancestor chain. If the limit is exceeded,
+	// escalate to human (L3) instead of retrying indefinitely.
+	maxRetries := defaultMaxRetries
+	retryCount, err := countTaskChainRecoveries(ctx, ttx.Tx, tenantID, taskID)
+	if err != nil {
+		e.log.Warn("recovery trigger: count retries", "task", taskID, "error", err)
+	}
+	if retryCount >= maxRetries && level < domain.RecoveryLevelL3 {
+		e.log.Warn("recovery retry limit exceeded, escalating to L3",
+			"task", taskID, "retry_count", retryCount, "max_retries", maxRetries)
+		level = domain.RecoveryLevelL3
+	}
+
 	// Determine the resumption path (docs/06 §4): direct checkpoint
 	// replay when a checkpoint exists + a compatible adapter is
 	// available; otherwise summarize-resume.
@@ -272,6 +293,8 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, tr
 		ResumptionPath:     resumptionPath,
 		BudgetTokensLimit:  budgetTokensLimit,
 		BudgetCostLimitUSD: budgetCostLimit,
+		MaxRetries:         defaultMaxRetries,
+		RetryDelaySeconds:  defaultRetryDelaySeconds,
 		TriggeredAt:        now,
 	}
 	created, err := db.CreateRecoveryExecution(ctx, ttx.Tx, row)
@@ -1095,3 +1118,37 @@ func enqueueRecoveryEvent(ctx context.Context, tx pgx.Tx, eventType string, rec 
 func strPtr(s string) *string { return &s }
 func boolPtr(b bool) *bool    { return &b }
 func int32Ptr(i int32) *int32 { return &i }
+
+// countTaskChainRecoveries walks the work item's parent chain to find
+// all ancestor task IDs, then counts terminal recovery executions for
+// any task in the chain. This prevents unbounded retry loops.
+func countTaskChainRecoveries(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (int, error) {
+	// Collect all task IDs in the chain.
+	taskIDs := []string{taskID}
+	cur := taskID
+	const maxDepth = 32
+	for i := 0; i < maxDepth; i++ {
+		var parentID *string
+		err := tx.QueryRow(ctx,
+			`SELECT parent_id FROM work_items WHERE id = $1 AND tenant_id = $2`, cur, tenantID).Scan(&parentID)
+		if err != nil {
+			break
+		}
+		if parentID == nil || *parentID == "" {
+			break
+		}
+		taskIDs = append(taskIDs, *parentID)
+		cur = *parentID
+	}
+	// Count terminal recovery executions for any task in the chain.
+	var count int
+	err := tx.QueryRow(ctx,
+		`SELECT COUNT(*) FROM recovery_executions
+		 WHERE tenant_id = $1 AND task_id = ANY($2)
+		   AND status IN ('resumed', 'failed')`,
+		tenantID, taskIDs).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}

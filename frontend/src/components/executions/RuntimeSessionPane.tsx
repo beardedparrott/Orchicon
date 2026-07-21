@@ -28,7 +28,8 @@
 // name like `task` and a JSON input that includes the prompt sent to
 // the child. There is no separate "subagent" event type; subagent
 // visibility is the same as tool-call visibility, which is the point.
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Copy } from "lucide-react";
 import type { StreamExecutionEventsResponse } from "@/api/gen/orchicon/api/v1/execution_pb";
 import { Markdown } from "@/components/markdown";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -69,6 +70,16 @@ interface ParsedArtifact {
   artifactType: string;
   content: string;
   occurredAt: Date;
+}
+
+// RenderedBlockWithArtifacts is a text-group that may carry inline
+// artifacts that were emitted between text chunks. This avoids breaking
+// the assistant message into separate bubbles when a `write` tool
+// produces an artifact mid-response.
+interface RenderedBlockWithArtifacts {
+  kind: "text-group";
+  chunks: ParsedTextChunk[];
+  artifacts: ParsedArtifact[];
 }
 
 // ChatMessage is the unified type the renderer iterates over. The
@@ -352,13 +363,13 @@ export function RuntimeSessionPane({ events, prompt, streamStatus, storedOutput 
 const rendered = useMemo<
   Array<
     | ChatMessage
-    | { kind: "text-group"; chunks: ParsedTextChunk[] }
+    | RenderedBlockWithArtifacts
     | { kind: "reasoning-group"; chunks: ParsedReasoningChunk[] }
   >
 >(() => {
     const blocks: Array<
       | ChatMessage
-      | { kind: "text-group"; chunks: ParsedTextChunk[] }
+      | RenderedBlockWithArtifacts
       | { kind: "reasoning-group"; chunks: ParsedReasoningChunk[] }
     > = [];
     for (const m of messages) {
@@ -367,7 +378,7 @@ const rendered = useMemo<
         if (last && "kind" in last && last.kind === "text-group") {
           last.chunks.push(m.chunk);
         } else {
-          blocks.push({ kind: "text-group", chunks: [m.chunk] });
+          blocks.push({ kind: "text-group", chunks: [m.chunk], artifacts: [] });
         }
       } else if (m.kind === "reasoning") {
         const last = blocks[blocks.length - 1];
@@ -375,6 +386,15 @@ const rendered = useMemo<
           last.chunks.push(m.chunk);
         } else {
           blocks.push({ kind: "reasoning-group", chunks: [m.chunk] });
+        }
+      } else if (m.kind === "artifact") {
+        // Absorb artifact into the preceding text group so it doesn't
+        // break the assistant message into separate bubbles.
+        const last = blocks[blocks.length - 1];
+        if (last && "kind" in last && last.kind === "text-group") {
+          last.artifacts.push(m.artifact);
+        } else {
+          blocks.push(m);
         }
       } else {
         blocks.push(m);
@@ -424,7 +444,7 @@ const rendered = useMemo<
       <CardContent>
         <div
           ref={scrollRef}
-          className="max-h-[600px] space-y-3 overflow-auto pr-1"
+          className="max-h-[70vh] min-h-[400px] space-y-3 overflow-auto pr-1"
         >
           {/* System prompt at the top — collapsed by default if it's
               long, since most operators just want to see what came
@@ -446,7 +466,11 @@ const rendered = useMemo<
                 );
               }
               return (
-                <AssistantBubble key={`tg-${idx}`} chunks={block.chunks} />
+                <AssistantBubble
+                  key={`tg-${idx}`}
+                  chunks={block.chunks}
+                  artifacts={block.artifacts ?? []}
+                />
               );
             }
             const m = block as ChatMessage;
@@ -489,7 +513,9 @@ const rendered = useMemo<
                   <span>assistant output</span>
                   <span className="opacity-60">(stored)</span>
                 </div>
-                <Markdown>{storedOutput}</Markdown>
+                <div className="break-words [overflow-wrap:anywhere]">
+                  <Markdown>{storedOutput}</Markdown>
+                </div>
               </div>
             </div>
           )}
@@ -530,10 +556,7 @@ function SystemNote({ text, ts }: { text: string; ts: Date }) {
   );
 }
 
-function AssistantBubble({ chunks }: { chunks: ParsedTextChunk[] }) {
-  // Concatenate consecutive text chunks — opencode emits one
-  // `text` event per streaming token chunk; the user sees one
-  // assistant message, not N bubbles per token.
+function AssistantBubble({ chunks, artifacts }: { chunks: ParsedTextChunk[]; artifacts: ParsedArtifact[] }) {
   const text = chunks.map((c) => c.text).join("");
   const lastTs = chunks[chunks.length - 1].occurredAt;
   return (
@@ -542,10 +565,53 @@ function AssistantBubble({ chunks }: { chunks: ParsedTextChunk[] }) {
         <div className="mb-1 flex items-center gap-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
           <span>assistant</span>
           <span className="opacity-60">{lastTs.toLocaleTimeString()}</span>
+          <span className="ml-auto">
+            <CopyButton text={text} />
+          </span>
         </div>
-        <Markdown>{text}</Markdown>
+        <div className="break-words [overflow-wrap:anywhere]">
+          <Markdown>{text}</Markdown>
+        </div>
+        {/* Inline artifacts: write-tool outputs are embedded inside the
+            assistant bubble so they don't break the message flow. */}
+        {artifacts.length > 0 && (
+          <div className="mt-3 space-y-2 border-t border-border/50 pt-3">
+            {artifacts.map((a, i) => (
+              <InlineArtifactCard key={i} artifact={a} />
+            ))}
+          </div>
+        )}
       </div>
     </div>
+  );
+}
+
+function InlineArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
+  const fileName = artifact.name.split("/").pop() || artifact.name;
+  const isMarkdown = artifact.artifactType === "markdown" || fileName.endsWith(".md");
+  return (
+    <details className="rounded-lg border border-sky-300/40 bg-sky-50/30 p-2 dark:bg-sky-950/20">
+      <summary className="flex cursor-pointer items-center gap-2 text-[11px] font-medium text-sky-800 dark:text-sky-200">
+        <span className="inline-flex items-center rounded bg-sky-200 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide dark:bg-sky-900">
+          artifact
+        </span>
+        <span className="truncate font-mono">{fileName}</span>
+        <span className="shrink-0 text-[10px] text-muted-foreground">
+          {artifact.content.length.toLocaleString()} bytes
+        </span>
+        <span className="ml-auto">
+          <CopyButton text={artifact.content} />
+        </span>
+      </summary>
+      {isMarkdown ? (
+        <div className="mt-2 max-h-48 overflow-auto rounded bg-background/70 p-2 text-xs leading-relaxed">
+          <Markdown>{artifact.content}</Markdown>
+        </div>
+      ) : (
+        <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-background/70 p-2 font-mono text-xs leading-relaxed">
+          {artifact.content}</pre>
+      )}
+    </details>
   );
 }
 
@@ -654,8 +720,13 @@ function ResultCard({ result }: { result: ParsedResult }) {
         <div className="mb-1 flex items-center gap-2 text-[10px] font-medium uppercase tracking-wide text-blue-700 dark:text-blue-300">
           <span>final result</span>
           <span className="opacity-60">{result.occurredAt.toLocaleTimeString()}</span>
+          <span className="ml-auto">
+            <CopyButton text={result.text} />
+          </span>
         </div>
-        <Markdown>{result.text}</Markdown>
+        <div className="break-words [overflow-wrap:anywhere]">
+          <Markdown>{result.text}</Markdown>
+        </div>
       </div>
     </div>
   );
@@ -693,9 +764,12 @@ function ArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
             {artifact.content.length.toLocaleString()} bytes
           </span>
         </div>
-        <span className="shrink-0 text-[10px] text-muted-foreground">
-          {artifact.occurredAt.toLocaleTimeString()}
-        </span>
+        <div className="flex items-center gap-2">
+          <CopyButton text={artifact.content} />
+          <span className="shrink-0 text-[10px] text-muted-foreground">
+            {artifact.occurredAt.toLocaleTimeString()}
+          </span>
+        </div>
       </div>
       <details open={true}>
         <summary className="cursor-pointer select-none text-[10px] font-medium uppercase tracking-wide text-sky-700 dark:text-sky-300">
@@ -713,6 +787,31 @@ function ArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
         )}
       </details>
     </div>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {
+      // clipboard not available
+    });
+  }, [text]);
+  return (
+    <button
+      onClick={handleCopy}
+      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors"
+      title="Copy to clipboard"
+    >
+      {copied ? (
+        <span className="text-emerald-600 dark:text-emerald-400">Copied!</span>
+      ) : (
+        <Copy className="h-3 w-3" />
+      )}
+    </button>
   );
 }
 

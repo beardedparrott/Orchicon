@@ -34,6 +34,8 @@ type ExecutionRow struct {
 	WorkflowName    string
 	ErrorMessage    string
 	Output          string
+	Conversation    []byte // jsonb: follow-up conversation array
+	IsFollowUp      bool
 	Version         int
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
@@ -46,25 +48,29 @@ func CreateExecution(ctx context.Context, tx pgx.Tx, e ExecutionRow) (ExecutionR
 	const q = `INSERT INTO worker_executions
 		(id, tenant_id, project_id, task_id, worker_id, worker_version,
 		 adapter_id, status, health_state, started_at,
-		 workflow_run_id, workflow_step_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		 workflow_run_id, workflow_step_id, conversation, is_follow_up)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING id, tenant_id, project_id, task_id, worker_id, worker_version,
 			adapter_id, status, health_state, started_at, ended_at,
 			token_usage, cost_usd, checkpoint_ref, recovery_id,
-			workflow_run_id, workflow_step_id, error_message, output, version,
+			workflow_run_id, workflow_step_id, error_message, output, conversation, is_follow_up, version,
 			created_at, updated_at`
+	conv := e.Conversation
+	if conv == nil {
+		conv = []byte("[]")
+	}
 	row := e
 	err := tx.QueryRow(ctx, q,
 		e.ID, e.TenantID, e.ProjectID, e.TaskID, e.WorkerID, e.WorkerVersion,
 		e.AdapterID, e.Status, e.HealthState, e.StartedAt,
-		e.WorkflowRunID, e.WorkflowStepID,
+		e.WorkflowRunID, e.WorkflowStepID, conv, e.IsFollowUp,
 	).Scan(
 		&row.ID, &row.TenantID, &row.ProjectID, &row.TaskID, &row.WorkerID,
 		&row.WorkerVersion, &row.AdapterID, &row.Status, &row.HealthState,
 		&row.StartedAt, &row.EndedAt, &row.TokenUsage, &row.CostUSD,
 		&row.CheckpointRef, &row.RecoveryID,
 		&row.WorkflowRunID, &row.WorkflowStepID,
-		&row.ErrorMessage, &row.Output,
+		&row.ErrorMessage, &row.Output, &row.Conversation, &row.IsFollowUp,
 		&row.Version,
 		&row.CreatedAt, &row.UpdatedAt,
 	)
@@ -79,7 +85,7 @@ func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (Executio
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
-		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.version,
+		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
 		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
@@ -92,7 +98,7 @@ func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (Executio
 		&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 		&e.CheckpointRef, &e.RecoveryID,
 		&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName,
-		&e.ErrorMessage, &e.Output,
+		&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp,
 		&e.Version,
 		&e.CreatedAt, &e.UpdatedAt,
 	)
@@ -106,15 +112,20 @@ func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (Executio
 }
 
 // ListExecutionsFilter scopes a list query to a tenant, optionally
-// filtered by project/task/status/workflow_run_id.
+// filtered by project/task/status/workflow_run_id, with free-text
+// search and sort.
 type ListExecutionsFilter struct {
-	TenantID      string
-	ProjectID     string
-	TaskID        string
-	Status        string
-	WorkflowRunID string
-	PageSize      int
-	AfterID       string
+	TenantID       string
+	ProjectID      string
+	TaskID         string
+	Status         string
+	WorkflowRunID  string
+	Search         string
+	SortBy         string
+	SortOrder      string
+	PageSize       int
+	AfterID        string
+	ExcludeFollowUp bool
 }
 
 // ListExecutions returns a page of executions for the tenant.
@@ -122,34 +133,76 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 	if f.PageSize <= 0 || f.PageSize > 1000 {
 		f.PageSize = 100
 	}
+	if f.SortBy == "" {
+		f.SortBy = "created_at"
+	}
+	if f.SortOrder == "" {
+		f.SortOrder = "desc"
+	}
 	q := `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
-		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.version,
+		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
 		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
 		LEFT JOIN workflows w ON w.id = wr.workflow_id
-		WHERE we.tenant_id = $1 AND ($2 = '' OR we.id > $2)`
-	args := []any{f.TenantID, f.AfterID}
+		WHERE we.tenant_id = $1`
+	args := []any{f.TenantID}
+	argIdx := 2
+	if f.AfterID != "" {
+		q += fmt.Sprintf(` AND ($%d = '' OR we.id > $%[1]d)`, argIdx)
+		args = append(args, f.AfterID)
+		argIdx++
+	}
 	if f.ProjectID != "" {
-		q += fmt.Sprintf(` AND we.project_id = $%d`, len(args)+1)
+		q += fmt.Sprintf(` AND we.project_id = $%d`, argIdx)
 		args = append(args, f.ProjectID)
+		argIdx++
 	}
 	if f.TaskID != "" {
-		q += fmt.Sprintf(` AND we.task_id = $%d`, len(args)+1)
+		q += fmt.Sprintf(` AND we.task_id = $%d`, argIdx)
 		args = append(args, f.TaskID)
+		argIdx++
 	}
 	if f.Status != "" {
-		q += fmt.Sprintf(` AND we.status = $%d`, len(args)+1)
+		q += fmt.Sprintf(` AND we.status = $%d`, argIdx)
 		args = append(args, f.Status)
+		argIdx++
 	}
 	if f.WorkflowRunID != "" {
-		q += fmt.Sprintf(` AND we.workflow_run_id = $%d`, len(args)+1)
+		q += fmt.Sprintf(` AND we.workflow_run_id = $%d`, argIdx)
 		args = append(args, f.WorkflowRunID)
+		argIdx++
 	}
-	q += ` ORDER BY we.id DESC LIMIT $` + fmt.Sprint(len(args)+1)
+	if f.Search != "" {
+		q += fmt.Sprintf(` AND (we.worker_id ILIKE '%%' || $%d || '%%' OR we.task_id ILIKE '%%' || $%[1]d || '%%' OR COALESCE(w.name, '') ILIKE '%%' || $%[1]d || '%%')`, argIdx)
+		args = append(args, f.Search)
+		argIdx++
+	}
+	if f.ExcludeFollowUp {
+		q += fmt.Sprintf(` AND we.is_follow_up = $%d`, argIdx)
+		args = append(args, false)
+		argIdx++
+	}
+	// Validate sort column to prevent SQL injection.
+	sortColumn := "we.created_at"
+	switch f.SortBy {
+	case "status":
+		sortColumn = "we.status"
+	case "worker_id":
+		sortColumn = "we.worker_id"
+	case "created_at":
+		sortColumn = "we.created_at"
+	}
+	sortDir := "DESC"
+	if f.SortOrder == "asc" {
+		sortDir = "ASC"
+	}
+	q += fmt.Sprintf(` ORDER BY %s %s`, sortColumn, sortDir)
+	q += fmt.Sprintf(` LIMIT $%d`, argIdx)
 	args = append(args, f.PageSize)
+	argIdx++
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("db: list executions: %w", err)
@@ -164,7 +217,7 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 			&e.CheckpointRef, &e.RecoveryID,
 			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName,
-			&e.ErrorMessage, &e.Output,
+			&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp,
 			&e.Version,
 			&e.CreatedAt, &e.UpdatedAt,
 		); err != nil {
@@ -189,6 +242,7 @@ type UpdateExecutionFields struct {
 	RecoveryID   *string
 	ErrorMessage *string
 	Output       *string
+	Conversation *[]byte
 }
 
 // UpdateExecution applies a partial update with optimistic concurrency.
@@ -253,17 +307,22 @@ func UpdateExecution(ctx context.Context, tx pgx.Tx, tenantID, id string, expect
 		args = append(args, *f.Output)
 		setIdx++
 	}
+	if f.Conversation != nil {
+		q += fmt.Sprintf(`, conversation = $%d`, setIdx)
+		args = append(args, *f.Conversation)
+		setIdx++
+	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, project_id, task_id, worker_id, worker_version,
 		adapter_id, status, health_state, started_at, ended_at,
-		token_usage, cost_usd, checkpoint_ref, recovery_id, error_message, output, version,
+		token_usage, cost_usd, checkpoint_ref, recovery_id, error_message, output, conversation, is_follow_up, version,
 		created_at, updated_at`
 	var e ExecutionRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&e.ID, &e.TenantID, &e.ProjectID, &e.TaskID, &e.WorkerID,
 		&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 		&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
-		&e.CheckpointRef, &e.RecoveryID, &e.ErrorMessage, &e.Output,
+		&e.CheckpointRef, &e.RecoveryID, &e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp,
 		&e.Version,
 		&e.CreatedAt, &e.UpdatedAt,
 	)
@@ -282,7 +341,7 @@ func ListDispatchingExecutions(ctx context.Context, tx pgx.Tx, tenantID string) 
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
-		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.version,
+		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
 		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
@@ -303,7 +362,7 @@ func ListDispatchingExecutions(ctx context.Context, tx pgx.Tx, tenantID string) 
 			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 			&e.CheckpointRef, &e.RecoveryID,
 			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName,
-			&e.ErrorMessage, &e.Output,
+			&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp,
 			&e.Version,
 			&e.CreatedAt, &e.UpdatedAt,
 		); err != nil {

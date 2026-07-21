@@ -5,12 +5,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { adapterClient, executionClient } from "@/api/clients";
 import { useStream } from "@/api/useStream";
+import type { CreateFollowUpExecutionResponse } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { RuntimeAdapter } from "@/api/gen/orchicon/api/v1/adapter_pb";
 import type { WorkerExecution } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { ExecutionEvent } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { ApprovalRequest } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { StreamExecutionEventsRequest } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { StreamExecutionEventsResponse } from "@/api/gen/orchicon/api/v1/execution_pb";
+
 import type { PartialMessage } from "@bufbuild/protobuf";
 
 // --- adapter keys ---
@@ -61,19 +63,27 @@ export function useListExecutions(opts?: {
   taskId?: string;
   status?: number;
   workflowRunId?: string;
+  search?: string;
+  sortBy?: string;
+  sortOrder?: string;
+  enabled?: boolean;
 }) {
   return useQuery({
     queryKey: executionKeys.list(opts?.projectId, opts?.status),
     queryFn: async () => {
       const res = await executionClient.listExecutions({
-        pageSize: 100,
+        pageSize: 200,
         projectId: opts?.projectId ?? undefined,
         taskId: opts?.taskId ?? undefined,
         status: opts?.status ?? undefined,
         workflowRunId: opts?.workflowRunId ?? undefined,
+        search: opts?.search ?? "",
+        sortBy: opts?.sortBy ?? "created_at",
+        sortOrder: opts?.sortOrder ?? "desc",
       });
       return res.executions as WorkerExecution[];
     },
+    enabled: opts?.enabled,
     refetchInterval: 3_000,
   });
 }
@@ -195,6 +205,19 @@ export function useDeleteExecution() {
   });
 }
 
+export function useBatchDeleteExecutions() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (ids: string[]) => {
+      const res = await executionClient.batchDeleteExecutions({ ids });
+      return res;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: executionKeys.all });
+    },
+  });
+}
+
 // --- Tier 2 approval ---
 
 export function useListPendingApprovals(executionId?: string) {
@@ -207,6 +230,21 @@ export function useListPendingApprovals(executionId?: string) {
       return res.approvals as ApprovalRequest[];
     },
     refetchInterval: 5_000, // poll every 5s for pending approvals
+  });
+}
+
+// --- follow-up execution ---
+
+export function useCreateFollowUpExecution() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { executionId: string; message: string }) => {
+      const res = await executionClient.createFollowUpExecution(input);
+      return res as CreateFollowUpExecutionResponse;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: executionKeys.all });
+    },
   });
 }
 

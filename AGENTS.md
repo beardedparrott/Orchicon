@@ -25,6 +25,8 @@ The project's model spend is rising. Be economical but **never at the expense of
 
 - **Efficiency is not an excuse for shortcuts.** Never patch around a symptom without first identifying the root cause through proper troubleshooting. Verbose investigation is cheaper than a second pass that has to undo incorrect assumptions.
 - **Do not assume.** Test every hypothesis. When a user reports a bug, reproduce it, read the relevant code path, and verify the fix actually resolves the issue at the system level — not just in a typecheck or unit test.
+- **Fix the whole class, not just one instance.** When a bug is found in a query, handler, or component — especially a copy-paste pattern like a SQL column list or a Scan call — search for every other occurrence of the same pattern and fix them all. A single bug report often reveals a systemic issue.
+- **Think broadly, not minimally.** When the user agrees to a suggestion (e.g. "add cache-control headers"), don't limit the fix to just the one endpoint that prompted it. Check whether every similar endpoint, handler, or serving path has the same gap and apply the fix consistently.
 - **Every answer must explain the full picture:** *why* it was broken, *where* the fault lived, *who* caused it (which component), *when* it triggers (startup, every request, only after certain conditions), and *what* the fix does at a mechanical level.
 - Prefer parallel tool calls when independent (one message, many tools) to cut round-trips.
 - Read only the slice of a file you need; avoid re-reading whole files.
@@ -46,6 +48,7 @@ The project's model spend is rising. Be economical but **never at the expense of
   fi
   ```
 - Branch naming: `<type>/<short-description>` (e.g. `feat/project-crud`, `fix/outbox-relay-dedup`, `chore/docker-compose-setup`). Types: `feat`, `fix`, `chore`, `refactor`, `docs`, `test`.
+- **Before starting work on a new branch**, bump the version tag: `git tag -a v0.1.<next> -m "v0.1.<next>"`. This ensures the binary reports the correct version during local development and `scripts/install-local.sh` embeds the new tag.
 - Commit early and often on your branch. Write clear commit messages in present tense: `Add project CRUD service and data-access layer`. Stage only the files relevant to the commit.
 - **Never create a pull request without asking the user for approval first.** Ask, wait for a yes, then proceed.
 - Once work is complete and properly tested, ask the user to verify.

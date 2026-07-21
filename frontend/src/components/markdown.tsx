@@ -80,7 +80,7 @@ const COMPONENTS: Components = {
 export function Markdown({ children, className }: { children?: string | null; className?: string }) {
   if (!children) return null;
   return (
-    <div className={cn("prose-custom text-sm leading-relaxed", className)}>
+    <div className={cn("prose-custom text-sm leading-relaxed break-words [overflow-wrap:anywhere]", className)}>
       <ReactMarkdown components={COMPONENTS} remarkPlugins={[remarkGfm]}>
         {children}
       </ReactMarkdown>
