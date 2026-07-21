@@ -989,6 +989,11 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		if err != nil {
 			r.log.Warn("failed to read project context files", "project_id", wi.ProjectID, "work_item_id", wi.ID, "error", err)
 		} else if fileCtx != "" {
+			previewLen := len(fileCtx)
+			if previewLen > 500 {
+				previewLen = 500
+			}
+			r.log.Info("file context built", "work_item_id", wi.ID, "length", len(fileCtx), "preview", fileCtx[:previewLen])
 			sb.WriteString(fileCtx)
 		}
 	}
