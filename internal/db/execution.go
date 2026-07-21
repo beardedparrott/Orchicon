@@ -217,7 +217,7 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 			&e.CheckpointRef, &e.RecoveryID,
 			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName,
-			&e.ErrorMessage, &e.Output, &e.Conversation,
+			&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp,
 			&e.Version,
 			&e.CreatedAt, &e.UpdatedAt,
 		); err != nil {
