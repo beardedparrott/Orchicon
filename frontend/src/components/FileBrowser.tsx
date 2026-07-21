@@ -145,18 +145,15 @@ export function FileBrowser({
                   {selectedFiles.length} file{selectedFiles.length !== 1 ? "s" : ""} selected as context:
                 </p>
                 <div className="rounded-md border divide-y max-h-[300px] overflow-y-auto">
-                  {selectedFiles.map((f) => {
-                    const displayPath = projectDir ? `${projectDir}/${f}` : f;
-                    return (
-                      <div
-                        key={f}
-                        className="flex items-center gap-2 px-3 py-2 text-xs font-mono"
-                      >
-                        <File className="h-3 w-3 shrink-0 text-sky-500" />
-                        <span className="truncate">{displayPath}</span>
-                      </div>
-                    );
-                  })}
+                  {selectedFiles.map((f) => (
+                    <div
+                      key={f}
+                      className="flex items-center gap-2 px-3 py-2 text-xs font-mono"
+                    >
+                      <File className="h-3 w-3 shrink-0 text-sky-500" />
+                      <span className="truncate">{f}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -241,25 +238,22 @@ export function FileBrowser({
                       {selectedFiles.length} path{selectedFiles.length !== 1 ? "s" : ""} selected:
                     </p>
                     <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
-                      {selectedFiles.slice(0, 30).map((f) => {
-                        const displayPath = projectDir ? `${projectDir}/${f}` : f;
-                        return (
-                          <span
-                            key={f}
-                            className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-xs font-mono"
+                      {selectedFiles.slice(0, 30).map((f) => (
+                        <span
+                          key={f}
+                          className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-xs font-mono"
+                        >
+                          <File className="h-3 w-3 shrink-0" />
+                          <span className="truncate max-w-[300px]">{f}</span>
+                          <button
+                            type="button"
+                            className="hover:text-destructive shrink-0"
+                            onClick={() => toggleEntry(f)}
                           >
-                            <File className="h-3 w-3 shrink-0" />
-                            <span className="truncate max-w-[300px]">{displayPath}</span>
-                            <button
-                              type="button"
-                              className="hover:text-destructive shrink-0"
-                              onClick={() => toggleEntry(f)}
-                            >
-                              ×
-                            </button>
-                          </span>
-                        );
-                      })}
+                            ×
+                          </button>
+                        </span>
+                      ))}
                       {selectedFiles.length > 30 && (
                         <span className="text-xs text-muted-foreground">
                           …and {selectedFiles.length - 30} more

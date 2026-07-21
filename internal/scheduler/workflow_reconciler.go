@@ -1361,12 +1361,15 @@ func stepKindLabel(kind string) string {
 // paths so the worker can read them from disk. No file contents are sent
 // — only the paths. Directories are listed as-is; the worker is instructed
 // to read them.
+//
+// Paths are expected to be absolute. For backward compatibility, relative
+// paths are resolved against project_dir if it is set.
 func (r *WorkflowReconciler) readProjectContextFiles(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (string, error) {
 	p, err := db.GetProject(ctx, tx, tenantID, projectID)
 	if err != nil {
 		return "", fmt.Errorf("get project for context files: %w", err)
 	}
-	if p.ProjectDir == "" || len(p.ContextFiles) == 0 {
+	if len(p.ContextFiles) == 0 {
 		return "", nil
 	}
 	var files []string
@@ -1379,12 +1382,16 @@ func (r *WorkflowReconciler) readProjectContextFiles(ctx context.Context, tx pgx
 	var sb strings.Builder
 	sb.WriteString("# File context\n\n")
 	sb.WriteString("The following files and directories are provided as project context. Please fully read the contents of each file, and for directories, read all files within them, before starting your work.\n\n")
-	for _, relPath := range files {
-		fullPath := filepath.Join(p.ProjectDir, relPath)
-		if !strings.HasPrefix(filepath.Clean(fullPath), filepath.Clean(p.ProjectDir)) {
+	for _, path := range files {
+		cleaned := filepath.Clean(path)
+		// Backward compat: resolve relative paths against project_dir.
+		if !filepath.IsAbs(cleaned) && p.ProjectDir != "" {
+			cleaned = filepath.Join(p.ProjectDir, cleaned)
+		}
+		if !filepath.IsAbs(cleaned) {
 			continue
 		}
-		fmt.Fprintf(&sb, "- `%s`\n", fullPath)
+		fmt.Fprintf(&sb, "- `%s`\n", cleaned)
 	}
 	sb.WriteString("\n")
 	return sb.String(), nil

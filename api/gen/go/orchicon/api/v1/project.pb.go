@@ -206,10 +206,10 @@ type Project struct {
 	// filesystem. Files within this directory can be selected as context
 	// for workers (context_files).
 	ProjectDir string `protobuf:"bytes,10,opt,name=project_dir,json=projectDir,proto3" json:"project_dir,omitempty"`
-	// context_files are relative file paths (from project_dir) selected
-	// to be included as context when workers are dispatched for this
-	// project. The contents of these files are injected into the
-	// composite prompt (buildCompositePrompt).
+	// context_files are absolute file paths selected to be included as
+	// context when workers are dispatched for this project. The contents
+	// of these files are injected into the composite prompt
+	// (buildCompositePrompt).
 	ContextFiles  []string `protobuf:"bytes,11,rep,name=context_files,json=contextFiles,proto3" json:"context_files,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -372,7 +372,7 @@ func (x *ContextFiles) GetFiles() []string {
 type FileTreeEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Path          string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"` // relative path from project_dir
+	Path          string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"` // absolute path
 	IsDir         bool                   `protobuf:"varint,3,opt,name=is_dir,json=isDir,proto3" json:"is_dir,omitempty"`
 	Children      []*FileTreeEntry       `protobuf:"bytes,4,rep,name=children,proto3" json:"children,omitempty"`
 	unknownFields protoimpl.UnknownFields
