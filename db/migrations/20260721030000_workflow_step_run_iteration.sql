@@ -5,8 +5,8 @@
 -- The existing tenant_isolation RLS policy on workflow_step_runs covers
 -- both new columns (row-level, tenant_id is already on every row).
 ALTER TABLE workflow_step_runs
-  ADD COLUMN iteration     INT  NOT NULL DEFAULT 0,
-  ADD COLUMN superseded_by TEXT;
+  ADD COLUMN IF NOT EXISTS iteration     INT  NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS superseded_by TEXT;
 
 COMMENT ON COLUMN workflow_step_runs.iteration
   IS 'Re-entry count for loop decision steps (docs/11 §3.4). 0 for first dispatch.';

@@ -6,8 +6,8 @@
 -- The existing tenant_isolation RLS policy on work_items covers both new
 -- columns (row-level, tenant_id is already on every row).
 ALTER TABLE work_items
-  ADD COLUMN scheduled_start_at    TIMESTAMPTZ,
-  ADD COLUMN auto_start_workflow   BOOLEAN NOT NULL DEFAULT TRUE;
+  ADD COLUMN IF NOT EXISTS scheduled_start_at    TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS auto_start_workflow   BOOLEAN NOT NULL DEFAULT TRUE;
 
 COMMENT ON COLUMN work_items.scheduled_start_at
   IS 'Scheduled start time for a bound workflow run (docs/11 §5.1). NULL = immediate.';

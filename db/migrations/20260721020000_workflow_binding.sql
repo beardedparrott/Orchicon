@@ -4,8 +4,8 @@
 -- The existing tenant_isolation RLS policy on workflow_runs covers both
 -- new columns (row-level, tenant_id is already on every row).
 ALTER TABLE workflow_runs
-  ADD COLUMN work_item_id   TEXT REFERENCES work_items(id),
-  ADD COLUMN bound_worker_ref JSONB;
+  ADD COLUMN IF NOT EXISTS work_item_id   TEXT REFERENCES work_items(id),
+  ADD COLUMN IF NOT EXISTS bound_worker_ref JSONB;
 
 COMMENT ON COLUMN workflow_runs.work_item_id
   IS 'Work item this bound run operates on (docs/11 §2.1). NULL for one-shot runs.';
