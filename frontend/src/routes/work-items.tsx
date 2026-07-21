@@ -258,6 +258,8 @@ function TreeView({
   const { data: items, isLoading, error } = useListWorkItems(projectId, {
     search: search || undefined,
     status: statusFilter ? (Number(statusFilter) as WorkItemProto["status"]) : undefined,
+    sortBy: sortBy || undefined,
+    sortOrder: sortOrder || undefined,
   });
 
   if (isLoading) {
