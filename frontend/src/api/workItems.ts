@@ -50,6 +50,7 @@ export function useListWorkItems(
       return res.workItems as WorkItem[];
     },
     enabled: !!projectId,
+    refetchInterval: 5_000,
   });
 }
 
@@ -150,8 +151,7 @@ export function useBatchDeleteWorkItems(projectId: string) {
       await Promise.all(ids.map((id) => workItemClient.hardDeleteWorkItem({ id })));
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: workItemKeys.list(projectId) });
-      qc.invalidateQueries({ queryKey: workItemKeys.graph(projectId) });
+      qc.invalidateQueries({ queryKey: workItemKeys.all });
     },
   });
 }
