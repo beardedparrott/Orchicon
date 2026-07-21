@@ -42,8 +42,8 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-**v0.1.127** — Unified page patterns: back buttons, YAML code view + clone, bulk delete, absolute paths for context files.
-Added ArrowLeft back buttons to all detail pages and the dependency graph view. Added Code/Detail toggle with YAML view + Clone button to projects, work items, and workers detail pages. Added bulk delete with select-all checkboxes to projects, work items, workers, workflows, and recovery list pages. Added status/decision point filters to policies. Converted all list pages to vertical list format. Switched `context_files` from relative paths to absolute paths end-to-end — validation now requires `filepath.IsAbs`, `listDirectory` returns absolute `FileTreeEntry.Path`, and worker dispatch uses paths directly with a backward-compat fallback for old relative data.
+**v0.1.131** — Bound-run dispatch path (PR-A of Workflow Templates & Binding).
+Added `work_item_id` to `StartWorkflowRequest` and `WorkflowRun` proto messages. New DB migration adds nullable `work_item_id` and `bound_worker_ref` columns to `workflow_runs` (FK to work_items). The `WorkflowReconciler.dispatchStep` now checks for a bound run: when `run.WorkItemID` is set and no canvas work-item markers are upstream, it operates directly on the bound work item. One-shot (unbound) runs are unchanged — zero behavioral regression verified via curl E2E.
 
 ## Installation
 
