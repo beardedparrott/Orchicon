@@ -83,7 +83,9 @@ live in the Atlas migrations and evolve independently of this doc.
 - `workflow_versions` — workflow_id, version, steps (jsonb), inputs,
   outputs, recovery_policy_ref, version_note, status.
 - `workflow_runs` — id, workflow_id, workflow_version, project_id,
-  status, started_at, ended_at, current_step, run_context (jsonb).
+  status, started_at, ended_at, current_step, run_context (jsonb),
+  work_item_id (bound run link, docs/11 §5.1),
+  bound_worker_ref (jsonb, reserved).
 - `workflow_step_runs` — id, workflow_run_id, step_id, status,
   started_at, ended_at, attempt, result (jsonb).
 

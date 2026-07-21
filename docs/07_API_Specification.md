@@ -81,7 +81,9 @@ streaming for its entity.
 
 ### 3.4 `WorkflowService`
 - `CreateWorkflow`, `PublishWorkflow`, `GetWorkflow`, `ListWorkflows`
-- `StartWorkflow`, `AbortWorkflow`
+- `StartWorkflow(workflow_id, project_id, run_context, work_item_id?)`
+  — `work_item_id` binds the run to a work item (template binding,
+  docs/11 §5.3); empty for one-shot runs.
 - `StreamWorkflowEvents` (server-stream) — step transitions
 - `AcquireEditLock`, `ReleaseEditLock`, `GetEditLock` — explicit edit
   lock with TTL + heartbeat renewal; prevents concurrent edits. Other

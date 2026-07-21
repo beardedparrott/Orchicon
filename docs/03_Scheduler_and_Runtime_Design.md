@@ -32,7 +32,10 @@ management.
 Each top-level entity has a dedicated reconciler:
 
 - `ProjectReconciler` — lifecycle, budget enforcement, child health.
-- `WorkflowReconciler` — step DAG progression, gate evaluation.
+- `WorkflowReconciler` — step DAG progression, gate evaluation,
+  bound-run dispatch (docs/11 §4): when `run.WorkItemID` is set and no
+  canvas work-item markers are upstream of a `task` step, the reconciler
+  operates directly on the bound work item.
 - `TaskReconciler` — dependency resolution, dispatch decision,
   completion policy.
 - `WorkerReconciler` — Worker version lifecycle, retirement queue.

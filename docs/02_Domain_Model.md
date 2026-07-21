@@ -107,6 +107,11 @@ gate_policy_ref.
 
 Lifecycle: `draft → published → running → completed | failed | aborted`.
 
+A **bound run** (docs/11 §2.1) is a WorkflowRun whose `work_item_id`
+links it directly to a work item. Successive `task` steps reassign
+different Workers onto the same bound WorkItem in place, without
+spawning Subtasks. Bound runs are the unit of template-based execution.
+
 Workflows are the unit that the Scheduler treats as the top-level
 reconcilable object for execution; Tasks are reconciled as children.
 
