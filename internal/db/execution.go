@@ -315,14 +315,14 @@ func UpdateExecution(ctx context.Context, tx pgx.Tx, tenantID, id string, expect
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, project_id, task_id, worker_id, worker_version,
 		adapter_id, status, health_state, started_at, ended_at,
-		token_usage, cost_usd, checkpoint_ref, recovery_id, error_message, output, conversation, version,
+		token_usage, cost_usd, checkpoint_ref, recovery_id, error_message, output, conversation, is_follow_up, version,
 		created_at, updated_at`
 	var e ExecutionRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&e.ID, &e.TenantID, &e.ProjectID, &e.TaskID, &e.WorkerID,
 		&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 		&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
-		&e.CheckpointRef, &e.RecoveryID, &e.ErrorMessage, &e.Output, &e.Conversation,
+		&e.CheckpointRef, &e.RecoveryID, &e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp,
 		&e.Version,
 		&e.CreatedAt, &e.UpdatedAt,
 	)
