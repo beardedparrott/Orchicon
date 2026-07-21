@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { adapterClient, executionClient } from "@/api/clients";
 import { useStream } from "@/api/useStream";
+import type { CreateFollowUpExecutionResponse } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { RuntimeAdapter } from "@/api/gen/orchicon/api/v1/adapter_pb";
 import type { WorkerExecution } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { ExecutionEvent } from "@/api/gen/orchicon/api/v1/execution_pb";
