@@ -208,6 +208,7 @@ message StartWorkflowRequest {
   string workflow_id = 1;
   string project_id = 2; // run scoped to this project (workflow may be a template)
   string run_context = 3; // JSON: input values for this run
+  string work_item_id = 4; // bind run to this work item (template binding); empty for one-shot runs
 }
 
 message StartWorkflowResponse {

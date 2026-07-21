@@ -975,6 +975,13 @@ export class StartWorkflowRequest extends Message<StartWorkflowRequest> {
    */
   runContext = "";
 
+  /**
+   * bind run to this work item (template binding); empty for one-shot runs
+   *
+   * @generated from field: string work_item_id = 4;
+   */
+  workItemId = "";
+
   constructor(data?: PartialMessage<StartWorkflowRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -986,6 +993,7 @@ export class StartWorkflowRequest extends Message<StartWorkflowRequest> {
     { no: 1, name: "workflow_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "run_context", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "work_item_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): StartWorkflowRequest {

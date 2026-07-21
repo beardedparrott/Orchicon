@@ -229,6 +229,7 @@ Verify by running the installer against a draft release at minimum (`bash script
 | `docs/08_Event_Bus_and_Telemetry_Model.md` | NATS, OTel, SigNoz, events |
 | `docs/09_Database_Schema.md` | Tables, outbox, RLS, migrations |
 | `docs/10_Frontend_Architecture.md` | React, Connect-ES, workflow editor |
+| `docs/11_Workflow_Templates_and_Binding.md` | Repeatable workflow templates, work-item binding, loop decision step |
 
 ## Things you need to know
 

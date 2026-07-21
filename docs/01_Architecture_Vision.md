@@ -20,6 +20,7 @@ Sibling documents:
 - `08_Event_Bus_and_Telemetry_Model.md`
 - `09_Database_Schema.md`
 - `10_Frontend_Architecture.md`
+- `11_Workflow_Templates_and_Binding.md`
 
 ---
 
