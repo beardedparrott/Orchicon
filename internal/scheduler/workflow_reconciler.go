@@ -682,10 +682,10 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		// If upstream failed → loop back to loop_branch (if iterations <
 		// max_iterations) or fail the loop node (exhausted).
 		cfg := parseLoopDecisionConfig(step.Config)
-		if cfg.LoopBranch == "" || cfg.SuccessBranch == "" || cfg.MaxIterations < 1 {
+		if cfg.LoopBranch == "" || cfg.MaxIterations < 1 {
 			return r.failStep(ctx, tx, tenantID, run, sr, runs,
-				fmt.Errorf("loop_decision step %q: missing or invalid config (loop_branch=%q, success_branch=%q, max_iterations=%d)",
-					step.Name, cfg.LoopBranch, cfg.SuccessBranch, cfg.MaxIterations))
+				fmt.Errorf("loop_decision step %q: missing or invalid config (loop_branch=%q, max_iterations=%d)",
+					step.Name, cfg.LoopBranch, cfg.MaxIterations))
 		}
 
 		// Find the upstream step run (the one we branch from).
