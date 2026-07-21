@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Link, createRoute } from "@tanstack/react-router";
+import { Trash2, SearchX } from "lucide-react";
 
-import { useListProjects } from "@/api/projects";
+import { useBatchDeleteProjects, useListProjects } from "@/api/projects";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -28,6 +29,7 @@ function ProjectsPage() {
   const [status, setStatus] = useState<string>("all");
   const [sortBy, setSortBy] = useState("created_at");
   const [sortOrder, setSortOrder] = useState("asc");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const statusFilter: ProjectStatus | undefined =
     status === "all" ? undefined : (Number(status) as ProjectStatus);
@@ -38,6 +40,34 @@ function ProjectsPage() {
     sortBy,
     sortOrder,
   });
+  const batchDelete = useBatchDeleteProjects();
+
+  const toggleSelect = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (!projects) return;
+    if (selected.size === projects.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(projects.map((p) => p.id)));
+    }
+  };
+
+  const handleBatchDelete = () => {
+    if (selected.size === 0) return;
+    const count = selected.size;
+    if (!window.confirm(`Delete ${count} project${count === 1 ? "" : "s"}? This cannot be undone.`)) return;
+    batchDelete.mutate(Array.from(selected), {
+      onSuccess: () => setSelected(new Set()),
+    });
+  };
 
   return (
     <div className="space-y-6">
@@ -89,6 +119,17 @@ function ProjectsPage() {
           <option value="asc">Asc</option>
           <option value="desc">Desc</option>
         </select>
+        {selected.size > 0 && (
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={handleBatchDelete}
+            disabled={batchDelete.isPending}
+          >
+            <Trash2 className="mr-1 h-3.5 w-3.5" />
+            Delete {selected.size} selected
+          </Button>
+        )}
       </div>
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
@@ -101,7 +142,10 @@ function ProjectsPage() {
       {projects && projects.length === 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>No projects yet</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <SearchX className="h-5 w-5 text-muted-foreground" />
+              No projects yet
+            </CardTitle>
             <CardDescription>
               Create your first project to start orchestrating autonomous
               AI work.
@@ -111,28 +155,62 @@ function ProjectsPage() {
       )}
 
       {projects && projects.length > 0 && (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {projects.map((p) => (
-            <Link key={p.id} to="/projects/$id" params={{ id: p.id }}>
-              <Card className="transition-colors hover:bg-accent">
-                <CardHeader>
-                  <CardTitle className="flex items-center justify-between">
-                    <span className="truncate">{p.name}</span>
-                    <StatusBadge status={p.status} />
-                  </CardTitle>
-                  <CardDescription className="font-mono text-xs">
-                    {p.slug}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-xs text-muted-foreground">
-                    v{p.version}
-                  </p>
-                </CardContent>
-              </Card>
-            </Link>
-          ))}
-        </div>
+        <>
+          <div className="flex items-center gap-2 px-2 py-1">
+            <input
+              type="checkbox"
+              checked={projects.length > 0 && selected.size === projects.length}
+              onChange={toggleSelectAll}
+              className="h-4 w-4 rounded border-input"
+            />
+            <span className="text-xs text-muted-foreground">
+              {selected.size > 0
+                ? `${selected.size} of ${projects.length} selected`
+                : `${projects.length} project${projects.length === 1 ? "" : "s"}`}
+            </span>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {projects.map((p) => (
+              <div key={p.id} className="group relative">
+                <input
+                  type="checkbox"
+                  checked={selected.has(p.id)}
+                  onChange={() => toggleSelect(p.id)}
+                  className="absolute left-3 top-3 z-10 h-4 w-4 rounded border-input"
+                />
+                <Link to="/projects/$id" params={{ id: p.id }}>
+                  <Card className="transition-colors hover:bg-accent">
+                    <CardHeader>
+                      <CardTitle className="flex items-center justify-between">
+                        <span className="truncate">{p.name}</span>
+                        <StatusBadge status={p.status} />
+                      </CardTitle>
+                      <CardDescription className="font-mono text-xs">
+                        {p.slug}
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <p className="text-xs text-muted-foreground">
+                        v{p.version}
+                      </p>
+                    </CardContent>
+                  </Card>
+                </Link>
+                <button
+                  onClick={() => {
+                    if (window.confirm("Delete this project?")) {
+                      batchDelete.mutate([p.id]);
+                    }
+                  }}
+                  className="absolute right-3 top-3 opacity-0 group-hover:opacity-100 rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground hover:text-destructive hover:bg-accent transition-all"
+                  title="Delete project"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        </>
       )}
     </div>
   );

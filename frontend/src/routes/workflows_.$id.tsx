@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft } from "lucide-react";
 import ReactFlow, {
   Background,
   Controls,
@@ -641,13 +642,24 @@ function EditorInner({ workflowId }: { workflowId: string }) {
       <div className="flex flex-col gap-4">
         {/* header + actions */}
         <div className="flex items-start justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">{wf.name}</h1>
-            <p className="text-xs text-muted-foreground">
-              {effectiveProjectId ? `project: ${effectiveProjectId.slice(0, 12)}…` : "tenant template"} ·
-              {" "}v{wf.currentVersion || "—"} · status:{" "}
-              {WORKFLOW_STATUS_LABELS[wf.status]}
-            </p>
+          <div className="flex min-w-0 items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate({ to: "/workflows" })}
+              className="shrink-0"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              <span className="ml-1 hidden sm:inline">Back</span>
+            </Button>
+            <div className="min-w-0">
+              <h1 className="text-lg font-semibold tracking-tight sm:text-2xl truncate">{wf.name}</h1>
+              <p className="truncate text-xs text-muted-foreground">
+                {effectiveProjectId ? `project: ${effectiveProjectId.slice(0, 12)}…` : "tenant template"} ·
+                {" "}v{wf.currentVersion || "—"} · status:{" "}
+                {WORKFLOW_STATUS_LABELS[wf.status]}
+              </p>
+            </div>
           </div>
           <div className="flex flex-wrap gap-2">
             <Button

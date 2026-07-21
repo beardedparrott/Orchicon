@@ -126,6 +126,19 @@ export function useDeleteWorker() {
   });
 }
 
+// useBatchDeleteWorkers hard-deletes multiple workers by id.
+export function useBatchDeleteWorkers() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (ids: string[]) => {
+      await Promise.allSettled(ids.map((id) => workerClient.deleteWorker({ id })));
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: workerKeys.list() });
+    },
+  });
+}
+
 // useRetireWorker retires a deprecated worker.
 export function useRetireWorker() {
   const qc = useQueryClient();

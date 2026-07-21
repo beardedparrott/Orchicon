@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { createRoute, useNavigate } from "@tanstack/react-router";
+import { ArrowLeft } from "lucide-react";
 
 import {
   useEvaluatePolicy,
@@ -108,17 +109,28 @@ function PolicyDetailPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{policy.name}</h1>
-          <p className="text-sm text-muted-foreground">
-            {DECISION_POINT_LABELS[latestVersion?.decisionPoint ?? latestDraft?.decisionPoint ?? 0] ?? "—"} ·{" "}
-            <span className={cn("font-medium", STATUS_STYLES[policy.status])}>
-              {STATUS_LABELS[policy.status]}
-            </span>
-          </p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate({ to: "/policies" })}
+            className="shrink-0"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            <span className="ml-1 hidden sm:inline">Back</span>
+          </Button>
+          <div className="min-w-0">
+            <h1 className="text-lg font-semibold tracking-tight sm:text-2xl truncate">{policy.name}</h1>
+            <p className="truncate text-sm text-muted-foreground">
+              {DECISION_POINT_LABELS[latestVersion?.decisionPoint ?? latestDraft?.decisionPoint ?? 0] ?? "—"} ·{" "}
+              <span className={cn("font-medium", STATUS_STYLES[policy.status])}>
+                {STATUS_LABELS[policy.status]}
+              </span>
+            </p>
+          </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {policy.status === 2 && (
             <Button
               variant="outline"
@@ -137,9 +149,6 @@ function PolicyDetailPage() {
               </Button>
             </>
           )}
-          <Button variant="ghost" onClick={() => navigate({ to: "/policies" })}>
-            Back
-          </Button>
         </div>
       </div>
 

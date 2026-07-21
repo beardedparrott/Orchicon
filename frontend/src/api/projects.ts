@@ -125,3 +125,16 @@ export function useDeleteProject() {
     },
   });
 }
+
+// useBatchDeleteProjects hard-deletes multiple projects by id.
+export function useBatchDeleteProjects() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (ids: string[]) => {
+      await Promise.allSettled(ids.map((id) => projectClient.deleteProject({ id })));
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: projectKeys.list() });
+    },
+  });
+}

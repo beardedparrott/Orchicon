@@ -2,16 +2,19 @@ import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { useQueryClient } from "@tanstack/react-query";
+import { ArrowLeft } from "lucide-react";
 
 import {
   useActivateProject,
   useArchiveProject,
+  useCreateProject,
   useDeleteProject,
   useGetProject,
   useUpdateProject,
   projectKeys,
 } from "@/api/projects";
 import { useStreamProjectEvents } from "@/api/projectEvents";
+import { EntityYamlView } from "@/components/EntityYamlView";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import {
@@ -42,9 +45,11 @@ function ProjectDetailPage() {
   const deleteMutation = useDeleteProject();
   const updateProject = useUpdateProject();
   const activateProject = useActivateProject();
+  const createProject = useCreateProject();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
+  const [viewMode, setViewMode] = useState<"detail" | "code">("detail");
 
   const { register, handleSubmit, reset } = useForm({
     defaultValues: { name: "", slug: "" },
@@ -93,60 +98,71 @@ function ProjectDetailPage() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          {editing ? (
-            <form
-              onSubmit={handleSubmit((data) => {
-                updateProject.mutate(
-                  { id, name: data.name, slug: data.slug },
-                  { onSuccess: () => setEditing(false) },
-                );
-              })}
-              className="space-y-3"
-            >
-              <div className="space-y-2">
-                <Label htmlFor="name">Name</Label>
-                <Input id="name" {...register("name", { required: true })} />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="slug">Slug</Label>
-                <Input id="slug" {...register("slug")} />
-              </div>
-              <div className="flex gap-2">
-                <Button type="submit" disabled={updateProject.isPending}>
-                  {updateProject.isPending ? "Saving…" : "Save"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    reset();
-                    setEditing(false);
-                  }}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </form>
-          ) : (
-            <>
-              <h1 className="text-2xl font-semibold tracking-tight">
-                {project.name}
-              </h1>
-              <p className="font-mono text-xs text-muted-foreground">
-                {project.slug}
-              </p>
-            </>
-          )}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate({ to: "/projects" })}
+            className="shrink-0"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            <span className="ml-1 hidden sm:inline">Back</span>
+          </Button>
+          <div className="min-w-0">
+            {editing ? (
+              <form
+                onSubmit={handleSubmit((data) => {
+                  updateProject.mutate(
+                    { id, name: data.name, slug: data.slug },
+                    { onSuccess: () => setEditing(false) },
+                  );
+                })}
+                className="space-y-3"
+              >
+                <div className="space-y-2">
+                  <Label htmlFor="name">Name</Label>
+                  <Input id="name" {...register("name", { required: true })} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="slug">Slug</Label>
+                  <Input id="slug" {...register("slug")} />
+                </div>
+                <div className="flex gap-2">
+                  <Button type="submit" disabled={updateProject.isPending}>
+                    {updateProject.isPending ? "Saving…" : "Save"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      reset();
+                      setEditing(false);
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </form>
+            ) : (
+              <>
+                <h1 className="text-lg font-semibold tracking-tight sm:text-2xl">
+                  {project.name}
+                </h1>
+                <p className="truncate font-mono text-xs text-muted-foreground">
+                  {project.slug}
+                </p>
+              </>
+            )}
+          </div>
         </div>
-        <div className="flex gap-2">
-          {!editing && (
+        <div className="flex flex-wrap items-center gap-2">
+          {!editing && viewMode === "detail" && (
             <Button variant="outline" onClick={() => setEditing(true)}>
               Edit
             </Button>
           )}
-          {project.status === 1 && (
+          {project.status === 1 && viewMode === "detail" && (
             <Button
               onClick={() => activateProject.mutateAsync(id)}
               disabled={activateProject.isPending}
@@ -154,7 +170,7 @@ function ProjectDetailPage() {
               {activateProject.isPending ? "Activating…" : "Activate"}
             </Button>
           )}
-          {project.status !== 4 && (
+          {project.status !== 4 && viewMode === "detail" && (
             <Button
               variant="outline"
               onClick={handleArchive}
@@ -170,9 +186,62 @@ function ProjectDetailPage() {
           >
             {deleteMutation.isPending ? "Deleting…" : "Delete"}
           </Button>
+          <Button
+            variant="outline"
+            onClick={() =>
+              setViewMode(viewMode === "detail" ? "code" : "detail")
+            }
+            title={
+              viewMode === "detail"
+                ? "Switch to code view"
+                : "Switch to detail view"
+            }
+          >
+            {viewMode === "detail" ? "Code" : "Detail"}
+          </Button>
         </div>
       </div>
 
+      {viewMode === "code" ? (
+        <EntityYamlView
+          data={{
+            id: project.id,
+            name: project.name,
+            slug: project.slug,
+            status: statusLabel(project.status),
+            version: project.version,
+            ...(project.goals && project.goals !== "{}"
+              ? { goals: parseGoals(project.goals) }
+              : {}),
+            ...(project.projectDir ? { project_dir: project.projectDir } : {}),
+            ...(project.contextFiles?.length
+              ? { context_files: project.contextFiles }
+              : {}),
+            created_at: project.createdAt
+              ? new Date(
+                  Number(project.createdAt.seconds) * 1000,
+                ).toISOString()
+              : null,
+            updated_at: project.updatedAt
+              ? new Date(
+                  Number(project.updatedAt.seconds) * 1000,
+                ).toISOString()
+              : null,
+          }}
+          title="Project YAML"
+          onClone={async () => {
+            const name = window.prompt(
+              "Clone name:",
+              `Clone of ${project.name}`,
+            );
+            if (!name) return;
+            const result = await createProject.mutateAsync({ name });
+            navigate({ to: `/projects/${result.id}` });
+          }}
+          cloneDisabled={createProject.isPending}
+        />
+      ) : (
+        <>
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader>
@@ -287,6 +356,8 @@ function ProjectDetailPage() {
           )}
         </CardContent>
       </Card>
+        </>
+      )}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { createRoute, useNavigate } from "@tanstack/react-router";
+import { ArrowLeft } from "lucide-react";
 
 import {
   useApproveContinuationPlan,
@@ -63,22 +64,30 @@ function RecoveryDetailPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">
-            Recovery{" "}
-            <span className="font-mono text-base">{recovery.id.slice(0, 16)}…</span>
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            task{" "}
-            <span className="font-mono">{recovery.taskId.slice(0, 12)}…</span>{" "}
-            · L{recovery.level} · {recovery.resumptionPath}
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="ghost" onClick={() => navigate({ to: "/recovery" })}>
-            Back
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate({ to: "/recovery" })}
+            className="shrink-0"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            <span className="ml-1 hidden sm:inline">Back</span>
           </Button>
+          <div className="min-w-0">
+            <h1 className="text-lg font-semibold tracking-tight sm:text-2xl">
+              Recovery{" "}
+              <span className="font-mono text-base">{recovery.id.slice(0, 16)}…</span>
+            </h1>
+            <p className="truncate text-sm text-muted-foreground">
+              task{" "}
+              <span className="font-mono">{recovery.taskId.slice(0, 12)}…</span>{" "}
+              · L{recovery.level} · {recovery.resumptionPath}
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
           {!isTerminal && (
             <Button
               variant="outline"

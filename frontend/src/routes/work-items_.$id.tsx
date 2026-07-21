@@ -1,7 +1,9 @@
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
+import { ArrowLeft } from "lucide-react";
 
 import {
+  useCreateWorkItem,
   useGetWorkItem,
   useUpdateWorkItem,
   useDeleteWorkItem,
@@ -10,6 +12,7 @@ import {
   useGetDependencyGraph,
 } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
+import { EntityYamlView } from "@/components/EntityYamlView";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import {
@@ -42,11 +45,13 @@ function WorkItemDetailPage() {
   const deleteWorkItem = useDeleteWorkItem(item?.projectId ?? "");
   const hardDeleteWorkItem = useHardDeleteWorkItem(item?.projectId ?? "");
   const addDependency = useAddDependency(item?.projectId ?? "");
+  const createWorkItem = useCreateWorkItem();
   const { data: graph } = useGetDependencyGraph(item?.projectId ?? "");
   const { data: projects } = useListProjects();
   const navigate = useNavigate();
 
   const [editing, setEditing] = useState(false);
+  const [viewMode, setViewMode] = useState<"detail" | "code">("detail");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [acceptanceCriteria, setAcceptanceCriteria] = useState("");
@@ -116,30 +121,41 @@ function WorkItemDetailPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <KindBadge kind={item.kind} />
-            <h1 className="text-2xl font-semibold tracking-tight">
-              {item.title}
-            </h1>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate({ to: "/work-items" })}
+            className="shrink-0"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            <span className="ml-1 hidden sm:inline">Back</span>
+          </Button>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <KindBadge kind={item.kind} />
+              <h1 className="text-lg font-semibold tracking-tight sm:text-2xl">
+                {item.title}
+              </h1>
+            </div>
+            <p className="mt-1 truncate text-xs text-muted-foreground">
+              v{item.version} · {item.id}
+            </p>
+            <p className="truncate text-xs text-muted-foreground">
+              Project:{" "}
+              <Link
+                to="/projects/$id"
+                params={{ id: item.projectId }}
+                className="font-medium hover:underline"
+              >
+                {projectName}
+              </Link>
+            </p>
           </div>
-          <p className="mt-1 text-xs text-muted-foreground">
-            v{item.version} · {item.id}
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Project:{" "}
-            <Link
-              to="/projects/$id"
-              params={{ id: item.projectId }}
-              className="font-medium hover:underline"
-            >
-              {projectName}
-            </Link>
-          </p>
         </div>
-        <div className="flex gap-2">
-          {!editing && (
+        <div className="flex flex-wrap items-center gap-2">
+          {!editing && viewMode === "detail" && (
             <Button
               variant="outline"
               onClick={() => {
@@ -170,8 +186,79 @@ function WorkItemDetailPage() {
           >
             {hardDeleteWorkItem.isPending ? "Deleting…" : "Delete"}
           </Button>
+          <Button
+            variant="outline"
+            onClick={() =>
+              setViewMode(viewMode === "detail" ? "code" : "detail")
+            }
+            title={
+              viewMode === "detail"
+                ? "Switch to code view"
+                : "Switch to detail view"
+            }
+          >
+            {viewMode === "detail" ? "Code" : "Detail"}
+          </Button>
         </div>
       </div>
+
+      {viewMode === "code" ? (
+        <EntityYamlView
+          data={{
+            id: item.id,
+            title: item.title,
+            kind: ({
+              1: "epic",
+              2: "feature",
+              3: "task",
+              4: "subtask",
+            } as Record<number, string>)[item.kind] ?? "unknown",
+            project_id: item.projectId,
+            parent_id: item.parentId || undefined,
+            status: ({
+              1: "pending",
+              2: "ready",
+              3: "assigned",
+              4: "running",
+              6: "succeeded",
+              7: "failed",
+              8: "cancelled",
+            } as Record<number, string>)[item.status] ?? "unknown",
+            priority: item.priority,
+            description: item.description || undefined,
+            acceptance_criteria: item.acceptanceCriteria || undefined,
+            assigned_worker_ref: item.assignedWorkerRef || undefined,
+            context_window: item.contextWindow || undefined,
+            version: item.version,
+            created_at: item.createdAt
+              ? new Date(Number(item.createdAt.seconds) * 1000).toISOString()
+              : null,
+            updated_at: item.updatedAt
+              ? new Date(Number(item.updatedAt.seconds) * 1000).toISOString()
+              : null,
+          }}
+          title="Work Item YAML"
+          onClone={async () => {
+            const title = window.prompt(
+              "Clone title:",
+              `Clone of ${item.title}`,
+            );
+            if (!title) return;
+            const result = await createWorkItem.mutateAsync({
+              title,
+              projectId: item.projectId,
+              kind: item.kind,
+              description: item.description,
+              acceptanceCriteria: item.acceptanceCriteria,
+              priority: item.priority,
+              contextWindow: item.contextWindow,
+            });
+            navigate({ to: `/work-items/${result.id}` });
+          }}
+          cloneDisabled={createWorkItem.isPending}
+        />
+      ) : (
+      <>
 
       <div className="grid gap-4 md:grid-cols-4">
         <Card>
@@ -452,6 +539,8 @@ function WorkItemDetailPage() {
           </div>
         </CardContent>
       </Card>
+        </>
+      )}
     </div>
   );
 }

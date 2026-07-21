@@ -142,6 +142,20 @@ export function useHardDeleteWorkItem(projectId: string) {
   });
 }
 
+// useBatchDeleteWorkItems hard-deletes multiple work items by id.
+export function useBatchDeleteWorkItems(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (ids: string[]) => {
+      await Promise.allSettled(ids.map((id) => workItemClient.hardDeleteWorkItem({ id })));
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: workItemKeys.list(projectId) });
+      qc.invalidateQueries({ queryKey: workItemKeys.graph(projectId) });
+    },
+  });
+}
+
 // useAddDependency adds an edge to the work DAG.
 export function useAddDependency(projectId: string) {
   const qc = useQueryClient();

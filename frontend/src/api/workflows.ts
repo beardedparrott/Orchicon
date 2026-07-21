@@ -204,6 +204,19 @@ export function useDeleteWorkflow() {
   });
 }
 
+// useBatchDeleteWorkflows hard-deletes multiple workflows by id.
+export function useBatchDeleteWorkflows() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (ids: string[]) => {
+      await Promise.allSettled(ids.map((id) => workflowClient.deleteWorkflow({ id })));
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: workflowKeys.list() });
+    },
+  });
+}
+
 // useDeleteWorkflowVersion deletes a single draft version and
 // invalidates the versions list.
 export function useDeleteWorkflowVersion() {
