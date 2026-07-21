@@ -185,6 +185,17 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID string) error 
 	}
 
 	// Create WorkerExecution (docs/03 §4: createWorkerExecution).
+	// Check if the work item's results indicate this is a follow-up
+	// execution (created by CreateFollowUpExecution).
+	var isFollowUp bool
+	if len(task.Results) > 0 {
+		var taskResults map[string]any
+		if err := json.Unmarshal(task.Results, &taskResults); err == nil {
+			if v, ok := taskResults["_is_follow_up"].(string); ok && v == "true" {
+				isFollowUp = true
+			}
+		}
+	}
 	now := time.Now().UTC()
 	execRow := db.ExecutionRow{
 		ID:             db.NewID(),
@@ -199,6 +210,7 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID string) error 
 		StartedAt:      &now,
 		WorkflowRunID:  task.WorkflowRunID,
 		WorkflowStepID: task.WorkflowStepID,
+		IsFollowUp:     isFollowUp,
 	}
 	created, err := db.CreateExecution(ctx, ttx.Tx, execRow)
 	if err != nil {

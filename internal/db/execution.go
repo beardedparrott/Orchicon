@@ -35,6 +35,7 @@ type ExecutionRow struct {
 	ErrorMessage    string
 	Output          string
 	Conversation    []byte // jsonb: follow-up conversation array
+	IsFollowUp      bool
 	Version         int
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
@@ -47,12 +48,12 @@ func CreateExecution(ctx context.Context, tx pgx.Tx, e ExecutionRow) (ExecutionR
 	const q = `INSERT INTO worker_executions
 		(id, tenant_id, project_id, task_id, worker_id, worker_version,
 		 adapter_id, status, health_state, started_at,
-		 workflow_run_id, workflow_step_id, conversation)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		 workflow_run_id, workflow_step_id, conversation, is_follow_up)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING id, tenant_id, project_id, task_id, worker_id, worker_version,
 			adapter_id, status, health_state, started_at, ended_at,
 			token_usage, cost_usd, checkpoint_ref, recovery_id,
-			workflow_run_id, workflow_step_id, error_message, output, conversation, version,
+			workflow_run_id, workflow_step_id, error_message, output, conversation, is_follow_up, version,
 			created_at, updated_at`
 	conv := e.Conversation
 	if conv == nil {
@@ -62,14 +63,14 @@ func CreateExecution(ctx context.Context, tx pgx.Tx, e ExecutionRow) (ExecutionR
 	err := tx.QueryRow(ctx, q,
 		e.ID, e.TenantID, e.ProjectID, e.TaskID, e.WorkerID, e.WorkerVersion,
 		e.AdapterID, e.Status, e.HealthState, e.StartedAt,
-		e.WorkflowRunID, e.WorkflowStepID, conv,
+		e.WorkflowRunID, e.WorkflowStepID, conv, e.IsFollowUp,
 	).Scan(
 		&row.ID, &row.TenantID, &row.ProjectID, &row.TaskID, &row.WorkerID,
 		&row.WorkerVersion, &row.AdapterID, &row.Status, &row.HealthState,
 		&row.StartedAt, &row.EndedAt, &row.TokenUsage, &row.CostUSD,
 		&row.CheckpointRef, &row.RecoveryID,
 		&row.WorkflowRunID, &row.WorkflowStepID,
-		&row.ErrorMessage, &row.Output, &row.Conversation,
+		&row.ErrorMessage, &row.Output, &row.Conversation, &row.IsFollowUp,
 		&row.Version,
 		&row.CreatedAt, &row.UpdatedAt,
 	)
@@ -84,7 +85,7 @@ func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (Executio
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
-		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.conversation, we.version,
+		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
 		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
@@ -97,7 +98,7 @@ func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (Executio
 		&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 		&e.CheckpointRef, &e.RecoveryID,
 		&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName,
-		&e.ErrorMessage, &e.Output, &e.Conversation,
+		&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp,
 		&e.Version,
 		&e.CreatedAt, &e.UpdatedAt,
 	)
@@ -114,16 +115,17 @@ func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (Executio
 // filtered by project/task/status/workflow_run_id, with free-text
 // search and sort.
 type ListExecutionsFilter struct {
-	TenantID      string
-	ProjectID     string
-	TaskID        string
-	Status        string
-	WorkflowRunID string
-	Search        string
-	SortBy        string
-	SortOrder     string
-	PageSize      int
-	AfterID       string
+	TenantID       string
+	ProjectID      string
+	TaskID         string
+	Status         string
+	WorkflowRunID  string
+	Search         string
+	SortBy         string
+	SortOrder      string
+	PageSize       int
+	AfterID        string
+	ExcludeFollowUp bool
 }
 
 // ListExecutions returns a page of executions for the tenant.
@@ -140,7 +142,7 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 	q := `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
-		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.conversation, we.version,
+		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
 		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
@@ -176,6 +178,11 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 	if f.Search != "" {
 		q += fmt.Sprintf(` AND (we.worker_id ILIKE '%%' || $%d || '%%' OR we.task_id ILIKE '%%' || $%[1]d || '%%' OR COALESCE(w.name, '') ILIKE '%%' || $%[1]d || '%%')`, argIdx)
 		args = append(args, f.Search)
+		argIdx++
+	}
+	if f.ExcludeFollowUp {
+		q += fmt.Sprintf(` AND we.is_follow_up = $%d`, argIdx)
+		args = append(args, false)
 		argIdx++
 	}
 	// Validate sort column to prevent SQL injection.
@@ -334,7 +341,7 @@ func ListDispatchingExecutions(ctx context.Context, tx pgx.Tx, tenantID string) 
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
-		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.conversation, we.version,
+		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
 		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
@@ -355,7 +362,7 @@ func ListDispatchingExecutions(ctx context.Context, tx pgx.Tx, tenantID string) 
 			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 			&e.CheckpointRef, &e.RecoveryID,
 			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName,
-			&e.ErrorMessage, &e.Output, &e.Conversation,
+			&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp,
 			&e.Version,
 			&e.CreatedAt, &e.UpdatedAt,
 		); err != nil {

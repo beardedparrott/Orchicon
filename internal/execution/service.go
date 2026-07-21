@@ -110,9 +110,10 @@ func (s *Service) ListExecutions(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	f := db.ListExecutionsFilter{
-		TenantID:  tenantID,
-		PageSize:  int(req.Msg.PageSize),
-		AfterID:   req.Msg.PageToken,
+		TenantID:       tenantID,
+		PageSize:       int(req.Msg.PageSize),
+		AfterID:        req.Msg.PageToken,
+		ExcludeFollowUp: true, // hide follow-up executions from the main list
 	}
 	if req.Msg.ProjectId != nil {
 		f.ProjectID = *req.Msg.ProjectId
@@ -583,6 +584,7 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 	resultsJSON, _ := json.Marshal(map[string]string{
 		"_parent_execution_id": msg.ExecutionId,
 		"_follow_up_message":   q,
+		"_is_follow_up":        "true",
 	})
 	newWI := db.WorkItemRow{
 		ID:        db.NewID(),
