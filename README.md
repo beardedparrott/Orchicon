@@ -42,7 +42,8 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-**v0.1.132** — Loop decision step + iteration tracking (PR-B of Workflow Templates & Binding).
+**v0.1.133** — Scheduled start + WorkItem workflow binding (PR-C of Workflow Templates & Binding).
+Added `scheduled_start_at` and `auto_start_workflow` columns to `work_items` for template-bound runs. New `ScheduledRunReconciler` scans for pending scheduled work items and dispatches `StartWorkflow`. The WorkItem create/update handlers now accept `workflow_id`, `scheduled_start_at`, and `auto_start_workflow` — when a workflow is bound with no scheduled time and auto-start enabled, the run begins immediately on save. v0.1.132 was Loop decision step. v0.1.131 was Bound-run dispatch.
 Added `StepKindLoopDecision` to proto/domain/reconciler. The loop decision step inspects its upstream step result: on success it advances forward; on failure it loops back to a prior step (up to `max_iterations`). Iteration tracking uses new `iteration` and `superseded_by` columns on `workflow_step_runs` — re-entry creates a fresh step run with `iteration = N+1` and marks the prior run as superseded (audit trail preserved). Frontend adds a Loop Decision palette node with cyan accent, `max_iterations` config in PropertiesPanel, and cycle-detection relaxation for loop back-edges. Once `max_iterations` is exhausted the run fails and opt-out recovery engages (invariant #8).
 
 ## Installation
