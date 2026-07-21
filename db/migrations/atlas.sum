@@ -1,4 +1,4 @@
-h1:E05PnPK08S31EYYXIFrE1x5h04NzU1Z6ibjAtLSmeKY=
+h1:fl7p85vyrpxWf3N0IA0ACIsykWwHu2BhSNvTAHQm1/I=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712223028_add_outbox.sql h1:tlrMIs8ABXFMszWNaYd7gxjn3p42rmqrZeoxOJ1Vqvg=
 20260713012808_workers_workitems.sql h1:3li9AejCZaj9bcZz8wKOw0GG7UER3Uz9jbSNKF74Zo8=
@@ -21,3 +21,4 @@ h1:E05PnPK08S31EYYXIFrE1x5h04NzU1Z6ibjAtLSmeKY=
 20260721020000_workflow_binding.sql h1:Hb/QUFfU+tLG89wW/Nmo4qBP3vQkhQIwnfqiiAVE9RU=
 20260721030000_workflow_step_run_iteration.sql h1:edFfWUEYBhGKeqrfxndh/FBAum5/y0qe3fduaBfsEmM=
 20260721040000_work_item_scheduled_start.sql h1:CTYKkKSROfrzH4/vTSjeFp8KUdX3XTYpF6SgcCmcnHw=
+20260721050000_workflow_runs_work_item_id_on_delete_set_null.sql h1:LU6BEqevncPlL6RJtJfEGjG7IN6yYnZB1HpLWVVzZmU=
