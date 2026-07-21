@@ -171,14 +171,14 @@ function ProjectsPage() {
           </div>
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {projects.map((p) => (
-              <div key={p.id} className="group relative">
+              <div key={p.id} className="group flex items-start gap-2">
                 <input
                   type="checkbox"
                   checked={selected.has(p.id)}
                   onChange={() => toggleSelect(p.id)}
-                  className="absolute left-3 top-3 z-10 h-4 w-4 rounded border-input"
+                  className="mt-4 shrink-0 h-4 w-4 rounded border-input"
                 />
-                <Link to="/projects/$id" params={{ id: p.id }}>
+                <Link to="/projects/$id" params={{ id: p.id }} className="min-w-0 flex-1">
                   <Card className="transition-colors hover:bg-accent">
                     <CardHeader>
                       <CardTitle className="flex items-center justify-between">
@@ -202,7 +202,7 @@ function ProjectsPage() {
                       batchDelete.mutate([p.id]);
                     }
                   }}
-                  className="absolute right-3 top-3 opacity-0 group-hover:opacity-100 rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground hover:text-destructive hover:bg-accent transition-all"
+                  className="mt-3 shrink-0 opacity-0 group-hover:opacity-100 rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground hover:text-destructive hover:bg-accent transition-all"
                   title="Delete project"
                 >
                   ✕

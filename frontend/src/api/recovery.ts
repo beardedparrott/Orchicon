@@ -129,6 +129,19 @@ export function useRejectContinuationPlan() {
   });
 }
 
+// useBatchCancelRecoveries cancels multiple recovery executions by id.
+export function useBatchCancelRecoveries() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (ids: string[]) => {
+      await Promise.allSettled(ids.map((id) => recoveryClient.cancelRecovery({ recoveryId: id })));
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: recoveryKeys.all });
+    },
+  });
+}
+
 export function useMarkTaskSucceeded() {
   const qc = useQueryClient();
   return useMutation({

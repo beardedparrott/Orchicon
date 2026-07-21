@@ -1,4 +1,4 @@
-import { createRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { Trash2, SearchX } from "lucide-react";
 
@@ -29,7 +29,6 @@ export const Route = createRoute({
 
 function WorkItemsPage() {
   const { data: projects } = useListProjects();
-  const navigate = useNavigate();
   const [projectId, setProjectId] = useState<string>("");
   const [view, setView] = useState<"tree" | "board">("tree");
   const [search, setSearch] = useState("");
