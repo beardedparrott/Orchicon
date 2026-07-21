@@ -501,9 +501,11 @@ func (s *Service) ListPendingApprovals(ctx context.Context, req *connect.Request
 }
 
 // CreateFollowUpExecution appends the user's follow-up message to the
-// execution's conversation field. No new work item or execution is created
-// — the follow-up is purely a record appended to the original execution
-// so the conversation persists across page navigation.
+// execution's conversation and creates a child work item so the worker
+// processes the follow-up. The assistant's response is written back to
+// the original execution's conversation by the TaskReconciler
+// (appendToParentConversation) when the child execution completes, so
+// the full thread appears on the original execution detail page.
 func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Request[apiv1.CreateFollowUpExecutionRequest]) (*connect.Response[apiv1.CreateFollowUpExecutionResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -527,11 +529,80 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 	}
 	defer ttx.Rollback(ctx)
 
+	// 1. Get the previous execution and its task.
 	prevExec, err := db.GetExecution(ctx, ttx.Tx, tenantID, msg.ExecutionId)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
+	task, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, prevExec.TaskID)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
 
+	// 2. Build the follow-up composite prompt.
+	var prevComposite string
+	if len(task.PromptContext) > 0 {
+		var pc struct {
+			Composite string `json:"composite"`
+		}
+		if err := json.Unmarshal(task.PromptContext, &pc); err == nil {
+			prevComposite = strings.TrimSpace(pc.Composite)
+		}
+	}
+	var followUpPrompt strings.Builder
+	followUpPrompt.WriteString("# Follow-up task\n\n")
+	followUpPrompt.WriteString("This is a follow-up to a previous execution. Continue from where the previous work left off.\n\n")
+	if prevComposite != "" {
+		followUpPrompt.WriteString("## Previous context\n\n")
+		followUpPrompt.WriteString(prevComposite)
+		followUpPrompt.WriteString("\n\n")
+	}
+	output := strings.TrimSpace(prevExec.Output)
+	if output != "" {
+		followUpPrompt.WriteString("## Previous execution output\n\n")
+		if len(output) > 32000 {
+			output = output[:32000] + "\n\n*(truncated — previous output was longer)*"
+		}
+		followUpPrompt.WriteString(output)
+		followUpPrompt.WriteString("\n\n")
+	}
+	followUpPrompt.WriteString("## Follow-up question\n\n")
+	followUpPrompt.WriteString(q)
+	followUpPrompt.WriteString("\n\n")
+	followUpPrompt.WriteString("# Instructions\n\n")
+	followUpPrompt.WriteString("Complete the follow-up task above. Continue from where the previous execution left off. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one short paragraph summarizing what you did.\n\n")
+
+	promptCtx, err := json.Marshal(map[string]string{"composite": followUpPrompt.String()})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("marshal prompt context: %w", err))
+	}
+
+	// 3. Create a child work item with _parent_execution_id so the
+	// TaskReconciler's transitionWorkItemOnResult writes the assistant
+	// response back to the original execution's conversation.
+	resultsJSON, _ := json.Marshal(map[string]string{
+		"_parent_execution_id": msg.ExecutionId,
+		"_follow_up_message":   q,
+	})
+	newWI := db.WorkItemRow{
+		ID:        db.NewID(),
+		TenantID:  tenantID,
+		ProjectID: task.ProjectID,
+		ParentID:  &task.ID,
+		Kind:      domain.WorkItemKindTask,
+		Title:     fmt.Sprintf("Follow-up: %s", strings.TrimSpace(task.Title)),
+		Status:    domain.WorkItemReady,
+		AssignedWorkerRef: task.AssignedWorkerRef,
+		Priority:  task.Priority,
+		PromptContext: promptCtx,
+		Results:   resultsJSON,
+	}
+	if _, err := db.CreateWorkItem(ctx, ttx.Tx, newWI); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create follow-up work item: %w", err))
+	}
+
+	// 4. Append the user's message to the original execution's
+	// conversation so it appears immediately in the UI.
 	conv := prevExec.Conversation
 	if len(conv) == 0 {
 		conv = []byte("[]")
@@ -563,7 +634,7 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
 
-	s.log.Info("follow-up message appended",
+	s.log.Info("follow-up created",
 		"execution", msg.ExecutionId,
 	)
 
