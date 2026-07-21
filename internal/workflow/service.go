@@ -1269,6 +1269,8 @@ func stepRunRowToProto(s db.WorkflowStepRunRow) *apiv1.WorkflowStepRun {
 		Attempt:           int32(s.Attempt),
 		Result:            string(s.Result),
 		WorkerExecutionId: s.WorkerExecutionID,
+		Iteration:         int32(s.Iteration),
+		SupersededBy:      s.SupersededBy,
 		CreatedAt:         timestamppb.New(s.CreatedAt),
 		UpdatedAt:         timestamppb.New(s.UpdatedAt),
 	}

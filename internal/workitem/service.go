@@ -120,8 +120,10 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		t := msg.ScheduledStartAt.AsTime()
 		scheduledStartAt = &t
 	}
+	// auto_start_workflow defaults to true when unset (proto optional).
+	// Only false when explicitly set to false.
 	autoStart := true
-	if msg.ScheduledStartAt == nil && !msg.AutoStartWorkflow {
+	if msg.AutoStartWorkflow != nil && !*msg.AutoStartWorkflow {
 		autoStart = false
 	}
 	workflowID := msg.WorkflowId
@@ -809,10 +811,13 @@ func rowToProto(w db.WorkItemRow) *apiv1.WorkItem {
 	if w.WorkflowID != nil {
 		p.WorkflowId = *w.WorkflowID
 	}
+	p.WorkflowRunId = w.WorkflowRunID
+	p.WorkflowStepId = w.WorkflowStepID
 	if w.ScheduledStartAt != nil {
 		p.ScheduledStartAt = timestamppb.New(*w.ScheduledStartAt)
 	}
-	p.AutoStartWorkflow = w.AutoStartWorkflow
+	av := w.AutoStartWorkflow
+	p.AutoStartWorkflow = &av
 	return p
 }
 

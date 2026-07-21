@@ -110,6 +110,8 @@ message WorkflowStepRun {
   string worker_execution_id = 10; // for task steps: the dispatched execution
   google.protobuf.Timestamp started_at = 11;
   google.protobuf.Timestamp ended_at = 12;
+  int32 iteration = 15; // re-entry count for loop decision steps (0 for first dispatch)
+  string superseded_by = 16; // step run id that superseded this one (non-empty for archived iterations)
   google.protobuf.Timestamp created_at = 13;
   google.protobuf.Timestamp updated_at = 14;
 }

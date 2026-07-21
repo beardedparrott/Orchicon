@@ -100,11 +100,11 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
   scheduledStartAt?: Timestamp;
 
   /**
-   * default true; set false to defer start
+   * default true when unset; set false to defer start
    *
-   * @generated from field: bool auto_start_workflow = 14;
+   * @generated from field: optional bool auto_start_workflow = 14;
    */
-  autoStartWorkflow = false;
+  autoStartWorkflow?: boolean;
 
   constructor(data?: PartialMessage<CreateWorkItemRequest>) {
     super();
@@ -127,7 +127,7 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
     { no: 11, name: "request_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 12, name: "workflow_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 13, name: "scheduled_start_at", kind: "message", T: Timestamp },
-    { no: 14, name: "auto_start_workflow", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 14, name: "auto_start_workflow", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkItemRequest {
