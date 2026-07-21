@@ -271,6 +271,20 @@ export class WorkItem extends Message<WorkItem> {
   workflowId = "";
 
   /**
+   * active workflow run id (set by WorkflowReconciler on dispatch)
+   *
+   * @generated from field: string workflow_run_id = 22;
+   */
+  workflowRunId = "";
+
+  /**
+   * active workflow step run id (set by WorkflowReconciler on dispatch)
+   *
+   * @generated from field: string workflow_step_id = 23;
+   */
+  workflowStepId = "";
+
+  /**
    * scheduled start for bound runs
    *
    * @generated from field: google.protobuf.Timestamp scheduled_start_at = 20;
@@ -278,11 +292,11 @@ export class WorkItem extends Message<WorkItem> {
   scheduledStartAt?: Timestamp;
 
   /**
-   * true = auto-start on save; false = manual start only
+   * true = auto-start on save; false = manual start only; unset defaults to true
    *
-   * @generated from field: bool auto_start_workflow = 21;
+   * @generated from field: optional bool auto_start_workflow = 21;
    */
-  autoStartWorkflow = false;
+  autoStartWorkflow?: boolean;
 
   /**
    * @generated from field: int32 priority = 12;
@@ -355,8 +369,10 @@ export class WorkItem extends Message<WorkItem> {
     { no: 9, name: "status", kind: "enum", T: proto3.getEnumType(WorkItemStatus) },
     { no: 10, name: "assigned_worker_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 11, name: "workflow_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 22, name: "workflow_run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 23, name: "workflow_step_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 20, name: "scheduled_start_at", kind: "message", T: Timestamp },
-    { no: 21, name: "auto_start_workflow", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 21, name: "auto_start_workflow", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
     { no: 12, name: "priority", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 13, name: "budgets", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 14, name: "context_window", kind: "scalar", T: 5 /* ScalarType.INT32 */ },

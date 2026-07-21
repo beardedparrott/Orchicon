@@ -43,10 +43,10 @@ type CreateWorkItemRequest struct {
 	Priority           int32                  `protobuf:"varint,8,opt,name=priority,proto3" json:"priority,omitempty"`
 	Budgets            string                 `protobuf:"bytes,9,opt,name=budgets,proto3" json:"budgets,omitempty"` // JSON
 	ContextWindow      int32                  `protobuf:"varint,10,opt,name=context_window,json=contextWindow,proto3" json:"context_window,omitempty"`
-	RequestId          string                 `protobuf:"bytes,11,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`                            // idempotency (docs/07 §5.5)
-	WorkflowId         string                 `protobuf:"bytes,12,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`                         // bind to this workflow template; empty = no binding
-	ScheduledStartAt   *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=scheduled_start_at,json=scheduledStartAt,proto3" json:"scheduled_start_at,omitempty"`     // optional scheduled start; null = start immediately if auto_start_workflow
-	AutoStartWorkflow  bool                   `protobuf:"varint,14,opt,name=auto_start_workflow,json=autoStartWorkflow,proto3" json:"auto_start_workflow,omitempty"` // default true; set false to defer start
+	RequestId          string                 `protobuf:"bytes,11,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`                                  // idempotency (docs/07 §5.5)
+	WorkflowId         string                 `protobuf:"bytes,12,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`                               // bind to this workflow template; empty = no binding
+	ScheduledStartAt   *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=scheduled_start_at,json=scheduledStartAt,proto3" json:"scheduled_start_at,omitempty"`           // optional scheduled start; null = start immediately if auto_start_workflow
+	AutoStartWorkflow  *bool                  `protobuf:"varint,14,opt,name=auto_start_workflow,json=autoStartWorkflow,proto3,oneof" json:"auto_start_workflow,omitempty"` // default true when unset; set false to defer start
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -173,8 +173,8 @@ func (x *CreateWorkItemRequest) GetScheduledStartAt() *timestamppb.Timestamp {
 }
 
 func (x *CreateWorkItemRequest) GetAutoStartWorkflow() bool {
-	if x != nil {
-		return x.AutoStartWorkflow
+	if x != nil && x.AutoStartWorkflow != nil {
+		return *x.AutoStartWorkflow
 	}
 	return false
 }
@@ -1315,7 +1315,7 @@ var File_orchicon_api_v1_work_item_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\n" +
-	"'orchicon/api/v1/work_item_service.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1forchicon/api/v1/work_item.proto\"\xa3\x04\n" +
+	"'orchicon/api/v1/work_item_service.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1forchicon/api/v1/work_item.proto\"\xc0\x04\n" +
 	"\x15CreateWorkItemRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1d\n" +
 	"\n" +
@@ -1333,8 +1333,9 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"request_id\x18\v \x01(\tR\trequestId\x12\x1f\n" +
 	"\vworkflow_id\x18\f \x01(\tR\n" +
 	"workflowId\x12H\n" +
-	"\x12scheduled_start_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\x10scheduledStartAt\x12.\n" +
-	"\x13auto_start_workflow\x18\x0e \x01(\bR\x11autoStartWorkflow\"P\n" +
+	"\x12scheduled_start_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\x10scheduledStartAt\x123\n" +
+	"\x13auto_start_workflow\x18\x0e \x01(\bH\x00R\x11autoStartWorkflow\x88\x01\x01B\x16\n" +
+	"\x14_auto_start_workflow\"P\n" +
 	"\x16CreateWorkItemResponse\x126\n" +
 	"\twork_item\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkItemR\bworkItem\"$\n" +
 	"\x12GetWorkItemRequest\x12\x0e\n" +
@@ -1542,6 +1543,7 @@ func file_orchicon_api_v1_work_item_service_proto_init() {
 		return
 	}
 	file_orchicon_api_v1_work_item_proto_init()
+	file_orchicon_api_v1_work_item_service_proto_msgTypes[0].OneofWrappers = []any{}
 	file_orchicon_api_v1_work_item_service_proto_msgTypes[4].OneofWrappers = []any{}
 	file_orchicon_api_v1_work_item_service_proto_msgTypes[6].OneofWrappers = []any{}
 	type x struct{}

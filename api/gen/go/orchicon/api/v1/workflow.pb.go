@@ -900,6 +900,8 @@ type WorkflowStepRun struct {
 	WorkerExecutionId string                 `protobuf:"bytes,10,opt,name=worker_execution_id,json=workerExecutionId,proto3" json:"worker_execution_id,omitempty"` // for task steps: the dispatched execution
 	StartedAt         *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
 	EndedAt           *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`
+	Iteration         int32                  `protobuf:"varint,15,opt,name=iteration,proto3" json:"iteration,omitempty"`                          // re-entry count for loop decision steps (0 for first dispatch)
+	SupersededBy      string                 `protobuf:"bytes,16,opt,name=superseded_by,json=supersededBy,proto3" json:"superseded_by,omitempty"` // step run id that superseded this one (non-empty for archived iterations)
 	CreatedAt         *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt         *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	unknownFields     protoimpl.UnknownFields
@@ -1018,6 +1020,20 @@ func (x *WorkflowStepRun) GetEndedAt() *timestamppb.Timestamp {
 		return x.EndedAt
 	}
 	return nil
+}
+
+func (x *WorkflowStepRun) GetIteration() int32 {
+	if x != nil {
+		return x.Iteration
+	}
+	return 0
+}
+
+func (x *WorkflowStepRun) GetSupersededBy() string {
+	if x != nil {
+		return x.SupersededBy
+	}
+	return ""
 }
 
 func (x *WorkflowStepRun) GetCreatedAt() *timestamppb.Timestamp {
@@ -1232,7 +1248,7 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12 \n" +
 	"\fwork_item_id\x18\x0e \x01(\tR\n" +
-	"workItemId\"\xd6\x04\n" +
+	"workItemId\"\x99\x05\n" +
 	"\x0fWorkflowStepRun\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12&\n" +
@@ -1247,7 +1263,9 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	" \x01(\tR\x11workerExecutionId\x129\n" +
 	"\n" +
 	"started_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x125\n" +
-	"\bended_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\aendedAt\x129\n" +
+	"\bended_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\aendedAt\x12\x1c\n" +
+	"\titeration\x18\x0f \x01(\x05R\titeration\x12#\n" +
+	"\rsuperseded_by\x18\x10 \x01(\tR\fsupersededBy\x129\n" +
 	"\n" +
 	"created_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +

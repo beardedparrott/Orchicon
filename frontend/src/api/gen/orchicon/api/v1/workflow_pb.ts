@@ -834,6 +834,20 @@ export class WorkflowStepRun extends Message<WorkflowStepRun> {
   endedAt?: Timestamp;
 
   /**
+   * re-entry count for loop decision steps (0 for first dispatch)
+   *
+   * @generated from field: int32 iteration = 15;
+   */
+  iteration = 0;
+
+  /**
+   * step run id that superseded this one (non-empty for archived iterations)
+   *
+   * @generated from field: string superseded_by = 16;
+   */
+  supersededBy = "";
+
+  /**
    * @generated from field: google.protobuf.Timestamp created_at = 13;
    */
   createdAt?: Timestamp;
@@ -863,6 +877,8 @@ export class WorkflowStepRun extends Message<WorkflowStepRun> {
     { no: 10, name: "worker_execution_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 11, name: "started_at", kind: "message", T: Timestamp },
     { no: 12, name: "ended_at", kind: "message", T: Timestamp },
+    { no: 15, name: "iteration", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 16, name: "superseded_by", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 13, name: "created_at", kind: "message", T: Timestamp },
     { no: 14, name: "updated_at", kind: "message", T: Timestamp },
   ]);
