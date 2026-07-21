@@ -1427,6 +1427,8 @@ func (r *WorkflowReconciler) readFileOrDir(sb *strings.Builder, absPath, relPath
 		if err != nil {
 			return 0, fmt.Errorf("read dir: %w", err)
 		}
+		// Emit directory heading so the worker sees the structure.
+		fmt.Fprintf(sb, "### 📁 %s\n\n", absPath)
 		var total int
 		for _, entry := range entries {
 			if *totalRead >= maxTotalReadSize {
@@ -1438,7 +1440,7 @@ func (r *WorkflowReconciler) readFileOrDir(sb *strings.Builder, absPath, relPath
 			n, err := r.readFileOrDir(sb, childAbs, childRel, depth+1, totalRead)
 			if err != nil {
 				r.log.Warn("error reading context file", "path", childAbs, "error", err)
-				fmt.Fprintf(sb, "\n> ⚠ Error reading `%s`: %s\n\n", childRel, err)
+				fmt.Fprintf(sb, "\n> ⚠ Error reading `%s`: %s\n\n", childAbs, err)
 			}
 			total += n
 		}
@@ -1458,7 +1460,7 @@ func (r *WorkflowReconciler) readFileOrDir(sb *strings.Builder, absPath, relPath
 		sniff = sniff[:8192]
 	}
 	if bytes.IndexByte(sniff, 0) != -1 {
-		fmt.Fprintf(sb, "### `%s`\n\n_Binary file (%d bytes) — content not inlined._\n\n", relPath, len(data))
+		fmt.Fprintf(sb, "### `%s`\n\n_Binary file (%d bytes) — content not inlined._\n\n", absPath, len(data))
 		*totalRead += len(data)
 		return len(data), nil
 	}
@@ -1467,7 +1469,7 @@ func (r *WorkflowReconciler) readFileOrDir(sb *strings.Builder, absPath, relPath
 	if len(content) > maxFileReadSize {
 		content = content[:maxFileReadSize]
 	}
-	fmt.Fprintf(sb, "### `%s`\n\n```\n%s\n```\n\n", relPath, string(content))
+	fmt.Fprintf(sb, "### `%s`\n\n```\n%s\n```\n\n", absPath, string(content))
 	if len(data) > maxFileReadSize {
 		fmt.Fprintf(sb, "_File truncated: %d of %d bytes shown._\n\n", maxFileReadSize, len(data))
 	}
