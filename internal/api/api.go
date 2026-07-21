@@ -7,6 +7,7 @@ package api
 
 import (
 	"compress/gzip"
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -92,8 +93,16 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	workerSvc := worker.New(deps.Pool, deps.Log)
 	mux.Handle(apiv1connect.NewWorkerServiceHandler(workerSvc, interceptorOpt))
 
+	// WorkflowService (docs/07 §3.4). Constructed before WorkItemService
+	// so the WorkItemService can wire the StartWorkflowStarter.
+	workflowSvc := workflow.New(deps.Pool, deps.Log, deps.Subscriber)
+	mux.Handle(apiv1connect.NewWorkflowServiceHandler(workflowSvc, interceptorOpt))
+
 	// WorkItemService (docs/07 §3.2).
 	workItemSvc := workitem.New(deps.Pool, deps.Log)
+	workItemSvc.SetStartWorkflowStarter(func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
+		return workflow.StartWorkflowDirect(ctx, deps.Pool, deps.Log, tenantID, workflowID, projectID, workItemID)
+	})
 	mux.Handle(apiv1connect.NewWorkItemServiceHandler(workItemSvc, interceptorOpt))
 
 	// RuntimeAdapterService (docs/07 §3.7).
@@ -103,10 +112,6 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// ExecutionService (docs/07 §3.8).
 	execSvc := execution.New(deps.Pool, deps.Log, deps.Subscriber)
 	mux.Handle(apiv1connect.NewExecutionServiceHandler(execSvc, interceptorOpt))
-
-	// WorkflowService (docs/07 §3.4).
-	workflowSvc := workflow.New(deps.Pool, deps.Log, deps.Subscriber)
-	mux.Handle(apiv1connect.NewWorkflowServiceHandler(workflowSvc, interceptorOpt))
 
 	// PolicyService (docs/07 §3.5).
 	policySvc := policy.NewService(deps.Pool, deps.Log, deps.PolicyEngine, deps.Subscriber)

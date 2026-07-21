@@ -17,6 +17,10 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// StartWorkflowStarter starts a workflow run for a bound work item.
+// Injected by the server wired to the workflow service.
+type StartWorkflowStarter func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error
+
 // Service implements the WorkItemService Connect handler
 // (apiv1connect.WorkItemServiceHandler). Each mutation writes an outbox
 // row in the same transaction as the state change (AGENTS.md invariant
@@ -24,8 +28,9 @@ import (
 // (docs/09 §5). Dependency cycles are rejected at admission using a
 // recursive CTE (docs/09 §11).
 type Service struct {
-	pool *db.Pool
-	log  *slog.Logger
+	pool            *db.Pool
+	log             *slog.Logger
+	startWorkflowFn StartWorkflowStarter
 	apiv1connect.UnimplementedWorkItemServiceHandler
 }
 
@@ -36,6 +41,10 @@ var _ apiv1connect.WorkItemServiceHandler = (*Service)(nil)
 func New(pool *db.Pool, log *slog.Logger) *Service {
 	return &Service{pool: pool, log: log}
 }
+
+// SetStartWorkflowStarter injects the function to start a bound workflow run.
+// Called by the server before the reconciler starts (docs/11 §5.2).
+func (s *Service) SetStartWorkflowStarter(fn StartWorkflowStarter) { s.startWorkflowFn = fn }
 
 // CreateWorkItem creates a new work item within a project. Depth is
 // constrained to 4 levels (docs/02 §2.2).
@@ -105,6 +114,21 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 			fmt.Errorf("a top-level work item must be an epic, not a %s", kind))
 	}
 
+	// Parse scheduled start and workflow binding fields (docs/11 §5.1).
+	var scheduledStartAt *time.Time
+	if msg.ScheduledStartAt != nil {
+		t := msg.ScheduledStartAt.AsTime()
+		scheduledStartAt = &t
+	}
+	autoStart := true
+	if msg.ScheduledStartAt == nil && !msg.AutoStartWorkflow {
+		autoStart = false
+	}
+	workflowID := msg.WorkflowId
+	if workflowID == "" {
+		workflowID = "" // keep empty for unbound items
+	}
+
 	row := db.WorkItemRow{
 		ID:                 db.NewID(),
 		TenantID:           tenantID,
@@ -118,6 +142,12 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		Priority:           int(msg.Priority),
 		Budgets:            budgets,
 		ContextWindow:      int(msg.ContextWindow),
+		WorkflowID:         &workflowID,
+		ScheduledStartAt:   scheduledStartAt,
+		AutoStartWorkflow:  autoStart,
+	}
+	if workflowID == "" {
+		row.WorkflowID = nil
 	}
 	created, err := db.CreateWorkItem(ctx, ttx.Tx, row)
 	if err != nil {
@@ -129,6 +159,15 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
+
+	// If the work item has a workflow binding and should auto-start
+	// immediately, call StartWorkflow (docs/11 §5.2).
+	if workflowID != "" && scheduledStartAt == nil && autoStart && s.startWorkflowFn != nil {
+		if err := s.startWorkflowFn(ctx, tenantID, workflowID, msg.ProjectId, created.ID); err != nil {
+			s.log.Warn("auto-start workflow failed", "work_item", created.ID, "workflow", workflowID, "error", err)
+		}
+	}
+
 	s.log.Info("work item created", "id", created.ID, "kind", kind, "project", msg.ProjectId)
 	return connect.NewResponse(&apiv1.CreateWorkItemResponse{WorkItem: rowToProto(created)}), nil
 }
@@ -250,6 +289,18 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	}
 	if msg.ProjectId != nil {
 		fields.ProjectID = msg.ProjectId
+	}
+	if msg.WorkflowId != nil {
+		wfid := *msg.WorkflowId
+		fields.WorkflowID = &wfid
+	}
+	if msg.ScheduledStartAt != nil {
+		t := msg.ScheduledStartAt.AsTime()
+		fields.ScheduledStartAt = &t
+	}
+	if msg.AutoStartWorkflow != nil {
+		v := *msg.AutoStartWorkflow
+		fields.AutoStartWorkflow = &v
 	}
 
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
@@ -758,6 +809,10 @@ func rowToProto(w db.WorkItemRow) *apiv1.WorkItem {
 	if w.WorkflowID != nil {
 		p.WorkflowId = *w.WorkflowID
 	}
+	if w.ScheduledStartAt != nil {
+		p.ScheduledStartAt = timestamppb.New(*w.ScheduledStartAt)
+	}
+	p.AutoStartWorkflow = w.AutoStartWorkflow
 	return p
 }
 

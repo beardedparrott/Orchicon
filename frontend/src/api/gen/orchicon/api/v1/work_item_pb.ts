@@ -271,6 +271,20 @@ export class WorkItem extends Message<WorkItem> {
   workflowId = "";
 
   /**
+   * scheduled start for bound runs
+   *
+   * @generated from field: google.protobuf.Timestamp scheduled_start_at = 20;
+   */
+  scheduledStartAt?: Timestamp;
+
+  /**
+   * true = auto-start on save; false = manual start only
+   *
+   * @generated from field: bool auto_start_workflow = 21;
+   */
+  autoStartWorkflow = false;
+
+  /**
    * @generated from field: int32 priority = 12;
    */
   priority = 0;
@@ -341,6 +355,8 @@ export class WorkItem extends Message<WorkItem> {
     { no: 9, name: "status", kind: "enum", T: proto3.getEnumType(WorkItemStatus) },
     { no: 10, name: "assigned_worker_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 11, name: "workflow_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 20, name: "scheduled_start_at", kind: "message", T: Timestamp },
+    { no: 21, name: "auto_start_workflow", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 12, name: "priority", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 13, name: "budgets", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 14, name: "context_window", kind: "scalar", T: 5 /* ScalarType.INT32 */ },

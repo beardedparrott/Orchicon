@@ -1293,3 +1293,18 @@ func lockRowToProto(l db.EditLockRow) *apiv1.EditLock {
 }
 
 func strPtr(s string) *string { return &s }
+
+// StartWorkflowDirect starts a workflow run for a bound work item without
+// a Connect request wrapper. Used by the WorkItem service and the
+// ScheduledRunReconciler for inline dispatch (docs/11 §5.2).
+func StartWorkflowDirect(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantID, workflowID, projectID, workItemID string) error {
+	s := New(pool, log, nil)
+	req := connect.NewRequest(&apiv1.StartWorkflowRequest{
+		WorkflowId:  workflowID,
+		ProjectId:   projectID,
+		WorkItemId:  workItemID,
+		RunContext:  "{}",
+	})
+	_, err := s.StartWorkflow(ctx, req)
+	return err
+}

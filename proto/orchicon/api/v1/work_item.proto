@@ -55,6 +55,8 @@ message WorkItem {
   WorkItemStatus status = 9;
   string assigned_worker_ref = 10; // JSON: {worker_id, version} (docs/02 §2.2)
   string workflow_id = 11;
+  google.protobuf.Timestamp scheduled_start_at = 20; // scheduled start for bound runs
+  bool auto_start_workflow = 21; // true = auto-start on save; false = manual start only
   int32 priority = 12;
   string budgets = 13; // JSON: tokens/cost/time (docs/02 §2.2)
   int32 context_window = 14;

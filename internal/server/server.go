@@ -32,6 +32,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/recovery"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
+	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/beardedparrott/orchicon/internal/version"
 	"github.com/beardedparrott/orchicon/internal/webhook"
 )
@@ -242,10 +243,15 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		}
 	})
 	recoveryRec := recovery.NewReconciler(recoveryEngine)
+	scheduledRunRec := scheduler.NewScheduledRunReconciler(pool, log,
+		func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
+			return workflow.StartWorkflowDirect(ctx, pool, log, tenantID, workflowID, projectID, workItemID)
+		})
 	s.rcmgr = reconciler.NewManager(pool, log)
 	s.rcmgr.Register(taskRec)
 	s.rcmgr.Register(workflowRec)
 	s.rcmgr.Register(recoveryRec)
+	s.rcmgr.Register(scheduledRunRec)
 
 	// Seed an in-process OpenCode adapter registration so the
 	// TaskReconciler can find a ready adapter for dispatch (docs/04 §6.3:

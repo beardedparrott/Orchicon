@@ -256,6 +256,8 @@ type WorkItem struct {
 	Status             WorkItemStatus         `protobuf:"varint,9,opt,name=status,proto3,enum=orchicon.api.v1.WorkItemStatus" json:"status,omitempty"`
 	AssignedWorkerRef  string                 `protobuf:"bytes,10,opt,name=assigned_worker_ref,json=assignedWorkerRef,proto3" json:"assigned_worker_ref,omitempty"` // JSON: {worker_id, version} (docs/02 §2.2)
 	WorkflowId         string                 `protobuf:"bytes,11,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	ScheduledStartAt   *timestamppb.Timestamp `protobuf:"bytes,20,opt,name=scheduled_start_at,json=scheduledStartAt,proto3" json:"scheduled_start_at,omitempty"`     // scheduled start for bound runs
+	AutoStartWorkflow  bool                   `protobuf:"varint,21,opt,name=auto_start_workflow,json=autoStartWorkflow,proto3" json:"auto_start_workflow,omitempty"` // true = auto-start on save; false = manual start only
 	Priority           int32                  `protobuf:"varint,12,opt,name=priority,proto3" json:"priority,omitempty"`
 	Budgets            string                 `protobuf:"bytes,13,opt,name=budgets,proto3" json:"budgets,omitempty"` // JSON: tokens/cost/time (docs/02 §2.2)
 	ContextWindow      int32                  `protobuf:"varint,14,opt,name=context_window,json=contextWindow,proto3" json:"context_window,omitempty"`
@@ -378,6 +380,20 @@ func (x *WorkItem) GetWorkflowId() string {
 		return x.WorkflowId
 	}
 	return ""
+}
+
+func (x *WorkItem) GetScheduledStartAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ScheduledStartAt
+	}
+	return nil
+}
+
+func (x *WorkItem) GetAutoStartWorkflow() bool {
+	if x != nil {
+		return x.AutoStartWorkflow
+	}
+	return false
 }
 
 func (x *WorkItem) GetPriority() int32 {
@@ -590,7 +606,7 @@ var File_orchicon_api_v1_work_item_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\n" +
-	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc7\x05\n" +
+	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc1\x06\n" +
 	"\bWorkItem\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -605,7 +621,9 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\x13assigned_worker_ref\x18\n" +
 	" \x01(\tR\x11assignedWorkerRef\x12\x1f\n" +
 	"\vworkflow_id\x18\v \x01(\tR\n" +
-	"workflowId\x12\x1a\n" +
+	"workflowId\x12H\n" +
+	"\x12scheduled_start_at\x18\x14 \x01(\v2\x1a.google.protobuf.TimestampR\x10scheduledStartAt\x12.\n" +
+	"\x13auto_start_workflow\x18\x15 \x01(\bR\x11autoStartWorkflow\x12\x1a\n" +
 	"\bpriority\x18\f \x01(\x05R\bpriority\x12\x18\n" +
 	"\abudgets\x18\r \x01(\tR\abudgets\x12%\n" +
 	"\x0econtext_window\x18\x0e \x01(\x05R\rcontextWindow\x12\x18\n" +
@@ -683,17 +701,18 @@ var file_orchicon_api_v1_work_item_proto_goTypes = []any{
 var file_orchicon_api_v1_work_item_proto_depIdxs = []int32{
 	0, // 0: orchicon.api.v1.WorkItem.kind:type_name -> orchicon.api.v1.WorkItemKind
 	1, // 1: orchicon.api.v1.WorkItem.status:type_name -> orchicon.api.v1.WorkItemStatus
-	6, // 2: orchicon.api.v1.WorkItem.created_at:type_name -> google.protobuf.Timestamp
-	6, // 3: orchicon.api.v1.WorkItem.updated_at:type_name -> google.protobuf.Timestamp
-	2, // 4: orchicon.api.v1.WorkItemDependency.type:type_name -> orchicon.api.v1.DependencyType
-	6, // 5: orchicon.api.v1.WorkItemDependency.created_at:type_name -> google.protobuf.Timestamp
-	3, // 6: orchicon.api.v1.DependencyGraph.nodes:type_name -> orchicon.api.v1.WorkItem
-	4, // 7: orchicon.api.v1.DependencyGraph.edges:type_name -> orchicon.api.v1.WorkItemDependency
-	8, // [8:8] is the sub-list for method output_type
-	8, // [8:8] is the sub-list for method input_type
-	8, // [8:8] is the sub-list for extension type_name
-	8, // [8:8] is the sub-list for extension extendee
-	0, // [0:8] is the sub-list for field type_name
+	6, // 2: orchicon.api.v1.WorkItem.scheduled_start_at:type_name -> google.protobuf.Timestamp
+	6, // 3: orchicon.api.v1.WorkItem.created_at:type_name -> google.protobuf.Timestamp
+	6, // 4: orchicon.api.v1.WorkItem.updated_at:type_name -> google.protobuf.Timestamp
+	2, // 5: orchicon.api.v1.WorkItemDependency.type:type_name -> orchicon.api.v1.DependencyType
+	6, // 6: orchicon.api.v1.WorkItemDependency.created_at:type_name -> google.protobuf.Timestamp
+	3, // 7: orchicon.api.v1.DependencyGraph.nodes:type_name -> orchicon.api.v1.WorkItem
+	4, // 8: orchicon.api.v1.DependencyGraph.edges:type_name -> orchicon.api.v1.WorkItemDependency
+	9, // [9:9] is the sub-list for method output_type
+	9, // [9:9] is the sub-list for method input_type
+	9, // [9:9] is the sub-list for extension type_name
+	9, // [9:9] is the sub-list for extension extendee
+	0, // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_work_item_proto_init() }

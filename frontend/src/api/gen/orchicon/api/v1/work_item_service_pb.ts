@@ -13,7 +13,7 @@
 // @ts-nocheck
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
-import { Message, proto3 } from "@bufbuild/protobuf";
+import { Message, proto3, Timestamp } from "@bufbuild/protobuf";
 import { DependencyGraph, DependencyType, WorkItem, WorkItemDependency, WorkItemKind, WorkItemStatus } from "./work_item_pb.js";
 
 /**
@@ -85,6 +85,27 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
    */
   requestId = "";
 
+  /**
+   * bind to this workflow template; empty = no binding
+   *
+   * @generated from field: string workflow_id = 12;
+   */
+  workflowId = "";
+
+  /**
+   * optional scheduled start; null = start immediately if auto_start_workflow
+   *
+   * @generated from field: google.protobuf.Timestamp scheduled_start_at = 13;
+   */
+  scheduledStartAt?: Timestamp;
+
+  /**
+   * default true; set false to defer start
+   *
+   * @generated from field: bool auto_start_workflow = 14;
+   */
+  autoStartWorkflow = false;
+
   constructor(data?: PartialMessage<CreateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -104,6 +125,9 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
     { no: 9, name: "budgets", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 10, name: "context_window", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 11, name: "request_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 12, name: "workflow_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 13, name: "scheduled_start_at", kind: "message", T: Timestamp },
+    { no: 14, name: "auto_start_workflow", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkItemRequest {
@@ -428,6 +452,23 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
    */
   requestId = "";
 
+  /**
+   * bind/unbind to a workflow template
+   *
+   * @generated from field: optional string workflow_id = 15;
+   */
+  workflowId?: string;
+
+  /**
+   * @generated from field: optional google.protobuf.Timestamp scheduled_start_at = 16;
+   */
+  scheduledStartAt?: Timestamp;
+
+  /**
+   * @generated from field: optional bool auto_start_workflow = 17;
+   */
+  autoStartWorkflow?: boolean;
+
   constructor(data?: PartialMessage<UpdateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -446,6 +487,9 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
     { no: 8, name: "context_window", kind: "scalar", T: 5 /* ScalarType.INT32 */, opt: true },
     { no: 10, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 9, name: "request_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 15, name: "workflow_id", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 16, name: "scheduled_start_at", kind: "message", T: Timestamp, opt: true },
+    { no: 17, name: "auto_start_workflow", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkItemRequest {
