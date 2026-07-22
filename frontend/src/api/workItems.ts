@@ -144,7 +144,7 @@ export function useHardDeleteWorkItem(projectId: string) {
 }
 
 // useBatchDeleteWorkItems hard-deletes multiple work items by id.
-export function useBatchDeleteWorkItems(projectId: string) {
+export function useBatchDeleteWorkItems() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (ids: string[]) => {
