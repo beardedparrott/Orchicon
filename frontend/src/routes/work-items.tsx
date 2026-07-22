@@ -38,7 +38,7 @@ function WorkItemsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const activeProjectId = projectId || projects?.[0]?.id || "";
-  const batchDelete = useBatchDeleteWorkItems(activeProjectId);
+  const batchDelete = useBatchDeleteWorkItems();
 
   const toggleSelect = (id: string) => {
     setSelected((prev) => {

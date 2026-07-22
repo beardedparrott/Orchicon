@@ -4,6 +4,7 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { useCreateWorkflow } from "@/api/workflows";
+import { useListProjects } from "@/api/projects";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -16,11 +17,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Route as rootRoute } from "@/routes/__root";
 
-// Create workflow form (docs/10 §5, §2: React Hook Form + Zod).
-//
-// A workflow starts in draft state with its first draft version (an
-// empty step DAG). The visual editor opens after creation to add steps.
-// project_id is optional (empty for a tenant-level template).
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/workflows/new",
@@ -32,6 +28,8 @@ const createWorkflowSchema = z.object({
     .string()
     .min(1, "Name is required")
     .max(500, "Name must be at most 500 characters"),
+  type: z.enum(["one-shot", "repeatable-template"]),
+  projectId: z.string().optional(),
   versionNote: z.string().max(16384, "Version note is too long").optional(),
   recoveryPolicyRef: z.string().max(200).optional(),
 });
@@ -41,19 +39,24 @@ type CreateWorkflowForm = z.infer<typeof createWorkflowSchema>;
 function NewWorkflowPage() {
   const navigate = useNavigate();
   const createWorkflow = useCreateWorkflow();
+  const { data: projects } = useListProjects();
   const {
     register,
+    watch,
     handleSubmit,
     formState: { errors, isSubmitting },
   } = useForm<CreateWorkflowForm>({
     resolver: zodResolver(createWorkflowSchema),
-    defaultValues: { name: "", versionNote: "", recoveryPolicyRef: "" },
+    defaultValues: { name: "", type: "one-shot", versionNote: "", recoveryPolicyRef: "" },
   });
+  const workflowType = watch("type");
 
   const onSubmit = async (values: CreateWorkflowForm) => {
     const res = await createWorkflow.mutateAsync({
       name: values.name,
-      steps: "[]", // empty DAG — the editor adds steps
+      projectId: values.type === "one-shot" ? (values.projectId ?? "") : "",
+      type: values.type === "repeatable-template" ? "template" : "one_shot",
+      steps: "[]",
       inputs: "{}",
       outputs: "{}",
       recoveryPolicyRef: values.recoveryPolicyRef ?? "",
@@ -67,9 +70,8 @@ function NewWorkflowPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">New Workflow</h1>
         <p className="text-sm text-muted-foreground">
-          A composable execution plan. Starts as a draft. Open the visual
-          editor to drag connectors and wire steps. Use a Project connector
-          to bind the workflow to a project.
+          Choose whether this is a one-shot project workflow or a repeatable
+          template that can be bound to work items.
         </p>
       </div>
 
@@ -77,9 +79,8 @@ function NewWorkflowPage() {
         <CardHeader>
           <CardTitle>Workflow details</CardTitle>
           <CardDescription>
-            Workflows start in draft state. Drag a Project connector onto
-            the canvas to bind it to a project, then publish to make it
-            runnable.
+            A workflow starts in draft state. After creating, open the visual
+            editor to add steps. Publish to make it runnable.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -97,6 +98,46 @@ function NewWorkflowPage() {
                 </p>
               )}
             </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="type">Type</Label>
+              <select
+                id="type"
+                {...register("type")}
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+              >
+                <option value="one-shot">One-Shot</option>
+                <option value="repeatable-template">Repeatable Template</option>
+              </select>
+              <p className="text-xs text-muted-foreground">
+                {workflowType === "one-shot"
+                  ? "A single-run workflow tied to a project. Use the canvas to define project, work items, workers, and steps. Run it once."
+                  : "A reusable template bound to any work item. The template defines the workers; the work item provides the context. Can auto-start or run on a schedule."}
+              </p>
+            </div>
+
+            {workflowType === "one-shot" && (
+              <div className="space-y-2">
+                <Label htmlFor="projectId">Project</Label>
+                <select
+                  id="projectId"
+                  {...register("projectId")}
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                >
+                  <option value="">— Select a project —</option>
+                  {(projects ?? []).map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+                {errors.projectId && (
+                  <p className="text-xs text-destructive">
+                    {errors.projectId.message}
+                  </p>
+                )}
+              </div>
+            )}
 
             <div className="space-y-2">
               <Label htmlFor="versionNote">Version note (optional)</Label>

@@ -65,7 +65,7 @@ function WorkItemDetailPage() {
   const [editScheduledStartAt, setEditScheduledStartAt] = useState("");
   const [editAutoStartWorkflow, setEditAutoStartWorkflow] = useState(true);
 
-  const { data: workflows } = useListWorkflows({ status: 2 }); // published only
+  const { data: workflows } = useListWorkflows({ status: 2, templatesOnly: true }); // published templates only
 
   const [depTarget, setDepTarget] = useState("");
   const [depType, setDepType] = useState(1); // BLOCKS

@@ -372,6 +372,7 @@ type Workflow struct {
 	Status         WorkflowStatus         `protobuf:"varint,5,opt,name=status,proto3,enum=orchicon.api.v1.WorkflowStatus" json:"status,omitempty"`
 	CurrentVersion int32                  `protobuf:"varint,6,opt,name=current_version,json=currentVersion,proto3" json:"current_version,omitempty"` // latest version number
 	Version        int32                  `protobuf:"varint,7,opt,name=version,proto3" json:"version,omitempty"`                                     // optimistic concurrency (docs/09 §5)
+	Type           string                 `protobuf:"bytes,10,opt,name=type,proto3" json:"type,omitempty"`                                           // "template" or "one_shot" (docs/11 §2.1)
 	CreatedAt      *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt      *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	unknownFields  protoimpl.UnknownFields
@@ -455,6 +456,13 @@ func (x *Workflow) GetVersion() int32 {
 		return x.Version
 	}
 	return 0
+}
+
+func (x *Workflow) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
 }
 
 func (x *Workflow) GetCreatedAt() *timestamppb.Timestamp {
@@ -1181,7 +1189,7 @@ var File_orchicon_api_v1_workflow_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"\n" +
-	"\x1eorchicon/api/v1/workflow.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xdc\x02\n" +
+	"\x1eorchicon/api/v1/workflow.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf0\x02\n" +
 	"\bWorkflow\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -1190,7 +1198,9 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"\x04name\x18\x04 \x01(\tR\x04name\x127\n" +
 	"\x06status\x18\x05 \x01(\x0e2\x1f.orchicon.api.v1.WorkflowStatusR\x06status\x12'\n" +
 	"\x0fcurrent_version\x18\x06 \x01(\x05R\x0ecurrentVersion\x12\x18\n" +
-	"\aversion\x18\a \x01(\x05R\aversion\x129\n" +
+	"\aversion\x18\a \x01(\x05R\aversion\x12\x12\n" +
+	"\x04type\x18\n" +
+	" \x01(\tR\x04type\x129\n" +
 	"\n" +
 	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +

@@ -47,6 +47,7 @@ type CreateWorkflowRequest struct {
 	RecoveryPolicyRef string `protobuf:"bytes,7,opt,name=recovery_policy_ref,json=recoveryPolicyRef,proto3" json:"recovery_policy_ref,omitempty"`
 	VersionNote       string `protobuf:"bytes,8,opt,name=version_note,json=versionNote,proto3" json:"version_note,omitempty"`
 	RequestId         string `protobuf:"bytes,9,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"` // idempotency (docs/07 §5.5)
+	Type              string `protobuf:"bytes,10,opt,name=type,proto3" json:"type,omitempty"`                           // "template" or "one_shot" (default "one_shot" when project_id is set, "template" when empty)
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -140,6 +141,13 @@ func (x *CreateWorkflowRequest) GetVersionNote() string {
 func (x *CreateWorkflowRequest) GetRequestId() string {
 	if x != nil {
 		return x.RequestId
+	}
+	return ""
+}
+
+func (x *CreateWorkflowRequest) GetType() string {
+	if x != nil {
+		return x.Type
 	}
 	return ""
 }
@@ -574,6 +582,7 @@ type ListWorkflowsRequest struct {
 	Search        string                 `protobuf:"bytes,6,opt,name=search,proto3" json:"search,omitempty"`                        // free-text search across name
 	SortBy        string                 `protobuf:"bytes,7,opt,name=sort_by,json=sortBy,proto3" json:"sort_by,omitempty"`          // field name: "name", "status", "created_at" (default)
 	SortOrder     string                 `protobuf:"bytes,8,opt,name=sort_order,json=sortOrder,proto3" json:"sort_order,omitempty"` // "asc" or "desc" (default "asc")
+	Type          string                 `protobuf:"bytes,9,opt,name=type,proto3" json:"type,omitempty"`                            // filter by type: "template" or "one_shot"; empty = all
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -660,6 +669,13 @@ func (x *ListWorkflowsRequest) GetSortBy() string {
 func (x *ListWorkflowsRequest) GetSortOrder() string {
 	if x != nil {
 		return x.SortOrder
+	}
+	return ""
+}
+
+func (x *ListWorkflowsRequest) GetType() string {
+	if x != nil {
+		return x.Type
 	}
 	return ""
 }
@@ -2032,7 +2048,7 @@ var File_orchicon_api_v1_workflow_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_workflow_service_proto_rawDesc = "" +
 	"\n" +
-	"&orchicon/api/v1/workflow_service.proto\x12\x0forchicon.api.v1\x1a\x1eorchicon/api/v1/workflow.proto\x1a\x1corchicon/api/v1/worker.proto\"\xa1\x02\n" +
+	"&orchicon/api/v1/workflow_service.proto\x12\x0forchicon.api.v1\x1a\x1eorchicon/api/v1/workflow.proto\x1a\x1corchicon/api/v1/worker.proto\"\xb5\x02\n" +
 	"\x15CreateWorkflowRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1d\n" +
 	"\n" +
@@ -2044,7 +2060,9 @@ const file_orchicon_api_v1_workflow_service_proto_rawDesc = "" +
 	"\x13recovery_policy_ref\x18\a \x01(\tR\x11recoveryPolicyRef\x12!\n" +
 	"\fversion_note\x18\b \x01(\tR\vversionNote\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\t \x01(\tR\trequestId\"\x8b\x01\n" +
+	"request_id\x18\t \x01(\tR\trequestId\x12\x12\n" +
+	"\x04type\x18\n" +
+	" \x01(\tR\x04type\"\x8b\x01\n" +
 	"\x16CreateWorkflowResponse\x125\n" +
 	"\bworkflow\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkflowR\bworkflow\x12:\n" +
 	"\aversion\x18\x02 \x01(\v2 .orchicon.api.v1.WorkflowVersionR\aversion\"\\\n" +
@@ -2067,7 +2085,7 @@ const file_orchicon_api_v1_workflow_service_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x95\x01\n" +
 	"\x13GetWorkflowResponse\x125\n" +
 	"\bworkflow\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkflowR\bworkflow\x12G\n" +
-	"\x0elatest_version\x18\x02 \x01(\v2 .orchicon.api.v1.WorkflowVersionR\rlatestVersion\"\xa7\x02\n" +
+	"\x0elatest_version\x18\x02 \x01(\v2 .orchicon.api.v1.WorkflowVersionR\rlatestVersion\"\xbb\x02\n" +
 	"\x14ListWorkflowsRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1d\n" +
 	"\n" +
@@ -2079,7 +2097,8 @@ const file_orchicon_api_v1_workflow_service_proto_rawDesc = "" +
 	"\x06search\x18\x06 \x01(\tR\x06search\x12\x17\n" +
 	"\asort_by\x18\a \x01(\tR\x06sortBy\x12\x1d\n" +
 	"\n" +
-	"sort_order\x18\b \x01(\tR\tsortOrderB\t\n" +
+	"sort_order\x18\b \x01(\tR\tsortOrder\x12\x12\n" +
+	"\x04type\x18\t \x01(\tR\x04typeB\t\n" +
 	"\a_status\"x\n" +
 	"\x15ListWorkflowsResponse\x127\n" +
 	"\tworkflows\x18\x01 \x03(\v2\x19.orchicon.api.v1.WorkflowR\tworkflows\x12&\n" +

@@ -136,6 +136,13 @@ const (
 	EditLockResourceWorkflow = "workflow"
 )
 
+// WorkflowType distinguishes one-shot workflows from repeatable
+// templates (docs/11 §2.1). Stored as a string in workflows.type.
+const (
+	WorkflowTypeOneShot  = "one_shot"
+	WorkflowTypeTemplate = "template"
+)
+
 // Workflow lifecycle states (docs/02 §2.4):
 // draft → published → deprecated. A published version is immutable.
 const (

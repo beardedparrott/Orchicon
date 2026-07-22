@@ -102,11 +102,20 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *connect.Request[apiv1
 		}
 	}
 
+	workflowType := msg.Type
+	if workflowType == "" {
+		if projectID == "" {
+			workflowType = domain.WorkflowTypeTemplate
+		} else {
+			workflowType = domain.WorkflowTypeOneShot
+		}
+	}
 	workflowRow := db.WorkflowRow{
 		ID:             workflowID,
 		TenantID:       tenantID,
 		ProjectID:      projectID,
 		Name:           name,
+		Type:           workflowType,
 		Status:         domain.WorkflowDraft,
 		CurrentVersion: 0,
 	}
@@ -382,13 +391,14 @@ func (s *Service) ListWorkflows(ctx context.Context, req *connect.Request[apiv1.
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	f := db.ListWorkflowsFilter{
-		TenantID:  tenantID,
-		ProjectID: req.Msg.ProjectId,
-		PageSize:  int(req.Msg.PageSize),
-		AfterID:   req.Msg.PageToken,
-		Search:    req.Msg.Search,
-		SortBy:    req.Msg.SortBy,
-		SortOrder: req.Msg.SortOrder,
+		TenantID:     tenantID,
+		ProjectID:    req.Msg.ProjectId,
+		Type:         req.Msg.Type,
+		PageSize:     int(req.Msg.PageSize),
+		AfterID:      req.Msg.PageToken,
+		Search:       req.Msg.Search,
+		SortBy:       req.Msg.SortBy,
+		SortOrder:    req.Msg.SortOrder,
 	}
 	if req.Msg.Status != nil {
 		f.Status = workflowStatusFromProto(*req.Msg.Status)
@@ -1206,6 +1216,7 @@ func workflowRowToProto(w db.WorkflowRow) *apiv1.Workflow {
 		TenantId:       w.TenantID,
 		ProjectId:       w.ProjectID,
 		Name:            w.Name,
+		Type:            w.Type,
 		Status:          workflowStatusToProto(w.Status),
 		CurrentVersion: int32(w.CurrentVersion),
 		Version:         int32(w.Version),

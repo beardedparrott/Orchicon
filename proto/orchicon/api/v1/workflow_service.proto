@@ -110,6 +110,7 @@ message CreateWorkflowRequest {
   string recovery_policy_ref = 7;
   string version_note = 8;
   string request_id = 9; // idempotency (docs/07 §5.5)
+  string type = 10; // "template" or "one_shot" (default "one_shot" when project_id is set, "template" when empty)
 }
 
 message CreateWorkflowResponse {
@@ -159,6 +160,7 @@ message ListWorkflowsRequest {
   string search = 6; // free-text search across name
   string sort_by = 7; // field name: "name", "status", "created_at" (default)
   string sort_order = 8; // "asc" or "desc" (default "asc")
+  string type = 9; // filter by type: "template" or "one_shot"; empty = all
 }
 
 message ListWorkflowsResponse {

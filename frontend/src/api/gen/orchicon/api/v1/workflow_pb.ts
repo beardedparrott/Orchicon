@@ -352,6 +352,13 @@ export class Workflow extends Message<Workflow> {
   version = 0;
 
   /**
+   * "template" or "one_shot" (docs/11 §2.1)
+   *
+   * @generated from field: string type = 10;
+   */
+  type = "";
+
+  /**
    * @generated from field: google.protobuf.Timestamp created_at = 8;
    */
   createdAt?: Timestamp;
@@ -376,6 +383,7 @@ export class Workflow extends Message<Workflow> {
     { no: 5, name: "status", kind: "enum", T: proto3.getEnumType(WorkflowStatus) },
     { no: 6, name: "current_version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 7, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 10, name: "type", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 8, name: "created_at", kind: "message", T: Timestamp },
     { no: 9, name: "updated_at", kind: "message", T: Timestamp },
   ]);

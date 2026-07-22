@@ -12,9 +12,8 @@ import (
 // WorkflowRow is the data-access shape of a workflows table row — the
 // immutable header (docs/02 §2.4, docs/09 §3.4). The mutable snapshot
 // (steps, inputs, outputs, recovery_policy_ref) lives in
-// WorkflowVersionRow. project_id is empty for tenant-level templates.
-// tenant_id is the primary isolation layer; RLS is the backstop
-// (docs/09 §8.5).
+// WorkflowVersionRow. type distinguishes one-shot workflows from
+// repeatable templates (docs/11 §2.1).
 type WorkflowRow struct {
 	ID             string
 	TenantID       string
@@ -22,6 +21,7 @@ type WorkflowRow struct {
 	Name           string
 	CurrentVersion int
 	Status         string
+	Type           string // "one_shot" or "template"
 	Version        int
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
@@ -100,16 +100,16 @@ type WorkflowStepRunRow struct {
 // starts at 1; current_version starts at 0 (no published versions yet).
 func CreateWorkflow(ctx context.Context, tx pgx.Tx, w WorkflowRow) (WorkflowRow, error) {
 	const q = `INSERT INTO workflows
-		(id, tenant_id, project_id, name, current_version, status)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, tenant_id, project_id, name, current_version, status,
+		(id, tenant_id, project_id, name, current_version, status, type)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, tenant_id, project_id, name, current_version, status, type,
 			version, created_at, updated_at`
 	row := w
 	err := tx.QueryRow(ctx, q,
-		w.ID, w.TenantID, w.ProjectID, w.Name, w.CurrentVersion, w.Status,
+		w.ID, w.TenantID, w.ProjectID, w.Name, w.CurrentVersion, w.Status, w.Type,
 	).Scan(
 		&row.ID, &row.TenantID, &row.ProjectID, &row.Name, &row.CurrentVersion,
-		&row.Status, &row.Version, &row.CreatedAt, &row.UpdatedAt,
+		&row.Status, &row.Type, &row.Version, &row.CreatedAt, &row.UpdatedAt,
 	)
 	if err != nil {
 		return WorkflowRow{}, fmt.Errorf("db: create workflow: %w", err)
@@ -119,13 +119,13 @@ func CreateWorkflow(ctx context.Context, tx pgx.Tx, w WorkflowRow) (WorkflowRow,
 
 // GetWorkflow fetches a single workflow by id within the tenant scope.
 func GetWorkflow(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkflowRow, error) {
-	const q = `SELECT id, tenant_id, project_id, name, current_version, status,
+	const q = `SELECT id, tenant_id, project_id, name, current_version, status, type,
 		version, created_at, updated_at
 		FROM workflows WHERE id = $1 AND tenant_id = $2`
 	var w WorkflowRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
-		&w.Status, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+		&w.Status, &w.Type, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkflowRow{}, ErrNotFound
@@ -139,14 +139,16 @@ func GetWorkflow(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkflowR
 // ListWorkflowsFilter scopes a list query to a tenant, optionally
 // filtered by project, status, search, and sort.
 type ListWorkflowsFilter struct {
-	TenantID  string
-	ProjectID string // empty = all (including templates)
-	Status    string // empty = all statuses
-	PageSize  int
-	AfterID   string
-	Search    string
-	SortBy    string // "name", "status", "created_at" (default "id")
-	SortOrder string // "asc" or "desc" (default "asc")
+	TenantID      string
+	ProjectID     string // empty = all (including templates)
+	TemplatesOnly bool   // if true, return only templates (project_id = '')
+	Status        string // empty = all statuses
+	Type          string // filter by type: "template" or "one_shot"; empty = all
+	PageSize      int
+	AfterID       string
+	Search        string
+	SortBy        string // "name", "status", "created_at" (default "id")
+	SortOrder     string // "asc" or "desc" (default "asc")
 }
 
 // ListWorkflows returns a page of workflows for the tenant with
@@ -169,6 +171,9 @@ func ListWorkflows(ctx context.Context, tx pgx.Tx, f ListWorkflowsFilter) ([]Wor
 		args = append(args, f.ProjectID)
 		idx++
 	}
+	if f.TemplatesOnly {
+		where += fmt.Sprintf(` AND project_id = ''`)
+	}
 	if f.Status != "" {
 		where += fmt.Sprintf(` AND status = $%d`, idx)
 		args = append(args, f.Status)
@@ -179,6 +184,11 @@ func ListWorkflows(ctx context.Context, tx pgx.Tx, f ListWorkflowsFilter) ([]Wor
 		args = append(args, "%"+f.Search+"%")
 		idx++
 	}
+	if f.Type != "" {
+		where += fmt.Sprintf(` AND type = $%d`, idx)
+		args = append(args, f.Type)
+		idx++
+	}
 	sortBy := "id"
 	if f.SortBy == "name" || f.SortBy == "status" || f.SortBy == "created_at" {
 		sortBy = f.SortBy
@@ -187,7 +197,7 @@ func ListWorkflows(ctx context.Context, tx pgx.Tx, f ListWorkflowsFilter) ([]Wor
 	if f.SortOrder == "desc" {
 		sortOrder = "DESC"
 	}
-	q := fmt.Sprintf(`SELECT id, tenant_id, project_id, name, current_version, status,
+	q := fmt.Sprintf(`SELECT id, tenant_id, project_id, name, current_version, status, type,
 		version, created_at, updated_at
 		FROM workflows
 		WHERE %s
@@ -203,7 +213,7 @@ func ListWorkflows(ctx context.Context, tx pgx.Tx, f ListWorkflowsFilter) ([]Wor
 		var w WorkflowRow
 		if err := rows.Scan(
 			&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
-			&w.Status, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+			&w.Status, &w.Type, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan workflow: %w", err)
 		}
@@ -244,12 +254,12 @@ func UpdateWorkflowStatus(ctx context.Context, tx pgx.Tx, tenantID, id string, e
 	const q = `UPDATE workflows
 		SET status = $4, updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
-		RETURNING id, tenant_id, project_id, name, current_version, status,
+		RETURNING id, tenant_id, project_id, name, current_version, status, type,
 			version, created_at, updated_at`
 	var w WorkflowRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, status).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
-		&w.Status, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+		&w.Status, &w.Type, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkflowRow{}, ErrNotFound
@@ -266,12 +276,12 @@ func UpdateWorkflowCurrentVersion(ctx context.Context, tx pgx.Tx, tenantID, id s
 	const q = `UPDATE workflows
 		SET current_version = $4, status = 'published', updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
-		RETURNING id, tenant_id, project_id, name, current_version, status,
+		RETURNING id, tenant_id, project_id, name, current_version, status, type,
 			version, created_at, updated_at`
 	var w WorkflowRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, newVersion).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
-		&w.Status, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+		&w.Status, &w.Type, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkflowRow{}, ErrNotFound

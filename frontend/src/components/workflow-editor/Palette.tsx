@@ -25,39 +25,43 @@ import {
   type PaletteDropPayload,
 } from "./stepKinds";
 
-export function Palette({ readOnly }: { readOnly: boolean }) {
+export function Palette({ readOnly, mode = "full" }: { readOnly: boolean; mode?: "full" | "template" }) {
   return (
     <div className="space-y-3">
-      <Section
-        title="Project"
-        icon={PROJECT_ICON}
-        subtitle="Bind the run to a project"
-      >
-        <DraggableTile
-          label="Project"
-          sublabel="Assign a project on the right"
-          icon={PROJECT_ICON}
-          kindAccent="indigo"
-          payload={{ kind: STEP_KIND.PROJECT, name: "Project" }}
-          description="Binds the workflow run to a project. Select the project in the properties panel."
-          readOnly={readOnly}
-        />
-      </Section>
-      <Section
-        title="Work Item"
-        icon={WORKITEM_ICON}
-        subtitle="Reference a work item"
-      >
-        <DraggableTile
-          label="Work Item"
-          sublabel="Pick a work item on the right"
-          icon={FileText}
-          kindAccent="emerald"
-          payload={{ kind: STEP_KIND.WORK_ITEM, name: "Work Item" }}
-          description="A passive marker for a work item. The connected worker step processes this work item."
-          readOnly={readOnly}
-        />
-      </Section>
+      {mode === "full" && (
+        <>
+          <Section
+            title="Project"
+            icon={PROJECT_ICON}
+            subtitle="Bind the run to a project"
+          >
+            <DraggableTile
+              label="Project"
+              sublabel="Assign a project on the right"
+              icon={PROJECT_ICON}
+              kindAccent="indigo"
+              payload={{ kind: STEP_KIND.PROJECT, name: "Project" }}
+              description="Binds the workflow run to a project. Select the project in the properties panel."
+              readOnly={readOnly}
+            />
+          </Section>
+          <Section
+            title="Work Item"
+            icon={WORKITEM_ICON}
+            subtitle="Reference a work item"
+          >
+            <DraggableTile
+              label="Work Item"
+              sublabel="Pick a work item on the right"
+              icon={FileText}
+              kindAccent="emerald"
+              payload={{ kind: STEP_KIND.WORK_ITEM, name: "Work Item" }}
+              description="A passive marker for a work item. The connected worker step processes this work item."
+              readOnly={readOnly}
+            />
+          </Section>
+        </>
+      )}
       <Section
         title="Worker"
         icon={WORKER_ICON}
