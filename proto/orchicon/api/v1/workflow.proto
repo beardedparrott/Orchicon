@@ -29,6 +29,7 @@ message Workflow {
   WorkflowStatus status = 5;
   int32 current_version = 6; // latest version number
   int32 version = 7; // optimistic concurrency (docs/09 §5)
+  string type = 10; // "template" or "one_shot" (docs/11 §2.1)
   google.protobuf.Timestamp created_at = 8;
   google.protobuf.Timestamp updated_at = 9;
 }

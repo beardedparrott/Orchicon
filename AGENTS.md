@@ -53,7 +53,7 @@ The project's model spend is rising. Be economical but **never at the expense of
 - **Never create a pull request without asking the user for approval first.** Ask, wait for a yes, then proceed.
 - Once work is complete and properly tested, ask the user to verify.
 - After the user confirms, create a PR and merge. PRs MUST carry the `release` label to kick off the release creation on GitHub.
-- **Before every PR merge**, update the "Last Release Changes" section in `README.md` with the new version tag and a one-paragraph summary of the most recent changes.
+- **Before every PR merge**, ALWAYS ASK THE USER BEFORE MERGING, update the "Last Release Changes" section in `README.md` with the new version tag and a one-paragraph summary of the most recent changes.
 - Before starting work, always `git pull origin main` to get the latest. Before pushing, `git fetch origin && git rebase origin/main` if the branch has been open for a while.
 
 ## Local development loop

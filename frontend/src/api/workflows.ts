@@ -26,8 +26,8 @@ import type { PartialMessage } from "@bufbuild/protobuf";
 // Query keys are centralized so invalidation is type-safe.
 export const workflowKeys = {
   all: ["workflows"] as const,
-  list: (projectId?: string, status?: WorkflowStatus) =>
-    [...workflowKeys.all, "list", projectId, status] as const,
+  list: (projectId?: string, status?: WorkflowStatus, templatesOnly?: boolean) =>
+    [...workflowKeys.all, "list", projectId, status, templatesOnly] as const,
   detail: (id: string) => [...workflowKeys.all, "detail", id] as const,
   versions: (id: string) => [...workflowKeys.all, "versions", id] as const,
   editLock: (id: string) => [...workflowKeys.all, "edit-lock", id] as const,
@@ -39,14 +39,15 @@ export const workflowKeys = {
 
 // useListWorkflows fetches a page of workflows, optionally scoped to a
 // project (empty = all tenant workflows including templates).
-export function useListWorkflows(opts?: { projectId?: string; status?: WorkflowStatus; search?: string; sortBy?: string; sortOrder?: string }) {
+export function useListWorkflows(opts?: { projectId?: string; status?: WorkflowStatus; templatesOnly?: boolean; search?: string; sortBy?: string; sortOrder?: string }) {
   return useQuery({
-    queryKey: workflowKeys.list(opts?.projectId, opts?.status),
+    queryKey: workflowKeys.list(opts?.projectId, opts?.status, opts?.templatesOnly),
     queryFn: async () => {
       const res = await workflowClient.listWorkflows({
         pageSize: 100,
         projectId: opts?.projectId ?? "",
         status: opts?.status ?? undefined,
+        type: opts?.templatesOnly ? "template" : "",
         search: opts?.search || "",
         sortBy: opts?.sortBy || "",
         sortOrder: opts?.sortOrder || "",

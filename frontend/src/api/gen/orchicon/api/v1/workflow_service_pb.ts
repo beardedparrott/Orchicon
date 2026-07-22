@@ -83,6 +83,13 @@ export class CreateWorkflowRequest extends Message<CreateWorkflowRequest> {
    */
   requestId = "";
 
+  /**
+   * "template" or "one_shot" (default "one_shot" when project_id is set, "template" when empty)
+   *
+   * @generated from field: string type = 10;
+   */
+  type = "";
+
   constructor(data?: PartialMessage<CreateWorkflowRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -100,6 +107,7 @@ export class CreateWorkflowRequest extends Message<CreateWorkflowRequest> {
     { no: 7, name: "recovery_policy_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 8, name: "version_note", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 9, name: "request_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 10, name: "type", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkflowRequest {
@@ -526,6 +534,13 @@ export class ListWorkflowsRequest extends Message<ListWorkflowsRequest> {
    */
   sortOrder = "";
 
+  /**
+   * filter by type: "template" or "one_shot"; empty = all
+   *
+   * @generated from field: string type = 9;
+   */
+  type = "";
+
   constructor(data?: PartialMessage<ListWorkflowsRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -542,6 +557,7 @@ export class ListWorkflowsRequest extends Message<ListWorkflowsRequest> {
     { no: 6, name: "search", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 7, name: "sort_by", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 8, name: "sort_order", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 9, name: "type", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListWorkflowsRequest {

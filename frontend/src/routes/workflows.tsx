@@ -186,11 +186,16 @@ function WorkflowsPage() {
                         <StatusBadge status={w.status} />
                         <div className="min-w-0 flex-1 overflow-hidden">
                           <p className="truncate text-sm font-medium">{w.name}</p>
-                          <p className="break-all font-mono text-xs text-muted-foreground">
-                            {w.projectId
-                              ? `project: ${w.projectId.slice(0, 10)}…`
-                              : "tenant template"}
-                          </p>
+                          <div className="flex items-center gap-2">
+                            <span className={cn(
+                              "rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+                              w.projectId
+                                ? "bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300"
+                                : "bg-purple-100 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300",
+                            )}>
+                              {w.projectId ? "One-Shot" : "Template"}
+                            </span>
+                          </div>
                         </div>
                       </div>
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground sm:shrink-0">

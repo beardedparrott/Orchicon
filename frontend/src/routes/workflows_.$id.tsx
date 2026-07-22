@@ -832,7 +832,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
         {/* main editor layout: palette | canvas/code | properties */}
         {viewMode === "canvas" ? (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-[240px_1fr_300px]">
-            <Palette readOnly={readOnly} />
+            <Palette readOnly={readOnly} mode={data?.workflow?.type === "template" ? "template" : "full"} />
 
             <div
               className={cn(
