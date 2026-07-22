@@ -3,7 +3,7 @@
 --   project_id = ''  → template
 --   project_id != '' → one_shot
 ALTER TABLE workflows
-  ADD COLUMN type TEXT NOT NULL DEFAULT 'one_shot';
+  ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT 'one_shot';
 
 UPDATE workflows SET type = 'template' WHERE project_id = '';
 
