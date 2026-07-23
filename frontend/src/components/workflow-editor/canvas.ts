@@ -14,6 +14,10 @@ export function canvasToSteps(nodes: Node<StepData>[], edges: Edge[]): StepWire[
   for (const n of nodes) depsByNode.set(n.id, []);
   for (const e of edges) {
     if (e.source === e.target) continue;
+    // Skip loop-back edges from loop_decision nodes (source-loop handle).
+    // These are visual-only for the re-entry path; adding them as a
+    // dependency would prevent the initial dispatch of the target step.
+    if (e.sourceHandle === "source-loop") continue;
     depsByNode.get(e.target)?.push(e.source);
   }
 
@@ -89,9 +93,11 @@ export function stepsToCanvas(stepsJson: string): {
   }
 
   const edges: Edge[] = [];
+  const seen = new Set<string>();
   for (const s of steps) {
     for (const dep of s.depends_on ?? []) {
       const edgeKey = `e-${dep}-${s.id}`;
+      seen.add(edgeKey);
       const handles = edgeHandles[edgeKey];
       const srcKind = kindByNodeId.get(dep) ?? 1;
       const accent = KIND_ACCENT[srcKind] ?? "sky";
@@ -106,6 +112,35 @@ export function stepsToCanvas(stepsJson: string): {
         style: { stroke: `var(--kind-${accent})` },
         className: ACCENT_STROKE[accent] ?? "",
       });
+    }
+  }
+  // Also restore edges from edge_handles not covered by depends_on
+  // (e.g. loop-back edges from loop_decision nodes). Match against known
+  // node IDs since step IDs may contain hyphens.
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  for (const [edgeKey, handles] of Object.entries(edgeHandles)) {
+    if (seen.has(edgeKey)) continue;
+    for (const srcId of nodeIds) {
+      const prefix = `e-${srcId}-`;
+      if (edgeKey.startsWith(prefix)) {
+        const tgtId = edgeKey.slice(prefix.length);
+        if (nodeIds.has(tgtId)) {
+          const srcKind = kindByNodeId.get(srcId) ?? 1;
+          const accent = KIND_ACCENT[srcKind] ?? "sky";
+          edges.push({
+            id: edgeKey,
+            source: srcId,
+            target: tgtId,
+            sourceHandle: handles?.sourceHandle,
+            targetHandle: handles?.targetHandle,
+            markerEnd: { type: MarkerType.ArrowClosed },
+            animated: true,
+            style: { stroke: `var(--kind-${accent})` },
+            className: ACCENT_STROKE[accent] ?? "",
+          });
+        }
+        break;
+      }
     }
   }
 
