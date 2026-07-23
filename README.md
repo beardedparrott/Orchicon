@@ -42,6 +42,9 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
+**v0.1.143** — HF models script: robustness + error handling.
+Reworked `scripts/hf-latest-models.sh` with several robustness improvements — pagination now uses the full next URL from the `Link` header (extracting the URL between `<` and `>` angle brackets) instead of parsing/reconstructing the cursor, making it resilient to changes in API URL structure. Added HTTP status code checking with specific handling for 429 (rate limit), 5xx (server errors), and non-200 responses. Added network error detection (curl exit code). Added tool dependency check (curl, jq) with helpful error messages. Added macOS `date` fallback (`-v-7d`). Error messages now go to stderr. Stats display shows `—` instead of zero values for cleaner output of new models with no downloads.
+
 **v0.1.142** — HF models script: pagination fix + optimization.
 Fixed critical pagination bug in `scripts/hf-latest-models.sh`: the Hugging Face API uses cursor-based pagination (via the `Link` response header), but the script was using `offset` which the API silently ignores — every page returned the same 100 models. The claimed "500 models" was actually just 100 unique models duplicated 5×. Replaced offset-based pagination with cursor-based pagination by parsing the `Link` header's `rel="next"` cursor. Also replaced the per-model `jq` subprocess loop (5+ calls per model) with a single `jq` invocation, making `--week` mode (3000 models) fast.
 
