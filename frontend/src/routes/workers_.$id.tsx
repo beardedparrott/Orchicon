@@ -194,10 +194,14 @@ function WorkerDetailPage() {
                 <>
                   <Button onClick={() => setEditing(true)}>Edit</Button>
                   <Button
-                    onClick={async () => {
-                      document.getElementById("draftForm")?.requestSubmit();
-                      await new Promise((r) => setTimeout(r, 100));
-                      publishVersion.mutateAsync(id);
+                    onClick={() => {
+                      const form = document.getElementById("draftForm") as HTMLFormElement;
+                      if (form) {
+                        const submitEvent = new Event("submit", { cancelable: true, bubbles: true });
+                        if (form.dispatchEvent(submitEvent) && !submitEvent.defaultPrevented) {
+                          setTimeout(() => publishVersion.mutateAsync(id), 300);
+                        }
+                      }
                     }}
                     disabled={publishVersion.isPending}
                   >
