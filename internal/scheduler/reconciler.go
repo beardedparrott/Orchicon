@@ -193,6 +193,16 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID string) error 
 		}
 	}
 	now := time.Now().UTC()
+	// Look up the workflow step run's iteration (loop number) so the
+	// execution can display "Work Item Name - Worker Name - Loop #" in
+	// the frontend. Defaults to 0 for direct-dispatch (no workflow).
+	var iteration int
+	if task.WorkflowRunID != "" && task.WorkflowStepID != "" {
+		sr, err := db.GetWorkflowStepRunByStep(ctx, ttx.Tx, tenantID, task.WorkflowRunID, task.WorkflowStepID)
+		if err == nil {
+			iteration = sr.Iteration
+		}
+	}
 	execRow := db.ExecutionRow{
 		ID:             db.NewID(),
 		TenantID:       tenantID,
@@ -207,6 +217,7 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID string) error 
 		WorkflowRunID:  task.WorkflowRunID,
 		WorkflowStepID: task.WorkflowStepID,
 		IsFollowUp:     isFollowUp,
+		Iteration:      iteration,
 	}
 	created, err := db.CreateExecution(ctx, ttx.Tx, execRow)
 	if err != nil {

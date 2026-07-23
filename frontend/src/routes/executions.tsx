@@ -218,7 +218,9 @@ function ExecutionsPage() {
                       <ExecStatusBadge status={e.status} />
                       <div className="min-w-0 flex-1 overflow-hidden">
                         <p className="truncate text-sm font-medium">
-                          {e.workflowName || e.workerId} v{e.workerVersion}
+                          {e.workflowName
+                            ? `${e.workflowName} — ${e.workerId}${e.iteration > 0 ? ` — Loop #${e.iteration}` : ""}`
+                            : `${e.workerId} v${e.workerVersion}${e.iteration > 0 ? ` (loop #${e.iteration})` : ""}`}
                         </p>
                         <p className="break-all font-mono text-xs text-muted-foreground">
                           {e.id}

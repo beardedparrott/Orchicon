@@ -395,7 +395,10 @@ function ExecutionContextFooter({
   exec: import("@/api/gen/orchicon/api/v1/execution_pb").WorkerExecution;
 }) {
   const items = [
-    { label: "Worker", value: `${exec.workerId} v${exec.workerVersion}` },
+    {
+      label: "Worker",
+      value: `${exec.workerId} v${exec.workerVersion}${exec.iteration > 0 ? ` (loop #${exec.iteration})` : ""}`,
+    },
     { label: "Adapter", value: exec.adapterId || "—" },
     { label: "Task", value: exec.taskId },
     {
