@@ -2070,12 +2070,28 @@ func (r *WorkflowReconciler) reaskDecisionStep(ctx context.Context, tx pgx.Tx, t
 	if upResult.WorkItemID != "" {
 		wi, err := db.GetWorkItem(ctx, tx, tenantID, upResult.WorkItemID)
 		if err == nil {
-			reaskMsg := "\n\n**RE-ASK ATTEMPT " + fmt.Sprint(nextIter) + "**\n" +
+			reaskMsg := "\n\n# Re-ask\n\n**RE-ASK ATTEMPT " + fmt.Sprint(nextIter) + "**\n" +
 				"You MUST include `_decision` in your response with a value of `success` or `failure`.\n" +
 				"- `_decision: success` — the work is complete and correct\n" +
 				"- `_decision: failure` — there are issues that need fixing (include `_issues` with details)"
+
+			// Preserve the existing composite (worker identity, project,
+			// task, ancestors, workflow context, recovery, instructions)
+			// and append the re-ask instruction so the worker doesn't lose
+			// all context on a re-ask turn. Previously this overwrote the
+			// entire promptContext with just the re-ask message — the
+			// worker saw only "RE-ASK ATTEMPT 1" and nothing else.
+			var pc struct {
+				Composite string `json:"composite"`
+			}
+			existingPC := ""
+			_ = json.Unmarshal(wi.PromptContext, &pc)
+			if pc.Composite != "" {
+				existingPC = pc.Composite
+			}
+			combined := existingPC + reaskMsg
 			pcJSON, _ := json.Marshal(map[string]any{
-				"composite": reaskMsg,
+				"composite": combined,
 			})
 			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, wi.ID, wi.Version, db.UpdateWorkItemFields{
 				PromptContext: &pcJSON,
