@@ -140,9 +140,18 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// with --format json for machine-readable stdout events
 	// (docs/04 §6.0: CLI subprocess is the v0.1 transport). The goal
 	// (task title) is the positional message; the model ref maps to
-	// --model. System prompts are configured via opencode's agent
-	// config, not a CLI flag, so manifest.SystemPrompt is passed via
-	// env for the agent config to pick up if needed.
+	// --model.
+	//
+	// System prompts are configured via opencode's agent config
+	// (the `prompt` field on an agent), not a CLI flag. We pass the
+	// composed worker system prompt through OPENCODE_CONFIG_CONTENT
+	// (a JSON document consumed by opencode v1.x at startup) and
+	// select it with --agent. This ensures the worker's Role, Skills,
+	// Behavior, and AGENTS.md context are actually delivered to the
+	// model on every interaction — see worker prompt fields refactor
+	// (v0.1.139). Earlier code set OPENCODE_SYSTEM_PROMPT as an env
+	// var, but opencode does not read that var, so the prompt was
+	// silently dropped.
 	args := []string{
 		"run",
 		"--format", "json",
@@ -153,9 +162,14 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		a.log.Info("no model_ref specified, defaulting to free model", "model", modelRef, "execution", execRow.ID)
 	}
 	args = append(args, "--model", modelRef)
-	// The goal (task title) is the positional message. Auto-approve
-	// permissions so the non-interactive run doesn't block on prompts
-	// (docs/04 §6.1: non-interactive mode).
+	// Inject the worker's composed system prompt via a custom agent
+	// (orchicon-worker) so the prompt reaches the model on every
+	// turn. Auto-approve permissions so the non-interactive run
+	// doesn't block on prompts (docs/04 §6.1: non-interactive mode).
+	const workerAgent = "orchicon-worker"
+	if manifest.SystemPrompt != "" {
+		args = append(args, "--agent", workerAgent)
+	}
 	args = append(args, "--auto", manifest.Goal)
 
 	cmd := exec.CommandContext(ctx, binary, args...)
@@ -177,7 +191,30 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		"OPENCODE_PROJECT_ID="+manifest.ProjectID,
 	)
 	if manifest.SystemPrompt != "" {
-		cmd.Env = append(cmd.Env, "OPENCODE_SYSTEM_PROMPT="+manifest.SystemPrompt)
+		// Pass the system prompt as a custom agent definition in
+		// OPENCODE_CONFIG_CONTENT. The agent's `prompt` field is
+		// what opencode sends as the system message on every
+		// turn. We pin model/provider defaults in the same config so
+		// the agent does not fall back to user-global settings that
+		// the worker author never authorized.
+		agentCfg := struct {
+			Schema string                    `json:"$schema"`
+			Agent  map[string]map[string]any `json:"agent"`
+		}{
+			Schema: "https://opencode.ai/config.json",
+			Agent: map[string]map[string]any{
+				workerAgent: {
+					"prompt": manifest.SystemPrompt,
+					"mode":   "primary",
+					"model":  modelRef,
+				},
+			},
+		}
+		if cfgJSON, err := json.Marshal(agentCfg); err == nil {
+			cmd.Env = append(cmd.Env, "OPENCODE_CONFIG_CONTENT="+string(cfgJSON))
+		} else {
+			a.log.Warn("opencode: marshal agent config", "execution", execRow.ID, "error", err)
+		}
 	}
 
 	// Capture stdout + stderr. Stderr is logged to the control plane's

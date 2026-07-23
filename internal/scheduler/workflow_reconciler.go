@@ -197,16 +197,39 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		madeProgress := false
 
 		// Progress pending steps whose deps are satisfied → ready.
-		// Use runByID (which reflects in-pass updates) for both the
-		// pending check AND the dependency check so steps progressed
-		// by Phase 2/3 in a prior outer iteration are not re-processed
-		// with a stale version (fix: "db: not found" on re-update).
+		// Use runByID (which reflects in-pass updates) for the
+		// dependency check so steps progressed by Phase 2/3 in a
+		// prior outer iteration are not re-processed. The
+		// outer-progress loop iterates with the same stepRuns slice,
+		// so once a step has been moved past PENDING in this pass
+		// (or any prior pass) the original `sr.Version` is stale —
+		// re-applying a "mark step ready" against it produces a
+		// version-mismatch "db: not found" that wedges the whole run.
 		// Loop re-entry: a step run with iteration > 0 is a fresh
 		// re-entry run and must be processed even if runByID has a
 		// non-pending entry for the same StepID from a prior iteration.
+		// Superseded runs: a step run that has been superseded by a
+		// later iteration (e.g. loop_decision re-ask created a fresh
+		// run for the same step) is no longer the active run for
+		// that step and must be skipped. The original PR Reviewer
+		// run, for example, has SupersededBy set once a re-ask is
+		// created; trying to re-update it as ready/failed produces
+		// a version-mismatch "db: not found" error that wedges the
+		// whole run.
 		for _, sr := range stepRuns {
-			if cur, ok := runByID[sr.StepID]; ok && cur.Status != domain.StepRunPending && sr.Iteration == 0 {
-				r.log.Debug("DEBUG: skipping step run (not pending in runByID)", "stepID", sr.StepID, "id", sr.ID, "status", cur.Status)
+			if sr.SupersededBy != "" {
+				r.log.Debug("DEBUG: skipping superseded step run", "stepID", sr.StepID, "id", sr.ID, "supersededBy", sr.SupersededBy)
+				continue
+			}
+			// Skip if the active run for this StepID has already
+			// been moved past PENDING in a prior pass (avoid
+			// version-mismatch on re-update).
+			active := sr
+			if cur, ok := runByID[sr.StepID]; ok {
+				active = cur
+			}
+			if active.Status != domain.StepRunPending {
+				r.log.Debug("DEBUG: skipping step run (already past pending)", "stepID", sr.StepID, "id", sr.ID, "status", active.Status, "iteration", sr.Iteration)
 				continue
 			}
 			r.log.Debug("DEBUG: checking step for ready", "stepID", sr.StepID, "id", sr.ID, "status", sr.Status, "version", sr.Version)
@@ -239,6 +262,9 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 
 		// Dispatch ready steps by kind, evaluating gates first.
 		for _, sr := range stepRuns {
+			if sr.SupersededBy != "" {
+				continue
+			}
 			if sr.Status != domain.StepRunReady {
 				if r2, ok := runByID[sr.StepID]; ok && r2.Status == domain.StepRunReady {
 					sr = r2
@@ -277,6 +303,9 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 
 		// Poll running task steps: check their linked WorkItem status.
 		for i, sr := range stepRuns {
+			if sr.SupersededBy != "" {
+				continue
+			}
 			if sr.Status != domain.StepRunRunning || sr.StepKind != domain.StepKindTask {
 				continue
 			}
@@ -313,6 +342,9 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		// Poll running RECOVER steps: check if their linked recovery
 		// execution has completed (terminal).
 		for i, sr := range stepRuns {
+			if sr.SupersededBy != "" {
+				continue
+			}
 			if sr.Status != domain.StepRunRunning || sr.StepKind != domain.StepKindRecover {
 				continue
 			}
@@ -355,11 +387,19 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// Determine run terminal state: all steps succeeded → completed;
 	// any failed → failed. Also skip any remaining pending steps so
 	// they don't incorrectly display as "pending" in a failed run.
+	// Superseded step runs (e.g. a PR Reviewer run replaced by a
+	// loop_decision re-ask) are ignored — the active run for that
+	// step_id is whichever run is not superseded. This prevents a
+	// stuck "running" state when a superseded SUCCEEDED run is left
+	// in the list alongside a fresh PENDING re-ask run.
 	allSucceeded := true
 	anyFailed := false
 	hasSteps := false
 	var toSkip []string
 	for _, sr := range stepRuns {
+		if sr.SupersededBy != "" {
+			continue
+		}
 		hasSteps = true
 		if latest, ok := runByID[sr.StepID]; ok {
 			sr = latest

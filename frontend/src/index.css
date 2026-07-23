@@ -5,6 +5,32 @@
 @layer base {
   :root {
     --radius: 0.5rem;
+
+    /* ── Step kind accent colors (used by canvas edges, refs
+       var(--kind-${accent}) in canvas.ts / run view). The first
+       set is the light-theme palette; the .dark override below
+       shifts the same tokens to brighter, more saturated tones
+       for dark themes. Without these the canvas edges fall
+       back to the default ReactFlow gray. */
+    --kind-sky: 199 89% 48%;
+    --kind-amber: 38 92% 50%;
+    --kind-yellow: 45 93% 47%;
+    --kind-violet: 263 70% 50%;
+    --kind-rose: 346 77% 50%;
+    --kind-emerald: 160 84% 39%;
+    --kind-indigo: 234 89% 60%;
+    --kind-cyan: 188 86% 43%;
+  }
+
+  .dark {
+    --kind-sky: 199 89% 60%;
+    --kind-amber: 38 95% 60%;
+    --kind-yellow: 45 95% 58%;
+    --kind-violet: 263 80% 70%;
+    --kind-rose: 346 80% 65%;
+    --kind-emerald: 160 70% 50%;
+    --kind-indigo: 234 90% 70%;
+    --kind-cyan: 188 90% 55%;
   }
 
   /* ── Light Themes ─────────────────────────────── */
