@@ -275,10 +275,13 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID string) error 
 func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow, adapter db.AdapterRow) {
 	// Resolve the project directory so the adapter runs in the correct
 	// working directory (avoids picking up Orchicon's own AGENTS.md etc.).
+	// Use a background context (the reconciler's ctx may expire before
+	// this goroutine gets a chance to query).
 	var projectDir string
 	{
 		var p db.ProjectRow
-		if err := r.pool.QueryRow(ctx,
+		qCtx := context.Background()
+		if err := r.pool.QueryRow(qCtx,
 			`SELECT project_dir FROM projects WHERE id = $1 AND tenant_id = $2`,
 			exec.ProjectID, exec.TenantID,
 		).Scan(&p.ProjectDir); err == nil {

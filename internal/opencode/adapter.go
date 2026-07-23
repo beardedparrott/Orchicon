@@ -175,27 +175,28 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	}
 	args = append(args, "--auto", manifest.Goal)
 
-	cmd := exec.CommandContext(ctx, binary, args...)
+	// Resolve the working directory FIRST, before creating the
+	// command, so --dir is baked into the arg slice. Go's
+	// exec.CommandContext captures args at creation time, so any
+	// append after that line is silently ignored — which is why
+	// earlier code that appended --dir after CommandContext failed
+	// to scope opencode to the project directory, causing workers
+	// to operate on Orchicon's own repo instead.
 	var tmpDir string
-	if manifest.ProjectDir != "" {
-		cmd.Dir = manifest.ProjectDir
-		// Tell opencode the project directory so its internal
-		// path resolution (AGENTS.md findup, file read/write,
-		// glob patterns) scopes to the project, not the
-		// control-plane directory. Without --dir the subprocess
-		// inherits cmd.Dir but opencode may still scan parent
-		// directories for AGENTS.md, picking up Orchicon's
-		// own and wasting context on the wrong repo.
-		args = append(args, "--dir", manifest.ProjectDir)
-	} else {
-		// No project directory configured — run in an empty temp dir so
-		// opencode doesn't pick up Orchicon's own files (AGENTS.md, etc.)
-		// as context. Cleaned up when the subprocess exits.
+	runDir := manifest.ProjectDir
+	if runDir == "" {
 		tmpDir, _ = os.MkdirTemp("", "orchicon-exec-*")
 		if tmpDir != "" {
-			cmd.Dir = tmpDir
-			args = append(args, "--dir", tmpDir)
+			runDir = tmpDir
 		}
+	}
+	if runDir != "" {
+		args = append(args, "--dir", runDir)
+	}
+
+	cmd := exec.CommandContext(ctx, binary, args...)
+	if runDir != "" {
+		cmd.Dir = runDir
 	}
 	cmd.Env = append(os.Environ(),
 		"OPENCODE_EXECUTION_ID="+execRow.ID,
