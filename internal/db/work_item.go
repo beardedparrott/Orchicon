@@ -146,7 +146,7 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 		priority, budgets, context_window, results, prompt_context,
 		scheduled_start_at, auto_start_workflow, version, created_at, updated_at
 		FROM work_items
-		WHERE tenant_id = $1 AND project_id = $2 AND ($3 = '' OR id > $3)`
+		WHERE tenant_id = $1 AND ($2 = '' OR project_id = $2) AND ($3 = '' OR id > $3)`
 	args := []any{f.TenantID, f.ProjectID, f.AfterID}
 	if f.ParentID != nil {
 		if *f.ParentID == "" {

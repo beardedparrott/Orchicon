@@ -49,7 +49,7 @@ export function useListWorkItems(
       });
       return res.workItems as WorkItem[];
     },
-    enabled: !!projectId,
+    enabled: true, // empty projectId = list all
     refetchInterval: 5_000,
   });
 }

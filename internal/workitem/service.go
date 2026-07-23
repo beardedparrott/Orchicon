@@ -206,9 +206,7 @@ func (s *Service) ListWorkItems(ctx context.Context, req *connect.Request[apiv1.
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if req.Msg.ProjectId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id must not be empty"))
-	}
+	// Empty project_id = list across all projects (for "All" filter).
 	f := db.ListWorkItemsFilter{
 		TenantID:  tenantID,
 		ProjectID: req.Msg.ProjectId,
