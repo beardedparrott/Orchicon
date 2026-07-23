@@ -256,16 +256,33 @@ function WorkItemDetailPage() {
               : null,
           }}
           title="Work Item YAML"
+          editable
+          onSave={(parsed) => {
+            const statusMap: Record<string, number> = { pending: 1, scheduled: 10, ready: 2, assigned: 3, running: 4, succeeded: 6, failed: 7, cancelled: 8 };
+            updateWorkItem.mutate({
+              id,
+              title: typeof parsed.title === "string" ? parsed.title : item.title,
+              description: typeof parsed.description === "string" ? parsed.description : undefined,
+              acceptanceCriteria: typeof parsed.acceptance_criteria === "string" ? parsed.acceptance_criteria : undefined,
+              priority: typeof parsed.priority === "number" ? parsed.priority : undefined,
+              status: typeof parsed.status === "string" ? statusMap[parsed.status] : undefined,
+              projectId: typeof parsed.project_id === "string" ? parsed.project_id : undefined,
+              workflowId: typeof parsed.workflow_id === "string" ? parsed.workflow_id : undefined,
+              workflowRunId: typeof parsed.workflow_run_id === "string" ? parsed.workflow_run_id : undefined,
+            });
+          }}
+          saveDisabled={updateWorkItem.isPending}
           onClone={async () => {
             const title = window.prompt(
               "Clone title:",
               `Clone of ${item.title}`,
             );
             if (!title) return;
+            const cloneKind = item.parentId ? item.kind : 1;
             const result = await createWorkItem.mutateAsync({
               title,
               projectId: item.projectId,
-              kind: item.kind,
+              kind: cloneKind,
               description: item.description,
               acceptanceCriteria: item.acceptanceCriteria,
               priority: item.priority,

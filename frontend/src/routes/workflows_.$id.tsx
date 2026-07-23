@@ -944,20 +944,19 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                     >
                       Restore
                     </button>
-                    {v.status === 1 && (
-                      <button
-                        type="button"
-                        className="rounded px-1.5 py-0.5 text-[11px] font-medium text-destructive hover:bg-destructive/10"
-                        title="Delete this draft version"
-                        onClick={() => {
-                          if (window.confirm(`Delete v${v.version}? This cannot be undone.`)) {
-                            deleteVersion.mutate({ workflowId, versionId: v.id });
-                          }
-                        }}
-                      >
-                        Delete
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      className="rounded px-1.5 py-0.5 text-[11px] font-medium text-destructive hover:bg-destructive/10"
+                      title={`Delete v${v.version}${v.status === 2 ? " (published)" : ""}`}
+                      onClick={() => {
+                        const label = v.status === 2 ? `published v${v.version}` : `v${v.version}`;
+                        if (window.confirm(`Delete ${label}? This cannot be undone.`)) {
+                          deleteVersion.mutate({ workflowId, versionId: v.id });
+                        }
+                      }}
+                    >
+                      Delete
+                    </button>
                   </div>
                 ))}
               </div>

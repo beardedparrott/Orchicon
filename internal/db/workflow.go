@@ -419,13 +419,11 @@ func ListWorkflowVersions(ctx context.Context, tx pgx.Tx, tenantID, workflowID s
 	return out, rows.Err()
 }
 
-// DeleteWorkflowVersion hard-deletes a single workflow version. Only
-// draft versions may be deleted. At least one version must remain after
-// deletion, and the version is identified by its ULID id (not version
-// number).
+// DeleteWorkflowVersion hard-deletes a single workflow version. At
+// least one version must remain after deletion (docs/02 §2.4).
 func DeleteWorkflowVersion(ctx context.Context, tx pgx.Tx, tenantID, workflowID, versionID string) error {
-	// Verify the version exists, is a draft, and that at least one other
-	// version would remain.
+	// Verify the version exists and that at least one other version
+	// would remain.
 	var status string
 	var count int
 	if err := tx.QueryRow(ctx,
@@ -433,9 +431,6 @@ func DeleteWorkflowVersion(ctx context.Context, tx pgx.Tx, tenantID, workflowID,
 		 FROM workflow_versions wv WHERE tenant_id = $1 AND id = $3 AND workflow_id = $2`,
 		tenantID, workflowID, versionID).Scan(&status, &count); err != nil {
 		return fmt.Errorf("db: get workflow version: %w", err)
-	}
-	if status != "draft" {
-		return fmt.Errorf("db: cannot delete %s version", status)
 	}
 	if count < 2 {
 		return fmt.Errorf("db: cannot delete the last version")
