@@ -297,9 +297,13 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 		setIdx++
 	}
 	if f.WorkflowID != nil {
-		q += fmt.Sprintf(`, workflow_id = $%d`, setIdx)
-		args = append(args, *f.WorkflowID)
-		setIdx++
+		if *f.WorkflowID == "" {
+			q += fmt.Sprintf(`, workflow_id = NULL`)
+		} else {
+			q += fmt.Sprintf(`, workflow_id = $%d`, setIdx)
+			args = append(args, *f.WorkflowID)
+			setIdx++
+		}
 	}
 	if f.Results != nil {
 		q += fmt.Sprintf(`, results = $%d`, setIdx)

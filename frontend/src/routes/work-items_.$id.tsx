@@ -261,20 +261,23 @@ function WorkItemDetailPage() {
           editable
           onSave={(parsed) => {
             const statusMap: Record<string, number> = { pending: 1, scheduled: 10, ready: 2, assigned: 3, running: 4, succeeded: 6, failed: 7, cancelled: 8 };
-            // Helper: if the YAML explicitly has the field, send it (even empty to clear).
-            // If absent from YAML, send undefined (server leaves as-is).
-            const yamlVal = (key: string): string | undefined =>
-              Object.hasOwn(parsed, key) ? String(parsed[key] ?? "") : undefined;
+            // Always include all known fields from the YAML. Optional text
+            // fields default to "" so removing a line from YAML clears it.
+            const str = (key: string): string => String(parsed[key] ?? "");
+            const num = (key: string): number | undefined => {
+              const v = parsed[key];
+              return typeof v === "number" ? v : undefined;
+            };
             updateWorkItem.mutate({
               id,
-              title: typeof parsed.title === "string" ? parsed.title : item.title,
-              description: yamlVal("description"),
-              acceptanceCriteria: yamlVal("acceptance_criteria"),
-              priority: typeof parsed.priority === "number" ? parsed.priority : undefined,
+              title: str("title") || item.title,
+              description: str("description"),
+              acceptanceCriteria: str("acceptance_criteria"),
+              priority: num("priority"),
               status: typeof parsed.status === "string" ? statusMap[parsed.status] : undefined,
-              projectId: yamlVal("project_id"),
-              workflowId: yamlVal("workflow_id"),
-              workflowRunId: yamlVal("workflow_run_id"),
+              projectId: str("project_id"),
+              workflowId: str("workflow_id"),
+              workflowRunId: str("workflow_run_id"),
             });
           }}
           saveDisabled={updateWorkItem.isPending}
@@ -528,7 +531,7 @@ function WorkItemDetailPage() {
                   contextWindow,
                   status,
                   projectId: editProjectId,
-                  workflowId: editWorkflowId || undefined,
+                  workflowId: editWorkflowId,
                   scheduledStartAt: editScheduledStartAt
                     ? Timestamp.fromDate(new Date(editScheduledStartAt))
                     : undefined,
