@@ -42,6 +42,9 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
+**v0.1.139** — Worker prompt fields refactor + recovery overhaul + scheduling improvements.
+Replaced the single `system_prompt` field on workers with four structured fields: Role, Skills, Behavior, and AGENTS.md, stored separately in the DB and composed at dispatch time. Recovery is now exclusively triggered by explicit `recover` steps on the workflow canvas — the old auto-trigger was removed. Added `WORK_ITEM_STATUS_SCHEDULED` status: work items transition `pending → scheduled → running → succeeded/failed`. The scheduled run reconciler uses a 5-minute window to prevent stale fires. New `text_loop` stall signal catches workers stuck in text-only loops (10min without meaningful action). Canvas handle colors clarify input (emerald) vs output (amber) direction. Loop decision steps auto-set `success_branch`/`loop_branch` from edge connections. Project directory and context file pickers are now separate UI cards. YAML code view on work items is editable with Save support. All workflow versions can be deleted. Work item `workflow_run_id` can be cleared to re-schedule.
+
 **v0.1.136** — Hugging Face latest models script.
 Added `scripts/hf-latest-models.sh` — fetches the latest AI models released today or this week from the Hugging Face API, with paginated results, pipeline_tag distribution summary, and clean output to `/tmp/hf-latest-models-{today|week}.txt`.
 
