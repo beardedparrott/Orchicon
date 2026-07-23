@@ -348,6 +348,8 @@ function WorkItemDetailPage() {
                   <option value={6}>succeeded</option>
                   <option value={7}>failed</option>
                   <option value={8}>cancelled</option>
+                  <option value={9}>recovering</option>
+                  <option value={10}>scheduled</option>
                 </select>
               ) : (
                 ({

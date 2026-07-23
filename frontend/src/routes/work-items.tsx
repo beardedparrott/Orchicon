@@ -124,7 +124,7 @@ function WorkItemsPage() {
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
         >
-          <option value="">All statuses</option>
+          <option value="">All</option>
           <option value="1">pending</option>
           <option value="2">ready</option>
           <option value="3">assigned</option>
@@ -132,6 +132,8 @@ function WorkItemsPage() {
           <option value="6">succeeded</option>
           <option value="7">failed</option>
           <option value="8">cancelled</option>
+          <option value="9">recovering</option>
+          <option value="10">scheduled</option>
         </select>
 
         <select
@@ -508,6 +510,7 @@ function KindBadge({ kind }: { kind: number }) {
 function StatusPill({ status }: { status: number }) {
   const labels: Record<number, string> = {
     1: "pending",
+    10: "scheduled",
     2: "ready",
     3: "assigned",
     4: "running",
@@ -519,6 +522,7 @@ function StatusPill({ status }: { status: number }) {
   };
   const styles: Record<number, string> = {
     1: "bg-gray-100 text-gray-700",
+    10: "bg-purple-100 text-purple-800",
     2: "bg-blue-100 text-blue-800",
     3: "bg-yellow-100 text-yellow-800",
     4: "bg-green-100 text-green-800",
