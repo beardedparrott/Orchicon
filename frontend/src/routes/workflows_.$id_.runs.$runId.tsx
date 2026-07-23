@@ -370,10 +370,10 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
                     onClick={
                       clickable
                         ? () =>
-                            navigate({
-                              to: "/executions/$id",
-                              params: { id: sr.workerExecutionId! },
-                            })
+                            window.open(
+                              `/executions/${sr.workerExecutionId!}`,
+                              "_blank",
+                            )
                         : undefined
                     }
                     aria-label={
@@ -432,10 +432,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
                 key={ex.id}
                 className="flex w-full items-center gap-3 rounded-md border p-2 text-left text-sm hover:bg-accent"
                 onClick={() =>
-                  navigate({
-                    to: "/executions/$id",
-                    params: { id: ex.id },
-                  })
+                  window.open(`/executions/${ex.id}`, "_blank")
                 }
               >
                 <ExecStatusBadge status={ex.status} />
