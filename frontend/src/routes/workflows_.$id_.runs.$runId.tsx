@@ -154,9 +154,12 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
     for (const s of steps) {
       if (s.edge_handles) Object.assign(edgeHandles, s.edge_handles);
     }
+    const nodeIds = new Set(nodes.map((n) => n.id));
+    const seen = new Set<string>();
     for (const s of steps) {
       for (const dep of s.depends_on ?? []) {
         const edgeKey = `e-${dep}-${s.id}`;
+        seen.add(edgeKey);
         const handles = edgeHandles[edgeKey];
         edges.push({
           id: edgeKey,
@@ -165,8 +168,30 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
           sourceHandle: handles?.sourceHandle,
           targetHandle: handles?.targetHandle,
           markerEnd: { type: MarkerType.ArrowClosed },
-          animated: statusByStep.get(s.id) === 3, // animate running steps
+          animated: statusByStep.get(s.id) === 3,
         });
+      }
+    }
+    // Restore loop-back edges from edge_handles not covered by depends_on.
+    for (const [edgeKey, handles] of Object.entries(edgeHandles)) {
+      if (seen.has(edgeKey)) continue;
+      for (const srcId of nodeIds) {
+        const prefix = `e-${srcId}-`;
+        if (edgeKey.startsWith(prefix)) {
+          const tgtId = edgeKey.slice(prefix.length);
+          if (nodeIds.has(tgtId)) {
+            edges.push({
+              id: edgeKey,
+              source: srcId,
+              target: tgtId,
+              sourceHandle: handles?.sourceHandle,
+              targetHandle: handles?.targetHandle,
+              markerEnd: { type: MarkerType.ArrowClosed },
+              animated: false,
+            });
+          }
+          break;
+        }
       }
     }
     return { nodes, edges };
