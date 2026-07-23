@@ -1020,25 +1020,3 @@ func (r *TaskReconciler) propagateSummaryToStepRun(ctx context.Context, tx pgx.T
 	}
 	return nil
 }
-
-// composeSystemPrompt assembles the full system prompt from the worker's
-// four structured fields (role, skills, behavior, agents_md). Falls back
-// to the legacy SystemPrompt field if the new fields are empty.
-func composeSystemPrompt(v db.WorkerVersionRow) string {
-	if v.Role == "" && v.Skills == "" && v.Behavior == "" && v.AgentsMD == "" {
-		return v.SystemPrompt
-	}
-	var parts []string
-	add := func(heading, content string) {
-		c := strings.TrimSpace(content)
-		if c == "" {
-			return
-		}
-		parts = append(parts, "# "+heading+"\n\n"+c)
-	}
-	add("Role", v.Role)
-	add("Skills", v.Skills)
-	add("Behavior", v.Behavior)
-	add("AGENTS.md", v.AgentsMD)
-	return strings.Join(parts, "\n\n")
-}
