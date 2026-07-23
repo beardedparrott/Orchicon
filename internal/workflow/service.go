@@ -188,6 +188,12 @@ func (s *Service) PublishWorkflow(ctx context.Context, req *connect.Request[apiv
 	if err != nil {
 		return nil, mapDBError(err)
 	}
+	// Deprecate the previous published version so only the latest is active.
+	if current.CurrentVersion > 0 {
+		_, _ = ttx.Tx.Exec(ctx,
+			`UPDATE workflow_versions SET status = 'deprecated' WHERE tenant_id = $1 AND workflow_id = $2 AND version = $3 AND status = 'published'`,
+			tenantID, req.Msg.WorkflowId, current.CurrentVersion)
+	}
 	updated, err := db.UpdateWorkflowCurrentVersion(ctx, ttx.Tx, tenantID, req.Msg.WorkflowId, current.Version, latest.Version)
 	if err != nil {
 		return nil, mapDBError(err)
