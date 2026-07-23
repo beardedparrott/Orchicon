@@ -233,12 +233,14 @@ function WorkItemDetailPage() {
             parent_id: item.parentId || undefined,
             status: ({
               1: "pending",
+              10: "scheduled",
               2: "ready",
               3: "assigned",
               4: "running",
               6: "succeeded",
               7: "failed",
               8: "cancelled",
+              9: "recovering",
             } as Record<number, string>)[item.status] ?? "unknown",
             priority: item.priority,
             description: item.description || undefined,
@@ -350,12 +352,14 @@ function WorkItemDetailPage() {
               ) : (
                 ({
                   1: "pending",
+                  10: "scheduled",
                   2: "ready",
                   3: "assigned",
                   4: "running",
                   6: "succeeded",
                   7: "failed",
                   8: "cancelled",
+                  9: "recovering",
                 } as Record<number, string>)[item.status] ?? "unknown"
               )}
             </CardTitle>
