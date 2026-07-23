@@ -411,6 +411,25 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		}
 	} else if anyFailed {
 		now := time.Now().UTC()
+		// Terminate any running worker executions linked to this run.
+		for _, sr := range stepRuns {
+			if sr.WorkerExecutionID != "" {
+				if exec, err := db.GetExecution(ctx, ttx.Tx, tenantID, sr.WorkerExecutionID); err == nil {
+					if exec.Status == domain.ExecutionRunning || exec.Status == domain.ExecutionDispatching {
+						termStatus := domain.ExecutionTerminated
+						termHealth := domain.HealthUnhealthy
+						if _, err := db.UpdateExecution(ctx, ttx.Tx, tenantID, exec.ID, exec.Version, db.UpdateExecutionFields{
+							Status:       &termStatus,
+							HealthState:  &termHealth,
+							EndedAt:      &now,
+							ErrorMessage: strPtr("workflow run failed"),
+						}); err != nil {
+							return fmt.Errorf("terminate execution on run failure: %w", err)
+						}
+					}
+				}
+			}
+		}
 		updated, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
 			Status:  strPtr(domain.WorkflowRunFailed),
 			EndedAt: &now,
