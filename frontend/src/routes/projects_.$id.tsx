@@ -2,7 +2,7 @@ import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Folder } from "lucide-react";
+import { ArrowLeft, ArrowUp, Folder } from "lucide-react";
 
 import {
   useActivateProject,
@@ -13,7 +13,7 @@ import {
   useUpdateProject,
   projectKeys,
 } from "@/api/projects";
-import { useUpdateProjectDir } from "@/api/projectFiles";
+import { useListDirPath, useUpdateProjectDir } from "@/api/projectFiles";
 import { useStreamProjectEvents } from "@/api/projectEvents";
 import { EntityYamlView } from "@/components/EntityYamlView";
 import { Markdown } from "@/components/markdown";
@@ -313,40 +313,11 @@ function ProjectDetailPage() {
               <p className="text-sm text-muted-foreground">No directory set.</p>
             )}
             {editing && (
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="/path/to/project"
-                  className="flex-1 rounded-md border bg-background px-3 py-1.5 text-sm font-mono"
-                  id="projectDirInput"
-                />
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-9 text-xs"
-                  onClick={() => {
-                    const input = document.getElementById("projectDirInput") as HTMLInputElement;
-                    const path = input?.value.trim();
-                    if (path) {
-                      updateProjectDir.mutate({ id: project.id, projectDir: path });
-                    }
-                  }}
-                  disabled={updateProjectDir.isPending}
-                >
-                  {updateProjectDir.isPending ? "Saving…" : "Set"}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-9 text-xs"
-                  onClick={() => {
-                    document.querySelector("[data-browse-dir]")?.scrollIntoView({ behavior: "smooth" });
-                    (document.querySelector("[data-browse-dir]") as HTMLButtonElement)?.click();
-                  }}
-                >
-                  Browse
-                </Button>
-              </div>
+              <ProjectDirBrowser
+                currentDir={project.projectDir || ""}
+                onSelect={(path) => updateProjectDir.mutate({ id: project.id, projectDir: path })}
+                isSaving={updateProjectDir.isPending}
+              />
             )}
           </CardContent>
         </Card>
@@ -466,6 +437,57 @@ function parseGoals(s: string): [string, string][] {
   } catch {
     return [];
   }
+}
+
+function ProjectDirBrowser({ currentDir, onSelect, isSaving }: { currentDir: string; onSelect: (path: string) => void; isSaving: boolean }) {
+  const [browsePath, setBrowsePath] = useState(currentDir || "~");
+  const [showBrowser, setShowBrowser] = useState(false);
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 font-mono text-xs">
+        <Folder className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+        <span className="flex-1 truncate">{currentDir || "No directory set"}</span>
+        <Button variant="outline" size="sm" className="text-xs h-7 shrink-0" onClick={() => setShowBrowser(!showBrowser)}>
+          {showBrowser ? "Cancel" : currentDir ? "Change" : "Set directory"}
+        </Button>
+      </div>
+      {showBrowser && (
+        <DirTree path={browsePath} onNavigate={setBrowsePath} onSelect={onSelect} isSaving={isSaving} />
+      )}
+    </div>
+  );
+}
+
+function DirTree({ path, onNavigate, onSelect, isSaving }: { path: string; onNavigate: (p: string) => void; onSelect: (p: string) => void; isSaving: boolean }) {
+  const { data, isLoading, error } = useListDirPath(path);
+  const parentOf = (p: string) => {
+    const parts = p.split("/").filter(Boolean);
+    if (parts.length === 0) return "~";
+    if (p.startsWith("~")) return parts.slice(1, -1).join("/") || "~";
+    if (p.startsWith("/")) return "/" + parts.slice(0, -1).join("/") || "/";
+    return parts.slice(0, -1).join("/") || "~";
+  };
+  if (isLoading) return <p className="text-xs text-muted-foreground py-2">Loading…</p>;
+  if (error) return <p className="text-xs text-destructive py-2">Error: {String(error)}</p>;
+  const dirs = (data?.entries ?? []).filter((e: any) => e.isDir);
+  return (
+    <div className="rounded-md border max-h-[300px] overflow-y-auto">
+      <div className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b" onClick={() => onNavigate(parentOf(path))}>
+        <ArrowUp className="h-4 w-4 text-muted-foreground" />
+        <span className="text-muted-foreground text-xs">..</span>
+      </div>
+      {dirs.length === 0 && <p className="px-3 py-4 text-sm text-muted-foreground">Empty directory</p>}
+      {dirs.map((entry: any) => (
+        <div key={entry.path} className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b last:border-0">
+          <Folder className="h-4 w-4 text-amber-500 shrink-0" />
+          <span className="flex-1 truncate" onClick={() => onNavigate(entry.path)}>{entry.name}/</span>
+          <Button variant="outline" size="sm" className="text-xs h-7 shrink-0" onClick={() => onSelect(entry.path)} disabled={isSaving}>
+            {isSaving ? "Saving…" : "Select"}
+          </Button>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function formatPayload(data: Uint8Array): string {

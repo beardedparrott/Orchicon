@@ -193,7 +193,6 @@ export function FileBrowser({
                 {hasDir ? projectDir : "~ (not set)"}
               </span>
               <Button
-                data-browse-dir
                 variant="outline"
                 size="sm"
                 className="text-xs h-7 shrink-0"
