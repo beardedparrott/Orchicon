@@ -261,16 +261,20 @@ function WorkItemDetailPage() {
           editable
           onSave={(parsed) => {
             const statusMap: Record<string, number> = { pending: 1, scheduled: 10, ready: 2, assigned: 3, running: 4, succeeded: 6, failed: 7, cancelled: 8 };
+            // Helper: if the YAML explicitly has the field, send it (even empty to clear).
+            // If absent from YAML, send undefined (server leaves as-is).
+            const yamlVal = (key: string): string | undefined =>
+              Object.hasOwn(parsed, key) ? String(parsed[key] ?? "") : undefined;
             updateWorkItem.mutate({
               id,
               title: typeof parsed.title === "string" ? parsed.title : item.title,
-              description: typeof parsed.description === "string" ? parsed.description : undefined,
-              acceptanceCriteria: typeof parsed.acceptance_criteria === "string" ? parsed.acceptance_criteria : undefined,
+              description: yamlVal("description"),
+              acceptanceCriteria: yamlVal("acceptance_criteria"),
               priority: typeof parsed.priority === "number" ? parsed.priority : undefined,
               status: typeof parsed.status === "string" ? statusMap[parsed.status] : undefined,
-              projectId: typeof parsed.project_id === "string" ? parsed.project_id : undefined,
-              workflowId: typeof parsed.workflow_id === "string" ? parsed.workflow_id : undefined,
-              workflowRunId: typeof parsed.workflow_run_id === "string" ? parsed.workflow_run_id : undefined,
+              projectId: yamlVal("project_id"),
+              workflowId: yamlVal("workflow_id"),
+              workflowRunId: yamlVal("workflow_run_id"),
             });
           }}
           saveDisabled={updateWorkItem.isPending}
