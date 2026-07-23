@@ -927,12 +927,26 @@ func enqueueWorkItemEvent(ctx context.Context, tx pgx.Tx, eventType string, w db
 
 func strPtr(s string) *string { return &s }
 
-// composeSystemPrompt composes the full system prompt from the worker's
-// prompt fields. Currently returns SystemPrompt directly; when the four
-// structured fields (role, skills, behavior, agents_md) land in the data
-// layer, this function will compose them into a single prompt.
+// composeSystemPrompt assembles the full system prompt from the worker's
+// four structured fields (role, skills, behavior, agents_md). Falls back
+// to the legacy SystemPrompt field if the new fields are empty.
 func composeSystemPrompt(v db.WorkerVersionRow) string {
-	return v.SystemPrompt
+	if v.Role == "" && v.Skills == "" && v.Behavior == "" && v.AgentsMD == "" {
+		return v.SystemPrompt
+	}
+	var parts []string
+	add := func(heading, content string) {
+		c := strings.TrimSpace(content)
+		if c == "" {
+			return
+		}
+		parts = append(parts, "# "+heading+"\n\n"+c)
+	}
+	add("Role", v.Role)
+	add("Skills", v.Skills)
+	add("Behavior", v.Behavior)
+	add("AGENTS.md", v.AgentsMD)
+	return strings.Join(parts, "\n\n")
 }
 
 // summaryMarker is the literal line the worker's prompt instructs it to
