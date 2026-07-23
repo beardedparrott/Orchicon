@@ -17,7 +17,8 @@ SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 # ── Config ────────────────────────────────────────────────────────────────────
 HF_API="https://huggingface.co/api/models"
 PER_PAGE=100
-MAX_PAGES=5
+MAX_PAGES_TODAY=5
+MAX_PAGES_WEEK=30
 CACHE_DIR="/tmp/hf-cache"
 mkdir -p "$CACHE_DIR"
 
@@ -58,15 +59,15 @@ TODAY=$(date -u +%Y-%m-%d)
 WEEK_AGO=$(date -u -d "7 days ago" +%Y-%m-%d)
 
 if [ "$MODE" = "week" ]; then
-  DATE_FROM="$WEEK_AGO"
   LABEL="week ($WEEK_AGO — $TODAY)"
   OUTPUT_FILE="/tmp/hf-latest-models-week.txt"
   CACHE_FILE="$CACHE_DIR/week.json"
+  MAX_PAGES="$MAX_PAGES_WEEK"
 else
-  DATE_FROM="$TODAY"
   LABEL="today ($TODAY)"
   OUTPUT_FILE="/tmp/hf-latest-models-today.txt"
   CACHE_FILE="$CACHE_DIR/today.json"
+  MAX_PAGES="$MAX_PAGES_TODAY"
 fi
 
 # ── Fetch from Hugging Face API (paginated) ──────────────────────────────────
@@ -81,7 +82,7 @@ fetch_and_cache() {
   pages=()
   for (( page=0; page<MAX_PAGES; page++ )); do
     offset=$(( page * PER_PAGE ))
-    url="${HF_API}?sort=createdAt&direction=-1&limit=${PER_PAGE}&offset=${offset}&date_created__gte=${DATE_FROM}"
+    url="${HF_API}?sort=createdAt&direction=-1&limit=${PER_PAGE}&offset=${offset}"
     printf "  Page %d (offset=%d) ... " "$(( page + 1 ))" "$offset"
     response=$(curl -sS --max-time 20 \
       -H "User-Agent: orchicon-script/1.0" \
@@ -120,12 +121,21 @@ if ! jq empty "$CACHE_FILE" 2>/dev/null; then
   exit 1
 fi
 
+# ── Filter cached models by date (local filtering, since the HF API
+#     does not support server-side date filtering) ────────────────────────────
+if [ "$MODE" = "week" ]; then
+  FILTERED_FILE=$(mktemp)
+  jq --arg from "$WEEK_AGO" '[.[] | select(.createdAt >= ($from + "T00:00:00.000Z"))]' "$CACHE_FILE" > "$FILTERED_FILE"
+else
+  FILTERED_FILE=$(mktemp)
+  jq --arg today "$TODAY" '[.[] | select(.createdAt // "" | startswith($today))]' "$CACHE_FILE" > "$FILTERED_FILE"
+fi
+
 # ── Parse and format output ───────────────────────────────────────────────────
 {
-  # Count metrics
-  total=$(jq 'length' "$CACHE_FILE")
-  downloaded=$(jq '[.[] | select(.downloads > 0)] | length' "$CACHE_FILE")
-  total_downloads=$(jq '[.[] | .downloads // 0] | add' "$CACHE_FILE")
+  total=$(jq 'length' "$FILTERED_FILE")
+  downloaded=$(jq '[.[] | select(.downloads > 0)] | length' "$FILTERED_FILE")
+  total_downloads=$(jq '[.[] | .downloads // 0] | add' "$FILTERED_FILE")
   avg_downloads=$(( total > 0 ? total_downloads / total : 0 ))
 
   echo "╔══════════════════════════════════════════════════════════════════════════╗"
@@ -139,12 +149,11 @@ fi
   echo "  Avg downloads/model: $avg_downloads"
   echo ""
 
-  # List pipeline_tag distribution
   echo "  ── Capability (pipeline_tag) distribution ──"
-  jq -r 'group_by(.pipeline_tag // "unlabeled") | map({tag: .[0].pipeline_tag // "unlabeled", count: length}) | sort_by(-.count) | .[] | "    \(.tag): \(.count)"' "$CACHE_FILE"
+  jq -r 'group_by(.pipeline_tag // "unlabeled") | map({tag: .[0].pipeline_tag // "unlabeled", count: length}) | sort_by(-.count) | .[] | "    \(.tag): \(.count)"' "$FILTERED_FILE"
   echo ""
 
-  jq -c '.[]' "$CACHE_FILE" 2>/dev/null | while IFS= read -r model; do
+  jq -c '.[]' "$FILTERED_FILE" 2>/dev/null | while IFS= read -r model; do
     id=$(echo "$model" | jq -r '.id // "unknown"')
     pipeline_tag=$(echo "$model" | jq -r '.pipeline_tag // "unlabeled"')
     downloads=$(echo "$model" | jq -r '.downloads // 0')
@@ -152,8 +161,12 @@ fi
     created_at=$(echo "$model" | jq -r '.createdAt // "unknown"')
     created_readable=$(echo "$created_at" | sed 's/T/ /' | sed 's/\.[0-9]*Z//' | sed 's/Z//')
 
-    libs=$(echo "$model" | jq -r '[.library_name[]? // empty] | join(", ")')
-    if [ -z "$libs" ]; then libs="—"; fi
+    raw_libs=$(echo "$model" | jq -r '.library_name? // ""')
+    if [ -z "$raw_libs" ] || [ "$raw_libs" = "null" ]; then
+      libs="—"
+    else
+      libs="$raw_libs"
+    fi
 
     printf "  Model:      %s\n" "$id"
     printf "  Capability: %s\n" "$pipeline_tag"
@@ -166,6 +179,8 @@ fi
 
   echo ""
 } > "$OUTPUT_FILE"
+
+rm -f "$FILTERED_FILE"
 
 echo ""
 echo "Done. Output written to: $OUTPUT_FILE"

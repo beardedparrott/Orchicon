@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -838,7 +839,7 @@ func versionRowToProto(v db.WorkerVersionRow) *apiv1.WorkerVersion {
 		Status:             workerVersionStatusToProto(v.Status),
 		RuntimeRef:         v.RuntimeRef,
 		ModelRef:           v.ModelRef,
-		SystemPrompt:       v.SystemPrompt,
+		SystemPrompt:       composeWorkerPrompt(v),
 		ContextSources:     string(v.ContextSources),
 		Permissions:        string(v.Permissions),
 		GatedTools:         string(v.GatedTools),
@@ -853,6 +854,27 @@ func versionRowToProto(v db.WorkerVersionRow) *apiv1.WorkerVersion {
 		pv.PublishedAt = timestamppb.New(*v.PublishedAt)
 	}
 	return pv
+}
+
+// composeWorkerPrompt builds the system prompt for the proto response
+// from the worker's four structured fields. Falls back to v.SystemPrompt.
+func composeWorkerPrompt(v db.WorkerVersionRow) string {
+	if v.Role == "" && v.Skills == "" && v.Behavior == "" && v.AgentsMD == "" {
+		return v.SystemPrompt
+	}
+	var parts []string
+	add := func(heading, content string) {
+		c := strings.TrimSpace(content)
+		if c == "" {
+			return
+		}
+		parts = append(parts, "# "+heading+"\n\n"+c)
+	}
+	add("Role", v.Role)
+	add("Skills", v.Skills)
+	add("Behavior", v.Behavior)
+	add("AGENTS.md", v.AgentsMD)
+	return strings.Join(parts, "\n\n")
 }
 
 // lockRowToProto maps a db.EditLockRow to the generated proto EditLock.
