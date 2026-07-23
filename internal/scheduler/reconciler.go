@@ -44,7 +44,6 @@ type TaskReconciler struct {
 	pool             *db.Pool
 	log              *slog.Logger
 	bridge           AdapterBridge
-	recovery         RecoveryTrigger   // Phase 7: trigger recovery on failure (docs/06 §2)
 	eventPub         eventbus.Publisher // direct NATS publisher for low-latency streaming (bypasses outbox relay)
 	workflowNotifier func(ctx context.Context, runID string) // enqueues run for WorkflowReconciler on task completion
 }
@@ -54,12 +53,9 @@ func NewTaskReconciler(pool *db.Pool, log *slog.Logger, bridge AdapterBridge) *T
 	return &TaskReconciler{pool: pool, log: log, bridge: bridge}
 }
 
-// SetRecoveryTrigger injects the recovery trigger (Phase 7). Called by
-// the server after constructing both the TaskReconciler and the
-// RecoveryEngine. When set, the TaskReconciler triggers a recovery
-// when an execution fails (docs/06 §2). Recovery is opt-out, not opt-in
-// (docs/06 §1).
-func (r *TaskReconciler) SetRecoveryTrigger(rt RecoveryTrigger) { r.recovery = rt }
+// SetRecoveryTrigger is deprecated. Recovery is triggered exclusively by
+// explicit `recover` steps on the workflow canvas (docs/06 §1).
+func (r *TaskReconciler) SetRecoveryTrigger(rt RecoveryTrigger) {}
 
 // SetEventPublisher injects a direct NATS publisher for streaming
 // execution events. When set, the reconciler publishes events directly
@@ -560,11 +556,11 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 			}
 		}
 	} else {
-		// Failure: transition to recovering and trigger the recovery
-		// workflow (docs/06 §2). Recovery is opt-out, not opt-in
-		// (docs/06 §1). The trigger is idempotent (docs/06 §9).
+		// Failure: transition to failed so the step run transitions to
+		// terminal-failed, allowing a downstream `recover` step to
+		// activate and trigger recovery (docs/06 §1).
 		fields := db.UpdateWorkItemFields{
-			Status: strPtr(domain.WorkItemRecovering),
+			Status: strPtr(domain.WorkItemFailed),
 		}
 		if resultsJSON != nil {
 			fields.Results = &resultsJSON
@@ -595,16 +591,8 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 		r.workflowNotifier(context.Background(), wi.WorkflowRunID)
 	}
 
-	// Trigger recovery on failure (Phase 7). Done after commit so the
-	// recovering state is durable; the recovery trigger is idempotent
-	// (docs/06 §9). If no RecoveryTrigger is wired (nil), the task
-	// stays in recovering — the operator can trigger manually.
-	if !succeeded && r.recovery != nil {
-		triggerReason := "execution_failed"
-		if err := r.recovery.TriggerOnFailure(ctx, "tnt_dev", exec.TaskID, execID, triggerReason); err != nil {
-			r.log.Error("trigger recovery on failure", "task", exec.TaskID, "execution", execID, "error", err)
-		}
-	}
+	// Recovery is NOT triggered automatically — explicit `recover`
+	// steps on the workflow canvas handle this (docs/06 §1).
 }
 
 // OnHealth is called by the adapter bridge to update the execution's
@@ -654,24 +642,10 @@ func (r *TaskReconciler) OnStall(ctx context.Context, execID, reason string) {
 		}
 		_ = ttx.Commit(ctx)
 	}
-	if r.recovery == nil {
-		return
-	}
-	// Resolve the task + execution for the trigger (idempotent).
-	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
-	if err != nil {
-		r.log.Error("on stall: begin tx", "execution", execID, "error", err)
-		return
-	}
-	exec, err := db.GetExecution(ctx, ttx.Tx, "tnt_dev", execID)
-	ttx.Rollback(ctx)
-	if err != nil {
-		r.log.Error("on stall: get execution", "execution", execID, "error", err)
-		return
-	}
-	if err := r.recovery.TriggerOnFailure(ctx, "tnt_dev", exec.TaskID, execID, reason); err != nil {
-		r.log.Error("on stall: trigger recovery", "execution", execID, "task", exec.TaskID, "error", err)
-	}
+	// Terminate the execution and fail the work item so the downstream
+	// recover step (if any) activates on the next reconcile pass.
+	r.updateExecStatus(ctx, execID, domain.ExecutionUnhealthy, domain.HealthUnhealthy, "", reason)
+	r.transitionWorkItemOnResult(ctx, execID, false, reason)
 }
 
 // OnToolCall publishes a tool_call execution event so the frontend live
@@ -953,10 +927,10 @@ func enqueueWorkItemEvent(ctx context.Context, tx pgx.Tx, eventType string, w db
 
 func strPtr(s string) *string { return &s }
 
-// composeSystemPrompt returns the worker's system prompt. The four
-// structured fields (role, skills, behavior, agents_md) are stored
-// separately in the DB and composed at read time by the data-access
-// layer. This function exists to make the intent explicit.
+// composeSystemPrompt composes the full system prompt from the worker's
+// prompt fields. Currently returns SystemPrompt directly; when the four
+// structured fields (role, skills, behavior, agents_md) land in the data
+// layer, this function will compose them into a single prompt.
 func composeSystemPrompt(v db.WorkerVersionRow) string {
 	return v.SystemPrompt
 }
