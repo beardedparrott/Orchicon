@@ -195,15 +195,23 @@ function WorkerDetailPage() {
                   <Button onClick={() => setEditing(true)}>Edit</Button>
                   <Button
                     onClick={() => {
-                      const form = document.getElementById("draftForm") as HTMLFormElement;
-                      if (form) {
-                        const submitEvent = new Event("submit", { cancelable: true, bubbles: true });
-                        if (form.dispatchEvent(submitEvent) && !submitEvent.defaultPrevented) {
-                          setTimeout(() => publishVersion.mutateAsync(id), 300);
-                        }
-                      }
+                      handleSubmit(async (formData) => {
+                        await updateVersion.mutateAsync({
+                          workerId: id,
+                          versionId: draftVersion.id,
+                          runtimeRef: formData.runtimeRef,
+                          modelRef: formData.modelRef,
+                          systemPrompt: [formData.role, formData.skills, formData.behavior, formData.agentsMd].filter(Boolean).join("\n\n"),
+                          permissions: formData.permissions,
+                          gatedTools: formData.gatedTools,
+                          budgetOverrides: formData.budgetOverrides,
+                          contextSources: formData.contextSources,
+                          versionNote: formData.versionNote,
+                        });
+                        publishVersion.mutateAsync(id);
+                      })();
                     }}
-                    disabled={publishVersion.isPending}
+                    disabled={updateVersion.isPending || publishVersion.isPending}
                   >
                     {publishVersion.isPending
                       ? "Publishing…"
@@ -392,24 +400,20 @@ function WorkerDetailPage() {
           <CardContent className="space-y-6">
             <form
               id="draftForm"
-              onSubmit={handleSubmit((formData) => {
-                updateVersion.mutate(
-                  {
-                    workerId: id,
-                    versionId: draftVersion.id,
-                    runtimeRef: formData.runtimeRef,
-                    modelRef: formData.modelRef,
-                    systemPrompt: [formData.role, formData.skills, formData.behavior, formData.agentsMd].filter(Boolean).join("\n\n"),
-                    permissions: formData.permissions,
-                    gatedTools: formData.gatedTools,
-                    budgetOverrides: formData.budgetOverrides,
-                    contextSources: formData.contextSources,
-                    versionNote: formData.versionNote,
-                  },
-                  {
-                    onSuccess: () => setEditing(false),
-                  },
-                );
+              onSubmit={handleSubmit(async (formData) => {
+                await updateVersion.mutateAsync({
+                  workerId: id,
+                  versionId: draftVersion.id,
+                  runtimeRef: formData.runtimeRef,
+                  modelRef: formData.modelRef,
+                  systemPrompt: [formData.role, formData.skills, formData.behavior, formData.agentsMd].filter(Boolean).join("\n\n"),
+                  permissions: formData.permissions,
+                  gatedTools: formData.gatedTools,
+                  budgetOverrides: formData.budgetOverrides,
+                  contextSources: formData.contextSources,
+                  versionNote: formData.versionNote,
+                });
+                setEditing(false);
               })}
               className="space-y-6"
             >
