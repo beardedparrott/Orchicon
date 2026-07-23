@@ -89,6 +89,7 @@ enum WorkItemStatus {
   WORK_ITEM_STATUS_FAILED = 7;
   WORK_ITEM_STATUS_CANCELLED = 8;
   WORK_ITEM_STATUS_RECOVERING = 9;
+  WORK_ITEM_STATUS_SCHEDULED = 10;
 }
 
 // WorkItemDependency is an edge in the work DAG. The scheduler treats

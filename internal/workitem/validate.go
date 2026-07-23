@@ -116,6 +116,8 @@ func validateStatus(status apiv1.WorkItemStatus) string {
 		return domain.WorkItemCancelled
 	case apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECOVERING:
 		return domain.WorkItemRecovering
+	case apiv1.WorkItemStatus_WORK_ITEM_STATUS_SCHEDULED:
+		return domain.WorkItemScheduled
 	default:
 		return domain.WorkItemPending
 	}

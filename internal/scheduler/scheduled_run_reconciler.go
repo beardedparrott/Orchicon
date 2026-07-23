@@ -43,7 +43,7 @@ func (r *ScheduledRunReconciler) Reconcile(ctx context.Context, key string) reco
 }
 
 func (r *ScheduledRunReconciler) scanAndFire(ctx context.Context) reconciler.Result {
-	ttx, err := r.pool.BeginTenantTx(ctx, "")
+	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {
 		r.log.Error("scheduled_run: begin tx", "error", err)
 		return reconciler.Result{RequeueAfter: 0, Error: err}
@@ -52,11 +52,9 @@ func (r *ScheduledRunReconciler) scanAndFire(ctx context.Context) reconciler.Res
 
 	q := `SELECT id, tenant_id, workflow_id, project_id FROM work_items
 		 WHERE workflow_id IS NOT NULL
-		   AND workflow_run_id = ''
 		   AND scheduled_start_at IS NOT NULL
-		   AND scheduled_start_at <= now()
-		   AND status = 'pending'
-		   AND auto_start_workflow
+		   AND scheduled_start_at BETWEEN now() - interval '5 minutes' AND now()
+		   AND status = 'scheduled'
 		 LIMIT 100`
 
 	rows, err := ttx.Tx.Query(ctx, q)

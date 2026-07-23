@@ -613,6 +613,22 @@ func (s *Service) StartWorkflow(ctx context.Context, req *connect.Request[apiv1.
 		}
 	}
 
+	// If this run is bound to a work item, set the workflow_run_id and
+	// transition the work item from "scheduled" to "running".
+	if req.Msg.WorkItemId != "" {
+		wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, req.Msg.WorkItemId)
+		if err == nil {
+			runID := createdRun.ID
+			status := domain.WorkItemRunning
+			if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, req.Msg.WorkItemId, wi.Version, db.UpdateWorkItemFields{
+				WorkflowRunID: &runID,
+				Status:        &status,
+			}); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("set work_item workflow_run_id: %w", err))
+			}
+		}
+	}
+
 	if err := enqueueWorkflowEvent(ctx, ttx.Tx, domain.WorkflowEventRunStarted, wf, version, createdRun, ""); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}

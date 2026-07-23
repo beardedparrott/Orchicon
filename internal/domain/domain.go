@@ -112,6 +112,7 @@ func IsRecoveryKind(kind string) bool {
 // succeeded | failed | cancelled | recovering (docs/02 §2.2).
 const (
 	WorkItemPending       = "pending"
+	WorkItemScheduled     = "scheduled"
 	WorkItemReady        = "ready"
 	WorkItemAssigned     = "assigned"
 	WorkItemRunning      = "running"

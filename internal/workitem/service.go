@@ -131,6 +131,10 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		workflowID = "" // keep empty for unbound items
 	}
 
+	status := domain.WorkItemPending
+	if scheduledStartAt != nil {
+		status = domain.WorkItemScheduled
+	}
 	row := db.WorkItemRow{
 		ID:                 db.NewID(),
 		TenantID:           tenantID,
@@ -140,7 +144,7 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		Title:              title,
 		Description:        description,
 		AcceptanceCriteria: acceptanceCriteria,
-		Status:             domain.WorkItemPending,
+		Status:             status,
 		Priority:           int(msg.Priority),
 		Budgets:            budgets,
 		ContextWindow:      int(msg.ContextWindow),
@@ -299,10 +303,16 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if msg.ScheduledStartAt != nil {
 		t := msg.ScheduledStartAt.AsTime()
 		fields.ScheduledStartAt = &t
+		status := domain.WorkItemScheduled
+		fields.Status = &status
 	}
 	if msg.AutoStartWorkflow != nil {
 		v := *msg.AutoStartWorkflow
 		fields.AutoStartWorkflow = &v
+	}
+	if msg.WorkflowRunId != nil {
+		v := *msg.WorkflowRunId
+		fields.WorkflowRunID = &v
 	}
 
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
@@ -747,6 +757,8 @@ func statusToProto(status string) apiv1.WorkItemStatus {
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_CANCELLED
 	case domain.WorkItemRecovering:
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECOVERING
+	case domain.WorkItemScheduled:
+		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_SCHEDULED
 	default:
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_UNSPECIFIED
 	}
