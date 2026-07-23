@@ -273,38 +273,52 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID string) error 
 // adapter call (docs/03 §8: no SELECT FOR UPDATE held across external
 // calls). The bridge updates the execution status as telemetry arrives.
 func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow, adapter db.AdapterRow) {
-	// PR B (context propagation): if the WorkflowReconciler populated
-	// the work item's prompt_context, the composite prompt is the
-	// Goal — it carries the work item's title + description + AC +
-	// ancestor chain + upstream step summaries. Otherwise fall back
-	// to task.Title (the legacy direct-dispatch path).
-	goal := task.Title
-	if len(task.PromptContext) > 0 {
-		var pc struct {
-			Composite string `json:"composite"`
-		}
-		if err := json.Unmarshal(task.PromptContext, &pc); err == nil && pc.Composite != "" {
-			goal = pc.Composite
-		}
-	}
 	// Resolve the project directory so the adapter runs in the correct
 	// working directory (avoids picking up Orchicon's own AGENTS.md etc.).
 	var projectDir string
-	var projDir string
-	if err := r.pool.QueryRow(ctx,
-		`SELECT project_dir FROM projects WHERE id = $1 AND tenant_id = $2`,
-		exec.ProjectID, "tnt_dev",
-	).Scan(&projDir); err == nil {
-		projectDir = projDir
+	{
+		var p db.ProjectRow
+		if err := r.pool.QueryRow(ctx,
+			`SELECT project_dir FROM projects WHERE id = $1 AND tenant_id = $2`,
+			exec.ProjectID, "tnt_dev",
+		).Scan(&p.ProjectDir); err == nil {
+			projectDir = p.ProjectDir
+		}
 	}
+	// The system prompt is the full context the model sees on every
+	// turn. The WorkflowReconciler (when this work item was bound to
+	// a workflow step) wrote a comprehensive composite into
+	// task.PromptContext that already contains the worker identity,
+	// the project directory + context files, the task, the ancestor
+	// chain, the recovery narrative, and the worker's contract
+	// (ORCHICON WORKER SUMMARY marker). The opencode adapter delivers
+	// this as the agent's `prompt` via OPENCODE_CONFIG_CONTENT so
+	// every conversation turn carries the same context.
+	composite, _ := extractComposite(task.PromptContext)
+	systemPrompt := composite
+	// Fall back to a minimal worker-prompt if no composite was set
+	// (legacy direct-dispatch path: work item dispatched outside a
+	// workflow, so the workflow reconciler never built a composite).
+	if systemPrompt == "" {
+		systemPrompt = composeSystemPrompt(version)
+		if strings.TrimSpace(systemPrompt) == "" {
+			systemPrompt = "You are a worker in the Orchicon orchestration system. " +
+				"Complete the work item described in the user message and report back."
+		}
+	}
+	// User message (Goal): just the work item title. The composite
+	// (with the full task + project + recovery context) is the
+	// system message, not the user message, so the worker
+	// instruction to end with ORCHICON WORKER SUMMARY is consistent
+	// across the first turn and every subsequent turn.
 	manifest := ExecutionManifest{
 		ExecutionID:        exec.ID,
 		TaskID:             exec.TaskID,
 		ProjectID:          exec.ProjectID,
 		WorkerID:           version.WorkerID,
 		WorkerVersion:      version.Version,
-		SystemPrompt:       composeSystemPrompt(version),
-		Goal:               goal,
+		SystemPrompt:       systemPrompt,
+		Goal:               task.Title,
 		AcceptanceCriteria: task.AcceptanceCriteria,
 		ModelRef:           version.ModelRef,
 		ContextSources:     version.ContextSources,
@@ -927,9 +941,29 @@ func enqueueWorkItemEvent(ctx context.Context, tx pgx.Tx, eventType string, w db
 
 func strPtr(s string) *string { return &s }
 
-// composeSystemPrompt assembles the full system prompt from the worker's
-// four structured fields (role, skills, behavior, agents_md). Falls back
-// to the legacy SystemPrompt field if the new fields are empty.
+// extractComposite pulls the "composite" string out of a work item's
+// prompt_context JSON (set by the WorkflowReconciler's buildCompositePrompt).
+// Returns "" if the field is absent or unparseable.
+func extractComposite(pc []byte) (string, error) {
+	if len(pc) == 0 {
+		return "", nil
+	}
+	var parsed struct {
+		Composite string `json:"composite"`
+	}
+	if err := json.Unmarshal(pc, &parsed); err != nil {
+		return "", err
+	}
+	return parsed.Composite, nil
+}
+
+// composeSystemPrompt assembles the worker-only system prompt from the
+// four structured fields (role, skills, behavior, agents_md). Used as
+// a fallback when the WorkflowReconciler did not build a composite
+// (i.e. a work item dispatched outside a workflow, on the legacy
+// direct path). The full system prompt the model sees on every turn
+// is the composite — which itself contains composeSystemPrompt's
+// output prepended under a "# Worker" section.
 func composeSystemPrompt(v db.WorkerVersionRow) string {
 	if v.Role == "" && v.Skills == "" && v.Behavior == "" && v.AgentsMD == "" {
 		return v.SystemPrompt

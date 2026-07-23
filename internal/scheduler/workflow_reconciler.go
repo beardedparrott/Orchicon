@@ -39,6 +39,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -678,19 +679,40 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 				}
 				return fmt.Errorf("load work item: %w", err)
 			}
-			// PR B (context propagation): build the composite prompt
-			// the worker should see. The prompt is the work item
-			// itself + ancestor chain + summaries from upstream
-			// stages in this run. It is stored on the work item
-			// before dispatch; the opencode adapter reads it via
-			// the TaskReconciler → manifest Goal.
-			composite, err := r.buildCompositePrompt(ctx, tx, tenantID, wi, allSteps, runs)
-			if err != nil {
-				return fmt.Errorf("build composite prompt for %s: %w", wid, err)
+		// PR B (context propagation): build the composite prompt
+		// the worker should see. The prompt is the work item
+		// itself + ancestor chain + summaries from upstream
+		// stages in this run. It is stored on the work item
+		// before dispatch; the opencode adapter reads it via
+		// the TaskReconciler → manifest Goal.
+		//
+		// Worker identity (Role / Skills / Behavior / AGENTS.md) is
+		// prepended so the visible prompt the operator inspects in
+		// the execution detail page is the full context the model
+		// actually sees. The runtime delivers this same content as
+		// the system prompt via OPENCODE_CONFIG_CONTENT (see the
+		// opencode adapter) so the worker identity lands on every
+		// conversation turn, not just the first.
+		workerVer, err := db.GetWorkerVersionByID(ctx, tx, tenantID, step.Ref, fmt.Sprintf("v%d", step.WorkerVersion))
+		if err != nil {
+			if err == db.ErrNotFound {
+				// Fall back to latest published — supports workflows
+				// that don't pin a specific version.
+				workerVer, err = db.GetLatestWorkerVersion(ctx, tx, tenantID, step.Ref, true)
+				if err != nil {
+					return fmt.Errorf("load worker version for %s: %w", step.Ref, err)
+				}
+			} else {
+				return fmt.Errorf("load worker version for %s: %w", step.Ref, err)
 			}
-			pcJSON, _ := json.Marshal(map[string]any{
-				"composite": composite,
-			})
+		}
+		composite, err := r.buildCompositePrompt(ctx, tx, tenantID, wi, workerVer, allSteps, runs)
+		if err != nil {
+			return fmt.Errorf("build composite prompt for %s: %w", wid, err)
+		}
+		pcJSON, _ := json.Marshal(map[string]any{
+			"composite": composite,
+		})
 			assignFields := db.UpdateWorkItemFields{
 				AssignedWorkerRef: &workerRef,
 				WorkflowID:        &wfID,
@@ -1134,11 +1156,21 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 // when this work item is dispatched (PR B — context propagation). It
 // has the following sections:
 //
-//   1. # Task — the work item itself: title, description, acceptance
+//   0. # Worker — the worker's identity (Role / Skills / Behavior /
+//      AGENTS.md). Prepended so the visible prompt the operator
+//      inspects in the execution detail page is the full context
+//      the model actually sees. The runtime delivers the same
+//      content as the system prompt via OPENCODE_CONFIG_CONTENT
+//      (see the opencode adapter) so the worker identity lands on
+//      every conversation turn, not just the first.
+//   1. # Project — the project directory (working dir) + the
+//      contents of every file in `context_files` so the model
+//      doesn't have to guess at file paths.
+//   2. # Task — the work item itself: title, description, acceptance
 //      criteria. This is THE task; everything else is context.
-//   2. # Project context — the ancestor chain walked via
+//   3. # Project context — the ancestor chain walked via
 //      work_items.parent_id (oldest first).
-//   3. # Workflow context — a chronological timeline of every step in
+//   4. # Workflow context — a chronological timeline of every step in
 //      this run, in DAG order, with each step's status and the
 //      execution results it produced. The current step is marked so
 //      the worker can see what has come before and what is expected
@@ -1152,14 +1184,12 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 //          description (passive context markers).
 //        - DECISION / APPROVAL / PARALLEL steps: status only.
 //
-//   4. # Recovery context (this task) — if THIS work item was
+//   5. # Recovery context (this task) — if THIS work item was
 //      recovered from a previous execution failure, the recovery
 //      summary is included here verbatim (recovery engine writes it
 //      to the work item's results). Distinct from the per-step
 //      recovery timeline above: this is the recovery for the task
 //      the worker is about to execute, not for prior steps.
-//   5. # File context — selected project files (PR: project context
-//      files).
 //   6. # Instructions — the worker's contract: emit the
 //      ORCHICON WORKER SUMMARY marker at the end of the response so
 //      the next stage can read it as upstream context.
@@ -1168,8 +1198,60 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 // manifest Goal). The worker is instructed via the prompt's footer to
 // end its response with `ORCHICON WORKER SUMMARY:` followed by a short
 // summary that becomes the next stage's upstream context.
-func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, error) {
+func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, worker db.WorkerVersionRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, error) {
 	var sb strings.Builder
+	// 0. Worker identity (prepended so it's visible in the prompt
+	// the operator inspects).
+	workerIdentity := composeSystemPrompt(worker)
+	if workerIdentity != "" {
+		sb.WriteString("# Worker\n\n")
+		sb.WriteString(workerIdentity)
+		sb.WriteString("\n\n")
+	}
+	// 0b. Project (directory + context file contents). We read
+	// contents from disk so the model doesn't have to. Best-effort:
+	// a missing file logs a note but doesn't abort dispatch.
+	if wi.ProjectID != "" {
+		var p db.ProjectRow
+		if err := tx.QueryRow(ctx,
+			`SELECT project_dir, context_files FROM projects WHERE id = $1 AND tenant_id = $2`,
+			wi.ProjectID, tenantID,
+		).Scan(&p.ProjectDir, &p.ContextFiles); err == nil {
+			hasProject := false
+			if p.ProjectDir != "" {
+				if !hasProject {
+					sb.WriteString("# Project\n\n")
+					hasProject = true
+				}
+				fmt.Fprintf(&sb, "Project directory (working dir for all file operations): `%s`\n\n", p.ProjectDir)
+			}
+			var files []string
+			_ = json.Unmarshal(p.ContextFiles, &files)
+			for _, f := range files {
+				resolved := f
+				if !filepath.IsAbs(resolved) && p.ProjectDir != "" {
+					resolved = filepath.Join(p.ProjectDir, resolved)
+				}
+				if !filepath.IsAbs(resolved) {
+					continue
+				}
+				data, err := os.ReadFile(resolved)
+				if err != nil {
+					if !hasProject {
+						sb.WriteString("# Project\n\n")
+						hasProject = true
+					}
+					fmt.Fprintf(&sb, "**Note:** failed to read context file `%s`: %v\n\n", resolved, err)
+					continue
+				}
+				if !hasProject {
+					sb.WriteString("# Project\n\n")
+					hasProject = true
+				}
+				fmt.Fprintf(&sb, "## %s\n\n```\n%s\n```\n\n", resolved, string(data))
+			}
+		}
+	}
 	// 1. Task.
 	sb.WriteString("# Task\n\n")
 	fmt.Fprintf(&sb, "Title: %s\n\n", strings.TrimSpace(wi.Title))
@@ -1224,7 +1306,10 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 			}
 		}
 	}
-	// 5. File context — selected project files (PR: project context files).
+	// 5. File context — kept for backward compatibility (old
+	// composite shape). The prepended # Project block above already
+	// inlines file contents; this section is a fallback if a caller
+	// still has it set without a ProjectID.
 	if wi.ProjectID != "" {
 		fileCtx, err := r.readProjectContextFiles(ctx, tx, tenantID, wi.ProjectID)
 		if err != nil {

@@ -31,6 +31,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { ACCENT_STROKE, KIND_ACCENT } from "@/components/workflow-editor/stepKinds";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -135,9 +136,23 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
       task: 1, decision: 2, approval: 3, parallel: 4, recover: 5,
       work_item: 6, project: 7, loop_decision: 8, policy: 9,
     };
+    // Per-kind accent tokens. KIND_ACCENT maps the proto kind to a
+    // tailwind color name; ACCENT_STROKE maps that name to the
+    // tailwind class applied to the SVG edge. We use BOTH the
+    // className (so the tailwind stroke-*-400 utility draws the
+    // line — required when var(--kind-*) is undefined in the SVG
+    // context) AND the CSS-var style (so dark/light theme tokens
+    // can override without retouching every edge).
     const kindAccent: Record<number, string> = {
-      1: "sky", 2: "amber", 3: "yellow", 4: "violet", 5: "rose",
-      6: "emerald", 7: "indigo", 8: "cyan", 9: "amber",
+      1: KIND_ACCENT[1] ?? "sky",
+      2: KIND_ACCENT[2] ?? "amber",
+      3: KIND_ACCENT[3] ?? "yellow",
+      4: KIND_ACCENT[4] ?? "violet",
+      5: KIND_ACCENT[5] ?? "rose",
+      6: KIND_ACCENT[6] ?? "emerald",
+      7: KIND_ACCENT[7] ?? "indigo",
+      8: KIND_ACCENT[8] ?? "cyan",
+      9: KIND_ACCENT[9] ?? "amber",
     };
     // Map each step_id → active step run (ignoring superseded rows so
     // a loop_decision re-ask that replaced the prior run doesn't
@@ -220,6 +235,12 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
           targetHandle: handles?.targetHandle,
           markerEnd: { type: MarkerType.ArrowClosed },
           animated: statusByStep.get(s.id) === 3,
+          // className is the visible stroke (Tailwind stroke-*-400
+          // utility). The style.stroke is the same color via a CSS
+          // variable so dark/light themes can override it. Without
+          // the className, an undefined --kind-${accent} CSS var
+          // makes the SVG stroke "none" and the edge is invisible.
+          className: ACCENT_STROKE[accent] ?? "",
           style: { stroke: `var(--kind-${accent})` },
         });
       }
@@ -247,6 +268,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
               // actively routing (status 3 = running) so the user
               // can see the cycle in motion.
               animated: statusByStep.get(srcId) === 3,
+              className: ACCENT_STROKE[accent] ?? "",
               style: { stroke: `var(--kind-${accent})` },
             });
           }
