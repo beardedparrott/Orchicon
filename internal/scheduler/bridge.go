@@ -23,6 +23,7 @@ type ExecutionManifest struct {
 	ContextSources     []byte // jsonb
 	Budgets            []byte // jsonb
 	Permissions        []byte // jsonb
+	ProjectDir         string // working directory for the adapter subprocess
 }
 
 // ExecutionCallbacks are the status callbacks the adapter bridge uses to

@@ -173,8 +173,14 @@ function WorkItemDetailPage() {
                 setContextWindow(item.contextWindow ?? 0);
                 setEditProjectId(item.projectId);
                 setEditWorkflowId(item.workflowId ?? "");
-                setEditScheduledStartAt("");
-                setEditAutoStartWorkflow(item.autoStartWorkflow ?? true);
+                setEditScheduledStartAt(
+                  item.scheduledStartAt
+                    ? localDatetimeString(
+                        new Date(Number(item.scheduledStartAt.seconds) * 1000),
+                      )
+                    : "",
+                );
+                setEditAutoStartWorkflow(item.autoStartWorkflow !== false);
                 setStatus(item.status);
                 setEditing(true);
               }}
@@ -338,6 +344,16 @@ function WorkItemDetailPage() {
             </CardTitle>
           </CardHeader>
         </Card>
+        {item.scheduledStartAt && (
+          <Card>
+            <CardHeader>
+              <CardDescription>Next Run</CardDescription>
+              <CardTitle className="text-sm font-normal">
+                {new Date(Number(item.scheduledStartAt.seconds) * 1000).toLocaleString()}
+              </CardTitle>
+            </CardHeader>
+          </Card>
+        )}
         <Card>
           <CardHeader>
             <CardDescription>Priority</CardDescription>
@@ -489,7 +505,7 @@ function WorkItemDetailPage() {
                   scheduledStartAt: editScheduledStartAt
                     ? Timestamp.fromDate(new Date(editScheduledStartAt))
                     : undefined,
-                  autoStartWorkflow: editWorkflowId ? editAutoStartWorkflow : undefined,
+                  autoStartWorkflow: editScheduledStartAt ? editAutoStartWorkflow : undefined,
                 },
                 { onSuccess: () => setEditing(false) },
               )
@@ -660,4 +676,9 @@ function depTypeLabel(type: number): string {
     3: "relates_to",
   };
   return labels[type] ?? "unknown";
+}
+
+function localDatetimeString(d: Date): string {
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }

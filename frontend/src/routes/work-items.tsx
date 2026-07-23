@@ -37,7 +37,7 @@ function WorkItemsPage() {
   const [sortOrder, setSortOrder] = useState("desc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  const activeProjectId = projectId || projects?.[0]?.id || "";
+  const hasProjects = projects && projects.length > 0;
   const batchDelete = useBatchDeleteWorkItems();
 
   const toggleSelect = (id: string) => {
@@ -77,11 +77,11 @@ function WorkItemsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {activeProjectId && (
+          {projectId && (
             <Button asChild>
               <Link
                 to="/work-items/new"
-                search={{ projectId: activeProjectId, parentId: "" }}
+                search={{ projectId: projectId, parentId: "" }}
               >
                 New Work Item
               </Link>
@@ -93,13 +93,14 @@ function WorkItemsPage() {
       <div className="flex flex-wrap items-center gap-3">
         <select
           className="rounded-md border bg-background px-3 py-1.5 text-sm"
-          value={activeProjectId}
+          value={projectId}
           onChange={(e) => {
             setProjectId(e.target.value);
             setSelected(new Set());
           }}
           disabled={!projects || projects.length === 0}
         >
+          <option value="">All</option>
           {projects && projects.length > 0 ? (
             projects.map((p) => (
               <option key={p.id} value={p.id}>
@@ -107,7 +108,7 @@ function WorkItemsPage() {
               </option>
             ))
           ) : (
-            <option value="">No projects available</option>
+            <option value="" disabled>No projects available</option>
           )}
         </select>
 
@@ -177,11 +178,11 @@ function WorkItemsPage() {
           </button>
         </div>
 
-        {activeProjectId && (
+        {projectId && (
           <Button variant="outline" asChild>
             <Link
               to="/work-items/graph"
-              search={{ projectId: activeProjectId }}
+              search={{ projectId: projectId }}
             >
               Dependency Graph
             </Link>
@@ -201,7 +202,7 @@ function WorkItemsPage() {
         )}
       </div>
 
-      {!activeProjectId && (
+      {!hasProjects && (
         <Card>
           <CardHeader>
             <CardTitle>No project selected</CardTitle>
@@ -212,9 +213,9 @@ function WorkItemsPage() {
         </Card>
       )}
 
-      {activeProjectId && view === "tree" && (
+      {hasProjects && view === "tree" && (
         <TreeView
-          projectId={activeProjectId}
+          projectId={projectId}
           search={search}
           statusFilter={statusFilter}
           sortBy={sortBy}
@@ -224,9 +225,9 @@ function WorkItemsPage() {
           onToggleSelectAll={toggleSelectAll}
         />
       )}
-      {activeProjectId && view === "board" && (
+      {hasProjects && view === "board" && (
         <KanbanBoard
-          projectId={activeProjectId}
+          projectId={projectId}
           search={search}
           sortBy={sortBy}
           sortOrder={sortOrder}

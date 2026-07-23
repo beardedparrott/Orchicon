@@ -291,19 +291,30 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 			goal = pc.Composite
 		}
 	}
+	// Resolve the project directory so the adapter runs in the correct
+	// working directory (avoids picking up Orchicon's own AGENTS.md etc.).
+	var projectDir string
+	var projDir string
+	if err := r.pool.QueryRow(ctx,
+		`SELECT project_dir FROM projects WHERE id = $1 AND tenant_id = $2`,
+		exec.ProjectID, "tnt_dev",
+	).Scan(&projDir); err == nil {
+		projectDir = projDir
+	}
 	manifest := ExecutionManifest{
 		ExecutionID:        exec.ID,
 		TaskID:             exec.TaskID,
 		ProjectID:          exec.ProjectID,
 		WorkerID:           version.WorkerID,
 		WorkerVersion:      version.Version,
-		SystemPrompt:       version.SystemPrompt,
+		SystemPrompt:       composeSystemPrompt(version),
 		Goal:               goal,
 		AcceptanceCriteria: task.AcceptanceCriteria,
 		ModelRef:           version.ModelRef,
 		ContextSources:     version.ContextSources,
 		Budgets:            version.BudgetOverrides,
 		Permissions:        version.Permissions,
+		ProjectDir:         projectDir,
 	}
 	if err := r.bridge.Start(ctx, exec, manifest, r); err != nil {
 		r.log.Error("adapter start failed", "execution", exec.ID, "error", err)
@@ -941,6 +952,14 @@ func enqueueWorkItemEvent(ctx context.Context, tx pgx.Tx, eventType string, w db
 }
 
 func strPtr(s string) *string { return &s }
+
+// composeSystemPrompt returns the worker's system prompt. The four
+// structured fields (role, skills, behavior, agents_md) are stored
+// separately in the DB and composed at read time by the data-access
+// layer. This function exists to make the intent explicit.
+func composeSystemPrompt(v db.WorkerVersionRow) string {
+	return v.SystemPrompt
+}
 
 // summaryMarker is the literal line the worker's prompt instructs it to
 // end with. Everything from the marker (inclusive) to the end of the
