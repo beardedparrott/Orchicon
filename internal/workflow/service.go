@@ -679,7 +679,7 @@ func (s *Service) AbortWorkflow(ctx context.Context, req *connect.Request[apiv1.
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	// Cancel any in-flight step runs.
+	// Cancel any in-flight step runs and terminate linked worker executions.
 	stepRuns, err := db.ListWorkflowStepRuns(ctx, ttx.Tx, tenantID, req.Msg.RunId)
 	if err != nil {
 		return nil, mapDBError(err)
@@ -691,6 +691,23 @@ func (s *Service) AbortWorkflow(ctx context.Context, req *connect.Request[apiv1.
 				EndedAt: &now,
 			}); err != nil {
 				return nil, mapDBError(err)
+			}
+		}
+		// Terminate linked worker executions.
+		if sr.WorkerExecutionID != "" {
+			if exec, err := db.GetExecution(ctx, ttx.Tx, tenantID, sr.WorkerExecutionID); err == nil {
+				if exec.Status == domain.ExecutionRunning || exec.Status == domain.ExecutionDispatching {
+					termStatus := domain.ExecutionTerminated
+					termHealth := domain.HealthUnhealthy
+					if _, err := db.UpdateExecution(ctx, ttx.Tx, tenantID, exec.ID, exec.Version, db.UpdateExecutionFields{
+						Status:       &termStatus,
+						HealthState:  &termHealth,
+						EndedAt:      &now,
+						ErrorMessage: strPtr("workflow run aborted"),
+					}); err != nil {
+						return nil, mapDBError(err)
+					}
+				}
 			}
 		}
 	}
