@@ -329,6 +329,28 @@ function EditorInner({ workflowId }: { workflowId: string }) {
       const accent = KIND_ACCENT[srcKind] ?? "sky";
       const edgeStyle = { stroke: `var(--kind-${accent})` };
       const edgeClass = ACCENT_STROKE[accent] ?? "";
+      // For loop decision nodes, auto-set the config from the handle used.
+      if (srcKind === STEP_KIND.LOOP_DECISION && conn.sourceHandle) {
+        const targetId = conn.target!;
+        const cfg = parseConfig(srcNode?.data?.config ?? "{}");
+        const key =
+          conn.sourceHandle === "source-success"
+            ? "success_branch"
+            : conn.sourceHandle === "source-loop"
+              ? "loop_branch"
+              : null;
+        if (key && typeof cfg === "object" && !Array.isArray(cfg)) {
+          const next = { ...cfg, [key]: targetId };
+          setNodes((nds) =>
+            nds.map((n) =>
+              n.id === conn.source
+                ? { ...n, data: { ...n.data, config: JSON.stringify(next) } }
+                : n,
+            ),
+          );
+        }
+      }
+
       setEdges((eds) =>
         addEdge(
           {

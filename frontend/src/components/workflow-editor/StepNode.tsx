@@ -26,18 +26,6 @@ export const stepKindClasses: Record<number, string> = {
     "border-cyan-400/70 bg-cyan-50 text-cyan-950 dark:bg-cyan-950/40 dark:text-cyan-100",
 };
 
-export const stepKindHandleClasses: Record<number, string> = {
-  [STEP_KIND.TASK]: "!bg-sky-500",
-  [STEP_KIND.DECISION]: "!bg-amber-500",
-  [STEP_KIND.APPROVAL]: "!bg-yellow-500",
-  [STEP_KIND.PARALLEL]: "!bg-violet-500",
-  [STEP_KIND.RECOVER]: "!bg-rose-500",
-  [STEP_KIND.WORK_ITEM]: "!bg-emerald-500",
-  [STEP_KIND.PROJECT]: "!bg-indigo-500",
-  [STEP_KIND.POLICY]: "!bg-amber-500",
-  [STEP_KIND.LOOP_DECISION]: "!bg-cyan-500",
-};
-
 export function StepNode({ data, selected }: NodeProps<StepData>) {
   const kind = data.kind;
   const Icon = STEP_KIND_ICONS[kind] ?? STEP_KIND_ICONS[STEP_KIND.TASK];
@@ -75,19 +63,15 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
         type="target"
         id="target-left"
         position={Position.Left}
-        className={cn(
-          "!h-2.5 !w-2.5 !border-2 !border-background",
-          stepKindHandleClasses[kind],
-        )}
+        className="!h-2.5 !w-2.5 !border-2 !border-background !bg-emerald-400"
+        title="Input from upstream"
       />
       <Handle
         type="target"
         id="target-top"
         position={Position.Top}
-        className={cn(
-          "!h-2 !w-2 !border-2 !border-background",
-          stepKindHandleClasses[kind],
-        )}
+        className="!h-2 !w-2 !border-2 !border-background !bg-emerald-400"
+        title="Input from upstream"
       />
 
       <button
@@ -161,6 +145,12 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
         </div>
       )}
 
+      {kind === STEP_KIND.PARALLEL && (
+        <div className="mt-0.5 truncate text-[10px] font-medium text-violet-500 dark:text-violet-300">
+          Runs processes simultaneously
+        </div>
+      )}
+
       {data.gatePolicyRef && kind !== STEP_KIND.POLICY && (
         <div className="mt-1 flex items-center gap-1 truncate rounded bg-black/10 px-1 py-0.5 text-[9px] font-medium uppercase dark:bg-white/10">
           <span className="opacity-70">gate</span>
@@ -177,24 +167,47 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
         </div>
       )}
 
-      <Handle
-        type="source"
-        id="source-right"
-        position={Position.Right}
-        className={cn(
-          "!h-2.5 !w-2.5 !border-2 !border-background",
-          stepKindHandleClasses[kind],
-        )}
-      />
-      <Handle
-        type="source"
-        id="source-bottom"
-        position={Position.Bottom}
-        className={cn(
-          "!h-2 !w-2 !border-2 !border-background",
-          stepKindHandleClasses[kind],
-        )}
-      />
+      {kind === STEP_KIND.LOOP_DECISION ? (
+        <>
+          <Handle
+            type="source"
+            id="source-success"
+            position={Position.Bottom}
+            className="!h-2.5 !w-2.5 !border-2 !border-background !bg-emerald-500"
+            title="Success → forward"
+          />
+          <span className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-[9px] font-medium text-emerald-600 dark:text-emerald-400 pointer-events-none">
+            success
+          </span>
+          <Handle
+            type="source"
+            id="source-loop"
+            position={Position.Right}
+            className="!h-2.5 !w-2.5 !border-2 !border-background !bg-rose-500"
+            title="Loop → re-enter"
+          />
+          <span className="absolute -right-12 top-1/2 -translate-y-1/2 text-[9px] font-medium text-rose-600 dark:text-rose-400 pointer-events-none">
+            loop
+          </span>
+        </>
+      ) : (
+        <>
+          <Handle
+            type="source"
+            id="source-right"
+            position={Position.Right}
+            className="!h-2.5 !w-2.5 !border-2 !border-background !bg-amber-500"
+            title="Output to downstream"
+          />
+          <Handle
+            type="source"
+            id="source-bottom"
+            position={Position.Bottom}
+            className="!h-2 !w-2 !border-2 !border-background !bg-amber-500"
+            title="Output to downstream"
+          />
+        </>
+      )}
     </div>
   );
 }
