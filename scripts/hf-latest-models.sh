@@ -153,29 +153,15 @@ fi
   jq -r 'group_by(.pipeline_tag // "unlabeled") | map({tag: .[0].pipeline_tag // "unlabeled", count: length}) | sort_by(-.count) | .[] | "    \(.tag): \(.count)"' "$FILTERED_FILE"
   echo ""
 
-  jq -c '.[]' "$FILTERED_FILE" 2>/dev/null | while IFS= read -r model; do
-    id=$(echo "$model" | jq -r '.id // "unknown"')
-    pipeline_tag=$(echo "$model" | jq -r '.pipeline_tag // "unlabeled"')
-    downloads=$(echo "$model" | jq -r '.downloads // 0')
-    likes=$(echo "$model" | jq -r '.likes // 0')
-    created_at=$(echo "$model" | jq -r '.createdAt // "unknown"')
-    created_readable=$(echo "$created_at" | sed 's/T/ /' | sed 's/\.[0-9]*Z//' | sed 's/Z//')
-
-    raw_libs=$(echo "$model" | jq -r '.library_name? // ""')
-    if [ -z "$raw_libs" ] || [ "$raw_libs" = "null" ]; then
-      libs="—"
-    else
-      libs="$raw_libs"
-    fi
-
-    printf "  Model:      %s\n" "$id"
-    printf "  Capability: %s\n" "$pipeline_tag"
-    printf "  Libraries:  %s\n" "$libs"
-    printf "  Released:   %s\n" "$created_readable"
-    printf "  Stats:      ⭐ %s  ⬇️ %s\n" "$likes" "$downloads"
-    printf "  %s\n" "─────────────────────────────────────────────────────────"
-    echo ""
-  done
+  jq -r '.[] | [
+    "  Model:      \(.id // "unknown")",
+    "  Capability: \(.pipeline_tag // "unlabeled")",
+    "  Libraries:  \(if .library_name? and .library_name != null and .library_name != "" then .library_name else "—" end)",
+    "  Released:   \(.createdAt | sub("T"; " ") | sub("\\.[0-9]*Z"; "") | sub("Z"; ""))",
+    "  Stats:      ⭐ \(.likes // 0)  ⬇️ \(.downloads // 0)",
+    "  ─────────────────────────────────────────────────────────",
+    ""
+  ] | join("\n")' "$FILTERED_FILE"
 
   echo ""
 } > "$OUTPUT_FILE"
