@@ -280,7 +280,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		var p db.ProjectRow
 		if err := r.pool.QueryRow(ctx,
 			`SELECT project_dir FROM projects WHERE id = $1 AND tenant_id = $2`,
-			exec.ProjectID, "tnt_dev",
+			exec.ProjectID, exec.TenantID,
 		).Scan(&p.ProjectDir); err == nil {
 			projectDir = p.ProjectDir
 		}

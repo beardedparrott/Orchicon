@@ -166,6 +166,9 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// (orchicon-worker) so the prompt reaches the model on every
 	// turn. Auto-approve permissions so the non-interactive run
 	// doesn't block on prompts (docs/04 §6.1: non-interactive mode).
+	// The --dir flag tells opencode the project root, preventing
+	// accidental writes outside the project (docs/05 §10: workers
+	// must operate within their assigned project directory).
 	const workerAgent = "orchicon-worker"
 	if manifest.SystemPrompt != "" {
 		args = append(args, "--agent", workerAgent)
@@ -176,6 +179,14 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	var tmpDir string
 	if manifest.ProjectDir != "" {
 		cmd.Dir = manifest.ProjectDir
+		// Tell opencode the project directory so its internal
+		// path resolution (AGENTS.md findup, file read/write,
+		// glob patterns) scopes to the project, not the
+		// control-plane directory. Without --dir the subprocess
+		// inherits cmd.Dir but opencode may still scan parent
+		// directories for AGENTS.md, picking up Orchicon's
+		// own and wasting context on the wrong repo.
+		args = append(args, "--dir", manifest.ProjectDir)
 	} else {
 		// No project directory configured — run in an empty temp dir so
 		// opencode doesn't pick up Orchicon's own files (AGENTS.md, etc.)
@@ -183,6 +194,7 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		tmpDir, _ = os.MkdirTemp("", "orchicon-exec-*")
 		if tmpDir != "" {
 			cmd.Dir = tmpDir
+			args = append(args, "--dir", tmpDir)
 		}
 	}
 	cmd.Env = append(os.Environ(),
