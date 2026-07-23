@@ -159,6 +159,18 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	args = append(args, "--auto", manifest.Goal)
 
 	cmd := exec.CommandContext(ctx, binary, args...)
+	var tmpDir string
+	if manifest.ProjectDir != "" {
+		cmd.Dir = manifest.ProjectDir
+	} else {
+		// No project directory configured — run in an empty temp dir so
+		// opencode doesn't pick up Orchicon's own files (AGENTS.md, etc.)
+		// as context. Cleaned up when the subprocess exits.
+		tmpDir, _ = os.MkdirTemp("", "orchicon-exec-*")
+		if tmpDir != "" {
+			cmd.Dir = tmpDir
+		}
+	}
 	cmd.Env = append(os.Environ(),
 		"OPENCODE_EXECUTION_ID="+execRow.ID,
 		"OPENCODE_TASK_ID="+manifest.TaskID,
@@ -227,6 +239,9 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		a.mu.Lock()
 		delete(a.active, execRow.ID)
 		a.mu.Unlock()
+		if tmpDir != "" {
+			os.RemoveAll(tmpDir)
+		}
 	}()
 
 	// Signal execution started (docs/03 §6: assigned → running).

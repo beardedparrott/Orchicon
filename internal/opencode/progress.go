@@ -45,6 +45,7 @@ import (
 type stallWindows struct {
 	noProgress    time.Duration
 	noFileDiff    time.Duration
+	textLoop      time.Duration // pure text without meaningful action
 	repetitionN  int
 	repetitionW  time.Duration
 }
@@ -52,7 +53,8 @@ type stallWindows struct {
 func defaultStallWindows() stallWindows {
 	return stallWindows{
 		noProgress:   envDuration("ORCHICON_STALL_NO_PROGRESS_WINDOW", 120*time.Second),
-		noFileDiff:   envDuration("ORCHICON_STALL_NO_FILE_DIFF_WINDOW", 180*time.Second),
+		noFileDiff:   envDuration("ORCHICON_STALL_NO_FILE_DIFF_WINDOW", 15*time.Minute),
+		textLoop:     envDuration("ORCHICON_STALL_TEXT_LOOP_WINDOW", 10*time.Minute),
 		repetitionN:  envInt("ORCHICON_STALL_REPETITION_COUNT", 5),
 		repetitionW:  envDuration("ORCHICON_STALL_REPETITION_WINDOW", 300*time.Second),
 	}
@@ -71,9 +73,10 @@ type progressMonitor struct {
 
 	startedAt time.Time
 
-	lastStepFinish time.Time // step_finish = token progress
-	lastFileDiff  time.Time // file_diff = file progress
-	lastTokenCt   int64     // cumulative tokens (for no-NEW-token detection)
+	lastStepFinish     time.Time // step_finish = token progress
+	lastFileDiff       time.Time // file_diff = file progress
+	lastMeaningfulAction time.Time // tool_call / file_diff / step_finish (not just text)
+	lastTokenCt        int64     // cumulative tokens (for no-NEW-token detection)
 
 	// tool-call signature history for repetition detection.
 	// signature (tool+args hash) → timestamps within the window.
@@ -91,14 +94,15 @@ type progressMonitor struct {
 // call Close to stop the background ticker.
 func newProgressMonitor(execID string, w stallWindows) *progressMonitor {
 	m := &progressMonitor{
-		execID:     execID,
-		w:          w,
-		now:        time.Now,
-		startedAt:  time.Now(),
-		lastStepFinish: time.Now(),
-		lastFileDiff:  time.Now(),
-		sigs:       make(map[string][]time.Time),
-		stop:       make(chan struct{}),
+		execID:               execID,
+		w:                    w,
+		now:                  time.Now,
+		startedAt:            time.Now(),
+		lastStepFinish:       time.Now(),
+		lastFileDiff:         time.Now(),
+		lastMeaningfulAction: time.Now(),
+		sigs:                 make(map[string][]time.Time),
+		stop:                 make(chan struct{}),
 	}
 	return m
 }
@@ -111,8 +115,13 @@ func (m *progressMonitor) observe(eventType string, part map[string]any) {
 	defer m.mu.Unlock()
 	now := m.now()
 	switch eventType {
+	case "text", "reasoning":
+		// Text output counts as progress — reviewers produce text without
+		// step_finish events for extended periods.
+		m.lastStepFinish = now
 	case "step_finish":
 		m.lastStepFinish = now
+		m.lastMeaningfulAction = now
 		// Track cumulative token count so no-new-tokens is detectable even
 		// if step_finish fires without a token delta.
 		if tokens, ok := part["tokens"].(map[string]any); ok {
@@ -125,7 +134,9 @@ func (m *progressMonitor) observe(eventType string, part map[string]any) {
 		}
 	case "file_diff":
 		m.lastFileDiff = now
+		m.lastMeaningfulAction = now
 	case "tool_call":
+		m.lastMeaningfulAction = now
 		// Signature = tool name + marshaled args. Repeating the exact same
 		// call (same tool, same args) is the loop signal.
 		tool, _ := part["tool"].(string)
@@ -151,6 +162,9 @@ func (m *progressMonitor) run(ctx context.Context, onStall func(execID, reason s
 	poll := m.w.noProgress
 	if m.w.noFileDiff < poll && m.w.noFileDiff > 0 {
 		poll = m.w.noFileDiff
+	}
+	if m.w.textLoop > 0 && m.w.textLoop < poll {
+		poll = m.w.textLoop
 	}
 	if poll > 30*time.Second {
 		poll = 30 * time.Second
@@ -190,9 +204,18 @@ func (m *progressMonitor) check() string {
 		return "stalled:no_progress"
 	}
 	// no_file_diff: no file modifications within the window.
-	if now.Sub(m.lastFileDiff) > m.w.noFileDiff {
+	// Skipped when noFileDiff is 0 or negative (disabled), because
+	// reviewers/QA workers may never write files.
+	if m.w.noFileDiff > 0 && now.Sub(m.lastFileDiff) > m.w.noFileDiff {
 		m.fired = true
 		return "stalled:no_file_progress"
+	}
+	// text_loop: text flowing but no meaningful action (tool call, file
+	// diff, step finish) within the window. Catches workers that talk
+	// forever ("but wait, let me reconsider…") without ever doing work.
+	if m.w.textLoop > 0 && now.Sub(m.lastMeaningfulAction) > m.w.textLoop {
+		m.fired = true
+		return "stalled:text_loop:You were talking in circles without making progress. On the next attempt, start fresh with a clear plan, make a concrete tool call or file edit within the first few turns."
 	}
 	// repetition: same tool_call signature repeated more than the
 	// threshold within the window.

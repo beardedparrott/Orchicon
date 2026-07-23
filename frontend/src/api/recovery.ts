@@ -142,6 +142,19 @@ export function useBatchCancelRecoveries() {
   });
 }
 
+// useBatchDeleteRecoveries hard-deletes multiple recovery executions by id.
+export function useBatchDeleteRecoveries() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (ids: string[]) => {
+      await Promise.allSettled(ids.map((id) => recoveryClient.deleteRecovery({ id })));
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: recoveryKeys.all });
+    },
+  });
+}
+
 export function useMarkTaskSucceeded() {
   const qc = useQueryClient();
   return useMutation({

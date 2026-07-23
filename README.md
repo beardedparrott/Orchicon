@@ -42,10 +42,16 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
+**v0.1.139** — Worker prompt fields refactor + recovery overhaul + scheduling improvements.
+Replaced the single `system_prompt` field on workers with four structured fields: Role, Skills, Behavior, and AGENTS.md, stored separately in the DB and composed at dispatch time. Recovery is now exclusively triggered by explicit `recover` steps on the workflow canvas — the old auto-trigger was removed. Added `WORK_ITEM_STATUS_SCHEDULED` status: work items transition `pending → scheduled → running → succeeded/failed`. The scheduled run reconciler uses a 5-minute window to prevent stale fires. New `text_loop` stall signal catches workers stuck in text-only loops (10min without meaningful action). Canvas handle colors clarify input (emerald) vs output (amber) direction. Loop decision steps auto-set `success_branch`/`loop_branch` from edge connections. Project directory and context file pickers are now separate UI cards. YAML code view on work items is editable with Save support. All workflow versions can be deleted. Work item `workflow_run_id` can be cleared to re-schedule.
+
+**v0.1.136** — Hugging Face latest models script.
+Added `scripts/hf-latest-models.sh` — fetches the latest AI models released today or this week from the Hugging Face API, with paginated results, pipeline_tag distribution summary, and clean output to `/tmp/hf-latest-models-{today|week}.txt`.
+
+**v0.1.135** — No-op retag of v0.1.134.
+
 **v0.1.134** — Workflow types (template vs one-shot) + content-aware loop decision.
 Added a proper `type` column to workflows (`one_shot` or `template`) replacing the implicit "empty project_id = template" convention — templates are tenant-level bindable workflows, one-shots are project-scoped single runs. The create form has a type dropdown, the palette hides Project/Work Item tiles for templates, and the WorkItem workflow selector shows only templates. The loop decision step now evaluates a structured `_decision` signal from the reviewer's output (`success`/`failure`) and re-asks up to 3 times if no signal is found, amending the prompt with "YOU MUST" instructions on each re-attempt.
-Added `scheduled_start_at` and `auto_start_workflow` columns to `work_items` for template-bound runs. New `ScheduledRunReconciler` scans for pending scheduled work items and dispatches `StartWorkflow`. The WorkItem create/update handlers now accept `workflow_id`, `scheduled_start_at`, and `auto_start_workflow` — when a workflow is bound with no scheduled time and auto-start enabled, the run begins immediately on save. v0.1.132 was Loop decision step. v0.1.131 was Bound-run dispatch.
-Added `StepKindLoopDecision` to proto/domain/reconciler. The loop decision step inspects its upstream step result: on success it advances forward; on failure it loops back to a prior step (up to `max_iterations`). Iteration tracking uses new `iteration` and `superseded_by` columns on `workflow_step_runs` — re-entry creates a fresh step run with `iteration = N+1` and marks the prior run as superseded (audit trail preserved). Frontend adds a Loop Decision palette node with cyan accent, `max_iterations` config in PropertiesPanel, and cycle-detection relaxation for loop back-edges. Once `max_iterations` is exhausted the run fails and opt-out recovery engages (invariant #8).
 
 ## Installation
 

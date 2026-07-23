@@ -152,6 +152,11 @@ export enum WorkItemStatus {
    * @generated from enum value: WORK_ITEM_STATUS_RECOVERING = 9;
    */
   RECOVERING = 9,
+
+  /**
+   * @generated from enum value: WORK_ITEM_STATUS_SCHEDULED = 10;
+   */
+  SCHEDULED = 10,
 }
 // Retrieve enum metadata with: proto3.getEnumType(WorkItemStatus)
 proto3.util.setEnumType(WorkItemStatus, "orchicon.api.v1.WorkItemStatus", [
@@ -165,6 +170,7 @@ proto3.util.setEnumType(WorkItemStatus, "orchicon.api.v1.WorkItemStatus", [
   { no: 7, name: "WORK_ITEM_STATUS_FAILED" },
   { no: 8, name: "WORK_ITEM_STATUS_CANCELLED" },
   { no: 9, name: "WORK_ITEM_STATUS_RECOVERING" },
+  { no: 10, name: "WORK_ITEM_STATUS_SCHEDULED" },
 ]);
 
 /**

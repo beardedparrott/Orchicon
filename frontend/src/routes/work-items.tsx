@@ -37,7 +37,7 @@ function WorkItemsPage() {
   const [sortOrder, setSortOrder] = useState("desc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  const activeProjectId = projectId || projects?.[0]?.id || "";
+  const hasProjects = projects && projects.length > 0;
   const batchDelete = useBatchDeleteWorkItems();
 
   const toggleSelect = (id: string) => {
@@ -77,11 +77,11 @@ function WorkItemsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {activeProjectId && (
+          {projectId && (
             <Button asChild>
               <Link
                 to="/work-items/new"
-                search={{ projectId: activeProjectId, parentId: "" }}
+                search={{ projectId: projectId, parentId: "" }}
               >
                 New Work Item
               </Link>
@@ -93,13 +93,14 @@ function WorkItemsPage() {
       <div className="flex flex-wrap items-center gap-3">
         <select
           className="rounded-md border bg-background px-3 py-1.5 text-sm"
-          value={activeProjectId}
+          value={projectId}
           onChange={(e) => {
             setProjectId(e.target.value);
             setSelected(new Set());
           }}
           disabled={!projects || projects.length === 0}
         >
+          <option value="">All</option>
           {projects && projects.length > 0 ? (
             projects.map((p) => (
               <option key={p.id} value={p.id}>
@@ -107,7 +108,7 @@ function WorkItemsPage() {
               </option>
             ))
           ) : (
-            <option value="">No projects available</option>
+            <option value="" disabled>No projects available</option>
           )}
         </select>
 
@@ -123,7 +124,7 @@ function WorkItemsPage() {
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
         >
-          <option value="">All statuses</option>
+          <option value="">All</option>
           <option value="1">pending</option>
           <option value="2">ready</option>
           <option value="3">assigned</option>
@@ -131,6 +132,8 @@ function WorkItemsPage() {
           <option value="6">succeeded</option>
           <option value="7">failed</option>
           <option value="8">cancelled</option>
+          <option value="9">recovering</option>
+          <option value="10">scheduled</option>
         </select>
 
         <select
@@ -177,11 +180,11 @@ function WorkItemsPage() {
           </button>
         </div>
 
-        {activeProjectId && (
+        {projectId && (
           <Button variant="outline" asChild>
             <Link
               to="/work-items/graph"
-              search={{ projectId: activeProjectId }}
+              search={{ projectId: projectId }}
             >
               Dependency Graph
             </Link>
@@ -201,7 +204,7 @@ function WorkItemsPage() {
         )}
       </div>
 
-      {!activeProjectId && (
+      {!hasProjects && (
         <Card>
           <CardHeader>
             <CardTitle>No project selected</CardTitle>
@@ -212,9 +215,9 @@ function WorkItemsPage() {
         </Card>
       )}
 
-      {activeProjectId && view === "tree" && (
+      {hasProjects && view === "tree" && (
         <TreeView
-          projectId={activeProjectId}
+          projectId={projectId}
           search={search}
           statusFilter={statusFilter}
           sortBy={sortBy}
@@ -224,9 +227,9 @@ function WorkItemsPage() {
           onToggleSelectAll={toggleSelectAll}
         />
       )}
-      {activeProjectId && view === "board" && (
+      {hasProjects && view === "board" && (
         <KanbanBoard
-          projectId={activeProjectId}
+          projectId={projectId}
           search={search}
           sortBy={sortBy}
           sortOrder={sortOrder}
@@ -507,6 +510,7 @@ function KindBadge({ kind }: { kind: number }) {
 function StatusPill({ status }: { status: number }) {
   const labels: Record<number, string> = {
     1: "pending",
+    10: "scheduled",
     2: "ready",
     3: "assigned",
     4: "running",
@@ -518,6 +522,7 @@ function StatusPill({ status }: { status: number }) {
   };
   const styles: Record<number, string> = {
     1: "bg-gray-100 text-gray-700",
+    10: "bg-purple-100 text-purple-800",
     2: "bg-blue-100 text-blue-800",
     3: "bg-yellow-100 text-yellow-800",
     4: "bg-green-100 text-green-800",

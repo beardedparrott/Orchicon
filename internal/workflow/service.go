@@ -188,6 +188,12 @@ func (s *Service) PublishWorkflow(ctx context.Context, req *connect.Request[apiv
 	if err != nil {
 		return nil, mapDBError(err)
 	}
+	// Deprecate the previous published version so only the latest is active.
+	if current.CurrentVersion > 0 {
+		_, _ = ttx.Tx.Exec(ctx,
+			`UPDATE workflow_versions SET status = 'deprecated' WHERE tenant_id = $1 AND workflow_id = $2 AND version = $3 AND status = 'published'`,
+			tenantID, req.Msg.WorkflowId, current.CurrentVersion)
+	}
 	updated, err := db.UpdateWorkflowCurrentVersion(ctx, ttx.Tx, tenantID, req.Msg.WorkflowId, current.Version, latest.Version)
 	if err != nil {
 		return nil, mapDBError(err)
@@ -613,6 +619,22 @@ func (s *Service) StartWorkflow(ctx context.Context, req *connect.Request[apiv1.
 		}
 	}
 
+	// If this run is bound to a work item, set the workflow_run_id and
+	// transition the work item from "scheduled" to "running".
+	if req.Msg.WorkItemId != "" {
+		wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, req.Msg.WorkItemId)
+		if err == nil {
+			runID := createdRun.ID
+			status := domain.WorkItemRunning
+			if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, req.Msg.WorkItemId, wi.Version, db.UpdateWorkItemFields{
+				WorkflowRunID: &runID,
+				Status:        &status,
+			}); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("set work_item workflow_run_id: %w", err))
+			}
+		}
+	}
+
 	if err := enqueueWorkflowEvent(ctx, ttx.Tx, domain.WorkflowEventRunStarted, wf, version, createdRun, ""); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -657,7 +679,7 @@ func (s *Service) AbortWorkflow(ctx context.Context, req *connect.Request[apiv1.
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	// Cancel any in-flight step runs.
+	// Cancel any in-flight step runs and terminate linked worker executions.
 	stepRuns, err := db.ListWorkflowStepRuns(ctx, ttx.Tx, tenantID, req.Msg.RunId)
 	if err != nil {
 		return nil, mapDBError(err)
@@ -670,6 +692,32 @@ func (s *Service) AbortWorkflow(ctx context.Context, req *connect.Request[apiv1.
 			}); err != nil {
 				return nil, mapDBError(err)
 			}
+		}
+		// Terminate linked worker executions.
+		if sr.WorkerExecutionID != "" {
+			if exec, err := db.GetExecution(ctx, ttx.Tx, tenantID, sr.WorkerExecutionID); err == nil {
+				if exec.Status == domain.ExecutionRunning || exec.Status == domain.ExecutionDispatching {
+					termStatus := domain.ExecutionTerminated
+					termHealth := domain.HealthUnhealthy
+					if _, err := db.UpdateExecution(ctx, ttx.Tx, tenantID, exec.ID, exec.Version, db.UpdateExecutionFields{
+						Status:       &termStatus,
+						HealthState:  &termHealth,
+						EndedAt:      &now,
+						ErrorMessage: strPtr("workflow run aborted"),
+					}); err != nil {
+						return nil, mapDBError(err)
+					}
+				}
+			}
+		}
+	}
+	// Update the linked work item to cancelled.
+	if updated.WorkItemID != "" {
+		if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, updated.WorkItemID); err == nil {
+			status := domain.WorkItemCancelled
+			_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, updated.WorkItemID, wi.Version, db.UpdateWorkItemFields{
+				Status: &status,
+			})
 		}
 	}
 	wf, _ := db.GetWorkflow(ctx, ttx.Tx, tenantID, updated.WorkflowID)

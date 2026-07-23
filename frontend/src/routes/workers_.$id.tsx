@@ -15,6 +15,7 @@ import {
   useUpdateWorkerVersion,
 } from "@/api/workers";
 import { EntityYamlView } from "@/components/EntityYamlView";
+import { FileInputButton } from "@/components/FileInputButton";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import {
@@ -65,7 +66,10 @@ const DEFAULT_BUDGETS = `{
 interface EditFormData {
   runtimeRef: string;
   modelRef: string;
-  systemPrompt: string;
+  role: string;
+  skills: string;
+  behavior: string;
+  agentsMd: string;
   permissions: string;
   gatedTools: string;
   budgetOverrides: string;
@@ -95,7 +99,10 @@ function WorkerDetailPage() {
     defaultValues: {
       runtimeRef: "",
       modelRef: "",
-      systemPrompt: "",
+      role: "",
+      skills: "",
+      behavior: "",
+      agentsMd: "",
       permissions: DEFAULT_PERMISSIONS,
       gatedTools: "[]",
       budgetOverrides: DEFAULT_BUDGETS,
@@ -106,7 +113,10 @@ function WorkerDetailPage() {
       ? {
           runtimeRef: latestVersion.runtimeRef ?? "",
           modelRef: latestVersion.modelRef ?? "",
-          systemPrompt: latestVersion.systemPrompt ?? "",
+          role: latestVersion.systemPrompt?.match(/# Role\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
+          skills: latestVersion.systemPrompt?.match(/# Skills\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
+          behavior: latestVersion.systemPrompt?.match(/# Behavior\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
+          agentsMd: latestVersion.systemPrompt?.match(/# AGENTS\.md\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
           permissions: latestVersion.permissions || DEFAULT_PERMISSIONS,
           gatedTools: latestVersion.gatedTools || "[]",
           budgetOverrides: latestVersion.budgetOverrides || DEFAULT_BUDGETS,
@@ -166,18 +176,50 @@ function WorkerDetailPage() {
             natural width; gap-2 + flex-wrap drops them onto multiple
             lines cleanly. */}
         <div className="flex flex-wrap items-center gap-2">
-          {draftVersion && !editing && viewMode === "detail" && (
-            <Button onClick={() => setEditing(true)}>Edit</Button>
-          )}
           {draftVersion && viewMode === "detail" && (
-            <Button
-              onClick={() => publishVersion.mutateAsync(id)}
-              disabled={publishVersion.isPending}
-            >
-              {publishVersion.isPending
-                ? "Publishing…"
-                : "Publish v" + (draftVersion.version)}
-            </Button>
+            <>
+              {editing ? (
+                <>
+                  <Button type="submit" form="draftForm" disabled={updateVersion.isPending}>
+                    {updateVersion.isPending ? "Saving…" : "Save"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => setEditing(false)}
+                  >
+                    Cancel
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button onClick={() => setEditing(true)}>Edit</Button>
+                  <Button
+                    onClick={() => {
+                      handleSubmit(async (formData) => {
+                        await updateVersion.mutateAsync({
+                          workerId: id,
+                          versionId: draftVersion.id,
+                          runtimeRef: formData.runtimeRef,
+                          modelRef: formData.modelRef,
+                          systemPrompt: [formData.role, formData.skills, formData.behavior, formData.agentsMd].filter(Boolean).join("\n\n"),
+                          permissions: formData.permissions,
+                          gatedTools: formData.gatedTools,
+                          budgetOverrides: formData.budgetOverrides,
+                          contextSources: formData.contextSources,
+                          versionNote: formData.versionNote,
+                        });
+                        publishVersion.mutateAsync(id);
+                      })();
+                    }}
+                    disabled={updateVersion.isPending || publishVersion.isPending}
+                  >
+                    {publishVersion.isPending
+                      ? "Publishing…"
+                      : "Publish v" + (draftVersion.version)}
+                  </Button>
+                </>
+              )}
+            </>
           )}
           {isPublished && !draftVersion && viewMode === "detail" && (
             <Button
@@ -357,24 +399,21 @@ function WorkerDetailPage() {
           </CardHeader>
           <CardContent className="space-y-6">
             <form
-              onSubmit={handleSubmit((formData) => {
-                updateVersion.mutate(
-                  {
-                    workerId: id,
-                    versionId: draftVersion.id,
-                    runtimeRef: formData.runtimeRef,
-                    modelRef: formData.modelRef,
-                    systemPrompt: formData.systemPrompt,
-                    permissions: formData.permissions,
-                    gatedTools: formData.gatedTools,
-                    budgetOverrides: formData.budgetOverrides,
-                    contextSources: formData.contextSources,
-                    versionNote: formData.versionNote,
-                  },
-                  {
-                    onSuccess: () => setEditing(false),
-                  },
-                );
+              id="draftForm"
+              onSubmit={handleSubmit(async (formData) => {
+                await updateVersion.mutateAsync({
+                  workerId: id,
+                  versionId: draftVersion.id,
+                  runtimeRef: formData.runtimeRef,
+                  modelRef: formData.modelRef,
+                  systemPrompt: [formData.role, formData.skills, formData.behavior, formData.agentsMd].filter(Boolean).join("\n\n"),
+                  permissions: formData.permissions,
+                  gatedTools: formData.gatedTools,
+                  budgetOverrides: formData.budgetOverrides,
+                  contextSources: formData.contextSources,
+                  versionNote: formData.versionNote,
+                });
+                setEditing(false);
               })}
               className="space-y-6"
             >
@@ -397,12 +436,32 @@ function WorkerDetailPage() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="systemPrompt">System prompt</Label>
-                <Textarea
-                  id="systemPrompt"
-                  className="min-h-[120px] font-mono text-xs"
-                  {...register("systemPrompt")}
-                />
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="role">Role</Label>
+                  <FileInputButton onLoad={(c) => setValue("role", c, { shouldValidate: true })} />
+                </div>
+                <Textarea id="role" className="min-h-[80px] font-mono text-xs" {...register("role")} />
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="skills">Skills</Label>
+                  <FileInputButton onLoad={(c) => setValue("skills", c, { shouldValidate: true })} multiple label="Load files" />
+                </div>
+                <Textarea id="skills" className="min-h-[80px] font-mono text-xs" {...register("skills")} />
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="behavior">Behavior</Label>
+                  <FileInputButton onLoad={(c) => setValue("behavior", c, { shouldValidate: true })} />
+                </div>
+                <Textarea id="behavior" className="min-h-[80px] font-mono text-xs" {...register("behavior")} />
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="agentsMd">AGENTS.md</Label>
+                  <FileInputButton onLoad={(c) => setValue("agentsMd", c, { shouldValidate: true })} accept=".md,.txt" multiple label="Load file(s)" />
+                </div>
+                <Textarea id="agentsMd" className="min-h-[120px] font-mono text-xs" {...register("agentsMd")} />
               </div>
 
               <div className="space-y-2 rounded-lg border p-4">
@@ -447,19 +506,6 @@ function WorkerDetailPage() {
                   {errors.gatedTools.message}
                 </p>
               )}
-
-              <div className="flex flex-wrap gap-2">
-                <Button type="submit" disabled={updateVersion.isPending}>
-                  {updateVersion.isPending ? "Saving…" : "Save changes"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setEditing(false)}
-                >
-                  Cancel
-                </Button>
-              </div>
             </form>
           </CardContent>
         </Card>
@@ -480,14 +526,25 @@ function WorkerDetailPage() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            {latestVersion.systemPrompt && (
-              <div>
-                <h4 className="text-xs font-medium uppercase text-muted-foreground">
-                  System prompt
-                </h4>
-                <Markdown>{latestVersion.systemPrompt}</Markdown>
-              </div>
-            )}
+            {(() => {
+              const sp = latestVersion.systemPrompt || "";
+              const extract = (heading: string) => {
+                const re = new RegExp(`# ${heading}\n\n([\\s\\S]*?)(?=\\n# |\\n*$)`);
+                return sp.match(re)?.[1]?.trim() || "";
+              };
+              const role = extract("Role");
+              const skills = extract("Skills");
+              const behavior = extract("Behavior");
+              const agents = extract("AGENTS.md");
+              return (
+                <>
+                  {role && <div><h4 className="text-xs font-medium uppercase text-muted-foreground">Role</h4><Markdown>{role}</Markdown></div>}
+                  {skills && <div><h4 className="text-xs font-medium uppercase text-muted-foreground">Skills</h4><Markdown>{skills}</Markdown></div>}
+                  {behavior && <div><h4 className="text-xs font-medium uppercase text-muted-foreground">Behavior</h4><Markdown>{behavior}</Markdown></div>}
+                  {agents && <div><h4 className="text-xs font-medium uppercase text-muted-foreground">AGENTS.md</h4><Markdown>{agents}</Markdown></div>}
+                </>
+              );
+            })()}
             <div className="grid gap-4 md:grid-cols-2">
               <JsonField
                 label="Permissions"

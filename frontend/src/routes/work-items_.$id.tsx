@@ -173,8 +173,14 @@ function WorkItemDetailPage() {
                 setContextWindow(item.contextWindow ?? 0);
                 setEditProjectId(item.projectId);
                 setEditWorkflowId(item.workflowId ?? "");
-                setEditScheduledStartAt("");
-                setEditAutoStartWorkflow(item.autoStartWorkflow ?? true);
+                setEditScheduledStartAt(
+                  item.scheduledStartAt
+                    ? localDatetimeString(
+                        new Date(Number(item.scheduledStartAt.seconds) * 1000),
+                      )
+                    : "",
+                );
+                setEditAutoStartWorkflow(item.autoStartWorkflow !== false);
                 setStatus(item.status);
                 setEditing(true);
               }}
@@ -227,12 +233,14 @@ function WorkItemDetailPage() {
             parent_id: item.parentId || undefined,
             status: ({
               1: "pending",
+              10: "scheduled",
               2: "ready",
               3: "assigned",
               4: "running",
               6: "succeeded",
               7: "failed",
               8: "cancelled",
+              9: "recovering",
             } as Record<number, string>)[item.status] ?? "unknown",
             priority: item.priority,
             description: item.description || undefined,
@@ -250,16 +258,40 @@ function WorkItemDetailPage() {
               : null,
           }}
           title="Work Item YAML"
+          editable
+          onSave={(parsed) => {
+            const statusMap: Record<string, number> = { pending: 1, scheduled: 10, ready: 2, assigned: 3, running: 4, succeeded: 6, failed: 7, cancelled: 8 };
+            // Always include all known fields from the YAML. Optional text
+            // fields default to "" so removing a line from YAML clears it.
+            const str = (key: string): string => String(parsed[key] ?? "");
+            const num = (key: string): number | undefined => {
+              const v = parsed[key];
+              return typeof v === "number" ? v : undefined;
+            };
+            updateWorkItem.mutate({
+              id,
+              title: str("title") || item.title,
+              description: str("description"),
+              acceptanceCriteria: str("acceptance_criteria"),
+              priority: num("priority"),
+              status: typeof parsed.status === "string" ? statusMap[parsed.status] : undefined,
+              projectId: str("project_id"),
+              workflowId: str("workflow_id"),
+              workflowRunId: str("workflow_run_id"),
+            });
+          }}
+          saveDisabled={updateWorkItem.isPending}
           onClone={async () => {
             const title = window.prompt(
               "Clone title:",
               `Clone of ${item.title}`,
             );
             if (!title) return;
+            const cloneKind = item.parentId ? item.kind : 1;
             const result = await createWorkItem.mutateAsync({
               title,
               projectId: item.projectId,
-              kind: item.kind,
+              kind: cloneKind,
               description: item.description,
               acceptanceCriteria: item.acceptanceCriteria,
               priority: item.priority,
@@ -277,7 +309,7 @@ function WorkItemDetailPage() {
           <CardHeader>
             <CardTitle>Scheduled start</CardTitle>
             <CardDescription>
-              Leave empty to start immediately on save (if auto-start is enabled).
+              Leave empty to start immediately. Set a time to schedule the run.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -299,7 +331,7 @@ function WorkItemDetailPage() {
                 onChange={(e) => setEditAutoStartWorkflow(e.target.checked)}
                 className="h-4 w-4 rounded border-input"
               />
-              <Label htmlFor="autoStart">Auto-start workflow on save</Label>
+              <Label htmlFor="autoStart">Start immediately on save</Label>
             </div>
           </CardContent>
         </Card>
@@ -323,21 +355,35 @@ function WorkItemDetailPage() {
                   <option value={6}>succeeded</option>
                   <option value={7}>failed</option>
                   <option value={8}>cancelled</option>
+                  <option value={9}>recovering</option>
+                  <option value={10}>scheduled</option>
                 </select>
               ) : (
                 ({
                   1: "pending",
+                  10: "scheduled",
                   2: "ready",
                   3: "assigned",
                   4: "running",
                   6: "succeeded",
                   7: "failed",
                   8: "cancelled",
+                  9: "recovering",
                 } as Record<number, string>)[item.status] ?? "unknown"
               )}
             </CardTitle>
           </CardHeader>
         </Card>
+        {item.scheduledStartAt && (
+          <Card>
+            <CardHeader>
+              <CardDescription>Next Run</CardDescription>
+              <CardTitle className="text-sm font-normal">
+                {new Date(Number(item.scheduledStartAt.seconds) * 1000).toLocaleString()}
+              </CardTitle>
+            </CardHeader>
+          </Card>
+        )}
         <Card>
           <CardHeader>
             <CardDescription>Priority</CardDescription>
@@ -485,11 +531,11 @@ function WorkItemDetailPage() {
                   contextWindow,
                   status,
                   projectId: editProjectId,
-                  workflowId: editWorkflowId || undefined,
+                  workflowId: editWorkflowId,
                   scheduledStartAt: editScheduledStartAt
                     ? Timestamp.fromDate(new Date(editScheduledStartAt))
                     : undefined,
-                  autoStartWorkflow: editWorkflowId ? editAutoStartWorkflow : undefined,
+                  autoStartWorkflow: editScheduledStartAt ? editAutoStartWorkflow : undefined,
                 },
                 { onSuccess: () => setEditing(false) },
               )
@@ -660,4 +706,9 @@ function depTypeLabel(type: number): string {
     3: "relates_to",
   };
   return labels[type] ?? "unknown";
+}
+
+function localDatetimeString(d: Date): string {
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }

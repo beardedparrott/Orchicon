@@ -17,7 +17,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { ApproveContinuationPlanRequest, ApproveContinuationPlanResponse, CancelRecoveryRequest, CancelRecoveryResponse, GetContinuationPlanRequest, GetContinuationPlanResponse, GetRecoveryRequest, GetRecoveryResponse, GetRecoveryStepRunsRequest, GetRecoveryStepRunsResponse, ListRecoveriesRequest, ListRecoveriesResponse, MarkTaskSucceededRequest, MarkTaskSucceededResponse, RejectContinuationPlanRequest, RejectContinuationPlanResponse, StreamRecoveryEventsRequest, StreamRecoveryEventsResponse, TriggerRecoveryRequest, TriggerRecoveryResponse } from "./recovery_service_pb.js";
+import { ApproveContinuationPlanRequest, ApproveContinuationPlanResponse, CancelRecoveryRequest, CancelRecoveryResponse, DeleteRecoveryRequest, DeleteRecoveryResponse, GetContinuationPlanRequest, GetContinuationPlanResponse, GetRecoveryRequest, GetRecoveryResponse, GetRecoveryStepRunsRequest, GetRecoveryStepRunsResponse, ListRecoveriesRequest, ListRecoveriesResponse, MarkTaskSucceededRequest, MarkTaskSucceededResponse, RejectContinuationPlanRequest, RejectContinuationPlanResponse, StreamRecoveryEventsRequest, StreamRecoveryEventsResponse, TriggerRecoveryRequest, TriggerRecoveryResponse } from "./recovery_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -49,6 +49,15 @@ export const RecoveryService = {
       name: "CancelRecovery",
       I: CancelRecoveryRequest,
       O: CancelRecoveryResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc orchicon.api.v1.RecoveryService.DeleteRecovery
+     */
+    deleteRecovery: {
+      name: "DeleteRecovery",
+      I: DeleteRecoveryRequest,
+      O: DeleteRecoveryResponse,
       kind: MethodKind.Unary,
     },
     /**

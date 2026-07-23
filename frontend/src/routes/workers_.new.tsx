@@ -12,6 +12,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { FileInputButton } from "@/components/FileInputButton";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -67,10 +68,10 @@ const createWorkerSchema = z.object({
     .string()
     .min(1, "Model ref is required")
     .max(200, "Model ref is too long"),
-  systemPrompt: z
-    .string()
-    .max(1_048_576, "System prompt is too large")
-    .optional(),
+  role: z.string().max(1_048_576, "Role is too large").optional(),
+  skills: z.string().max(1_048_576, "Skills is too large").optional(),
+  behavior: z.string().max(1_048_576, "Behavior is too large").optional(),
+  agentsMd: z.string().max(1_048_576, "AGENTS.md is too large").optional(),
   contextSources: z
     .string()
     .max(1_048_576, "Context sources is too large")
@@ -143,7 +144,10 @@ function NewWorkerPage() {
       purpose: "",
       runtimeRef: "opencode",
       modelRef: "",
-      systemPrompt: "",
+      role: "",
+      skills: "",
+      behavior: "",
+      agentsMd: "",
       contextSources: "[]",
       permissions: DEFAULT_PERMISSIONS,
       gatedTools: "[]",
@@ -167,7 +171,9 @@ function NewWorkerPage() {
       purpose: values.purpose || undefined,
       runtimeRef: values.runtimeRef,
       modelRef: values.modelRef,
-      systemPrompt: values.systemPrompt || undefined,
+      systemPrompt: [values.role, values.skills, values.behavior, values.agentsMd]
+        .filter(Boolean)
+        .join("\n\n"),
       contextSources: values.contextSources || undefined,
       permissions: values.permissions || undefined,
       gatedTools: values.gatedTools || undefined,
@@ -297,19 +303,32 @@ function NewWorkerPage() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="systemPrompt">System prompt</Label>
-              <Textarea
-                id="systemPrompt"
-                placeholder="You are an expert software engineer. Use {{project.name}} context…"
-                rows={8}
-                className="font-mono text-xs"
-                {...register("systemPrompt")}
-              />
-              {errors.systemPrompt && (
-                <p className="text-xs text-destructive">
-                  {errors.systemPrompt.message}
-                </p>
-              )}
+              <div className="flex items-center justify-between">
+                <Label htmlFor="role">Role</Label>
+                <FileInputButton onLoad={(c) => setValue("role", c, { shouldValidate: true })} />
+              </div>
+              <Textarea id="role" placeholder="You are a senior software engineer…" rows={3} className="font-mono text-xs" {...register("role")} />
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="skills">Skills</Label>
+                <FileInputButton onLoad={(c) => setValue("skills", c, { shouldValidate: true })} multiple label="Load files" />
+              </div>
+              <Textarea id="skills" placeholder="Go, TypeScript, PostgreSQL…" rows={3} className="font-mono text-xs" {...register("skills")} />
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="behavior">Behavior</Label>
+                <FileInputButton onLoad={(c) => setValue("behavior", c, { shouldValidate: true })} />
+              </div>
+              <Textarea id="behavior" placeholder="Be concise and direct…" rows={3} className="font-mono text-xs" {...register("behavior")} />
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="agentsMd">AGENTS.md</Label>
+                <FileInputButton onLoad={(c) => setValue("agentsMd", c, { shouldValidate: true })} accept=".md,.txt" multiple label="Load file(s)" />
+              </div>
+              <Textarea id="agentsMd" placeholder="Project conventions, build commands…" rows={6} className="font-mono text-xs" {...register("agentsMd")} />
             </div>
 
             <CardHeader className="px-0">

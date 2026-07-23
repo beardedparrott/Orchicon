@@ -8,9 +8,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/reconciler"
 )
 
-// ScheduledRunReconciler scans for work items with a pending scheduled
-// workflow start and dispatches them (docs/11 §5.2). Idempotent: once
-// workflow_run_id is set on the work item, the scan filter excludes it.
+// ScheduledRunReconciler scans for work items with status 'scheduled' and
+// a past-due scheduled_start_at, then dispatches the bound workflow
+// (docs/11 §5.2). Idempotent: status transitions to 'running' on fire.
 type ScheduledRunReconciler struct {
 	pool  *db.Pool
 	log   *slog.Logger
@@ -31,11 +31,9 @@ func (r *ScheduledRunReconciler) Kind() string { return "scheduled_run" }
 //
 //	SELECT id FROM work_items
 //	 WHERE workflow_id IS NOT NULL
-//	   AND workflow_run_id IS NULL
 //	   AND scheduled_start_at IS NOT NULL
-//	   AND scheduled_start_at <= now()
-//	   AND status = 'pending'
-//	   AND auto_start_workflow
+//	   AND scheduled_start_at BETWEEN now() - interval '5 minutes' AND now()
+//	   AND status = 'scheduled'
 func (r *ScheduledRunReconciler) Reconcile(ctx context.Context, key string) reconciler.Result {
 	// The scan query uses the kind as a scan-all signal; the key is ignored.
 	// Each scheduled work item is enqueued individually by the outbox or scan.
@@ -43,7 +41,7 @@ func (r *ScheduledRunReconciler) Reconcile(ctx context.Context, key string) reco
 }
 
 func (r *ScheduledRunReconciler) scanAndFire(ctx context.Context) reconciler.Result {
-	ttx, err := r.pool.BeginTenantTx(ctx, "")
+	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {
 		r.log.Error("scheduled_run: begin tx", "error", err)
 		return reconciler.Result{RequeueAfter: 0, Error: err}
@@ -52,11 +50,9 @@ func (r *ScheduledRunReconciler) scanAndFire(ctx context.Context) reconciler.Res
 
 	q := `SELECT id, tenant_id, workflow_id, project_id FROM work_items
 		 WHERE workflow_id IS NOT NULL
-		   AND workflow_run_id = ''
 		   AND scheduled_start_at IS NOT NULL
-		   AND scheduled_start_at <= now()
-		   AND status = 'pending'
-		   AND auto_start_workflow
+		   AND scheduled_start_at BETWEEN now() - interval '5 minutes' AND now()
+		   AND status = 'scheduled'
 		 LIMIT 100`
 
 	rows, err := ttx.Tx.Query(ctx, q)

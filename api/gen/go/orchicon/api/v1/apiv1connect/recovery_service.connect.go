@@ -53,6 +53,9 @@ const (
 	// RecoveryServiceCancelRecoveryProcedure is the fully-qualified name of the RecoveryService's
 	// CancelRecovery RPC.
 	RecoveryServiceCancelRecoveryProcedure = "/orchicon.api.v1.RecoveryService/CancelRecovery"
+	// RecoveryServiceDeleteRecoveryProcedure is the fully-qualified name of the RecoveryService's
+	// DeleteRecovery RPC.
+	RecoveryServiceDeleteRecoveryProcedure = "/orchicon.api.v1.RecoveryService/DeleteRecovery"
 	// RecoveryServiceGetRecoveryProcedure is the fully-qualified name of the RecoveryService's
 	// GetRecovery RPC.
 	RecoveryServiceGetRecoveryProcedure = "/orchicon.api.v1.RecoveryService/GetRecovery"
@@ -88,6 +91,7 @@ type RecoveryServiceClient interface {
 	// CancelRecovery transitions a running recovery to cancelled
 	// (docs/06 §3). The affected Task returns to its prior state.
 	CancelRecovery(context.Context, *connect.Request[v1.CancelRecoveryRequest]) (*connect.Response[v1.CancelRecoveryResponse], error)
+	DeleteRecovery(context.Context, *connect.Request[v1.DeleteRecoveryRequest]) (*connect.Response[v1.DeleteRecoveryResponse], error)
 	// GetRecovery returns a single RecoveryExecution by id.
 	GetRecovery(context.Context, *connect.Request[v1.GetRecoveryRequest]) (*connect.Response[v1.GetRecoveryResponse], error)
 	// ListRecoveries returns a page of RecoveryExecutions, optionally
@@ -136,6 +140,12 @@ func NewRecoveryServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			httpClient,
 			baseURL+RecoveryServiceCancelRecoveryProcedure,
 			connect.WithSchema(recoveryServiceMethods.ByName("CancelRecovery")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteRecovery: connect.NewClient[v1.DeleteRecoveryRequest, v1.DeleteRecoveryResponse](
+			httpClient,
+			baseURL+RecoveryServiceDeleteRecoveryProcedure,
+			connect.WithSchema(recoveryServiceMethods.ByName("DeleteRecovery")),
 			connect.WithClientOptions(opts...),
 		),
 		getRecovery: connect.NewClient[v1.GetRecoveryRequest, v1.GetRecoveryResponse](
@@ -193,6 +203,7 @@ func NewRecoveryServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 type recoveryServiceClient struct {
 	triggerRecovery         *connect.Client[v1.TriggerRecoveryRequest, v1.TriggerRecoveryResponse]
 	cancelRecovery          *connect.Client[v1.CancelRecoveryRequest, v1.CancelRecoveryResponse]
+	deleteRecovery          *connect.Client[v1.DeleteRecoveryRequest, v1.DeleteRecoveryResponse]
 	getRecovery             *connect.Client[v1.GetRecoveryRequest, v1.GetRecoveryResponse]
 	listRecoveries          *connect.Client[v1.ListRecoveriesRequest, v1.ListRecoveriesResponse]
 	getRecoveryStepRuns     *connect.Client[v1.GetRecoveryStepRunsRequest, v1.GetRecoveryStepRunsResponse]
@@ -211,6 +222,11 @@ func (c *recoveryServiceClient) TriggerRecovery(ctx context.Context, req *connec
 // CancelRecovery calls orchicon.api.v1.RecoveryService.CancelRecovery.
 func (c *recoveryServiceClient) CancelRecovery(ctx context.Context, req *connect.Request[v1.CancelRecoveryRequest]) (*connect.Response[v1.CancelRecoveryResponse], error) {
 	return c.cancelRecovery.CallUnary(ctx, req)
+}
+
+// DeleteRecovery calls orchicon.api.v1.RecoveryService.DeleteRecovery.
+func (c *recoveryServiceClient) DeleteRecovery(ctx context.Context, req *connect.Request[v1.DeleteRecoveryRequest]) (*connect.Response[v1.DeleteRecoveryResponse], error) {
+	return c.deleteRecovery.CallUnary(ctx, req)
 }
 
 // GetRecovery calls orchicon.api.v1.RecoveryService.GetRecovery.
@@ -262,6 +278,7 @@ type RecoveryServiceHandler interface {
 	// CancelRecovery transitions a running recovery to cancelled
 	// (docs/06 §3). The affected Task returns to its prior state.
 	CancelRecovery(context.Context, *connect.Request[v1.CancelRecoveryRequest]) (*connect.Response[v1.CancelRecoveryResponse], error)
+	DeleteRecovery(context.Context, *connect.Request[v1.DeleteRecoveryRequest]) (*connect.Response[v1.DeleteRecoveryResponse], error)
 	// GetRecovery returns a single RecoveryExecution by id.
 	GetRecovery(context.Context, *connect.Request[v1.GetRecoveryRequest]) (*connect.Response[v1.GetRecoveryResponse], error)
 	// ListRecoveries returns a page of RecoveryExecutions, optionally
@@ -306,6 +323,12 @@ func NewRecoveryServiceHandler(svc RecoveryServiceHandler, opts ...connect.Handl
 		RecoveryServiceCancelRecoveryProcedure,
 		svc.CancelRecovery,
 		connect.WithSchema(recoveryServiceMethods.ByName("CancelRecovery")),
+		connect.WithHandlerOptions(opts...),
+	)
+	recoveryServiceDeleteRecoveryHandler := connect.NewUnaryHandler(
+		RecoveryServiceDeleteRecoveryProcedure,
+		svc.DeleteRecovery,
+		connect.WithSchema(recoveryServiceMethods.ByName("DeleteRecovery")),
 		connect.WithHandlerOptions(opts...),
 	)
 	recoveryServiceGetRecoveryHandler := connect.NewUnaryHandler(
@@ -362,6 +385,8 @@ func NewRecoveryServiceHandler(svc RecoveryServiceHandler, opts ...connect.Handl
 			recoveryServiceTriggerRecoveryHandler.ServeHTTP(w, r)
 		case RecoveryServiceCancelRecoveryProcedure:
 			recoveryServiceCancelRecoveryHandler.ServeHTTP(w, r)
+		case RecoveryServiceDeleteRecoveryProcedure:
+			recoveryServiceDeleteRecoveryHandler.ServeHTTP(w, r)
 		case RecoveryServiceGetRecoveryProcedure:
 			recoveryServiceGetRecoveryHandler.ServeHTTP(w, r)
 		case RecoveryServiceListRecoveriesProcedure:
@@ -393,6 +418,10 @@ func (UnimplementedRecoveryServiceHandler) TriggerRecovery(context.Context, *con
 
 func (UnimplementedRecoveryServiceHandler) CancelRecovery(context.Context, *connect.Request[v1.CancelRecoveryRequest]) (*connect.Response[v1.CancelRecoveryResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.RecoveryService.CancelRecovery is not implemented"))
+}
+
+func (UnimplementedRecoveryServiceHandler) DeleteRecovery(context.Context, *connect.Request[v1.DeleteRecoveryRequest]) (*connect.Response[v1.DeleteRecoveryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.RecoveryService.DeleteRecovery is not implemented"))
 }
 
 func (UnimplementedRecoveryServiceHandler) GetRecovery(context.Context, *connect.Request[v1.GetRecoveryRequest]) (*connect.Response[v1.GetRecoveryResponse], error) {

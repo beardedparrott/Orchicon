@@ -445,3 +445,36 @@ func CheckDependenciesSatisfied(ctx context.Context, tx pgx.Tx, tenantID, workIt
 	}
 	return satisfied, nil
 }
+
+// GetLatestExecutionForTask returns the most recent execution for a
+// task within the tenant scope. Returns ErrNotFound if none exist.
+func GetLatestExecutionForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (ExecutionRow, error) {
+	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
+		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
+		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
+		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.version,
+		we.created_at, we.updated_at
+		FROM worker_executions we
+		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
+		LEFT JOIN workflows w ON w.id = wr.workflow_id
+		WHERE we.task_id = $1 AND we.tenant_id = $2
+		ORDER BY we.created_at DESC LIMIT 1`
+	var e ExecutionRow
+	err := tx.QueryRow(ctx, q, taskID, tenantID).Scan(
+		&e.ID, &e.TenantID, &e.ProjectID, &e.TaskID, &e.WorkerID,
+		&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
+		&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
+		&e.CheckpointRef, &e.RecoveryID,
+		&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName,
+		&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp,
+		&e.Version,
+		&e.CreatedAt, &e.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ExecutionRow{}, ErrNotFound
+	}
+	if err != nil {
+		return ExecutionRow{}, fmt.Errorf("db: get latest execution for task: %w", err)
+	}
+	return e, nil
+}

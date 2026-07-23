@@ -192,8 +192,6 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	// fails (docs/06 §2). The RecoveryEngine satisfies the scheduler's
 	// RecoveryTrigger interface (loose coupling — no scheduler→recovery
 	// import).
-	taskRec.SetRecoveryTrigger(recoveryEngine)
-
 	deps := api.Dependencies{
 		Pool:              pool,
 		Log:               log,
@@ -233,7 +231,7 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	if pub != nil {
 		taskRec.SetEventPublisher(pub)
 	}
-	workflowRec := scheduler.NewWorkflowReconciler(pool, log, policyEngine, taskRec)
+	workflowRec := scheduler.NewWorkflowReconciler(pool, log, policyEngine, taskRec, recoveryEngine)
 	// Wire the workflow notifier: when a work item completes, enqueue
 	// the workflow run ID so the WorkflowReconciler progresses the DAG
 	// immediately instead of waiting for its next scan pass (200ms).

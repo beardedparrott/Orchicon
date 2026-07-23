@@ -140,6 +140,30 @@ func (s *Service) CancelRecovery(ctx context.Context, req *connect.Request[apiv1
 	return connect.NewResponse(&apiv1.CancelRecoveryResponse{Recovery: recoveryRowToProto(updated)}), nil
 }
 
+// DeleteRecovery hard-deletes a recovery execution and cascade.
+func (s *Service) DeleteRecovery(ctx context.Context, req *connect.Request[apiv1.DeleteRecoveryRequest]) (*connect.Response[apiv1.DeleteRecoveryResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	if err := db.DeleteRecoveryExecution(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("recovery execution deleted", "id", req.Msg.Id)
+	return connect.NewResponse(&apiv1.DeleteRecoveryResponse{}), nil
+}
+
 // GetRecovery returns a single RecoveryExecution by id.
 func (s *Service) GetRecovery(ctx context.Context, req *connect.Request[apiv1.GetRecoveryRequest]) (*connect.Response[apiv1.GetRecoveryResponse], error) {
 	tenantID, err := requireTenant(ctx)

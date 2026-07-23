@@ -235,6 +235,86 @@ func (x *CancelRecoveryResponse) GetRecovery() *RecoveryExecution {
 	return nil
 }
 
+type DeleteRecoveryRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteRecoveryRequest) Reset() {
+	*x = DeleteRecoveryRequest{}
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteRecoveryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteRecoveryRequest) ProtoMessage() {}
+
+func (x *DeleteRecoveryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteRecoveryRequest.ProtoReflect.Descriptor instead.
+func (*DeleteRecoveryRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *DeleteRecoveryRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+type DeleteRecoveryResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteRecoveryResponse) Reset() {
+	*x = DeleteRecoveryResponse{}
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteRecoveryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteRecoveryResponse) ProtoMessage() {}
+
+func (x *DeleteRecoveryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteRecoveryResponse.ProtoReflect.Descriptor instead.
+func (*DeleteRecoveryResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{5}
+}
+
 type GetRecoveryRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -244,7 +324,7 @@ type GetRecoveryRequest struct {
 
 func (x *GetRecoveryRequest) Reset() {
 	*x = GetRecoveryRequest{}
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[4]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -256,7 +336,7 @@ func (x *GetRecoveryRequest) String() string {
 func (*GetRecoveryRequest) ProtoMessage() {}
 
 func (x *GetRecoveryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[4]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -269,7 +349,7 @@ func (x *GetRecoveryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRecoveryRequest.ProtoReflect.Descriptor instead.
 func (*GetRecoveryRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{4}
+	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *GetRecoveryRequest) GetId() string {
@@ -288,7 +368,7 @@ type GetRecoveryResponse struct {
 
 func (x *GetRecoveryResponse) Reset() {
 	*x = GetRecoveryResponse{}
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[5]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -300,7 +380,7 @@ func (x *GetRecoveryResponse) String() string {
 func (*GetRecoveryResponse) ProtoMessage() {}
 
 func (x *GetRecoveryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[5]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -313,7 +393,7 @@ func (x *GetRecoveryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRecoveryResponse.ProtoReflect.Descriptor instead.
 func (*GetRecoveryResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{5}
+	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *GetRecoveryResponse) GetRecovery() *RecoveryExecution {
@@ -337,7 +417,7 @@ type ListRecoveriesRequest struct {
 
 func (x *ListRecoveriesRequest) Reset() {
 	*x = ListRecoveriesRequest{}
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[6]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -349,7 +429,7 @@ func (x *ListRecoveriesRequest) String() string {
 func (*ListRecoveriesRequest) ProtoMessage() {}
 
 func (x *ListRecoveriesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[6]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -362,7 +442,7 @@ func (x *ListRecoveriesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRecoveriesRequest.ProtoReflect.Descriptor instead.
 func (*ListRecoveriesRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{6}
+	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ListRecoveriesRequest) GetTenantId() string {
@@ -417,7 +497,7 @@ type ListRecoveriesResponse struct {
 
 func (x *ListRecoveriesResponse) Reset() {
 	*x = ListRecoveriesResponse{}
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[7]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -429,7 +509,7 @@ func (x *ListRecoveriesResponse) String() string {
 func (*ListRecoveriesResponse) ProtoMessage() {}
 
 func (x *ListRecoveriesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[7]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -442,7 +522,7 @@ func (x *ListRecoveriesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRecoveriesResponse.ProtoReflect.Descriptor instead.
 func (*ListRecoveriesResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{7}
+	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ListRecoveriesResponse) GetRecoveries() []*RecoveryExecution {
@@ -468,7 +548,7 @@ type GetRecoveryStepRunsRequest struct {
 
 func (x *GetRecoveryStepRunsRequest) Reset() {
 	*x = GetRecoveryStepRunsRequest{}
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[8]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -480,7 +560,7 @@ func (x *GetRecoveryStepRunsRequest) String() string {
 func (*GetRecoveryStepRunsRequest) ProtoMessage() {}
 
 func (x *GetRecoveryStepRunsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[8]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -493,7 +573,7 @@ func (x *GetRecoveryStepRunsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRecoveryStepRunsRequest.ProtoReflect.Descriptor instead.
 func (*GetRecoveryStepRunsRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{8}
+	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *GetRecoveryStepRunsRequest) GetRecoveryId() string {
@@ -512,7 +592,7 @@ type GetRecoveryStepRunsResponse struct {
 
 func (x *GetRecoveryStepRunsResponse) Reset() {
 	*x = GetRecoveryStepRunsResponse{}
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[9]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -524,7 +604,7 @@ func (x *GetRecoveryStepRunsResponse) String() string {
 func (*GetRecoveryStepRunsResponse) ProtoMessage() {}
 
 func (x *GetRecoveryStepRunsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[9]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -537,7 +617,7 @@ func (x *GetRecoveryStepRunsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRecoveryStepRunsResponse.ProtoReflect.Descriptor instead.
 func (*GetRecoveryStepRunsResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{9}
+	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *GetRecoveryStepRunsResponse) GetStepRuns() []*RecoveryStepRun {
@@ -559,7 +639,7 @@ type StreamRecoveryEventsRequest struct {
 
 func (x *StreamRecoveryEventsRequest) Reset() {
 	*x = StreamRecoveryEventsRequest{}
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[10]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -571,7 +651,7 @@ func (x *StreamRecoveryEventsRequest) String() string {
 func (*StreamRecoveryEventsRequest) ProtoMessage() {}
 
 func (x *StreamRecoveryEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[10]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -584,7 +664,7 @@ func (x *StreamRecoveryEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamRecoveryEventsRequest.ProtoReflect.Descriptor instead.
 func (*StreamRecoveryEventsRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{10}
+	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *StreamRecoveryEventsRequest) GetTenantId() string {
@@ -625,7 +705,7 @@ type StreamRecoveryEventsResponse struct {
 
 func (x *StreamRecoveryEventsResponse) Reset() {
 	*x = StreamRecoveryEventsResponse{}
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[11]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -637,7 +717,7 @@ func (x *StreamRecoveryEventsResponse) String() string {
 func (*StreamRecoveryEventsResponse) ProtoMessage() {}
 
 func (x *StreamRecoveryEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[11]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -650,7 +730,7 @@ func (x *StreamRecoveryEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamRecoveryEventsResponse.ProtoReflect.Descriptor instead.
 func (*StreamRecoveryEventsResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{11}
+	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *StreamRecoveryEventsResponse) GetEvent() *RecoveryEvent {
@@ -677,7 +757,7 @@ type ApproveContinuationPlanRequest struct {
 
 func (x *ApproveContinuationPlanRequest) Reset() {
 	*x = ApproveContinuationPlanRequest{}
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[12]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -689,7 +769,7 @@ func (x *ApproveContinuationPlanRequest) String() string {
 func (*ApproveContinuationPlanRequest) ProtoMessage() {}
 
 func (x *ApproveContinuationPlanRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[12]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -702,7 +782,7 @@ func (x *ApproveContinuationPlanRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApproveContinuationPlanRequest.ProtoReflect.Descriptor instead.
 func (*ApproveContinuationPlanRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{12}
+	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ApproveContinuationPlanRequest) GetRecoveryId() string {
@@ -729,7 +809,7 @@ type ApproveContinuationPlanResponse struct {
 
 func (x *ApproveContinuationPlanResponse) Reset() {
 	*x = ApproveContinuationPlanResponse{}
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[13]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -741,7 +821,7 @@ func (x *ApproveContinuationPlanResponse) String() string {
 func (*ApproveContinuationPlanResponse) ProtoMessage() {}
 
 func (x *ApproveContinuationPlanResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[13]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -754,7 +834,7 @@ func (x *ApproveContinuationPlanResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApproveContinuationPlanResponse.ProtoReflect.Descriptor instead.
 func (*ApproveContinuationPlanResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{13}
+	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ApproveContinuationPlanResponse) GetPlan() *ContinuationPlan {
@@ -782,7 +862,7 @@ type RejectContinuationPlanRequest struct {
 
 func (x *RejectContinuationPlanRequest) Reset() {
 	*x = RejectContinuationPlanRequest{}
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[14]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -794,7 +874,7 @@ func (x *RejectContinuationPlanRequest) String() string {
 func (*RejectContinuationPlanRequest) ProtoMessage() {}
 
 func (x *RejectContinuationPlanRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[14]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -807,7 +887,7 @@ func (x *RejectContinuationPlanRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RejectContinuationPlanRequest.ProtoReflect.Descriptor instead.
 func (*RejectContinuationPlanRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{14}
+	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *RejectContinuationPlanRequest) GetRecoveryId() string {
@@ -841,7 +921,7 @@ type RejectContinuationPlanResponse struct {
 
 func (x *RejectContinuationPlanResponse) Reset() {
 	*x = RejectContinuationPlanResponse{}
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[15]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -853,7 +933,7 @@ func (x *RejectContinuationPlanResponse) String() string {
 func (*RejectContinuationPlanResponse) ProtoMessage() {}
 
 func (x *RejectContinuationPlanResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[15]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -866,7 +946,7 @@ func (x *RejectContinuationPlanResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RejectContinuationPlanResponse.ProtoReflect.Descriptor instead.
 func (*RejectContinuationPlanResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{15}
+	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *RejectContinuationPlanResponse) GetPlan() *ContinuationPlan {
@@ -892,7 +972,7 @@ type GetContinuationPlanRequest struct {
 
 func (x *GetContinuationPlanRequest) Reset() {
 	*x = GetContinuationPlanRequest{}
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[16]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -904,7 +984,7 @@ func (x *GetContinuationPlanRequest) String() string {
 func (*GetContinuationPlanRequest) ProtoMessage() {}
 
 func (x *GetContinuationPlanRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[16]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -917,7 +997,7 @@ func (x *GetContinuationPlanRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetContinuationPlanRequest.ProtoReflect.Descriptor instead.
 func (*GetContinuationPlanRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{16}
+	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *GetContinuationPlanRequest) GetRecoveryId() string {
@@ -936,7 +1016,7 @@ type GetContinuationPlanResponse struct {
 
 func (x *GetContinuationPlanResponse) Reset() {
 	*x = GetContinuationPlanResponse{}
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[17]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -948,7 +1028,7 @@ func (x *GetContinuationPlanResponse) String() string {
 func (*GetContinuationPlanResponse) ProtoMessage() {}
 
 func (x *GetContinuationPlanResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[17]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -961,7 +1041,7 @@ func (x *GetContinuationPlanResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetContinuationPlanResponse.ProtoReflect.Descriptor instead.
 func (*GetContinuationPlanResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{17}
+	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *GetContinuationPlanResponse) GetPlan() *ContinuationPlan {
@@ -984,7 +1064,7 @@ type MarkTaskSucceededRequest struct {
 
 func (x *MarkTaskSucceededRequest) Reset() {
 	*x = MarkTaskSucceededRequest{}
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[18]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -996,7 +1076,7 @@ func (x *MarkTaskSucceededRequest) String() string {
 func (*MarkTaskSucceededRequest) ProtoMessage() {}
 
 func (x *MarkTaskSucceededRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[18]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1009,7 +1089,7 @@ func (x *MarkTaskSucceededRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MarkTaskSucceededRequest.ProtoReflect.Descriptor instead.
 func (*MarkTaskSucceededRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{18}
+	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *MarkTaskSucceededRequest) GetTenantId() string {
@@ -1058,7 +1138,7 @@ type MarkTaskSucceededResponse struct {
 
 func (x *MarkTaskSucceededResponse) Reset() {
 	*x = MarkTaskSucceededResponse{}
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[19]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1070,7 +1150,7 @@ func (x *MarkTaskSucceededResponse) String() string {
 func (*MarkTaskSucceededResponse) ProtoMessage() {}
 
 func (x *MarkTaskSucceededResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[19]
+	mi := &file_orchicon_api_v1_recovery_service_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1083,7 +1163,7 @@ func (x *MarkTaskSucceededResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MarkTaskSucceededResponse.ProtoReflect.Descriptor instead.
 func (*MarkTaskSucceededResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{19}
+	return file_orchicon_api_v1_recovery_service_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *MarkTaskSucceededResponse) GetTaskId() string {
@@ -1123,7 +1203,10 @@ const file_orchicon_api_v1_recovery_service_proto_rawDesc = "" +
 	"recoveryId\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\"X\n" +
 	"\x16CancelRecoveryResponse\x12>\n" +
-	"\brecovery\x18\x01 \x01(\v2\".orchicon.api.v1.RecoveryExecutionR\brecovery\"$\n" +
+	"\brecovery\x18\x01 \x01(\v2\".orchicon.api.v1.RecoveryExecutionR\brecovery\"'\n" +
+	"\x15DeleteRecoveryRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\x18\n" +
+	"\x16DeleteRecoveryResponse\"$\n" +
 	"\x12GetRecoveryRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"U\n" +
 	"\x13GetRecoveryResponse\x12>\n" +
@@ -1189,10 +1272,11 @@ const file_orchicon_api_v1_recovery_service_proto_rawDesc = "" +
 	"\x19MarkTaskSucceededResponse\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12$\n" +
-	"\x0eaudit_event_id\x18\x03 \x01(\tR\fauditEventId2\xd7\b\n" +
+	"\x0eaudit_event_id\x18\x03 \x01(\tR\fauditEventId2\xba\t\n" +
 	"\x0fRecoveryService\x12d\n" +
 	"\x0fTriggerRecovery\x12'.orchicon.api.v1.TriggerRecoveryRequest\x1a(.orchicon.api.v1.TriggerRecoveryResponse\x12a\n" +
-	"\x0eCancelRecovery\x12&.orchicon.api.v1.CancelRecoveryRequest\x1a'.orchicon.api.v1.CancelRecoveryResponse\x12X\n" +
+	"\x0eCancelRecovery\x12&.orchicon.api.v1.CancelRecoveryRequest\x1a'.orchicon.api.v1.CancelRecoveryResponse\x12a\n" +
+	"\x0eDeleteRecovery\x12&.orchicon.api.v1.DeleteRecoveryRequest\x1a'.orchicon.api.v1.DeleteRecoveryResponse\x12X\n" +
 	"\vGetRecovery\x12#.orchicon.api.v1.GetRecoveryRequest\x1a$.orchicon.api.v1.GetRecoveryResponse\x12a\n" +
 	"\x0eListRecoveries\x12&.orchicon.api.v1.ListRecoveriesRequest\x1a'.orchicon.api.v1.ListRecoveriesResponse\x12p\n" +
 	"\x13GetRecoveryStepRuns\x12+.orchicon.api.v1.GetRecoveryStepRunsRequest\x1a,.orchicon.api.v1.GetRecoveryStepRunsResponse\x12u\n" +
@@ -1215,69 +1299,73 @@ func file_orchicon_api_v1_recovery_service_proto_rawDescGZIP() []byte {
 	return file_orchicon_api_v1_recovery_service_proto_rawDescData
 }
 
-var file_orchicon_api_v1_recovery_service_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_orchicon_api_v1_recovery_service_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_orchicon_api_v1_recovery_service_proto_goTypes = []any{
 	(*TriggerRecoveryRequest)(nil),          // 0: orchicon.api.v1.TriggerRecoveryRequest
 	(*TriggerRecoveryResponse)(nil),         // 1: orchicon.api.v1.TriggerRecoveryResponse
 	(*CancelRecoveryRequest)(nil),           // 2: orchicon.api.v1.CancelRecoveryRequest
 	(*CancelRecoveryResponse)(nil),          // 3: orchicon.api.v1.CancelRecoveryResponse
-	(*GetRecoveryRequest)(nil),              // 4: orchicon.api.v1.GetRecoveryRequest
-	(*GetRecoveryResponse)(nil),             // 5: orchicon.api.v1.GetRecoveryResponse
-	(*ListRecoveriesRequest)(nil),           // 6: orchicon.api.v1.ListRecoveriesRequest
-	(*ListRecoveriesResponse)(nil),          // 7: orchicon.api.v1.ListRecoveriesResponse
-	(*GetRecoveryStepRunsRequest)(nil),      // 8: orchicon.api.v1.GetRecoveryStepRunsRequest
-	(*GetRecoveryStepRunsResponse)(nil),     // 9: orchicon.api.v1.GetRecoveryStepRunsResponse
-	(*StreamRecoveryEventsRequest)(nil),     // 10: orchicon.api.v1.StreamRecoveryEventsRequest
-	(*StreamRecoveryEventsResponse)(nil),    // 11: orchicon.api.v1.StreamRecoveryEventsResponse
-	(*ApproveContinuationPlanRequest)(nil),  // 12: orchicon.api.v1.ApproveContinuationPlanRequest
-	(*ApproveContinuationPlanResponse)(nil), // 13: orchicon.api.v1.ApproveContinuationPlanResponse
-	(*RejectContinuationPlanRequest)(nil),   // 14: orchicon.api.v1.RejectContinuationPlanRequest
-	(*RejectContinuationPlanResponse)(nil),  // 15: orchicon.api.v1.RejectContinuationPlanResponse
-	(*GetContinuationPlanRequest)(nil),      // 16: orchicon.api.v1.GetContinuationPlanRequest
-	(*GetContinuationPlanResponse)(nil),     // 17: orchicon.api.v1.GetContinuationPlanResponse
-	(*MarkTaskSucceededRequest)(nil),        // 18: orchicon.api.v1.MarkTaskSucceededRequest
-	(*MarkTaskSucceededResponse)(nil),       // 19: orchicon.api.v1.MarkTaskSucceededResponse
-	(*RecoveryExecution)(nil),               // 20: orchicon.api.v1.RecoveryExecution
-	(RecoveryStatus)(0),                     // 21: orchicon.api.v1.RecoveryStatus
-	(*RecoveryStepRun)(nil),                 // 22: orchicon.api.v1.RecoveryStepRun
-	(*RecoveryEvent)(nil),                   // 23: orchicon.api.v1.RecoveryEvent
-	(*ContinuationPlan)(nil),                // 24: orchicon.api.v1.ContinuationPlan
+	(*DeleteRecoveryRequest)(nil),           // 4: orchicon.api.v1.DeleteRecoveryRequest
+	(*DeleteRecoveryResponse)(nil),          // 5: orchicon.api.v1.DeleteRecoveryResponse
+	(*GetRecoveryRequest)(nil),              // 6: orchicon.api.v1.GetRecoveryRequest
+	(*GetRecoveryResponse)(nil),             // 7: orchicon.api.v1.GetRecoveryResponse
+	(*ListRecoveriesRequest)(nil),           // 8: orchicon.api.v1.ListRecoveriesRequest
+	(*ListRecoveriesResponse)(nil),          // 9: orchicon.api.v1.ListRecoveriesResponse
+	(*GetRecoveryStepRunsRequest)(nil),      // 10: orchicon.api.v1.GetRecoveryStepRunsRequest
+	(*GetRecoveryStepRunsResponse)(nil),     // 11: orchicon.api.v1.GetRecoveryStepRunsResponse
+	(*StreamRecoveryEventsRequest)(nil),     // 12: orchicon.api.v1.StreamRecoveryEventsRequest
+	(*StreamRecoveryEventsResponse)(nil),    // 13: orchicon.api.v1.StreamRecoveryEventsResponse
+	(*ApproveContinuationPlanRequest)(nil),  // 14: orchicon.api.v1.ApproveContinuationPlanRequest
+	(*ApproveContinuationPlanResponse)(nil), // 15: orchicon.api.v1.ApproveContinuationPlanResponse
+	(*RejectContinuationPlanRequest)(nil),   // 16: orchicon.api.v1.RejectContinuationPlanRequest
+	(*RejectContinuationPlanResponse)(nil),  // 17: orchicon.api.v1.RejectContinuationPlanResponse
+	(*GetContinuationPlanRequest)(nil),      // 18: orchicon.api.v1.GetContinuationPlanRequest
+	(*GetContinuationPlanResponse)(nil),     // 19: orchicon.api.v1.GetContinuationPlanResponse
+	(*MarkTaskSucceededRequest)(nil),        // 20: orchicon.api.v1.MarkTaskSucceededRequest
+	(*MarkTaskSucceededResponse)(nil),       // 21: orchicon.api.v1.MarkTaskSucceededResponse
+	(*RecoveryExecution)(nil),               // 22: orchicon.api.v1.RecoveryExecution
+	(RecoveryStatus)(0),                     // 23: orchicon.api.v1.RecoveryStatus
+	(*RecoveryStepRun)(nil),                 // 24: orchicon.api.v1.RecoveryStepRun
+	(*RecoveryEvent)(nil),                   // 25: orchicon.api.v1.RecoveryEvent
+	(*ContinuationPlan)(nil),                // 26: orchicon.api.v1.ContinuationPlan
 }
 var file_orchicon_api_v1_recovery_service_proto_depIdxs = []int32{
-	20, // 0: orchicon.api.v1.TriggerRecoveryResponse.recovery:type_name -> orchicon.api.v1.RecoveryExecution
-	20, // 1: orchicon.api.v1.CancelRecoveryResponse.recovery:type_name -> orchicon.api.v1.RecoveryExecution
-	20, // 2: orchicon.api.v1.GetRecoveryResponse.recovery:type_name -> orchicon.api.v1.RecoveryExecution
-	21, // 3: orchicon.api.v1.ListRecoveriesRequest.status:type_name -> orchicon.api.v1.RecoveryStatus
-	20, // 4: orchicon.api.v1.ListRecoveriesResponse.recoveries:type_name -> orchicon.api.v1.RecoveryExecution
-	22, // 5: orchicon.api.v1.GetRecoveryStepRunsResponse.step_runs:type_name -> orchicon.api.v1.RecoveryStepRun
-	23, // 6: orchicon.api.v1.StreamRecoveryEventsResponse.event:type_name -> orchicon.api.v1.RecoveryEvent
-	24, // 7: orchicon.api.v1.ApproveContinuationPlanResponse.plan:type_name -> orchicon.api.v1.ContinuationPlan
-	20, // 8: orchicon.api.v1.ApproveContinuationPlanResponse.recovery:type_name -> orchicon.api.v1.RecoveryExecution
-	24, // 9: orchicon.api.v1.RejectContinuationPlanResponse.plan:type_name -> orchicon.api.v1.ContinuationPlan
-	20, // 10: orchicon.api.v1.RejectContinuationPlanResponse.recovery:type_name -> orchicon.api.v1.RecoveryExecution
-	24, // 11: orchicon.api.v1.GetContinuationPlanResponse.plan:type_name -> orchicon.api.v1.ContinuationPlan
+	22, // 0: orchicon.api.v1.TriggerRecoveryResponse.recovery:type_name -> orchicon.api.v1.RecoveryExecution
+	22, // 1: orchicon.api.v1.CancelRecoveryResponse.recovery:type_name -> orchicon.api.v1.RecoveryExecution
+	22, // 2: orchicon.api.v1.GetRecoveryResponse.recovery:type_name -> orchicon.api.v1.RecoveryExecution
+	23, // 3: orchicon.api.v1.ListRecoveriesRequest.status:type_name -> orchicon.api.v1.RecoveryStatus
+	22, // 4: orchicon.api.v1.ListRecoveriesResponse.recoveries:type_name -> orchicon.api.v1.RecoveryExecution
+	24, // 5: orchicon.api.v1.GetRecoveryStepRunsResponse.step_runs:type_name -> orchicon.api.v1.RecoveryStepRun
+	25, // 6: orchicon.api.v1.StreamRecoveryEventsResponse.event:type_name -> orchicon.api.v1.RecoveryEvent
+	26, // 7: orchicon.api.v1.ApproveContinuationPlanResponse.plan:type_name -> orchicon.api.v1.ContinuationPlan
+	22, // 8: orchicon.api.v1.ApproveContinuationPlanResponse.recovery:type_name -> orchicon.api.v1.RecoveryExecution
+	26, // 9: orchicon.api.v1.RejectContinuationPlanResponse.plan:type_name -> orchicon.api.v1.ContinuationPlan
+	22, // 10: orchicon.api.v1.RejectContinuationPlanResponse.recovery:type_name -> orchicon.api.v1.RecoveryExecution
+	26, // 11: orchicon.api.v1.GetContinuationPlanResponse.plan:type_name -> orchicon.api.v1.ContinuationPlan
 	0,  // 12: orchicon.api.v1.RecoveryService.TriggerRecovery:input_type -> orchicon.api.v1.TriggerRecoveryRequest
 	2,  // 13: orchicon.api.v1.RecoveryService.CancelRecovery:input_type -> orchicon.api.v1.CancelRecoveryRequest
-	4,  // 14: orchicon.api.v1.RecoveryService.GetRecovery:input_type -> orchicon.api.v1.GetRecoveryRequest
-	6,  // 15: orchicon.api.v1.RecoveryService.ListRecoveries:input_type -> orchicon.api.v1.ListRecoveriesRequest
-	8,  // 16: orchicon.api.v1.RecoveryService.GetRecoveryStepRuns:input_type -> orchicon.api.v1.GetRecoveryStepRunsRequest
-	10, // 17: orchicon.api.v1.RecoveryService.StreamRecoveryEvents:input_type -> orchicon.api.v1.StreamRecoveryEventsRequest
-	12, // 18: orchicon.api.v1.RecoveryService.ApproveContinuationPlan:input_type -> orchicon.api.v1.ApproveContinuationPlanRequest
-	14, // 19: orchicon.api.v1.RecoveryService.RejectContinuationPlan:input_type -> orchicon.api.v1.RejectContinuationPlanRequest
-	16, // 20: orchicon.api.v1.RecoveryService.GetContinuationPlan:input_type -> orchicon.api.v1.GetContinuationPlanRequest
-	18, // 21: orchicon.api.v1.RecoveryService.MarkTaskSucceeded:input_type -> orchicon.api.v1.MarkTaskSucceededRequest
-	1,  // 22: orchicon.api.v1.RecoveryService.TriggerRecovery:output_type -> orchicon.api.v1.TriggerRecoveryResponse
-	3,  // 23: orchicon.api.v1.RecoveryService.CancelRecovery:output_type -> orchicon.api.v1.CancelRecoveryResponse
-	5,  // 24: orchicon.api.v1.RecoveryService.GetRecovery:output_type -> orchicon.api.v1.GetRecoveryResponse
-	7,  // 25: orchicon.api.v1.RecoveryService.ListRecoveries:output_type -> orchicon.api.v1.ListRecoveriesResponse
-	9,  // 26: orchicon.api.v1.RecoveryService.GetRecoveryStepRuns:output_type -> orchicon.api.v1.GetRecoveryStepRunsResponse
-	11, // 27: orchicon.api.v1.RecoveryService.StreamRecoveryEvents:output_type -> orchicon.api.v1.StreamRecoveryEventsResponse
-	13, // 28: orchicon.api.v1.RecoveryService.ApproveContinuationPlan:output_type -> orchicon.api.v1.ApproveContinuationPlanResponse
-	15, // 29: orchicon.api.v1.RecoveryService.RejectContinuationPlan:output_type -> orchicon.api.v1.RejectContinuationPlanResponse
-	17, // 30: orchicon.api.v1.RecoveryService.GetContinuationPlan:output_type -> orchicon.api.v1.GetContinuationPlanResponse
-	19, // 31: orchicon.api.v1.RecoveryService.MarkTaskSucceeded:output_type -> orchicon.api.v1.MarkTaskSucceededResponse
-	22, // [22:32] is the sub-list for method output_type
-	12, // [12:22] is the sub-list for method input_type
+	4,  // 14: orchicon.api.v1.RecoveryService.DeleteRecovery:input_type -> orchicon.api.v1.DeleteRecoveryRequest
+	6,  // 15: orchicon.api.v1.RecoveryService.GetRecovery:input_type -> orchicon.api.v1.GetRecoveryRequest
+	8,  // 16: orchicon.api.v1.RecoveryService.ListRecoveries:input_type -> orchicon.api.v1.ListRecoveriesRequest
+	10, // 17: orchicon.api.v1.RecoveryService.GetRecoveryStepRuns:input_type -> orchicon.api.v1.GetRecoveryStepRunsRequest
+	12, // 18: orchicon.api.v1.RecoveryService.StreamRecoveryEvents:input_type -> orchicon.api.v1.StreamRecoveryEventsRequest
+	14, // 19: orchicon.api.v1.RecoveryService.ApproveContinuationPlan:input_type -> orchicon.api.v1.ApproveContinuationPlanRequest
+	16, // 20: orchicon.api.v1.RecoveryService.RejectContinuationPlan:input_type -> orchicon.api.v1.RejectContinuationPlanRequest
+	18, // 21: orchicon.api.v1.RecoveryService.GetContinuationPlan:input_type -> orchicon.api.v1.GetContinuationPlanRequest
+	20, // 22: orchicon.api.v1.RecoveryService.MarkTaskSucceeded:input_type -> orchicon.api.v1.MarkTaskSucceededRequest
+	1,  // 23: orchicon.api.v1.RecoveryService.TriggerRecovery:output_type -> orchicon.api.v1.TriggerRecoveryResponse
+	3,  // 24: orchicon.api.v1.RecoveryService.CancelRecovery:output_type -> orchicon.api.v1.CancelRecoveryResponse
+	5,  // 25: orchicon.api.v1.RecoveryService.DeleteRecovery:output_type -> orchicon.api.v1.DeleteRecoveryResponse
+	7,  // 26: orchicon.api.v1.RecoveryService.GetRecovery:output_type -> orchicon.api.v1.GetRecoveryResponse
+	9,  // 27: orchicon.api.v1.RecoveryService.ListRecoveries:output_type -> orchicon.api.v1.ListRecoveriesResponse
+	11, // 28: orchicon.api.v1.RecoveryService.GetRecoveryStepRuns:output_type -> orchicon.api.v1.GetRecoveryStepRunsResponse
+	13, // 29: orchicon.api.v1.RecoveryService.StreamRecoveryEvents:output_type -> orchicon.api.v1.StreamRecoveryEventsResponse
+	15, // 30: orchicon.api.v1.RecoveryService.ApproveContinuationPlan:output_type -> orchicon.api.v1.ApproveContinuationPlanResponse
+	17, // 31: orchicon.api.v1.RecoveryService.RejectContinuationPlan:output_type -> orchicon.api.v1.RejectContinuationPlanResponse
+	19, // 32: orchicon.api.v1.RecoveryService.GetContinuationPlan:output_type -> orchicon.api.v1.GetContinuationPlanResponse
+	21, // 33: orchicon.api.v1.RecoveryService.MarkTaskSucceeded:output_type -> orchicon.api.v1.MarkTaskSucceededResponse
+	23, // [23:34] is the sub-list for method output_type
+	12, // [12:23] is the sub-list for method input_type
 	12, // [12:12] is the sub-list for extension type_name
 	12, // [12:12] is the sub-list for extension extendee
 	0,  // [0:12] is the sub-list for field type_name
@@ -1289,15 +1377,15 @@ func file_orchicon_api_v1_recovery_service_proto_init() {
 		return
 	}
 	file_orchicon_api_v1_recovery_proto_init()
-	file_orchicon_api_v1_recovery_service_proto_msgTypes[6].OneofWrappers = []any{}
-	file_orchicon_api_v1_recovery_service_proto_msgTypes[10].OneofWrappers = []any{}
+	file_orchicon_api_v1_recovery_service_proto_msgTypes[8].OneofWrappers = []any{}
+	file_orchicon_api_v1_recovery_service_proto_msgTypes[12].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_recovery_service_proto_rawDesc), len(file_orchicon_api_v1_recovery_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   20,
+			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

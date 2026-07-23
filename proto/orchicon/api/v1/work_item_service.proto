@@ -117,6 +117,7 @@ message UpdateWorkItemRequest {
   optional string workflow_id = 15; // bind/unbind to a workflow template
   optional google.protobuf.Timestamp scheduled_start_at = 16;
   optional bool auto_start_workflow = 17;
+  optional string workflow_run_id = 18; // set to empty string to allow re-schedule
 }
 
 message UpdateWorkItemResponse {

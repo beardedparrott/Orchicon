@@ -1,8 +1,8 @@
 import { Link, createRoute } from "@tanstack/react-router";
 import { useState } from "react";
-import { Trash2, SearchX } from "lucide-react";
+import { SearchX } from "lucide-react";
 
-import { useBatchCancelRecoveries, useListRecoveries } from "@/api/recovery";
+import { useBatchCancelRecoveries, useBatchDeleteRecoveries, useListRecoveries } from "@/api/recovery";
 import type { RecoveryStatus } from "@/api/gen/orchicon/api/v1/recovery_pb";
 import { Button } from "@/components/ui/button";
 import {
@@ -32,6 +32,7 @@ function RecoveryPage() {
     status: statusFilter,
   });
   const batchCancel = useBatchCancelRecoveries();
+  const batchDelete = useBatchDeleteRecoveries();
 
   const toggleSelect = (id: string) => {
     setSelected((prev) => {
@@ -89,15 +90,30 @@ function RecoveryPage() {
           <option value="7">Blocked</option>
         </select>
         {selected.size > 0 && (
+          <>
           <Button
-            variant="destructive"
+            variant="outline"
             size="sm"
             onClick={handleBatchCancel}
             disabled={batchCancel.isPending}
+            className="h-8 text-xs"
           >
-            <Trash2 className="mr-1 h-3.5 w-3.5" />
-            Cancel {selected.size} selected
+            {batchCancel.isPending ? "Cancelling…" : "Cancel"}
           </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => {
+              const count = selected.size;
+              if (!window.confirm(`Delete ${count} recover${count === 1 ? "y" : "ies"}? This cannot be undone.`)) return;
+              batchDelete.mutate(Array.from(selected));
+            }}
+            disabled={batchDelete.isPending}
+            className="h-8 text-xs"
+          >
+            {batchDelete.isPending ? "Deleting…" : "Delete"}
+          </Button>
+          </>
         )}
       </div>
 

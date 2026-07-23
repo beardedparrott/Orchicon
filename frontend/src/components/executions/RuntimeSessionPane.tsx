@@ -507,17 +507,7 @@ const rendered = useMemo<
               This persists the model's text output across page navigation
               (docs/02 §2.7). */}
           {messages.length === 0 && storedOutput && (
-            <div className="flex justify-start">
-              <div className="max-w-[85%] rounded-lg rounded-tl-sm border border-border bg-card px-3 py-2 text-sm leading-relaxed shadow-sm">
-                <div className="mb-1 flex items-center gap-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                  <span>assistant output</span>
-                  <span className="opacity-60">(stored)</span>
-                </div>
-                <div className="break-words [overflow-wrap:anywhere]">
-                  <Markdown>{storedOutput}</Markdown>
-                </div>
-              </div>
-            </div>
+            <StoredOutputCard output={storedOutput} />
           )}
         </div>
       </CardContent>
@@ -526,6 +516,34 @@ const rendered = useMemo<
 }
 
 // --- bubble components ---------------------------------------------------
+
+function StoredOutputCard({ output }: { output: string }) {
+  const [showRaw, setShowRaw] = useState(false);
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[85%] rounded-lg rounded-tl-sm border border-border bg-card px-3 py-2 text-sm leading-relaxed shadow-sm">
+        <div className="mb-1 flex items-center gap-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+          <span>assistant output</span>
+          <span className="opacity-60">(stored)</span>
+          <button
+            type="button"
+            className="ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium hover:bg-accent hover:text-accent-foreground"
+            onClick={() => setShowRaw((v) => !v)}
+          >
+            {showRaw ? "Render markdown" : "Raw text"}
+          </button>
+        </div>
+        <div className="break-words [overflow-wrap:anywhere]">
+          {showRaw ? (
+            <pre className="whitespace-pre-wrap font-mono text-xs leading-relaxed">{output}</pre>
+          ) : (
+            <Markdown>{output}</Markdown>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function PromptCard({ prompt }: { prompt: string }) {
   // Long system prompts are common (worker's full system_prompt +

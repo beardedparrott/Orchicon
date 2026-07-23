@@ -58,6 +58,7 @@ type WorkflowReconciler struct {
 	log            *slog.Logger
 	policy         PolicyEvaluator // Phase 7: Rego gate evaluation (docs/02 §2.5)
 	taskDispatcher TaskDispatcher  // inline dispatch so executions appear immediately
+	recovery       RecoveryTrigger // triggers recovery on explicit `recover` steps
 }
 
 // NewWorkflowReconciler creates a WorkflowReconciler. The policy
@@ -66,8 +67,9 @@ type WorkflowReconciler struct {
 // The taskDispatcher is called after the workflow transaction commits
 // to dispatch ready work items immediately (not waiting for the next
 // TaskReconciler heartbeat). May be nil (fall back to heartbeat).
-func NewWorkflowReconciler(pool *db.Pool, log *slog.Logger, pe PolicyEvaluator, td TaskDispatcher) *WorkflowReconciler {
-	return &WorkflowReconciler{pool: pool, log: log, policy: pe, taskDispatcher: td}
+// recovery is the RecoveryEngine used by explicit `recover` steps.
+func NewWorkflowReconciler(pool *db.Pool, log *slog.Logger, pe PolicyEvaluator, td TaskDispatcher, rt RecoveryTrigger) *WorkflowReconciler {
+	return &WorkflowReconciler{pool: pool, log: log, policy: pe, taskDispatcher: td, recovery: rt}
 }
 
 // Kind returns the reconciler kind (docs/03 §2.1).
@@ -409,6 +411,34 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		}
 	} else if anyFailed {
 		now := time.Now().UTC()
+		// Update the linked work item to failed.
+		if run.WorkItemID != "" {
+			if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID); err == nil {
+				status := domain.WorkItemFailed
+				_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, db.UpdateWorkItemFields{
+					Status: &status,
+				})
+			}
+		}
+		// Terminate any running worker executions linked to this run.
+		for _, sr := range stepRuns {
+			if sr.WorkerExecutionID != "" {
+				if exec, err := db.GetExecution(ctx, ttx.Tx, tenantID, sr.WorkerExecutionID); err == nil {
+					if exec.Status == domain.ExecutionRunning || exec.Status == domain.ExecutionDispatching {
+						termStatus := domain.ExecutionTerminated
+						termHealth := domain.HealthUnhealthy
+						if _, err := db.UpdateExecution(ctx, ttx.Tx, tenantID, exec.ID, exec.Version, db.UpdateExecutionFields{
+							Status:       &termStatus,
+							HealthState:  &termHealth,
+							EndedAt:      &now,
+							ErrorMessage: strPtr("workflow run failed"),
+						}); err != nil {
+							return fmt.Errorf("terminate execution on run failure: %w", err)
+						}
+					}
+				}
+			}
+		}
 		updated, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
 			Status:  strPtr(domain.WorkflowRunFailed),
 			EndedAt: &now,
@@ -711,16 +741,28 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 				fmt.Errorf("loop_decision step %q: no upstream step result found", step.Name))
 		}
 
-		// If upstream failed, follow the existing loop-back path.
+		// If upstream failed (crash, stall, tool error), trigger recovery
+		// and succeed the step so the DAG can continue.
 		if upstreamStatus != domain.StepRunSucceeded {
-			currentIter := currentLoopIteration(runs, cfg.LoopBranch)
-			if currentIter >= cfg.MaxIterations {
-				return r.failStep(ctx, tx, tenantID, run, sr, runs,
-					fmt.Errorf("loop_decision step %q: max_iterations (%d) exhausted", step.Name, cfg.MaxIterations))
+			if r.recovery != nil && upResult.WorkItemID != "" {
+				failedExecID := ""
+				if latest, err := db.GetLatestExecutionForTask(ctx, tx, tenantID, upResult.WorkItemID); err == nil {
+					failedExecID = latest.ID
+				}
+				if err := r.recovery.TriggerOnFailure(ctx, tenantID, upResult.WorkItemID, failedExecID, "loop_decision:upstream_failed"); err != nil {
+					r.log.Warn("loop_decision: trigger recovery on failure", "run", run.ID, "step", step.ID, "work_item", upResult.WorkItemID, "error", err)
+				}
 			}
-			if err := r.loopDecisionReenter(ctx, tx, tenantID, run, sr, step, runs, cfg.LoopBranch, currentIter, now); err != nil {
-				return err
+			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:    strPtr(domain.StepRunSucceeded),
+				StartedAt: &now,
+				EndedAt:   &now,
+			})
+			if err != nil {
+				return fmt.Errorf("mark loop_decision step succeeded (upstream failed): %w", err)
 			}
+			runs[step.ID] = updated
+			r.log.Info("loop_decision: upstream failed, triggered recovery", "run", run.ID, "step", step.ID)
 			break
 		}
 
@@ -889,9 +931,18 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		}
 		recovery, err := db.GetLatestRecoveryForTask(ctx, tx, tenantID, depResult.WorkItemID)
 		if err == db.ErrNotFound {
-			// Recovery not yet created (TaskReconciler may not have
-			// processed the failure). Leave ready and retry next pass.
-			r.log.Info("recover step waiting for recovery execution", "run", run.ID, "step", step.ID, "work_item", depResult.WorkItemID)
+			// No recovery exists — trigger it now. The step-level
+			// strategy is written below on first pending encounter.
+			if r.recovery != nil {
+				failedExecID := ""
+				if latest, err := db.GetLatestExecutionForTask(ctx, tx, tenantID, depResult.WorkItemID); err == nil {
+					failedExecID = latest.ID
+				}
+				if err := r.recovery.TriggerOnFailure(ctx, tenantID, depResult.WorkItemID, failedExecID, "workflow_recover_step"); err != nil {
+					r.log.Warn("recover step: trigger recovery", "work_item", depResult.WorkItemID, "error", err)
+				}
+			}
+			r.log.Info("recover step triggered recovery", "run", run.ID, "step", step.ID, "work_item", depResult.WorkItemID)
 			break
 		}
 		if err != nil {

@@ -329,6 +329,28 @@ function EditorInner({ workflowId }: { workflowId: string }) {
       const accent = KIND_ACCENT[srcKind] ?? "sky";
       const edgeStyle = { stroke: `var(--kind-${accent})` };
       const edgeClass = ACCENT_STROKE[accent] ?? "";
+      // For loop decision nodes, auto-set the config from the handle used.
+      if (srcKind === STEP_KIND.LOOP_DECISION && conn.sourceHandle) {
+        const targetId = conn.target!;
+        const cfg = parseConfig(srcNode?.data?.config ?? "{}");
+        const key =
+          conn.sourceHandle === "source-success"
+            ? "success_branch"
+            : conn.sourceHandle === "source-loop"
+              ? "loop_branch"
+              : null;
+        if (key && typeof cfg === "object" && !Array.isArray(cfg)) {
+          const next = { ...cfg, [key]: targetId };
+          setNodes((nds) =>
+            nds.map((n) =>
+              n.id === conn.source
+                ? { ...n, data: { ...n.data, config: JSON.stringify(next) } }
+                : n,
+            ),
+          );
+        }
+      }
+
       setEdges((eds) =>
         addEdge(
           {
@@ -944,20 +966,19 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                     >
                       Restore
                     </button>
-                    {v.status === 1 && (
-                      <button
-                        type="button"
-                        className="rounded px-1.5 py-0.5 text-[11px] font-medium text-destructive hover:bg-destructive/10"
-                        title="Delete this draft version"
-                        onClick={() => {
-                          if (window.confirm(`Delete v${v.version}? This cannot be undone.`)) {
-                            deleteVersion.mutate({ workflowId, versionId: v.id });
-                          }
-                        }}
-                      >
-                        Delete
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      className="rounded px-1.5 py-0.5 text-[11px] font-medium text-destructive hover:bg-destructive/10"
+                      title={`Delete v${v.version}${v.status === 2 ? " (published)" : ""}`}
+                      onClick={() => {
+                        const label = v.status === 2 ? `published v${v.version}` : `v${v.version}`;
+                        if (window.confirm(`Delete ${label}? This cannot be undone.`)) {
+                          deleteVersion.mutate({ workflowId, versionId: v.id });
+                        }
+                      }}
+                    >
+                      Delete
+                    </button>
                   </div>
                 ))}
               </div>
