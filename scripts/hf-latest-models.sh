@@ -35,7 +35,6 @@ Options:
 
 Output: /tmp/hf-latest-models-{today|week}.txt
 EOF
-  exit 0
 }
 
 # ── Parse arguments ────────────────────────────────────────────────────────────
@@ -47,8 +46,8 @@ while [[ $# -gt 0 ]]; do
     --today)       MODE="today" ;;
     --week)        MODE="week" ;;
     --force-cache) FORCE_CACHE=true ;;
-    --help|-h)     usage ;;
-    *)             echo "Unknown option: $1"; usage ;;
+    --help|-h)     usage; exit 0 ;;
+    *)             echo "Error: Unknown option: $1" >&2; usage; exit 1 ;;
   esac
   shift
 done
@@ -70,7 +69,7 @@ else
   MAX_PAGES="$MAX_PAGES_TODAY"
 fi
 
-# ── Fetch from Hugging Face API (paginated) ──────────────────────────────────
+# ── Fetch from Hugging Face API (cursor-based pagination) ────────────────────
 fetch_and_cache() {
   if [ "$FORCE_CACHE" = true ] && [ -f "$CACHE_FILE" ]; then
     echo "Using cached response from $CACHE_FILE"
@@ -80,12 +79,16 @@ fetch_and_cache() {
   echo "Fetching models released $LABEL from Hugging Face API..."
 
   pages=()
+  cursor=""
+
   for (( page=0; page<MAX_PAGES; page++ )); do
-    offset=$(( page * PER_PAGE ))
-    url="${HF_API}?sort=createdAt&direction=-1&limit=${PER_PAGE}&offset=${offset}"
-    printf "  Page %d (offset=%d) ... " "$(( page + 1 ))" "$offset"
+    url="${HF_API}?sort=createdAt&direction=-1&limit=${PER_PAGE}"
+    [ -n "$cursor" ] && url="${url}&cursor=${cursor}"
+
+    printf "  Page %d ... " "$(( page + 1 ))"
     response=$(curl -sS --max-time 20 \
       -H "User-Agent: orchicon-script/1.0" \
+      -D /tmp/hf-latest-headers-$$.txt \
       "$url")
 
     count=$(echo "$response" | jq 'length' 2>/dev/null || echo "0")
@@ -93,10 +96,23 @@ fetch_and_cache() {
 
     if [ "$count" -eq 0 ]; then
       echo "  No more models — stopping."
+      rm -f /tmp/hf-latest-headers-$$.txt
       break
     fi
 
     pages+=("$response")
+
+    # Extract next cursor from Link header (cursor-based pagination)
+    # grep may find nothing (last page) — || true prevents set -e from aborting
+    link=$(grep -i '^link:' /tmp/hf-latest-headers-$$.txt 2>/dev/null | sed 's/^[Ll]ink: //' | tr -d '\r\n' || true)
+    rm -f /tmp/hf-latest-headers-$$.txt
+
+    if echo "$link" | grep -q 'rel="next"'; then
+      cursor=$(echo "$link" | sed 's/.*cursor=\([a-zA-Z0-9_%=+\/]*\).*/\1/')
+    else
+      echo "  No more pages — stopping."
+      break
+    fi
   done
 
   if [ ${#pages[@]} -eq 0 ]; then
