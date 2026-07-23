@@ -176,18 +176,38 @@ function WorkerDetailPage() {
             natural width; gap-2 + flex-wrap drops them onto multiple
             lines cleanly. */}
         <div className="flex flex-wrap items-center gap-2">
-          {draftVersion && !editing && viewMode === "detail" && (
-            <Button onClick={() => setEditing(true)}>Edit</Button>
-          )}
           {draftVersion && viewMode === "detail" && (
-            <Button
-              onClick={() => publishVersion.mutateAsync(id)}
-              disabled={publishVersion.isPending}
-            >
-              {publishVersion.isPending
-                ? "Publishing…"
-                : "Publish v" + (draftVersion.version)}
-            </Button>
+            <>
+              {editing ? (
+                <>
+                  <Button type="submit" form="draftForm" disabled={updateVersion.isPending}>
+                    {updateVersion.isPending ? "Saving…" : "Save"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => setEditing(false)}
+                  >
+                    Cancel
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button onClick={() => setEditing(true)}>Edit</Button>
+                  <Button
+                    onClick={async () => {
+                      document.getElementById("draftForm")?.requestSubmit();
+                      await new Promise((r) => setTimeout(r, 100));
+                      publishVersion.mutateAsync(id);
+                    }}
+                    disabled={publishVersion.isPending}
+                  >
+                    {publishVersion.isPending
+                      ? "Publishing…"
+                      : "Publish v" + (draftVersion.version)}
+                  </Button>
+                </>
+              )}
+            </>
           )}
           {isPublished && !draftVersion && viewMode === "detail" && (
             <Button
@@ -367,6 +387,7 @@ function WorkerDetailPage() {
           </CardHeader>
           <CardContent className="space-y-6">
             <form
+              id="draftForm"
               onSubmit={handleSubmit((formData) => {
                 updateVersion.mutate(
                   {
@@ -477,19 +498,6 @@ function WorkerDetailPage() {
                   {errors.gatedTools.message}
                 </p>
               )}
-
-              <div className="flex flex-wrap gap-2">
-                <Button type="submit" disabled={updateVersion.isPending}>
-                  {updateVersion.isPending ? "Saving…" : "Save changes"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setEditing(false)}
-                >
-                  Cancel
-                </Button>
-              </div>
             </form>
           </CardContent>
         </Card>
