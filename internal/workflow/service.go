@@ -711,6 +711,15 @@ func (s *Service) AbortWorkflow(ctx context.Context, req *connect.Request[apiv1.
 			}
 		}
 	}
+	// Update the linked work item to cancelled.
+	if updated.WorkItemID != "" {
+		if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, updated.WorkItemID); err == nil {
+			status := domain.WorkItemCancelled
+			_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, updated.WorkItemID, wi.Version, db.UpdateWorkItemFields{
+				Status: &status,
+			})
+		}
+	}
 	wf, _ := db.GetWorkflow(ctx, ttx.Tx, tenantID, updated.WorkflowID)
 	if err := enqueueWorkflowEvent(ctx, ttx.Tx, domain.WorkflowEventRunAborted, wf, db.WorkflowVersionRow{}, updated, reason); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)

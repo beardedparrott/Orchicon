@@ -411,6 +411,15 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		}
 	} else if anyFailed {
 		now := time.Now().UTC()
+		// Update the linked work item to failed.
+		if run.WorkItemID != "" {
+			if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID); err == nil {
+				status := domain.WorkItemFailed
+				_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, db.UpdateWorkItemFields{
+					Status: &status,
+				})
+			}
+		}
 		// Terminate any running worker executions linked to this run.
 		for _, sr := range stepRuns {
 			if sr.WorkerExecutionID != "" {
