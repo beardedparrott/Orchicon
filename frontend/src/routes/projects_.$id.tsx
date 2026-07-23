@@ -1,5 +1,5 @@
 import { createRoute, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Folder } from "lucide-react";
@@ -46,6 +46,7 @@ function ProjectDetailPage() {
   const deleteMutation = useDeleteProject();
   const updateProject = useUpdateProject();
   const updateProjectDir = useUpdateProjectDir();
+  const dirInputRef = useRef<HTMLInputElement>(null);
   const activateProject = useActivateProject();
   const createProject = useCreateProject();
   const navigate = useNavigate();
@@ -315,26 +316,36 @@ function ProjectDetailPage() {
             {editing && (
               <div className="flex gap-2">
                 <input
-                  type="text"
-                  placeholder="/path/to/project"
-                  className="flex-1 rounded-md border bg-background px-3 py-1.5 text-sm font-mono"
-                  id="projectDirInput"
+                  ref={dirInputRef}
+                  type="file"
+                  className="hidden"
+                  // @ts-ignore webkitdirectory is non-standard
+                  webkitdirectory=""
+                  directory=""
+                  onChange={(e) => {
+                    const files = e.target.files;
+                    if (files && files.length > 0) {
+                      const path = files[0].webkitRelativePath;
+                      const root = path.split("/").slice(0, -1).join("/");
+                      const firstFile = files[0] as any;
+                      const fullPath = firstFile.path?.slice(0, -firstFile.name.length - 1) ?? root;
+                      if (fullPath) {
+                        updateProjectDir.mutate({ id: project.id, projectDir: fullPath });
+                      }
+                    }
+                  }}
                 />
                 <Button
                   variant="outline"
                   size="sm"
                   className="h-9 text-xs"
-                  onClick={() => {
-                    const input = document.getElementById("projectDirInput") as HTMLInputElement;
-                    const path = input?.value.trim();
-                    if (path) {
-                      updateProjectDir.mutate({ id: project.id, projectDir: path });
-                    }
-                  }}
-                  disabled={updateProjectDir.isPending}
+                  onClick={() => dirInputRef.current?.click()}
                 >
-                  {updateProjectDir.isPending ? "Saving…" : "Set Directory"}
+                  Browse
                 </Button>
+                {updateProjectDir.isPending && (
+                  <span className="text-xs text-muted-foreground self-center">Saving…</span>
+                )}
               </div>
             )}
           </CardContent>
