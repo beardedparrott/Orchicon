@@ -13,6 +13,7 @@ import {
   useUpdateProject,
   projectKeys,
 } from "@/api/projects";
+import { useUpdateProjectDir } from "@/api/projectFiles";
 import { useStreamProjectEvents } from "@/api/projectEvents";
 import { EntityYamlView } from "@/components/EntityYamlView";
 import { Markdown } from "@/components/markdown";
@@ -44,6 +45,7 @@ function ProjectDetailPage() {
   const archiveProject = useArchiveProject();
   const deleteMutation = useDeleteProject();
   const updateProject = useUpdateProject();
+  const updateProjectDir = useUpdateProjectDir();
   const activateProject = useActivateProject();
   const createProject = useCreateProject();
   const navigate = useNavigate();
@@ -301,7 +303,7 @@ function ProjectDetailPage() {
               empty temp directory.
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-3">
             {project.projectDir ? (
               <div className="flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 font-mono text-xs">
                 <Folder className="h-3.5 w-3.5 shrink-0 text-amber-500" />
@@ -309,6 +311,31 @@ function ProjectDetailPage() {
               </div>
             ) : (
               <p className="text-sm text-muted-foreground">No directory set.</p>
+            )}
+            {editing && (
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="/path/to/project"
+                  className="flex-1 rounded-md border bg-background px-3 py-1.5 text-sm font-mono"
+                  id="projectDirInput"
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-9 text-xs"
+                  onClick={() => {
+                    const input = document.getElementById("projectDirInput") as HTMLInputElement;
+                    const path = input?.value.trim();
+                    if (path) {
+                      updateProjectDir.mutate({ id: project.id, projectDir: path });
+                    }
+                  }}
+                  disabled={updateProjectDir.isPending}
+                >
+                  {updateProjectDir.isPending ? "Saving…" : "Set Directory"}
+                </Button>
+              </div>
             )}
           </CardContent>
         </Card>
