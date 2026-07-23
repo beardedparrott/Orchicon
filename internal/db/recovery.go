@@ -713,3 +713,28 @@ func UpdateContinuationPlanStatus(ctx context.Context, tx pgx.Tx, tenantID, id, 
 	}
 	return p, nil
 }
+
+// DeleteRecoveryExecution hard-deletes a recovery execution and cascades
+// to its step runs and continuation plans.
+func DeleteRecoveryExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM continuation_plans WHERE tenant_id = $1 AND recovery_id = $2`,
+		tenantID, id); err != nil {
+		return fmt.Errorf("db: delete continuation plans: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM recovery_step_runs WHERE tenant_id = $1 AND recovery_id = $2`,
+		tenantID, id); err != nil {
+		return fmt.Errorf("db: delete recovery step runs: %w", err)
+	}
+	ct, err := tx.Exec(ctx,
+		`DELETE FROM recovery_executions WHERE tenant_id = $1 AND id = $2`,
+		tenantID, id)
+	if err != nil {
+		return fmt.Errorf("db: delete recovery execution: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

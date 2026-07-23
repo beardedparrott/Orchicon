@@ -190,6 +190,74 @@ export class CancelRecoveryResponse extends Message<CancelRecoveryResponse> {
 }
 
 /**
+ * @generated from message orchicon.api.v1.DeleteRecoveryRequest
+ */
+export class DeleteRecoveryRequest extends Message<DeleteRecoveryRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  constructor(data?: PartialMessage<DeleteRecoveryRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DeleteRecoveryRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteRecoveryRequest {
+    return new DeleteRecoveryRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteRecoveryRequest {
+    return new DeleteRecoveryRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteRecoveryRequest {
+    return new DeleteRecoveryRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteRecoveryRequest | PlainMessage<DeleteRecoveryRequest> | undefined, b: DeleteRecoveryRequest | PlainMessage<DeleteRecoveryRequest> | undefined): boolean {
+    return proto3.util.equals(DeleteRecoveryRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.DeleteRecoveryResponse
+ */
+export class DeleteRecoveryResponse extends Message<DeleteRecoveryResponse> {
+  constructor(data?: PartialMessage<DeleteRecoveryResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DeleteRecoveryResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteRecoveryResponse {
+    return new DeleteRecoveryResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteRecoveryResponse {
+    return new DeleteRecoveryResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteRecoveryResponse {
+    return new DeleteRecoveryResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteRecoveryResponse | PlainMessage<DeleteRecoveryResponse> | undefined, b: DeleteRecoveryResponse | PlainMessage<DeleteRecoveryResponse> | undefined): boolean {
+    return proto3.util.equals(DeleteRecoveryResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.GetRecoveryRequest
  */
 export class GetRecoveryRequest extends Message<GetRecoveryRequest> {

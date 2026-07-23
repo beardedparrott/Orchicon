@@ -26,6 +26,7 @@ service RecoveryService {
   // CancelRecovery transitions a running recovery to cancelled
   // (docs/06 §3). The affected Task returns to its prior state.
   rpc CancelRecovery(CancelRecoveryRequest) returns (CancelRecoveryResponse);
+  rpc DeleteRecovery(DeleteRecoveryRequest) returns (DeleteRecoveryResponse);
 
   // GetRecovery returns a single RecoveryExecution by id.
   rpc GetRecovery(GetRecoveryRequest) returns (GetRecoveryResponse);
@@ -79,6 +80,12 @@ message CancelRecoveryRequest {
 message CancelRecoveryResponse {
   RecoveryExecution recovery = 1;
 }
+
+message DeleteRecoveryRequest {
+  string id = 1;
+}
+
+message DeleteRecoveryResponse {}
 
 message GetRecoveryRequest {
   string id = 1;
