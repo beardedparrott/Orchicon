@@ -301,8 +301,6 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if msg.ScheduledStartAt != nil {
 		t := msg.ScheduledStartAt.AsTime()
 		fields.ScheduledStartAt = &t
-		status := domain.WorkItemScheduled
-		fields.Status = &status
 	}
 	if msg.AutoStartWorkflow != nil {
 		v := *msg.AutoStartWorkflow
