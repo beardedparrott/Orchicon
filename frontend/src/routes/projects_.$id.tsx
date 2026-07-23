@@ -2,7 +2,7 @@ import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Folder } from "lucide-react";
 
 import {
   useActivateProject,
@@ -290,7 +290,31 @@ function ProjectDetailPage() {
         </Card>
       )}
 
-      {/* File browser section */}
+      {/* Main project directory */}
+      {project && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Main Project Directory</CardTitle>
+            <CardDescription>
+              Root directory for worker operations. All file operations are
+              scoped to this folder. Required — without it workers run in an
+              empty temp directory.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {project.projectDir ? (
+              <div className="flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 font-mono text-xs">
+                <Folder className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                <span className="flex-1 truncate">{project.projectDir}</span>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">No directory set.</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Context files — browser within the project directory */}
       {project && (
         <FileBrowser
           projectId={project.id}
