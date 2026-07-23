@@ -309,7 +309,7 @@ function WorkItemDetailPage() {
           <CardHeader>
             <CardTitle>Scheduled start</CardTitle>
             <CardDescription>
-              Leave empty to start immediately on save (if auto-start is enabled).
+              Leave empty to start immediately. Set a time to schedule the run.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -331,7 +331,7 @@ function WorkItemDetailPage() {
                 onChange={(e) => setEditAutoStartWorkflow(e.target.checked)}
                 className="h-4 w-4 rounded border-input"
               />
-              <Label htmlFor="autoStart">Auto-start workflow on save</Label>
+              <Label htmlFor="autoStart">Start immediately on save</Label>
             </div>
           </CardContent>
         </Card>
