@@ -510,12 +510,25 @@ function WorkerDetailPage() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            {latestVersion.systemPrompt && (
-              <div>
-                <h4 className="text-xs font-medium uppercase text-muted-foreground">Role</h4>
-                <Markdown>{latestVersion.systemPrompt.match(/# Role\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] || latestVersion.systemPrompt}</Markdown>
-              </div>
-            )}
+            {(() => {
+              const sp = latestVersion.systemPrompt || "";
+              const extract = (heading: string) => {
+                const re = new RegExp(`# ${heading}\n\n([\\s\\S]*?)(?=\\n# |\\n*$)`);
+                return sp.match(re)?.[1]?.trim() || "";
+              };
+              const role = extract("Role");
+              const skills = extract("Skills");
+              const behavior = extract("Behavior");
+              const agents = extract("AGENTS.md");
+              return (
+                <>
+                  {role && <div><h4 className="text-xs font-medium uppercase text-muted-foreground">Role</h4><Markdown>{role}</Markdown></div>}
+                  {skills && <div><h4 className="text-xs font-medium uppercase text-muted-foreground">Skills</h4><Markdown>{skills}</Markdown></div>}
+                  {behavior && <div><h4 className="text-xs font-medium uppercase text-muted-foreground">Behavior</h4><Markdown>{behavior}</Markdown></div>}
+                  {agents && <div><h4 className="text-xs font-medium uppercase text-muted-foreground">AGENTS.md</h4><Markdown>{agents}</Markdown></div>}
+                </>
+              );
+            })()}
             <div className="grid gap-4 md:grid-cols-2">
               <JsonField
                 label="Permissions"
