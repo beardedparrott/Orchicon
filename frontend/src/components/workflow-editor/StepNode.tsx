@@ -7,6 +7,7 @@ import {
   STEP_KIND,
   STEP_KIND_DISPLAY_LABELS,
   STEP_KIND_ICONS,
+  type StepConfig,
   type StepData,
 } from "./stepKinds";
 
@@ -30,7 +31,7 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
   const kind = data.kind;
   const Icon = STEP_KIND_ICONS[kind] ?? STEP_KIND_ICONS[STEP_KIND.TASK];
   const label = STEP_KIND_DISPLAY_LABELS[kind] ?? "step";
-  const cfg = parseConfig(data.config);
+  const cfg = parseConfig(data.config) as StepConfig;
 
   const hasBinding =
     kind === STEP_KIND.TASK
@@ -129,6 +130,14 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
               · {String(cfg.max_retries ?? 5)}× × {String(cfg.retry_delay_seconds ?? 10)}s
             </span>
           ) : null}
+        </div>
+      )}
+      {kind === STEP_KIND.TASK && typeof cfg.recovery?.strategy === "string" && cfg.recovery.strategy !== "retry" && (
+        <div className="mt-1 flex items-center gap-1 truncate rounded px-1 py-0.5 text-[10px] font-medium text-sky-600 dark:text-sky-300">
+          <span>recovery: {RECOVERY_STRATEGY_LABELS[cfg.recovery.strategy] ?? cfg.recovery.strategy}</span>
+          {typeof cfg.recovery.max_attempts === "number" && (
+            <span className="ml-1 opacity-70">· {cfg.recovery.max_attempts} max</span>
+          )}
         </div>
       )}
 

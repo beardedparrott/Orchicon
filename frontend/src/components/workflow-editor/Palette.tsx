@@ -6,7 +6,6 @@ import {
   GitBranch,
   GitFork,
   Info,
-  LifeBuoy,
   Repeat2,
   ShieldCheck,
   UserCheck,
@@ -116,21 +115,6 @@ export function Palette({ readOnly, mode = "full" }: { readOnly: boolean; mode?:
           kindAccent="cyan"
           payload={{ kind: STEP_KIND.LOOP_DECISION, name: "Loop Decision" }}
           description="Inspects the upstream step result. On success, continues forward. On failure, loops back to a prior step (up to max_iterations). After exhausting attempts, the run fails and recovery engages."
-          readOnly={readOnly}
-        />
-      </Section>
-      <Section
-        title="Recovery"
-        icon={LifeBuoy}
-        subtitle="What to do when a worker fails"
-      >
-        <DraggableTile
-          label="Recovery"
-          sublabel="Set strategy in properties"
-          icon={LifeBuoy}
-          kindAccent="rose"
-          payload={{ kind: STEP_KIND.RECOVER, name: "Recovery" }}
-          description="Triggers recovery on upstream failure. Choose the strategy in the properties panel."
           readOnly={readOnly}
         />
       </Section>

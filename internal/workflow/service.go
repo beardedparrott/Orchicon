@@ -65,10 +65,6 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	recoveryPolicyRef, err := validateTextField(msg.RecoveryPolicyRef, maxNameLen, "recovery_policy_ref")
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
 	steps, err := validateStepsField(msg.Steps)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
@@ -134,8 +130,7 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *connect.Request[apiv1
 		Status:            domain.WorkflowVersionDraft,
 		Steps:             steps,
 		Inputs:            inputs,
-		Outputs:           outputs,
-		RecoveryPolicyRef: recoveryPolicyRef,
+		Outputs:    outputs,
 	}
 	createdVersion, err := db.CreateWorkflowVersion(ctx, ttx.Tx, versionRow)
 	if err != nil {
@@ -261,9 +256,8 @@ func (s *Service) CreateWorkflowVersion(ctx context.Context, req *connect.Reques
 		VersionNote:       versionNote,
 		Status:            domain.WorkflowVersionDraft,
 		Steps:             latestPublished.Steps,
-		Inputs:            latestPublished.Inputs,
-		Outputs:           latestPublished.Outputs,
-		RecoveryPolicyRef: latestPublished.RecoveryPolicyRef,
+		Inputs:    latestPublished.Inputs,
+		Outputs:   latestPublished.Outputs,
 	}
 	created, err := db.CreateWorkflowVersion(ctx, ttx.Tx, versionRow)
 	if err != nil {
@@ -454,7 +448,7 @@ func (s *Service) ListWorkflowVersions(ctx context.Context, req *connect.Request
 }
 
 // UpdateWorkflowVersion saves edits to a draft version's steps (and
-// inputs/outputs/recovery_policy_ref). Only draft versions are mutable;
+// inputs/outputs). Only draft versions are mutable;
 // published versions are immutable (docs/02 §2.4). This is the "save"
 // action in the visual editor. The steps JSON is validated as a
 // well-formed JSON array (AGENTS.md security standards).
@@ -475,10 +469,6 @@ func (s *Service) UpdateWorkflowVersion(ctx context.Context, req *connect.Reques
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	outputs, err := validateJSONField(req.Msg.Outputs, "{}", "outputs", maxJSONFieldLen)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-	recoveryPolicyRef, err := validateTextField(req.Msg.RecoveryPolicyRef, maxNameLen, "recovery_policy_ref")
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -505,18 +495,18 @@ func (s *Service) UpdateWorkflowVersion(ctx context.Context, req *connect.Reques
 	// Update the draft version's mutable fields. The version number and
 	// id are unchanged; this is an in-place edit of the draft snapshot.
 	const q = `UPDATE workflow_versions
-		SET steps = $3, inputs = $4, outputs = $5, recovery_policy_ref = $6,
-		    version_note = CASE WHEN $7 = '' THEN version_note ELSE $7 END
+		SET steps = $3, inputs = $4, outputs = $5,
+		    version_note = CASE WHEN $6 = '' THEN version_note ELSE $6 END
 		WHERE tenant_id = $1 AND id = $2
 		RETURNING id, tenant_id, workflow_id, version, version_note, status,
-			steps, inputs, outputs, recovery_policy_ref, published_at, created_at`
+			steps, inputs, outputs, published_at, created_at`
 	var v db.WorkflowVersionRow
 	err = ttx.Tx.QueryRow(ctx, q,
-		tenantID, latest.ID, steps, inputs, outputs, recoveryPolicyRef, versionNote,
+		tenantID, latest.ID, steps, inputs, outputs, versionNote,
 	).Scan(
 		&v.ID, &v.TenantID, &v.WorkflowID, &v.Version, &v.VersionNote,
 		&v.Status, &v.Steps, &v.Inputs, &v.Outputs,
-		&v.RecoveryPolicyRef, &v.PublishedAt, &v.CreatedAt,
+		&v.PublishedAt, &v.CreatedAt,
 	)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("db: update workflow version: %w", err))
@@ -1283,9 +1273,8 @@ func versionRowToProto(v db.WorkflowVersionRow) *apiv1.WorkflowVersion {
 		Status:            workflowVersionStatusToProto(v.Status),
 		Steps:             string(v.Steps),
 		Inputs:            string(v.Inputs),
-		Outputs:           string(v.Outputs),
-		RecoveryPolicyRef: v.RecoveryPolicyRef,
-		CreatedAt:         timestamppb.New(v.CreatedAt),
+		Outputs:   string(v.Outputs),
+		CreatedAt: timestamppb.New(v.CreatedAt),
 	}
 	if v.PublishedAt != nil {
 		pv.PublishedAt = timestamppb.New(*v.PublishedAt)

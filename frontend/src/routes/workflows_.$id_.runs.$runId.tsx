@@ -97,7 +97,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
   const { data: wfData } = useGetWorkflow(workflowId);
   const { data: run, isLoading, error } = useGetWorkflowRun(runId);
   const { data: stepRuns } = useGetWorkflowStepRuns(runId);
-  const { data: runExecs } = useListExecutions({ workflowRunId: runId });
+  const { data: runExecs } = useListExecutions({ workflowRunId: runId, sortOrder: "asc" });
   const abortRun = useAbortWorkflow();
 
   // Live event stream (docs/10 §4). Subscribes to StreamWorkflowEvents
@@ -465,13 +465,38 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
                     }
                   >
                     <StepStatusPill status={sr.status} />
-                    <span className="font-medium">{sr.stepName || sr.stepId}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {STEP_KIND_LABELS[sr.stepKind] ?? "step"}
-                    </span>
-                    <LiveDuration startedAt={sr.startedAt} endedAt={sr.endedAt} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{sr.stepName || sr.stepId}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {STEP_KIND_LABELS[sr.stepKind] ?? "step"}
+                        </span>
+                        <LiveDuration startedAt={sr.startedAt} endedAt={sr.endedAt} />
+                      </div>
+                      {sr.result && (() => {
+                        try {
+                          const r = JSON.parse(sr.result);
+                          const parts: string[] = [];
+                          if (r._decision) parts.push(r._decision);
+                          if (r._worker) parts.push(`by ${r._worker}`);
+                          if (r._summary) {
+                            const line = r._summary.split("\n")[0].slice(0, 120);
+                            parts.push(line);
+                          }
+                          if (Array.isArray(r._touched_files) && r._touched_files.length > 0) {
+                            parts.push(`${r._touched_files.length} file${r._touched_files.length !== 1 ? "s" : ""}`);
+                          }
+                          if (parts.length === 0) return null;
+                          return (
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              {parts.join(" · ")}
+                            </div>
+                          );
+                        } catch { return null; }
+                      })()}
+                    </div>
                     {sr.workerExecutionId && (
-                      <span className="font-mono text-xs text-muted-foreground">
+                      <span className="shrink-0 font-mono text-xs text-muted-foreground">
                         exec: {sr.workerExecutionId.slice(0, 12)}…
                       </span>
                     )}

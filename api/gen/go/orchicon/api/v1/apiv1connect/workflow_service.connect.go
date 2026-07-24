@@ -139,7 +139,7 @@ type WorkflowServiceClient interface {
 	// immutable. At least one version must remain.
 	DeleteWorkflowVersion(context.Context, *connect.Request[v1.DeleteWorkflowVersionRequest]) (*connect.Response[v1.DeleteWorkflowVersionResponse], error)
 	// UpdateWorkflowVersion saves edits to a draft version's steps (and
-	// inputs/outputs/recovery_policy_ref). Only draft versions are mutable;
+	// inputs/outputs). Only draft versions are mutable;
 	// published versions are immutable (docs/02 §2.4). This is the "save"
 	// action in the visual editor.
 	UpdateWorkflowVersion(context.Context, *connect.Request[v1.UpdateWorkflowVersionRequest]) (*connect.Response[v1.UpdateWorkflowVersionResponse], error)
@@ -449,7 +449,7 @@ type WorkflowServiceHandler interface {
 	// immutable. At least one version must remain.
 	DeleteWorkflowVersion(context.Context, *connect.Request[v1.DeleteWorkflowVersionRequest]) (*connect.Response[v1.DeleteWorkflowVersionResponse], error)
 	// UpdateWorkflowVersion saves edits to a draft version's steps (and
-	// inputs/outputs/recovery_policy_ref). Only draft versions are mutable;
+	// inputs/outputs). Only draft versions are mutable;
 	// published versions are immutable (docs/02 §2.4). This is the "save"
 	// action in the visual editor.
 	UpdateWorkflowVersion(context.Context, *connect.Request[v1.UpdateWorkflowVersionRequest]) (*connect.Response[v1.UpdateWorkflowVersionResponse], error)

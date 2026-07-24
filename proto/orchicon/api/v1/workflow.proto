@@ -19,7 +19,7 @@ import "google/protobuf/timestamp.proto";
 
 // Workflow is the immutable header row for a composable execution plan
 // (docs/02 §2.4, docs/09 §3.4). The mutable snapshot (steps, inputs,
-// outputs, recovery_policy_ref) lives in WorkflowVersion. project_id is
+// outputs) lives in WorkflowVersion. project_id is
 // empty for tenant-level templates.
 message Workflow {
   string id = 1;
@@ -48,7 +48,7 @@ message WorkflowVersion {
   string steps = 7; // JSON array of Step messages (docs/02 §2.4)
   string inputs = 8; // JSON: workflow input schema
   string outputs = 9; // JSON: workflow output schema
-  string recovery_policy_ref = 10;
+  reserved 10; // recovery_policy_ref (removed — recovery is per-step config)
   google.protobuf.Timestamp published_at = 11;
   google.protobuf.Timestamp created_at = 12;
 }

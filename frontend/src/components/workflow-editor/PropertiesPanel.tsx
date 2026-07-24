@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Node } from "reactflow";
 
 import { Info } from "lucide-react";
@@ -16,10 +16,10 @@ import { PolicyStatus } from "@/api/gen/orchicon/api/v1/policy_pb";
 import { WorkItemKind } from "@/api/gen/orchicon/api/v1/work_item_pb";
 
 import {
-  RECOVERY_STRATEGY_OPTIONS,
   STEP_KIND,
   STEP_KIND_DISPLAY_LABELS,
   STEP_KIND_ICONS,
+  type StepConfig,
   type StepData,
 } from "./stepKinds";
 
@@ -39,10 +39,39 @@ export function PropertiesPanel({
   const { data: workers } = useListWorkers();
   const { data: policies } = useListPolicies({ status: PolicyStatus.PUBLISHED });
 
+  // Seed default config values for newly-created steps. Must be before
+  // the early return to keep hook order stable across renders.
+  useEffect(() => {
+    if (!node || readOnly) return;
+    const d = node.data;
+    const cfg = parseConfig(d.config) as StepConfig;
+    let changed = false;
+    const next = { ...cfg };
+    if (d.kind === STEP_KIND.LOOP_DECISION && typeof cfg.max_iterations !== "number") {
+      next.max_iterations = 3;
+      changed = true;
+    }
+    if (d.kind === STEP_KIND.TASK) {
+      const rec = cfg.recovery ?? {};
+      if (typeof rec.strategy !== "string") {
+        next.recovery = { ...rec, strategy: "retry" };
+        changed = true;
+      }
+      if (typeof rec.max_attempts !== "number") {
+        next.recovery = { ...(next.recovery ?? rec), max_attempts: 3 };
+        changed = true;
+      }
+    }
+    if (changed) {
+      onChange({ config: JSON.stringify(next) });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node]);
+
   if (!node) return <EmptyProperties />;
   const d = node.data;
   const Icon = STEP_KIND_ICONS[d.kind] ?? STEP_KIND_ICONS[1];
-  const cfg = parseConfig(d.config);
+  const cfg = parseConfig(d.config) as StepConfig;
 
   const publishedWorkers = (workers ?? []).filter(
     (w) => w.status === WorkerStatus.PUBLISHED,
@@ -114,6 +143,7 @@ export function PropertiesPanel({
         )}
 
         {d.kind === STEP_KIND.TASK && (
+          <>
           <Field label="Worker" hint="The worker that processes the upstream work item.">
             <select
               className="h-9 w-full rounded-md border bg-background px-2 text-sm"
@@ -135,6 +165,41 @@ export function PropertiesPanel({
               ))}
             </select>
           </Field>
+          <Field label="Recovery strategy" hint="What happens when the step's work item fails.">
+            <select
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              value={typeof cfg.recovery?.strategy === "string" ? cfg.recovery.strategy : "retry"}
+              disabled={readOnly}
+              onChange={(e) => {
+                const strategy = e.target.value;
+                const recovery = { ...(cfg.recovery ?? {}), strategy };
+                const next = { ...cfg, recovery };
+                onChange({ config: JSON.stringify(next) });
+              }}
+            >
+              <option value="retry">Blind retry</option>
+              <option value="summarize_restart">Summarize + restart</option>
+              <option value="human_escalation">Human escalation</option>
+              <option value="stop">Stop (permanent failure)</option>
+            </select>
+          </Field>
+          <Field label="Max attempts" hint="Number of times to retry before the step is permanently failed.">
+            <input
+              type="number"
+              min={1}
+              max={20}
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              value={typeof cfg.recovery?.max_attempts === "number" ? cfg.recovery.max_attempts : 3}
+              disabled={readOnly}
+              onChange={(e) => {
+                const maxAttempts = Math.max(1, Math.min(20, parseInt(e.target.value, 10) || 3));
+                const recovery = { ...(cfg.recovery ?? {}), max_attempts: maxAttempts };
+                const next = { ...cfg, recovery };
+                onChange({ config: JSON.stringify(next) });
+              }}
+            />
+          </Field>
+          </>
         )}
 
         {d.kind === STEP_KIND.POLICY && (
@@ -215,68 +280,6 @@ export function PropertiesPanel({
                 : "Connect the success outlet (right handle) to the next step."}
             </p>
           </Field>
-          </>
-        )}
-
-        {d.kind === STEP_KIND.RECOVER && (
-          <>
-          <Field label="Recovery strategy" hint="What happens when the upstream worker fails.">
-            <select
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-              value={typeof cfg.strategy === "string" ? cfg.strategy : "summarize_restart"}
-              disabled={readOnly}
-              onChange={(e) => {
-                const strategy = e.target.value;
-                const opt = RECOVERY_STRATEGY_OPTIONS.find((s) => s.value === strategy);
-                if (opt) {
-                  const next = { ...cfg, strategy };
-                  onChange({ name: opt.label, config: JSON.stringify(next) });
-                }
-              }}
-            >
-              {RECOVERY_STRATEGY_OPTIONS.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-          </Field>
-          {/* Retry config only applies to non-"stop" strategies.
-              "Stop" means abandon cleanly — no retries needed. */}
-          {(typeof cfg.strategy !== "string" || cfg.strategy !== "stop") && (
-            <>
-            <Field label="Max retries" hint="How many times to retry before escalating to human (L3).">
-              <input
-                type="number"
-                min={1}
-                max={100}
-                className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-                value={typeof cfg.max_retries === "number" ? cfg.max_retries : 5}
-                disabled={readOnly}
-                onChange={(e) => {
-                  const maxRetries = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 5));
-                  const next = { ...cfg, max_retries: maxRetries };
-                  onChange({ config: JSON.stringify(next) });
-                }}
-              />
-            </Field>
-            <Field label="Retry delay (seconds)" hint="Time to wait between retries.">
-              <input
-                type="number"
-                min={0}
-                max={3600}
-                className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-                value={typeof cfg.retry_delay_seconds === "number" ? cfg.retry_delay_seconds : 10}
-                disabled={readOnly}
-                onChange={(e) => {
-                  const delay = Math.max(0, Math.min(3600, parseInt(e.target.value, 10) || 10));
-                  const next = { ...cfg, retry_delay_seconds: delay };
-                  onChange({ config: JSON.stringify(next) });
-                }}
-              />
-            </Field>
-            </>
-          )}
           </>
         )}
 

@@ -67,11 +67,6 @@ export class CreateWorkflowRequest extends Message<CreateWorkflowRequest> {
   outputs = "";
 
   /**
-   * @generated from field: string recovery_policy_ref = 7;
-   */
-  recoveryPolicyRef = "";
-
-  /**
    * @generated from field: string version_note = 8;
    */
   versionNote = "";
@@ -104,7 +99,6 @@ export class CreateWorkflowRequest extends Message<CreateWorkflowRequest> {
     { no: 4, name: "steps", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 5, name: "inputs", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 6, name: "outputs", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 7, name: "recovery_policy_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 8, name: "version_note", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 9, name: "request_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 10, name: "type", kind: "scalar", T: 9 /* ScalarType.STRING */ },
@@ -887,11 +881,6 @@ export class UpdateWorkflowVersionRequest extends Message<UpdateWorkflowVersionR
   outputs = "";
 
   /**
-   * @generated from field: string recovery_policy_ref = 5;
-   */
-  recoveryPolicyRef = "";
-
-  /**
    * optional: update the version note
    *
    * @generated from field: string version_note = 6;
@@ -910,7 +899,6 @@ export class UpdateWorkflowVersionRequest extends Message<UpdateWorkflowVersionR
     { no: 2, name: "steps", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "inputs", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 4, name: "outputs", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 5, name: "recovery_policy_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 6, name: "version_note", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 

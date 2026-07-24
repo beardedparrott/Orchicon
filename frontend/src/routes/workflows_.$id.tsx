@@ -573,7 +573,6 @@ function EditorInner({ workflowId }: { workflowId: string }) {
       steps: JSON.stringify(steps),
       inputs: "{}",
       outputs: "{}",
-      recoveryPolicyRef: "",
     });
     setDirty(false);
   };

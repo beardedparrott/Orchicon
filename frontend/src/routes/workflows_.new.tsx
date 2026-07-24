@@ -31,7 +31,6 @@ const createWorkflowSchema = z.object({
   type: z.enum(["one-shot", "repeatable-template"]),
   projectId: z.string().optional(),
   versionNote: z.string().max(16384, "Version note is too long").optional(),
-  recoveryPolicyRef: z.string().max(200).optional(),
 });
 
 type CreateWorkflowForm = z.infer<typeof createWorkflowSchema>;
@@ -47,7 +46,7 @@ function NewWorkflowPage() {
     formState: { errors, isSubmitting },
   } = useForm<CreateWorkflowForm>({
     resolver: zodResolver(createWorkflowSchema),
-    defaultValues: { name: "", type: "one-shot", versionNote: "", recoveryPolicyRef: "" },
+    defaultValues: { name: "", type: "one-shot", versionNote: "" },
   });
   const workflowType = watch("type");
 
@@ -59,7 +58,6 @@ function NewWorkflowPage() {
       steps: "[]",
       inputs: "{}",
       outputs: "{}",
-      recoveryPolicyRef: values.recoveryPolicyRef ?? "",
       versionNote: values.versionNote ?? "",
     });
     navigate({ to: "/workflows/$id", params: { id: res.workflow.id } });
@@ -149,22 +147,6 @@ function NewWorkflowPage() {
               {errors.versionNote && (
                 <p className="text-xs text-destructive">
                   {errors.versionNote.message}
-                </p>
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="recoveryPolicyRef">
-                Recovery policy ref (optional)
-              </Label>
-              <Input
-                id="recoveryPolicyRef"
-                placeholder=""
-                {...register("recoveryPolicyRef")}
-              />
-              {errors.recoveryPolicyRef && (
-                <p className="text-xs text-destructive">
-                  {errors.recoveryPolicyRef.message}
                 </p>
               )}
             </div>

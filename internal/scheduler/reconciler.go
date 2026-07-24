@@ -22,6 +22,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -551,9 +553,24 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	// Persist output + summary on the work item's results JSON so the
 	// audit trail shows what the worker produced. The summary is the
 	// canonical downstream input.
+	//
+	// We start fresh — previous results from an earlier execution
+	// (e.g. SSE) carry stale _decision that must NOT survive into this
+	// execution (the new output may not explicitly overwrite it via a
+	// _decision: marker). But _issues (review feedback) IS preserved
+	// across loop iterations so each loop-back has the reviewer's
+	// findings. _parent_execution_id and _recovery_summary are also
+	// carried forward.
 	results := map[string]any{}
 	if len(wi.Results) > 0 {
-		_ = json.Unmarshal(wi.Results, &results)
+		var existing map[string]any
+		if err := json.Unmarshal(wi.Results, &existing); err == nil {
+			for _, k := range []string{"_parent_execution_id", "_recovery_summary", "_issues"} {
+				if v, ok := existing[k]; ok {
+					results[k] = v
+				}
+			}
+		}
 	}
 	if output != "" {
 		results["_output"] = output
@@ -561,6 +578,7 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	if summary != "" {
 		results["_summary"] = summary
 	}
+	results["_worker"] = exec.WorkerID
 	// Extract structured fields from worker output for the
 	// loop_decision step: _decision (success/failure) and _issues.
 	// The worker's AGENTS.md instructs it to emit these on their
@@ -569,6 +587,19 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	// loop decision can't route to success/failure — it falls
 	// through to re-ask every time.
 	extractStructuredResult(output, results)
+	// Fallback: if no explicit _decision marker was found, parse it
+	// from the ORCHICON WORKER SUMMARY: <decision> — <text> format.
+	if _, ok := results["_decision"]; !ok {
+		if d := extractSummaryDecision(output); d != "" {
+			results["_decision"] = d
+		}
+	}
+	// Extract list of modified files from diff markers in the output.
+	if output != "" {
+		if files := extractTouchedFiles(output); len(files) > 0 {
+			results["_touched_files"] = files
+		}
+	}
 	resultsJSON, _ := json.Marshal(results)
 	if succeeded {
 		fields := db.UpdateWorkItemFields{
@@ -581,16 +612,10 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 			r.log.Error("transition work item: update", "task", exec.TaskID, "error", err)
 			return
 		}
-		// PR B: copy the summary onto the linked workflow step run
-		// (results._summary) so the WorkflowReconciler can compose
-		// it into the next stage's prompt. Best-effort — a missing
-		// step run (e.g. dispatched without a workflow) is logged
-		// and skipped, not fatal.
-		if summary != "" {
-			if err := r.propagateSummaryToStepRun(ctx, ttx.Tx, "tnt_dev", exec.TaskID, summary); err != nil {
-				r.log.Warn("propagate summary to step run", "task", exec.TaskID, "error", err)
-			}
-		}
+		// Copy the execution results onto the linked workflow step run
+		// so the run view can display decision/summary/issues/files
+		// without opening each execution. Best-effort.
+		r.propagateStepRunResults(ctx, ttx.Tx, exec.TaskID, results)
 	} else {
 		// Failure: transition to failed so the step run transitions to
 		// terminal-failed, allowing a downstream `recover` step to
@@ -611,6 +636,9 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 		return
 	}
 
+	// Write .orchicon/ files for the next worker to read.
+	r.writeOrchiconFiles(ctx, exec, wi, succeeded, results)
+
 	// Follow-up write-back: if this work item has a parent execution
 	// (created via CreateFollowUpExecution), append the assistant's
 	// output to the parent execution's conversation so the follow-up
@@ -629,6 +657,73 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 
 	// Recovery is NOT triggered automatically — explicit `recover`
 	// steps on the workflow canvas handle this (docs/06 §1).
+}
+
+// writeOrchiconFiles writes the execution results to .orchicon/ files
+// in the project directory so the next worker can read previous step
+// results from disk instead of receiving them inline in the prompt.
+// Files are overwritten on every execution so disk always reflects
+// the latest state. Best-effort — failures are logged but not fatal.
+func (r *TaskReconciler) writeOrchiconFiles(ctx context.Context, exec db.ExecutionRow, wi db.WorkItemRow, succeeded bool, results map[string]any) {
+	projectDir := r.lookupProjectDir(ctx, wi.ProjectID)
+	if projectDir == "" {
+		return
+	}
+	orchDir := filepath.Join(projectDir, ".orchicon", exec.WorkflowRunID)
+	if err := os.MkdirAll(orchDir, 0755); err != nil {
+		r.log.Warn("write .orchicon files: mkdir", "dir", orchDir, "error", err)
+		return
+	}
+
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(orchDir, name), []byte(content), 0644); err != nil {
+			r.log.Warn("write .orchicon file", "file", name, "error", err)
+		}
+	}
+
+	write("status", map[bool]string{true: "success", false: "failure"}[succeeded])
+	write("worker", exec.WorkerID)
+
+	if summary, ok := results["_summary"].(string); ok && summary != "" {
+		write("summary", summary)
+	}
+	if issues, ok := results["_issues"].(string); ok && issues != "" {
+		write("issues", issues)
+	}
+	if files, ok := results["_touched_files"].([]any); ok && len(files) > 0 {
+		var sb strings.Builder
+		for _, f := range files {
+			if s, ok := f.(string); ok {
+				sb.WriteString(s)
+				sb.WriteString("\n")
+			}
+		}
+		write("touched_files", strings.TrimSpace(sb.String()))
+	}
+}
+
+// lookupProjectDir returns the project directory for a project id.
+// Returns "" if the project is not found.
+func (r *TaskReconciler) lookupProjectDir(ctx context.Context, projectID string) string {
+	if projectID == "" {
+		return ""
+	}
+	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		r.log.Warn("lookup project dir: begin tx", "error", err)
+		return ""
+	}
+	defer ttx.Rollback(ctx)
+	var dir string
+	err = ttx.Tx.QueryRow(ctx,
+		`SELECT project_dir FROM projects WHERE id = $1 AND tenant_id = $2`,
+		projectID, "tnt_dev",
+	).Scan(&dir)
+	if err != nil || dir == "" {
+		return ""
+	}
+	ttx.Commit(ctx)
+	return dir
 }
 
 // OnHealth is called by the adapter bridge to update the execution's
@@ -1093,21 +1188,97 @@ func composeSystemPrompt(v db.WorkerVersionRow) string {
 // worker's output becomes the summary that flows downstream as upstream
 // context. If absent, the entire output is treated as the summary so
 // lenient workers that don't follow the contract still propagate.
+//
+// The marker is followed by an optional decision prefix (first word,
+// "success" or "failure") and the summary text:
+//
+//	ORCHICON WORKER SUMMARY: success — Implemented the feature.
+//	ORCHICON WORKER SUMMARY: failure — Found 3 bugs.
+//
+// The `—` separator is optional; anything after the first word is the
+// summary. If no decision prefix is present, the full text is treated
+// as the summary (backward compatible).
 const summaryMarker = "ORCHICON WORKER SUMMARY:"
 
 // extractWorkerSummary parses the ORCHICON WORKER SUMMARY block from
-// the worker's text. It takes the LAST occurrence of the marker (in
-// case the worker mentions the literal in earlier text) and returns
-// everything from the marker to the end of the string, trimmed. If the
-// marker is not present, the entire input is returned (best-effort —
-// the worker's prompt instructs it to end with the marker, but
-// fallbacks keep lenient workers from breaking the workflow).
+// the worker's text. It takes the LAST occurrence of the marker and
+// returns everything after it, trimmed, minus the decision prefix.
+// If the marker is not present, the entire input is returned.
 func extractWorkerSummary(output string) string {
 	idx := strings.LastIndex(output, summaryMarker)
 	if idx < 0 {
 		return strings.TrimSpace(output)
 	}
-	return strings.TrimSpace(output[idx+len(summaryMarker):])
+	rest := strings.TrimSpace(output[idx+len(summaryMarker):])
+	return trimSummaryDecision(rest)
+}
+
+// extractSummaryDecision reads the first word of the summary block
+// (the text after ORCHICON WORKER SUMMARY:) and returns "success",
+// "failure", or "" if neither is found. The first word and any
+// separator (—, :, whitespace) are consumed.
+func extractSummaryDecision(output string) string {
+	idx := strings.LastIndex(output, summaryMarker)
+	if idx < 0 {
+		return ""
+	}
+	rest := strings.TrimSpace(output[idx+len(summaryMarker):])
+	return firstWordAsDecision(rest)
+}
+
+// trimSummaryDecision removes the leading decision word (if present)
+// and any separator from the summary text.
+func trimSummaryDecision(s string) string {
+	first := firstWordAsDecision(s)
+	if first == "" {
+		return s
+	}
+	// Remove the decision word and any separator that follows.
+	rest := strings.TrimSpace(strings.TrimPrefix(s, first))
+	rest = strings.TrimLeft(rest, "—:- ")
+	return strings.TrimSpace(rest)
+}
+
+// firstWordAsDecision returns "success", "failure", or "" depending
+// on the first whitespace-delimited word of s.
+func firstWordAsDecision(s string) string {
+	parts := strings.Fields(s)
+	if len(parts) == 0 {
+		return ""
+	}
+	first := strings.ToLower(parts[0])
+	switch {
+	case strings.HasPrefix(first, "success"):
+		return "success"
+	case strings.HasPrefix(first, "failure"):
+		return "failure"
+	}
+	return ""
+}
+
+// extractTouchedFiles parses `diff --git` lines from the worker's
+// output text to determine which files were modified. Returns the
+// target paths (the b/ side of the diff).
+func extractTouchedFiles(output string) []string {
+	var files []string
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "diff --git") {
+			continue
+		}
+		// diff --git a/path b/path
+		parts := strings.Fields(trimmed)
+		if len(parts) < 4 {
+			continue
+		}
+		p := strings.TrimPrefix(parts[3], "b/")
+		if p != "" && !seen[p] {
+			seen[p] = true
+			files = append(files, p)
+		}
+	}
+	return files
 }
 
 // propagateSummaryToStepRun copies the worker's summary onto the
@@ -1119,43 +1290,42 @@ func extractWorkerSummary(output string) string {
 // Best-effort: a missing step run (e.g. dispatched without a
 // workflow) is logged at debug and skipped. An error is returned only
 // for genuine database errors.
-func (r *TaskReconciler) propagateSummaryToStepRun(ctx context.Context, tx pgx.Tx, tenantID, taskID, summary string) error {
+func (r *TaskReconciler) propagateStepRunResults(ctx context.Context, tx pgx.Tx, taskID string, results map[string]any) {
 	// Find the step run that references this task.
 	const q = `SELECT id, result, version FROM workflow_step_runs
 		WHERE tenant_id = $1 AND result::text LIKE $2
 		ORDER BY created_at DESC LIMIT 1`
-	// We can't pass JSONB -> text via bind, so use a LIKE on the
-	// result's text projection. The _work_item_id is a unique key in
-	// the result JSON for task steps dispatched by the workflow.
-	// Postgres's JSONB text representation has a space after each
-	// colon, so the pattern needs a wildcard between the colon and
-	// the id: "_work_item_id":<space?>01K...; the leading + trailing
-	// `%` cover anything before/after.
-	rows, err := tx.Query(ctx, q, tenantID, `%_work_item_id":%`+taskID+`%`)
+	rows, err := tx.Query(ctx, q, "tnt_dev", `%_work_item_id":%`+taskID+`%`)
 	if err != nil {
-		return fmt.Errorf("find step run for task: %w", err)
+		r.log.Warn("propagate step run results: query", "task", taskID, "error", err)
+		return
 	}
 	defer rows.Close()
 	if !rows.Next() {
-		r.log.Debug("no step run references task", "task", taskID)
-		return nil // no step run — task wasn't dispatched by a workflow
+		return
 	}
 	var stepRunID, rawResult string
 	var version int
 	if err := rows.Scan(&stepRunID, &rawResult, &version); err != nil {
-		return fmt.Errorf("scan step run: %w", err)
+		r.log.Warn("propagate step run results: scan", "task", taskID, "error", err)
+		return
 	}
 	rows.Close()
 	merged := map[string]any{}
 	if rawResult != "" {
 		_ = json.Unmarshal([]byte(rawResult), &merged)
 	}
-	merged["_summary"] = summary
+	// Propagate execution fields onto the step run so the run-view
+	// UI can show them without opening each execution.
+	for _, k := range []string{"_summary", "_decision", "_issues", "_touched_files", "_worker"} {
+		if v, ok := results[k]; ok {
+			merged[k] = v
+		}
+	}
 	updated, _ := json.Marshal(merged)
-	if _, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, stepRunID, version, db.UpdateWorkflowStepRunFields{
+	if _, err := db.UpdateWorkflowStepRun(ctx, tx, "tnt_dev", stepRunID, version, db.UpdateWorkflowStepRunFields{
 		Result: &updated,
 	}); err != nil {
-		return fmt.Errorf("update step run result: %w", err)
+		r.log.Warn("propagate step run results: update", "task", taskID, "error", err)
 	}
-	return nil
 }

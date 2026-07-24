@@ -200,8 +200,7 @@ function WorkerDetailPage() {
               {selectedVersion.status === 2 && (
                 <Button onClick={async () => {
                   await revertVersion.mutateAsync({ versionId: selectedVersion.id });
-                  setSelectedVersionId(undefined);
-                  // Force refetch versions
+                  setEditing(true);
                 }}>
                   Edit (revert to draft)
                 </Button>
@@ -215,49 +214,43 @@ function WorkerDetailPage() {
               </Button>
             </>
           )}
-          {draftVersion && viewMode === "detail" && !selectedVersionId && (
+          {editing && (
             <>
-              {editing ? (
-                <>
-                  <Button type="submit" form="draftForm" disabled={updateVersion.isPending}>
-                    {updateVersion.isPending ? "Saving…" : "Save"}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={() => setEditing(false)}
-                  >
-                    Cancel
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Button onClick={() => setEditing(true)}>Edit</Button>
-                  <Button
-                    onClick={() => {
-                      handleSubmit(async (formData) => {
-                        await updateVersion.mutateAsync({
-                          workerId: id,
-                          versionId: draftVersion.id,
-                          runtimeRef: formData.runtimeRef,
-                          modelRef: formData.modelRef,
-                          systemPrompt: [formData.role, formData.skills, formData.behavior, formData.agentsMd].filter(Boolean).join("\n\n"),
-                          permissions: formData.permissions,
-                          gatedTools: formData.gatedTools,
-                          budgetOverrides: formData.budgetOverrides,
-                          contextSources: formData.contextSources,
-                          versionNote: formData.versionNote,
-                        });
-                        publishVersion.mutateAsync(id);
-                      })();
-                    }}
-                    disabled={updateVersion.isPending || publishVersion.isPending}
-                  >
-                    {publishVersion.isPending
-                      ? "Publishing…"
-                      : "Publish v" + (draftVersion.version)}
-                  </Button>
-                </>
-              )}
+              <Button type="submit" form="draftForm" disabled={updateVersion.isPending}>
+                {updateVersion.isPending ? "Saving…" : "Save"}
+              </Button>
+              <Button variant="outline" onClick={() => setEditing(false)}>
+                Cancel
+              </Button>
+            </>
+          )}
+          {draftVersion && viewMode === "detail" && !editing && !selectedVersionId && (
+            <>
+              <Button onClick={() => setEditing(true)}>Edit</Button>
+              <Button
+                onClick={() => {
+                  handleSubmit(async (formData) => {
+                    await updateVersion.mutateAsync({
+                      workerId: id,
+                      versionId: draftVersion.id,
+                      runtimeRef: formData.runtimeRef,
+                      modelRef: formData.modelRef,
+                      systemPrompt: [formData.role, formData.skills, formData.behavior, formData.agentsMd].filter(Boolean).join("\n\n"),
+                      permissions: formData.permissions,
+                      gatedTools: formData.gatedTools,
+                      budgetOverrides: formData.budgetOverrides,
+                      contextSources: formData.contextSources,
+                      versionNote: formData.versionNote,
+                    });
+                    publishVersion.mutateAsync(id);
+                  })();
+                }}
+                disabled={updateVersion.isPending || publishVersion.isPending}
+              >
+                {publishVersion.isPending
+                  ? "Publishing…"
+                  : "Publish v" + (draftVersion.version)}
+              </Button>
             </>
           )}
           {isPublished && !draftVersion && viewMode === "detail" && (

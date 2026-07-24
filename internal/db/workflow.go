@@ -11,7 +11,7 @@ import (
 
 // WorkflowRow is the data-access shape of a workflows table row — the
 // immutable header (docs/02 §2.4, docs/09 §3.4). The mutable snapshot
-// (steps, inputs, outputs, recovery_policy_ref) lives in
+// (steps, inputs, outputs) lives in
 // WorkflowVersionRow. type distinguishes one-shot workflows from
 // repeatable templates (docs/11 §2.1).
 type WorkflowRow struct {
@@ -42,7 +42,6 @@ type WorkflowVersionRow struct {
 	Steps              []byte // jsonb: array of Step messages
 	Inputs             []byte // jsonb
 	Outputs            []byte // jsonb
-	RecoveryPolicyRef  string
 	PublishedAt        *time.Time
 	CreatedAt          time.Time
 }
@@ -298,18 +297,18 @@ func UpdateWorkflowCurrentVersion(ctx context.Context, tx pgx.Tx, tenantID, id s
 func CreateWorkflowVersion(ctx context.Context, tx pgx.Tx, v WorkflowVersionRow) (WorkflowVersionRow, error) {
 	const q = `INSERT INTO workflow_versions
 		(id, tenant_id, workflow_id, version, version_note, status,
-		 steps, inputs, outputs, recovery_policy_ref)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		 steps, inputs, outputs)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id, tenant_id, workflow_id, version, version_note, status,
-			steps, inputs, outputs, recovery_policy_ref, published_at, created_at`
+			steps, inputs, outputs, published_at, created_at`
 	row := v
 	err := tx.QueryRow(ctx, q,
 		v.ID, v.TenantID, v.WorkflowID, v.Version, v.VersionNote, v.Status,
-		v.Steps, v.Inputs, v.Outputs, v.RecoveryPolicyRef,
+		v.Steps, v.Inputs, v.Outputs,
 	).Scan(
 		&row.ID, &row.TenantID, &row.WorkflowID, &row.Version, &row.VersionNote,
 		&row.Status, &row.Steps, &row.Inputs, &row.Outputs,
-		&row.RecoveryPolicyRef, &row.PublishedAt, &row.CreatedAt,
+		&row.PublishedAt, &row.CreatedAt,
 	)
 	if err != nil {
 		return WorkflowVersionRow{}, fmt.Errorf("db: create workflow version: %w", err)
@@ -325,12 +324,12 @@ func PublishWorkflowVersion(ctx context.Context, tx pgx.Tx, tenantID, workflowID
 		SET status = 'published', published_at = now()
 		WHERE tenant_id = $1 AND workflow_id = $2 AND version = $3 AND status = 'draft'
 		RETURNING id, tenant_id, workflow_id, version, version_note, status,
-			steps, inputs, outputs, recovery_policy_ref, published_at, created_at`
+			steps, inputs, outputs, published_at, created_at`
 	var v WorkflowVersionRow
 	err := tx.QueryRow(ctx, q, tenantID, workflowID, version).Scan(
 		&v.ID, &v.TenantID, &v.WorkflowID, &v.Version, &v.VersionNote,
 		&v.Status, &v.Steps, &v.Inputs, &v.Outputs,
-		&v.RecoveryPolicyRef, &v.PublishedAt, &v.CreatedAt,
+		&v.PublishedAt, &v.CreatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkflowVersionRow{}, ErrNotFound
@@ -347,7 +346,7 @@ func PublishWorkflowVersion(ctx context.Context, tx pgx.Tx, tenantID, workflowID
 // status.
 func GetLatestWorkflowVersion(ctx context.Context, tx pgx.Tx, tenantID, workflowID string, publishedOnly bool) (WorkflowVersionRow, error) {
 	q := `SELECT id, tenant_id, workflow_id, version, version_note, status,
-		steps, inputs, outputs, recovery_policy_ref, published_at, created_at
+		steps, inputs, outputs, published_at, created_at
 		FROM workflow_versions
 		WHERE tenant_id = $1 AND workflow_id = $2`
 	args := []any{tenantID, workflowID}
@@ -359,7 +358,7 @@ func GetLatestWorkflowVersion(ctx context.Context, tx pgx.Tx, tenantID, workflow
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&v.ID, &v.TenantID, &v.WorkflowID, &v.Version, &v.VersionNote,
 		&v.Status, &v.Steps, &v.Inputs, &v.Outputs,
-		&v.RecoveryPolicyRef, &v.PublishedAt, &v.CreatedAt,
+		&v.PublishedAt, &v.CreatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkflowVersionRow{}, ErrNotFound
@@ -374,14 +373,14 @@ func GetLatestWorkflowVersion(ctx context.Context, tx pgx.Tx, tenantID, workflow
 // the tenant scope.
 func GetWorkflowVersion(ctx context.Context, tx pgx.Tx, tenantID, workflowID string, version int) (WorkflowVersionRow, error) {
 	const q = `SELECT id, tenant_id, workflow_id, version, version_note, status,
-		steps, inputs, outputs, recovery_policy_ref, published_at, created_at
+		steps, inputs, outputs, published_at, created_at
 		FROM workflow_versions
 		WHERE tenant_id = $1 AND workflow_id = $2 AND version = $3`
 	var v WorkflowVersionRow
 	err := tx.QueryRow(ctx, q, tenantID, workflowID, version).Scan(
 		&v.ID, &v.TenantID, &v.WorkflowID, &v.Version, &v.VersionNote,
 		&v.Status, &v.Steps, &v.Inputs, &v.Outputs,
-		&v.RecoveryPolicyRef, &v.PublishedAt, &v.CreatedAt,
+		&v.PublishedAt, &v.CreatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkflowVersionRow{}, ErrNotFound
@@ -395,7 +394,7 @@ func GetWorkflowVersion(ctx context.Context, tx pgx.Tx, tenantID, workflowID str
 // ListWorkflowVersions returns all versions of a workflow, newest first.
 func ListWorkflowVersions(ctx context.Context, tx pgx.Tx, tenantID, workflowID string) ([]WorkflowVersionRow, error) {
 	const q = `SELECT id, tenant_id, workflow_id, version, version_note, status,
-		steps, inputs, outputs, recovery_policy_ref, published_at, created_at
+		steps, inputs, outputs, published_at, created_at
 		FROM workflow_versions
 		WHERE tenant_id = $1 AND workflow_id = $2
 		ORDER BY version DESC`
@@ -410,7 +409,7 @@ func ListWorkflowVersions(ctx context.Context, tx pgx.Tx, tenantID, workflowID s
 		if err := rows.Scan(
 			&v.ID, &v.TenantID, &v.WorkflowID, &v.Version, &v.VersionNote,
 			&v.Status, &v.Steps, &v.Inputs, &v.Outputs,
-			&v.RecoveryPolicyRef, &v.PublishedAt, &v.CreatedAt,
+			&v.PublishedAt, &v.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan workflow version: %w", err)
 		}

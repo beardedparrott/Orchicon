@@ -42,26 +42,23 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-### v0.1.142 (2026-07-24)
+### v0.1.143 (2026-07-24)
 
 | Type | Change |
 |---|---|
-| Bug fix | Worker system prompts (Role, Skills, Behavior, AGENTS.md) now delivered to model via OPENCODE_CONFIG_CONTENT — previous OPENCODE_SYSTEM_PROMPT env var was silently ignored by opencode |
-| Bug fix | Workflow reconciler no longer wedges on loop_decision re-asks — step runs reloaded each pass, superseded runs skipped, new chain runs created on re-enter |
-| Bug fix | Loop decision blocks downstream steps during re-ask/re-enter by marking itself RUNNING instead of SUCCEEDED |
-| Bug fix | Recovery step now transitions to RUNNING when triggered, so poll phase tracks completion instead of the run failing immediately |
-| Bug fix | `_decision` extraction handles any delimiter (`_decision:failure`, `_decision: failure _issues:...`, `_decision:failureissues`) |
-| Bug fix | Run view edges now visible — added Tailwind className fallback; CSS var was undefined in SVG context |
-| Bug fix | `--dir` flag now correctly passed to opencode (was appended after exec.CommandContext, silently dropped) |
-| Bug fix | New Work Item button always visible (no longer hidden when no project filter selected) |
-| Feature | Worker purpose field (from `workers.purpose`) shown in composite prompt as "Your purpose on this step" |
-| Feature | Human-readable worker names in execution list, detail, and run views |
-| Feature | Execution iteration (loop number) displayed in naming |
-| Feature | Worker detail page: consolidated Versions card with expandable rows, Make Active/Revert to Draft/Delete buttons, version switching |
-| Feature | DeleteWorkerVersion + GetWorkerVersion + SetActiveWorkerVersion + RevertWorkerVersionToDraft RPCs |
-| Feature | Raw/markdown toggle on AssistantBubble, emoji support via remark-emoji |
-| Chore | Updated PR Reviewer and QA Engineer prompts with clear role delineation (review only / test only, never write code) |
-| Chore | AGENTS.md now specifies table format for README.md Last Release Changes section |
+| Feature | Replaced DAG recovery step with per-step recovery config (retry/summarize_restart/human_escalation/stop) — inline step-level retry with 3 attempts before permanent failure |
+| Feature | Decision signal parsed from `ORCHICON WORKER SUMMARY: success|failure — <text>` prefix — more reliable than separate `_decision:` text markers |
+| Feature | `.orchicon/<run_id>/` files written after each execution — workers read previous step results from disk instead of inline prompt context |
+| Feature | Per-step run results (decision, summary, worker, file count) displayed inline on workflow run page |
+| Feature | Increased stall timeout default from 120s to 300s |
+| Feature | Canned worker prompts updated to use summary-based decision format |
+| Bug fix | Stale `_decision` from prior execution no longer leaks into next step's results |
+| Bug fix | `_issues` (review feedback) preserved across loop iterations |
+| Bug fix | Workflow context marks correct step as current (not prior dispatch's step) |
+| Bug fix | Worker edit: Save/Cancel buttons always visible when editing, Edit (revert to draft) enters edit mode |
+| Bug fix | Step config defaults (max_iterations, recovery strategy) now persisted on first render |
+| Bug fix | React error #310 (hook count mismatch) on PropertiesPanel |
+| Chore | Removed `recovery_policy_ref` end-to-end (proto, DB, backend, frontend) |
 
 ## Installation
 

@@ -269,16 +269,33 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			}
 		}
 
-		// Dispatch ready steps by kind, evaluating gates first.
+		// Dispatch ready or recovering steps by kind, evaluating gates first.
+		// Recovering steps from summarize_restart are skipped here — the
+		// recovery engine sets the work item back to "ready" asynchronously
+		// and the TaskReconciler dispatches it on its own heartbeat.
 		for _, sr := range stepRuns {
 			if sr.SupersededBy != "" {
 				continue
 			}
-			if sr.Status != domain.StepRunReady {
-				if r2, ok := runByID[sr.StepID]; ok && r2.Status == domain.StepRunReady {
+			if sr.Status != domain.StepRunReady && sr.Status != domain.StepRunRecovering {
+				if r2, ok := runByID[sr.StepID]; ok && (r2.Status == domain.StepRunReady || r2.Status == domain.StepRunRecovering) {
 					sr = r2
 				} else {
 					continue
+				}
+			}
+			// For recovering steps, skip if the work item is still in
+			// recovery (recovery engine hasn't completed yet).
+			if sr.Status == domain.StepRunRecovering && sr.StepKind == domain.StepKindTask {
+				var parsed struct {
+					WorkItemID string `json:"_work_item_id"`
+				}
+				if err := json.Unmarshal(sr.Result, &parsed); err == nil && parsed.WorkItemID != "" {
+					wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, parsed.WorkItemID)
+					if err == nil && wi.Status == domain.WorkItemRecovering {
+						// Recovery still in progress — wait for next pass.
+						continue
+					}
 				}
 			}
 			step, ok := stepByID[sr.StepID]
@@ -318,7 +335,11 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			if sr.Status != domain.StepRunRunning || sr.StepKind != domain.StepKindTask {
 				continue
 			}
-			terminal, failed, err := r.pollTaskStep(ctx, ttx.Tx, tenantID, run, sr)
+			stepCfg := ""
+			if s, ok := stepByID[sr.StepID]; ok {
+				stepCfg = s.Config
+			}
+			terminal, failed, err := r.pollTaskStep(ctx, ttx.Tx, tenantID, run, sr, stepCfg, runByID)
 			if err != nil {
 				return err
 			}
@@ -345,45 +366,13 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				if err := r.enqueueStepEvent(ctx, ttx.Tx, evt, run, updated); err != nil {
 					return fmt.Errorf("enqueue step result: %w", err)
 				}
-			}
-		}
-
-		// Poll running RECOVER steps: check if their linked recovery
-		// execution has completed (terminal).
-		for i, sr := range stepRuns {
-			if sr.SupersededBy != "" {
-				continue
-			}
-			if sr.Status != domain.StepRunRunning || sr.StepKind != domain.StepKindRecover {
-				continue
-			}
-			terminal, failed, err := r.pollRecoverStep(ctx, ttx.Tx, tenantID, run, sr)
-			if err != nil {
-				return err
-			}
-			if terminal {
-				endNow := time.Now().UTC()
-				finalStatus := domain.StepRunSucceeded
-				if failed {
-					finalStatus = domain.StepRunFailed
-				}
-				updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-					Status:  strPtr(finalStatus),
-					EndedAt: &endNow,
-				})
-				if err != nil {
-					return fmt.Errorf("mark recover step terminal: %w", err)
-				}
-				stepRuns[i] = updated
-				runByID[sr.StepID] = updated
+			} else if cur, ok := runByID[sr.StepID]; ok && cur.Status == domain.StepRunRecovering {
+				// pollTaskStep initiated a retry — a new work_item was
+				// created and the step was set to recovering. Signal
+				// progress so the dispatch section re-dispatches on the
+				// next inner loop iteration.
+				stepRuns[i] = cur
 				madeProgress = true
-				evt := domain.WorkflowEventStepSucceeded
-				if failed {
-					evt = domain.WorkflowEventStepFailed
-				}
-				if err := r.enqueueStepEvent(ctx, ttx.Tx, evt, run, updated); err != nil {
-					return fmt.Errorf("enqueue recover step result: %w", err)
-				}
 			}
 		}
 
@@ -450,6 +439,10 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		case domain.StepRunFailed, domain.StepRunBlocked:
 			anyFailed = true
 		case domain.StepRunApprovalPending:
+			allSucceeded = false
+		case domain.StepRunRecovering:
+			// Recovering is not terminal — the step is being retried.
+			// Keep the run running (don't set anyFailed).
 			allSucceeded = false
 		default:
 			allSucceeded = false
@@ -557,10 +550,9 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 }
 
 // depsSatisfied returns true if all depends_on steps of `step` are in a
-// terminal-success state (succeeded or skipped). For RECOVER steps,
-// failed deps are also acceptable — they trigger the recovery wait path.
+// terminal-success state (succeeded or skipped). Loop decision steps
+// accept a failed upstream as satisfied so they can evaluate looping.
 func (r *WorkflowReconciler) depsSatisfied(step workflow.StepWire, runs map[string]db.WorkflowStepRunRow) bool {
-	isRecover := step.Kind == domain.StepKindRecover
 	isLoopDecision := step.Kind == domain.StepKindLoopDecision
 	for _, dep := range step.DependsOn {
 		sr, ok := runs[dep]
@@ -573,11 +565,6 @@ func (r *WorkflowReconciler) depsSatisfied(step workflow.StepWire, runs map[stri
 			r.log.Debug("DEBUG: depsSatisfied dep satisfied", "step", step.ID, "dep", dep, "status", sr.Status)
 			continue
 		}
-		if isRecover && sr.Status == domain.StepRunFailed {
-			r.log.Debug("DEBUG: depsSatisfied recover dep satisfied (failed)", "step", step.ID, "dep", dep)
-			continue
-		}
-		// Loop decision: a failed upstream triggers the loop/exit evaluation.
 		if isLoopDecision && sr.Status == domain.StepRunFailed {
 			r.log.Debug("DEBUG: depsSatisfied loop_decision dep satisfied (failed)", "step", step.ID, "dep", dep)
 			continue
@@ -681,17 +668,24 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		return r.succeedStep(ctx, tx, tenantID, run, sr, runs, now, "work_item marker")
 
 	case domain.StepKindTask:
-		// Worker node. Look upstream for WORK_ITEM steps in
-		// step.DependsOn; the first one with a work_item_id is the
-		// input to dispatch. (Multi-input fan-in: dispatch all in
-		// series, track the last one on the step run — the previous
-		// ones still complete on their own assigned worker.)
-		// Bound runs (docs/11 §2.1): when the run has a work_item_id
-		// and no canvas work-item markers are upstream, operate directly
-		// on the bound work item.
-		upstream := upstreamWorkItemIDs(step, allSteps)
-		if len(upstream) == 0 && run.WorkItemID != "" {
-			upstream = []string{run.WorkItemID}
+		// For recovering steps, the retry work item was already created
+		// by pollTaskStep and its ID is stored in _work_item_id. Use it
+		// directly instead of looking up upstream canvas markers.
+		var upstream []string
+		if sr.Status == domain.StepRunRecovering {
+			var parsed struct {
+				WorkItemID string `json:"_work_item_id"`
+			}
+			if err := json.Unmarshal(sr.Result, &parsed); err == nil && parsed.WorkItemID != "" {
+				upstream = []string{parsed.WorkItemID}
+			}
+		}
+		if len(upstream) == 0 {
+			// Normal path: look upstream for WORK_ITEM steps or bound item.
+			upstream = upstreamWorkItemIDs(step, allSteps)
+			if len(upstream) == 0 && run.WorkItemID != "" {
+				upstream = []string{run.WorkItemID}
+			}
 		}
 		if len(upstream) == 0 {
 			return r.failStep(ctx, tx, tenantID, run, sr, runs,
@@ -746,6 +740,10 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 				return fmt.Errorf("load worker version for %s: %w", step.Ref, err)
 			}
 		}
+		// Set the WorkflowStepID before building the prompt so
+		// upstreamContext marks THIS step as the current one, not
+		// the step from a prior dispatch of the same work item.
+		wi.WorkflowStepID = sr.StepID
 		composite, err := r.buildCompositePrompt(ctx, tx, tenantID, wi, workerVer, allSteps, runs)
 		if err != nil {
 			return fmt.Errorf("build composite prompt for %s: %w", wid, err)
@@ -970,166 +968,6 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			return fmt.Errorf("enqueue parallel step_succeeded: %w", err)
 		}
 
-	case domain.StepKindRecover:
-		// Check whether any dependency failed. If all deps succeeded,
-		// skip recovery — the task completed normally.
-		depFailed := false
-		for _, dep := range step.DependsOn {
-			if s, ok := runs[dep]; ok && s.Status == domain.StepRunFailed {
-				depFailed = true
-				break
-			}
-		}
-		if !depFailed {
-			// All deps succeeded → skip recovery.
-			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-				Status:    strPtr(domain.StepRunSucceeded),
-				StartedAt: &now,
-				EndedAt:   &now,
-			})
-			if err != nil {
-				return fmt.Errorf("mark recover step succeeded (no-op): %w", err)
-			}
-			runs[step.ID] = updated
-			r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated)
-			break
-		}
-		// A dep failed — transition to running and wait for the recovery
-		// engine to complete. We find the failed dep's work item id from
-		// its result JSON (_work_item_id), then poll the recovery
-		// execution status.
-		var depResult struct {
-			WorkItemID string `json:"_work_item_id"`
-		}
-		for _, dep := range step.DependsOn {
-			if s, ok := runs[dep]; ok && s.Status == domain.StepRunFailed {
-				if err := json.Unmarshal(s.Result, &depResult); err == nil && depResult.WorkItemID != "" {
-					break
-				}
-			}
-		}
-		if depResult.WorkItemID == "" {
-			// No work item found — the failed dep was never dispatched
-			// (e.g. failStep due to missing config). There's nothing to
-			// recover from; mark the step as failed and move on.
-			r.log.Warn("recover step: failed dep has no work item id — nothing to recover", "run", run.ID, "step", step.ID)
-			now := time.Now().UTC()
-			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-				Status:  strPtr(domain.StepRunFailed),
-				EndedAt: &now,
-			})
-			if err != nil {
-				return fmt.Errorf("mark recover step failed (no work item): %w", err)
-			}
-			runs[step.ID] = updated
-			if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepFailed, run, updated); err != nil {
-				return fmt.Errorf("enqueue recover step_failed: %w", err)
-			}
-			break
-		}
-		recovery, err := db.GetLatestRecoveryForTask(ctx, tx, tenantID, depResult.WorkItemID)
-		if err == db.ErrNotFound {
-			// No recovery exists — trigger it now. The step-level
-			// strategy is written below on first pending encounter.
-			if r.recovery != nil {
-				failedExecID := ""
-				if latest, err := db.GetLatestExecutionForTask(ctx, tx, tenantID, depResult.WorkItemID); err == nil {
-					failedExecID = latest.ID
-				}
-				if err := r.recovery.TriggerOnFailure(ctx, tenantID, depResult.WorkItemID, failedExecID, "workflow_recover_step"); err != nil {
-					r.log.Warn("recover step: trigger recovery", "work_item", depResult.WorkItemID, "error", err)
-				}
-			}
-			// Mark the RECOVER step as RUNNING so the poll phase
-			// tracks recovery completion. Without this the step
-			// stays READY, gets re-dispatched every pass, and the
-			// terminal-state check sees the failed dep and marks
-			// the workflow run FAILED immediately.
-			recoveryStepUpdated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-				Status:    strPtr(domain.StepRunRunning),
-				StartedAt: &now,
-			})
-			if err != nil {
-				return fmt.Errorf("mark recover step running: %w", err)
-			}
-			runs[step.ID] = recoveryStepUpdated
-			if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepStarted, run, recoveryStepUpdated); err != nil {
-				return fmt.Errorf("enqueue recover step_started: %w", err)
-			}
-			r.log.Info("recover step triggered recovery", "run", run.ID, "step", step.ID, "work_item", depResult.WorkItemID)
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("get latest recovery for task %s: %w", depResult.WorkItemID, err)
-		}
-		// Terminal recovery states: resumed (success), failed, cancelled,
-		// escalated. Non-terminal: pending, running, blocked.
-		switch recovery.Status {
-		case domain.RecoveryResumed:
-			// Recovery completed successfully.
-			strategy := readConfigStrategy(step.Config)
-			if strategy != "" {
-				r.log.Info("workflow recover step completed", "run", run.ID, "step", step.ID, "strategy", strategy, "recovery", recovery.ID)
-			}
-			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-				Status:    strPtr(domain.StepRunSucceeded),
-				StartedAt: &now,
-				EndedAt:   &now,
-			})
-			if err != nil {
-				return fmt.Errorf("mark recover step succeeded: %w", err)
-			}
-			runs[step.ID] = updated
-			if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
-				return fmt.Errorf("enqueue recover step_succeeded: %w", err)
-			}
-		case domain.RecoveryFailed, domain.RecoveryCancelled, domain.RecoveryEscalated:
-			// Recovery terminated without success. The RECOVER step
-			// still succeeds to let the DAG continue; downstream steps
-			// see the failed work item and can decide how to react.
-			r.log.Warn("workflow recover step: recovery did not resume", "run", run.ID, "step", step.ID, "recovery", recovery.ID, "recovery_status", recovery.Status)
-			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-				Status:    strPtr(domain.StepRunSucceeded),
-				StartedAt: &now,
-				EndedAt:   &now,
-			})
-			if err != nil {
-				return fmt.Errorf("mark recover step succeeded (recovery %s): %w", recovery.Status, err)
-			}
-			runs[step.ID] = updated
-			if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
-				return fmt.Errorf("enqueue recover step_succeeded: %w", err)
-			}
-		default:
-			// Recovery still in progress — stay in running, retry next pass.
-			// On first encounter, write the step-level recovery config
-			// (max_retries, retry_delay_seconds) into the recovery execution's
-			// DB fields so the engine observes them.
-			if recovery.Status == domain.RecoveryPending && recovery.MaxRetries == 5 {
-				_, mr, rd := readRecoveryConfig(step.Config)
-				if _, err := db.UpdateRecoveryExecution(ctx, tx, tenantID, recovery.ID, recovery.Version, db.UpdateRecoveryExecutionFields{
-					MaxRetries:        &mr,
-					RetryDelaySeconds: &rd,
-				}); err != nil {
-					r.log.Warn("recover step: update recovery config", "recovery", recovery.ID, "error", err)
-				}
-			}
-			if sr.Status != domain.StepRunRunning {
-				updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-					Status:    strPtr(domain.StepRunRunning),
-					StartedAt: &now,
-				})
-				if err != nil {
-					return fmt.Errorf("mark recover step running: %w", err)
-				}
-				runs[step.ID] = updated
-				if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepStarted, run, updated); err != nil {
-					return fmt.Errorf("enqueue recover step_started: %w", err)
-				}
-			}
-			r.log.Info("recover step waiting for recovery", "run", run.ID, "step", step.ID, "recovery", recovery.ID, "recovery_status", recovery.Status)
-		}
-
 	case domain.StepKindApproval:
 		// Block at approval_pending (docs/02 §2.4). Human approval
 		// wiring (an ApproveStep RPC + Policy-derived decision) arrives
@@ -1247,35 +1085,49 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 //      the next stage can read it as upstream context.
 //
 // The composite is the opencode adapter's "message" (passed via the
-// manifest Goal). The worker is instructed via the prompt's footer to
-// end its response with `ORCHICON WORKER SUMMARY:` followed by a short
-// summary that becomes the next stage's upstream context.
+// manifest Goal). Sections in order:
+//
+//  0. Role — the worker's purpose
+//  1. Task — the work item
+//  2. Project context — directory and file contents
+//  3. Instructions — read .orchicon/ for previous step results,
+//     then output format including decision prefix
 func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, worker db.WorkerVersionRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, error) {
 	var sb strings.Builder
-	// 0. Worker identity (prepended so it's visible in the prompt
-	// the operator inspects).
-	workerIdentity := composeSystemPrompt(worker)
-	if workerIdentity != "" {
-		sb.WriteString("# Worker\n\n")
-		sb.WriteString(workerIdentity)
-		sb.WriteString("\n\n")
+
+	// 0. Role reinforcement — a single-line, emphatic statement at the
+	// absolute top so the worker never loses sight of its job.
+	var workerPurpose string
+	var wkrRow db.WorkerRow
+	if err := tx.QueryRow(ctx,
+		`SELECT purpose FROM workers WHERE id = $1 AND tenant_id = $2`,
+		worker.WorkerID, tenantID,
+	).Scan(&wkrRow.Purpose); err == nil {
+		workerPurpose = strings.TrimSpace(wkrRow.Purpose)
 	}
-	// 0b. Project (directory + context file contents). We read
-	// contents from disk so the model doesn't have to. Best-effort:
-	// a missing file logs a note but doesn't abort dispatch.
+	if workerPurpose != "" {
+		fmt.Fprintf(&sb, "# Role\n\n%s\n\n", workerPurpose)
+	}
+
+	// 1. Task.
+	sb.WriteString("# Task\n\n")
+	fmt.Fprintf(&sb, "Original work item: \"%s\"\n\n", strings.TrimSpace(wi.Title))
+	if d := strings.TrimSpace(wi.Description); d != "" {
+		fmt.Fprintf(&sb, "Description:\n%s\n\n", d)
+	}
+	if ac := strings.TrimSpace(wi.AcceptanceCriteria); ac != "" {
+		fmt.Fprintf(&sb, "Acceptance criteria:\n%s\n\n", ac)
+	}
+
+	// 2. Project context — directory + context files.
 	if wi.ProjectID != "" {
 		var p db.ProjectRow
 		if err := tx.QueryRow(ctx,
 			`SELECT project_dir, context_files FROM projects WHERE id = $1 AND tenant_id = $2`,
 			wi.ProjectID, tenantID,
 		).Scan(&p.ProjectDir, &p.ContextFiles); err == nil {
-			hasProject := false
 			if p.ProjectDir != "" {
-				if !hasProject {
-					sb.WriteString("# Project\n\n")
-					hasProject = true
-				}
-				fmt.Fprintf(&sb, "Project directory (working dir for all file operations): `%s`\n\n", p.ProjectDir)
+				fmt.Fprintf(&sb, "Working directory: `%s`\n\n", p.ProjectDir)
 			}
 			var files []string
 			_ = json.Unmarshal(p.ContextFiles, &files)
@@ -1289,124 +1141,39 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 				}
 				data, err := os.ReadFile(resolved)
 				if err != nil {
-					if !hasProject {
-						sb.WriteString("# Project\n\n")
-						hasProject = true
-					}
-					fmt.Fprintf(&sb, "**Note:** failed to read context file `%s`: %v\n\n", resolved, err)
+					fmt.Fprintf(&sb, "**Note:** failed to read `%s`: %v\n\n", resolved, err)
 					continue
-				}
-				if !hasProject {
-					sb.WriteString("# Project\n\n")
-					hasProject = true
 				}
 				fmt.Fprintf(&sb, "## %s\n\n```\n%s\n```\n\n", resolved, string(data))
 			}
 		}
 	}
-	// 1. Task.
-	// Show the original work item as the overall goal, then anchor
-	// the worker to its purpose so the task title ("Create a bash
-	// script") doesn't override the worker's actual role ("Review,
-	// don't write code"). The worker's Purpose field is set on the
-	// Worker profile by the author and travels with every dispatch.
-	var workerPurpose string
-	var wkrRow db.WorkerRow
-	if err := tx.QueryRow(ctx,
-		`SELECT purpose FROM workers WHERE id = $1 AND tenant_id = $2`,
-		worker.WorkerID, tenantID,
-	).Scan(&wkrRow.Purpose); err == nil {
-		workerPurpose = strings.TrimSpace(wkrRow.Purpose)
-	}
-	sb.WriteString("# Task\n\n")
-	fmt.Fprintf(&sb, "Original work item: \"%s\"\n\n", strings.TrimSpace(wi.Title))
-	if d := strings.TrimSpace(wi.Description); d != "" {
-		fmt.Fprintf(&sb, "Description:\n%s\n\n", d)
-	}
-	if ac := strings.TrimSpace(wi.AcceptanceCriteria); ac != "" {
-		fmt.Fprintf(&sb, "Acceptance criteria:\n%s\n\n", ac)
-	}
-	if workerPurpose != "" {
-		fmt.Fprintf(&sb, "---\n\n**Your purpose on this step:** %s\n\nFocus on the acceptance criteria above — they define what \"done\" looks like. The overall goal is described above; your specific job is to execute your purpose against it, not to reproduce the original task literally.\n\n---\n\n", workerPurpose)
-	}
-	// 2. Project context — ancestors, oldest first.
-	ancestors, err := walkAncestors(ctx, tx, tenantID, wi)
-	if err != nil {
-		return "", fmt.Errorf("walk ancestors: %w", err)
-	}
-	if len(ancestors) > 0 {
-		sb.WriteString("# Project context\n\n")
-		sb.WriteString("The items below are ancestor work items (epic → feature → task). They provide project context; the task above is the actual work to do.\n\n")
-		for _, a := range ancestors {
-			fmt.Fprintf(&sb, "## %s (%s)\n", strings.TrimSpace(a.Title), workItemKindLabel(a.Kind))
-			if d := strings.TrimSpace(a.Description); d != "" {
-				fmt.Fprintf(&sb, "%s\n", d)
-			}
-			sb.WriteString("\n")
-		}
-	}
-	// 3. Workflow context — full timeline of every step in this run.
-	// Walks allSteps in DAG order, inlines the result of every step
-	// (TASK full output + summary, RECOVER narrative, WORK_ITEM
-	// title, etc.) and marks the current step so the worker can
-	// orient itself. See upstreamContext for the per-step rendering.
-	wctx, err := r.upstreamContext(ctx, tx, tenantID, wi, allSteps, runs)
-	if err != nil {
-		return "", fmt.Errorf("build workflow context: %w", err)
-	}
-	if wctx != "" {
-		sb.WriteString(wctx)
-	}
-	// 4a. Recovery context (this task) — this work item may have been
-	// recovered from a previous execution failure. The recovery engine
-	// writes _recovery_summary into the work item's results when it
-	// transitions the task back to ready; inject it here so the
-	// replacement execution knows what went wrong and what was
-	// recovered.
-	if len(wi.Results) > 0 {
-		var wiParsed map[string]any
-		if err := json.Unmarshal(wi.Results, &wiParsed); err == nil {
-			if rSummary, ok := wiParsed["_recovery_summary"].(string); ok && rSummary != "" {
-				sb.WriteString("# Recovery context (this task)\n\n")
-				sb.WriteString("The previous execution for this task failed and was automatically recovered. The following is a summary of what happened:\n\n")
-				sb.WriteString(rSummary)
-				sb.WriteString("\n\n")
-			}
-		}
-	}
-	// 4b. Previous review feedback — when the loop routes back to
-	// SSE after PR Reviewer found issues, the _issues field carries
-	// the PR Reviewer's findings. Include them here so the SSE knows
-	// what needs fixing even though the previous PR Reviewer step
-	// run was superseded and its output is no longer in the active
-	// workflow context (the new cycle's PR Reviewer hasn't run yet).
-	if len(wi.Results) > 0 {
-		var wiParsed map[string]any
-		if err := json.Unmarshal(wi.Results, &wiParsed); err == nil {
-			if issues, ok := wiParsed["_issues"].(string); ok && issues != "" {
-				sb.WriteString("# Previous review feedback\n\n")
-				sb.WriteString("The following issues were identified by the reviewer. Address them in your work:\n\n")
-				sb.WriteString(issues)
-				sb.WriteString("\n\n")
-			}
-		}
-	}
-	// 5. File context — kept for backward compatibility (old
-	// composite shape). The prepended # Project block above already
-	// inlines file contents; this section is a fallback if a caller
-	// still has it set without a ProjectID.
-	if wi.ProjectID != "" {
-		fileCtx, err := r.readProjectContextFiles(ctx, tx, tenantID, wi.ProjectID)
-		if err != nil {
-			r.log.Warn("failed to read project context files", "project_id", wi.ProjectID, "work_item_id", wi.ID, "error", err)
-		} else if fileCtx != "" {
-			sb.WriteString(fileCtx)
-		}
-	}
-	// 6. Footer: instruction for the worker to emit the summary marker.
+
+	// 3. Instructions.
 	sb.WriteString("# Instructions\n\n")
-	sb.WriteString("Complete the task above. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one short paragraph summarizing what you did. Everything from that marker to the end of your output is passed to the next stage of the workflow as upstream context.\n\n")
-	sb.WriteString("If you produce an output file (an essay, report, configuration, generated code, or any structured artifact), use the `write` tool to save it instead of `bash` with a heredoc. The `write` tool saves the file and orchicon automatically captures its content as an inline artifact visible in the execution log. Using `write` (not bash heredoc) makes your output visible to the operator without them having to click through tool input.\n")
+	// Only instruct the worker to read .orchicon/ files when prior
+	// steps have completed. On the first step there's nothing to read.
+	hasPriorSteps := false
+	for _, sr := range runs {
+		if sr.Status == domain.StepRunSucceeded || sr.Status == domain.StepRunFailed {
+			hasPriorSteps = true
+			break
+		}
+	}
+	if hasPriorSteps {
+		sb.WriteString("Read this run's `.orchicon/` files from the working directory to see the previous step's results:\n\n")
+		fmt.Fprintf(&sb, "- `.orchicon/%s/status` — `success` or `failure` from the previous step\n", wi.WorkflowRunID)
+		fmt.Fprintf(&sb, "- `.orchicon/%s/summary` — what the previous worker did\n", wi.WorkflowRunID)
+		fmt.Fprintf(&sb, "- `.orchicon/%s/issues` — issues found by the previous reviewer (if any)\n", wi.WorkflowRunID)
+		fmt.Fprintf(&sb, "- `.orchicon/%s/worker` — which worker produced the previous results\n\n", wi.WorkflowRunID)
+	}
+	sb.WriteString("Complete the task above. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — either `success` or `failure` — and a short paragraph summarizing what you did.\n\n")
+	sb.WriteString("Format:\n")
+	sb.WriteString("```\nORCHICON WORKER SUMMARY: success — Implemented the feature.\n```\n")
+	sb.WriteString("or\n")
+	sb.WriteString("```\nORCHICON WORKER SUMMARY: failure — Found 3 bugs in the implementation.\n```\n\n")
+	sb.WriteString("The first word (`success` or `failure`) is used to route the workflow. The text after `—` is passed to the next stage as the summary of your work.\n\n")
+	sb.WriteString("If you produce an output file, use the `write` tool (not `bash` with a heredoc). The `write` tool saves the file and orchicon captures it as an inline artifact.\n")
 	return sb.String(), nil
 }
 
@@ -1439,35 +1206,21 @@ func walkAncestors(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkIt
 	return out, nil
 }
 
-// upstreamContext renders a chronological "Workflow context" section
-// for the worker: a numbered list of every step in this run, in DAG
-// order, with each step's status and the execution results it
-// produced. The current step is marked so the worker can see what has
-// come before and what is expected next.
+// upstreamContext renders a compact "Workflow context" section for
+// the worker. Each prior step is a short card: decision, summary,
+// and list of touched files. No full output dumps. The current step
+// is marked so the worker can orient itself.
 //
 // Per-step rendering (see renderUpstreamStep):
 //
-//   - TASK: linked work item (loaded from DB) — its title, the
-//     worker's full output (truncated to upstreamOutputMaxChars if
-//     huge), the extracted ORCHICON WORKER SUMMARY, and any
-//     _recovery_summary on the work item.
-//   - RECOVER: linked recovery execution (loaded from DB) — its
-//     status, strategy, summary narrative, and trigger reason.
-//   - WORK_ITEM: linked work item title + a short description
-//     excerpt. These are passive context markers on the canvas, not
-//     executed by a worker.
+//   - TASK: _decision, _summary, _touched_files from the work item's
+//     results. No full output dump.
+//   - WORK_ITEM: linked work item title + a short description.
 //   - PROJECT: project name only.
-//   - DECISION / APPROVAL / PARALLEL: status only (they're branching
-//     and gating primitives, not result-bearing).
+//   - DECISION / APPROVAL / PARALLEL: status only.
 //
-// Returns "" when the run has no step runs yet (first step) so the
-// caller can omit the section entirely rather than render an empty
-// header. The function walks the DAG by step-id order via allSteps
-// (the order the author placed them on the canvas — for a linear
-// chain that's left-to-right; for a diamond, the source order
-// approximates topological order, which is the best the reconciler
-// can do without a full topological sort). Cycles are the caller's
-// responsibility to prevent (validated at save time, docs/10 §11).
+// Returns "" when the run has no completed steps yet. Walks the DAG
+// by step-id order via allSteps.
 func (r *WorkflowReconciler) upstreamContext(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, error) {
 	// Find the current step (the one being dispatched). The worker
 	// step whose result will eventually hold this work item's id is
@@ -1538,21 +1291,19 @@ func (r *WorkflowReconciler) upstreamContext(ctx context.Context, tx pgx.Tx, ten
 	}
 
 	// If a current step is known, append a brief "next task" reminder
-	// so the worker can see at a glance what is expected of them. The
-	// "→ you are here" marker lives here rather than in the timeline
-	// because the current dispatch is the NEXT step to run — the
-	// timeline only contains prior steps that have already started.
+	// so the worker can see at a glance what is expected of them.
+	sb.WriteString("---\n\n")
 	if currentStepID != "" {
 		for _, s := range allSteps {
 			if s.ID != currentStepID {
 				continue
 			}
-			sb.WriteString("## → Next task (you are here)\n\n")
-			fmt.Fprintf(&sb, "You are executing **%s** (%s", strings.TrimSpace(s.Name), stepKindLabel(s.Kind))
+			sb.WriteString("**→ Your task:** ")
+			fmt.Fprintf(&sb, "You are executing **%s**", strings.TrimSpace(s.Name))
 			if s.Kind == domain.StepKindTask && s.Ref != "" {
-				fmt.Fprintf(&sb, ", worker `%s`", s.Ref)
+				fmt.Fprintf(&sb, " as `%s`", s.Ref)
 			}
-			sb.WriteString("). Complete the work in the *Task* section above, then end your response with the `ORCHICON WORKER SUMMARY:` marker so the next stage can read your result.\n\n")
+			sb.WriteString(". Complete the work in the *Task* section above, then end with the marker.\n\n")
 			break
 		}
 	}
@@ -1598,9 +1349,9 @@ func (r *WorkflowReconciler) renderUpstreamStep(ctx context.Context, tx pgx.Tx, 
 	switch s.Kind {
 	case domain.StepKindTask:
 		// Linked work item id is stored in the step run's result
-		// JSON when the task was dispatched. We then load the work
-		// item to get its full _output + _summary + _recovery_summary
-		// from the results JSONB.
+		// JSON when the task was dispatched. We load the work item
+		// to read its _decision, _summary, and _touched_files from
+		// the results JSONB — no full output dump.
 		var ref struct {
 			WorkItemID string `json:"_work_item_id"`
 		}
@@ -1615,58 +1366,29 @@ func (r *WorkflowReconciler) renderUpstreamStep(ctx context.Context, tx pgx.Tx, 
 			}
 			return fmt.Errorf("load work item for upstream step %s: %w", s.ID, err)
 		}
-		fmt.Fprintf(sb, "Work item: %s (%s)\n", strings.TrimSpace(wi.Title), workItemKindLabel(wi.Kind))
-		// Per-work-item results: _output (worker's full text),
-		// _summary (extracted by TaskReconciler), _recovery_summary
-		// (set when the recovery engine resumes a failed task).
 		var parsed map[string]any
 		if len(wi.Results) > 0 {
 			_ = json.Unmarshal(wi.Results, &parsed)
 		}
-		if output, ok := parsed["_output"].(string); ok && output != "" {
-			r.writeCappedText(sb, "Output", output, upstreamOutputMaxChars)
+		if d, ok := parsed["_decision"].(string); ok && d != "" {
+			fmt.Fprintf(sb, "Decision: %s\n", d)
 		}
 		if summary, ok := parsed["_summary"].(string); ok && summary != "" {
-			// _summary is the canonical "what the worker did" line
-			// the next stage reads; it may already appear in the
-			// output block above, but we surface it again as a
-			// clear "Summary" field so the worker doesn't have to
-			// hunt for the marker.
-			fmt.Fprintf(sb, "\nSummary: %s\n", summary)
+			fmt.Fprintf(sb, "Summary: %s\n", summary)
+		}
+		if files, ok := parsed["_touched_files"].([]any); ok && len(files) > 0 {
+			paths := make([]string, 0, len(files))
+			for _, f := range files {
+				if s, ok := f.(string); ok {
+					paths = append(paths, s)
+				}
+			}
+			if len(paths) > 0 {
+				fmt.Fprintf(sb, "Files: `%s`\n", strings.Join(paths, "`, `"))
+			}
 		}
 		if recSummary, ok := parsed["_recovery_summary"].(string); ok && recSummary != "" {
-			fmt.Fprintf(sb, "\nRecovery narrative (for this task):\n%s\n", recSummary)
-		}
-
-	case domain.StepKindRecover:
-		// Look up the recovery execution that this step was waiting
-		// on. The step's result JSON carries the work item id of the
-		// failed dep (the one being recovered). We then read the
-		// latest recovery for that work item.
-		var ref struct {
-			WorkItemID string `json:"_work_item_id"`
-		}
-		if err := json.Unmarshal(sr.Result, &ref); err != nil || ref.WorkItemID == "" {
-			break
-		}
-		rec, err := db.GetLatestRecoveryForTask(ctx, tx, tenantID, ref.WorkItemID)
-		if err != nil {
-			if err == db.ErrNotFound {
-				r.log.Debug("upstream step: recovery missing", "step", s.ID, "work_item_id", ref.WorkItemID)
-				break
-			}
-			return fmt.Errorf("load recovery for upstream step %s: %w", s.ID, err)
-		}
-		if rec.Strategy != "" {
-			fmt.Fprintf(sb, "Recovery strategy: %s\n", rec.Strategy)
-		}
-		if rec.TriggerReason != "" {
-			fmt.Fprintf(sb, "Trigger reason: %s\n", rec.TriggerReason)
-		}
-		if rec.Summary != "" {
-			fmt.Fprintf(sb, "\nRecovery narrative:\n%s\n", rec.Summary)
-		} else if rec.Status != "" {
-			fmt.Fprintf(sb, "\nRecovery status: %s (no narrative recorded).\n", rec.Status)
+			fmt.Fprintf(sb, "Recovery: %s\n", recSummary)
 		}
 
 	case domain.StepKindWorkItem:
@@ -1863,47 +1585,52 @@ func readConfigProjectID(config string) string {
 // when a RECOVER step is reached so operators can see what the
 // runtime would have done on a real failure. Returns "" for empty /
 // missing.
-func readConfigStrategy(config string) string {
-	if config == "" {
-		return ""
-	}
-	var parsed struct {
-		Strategy string `json:"strategy"`
-	}
-	if err := json.Unmarshal([]byte(config), &parsed); err != nil {
-		return ""
-	}
-	return parsed.Strategy
+// stepRecoveryConfig is the per-step recovery configuration embedded in
+// a task step's config JSON under the "recovery" key. Controls what
+// happens when the step's work item fails after blind-retry attempts
+// are exhausted.
+//
+// Strategy options:
+//   - "retry" (default): blind retry — create a fresh work item and
+//     re-dispatch immediately.
+//   - "summarize_restart": trigger the recovery engine to capture,
+//     summarize, and resume the failed work item with context.
+//   - "human_escalation": set the step to approval_pending; a human
+//     must mark the task succeeded to continue.
+//   - "stop": permanent failure — no retry, step is marked failed.
+type stepRecoveryConfig struct {
+	Strategy          string `json:"strategy"`
+	MaxAttempts       int    `json:"max_attempts"`
+	RetryDelaySeconds int    `json:"retry_delay_seconds"`
 }
 
-// readRecoveryConfig extracts strategy, max_retries and
-// retry_delay_seconds from the step config JSON. Returns defaults
-// for any missing field.
-func readRecoveryConfig(config string) (strategy string, maxRetries, retryDelay int) {
-	strategy = "summarize_restart"
-	maxRetries = 5
-	retryDelay = 10
+// readStepRecoveryConfig reads the "recovery" block from the step's
+// config JSON. Returns defaults (strategy="retry", max_attempts=3) for
+// any missing field.
+func readStepRecoveryConfig(config string) stepRecoveryConfig {
+	cfg := stepRecoveryConfig{
+		Strategy:    "retry",
+		MaxAttempts: 3,
+	}
 	if config == "" {
-		return
+		return cfg
 	}
-	var parsed struct {
-		Strategy          string `json:"strategy"`
-		MaxRetries        int    `json:"max_retries"`
-		RetryDelaySeconds int    `json:"retry_delay_seconds"`
+	var outer struct {
+		Recovery stepRecoveryConfig `json:"recovery"`
 	}
-	if err := json.Unmarshal([]byte(config), &parsed); err != nil {
-		return
+	if err := json.Unmarshal([]byte(config), &outer); err != nil {
+		return cfg
 	}
-	if parsed.Strategy != "" {
-		strategy = parsed.Strategy
+	if outer.Recovery.Strategy != "" {
+		cfg.Strategy = outer.Recovery.Strategy
 	}
-	if parsed.MaxRetries > 0 {
-		maxRetries = parsed.MaxRetries
+	if outer.Recovery.MaxAttempts > 0 {
+		cfg.MaxAttempts = outer.Recovery.MaxAttempts
 	}
-	if parsed.RetryDelaySeconds > 0 {
-		retryDelay = parsed.RetryDelaySeconds
+	if outer.Recovery.RetryDelaySeconds > 0 {
+		cfg.RetryDelaySeconds = outer.Recovery.RetryDelaySeconds
 	}
-	return
+	return cfg
 }
 
 // upstreamWorkItemIDs walks step.DependsOn looking for WORK_ITEM steps
@@ -1930,60 +1657,30 @@ func upstreamWorkItemIDs(step workflow.StepWire, allSteps []workflow.StepWire) [
 	return ids
 }
 
-// pollRecoverStep checks whether the recovery execution linked to a
-// running RECOVER step has completed. Returns (terminal, error). The
-// work item id is read from the failed dep step run's result JSON
-// (_work_item_id).
-func (r *WorkflowReconciler) pollRecoverStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow) (terminal bool, failed bool, err error) {
-	// Find the latest stepRuns for this run to look up the dep's result.
-	stepRuns, err := db.ListWorkflowStepRuns(ctx, tx, tenantID, run.ID)
-	if err != nil {
-		return false, false, fmt.Errorf("list step runs for recover poll: %w", err)
-	}
-	var workItemID string
-	for _, s := range stepRuns {
-		if s.StepKind == domain.StepKindTask && s.Status == domain.StepRunFailed {
-			var parsed struct {
-				WorkItemID string `json:"_work_item_id"`
-			}
-			if err := json.Unmarshal(s.Result, &parsed); err == nil && parsed.WorkItemID != "" {
-				workItemID = parsed.WorkItemID
-				break
-			}
-		}
-	}
-	if workItemID == "" {
-		// No recoverable work item found — tell caller to mark step
-		// as failed so polling stops. Happens when the failed dep was
-		// never dispatched (no _work_item_id in its result).
-		return true, true, nil
-	}
-	recovery, err := db.GetLatestRecoveryForTask(ctx, tx, tenantID, workItemID)
-	if err == db.ErrNotFound {
-		return false, false, nil
-	}
-	if err != nil {
-		return false, false, fmt.Errorf("get latest recovery for task %s: %w", workItemID, err)
-	}
-	switch recovery.Status {
-	case domain.RecoveryResumed, domain.RecoveryFailed, domain.RecoveryCancelled, domain.RecoveryEscalated:
-		r.log.Info("recover step recovery terminal", "run", run.ID, "step", sr.StepID, "recovery", recovery.ID, "status", recovery.Status)
-		return true, false, nil
-	default:
-		return false, false, nil
-	}
-}
-
 // pollTaskStep checks the WorkItem linked to a running task step. Returns
 // (terminal, failed, error). The WorkItem id is stored in the step run's
 // result JSON under _work_item_id.
-func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow) (bool, bool, error) {
+//
+// When the work item has failed and the step has remaining retry attempts,
+// behaviour depends on the step's recovery strategy (from
+// stepConfig.recovery):
+//
+//   - "retry" (default): creates a fresh work item and re-dispatches
+//     immediately. The step transitions to "recovering".
+//   - "summarize_restart": triggers the recovery engine to capture,
+//     summarize, and resume the failed work item. The step waits in
+//     "recovering" until the recovery completes.
+//   - "human_escalation": sets the step to "approval_pending"; a human
+//     must mark the task succeeded to continue.
+//   - "stop": permanent failure — no retry.
+//
+// Terminal failure only occurs after all attempts are exhausted,
+// regardless of strategy.
+func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, stepConfig string, runByID map[string]db.WorkflowStepRunRow) (bool, bool, error) {
 	var parsed struct {
 		WorkItemID string `json:"_work_item_id"`
 	}
 	if err := json.Unmarshal(sr.Result, &parsed); err != nil || parsed.WorkItemID == "" {
-		// No linked WorkItem yet (dispatch may not have committed in
-		// this pass). Not terminal.
 		return false, false, nil
 	}
 	wi, err := db.GetWorkItem(ctx, tx, tenantID, parsed.WorkItemID)
@@ -1996,12 +1693,113 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 	switch wi.Status {
 	case domain.WorkItemSucceeded:
 		return true, false, nil
+
 	case domain.WorkItemFailed, domain.WorkItemCancelled:
-		return true, true, nil
+		rc := readStepRecoveryConfig(stepConfig)
+
+		if sr.Attempt >= rc.MaxAttempts-1 {
+			return true, true, nil
+		}
+
+		newAttempt := sr.Attempt + 1
+		r.log.Info("task step failed, running recovery strategy",
+			"run", run.ID, "step", sr.StepID,
+			"work_item", wi.ID, "attempt", newAttempt, "max_attempts", rc.MaxAttempts,
+			"strategy", rc.Strategy)
+
+		switch rc.Strategy {
+		case "retry", "":
+			freshID := db.NewID()
+			fresh := db.WorkItemRow{
+				ID:                 freshID,
+				TenantID:           wi.TenantID,
+				ProjectID:          wi.ProjectID,
+				ParentID:           wi.ParentID,
+				Kind:               wi.Kind,
+				Title:              wi.Title,
+				Description:        wi.Description,
+				AcceptanceCriteria: wi.AcceptanceCriteria,
+				Status:             domain.WorkItemPending,
+				Priority:           wi.Priority,
+				Budgets:            wi.Budgets,
+				ContextWindow:      wi.ContextWindow,
+				WorkflowID:         wi.WorkflowID,
+				WorkflowRunID:      wi.WorkflowRunID,
+				WorkflowStepID:     wi.WorkflowStepID,
+				Results:            []byte("{}"),
+				PromptContext:      wi.PromptContext,
+			}
+			if _, err := db.CreateWorkItem(ctx, tx, fresh); err != nil {
+				return false, false, fmt.Errorf("create retry work item: %w", err)
+			}
+			stepResult, _ := json.Marshal(map[string]string{"_work_item_id": freshID})
+			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:  strPtr(domain.StepRunRecovering),
+				Attempt: &newAttempt,
+				Result:  &stepResult,
+			})
+			if err != nil {
+				return false, false, fmt.Errorf("update step run for retry: %w", err)
+			}
+			runByID[sr.StepID] = updated
+			return false, false, nil
+
+		case "summarize_restart":
+			if r.recovery != nil {
+				failedExecID := r.getFailedExecID(ctx, tx, tenantID, parsed.WorkItemID)
+				if err := r.recovery.TriggerOnFailure(ctx, tenantID, parsed.WorkItemID, failedExecID, "step_recovery"); err != nil {
+					r.log.Warn("step recovery: trigger on failure", "work_item", parsed.WorkItemID, "error", err)
+				}
+			}
+			stepResult, _ := json.Marshal(map[string]string{"_work_item_id": parsed.WorkItemID})
+			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:  strPtr(domain.StepRunRecovering),
+				Attempt: &newAttempt,
+				Result:  &stepResult,
+			})
+			if err != nil {
+				return false, false, fmt.Errorf("update step run for recovery: %w", err)
+			}
+			runByID[sr.StepID] = updated
+			return false, false, nil
+
+		case "human_escalation":
+			stepResult, _ := json.Marshal(map[string]string{
+				"_work_item_id": parsed.WorkItemID,
+				"_decision":     "pending",
+			})
+			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:  strPtr(domain.StepRunApprovalPending),
+				Attempt: &newAttempt,
+				Result:  &stepResult,
+			})
+			if err != nil {
+				return false, false, fmt.Errorf("update step run for human escalation: %w", err)
+			}
+			runByID[sr.StepID] = updated
+			return false, false, nil
+
+		case "stop":
+			return true, true, nil
+
+		default:
+			return true, true, nil
+		}
+
 	default:
-		// Still in flight.
 		return false, false, nil
 	}
+}
+
+// getFailedExecID returns the latest execution ID for the given work
+// item. Best-effort — returns "" on any error so recovery can still
+// proceed without a specific execution reference.
+func (r *WorkflowReconciler) getFailedExecID(ctx context.Context, tx pgx.Tx, tenantID, workItemID string) string {
+	exec, err := db.GetLatestExecutionForTask(ctx, tx, tenantID, workItemID)
+	if err != nil {
+		return ""
+	}
+	return exec.ID
 }
 
 // --- event helpers ---------------------------------------------------------
@@ -2156,9 +1954,13 @@ func (r *WorkflowReconciler) reaskDecisionStep(ctx context.Context, tx pgx.Tx, t
 		wi, err := db.GetWorkItem(ctx, tx, tenantID, upResult.WorkItemID)
 		if err == nil {
 			reaskMsg := "\n\n# Re-ask\n\n**RE-ASK ATTEMPT " + fmt.Sprint(nextIter) + "**\n" +
-				"You MUST include `_decision` in your response with a value of `success` or `failure`.\n" +
-				"- `_decision: success` — the work is complete and correct\n" +
-				"- `_decision: failure` — there are issues that need fixing (include `_issues` with details)"
+				"Your response must end with:\n" +
+				"```\nORCHICON WORKER SUMMARY: success — <summary>\n```\n" +
+				"or\n" +
+				"```\nORCHICON WORKER SUMMARY: failure — <summary>\n```\n" +
+				"The first word (`success` or `failure`) routes the workflow. " +
+				"If the work is complete and correct, use `success`. " +
+				"If there are issues that need fixing, use `failure` and include `_issues` with details."
 
 			// Preserve the existing composite (worker identity, project,
 			// task, ancestors, workflow context, recovery, instructions)
