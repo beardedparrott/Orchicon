@@ -182,6 +182,11 @@ function WorkerDetailPage() {
             natural width; gap-2 + flex-wrap drops them onto multiple
             lines cleanly. */}
         <div className="flex flex-wrap items-center gap-2">
+          {selectedVersionId && (
+            <Button variant="outline" onClick={() => setSelectedVersionId(undefined)}>
+              ← Back to active
+            </Button>
+          )}
           {draftVersion && viewMode === "detail" && (
             <>
               {editing ? (
@@ -583,15 +588,6 @@ function WorkerDetailPage() {
                   ? ` — ${selectedVersion.versionNote}`
                   : ""}
               </CardTitle>
-              {selectedVersionId && (
-                <button
-                  type="button"
-                  className="text-xs text-muted-foreground hover:text-foreground"
-                  onClick={() => setSelectedVersionId(undefined)}
-                >
-                  Back to active
-                </button>
-              )}
             </div>
             <CardDescription>
               {versionStatusLabel(selectedVersion.status)}
