@@ -551,9 +551,23 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	// Persist output + summary on the work item's results JSON so the
 	// audit trail shows what the worker produced. The summary is the
 	// canonical downstream input.
+	//
+	// We start fresh — previous results from an earlier execution
+	// (e.g. SSE) carry stale _decision/_issues that must NOT survive
+	// into this execution (the new output may not explicitly overwrite
+	// them via _decision: markers). Only _parent_execution_id and
+	// _recovery_summary are preserved from prior results.
 	results := map[string]any{}
 	if len(wi.Results) > 0 {
-		_ = json.Unmarshal(wi.Results, &results)
+		var existing map[string]any
+		if err := json.Unmarshal(wi.Results, &existing); err == nil {
+			if pid, ok := existing["_parent_execution_id"]; ok {
+				results["_parent_execution_id"] = pid
+			}
+			if rs, ok := existing["_recovery_summary"]; ok {
+				results["_recovery_summary"] = rs
+			}
+		}
 	}
 	if output != "" {
 		results["_output"] = output
