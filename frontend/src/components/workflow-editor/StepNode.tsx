@@ -7,6 +7,7 @@ import {
   STEP_KIND,
   STEP_KIND_DISPLAY_LABELS,
   STEP_KIND_ICONS,
+  type StepConfig,
   type StepData,
 } from "./stepKinds";
 
@@ -30,7 +31,7 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
   const kind = data.kind;
   const Icon = STEP_KIND_ICONS[kind] ?? STEP_KIND_ICONS[STEP_KIND.TASK];
   const label = STEP_KIND_DISPLAY_LABELS[kind] ?? "step";
-  const cfg = parseConfig(data.config);
+  const cfg = parseConfig(data.config) as StepConfig;
 
   const hasBinding =
     kind === STEP_KIND.TASK

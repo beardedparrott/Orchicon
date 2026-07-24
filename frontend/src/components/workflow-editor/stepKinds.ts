@@ -124,6 +124,17 @@ export const ACCENT_STROKE: Record<string, string> = {
   cyan: "stroke-cyan-400",
 };
 
+export interface StepRecoveryConfig {
+  strategy?: string;
+  max_attempts?: number;
+  retry_delay_seconds?: number;
+}
+
+export interface StepConfig {
+  recovery?: StepRecoveryConfig;
+  [key: string]: unknown;
+}
+
 export const RECOVERY_STRATEGY_LABELS: Record<string, string> = {
   retry: "Blind retry",
   summarize_restart: "Summarize + restart",

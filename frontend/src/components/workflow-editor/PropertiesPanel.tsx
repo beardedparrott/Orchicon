@@ -19,6 +19,7 @@ import {
   STEP_KIND,
   STEP_KIND_DISPLAY_LABELS,
   STEP_KIND_ICONS,
+  type StepConfig,
   type StepData,
 } from "./stepKinds";
 
@@ -41,7 +42,7 @@ export function PropertiesPanel({
   if (!node) return <EmptyProperties />;
   const d = node.data;
   const Icon = STEP_KIND_ICONS[d.kind] ?? STEP_KIND_ICONS[1];
-  const cfg = parseConfig(d.config);
+  const cfg = parseConfig(d.config) as StepConfig;
 
   const publishedWorkers = (workers ?? []).filter(
     (w) => w.status === WorkerStatus.PUBLISHED,
