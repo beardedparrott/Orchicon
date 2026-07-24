@@ -1081,35 +1081,118 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 //      the next stage can read it as upstream context.
 //
 // The composite is the opencode adapter's "message" (passed via the
-// manifest Goal). The worker is instructed via the prompt's footer to
-// end its response with `ORCHICON WORKER SUMMARY:` followed by a short
-// summary that becomes the next stage's upstream context.
+// manifest Goal). Sections in order:
+//
+//  0. ROLE — bold, one-line purpose statement
+//  0a. Worker identity (system prompt)
+//  1. Task — the work item
+//  2. Previous review feedback (if looping back)
+//  3. Workflow context — compact cards (decision + summary + files)
+//  4. Recovery context (if recovered)
+//  5. Project context — ancestors, directory, context files
+//  6. Instructions — output format including decision prefix
 func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, worker db.WorkerVersionRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, error) {
 	var sb strings.Builder
-	// 0. Worker identity (prepended so it's visible in the prompt
-	// the operator inspects).
+
+	// 0. Role reinforcement — a single-line, emphatic statement at the
+	// absolute top so the worker never loses sight of its job.
+	var workerPurpose string
+	var wkrRow db.WorkerRow
+	if err := tx.QueryRow(ctx,
+		`SELECT purpose FROM workers WHERE id = $1 AND tenant_id = $2`,
+		worker.WorkerID, tenantID,
+	).Scan(&wkrRow.Purpose); err == nil {
+		workerPurpose = strings.TrimSpace(wkrRow.Purpose)
+	}
+	if workerPurpose != "" {
+		fmt.Fprintf(&sb, "**⚠ YOUR ROLE: %s**\n\n", workerPurpose)
+	}
+
+	// 0a. Worker identity (role, skills, behavior, AGENTS.md) —
+	// the system prompt. Included here so it's visible in the prompt
+	// the operator inspects.
 	workerIdentity := composeSystemPrompt(worker)
 	if workerIdentity != "" {
 		sb.WriteString("# Worker\n\n")
 		sb.WriteString(workerIdentity)
 		sb.WriteString("\n\n")
 	}
-	// 0b. Project (directory + context file contents). We read
-	// contents from disk so the model doesn't have to. Best-effort:
-	// a missing file logs a note but doesn't abort dispatch.
+
+	// 1. Task — immediately after the role so the worker knows what
+	// to do before reading context.
+	sb.WriteString("# Task\n\n")
+	fmt.Fprintf(&sb, "Original work item: \"%s\"\n\n", strings.TrimSpace(wi.Title))
+	if d := strings.TrimSpace(wi.Description); d != "" {
+		fmt.Fprintf(&sb, "Description:\n%s\n\n", d)
+	}
+	if ac := strings.TrimSpace(wi.AcceptanceCriteria); ac != "" {
+		fmt.Fprintf(&sb, "Acceptance criteria:\n%s\n\n", ac)
+	}
+
+	// 2. Previous review feedback — when the loop routes back to
+	// SSE after PR Reviewer found issues, the _issues field carries
+	// the PR Reviewer's findings. Show this right after the task
+	// so the SSE knows what to fix before reading the full context.
+	if len(wi.Results) > 0 {
+		var wiParsed map[string]any
+		if err := json.Unmarshal(wi.Results, &wiParsed); err == nil {
+			if issues, ok := wiParsed["_issues"].(string); ok && issues != "" {
+				sb.WriteString("# Previous review feedback\n\n")
+				sb.WriteString("The following issues were identified. Address them in your work:\n\n")
+				sb.WriteString(issues)
+				sb.WriteString("\n\n")
+			}
+		}
+	}
+
+	// 3. Workflow context — compact cards with only the essential
+	// info: decision, summary, and touched files. No full output.
+	wctx, err := r.upstreamContext(ctx, tx, tenantID, wi, allSteps, runs)
+	if err != nil {
+		return "", fmt.Errorf("build workflow context: %w", err)
+	}
+	if wctx != "" {
+		sb.WriteString(wctx)
+	}
+
+	// 4. Recovery context (this task) — set by the recovery engine
+	// when a failed work item is resumed.
+	if len(wi.Results) > 0 {
+		var wiParsed map[string]any
+		if err := json.Unmarshal(wi.Results, &wiParsed); err == nil {
+			if rSummary, ok := wiParsed["_recovery_summary"].(string); ok && rSummary != "" {
+				sb.WriteString("# Recovery context\n\n")
+				sb.WriteString("The previous execution failed and was recovered. Summary:\n\n")
+				sb.WriteString(rSummary)
+				sb.WriteString("\n\n")
+			}
+		}
+	}
+
+	// 5. Project context — ancestors + directory + context files.
+	ancestors, err := walkAncestors(ctx, tx, tenantID, wi)
+	if err != nil {
+		return "", fmt.Errorf("walk ancestors: %w", err)
+	}
+	if len(ancestors) > 0 {
+		sb.WriteString("# Project context\n\n")
+		sb.WriteString("Ancestor work items (epic → feature → task):\n\n")
+		for _, a := range ancestors {
+			fmt.Fprintf(&sb, "- **%s** (%s)\n", strings.TrimSpace(a.Title), workItemKindLabel(a.Kind))
+			if d := strings.TrimSpace(a.Description); d != "" {
+				fmt.Fprintf(&sb, "  %s\n", d)
+			}
+		}
+		sb.WriteString("\n")
+	}
 	if wi.ProjectID != "" {
 		var p db.ProjectRow
 		if err := tx.QueryRow(ctx,
 			`SELECT project_dir, context_files FROM projects WHERE id = $1 AND tenant_id = $2`,
 			wi.ProjectID, tenantID,
 		).Scan(&p.ProjectDir, &p.ContextFiles); err == nil {
-			hasProject := false
 			if p.ProjectDir != "" {
-				if !hasProject {
-					sb.WriteString("# Project\n\n")
-					hasProject = true
-				}
-				fmt.Fprintf(&sb, "Project directory (working dir for all file operations): `%s`\n\n", p.ProjectDir)
+				fmt.Fprintf(&sb, "Working directory: `%s`\n\n", p.ProjectDir)
 			}
 			var files []string
 			_ = json.Unmarshal(p.ContextFiles, &files)
@@ -1123,124 +1206,23 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 				}
 				data, err := os.ReadFile(resolved)
 				if err != nil {
-					if !hasProject {
-						sb.WriteString("# Project\n\n")
-						hasProject = true
-					}
-					fmt.Fprintf(&sb, "**Note:** failed to read context file `%s`: %v\n\n", resolved, err)
+					fmt.Fprintf(&sb, "**Note:** failed to read `%s`: %v\n\n", resolved, err)
 					continue
-				}
-				if !hasProject {
-					sb.WriteString("# Project\n\n")
-					hasProject = true
 				}
 				fmt.Fprintf(&sb, "## %s\n\n```\n%s\n```\n\n", resolved, string(data))
 			}
 		}
 	}
-	// 1. Task.
-	// Show the original work item as the overall goal, then anchor
-	// the worker to its purpose so the task title ("Create a bash
-	// script") doesn't override the worker's actual role ("Review,
-	// don't write code"). The worker's Purpose field is set on the
-	// Worker profile by the author and travels with every dispatch.
-	var workerPurpose string
-	var wkrRow db.WorkerRow
-	if err := tx.QueryRow(ctx,
-		`SELECT purpose FROM workers WHERE id = $1 AND tenant_id = $2`,
-		worker.WorkerID, tenantID,
-	).Scan(&wkrRow.Purpose); err == nil {
-		workerPurpose = strings.TrimSpace(wkrRow.Purpose)
-	}
-	sb.WriteString("# Task\n\n")
-	fmt.Fprintf(&sb, "Original work item: \"%s\"\n\n", strings.TrimSpace(wi.Title))
-	if d := strings.TrimSpace(wi.Description); d != "" {
-		fmt.Fprintf(&sb, "Description:\n%s\n\n", d)
-	}
-	if ac := strings.TrimSpace(wi.AcceptanceCriteria); ac != "" {
-		fmt.Fprintf(&sb, "Acceptance criteria:\n%s\n\n", ac)
-	}
-	if workerPurpose != "" {
-		fmt.Fprintf(&sb, "---\n\n**Your purpose on this step:** %s\n\nFocus on the acceptance criteria above — they define what \"done\" looks like. The overall goal is described above; your specific job is to execute your purpose against it, not to reproduce the original task literally.\n\n---\n\n", workerPurpose)
-	}
-	// 2. Project context — ancestors, oldest first.
-	ancestors, err := walkAncestors(ctx, tx, tenantID, wi)
-	if err != nil {
-		return "", fmt.Errorf("walk ancestors: %w", err)
-	}
-	if len(ancestors) > 0 {
-		sb.WriteString("# Project context\n\n")
-		sb.WriteString("The items below are ancestor work items (epic → feature → task). They provide project context; the task above is the actual work to do.\n\n")
-		for _, a := range ancestors {
-			fmt.Fprintf(&sb, "## %s (%s)\n", strings.TrimSpace(a.Title), workItemKindLabel(a.Kind))
-			if d := strings.TrimSpace(a.Description); d != "" {
-				fmt.Fprintf(&sb, "%s\n", d)
-			}
-			sb.WriteString("\n")
-		}
-	}
-	// 3. Workflow context — full timeline of every step in this run.
-	// Walks allSteps in DAG order, inlines the result of every step
-	// (TASK full output + summary, RECOVER narrative, WORK_ITEM
-	// title, etc.) and marks the current step so the worker can
-	// orient itself. See upstreamContext for the per-step rendering.
-	wctx, err := r.upstreamContext(ctx, tx, tenantID, wi, allSteps, runs)
-	if err != nil {
-		return "", fmt.Errorf("build workflow context: %w", err)
-	}
-	if wctx != "" {
-		sb.WriteString(wctx)
-	}
-	// 4a. Recovery context (this task) — this work item may have been
-	// recovered from a previous execution failure. The recovery engine
-	// writes _recovery_summary into the work item's results when it
-	// transitions the task back to ready; inject it here so the
-	// replacement execution knows what went wrong and what was
-	// recovered.
-	if len(wi.Results) > 0 {
-		var wiParsed map[string]any
-		if err := json.Unmarshal(wi.Results, &wiParsed); err == nil {
-			if rSummary, ok := wiParsed["_recovery_summary"].(string); ok && rSummary != "" {
-				sb.WriteString("# Recovery context (this task)\n\n")
-				sb.WriteString("The previous execution for this task failed and was automatically recovered. The following is a summary of what happened:\n\n")
-				sb.WriteString(rSummary)
-				sb.WriteString("\n\n")
-			}
-		}
-	}
-	// 4b. Previous review feedback — when the loop routes back to
-	// SSE after PR Reviewer found issues, the _issues field carries
-	// the PR Reviewer's findings. Include them here so the SSE knows
-	// what needs fixing even though the previous PR Reviewer step
-	// run was superseded and its output is no longer in the active
-	// workflow context (the new cycle's PR Reviewer hasn't run yet).
-	if len(wi.Results) > 0 {
-		var wiParsed map[string]any
-		if err := json.Unmarshal(wi.Results, &wiParsed); err == nil {
-			if issues, ok := wiParsed["_issues"].(string); ok && issues != "" {
-				sb.WriteString("# Previous review feedback\n\n")
-				sb.WriteString("The following issues were identified by the reviewer. Address them in your work:\n\n")
-				sb.WriteString(issues)
-				sb.WriteString("\n\n")
-			}
-		}
-	}
-	// 5. File context — kept for backward compatibility (old
-	// composite shape). The prepended # Project block above already
-	// inlines file contents; this section is a fallback if a caller
-	// still has it set without a ProjectID.
-	if wi.ProjectID != "" {
-		fileCtx, err := r.readProjectContextFiles(ctx, tx, tenantID, wi.ProjectID)
-		if err != nil {
-			r.log.Warn("failed to read project context files", "project_id", wi.ProjectID, "work_item_id", wi.ID, "error", err)
-		} else if fileCtx != "" {
-			sb.WriteString(fileCtx)
-		}
-	}
-	// 6. Footer: instruction for the worker to emit the summary marker.
+
+	// 6. Output format instructions.
 	sb.WriteString("# Instructions\n\n")
-	sb.WriteString("Complete the task above. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one short paragraph summarizing what you did. Everything from that marker to the end of your output is passed to the next stage of the workflow as upstream context.\n\n")
-	sb.WriteString("If you produce an output file (an essay, report, configuration, generated code, or any structured artifact), use the `write` tool to save it instead of `bash` with a heredoc. The `write` tool saves the file and orchicon automatically captures its content as an inline artifact visible in the execution log. Using `write` (not bash heredoc) makes your output visible to the operator without them having to click through tool input.\n")
+	sb.WriteString("Complete the task above. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — either `success` or `failure` — and a short paragraph summarizing what you did.\n\n")
+	sb.WriteString("Format:\n")
+	sb.WriteString("```\nORCHICON WORKER SUMMARY: success — Implemented the feature.\n```\n")
+	sb.WriteString("or\n")
+	sb.WriteString("```\nORCHICON WORKER SUMMARY: failure — Found 3 bugs in the implementation.\n```\n\n")
+	sb.WriteString("The first word (`success` or `failure`) is used to route the workflow. The text after `—` is passed to the next stage as the summary of your work.\n\n")
+	sb.WriteString("If you produce an output file, use the `write` tool (not `bash` with a heredoc). The `write` tool saves the file and orchicon captures it as an inline artifact.\n")
 	return sb.String(), nil
 }
 
@@ -1273,35 +1255,21 @@ func walkAncestors(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkIt
 	return out, nil
 }
 
-// upstreamContext renders a chronological "Workflow context" section
-// for the worker: a numbered list of every step in this run, in DAG
-// order, with each step's status and the execution results it
-// produced. The current step is marked so the worker can see what has
-// come before and what is expected next.
+// upstreamContext renders a compact "Workflow context" section for
+// the worker. Each prior step is a short card: decision, summary,
+// and list of touched files. No full output dumps. The current step
+// is marked so the worker can orient itself.
 //
 // Per-step rendering (see renderUpstreamStep):
 //
-//   - TASK: linked work item (loaded from DB) — its title, the
-//     worker's full output (truncated to upstreamOutputMaxChars if
-//     huge), the extracted ORCHICON WORKER SUMMARY, and any
-//     _recovery_summary on the work item.
-//   - RECOVER: linked recovery execution (loaded from DB) — its
-//     status, strategy, summary narrative, and trigger reason.
-//   - WORK_ITEM: linked work item title + a short description
-//     excerpt. These are passive context markers on the canvas, not
-//     executed by a worker.
+//   - TASK: _decision, _summary, _touched_files from the work item's
+//     results. No full output dump.
+//   - WORK_ITEM: linked work item title + a short description.
 //   - PROJECT: project name only.
-//   - DECISION / APPROVAL / PARALLEL: status only (they're branching
-//     and gating primitives, not result-bearing).
+//   - DECISION / APPROVAL / PARALLEL: status only.
 //
-// Returns "" when the run has no step runs yet (first step) so the
-// caller can omit the section entirely rather than render an empty
-// header. The function walks the DAG by step-id order via allSteps
-// (the order the author placed them on the canvas — for a linear
-// chain that's left-to-right; for a diamond, the source order
-// approximates topological order, which is the best the reconciler
-// can do without a full topological sort). Cycles are the caller's
-// responsibility to prevent (validated at save time, docs/10 §11).
+// Returns "" when the run has no completed steps yet. Walks the DAG
+// by step-id order via allSteps.
 func (r *WorkflowReconciler) upstreamContext(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, error) {
 	// Find the current step (the one being dispatched). The worker
 	// step whose result will eventually hold this work item's id is
@@ -1432,9 +1400,9 @@ func (r *WorkflowReconciler) renderUpstreamStep(ctx context.Context, tx pgx.Tx, 
 	switch s.Kind {
 	case domain.StepKindTask:
 		// Linked work item id is stored in the step run's result
-		// JSON when the task was dispatched. We then load the work
-		// item to get its full _output + _summary + _recovery_summary
-		// from the results JSONB.
+		// JSON when the task was dispatched. We load the work item
+		// to read its _decision, _summary, and _touched_files from
+		// the results JSONB — no full output dump.
 		var ref struct {
 			WorkItemID string `json:"_work_item_id"`
 		}
@@ -1449,27 +1417,29 @@ func (r *WorkflowReconciler) renderUpstreamStep(ctx context.Context, tx pgx.Tx, 
 			}
 			return fmt.Errorf("load work item for upstream step %s: %w", s.ID, err)
 		}
-		fmt.Fprintf(sb, "Work item: %s (%s)\n", strings.TrimSpace(wi.Title), workItemKindLabel(wi.Kind))
-		// Per-work-item results: _output (worker's full text),
-		// _summary (extracted by TaskReconciler), _recovery_summary
-		// (set when the recovery engine resumes a failed task).
 		var parsed map[string]any
 		if len(wi.Results) > 0 {
 			_ = json.Unmarshal(wi.Results, &parsed)
 		}
-		if output, ok := parsed["_output"].(string); ok && output != "" {
-			r.writeCappedText(sb, "Output", output, upstreamOutputMaxChars)
+		if d, ok := parsed["_decision"].(string); ok && d != "" {
+			fmt.Fprintf(sb, "Decision: %s\n", d)
 		}
 		if summary, ok := parsed["_summary"].(string); ok && summary != "" {
-			// _summary is the canonical "what the worker did" line
-			// the next stage reads; it may already appear in the
-			// output block above, but we surface it again as a
-			// clear "Summary" field so the worker doesn't have to
-			// hunt for the marker.
-			fmt.Fprintf(sb, "\nSummary: %s\n", summary)
+			fmt.Fprintf(sb, "Summary: %s\n", summary)
+		}
+		if files, ok := parsed["_touched_files"].([]any); ok && len(files) > 0 {
+			paths := make([]string, 0, len(files))
+			for _, f := range files {
+				if s, ok := f.(string); ok {
+					paths = append(paths, s)
+				}
+			}
+			if len(paths) > 0 {
+				fmt.Fprintf(sb, "Files: `%s`\n", strings.Join(paths, "`, `"))
+			}
 		}
 		if recSummary, ok := parsed["_recovery_summary"].(string); ok && recSummary != "" {
-			fmt.Fprintf(sb, "\nRecovery narrative (for this task):\n%s\n", recSummary)
+			fmt.Fprintf(sb, "Recovery: %s\n", recSummary)
 		}
 
 	case domain.StepKindWorkItem:

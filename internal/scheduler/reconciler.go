@@ -569,6 +569,19 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	// loop decision can't route to success/failure — it falls
 	// through to re-ask every time.
 	extractStructuredResult(output, results)
+	// Fallback: if no explicit _decision marker was found, parse it
+	// from the ORCHICON WORKER SUMMARY: <decision> — <text> format.
+	if _, ok := results["_decision"]; !ok {
+		if d := extractSummaryDecision(output); d != "" {
+			results["_decision"] = d
+		}
+	}
+	// Extract list of modified files from diff markers in the output.
+	if output != "" {
+		if files := extractTouchedFiles(output); len(files) > 0 {
+			results["_touched_files"] = files
+		}
+	}
 	resultsJSON, _ := json.Marshal(results)
 	if succeeded {
 		fields := db.UpdateWorkItemFields{
@@ -1093,21 +1106,97 @@ func composeSystemPrompt(v db.WorkerVersionRow) string {
 // worker's output becomes the summary that flows downstream as upstream
 // context. If absent, the entire output is treated as the summary so
 // lenient workers that don't follow the contract still propagate.
+//
+// The marker is followed by an optional decision prefix (first word,
+// "success" or "failure") and the summary text:
+//
+//	ORCHICON WORKER SUMMARY: success — Implemented the feature.
+//	ORCHICON WORKER SUMMARY: failure — Found 3 bugs.
+//
+// The `—` separator is optional; anything after the first word is the
+// summary. If no decision prefix is present, the full text is treated
+// as the summary (backward compatible).
 const summaryMarker = "ORCHICON WORKER SUMMARY:"
 
 // extractWorkerSummary parses the ORCHICON WORKER SUMMARY block from
-// the worker's text. It takes the LAST occurrence of the marker (in
-// case the worker mentions the literal in earlier text) and returns
-// everything from the marker to the end of the string, trimmed. If the
-// marker is not present, the entire input is returned (best-effort —
-// the worker's prompt instructs it to end with the marker, but
-// fallbacks keep lenient workers from breaking the workflow).
+// the worker's text. It takes the LAST occurrence of the marker and
+// returns everything after it, trimmed, minus the decision prefix.
+// If the marker is not present, the entire input is returned.
 func extractWorkerSummary(output string) string {
 	idx := strings.LastIndex(output, summaryMarker)
 	if idx < 0 {
 		return strings.TrimSpace(output)
 	}
-	return strings.TrimSpace(output[idx+len(summaryMarker):])
+	rest := strings.TrimSpace(output[idx+len(summaryMarker):])
+	return trimSummaryDecision(rest)
+}
+
+// extractSummaryDecision reads the first word of the summary block
+// (the text after ORCHICON WORKER SUMMARY:) and returns "success",
+// "failure", or "" if neither is found. The first word and any
+// separator (—, :, whitespace) are consumed.
+func extractSummaryDecision(output string) string {
+	idx := strings.LastIndex(output, summaryMarker)
+	if idx < 0 {
+		return ""
+	}
+	rest := strings.TrimSpace(output[idx+len(summaryMarker):])
+	return firstWordAsDecision(rest)
+}
+
+// trimSummaryDecision removes the leading decision word (if present)
+// and any separator from the summary text.
+func trimSummaryDecision(s string) string {
+	first := firstWordAsDecision(s)
+	if first == "" {
+		return s
+	}
+	// Remove the decision word and any separator that follows.
+	rest := strings.TrimSpace(strings.TrimPrefix(s, first))
+	rest = strings.TrimLeft(rest, "—:- ")
+	return strings.TrimSpace(rest)
+}
+
+// firstWordAsDecision returns "success", "failure", or "" depending
+// on the first whitespace-delimited word of s.
+func firstWordAsDecision(s string) string {
+	parts := strings.Fields(s)
+	if len(parts) == 0 {
+		return ""
+	}
+	first := strings.ToLower(parts[0])
+	switch {
+	case strings.HasPrefix(first, "success"):
+		return "success"
+	case strings.HasPrefix(first, "failure"):
+		return "failure"
+	}
+	return ""
+}
+
+// extractTouchedFiles parses `diff --git` lines from the worker's
+// output text to determine which files were modified. Returns the
+// target paths (the b/ side of the diff).
+func extractTouchedFiles(output string) []string {
+	var files []string
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "diff --git") {
+			continue
+		}
+		// diff --git a/path b/path
+		parts := strings.Fields(trimmed)
+		if len(parts) < 4 {
+			continue
+		}
+		p := strings.TrimPrefix(parts[3], "b/")
+		if p != "" && !seen[p] {
+			seen[p] = true
+			files = append(files, p)
+		}
+	}
+	return files
 }
 
 // propagateSummaryToStepRun copies the worker's summary onto the
