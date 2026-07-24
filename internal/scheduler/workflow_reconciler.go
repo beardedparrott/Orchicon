@@ -812,7 +812,12 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		}
 
 		// If upstream failed (crash, stall, tool error), trigger recovery
-		// and succeed the step so the DAG can continue.
+		// and create a new loop decision iteration so downstream steps
+		// (e.g. QA Engineer) block until the recovery cycle completes
+		// and the re-dispatched reviewer produces a valid decision.
+		// The old code marked the loop decision SUCCEEDED here, which
+		// satisfied downstream deps and let them run in parallel with
+		// the recovery — wrong.
 		if upstreamStatus != domain.StepRunSucceeded {
 			if r.recovery != nil && upResult.WorkItemID != "" {
 				failedExecID := ""
@@ -823,16 +828,11 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 					r.log.Warn("loop_decision: trigger recovery on failure", "run", run.ID, "step", step.ID, "work_item", upResult.WorkItemID, "error", err)
 				}
 			}
-			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-				Status:    strPtr(domain.StepRunSucceeded),
-				StartedAt: &now,
-				EndedAt:   &now,
-			})
-			if err != nil {
-				return fmt.Errorf("mark loop_decision step succeeded (upstream failed): %w", err)
+			nextIter := currentLoopIteration(runs, step.ID) + 1
+			if err := r.createLoopDecisionIteration(ctx, tx, tenantID, run, sr, step, runs, nextIter, now, `{"loop":"recovered"}`); err != nil {
+				return err
 			}
-			runs[step.ID] = updated
-			r.log.Info("loop_decision: upstream failed, triggered recovery", "run", run.ID, "step", step.ID)
+			r.log.Info("loop_decision: upstream failed, new iteration waiting", "run", run.ID, "step", step.ID)
 			break
 		}
 
@@ -1257,13 +1257,29 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		}
 	}
 	// 1. Task.
+	// Show the original work item as the overall goal, then anchor
+	// the worker to its purpose so the task title ("Create a bash
+	// script") doesn't override the worker's actual role ("Review,
+	// don't write code"). The worker's Purpose field is set on the
+	// Worker profile by the author and travels with every dispatch.
+	var workerPurpose string
+	var wkrRow db.WorkerRow
+	if err := tx.QueryRow(ctx,
+		`SELECT purpose FROM workers WHERE id = $1 AND tenant_id = $2`,
+		worker.WorkerID, tenantID,
+	).Scan(&wkrRow.Purpose); err == nil {
+		workerPurpose = strings.TrimSpace(wkrRow.Purpose)
+	}
 	sb.WriteString("# Task\n\n")
-	fmt.Fprintf(&sb, "Title: %s\n\n", strings.TrimSpace(wi.Title))
+	fmt.Fprintf(&sb, "Original work item: \"%s\"\n\n", strings.TrimSpace(wi.Title))
 	if d := strings.TrimSpace(wi.Description); d != "" {
 		fmt.Fprintf(&sb, "Description:\n%s\n\n", d)
 	}
 	if ac := strings.TrimSpace(wi.AcceptanceCriteria); ac != "" {
 		fmt.Fprintf(&sb, "Acceptance criteria:\n%s\n\n", ac)
+	}
+	if workerPurpose != "" {
+		fmt.Fprintf(&sb, "---\n\n**Your purpose on this step:** %s\n\nFocus on the acceptance criteria above — they define what \"done\" looks like. The overall goal is described above; your specific job is to execute your purpose against it, not to reproduce the original task literally.\n\n---\n\n", workerPurpose)
 	}
 	// 2. Project context — ancestors, oldest first.
 	ancestors, err := walkAncestors(ctx, tx, tenantID, wi)
