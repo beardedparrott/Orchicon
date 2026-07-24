@@ -200,8 +200,7 @@ function WorkerDetailPage() {
               {selectedVersion.status === 2 && (
                 <Button onClick={async () => {
                   await revertVersion.mutateAsync({ versionId: selectedVersion.id });
-                  setSelectedVersionId(undefined);
-                  // Force refetch versions
+                  setEditing(true);
                 }}>
                   Edit (revert to draft)
                 </Button>
