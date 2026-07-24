@@ -46,7 +46,10 @@ WHERE NOT EXISTS (SELECT 1 FROM worker_versions WHERE id = 'wv_se_qa_engineer_v3
 UPDATE workers SET current_version = 4 WHERE id = 'w_se_pr_reviewer';
 UPDATE workers SET current_version = 3 WHERE id = 'w_se_qa_engineer';
 
--- 4. Set purpose on all pre-canned workers so the composite prompt's
+-- 4. Ensure the newly published versions have the right status (idempotent).
+UPDATE worker_versions SET status = 'published' WHERE id IN ('wv_se_pr_reviewer_v4', 'wv_se_qa_engineer_v3');
+
+-- 5. Set purpose on all pre-canned workers so the composite prompt's
 -- "Your purpose on this step" section reflects the worker's actual job.
 UPDATE workers SET purpose = 'Write production-quality code. Implement features, fix bugs, and build automation scripts. Your output is working code — not a review, not a test report.' WHERE id = 'w_se_senior_software_engineer';
 UPDATE workers SET purpose = 'Review code for bugs, security issues, and design problems. Report everything you find with exact line references. Do NOT write or edit code — your output is a review report, not a patch.' WHERE id = 'w_se_pr_reviewer';
