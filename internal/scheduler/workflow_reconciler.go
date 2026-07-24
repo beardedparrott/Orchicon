@@ -1109,17 +1109,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		workerPurpose = strings.TrimSpace(wkrRow.Purpose)
 	}
 	if workerPurpose != "" {
-		fmt.Fprintf(&sb, "**⚠ YOUR ROLE: %s**\n\n", workerPurpose)
-	}
-
-	// 0a. Worker identity (role, skills, behavior, AGENTS.md) —
-	// the system prompt. Included here so it's visible in the prompt
-	// the operator inspects.
-	workerIdentity := composeSystemPrompt(worker)
-	if workerIdentity != "" {
-		sb.WriteString("# Worker\n\n")
-		sb.WriteString(workerIdentity)
-		sb.WriteString("\n\n")
+		fmt.Fprintf(&sb, "# Role\n\n%s\n\n", workerPurpose)
 	}
 
 	// 1. Task — immediately after the role so the worker knows what
