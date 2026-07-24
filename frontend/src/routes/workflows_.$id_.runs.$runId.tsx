@@ -476,21 +476,20 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
                       {sr.result && (() => {
                         try {
                           const r = JSON.parse(sr.result);
+                          const parts: string[] = [];
+                          if (r._decision) parts.push(r._decision);
+                          if (r._worker) parts.push(`by ${r._worker}`);
+                          if (r._summary) {
+                            const line = r._summary.split("\n")[0].slice(0, 120);
+                            parts.push(line);
+                          }
+                          if (Array.isArray(r._touched_files) && r._touched_files.length > 0) {
+                            parts.push(`${r._touched_files.length} file${r._touched_files.length !== 1 ? "s" : ""}`);
+                          }
+                          if (parts.length === 0) return null;
                           return (
-                            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-                              {r._decision && (
-                                <span className={r._decision === "success" ? "text-emerald-600" : "text-rose-600"}>
-                                  {r._decision}
-                                </span>
-                              )}
-                              {r._summary && (
-                                <span className="truncate max-w-[400px]" title={r._summary}>
-                                  {r._summary.split("\n")[0].slice(0, 120)}{r._summary.length > 120 ? "…" : ""}
-                                </span>
-                              )}
-                              {Array.isArray(r._touched_files) && r._touched_files.length > 0 && (
-                                <span>{r._touched_files.length} file{r._touched_files.length !== 1 ? "s" : ""}</span>
-                              )}
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              {parts.join(" · ")}
                             </div>
                           );
                         } catch { return null; }

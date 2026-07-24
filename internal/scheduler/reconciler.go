@@ -578,6 +578,7 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	if summary != "" {
 		results["_summary"] = summary
 	}
+	results["_worker"] = exec.WorkerID
 	// Extract structured fields from worker output for the
 	// loop_decision step: _decision (success/failure) and _issues.
 	// The worker's AGENTS.md instructs it to emit these on their
@@ -1316,7 +1317,7 @@ func (r *TaskReconciler) propagateStepRunResults(ctx context.Context, tx pgx.Tx,
 	}
 	// Propagate execution fields onto the step run so the run-view
 	// UI can show them without opening each execution.
-	for _, k := range []string{"_summary", "_decision", "_issues", "_touched_files"} {
+	for _, k := range []string{"_summary", "_decision", "_issues", "_touched_files", "_worker"} {
 		if v, ok := results[k]; ok {
 			merged[k] = v
 		}
