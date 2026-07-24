@@ -465,13 +465,39 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
                     }
                   >
                     <StepStatusPill status={sr.status} />
-                    <span className="font-medium">{sr.stepName || sr.stepId}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {STEP_KIND_LABELS[sr.stepKind] ?? "step"}
-                    </span>
-                    <LiveDuration startedAt={sr.startedAt} endedAt={sr.endedAt} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{sr.stepName || sr.stepId}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {STEP_KIND_LABELS[sr.stepKind] ?? "step"}
+                        </span>
+                        <LiveDuration startedAt={sr.startedAt} endedAt={sr.endedAt} />
+                      </div>
+                      {sr.result && (() => {
+                        try {
+                          const r = JSON.parse(sr.result);
+                          return (
+                            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+                              {r._decision && (
+                                <span className={r._decision === "success" ? "text-emerald-600" : "text-rose-600"}>
+                                  {r._decision}
+                                </span>
+                              )}
+                              {r._summary && (
+                                <span className="truncate max-w-[300px]" title={r._summary}>
+                                  {r._summary.slice(0, 80)}{r._summary.length > 80 ? "…" : ""}
+                                </span>
+                              )}
+                              {Array.isArray(r._touched_files) && r._touched_files.length > 0 && (
+                                <span>{r._touched_files.length} file{r._touched_files.length !== 1 ? "s" : ""}</span>
+                              )}
+                            </div>
+                          );
+                        } catch { return null; }
+                      })()}
+                    </div>
                     {sr.workerExecutionId && (
-                      <span className="font-mono text-xs text-muted-foreground">
+                      <span className="shrink-0 font-mono text-xs text-muted-foreground">
                         exec: {sr.workerExecutionId.slice(0, 12)}…
                       </span>
                     )}
