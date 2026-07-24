@@ -1341,7 +1341,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	if wctx != "" {
 		sb.WriteString(wctx)
 	}
-	// 4. Recovery context (this task) — this work item may have been
+	// 4a. Recovery context (this task) — this work item may have been
 	// recovered from a previous execution failure. The recovery engine
 	// writes _recovery_summary into the work item's results when it
 	// transitions the task back to ready; inject it here so the
@@ -1354,6 +1354,23 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 				sb.WriteString("# Recovery context (this task)\n\n")
 				sb.WriteString("The previous execution for this task failed and was automatically recovered. The following is a summary of what happened:\n\n")
 				sb.WriteString(rSummary)
+				sb.WriteString("\n\n")
+			}
+		}
+	}
+	// 4b. Previous review feedback — when the loop routes back to
+	// SSE after PR Reviewer found issues, the _issues field carries
+	// the PR Reviewer's findings. Include them here so the SSE knows
+	// what needs fixing even though the previous PR Reviewer step
+	// run was superseded and its output is no longer in the active
+	// workflow context (the new cycle's PR Reviewer hasn't run yet).
+	if len(wi.Results) > 0 {
+		var wiParsed map[string]any
+		if err := json.Unmarshal(wi.Results, &wiParsed); err == nil {
+			if issues, ok := wiParsed["_issues"].(string); ok && issues != "" {
+				sb.WriteString("# Previous review feedback\n\n")
+				sb.WriteString("The following issues were identified by the reviewer. Address them in your work:\n\n")
+				sb.WriteString(issues)
 				sb.WriteString("\n\n")
 			}
 		}
