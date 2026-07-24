@@ -561,6 +561,14 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	if summary != "" {
 		results["_summary"] = summary
 	}
+	// Extract structured fields from worker output for the
+	// loop_decision step: _decision (success/failure) and _issues.
+	// The worker's AGENTS.md instructs it to emit these on their
+	// own line at the end of the response. Without this extraction
+	// the _decision signal stays buried in _output text and the
+	// loop decision can't route to success/failure — it falls
+	// through to re-ask every time.
+	extractStructuredResult(output, results)
 	resultsJSON, _ := json.Marshal(results)
 	if succeeded {
 		fields := db.UpdateWorkItemFields{
@@ -954,6 +962,52 @@ func enqueueWorkItemEvent(ctx context.Context, tx pgx.Tx, eventType string, w db
 }
 
 func strPtr(s string) *string { return &s }
+
+// extractStructuredResult scans the worker's text output for structured
+// fields that the loop_decision step reads from the work item's top-level
+// results JSON. Recognised fields:
+//
+//	_decision: success  — the work was accepted (forward)
+//	_decision: failure  — the work was rejected (loop back)
+//	_issues: <text>      — details about what needs fixing
+//
+// Only fields at the start of a line (with optional code-fence markers)
+// are extracted — inline references like "The team decided: failure" are
+// ignored to avoid false matches. Each extracted field is written into
+// `results` under its key so the loop_decision's code path at
+// workflow_reconciler.go:838 finds it via wiResult[cfg.DecisionField].
+func extractStructuredResult(output string, results map[string]any) {
+	if output == "" {
+		return
+	}
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Strip markdown code-fence markers the worker might have
+		// wrapped the signal in (e.g. `_decision: success`).
+		trimmed = strings.TrimPrefix(trimmed, "```")
+		trimmed = strings.TrimSuffix(trimmed, "```")
+		trimmed = strings.TrimSpace(trimmed)
+	}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		trimmed = strings.TrimPrefix(trimmed, "```")
+		trimmed = strings.TrimSuffix(trimmed, "```")
+		trimmed = strings.TrimSpace(trimmed)
+		if strings.HasPrefix(trimmed, "_decision: ") {
+			val := strings.TrimSpace(strings.TrimPrefix(trimmed, "_decision: "))
+			if val == "success" || val == "failure" {
+				results["_decision"] = val
+			}
+		}
+		if strings.HasPrefix(trimmed, "_issues: ") {
+			val := strings.TrimSpace(strings.TrimPrefix(trimmed, "_issues: "))
+			if val != "" {
+				results["_issues"] = val
+			}
+		}
+	}
+}
 
 // extractComposite pulls the "composite" string out of a work item's
 // prompt_context JSON (set by the WorkflowReconciler's buildCompositePrompt).
