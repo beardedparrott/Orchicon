@@ -1006,17 +1006,10 @@ func extractStructuredResult(output string, results map[string]any) {
 				first := parts[0]
 				var decision string
 				switch {
-				case strings.HasPrefix(first, "success") && first != "successfully":
+				case strings.HasPrefix(first, "success"):
 					decision = "success"
 				case strings.HasPrefix(first, "failure"):
 					decision = "failure"
-				default:
-					// Mixed prefix — treat by longest match.
-					if len(first) >= 7 && first[:7] == "failure" {
-						decision = "failure"
-					} else if len(first) >= 7 && first[:7] == "success" {
-						decision = "success"
-					}
 				}
 				if decision != "" {
 					results["_decision"] = decision
