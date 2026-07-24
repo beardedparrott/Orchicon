@@ -341,6 +341,30 @@ func (s *Service) DeleteWorker(ctx context.Context, req *connect.Request[apiv1.D
 	return connect.NewResponse(&apiv1.DeleteWorkerResponse{}), nil
 }
 
+// DeleteWorkerVersion deletes a single draft worker version. Published
+// versions are immutable and cannot be deleted.
+func (s *Service) DeleteWorkerVersion(ctx context.Context, req *connect.Request[apiv1.DeleteWorkerVersionRequest]) (*connect.Response[apiv1.DeleteWorkerVersionResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.WorkerId == "" || req.Msg.VersionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("worker_id and version_id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	if err := db.DeleteWorkerVersion(ctx, ttx.Tx, tenantID, req.Msg.WorkerId, req.Msg.VersionId); err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	return connect.NewResponse(&apiv1.DeleteWorkerVersionResponse{}), nil
+}
+
 // GetWorker returns a single worker header by id, with its latest
 // published version (if any).
 func (s *Service) GetWorker(ctx context.Context, req *connect.Request[apiv1.GetWorkerRequest]) (*connect.Response[apiv1.GetWorkerResponse], error) {

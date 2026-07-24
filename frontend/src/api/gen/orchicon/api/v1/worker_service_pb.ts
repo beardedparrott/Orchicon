@@ -520,6 +520,80 @@ export class DeleteWorkerResponse extends Message<DeleteWorkerResponse> {
 }
 
 /**
+ * @generated from message orchicon.api.v1.DeleteWorkerVersionRequest
+ */
+export class DeleteWorkerVersionRequest extends Message<DeleteWorkerVersionRequest> {
+  /**
+   * @generated from field: string worker_id = 1;
+   */
+  workerId = "";
+
+  /**
+   * @generated from field: string version_id = 2;
+   */
+  versionId = "";
+
+  constructor(data?: PartialMessage<DeleteWorkerVersionRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DeleteWorkerVersionRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "worker_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "version_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteWorkerVersionRequest {
+    return new DeleteWorkerVersionRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteWorkerVersionRequest {
+    return new DeleteWorkerVersionRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteWorkerVersionRequest {
+    return new DeleteWorkerVersionRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteWorkerVersionRequest | PlainMessage<DeleteWorkerVersionRequest> | undefined, b: DeleteWorkerVersionRequest | PlainMessage<DeleteWorkerVersionRequest> | undefined): boolean {
+    return proto3.util.equals(DeleteWorkerVersionRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.DeleteWorkerVersionResponse
+ */
+export class DeleteWorkerVersionResponse extends Message<DeleteWorkerVersionResponse> {
+  constructor(data?: PartialMessage<DeleteWorkerVersionResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DeleteWorkerVersionResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteWorkerVersionResponse {
+    return new DeleteWorkerVersionResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteWorkerVersionResponse {
+    return new DeleteWorkerVersionResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteWorkerVersionResponse {
+    return new DeleteWorkerVersionResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteWorkerVersionResponse | PlainMessage<DeleteWorkerVersionResponse> | undefined, b: DeleteWorkerVersionResponse | PlainMessage<DeleteWorkerVersionResponse> | undefined): boolean {
+    return proto3.util.equals(DeleteWorkerVersionResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.GetWorkerRequest
  */
 export class GetWorkerRequest extends Message<GetWorkerRequest> {

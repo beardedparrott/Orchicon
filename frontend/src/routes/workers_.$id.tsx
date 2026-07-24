@@ -7,6 +7,7 @@ import {
   useCreateWorker,
   useCreateWorkerVersion,
   useDeleteWorker,
+  useDeleteWorkerVersion,
   useDeprecateWorker,
   useGetWorker,
   useListWorkerVersions,
@@ -89,7 +90,6 @@ function WorkerDetailPage() {
   const createWorker = useCreateWorker();
   const navigate = useNavigate();
   const deleteMutation = useDeleteWorker();
-
   const { data: latestData } = useGetWorker(id);
   const latestVersion = latestData?.latestVersion;
   const [editing, setEditing] = useState(false);
@@ -511,6 +511,47 @@ function WorkerDetailPage() {
         </Card>
       )}
 
+      {/* All versions list with delete for drafts */}
+      <Card>
+        <CardHeader>
+          <CardTitle>All versions</CardTitle>
+          <CardDescription>
+            Published versions are immutable. Only draft versions can be deleted.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-2">
+            {(versions ?? []).length === 0 ? (
+              <p className="text-sm text-muted-foreground">No versions yet.</p>
+            ) : (
+              (versions ?? []).map((ver) => (
+                <div
+                  key={ver.id}
+                  className="flex items-center gap-3 rounded-md border p-2 text-sm"
+                >
+                  <span className="font-mono font-medium">v{ver.version}</span>
+                  <WorkerVersionStatusBadge status={ver.status} />
+                  {ver.versionNote && (
+                    <span className="text-xs text-muted-foreground truncate">
+                      {ver.versionNote}
+                    </span>
+                  )}
+                  {ver.publishedAt && (
+                    <span className="text-xs text-muted-foreground shrink-0">
+                      {new Date(Number(ver.publishedAt.seconds) * 1000).toLocaleDateString()}
+                    </span>
+                  )}
+                  <span className="flex-1" />
+                  {ver.status === 1 && ( // draft
+                    <DeleteVersionButton workerId={id} versionId={ver.id} />
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Read-only version detail (shown when not editing) */}
       {!isEditingEnabled && latestVersion && (
         <Card>
@@ -701,6 +742,35 @@ function versionStatusLabel(status: number): string {
     3: "Deprecated — no new bindings",
   };
   return labels[status] ?? "unknown";
+}
+
+function WorkerVersionStatusBadge({ status }: { status: number }) {
+  const labels: Record<number, string> = { 1: "draft", 2: "published", 3: "deprecated", 4: "retired" };
+  const styles: Record<number, string> = {
+    1: "bg-yellow-100 text-yellow-800",
+    2: "bg-green-100 text-green-800",
+    3: "bg-orange-100 text-orange-800",
+    4: "bg-gray-200 text-gray-600",
+  };
+  return <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium", styles[status] ?? "")}>{labels[status] ?? "unknown"}</span>;
+}
+
+function DeleteVersionButton({ workerId, versionId }: { workerId: string; versionId: string }) {
+  const deleteVersion = useDeleteWorkerVersion();
+  return (
+    <button
+      type="button"
+      className="rounded px-1.5 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/10"
+      onClick={() => {
+        if (window.confirm("Delete this draft version? This cannot be undone.")) {
+          deleteVersion.mutate({ workerId, versionId });
+        }
+      }}
+      disabled={deleteVersion.isPending}
+    >
+      {deleteVersion.isPending ? "Deleting…" : "Delete"}
+    </button>
+  );
 }
 
 function formatJson(s: string): string {

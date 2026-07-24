@@ -390,6 +390,20 @@ func DeleteWorker(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
 	return nil
 }
 
+// DeleteWorkerVersion hard-deletes a single draft worker version.
+// Published/deprecated versions cannot be deleted.
+func DeleteWorkerVersion(ctx context.Context, tx pgx.Tx, tenantID, workerID, versionID string) error {
+	const q = `DELETE FROM worker_versions WHERE id = $1 AND tenant_id = $2 AND worker_id = $3 AND status = 'draft'`
+	tag, err := tx.Exec(ctx, q, versionID, tenantID, workerID)
+	if err != nil {
+		return fmt.Errorf("db: delete worker version: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // GetWorkerVersionByID fetches a single worker version by its ID within
 // the given tenant scope.
 func GetWorkerVersionByID(ctx context.Context, tx pgx.Tx, tenantID, workerID, versionID string) (WorkerVersionRow, error) {

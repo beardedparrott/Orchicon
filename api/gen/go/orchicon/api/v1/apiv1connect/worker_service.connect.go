@@ -56,6 +56,9 @@ const (
 	// WorkerServiceDeleteWorkerProcedure is the fully-qualified name of the WorkerService's
 	// DeleteWorker RPC.
 	WorkerServiceDeleteWorkerProcedure = "/orchicon.api.v1.WorkerService/DeleteWorker"
+	// WorkerServiceDeleteWorkerVersionProcedure is the fully-qualified name of the WorkerService's
+	// DeleteWorkerVersion RPC.
+	WorkerServiceDeleteWorkerVersionProcedure = "/orchicon.api.v1.WorkerService/DeleteWorkerVersion"
 	// WorkerServiceGetWorkerProcedure is the fully-qualified name of the WorkerService's GetWorker RPC.
 	WorkerServiceGetWorkerProcedure = "/orchicon.api.v1.WorkerService/GetWorker"
 	// WorkerServiceListWorkersProcedure is the fully-qualified name of the WorkerService's ListWorkers
@@ -99,6 +102,9 @@ type WorkerServiceClient interface {
 	RetireWorker(context.Context, *connect.Request[v1.RetireWorkerRequest]) (*connect.Response[v1.RetireWorkerResponse], error)
 	// DeleteWorker hard-deletes a Worker and all its versions.
 	DeleteWorker(context.Context, *connect.Request[v1.DeleteWorkerRequest]) (*connect.Response[v1.DeleteWorkerResponse], error)
+	// DeleteWorkerVersion hard-deletes a single draft version. Published
+	// versions are immutable and cannot be deleted — only deprecated.
+	DeleteWorkerVersion(context.Context, *connect.Request[v1.DeleteWorkerVersionRequest]) (*connect.Response[v1.DeleteWorkerVersionResponse], error)
 	// GetWorker returns a single Worker header by id.
 	GetWorker(context.Context, *connect.Request[v1.GetWorkerRequest]) (*connect.Response[v1.GetWorkerResponse], error)
 	// ListWorkers returns a page of Workers for the tenant.
@@ -163,6 +169,12 @@ func NewWorkerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(workerServiceMethods.ByName("DeleteWorker")),
 			connect.WithClientOptions(opts...),
 		),
+		deleteWorkerVersion: connect.NewClient[v1.DeleteWorkerVersionRequest, v1.DeleteWorkerVersionResponse](
+			httpClient,
+			baseURL+WorkerServiceDeleteWorkerVersionProcedure,
+			connect.WithSchema(workerServiceMethods.ByName("DeleteWorkerVersion")),
+			connect.WithClientOptions(opts...),
+		),
 		getWorker: connect.NewClient[v1.GetWorkerRequest, v1.GetWorkerResponse](
 			httpClient,
 			baseURL+WorkerServiceGetWorkerProcedure,
@@ -221,6 +233,7 @@ type workerServiceClient struct {
 	deprecateWorker      *connect.Client[v1.DeprecateWorkerRequest, v1.DeprecateWorkerResponse]
 	retireWorker         *connect.Client[v1.RetireWorkerRequest, v1.RetireWorkerResponse]
 	deleteWorker         *connect.Client[v1.DeleteWorkerRequest, v1.DeleteWorkerResponse]
+	deleteWorkerVersion  *connect.Client[v1.DeleteWorkerVersionRequest, v1.DeleteWorkerVersionResponse]
 	getWorker            *connect.Client[v1.GetWorkerRequest, v1.GetWorkerResponse]
 	listWorkers          *connect.Client[v1.ListWorkersRequest, v1.ListWorkersResponse]
 	listWorkerVersions   *connect.Client[v1.ListWorkerVersionsRequest, v1.ListWorkerVersionsResponse]
@@ -254,6 +267,11 @@ func (c *workerServiceClient) RetireWorker(ctx context.Context, req *connect.Req
 // DeleteWorker calls orchicon.api.v1.WorkerService.DeleteWorker.
 func (c *workerServiceClient) DeleteWorker(ctx context.Context, req *connect.Request[v1.DeleteWorkerRequest]) (*connect.Response[v1.DeleteWorkerResponse], error) {
 	return c.deleteWorker.CallUnary(ctx, req)
+}
+
+// DeleteWorkerVersion calls orchicon.api.v1.WorkerService.DeleteWorkerVersion.
+func (c *workerServiceClient) DeleteWorkerVersion(ctx context.Context, req *connect.Request[v1.DeleteWorkerVersionRequest]) (*connect.Response[v1.DeleteWorkerVersionResponse], error) {
+	return c.deleteWorkerVersion.CallUnary(ctx, req)
 }
 
 // GetWorker calls orchicon.api.v1.WorkerService.GetWorker.
@@ -314,6 +332,9 @@ type WorkerServiceHandler interface {
 	RetireWorker(context.Context, *connect.Request[v1.RetireWorkerRequest]) (*connect.Response[v1.RetireWorkerResponse], error)
 	// DeleteWorker hard-deletes a Worker and all its versions.
 	DeleteWorker(context.Context, *connect.Request[v1.DeleteWorkerRequest]) (*connect.Response[v1.DeleteWorkerResponse], error)
+	// DeleteWorkerVersion hard-deletes a single draft version. Published
+	// versions are immutable and cannot be deleted — only deprecated.
+	DeleteWorkerVersion(context.Context, *connect.Request[v1.DeleteWorkerVersionRequest]) (*connect.Response[v1.DeleteWorkerVersionResponse], error)
 	// GetWorker returns a single Worker header by id.
 	GetWorker(context.Context, *connect.Request[v1.GetWorkerRequest]) (*connect.Response[v1.GetWorkerResponse], error)
 	// ListWorkers returns a page of Workers for the tenant.
@@ -372,6 +393,12 @@ func NewWorkerServiceHandler(svc WorkerServiceHandler, opts ...connect.HandlerOp
 		WorkerServiceDeleteWorkerProcedure,
 		svc.DeleteWorker,
 		connect.WithSchema(workerServiceMethods.ByName("DeleteWorker")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workerServiceDeleteWorkerVersionHandler := connect.NewUnaryHandler(
+		WorkerServiceDeleteWorkerVersionProcedure,
+		svc.DeleteWorkerVersion,
+		connect.WithSchema(workerServiceMethods.ByName("DeleteWorkerVersion")),
 		connect.WithHandlerOptions(opts...),
 	)
 	workerServiceGetWorkerHandler := connect.NewUnaryHandler(
@@ -434,6 +461,8 @@ func NewWorkerServiceHandler(svc WorkerServiceHandler, opts ...connect.HandlerOp
 			workerServiceRetireWorkerHandler.ServeHTTP(w, r)
 		case WorkerServiceDeleteWorkerProcedure:
 			workerServiceDeleteWorkerHandler.ServeHTTP(w, r)
+		case WorkerServiceDeleteWorkerVersionProcedure:
+			workerServiceDeleteWorkerVersionHandler.ServeHTTP(w, r)
 		case WorkerServiceGetWorkerProcedure:
 			workerServiceGetWorkerHandler.ServeHTTP(w, r)
 		case WorkerServiceListWorkersProcedure:
@@ -477,6 +506,10 @@ func (UnimplementedWorkerServiceHandler) RetireWorker(context.Context, *connect.
 
 func (UnimplementedWorkerServiceHandler) DeleteWorker(context.Context, *connect.Request[v1.DeleteWorkerRequest]) (*connect.Response[v1.DeleteWorkerResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkerService.DeleteWorker is not implemented"))
+}
+
+func (UnimplementedWorkerServiceHandler) DeleteWorkerVersion(context.Context, *connect.Request[v1.DeleteWorkerVersionRequest]) (*connect.Response[v1.DeleteWorkerVersionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkerService.DeleteWorkerVersion is not implemented"))
 }
 
 func (UnimplementedWorkerServiceHandler) GetWorker(context.Context, *connect.Request[v1.GetWorkerRequest]) (*connect.Response[v1.GetWorkerResponse], error) {

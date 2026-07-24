@@ -115,6 +115,19 @@ export function useDeprecateWorker() {
   });
 }
 
+// useDeleteWorkerVersion deletes a single draft worker version.
+export function useDeleteWorkerVersion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { workerId: string; versionId: string }) => {
+      await workerClient.deleteWorkerVersion(input);
+    },
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: workerKeys.versions(variables.workerId) });
+    },
+  });
+}
+
 // useDeleteWorker hard-deletes a worker and invalidates the list.
 export function useDeleteWorker() {
   const qc = useQueryClient();

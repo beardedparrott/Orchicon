@@ -33,6 +33,10 @@ service WorkerService {
   // DeleteWorker hard-deletes a Worker and all its versions.
   rpc DeleteWorker(DeleteWorkerRequest) returns (DeleteWorkerResponse);
 
+  // DeleteWorkerVersion hard-deletes a single draft version. Published
+  // versions are immutable and cannot be deleted — only deprecated.
+  rpc DeleteWorkerVersion(DeleteWorkerVersionRequest) returns (DeleteWorkerVersionResponse);
+
   // GetWorker returns a single Worker header by id.
   rpc GetWorker(GetWorkerRequest) returns (GetWorkerResponse);
 
@@ -121,6 +125,13 @@ message DeleteWorkerRequest {
 }
 
 message DeleteWorkerResponse {}
+
+message DeleteWorkerVersionRequest {
+  string worker_id = 1;
+  string version_id = 2;
+}
+
+message DeleteWorkerVersionResponse {}
 
 message GetWorkerRequest {
   string id = 1;

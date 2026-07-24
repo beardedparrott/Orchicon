@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AcquireEditLockRequest, AcquireEditLockResponse, CreateWorkerRequest, CreateWorkerResponse, CreateWorkerVersionRequest, CreateWorkerVersionResponse, DeleteWorkerRequest, DeleteWorkerResponse, DeprecateWorkerRequest, DeprecateWorkerResponse, GetEditLockRequest, GetEditLockResponse, GetWorkerRequest, GetWorkerResponse, ListWorkersRequest, ListWorkersResponse, ListWorkerVersionsRequest, ListWorkerVersionsResponse, PublishWorkerVersionRequest, PublishWorkerVersionResponse, ReleaseEditLockRequest, ReleaseEditLockResponse, RetireWorkerRequest, RetireWorkerResponse, UpdateWorkerVersionRequest, UpdateWorkerVersionResponse } from "./worker_service_pb.js";
+import { AcquireEditLockRequest, AcquireEditLockResponse, CreateWorkerRequest, CreateWorkerResponse, CreateWorkerVersionRequest, CreateWorkerVersionResponse, DeleteWorkerRequest, DeleteWorkerResponse, DeleteWorkerVersionRequest, DeleteWorkerVersionResponse, DeprecateWorkerRequest, DeprecateWorkerResponse, GetEditLockRequest, GetEditLockResponse, GetWorkerRequest, GetWorkerResponse, ListWorkersRequest, ListWorkersResponse, ListWorkerVersionsRequest, ListWorkerVersionsResponse, PublishWorkerVersionRequest, PublishWorkerVersionResponse, ReleaseEditLockRequest, ReleaseEditLockResponse, RetireWorkerRequest, RetireWorkerResponse, UpdateWorkerVersionRequest, UpdateWorkerVersionResponse } from "./worker_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -79,6 +79,18 @@ export const WorkerService = {
       name: "DeleteWorker",
       I: DeleteWorkerRequest,
       O: DeleteWorkerResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * DeleteWorkerVersion hard-deletes a single draft version. Published
+     * versions are immutable and cannot be deleted — only deprecated.
+     *
+     * @generated from rpc orchicon.api.v1.WorkerService.DeleteWorkerVersion
+     */
+    deleteWorkerVersion: {
+      name: "DeleteWorkerVersion",
+      I: DeleteWorkerVersionRequest,
+      O: DeleteWorkerVersionResponse,
       kind: MethodKind.Unary,
     },
     /**
