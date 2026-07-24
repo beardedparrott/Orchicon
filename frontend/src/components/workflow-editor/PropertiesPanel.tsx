@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Node } from "reactflow";
 
 import { Info } from "lucide-react";
@@ -43,6 +43,32 @@ export function PropertiesPanel({
   const d = node.data;
   const Icon = STEP_KIND_ICONS[d.kind] ?? STEP_KIND_ICONS[1];
   const cfg = parseConfig(d.config) as StepConfig;
+
+  // Seed default config values for newly-created steps so the UI shows
+  // the actual persisted value, not just a display fallback.
+  useEffect(() => {
+    let changed = false;
+    const next = { ...cfg };
+    if (d.kind === STEP_KIND.LOOP_DECISION && typeof cfg.max_iterations !== "number") {
+      next.max_iterations = 3;
+      changed = true;
+    }
+    if (d.kind === STEP_KIND.TASK) {
+      if (typeof cfg.recovery?.strategy !== "string") {
+        next.recovery = { ...(cfg.recovery ?? {}), strategy: "retry" };
+        changed = true;
+      }
+      if (typeof cfg.recovery?.max_attempts !== "number") {
+        next.recovery = { ...(next.recovery ?? cfg.recovery ?? {}), max_attempts: 3 };
+        changed = true;
+      }
+    }
+    if (changed) {
+      onChange({ config: JSON.stringify(next) });
+    }
+    // Run once on mount — the step id is stable for the lifecycle of the panel.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const publishedWorkers = (workers ?? []).filter(
     (w) => w.status === WorkerStatus.PUBLISHED,
