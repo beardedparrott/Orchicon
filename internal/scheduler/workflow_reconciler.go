@@ -1151,12 +1151,23 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 
 	// 3. Instructions.
 	sb.WriteString("# Instructions\n\n")
-	sb.WriteString("Before starting, read the project's `.orchicon/` files from the working directory to see the previous step's results. Key files:\n\n")
-	sb.WriteString("- `.orchicon/status` — `success` or `failure` from the previous step\n")
-	sb.WriteString("- `.orchicon/summary` — what the previous worker did\n")
-	sb.WriteString("- `.orchicon/issues` — issues found by the previous reviewer (if any)\n")
-	sb.WriteString("- `.orchicon/worker` — which worker produced the previous results\n\n")
-	sb.WriteString("Then complete the task above. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — either `success` or `failure` — and a short paragraph summarizing what you did.\n\n")
+	// Only instruct the worker to read .orchicon/ files when prior
+	// steps have completed. On the first step there's nothing to read.
+	hasPriorSteps := false
+	for _, sr := range runs {
+		if sr.Status == domain.StepRunSucceeded || sr.Status == domain.StepRunFailed {
+			hasPriorSteps = true
+			break
+		}
+	}
+	if hasPriorSteps {
+		sb.WriteString("Read the project's `.orchicon/` files from the working directory to see the previous step's results:\n\n")
+		sb.WriteString("- `.orchicon/status` — `success` or `failure` from the previous step\n")
+		sb.WriteString("- `.orchicon/summary` — what the previous worker did\n")
+		sb.WriteString("- `.orchicon/issues` — issues found by the previous reviewer (if any)\n")
+		sb.WriteString("- `.orchicon/worker` — which worker produced the previous results\n\n")
+	}
+	sb.WriteString("Complete the task above. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — either `success` or `failure` — and a short paragraph summarizing what you did.\n\n")
 	sb.WriteString("Format:\n")
 	sb.WriteString("```\nORCHICON WORKER SUMMARY: success — Implemented the feature.\n```\n")
 	sb.WriteString("or\n")
