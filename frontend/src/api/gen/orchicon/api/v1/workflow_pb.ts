@@ -304,7 +304,7 @@ proto3.util.setEnumType(StepRunStatus, "orchicon.api.v1.StepRunStatus", [
 /**
  * Workflow is the immutable header row for a composable execution plan
  * (docs/02 §2.4, docs/09 §3.4). The mutable snapshot (steps, inputs,
- * outputs, recovery_policy_ref) lives in WorkflowVersion. project_id is
+ * outputs) lives in WorkflowVersion. project_id is
  * empty for tenant-level templates.
  *
  * @generated from message orchicon.api.v1.Workflow
@@ -468,11 +468,6 @@ export class WorkflowVersion extends Message<WorkflowVersion> {
   outputs = "";
 
   /**
-   * @generated from field: string recovery_policy_ref = 10;
-   */
-  recoveryPolicyRef = "";
-
-  /**
    * @generated from field: google.protobuf.Timestamp published_at = 11;
    */
   publishedAt?: Timestamp;
@@ -499,7 +494,6 @@ export class WorkflowVersion extends Message<WorkflowVersion> {
     { no: 7, name: "steps", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 8, name: "inputs", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 9, name: "outputs", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 10, name: "recovery_policy_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 11, name: "published_at", kind: "message", T: Timestamp },
     { no: 12, name: "created_at", kind: "message", T: Timestamp },
   ]);

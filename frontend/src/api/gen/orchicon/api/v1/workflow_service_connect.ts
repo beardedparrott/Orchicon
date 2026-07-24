@@ -139,7 +139,7 @@ export const WorkflowService = {
     },
     /**
      * UpdateWorkflowVersion saves edits to a draft version's steps (and
-     * inputs/outputs/recovery_policy_ref). Only draft versions are mutable;
+     * inputs/outputs). Only draft versions are mutable;
      * published versions are immutable (docs/02 §2.4). This is the "save"
      * action in the visual editor.
      *

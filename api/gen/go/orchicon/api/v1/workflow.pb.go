@@ -361,7 +361,7 @@ func (StepRunStatus) EnumDescriptor() ([]byte, []int) {
 
 // Workflow is the immutable header row for a composable execution plan
 // (docs/02 §2.4, docs/09 §3.4). The mutable snapshot (steps, inputs,
-// outputs, recovery_policy_ref) lives in WorkflowVersion. project_id is
+// outputs) lives in WorkflowVersion. project_id is
 // empty for tenant-level templates.
 type Workflow struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
@@ -484,21 +484,20 @@ func (x *Workflow) GetUpdatedAt() *timestamppb.Timestamp {
 // version is immutable; changes create a new version. The steps field
 // is a JSON array of Step messages (docs/02 §2.4).
 type WorkflowVersion struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Id                string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	TenantId          string                 `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
-	WorkflowId        string                 `protobuf:"bytes,3,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
-	Version           int32                  `protobuf:"varint,4,opt,name=version,proto3" json:"version,omitempty"` // monotonic integer
-	VersionNote       string                 `protobuf:"bytes,5,opt,name=version_note,json=versionNote,proto3" json:"version_note,omitempty"`
-	Status            WorkflowVersionStatus  `protobuf:"varint,6,opt,name=status,proto3,enum=orchicon.api.v1.WorkflowVersionStatus" json:"status,omitempty"`
-	Steps             string                 `protobuf:"bytes,7,opt,name=steps,proto3" json:"steps,omitempty"`     // JSON array of Step messages (docs/02 §2.4)
-	Inputs            string                 `protobuf:"bytes,8,opt,name=inputs,proto3" json:"inputs,omitempty"`   // JSON: workflow input schema
-	Outputs           string                 `protobuf:"bytes,9,opt,name=outputs,proto3" json:"outputs,omitempty"` // JSON: workflow output schema
-	RecoveryPolicyRef string                 `protobuf:"bytes,10,opt,name=recovery_policy_ref,json=recoveryPolicyRef,proto3" json:"recovery_policy_ref,omitempty"`
-	PublishedAt       *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=published_at,json=publishedAt,proto3" json:"published_at,omitempty"`
-	CreatedAt         *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	TenantId      string                 `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	WorkflowId    string                 `protobuf:"bytes,3,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	Version       int32                  `protobuf:"varint,4,opt,name=version,proto3" json:"version,omitempty"` // monotonic integer
+	VersionNote   string                 `protobuf:"bytes,5,opt,name=version_note,json=versionNote,proto3" json:"version_note,omitempty"`
+	Status        WorkflowVersionStatus  `protobuf:"varint,6,opt,name=status,proto3,enum=orchicon.api.v1.WorkflowVersionStatus" json:"status,omitempty"`
+	Steps         string                 `protobuf:"bytes,7,opt,name=steps,proto3" json:"steps,omitempty"`     // JSON array of Step messages (docs/02 §2.4)
+	Inputs        string                 `protobuf:"bytes,8,opt,name=inputs,proto3" json:"inputs,omitempty"`   // JSON: workflow input schema
+	Outputs       string                 `protobuf:"bytes,9,opt,name=outputs,proto3" json:"outputs,omitempty"` // JSON: workflow output schema
+	PublishedAt   *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=published_at,json=publishedAt,proto3" json:"published_at,omitempty"`
+	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WorkflowVersion) Reset() {
@@ -590,13 +589,6 @@ func (x *WorkflowVersion) GetInputs() string {
 func (x *WorkflowVersion) GetOutputs() string {
 	if x != nil {
 		return x.Outputs
-	}
-	return ""
-}
-
-func (x *WorkflowVersion) GetRecoveryPolicyRef() string {
-	if x != nil {
-		return x.RecoveryPolicyRef
 	}
 	return ""
 }
@@ -1204,7 +1196,7 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xce\x03\n" +
+	"updated_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xa4\x03\n" +
 	"\x0fWorkflowVersion\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1f\n" +
@@ -1215,12 +1207,11 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"\x06status\x18\x06 \x01(\x0e2&.orchicon.api.v1.WorkflowVersionStatusR\x06status\x12\x14\n" +
 	"\x05steps\x18\a \x01(\tR\x05steps\x12\x16\n" +
 	"\x06inputs\x18\b \x01(\tR\x06inputs\x12\x18\n" +
-	"\aoutputs\x18\t \x01(\tR\aoutputs\x12.\n" +
-	"\x13recovery_policy_ref\x18\n" +
-	" \x01(\tR\x11recoveryPolicyRef\x12=\n" +
+	"\aoutputs\x18\t \x01(\tR\aoutputs\x12=\n" +
 	"\fpublished_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\vpublishedAt\x129\n" +
 	"\n" +
-	"created_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\xaf\x02\n" +
+	"created_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAtJ\x04\b\n" +
+	"\x10\v\"\xaf\x02\n" +
 	"\x04Step\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12-\n" +

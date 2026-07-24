@@ -41,15 +41,14 @@ type CreateWorkflowRequest struct {
 	ProjectId string                 `protobuf:"bytes,2,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"` // empty for tenant-level template
 	Name      string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
 	// First-version snapshot fields (docs/02 §2.4):
-	Steps             string `protobuf:"bytes,4,opt,name=steps,proto3" json:"steps,omitempty"`     // JSON array of Step messages
-	Inputs            string `protobuf:"bytes,5,opt,name=inputs,proto3" json:"inputs,omitempty"`   // JSON
-	Outputs           string `protobuf:"bytes,6,opt,name=outputs,proto3" json:"outputs,omitempty"` // JSON
-	RecoveryPolicyRef string `protobuf:"bytes,7,opt,name=recovery_policy_ref,json=recoveryPolicyRef,proto3" json:"recovery_policy_ref,omitempty"`
-	VersionNote       string `protobuf:"bytes,8,opt,name=version_note,json=versionNote,proto3" json:"version_note,omitempty"`
-	RequestId         string `protobuf:"bytes,9,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"` // idempotency (docs/07 §5.5)
-	Type              string `protobuf:"bytes,10,opt,name=type,proto3" json:"type,omitempty"`                           // "template" or "one_shot" (default "one_shot" when project_id is set, "template" when empty)
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	Steps         string `protobuf:"bytes,4,opt,name=steps,proto3" json:"steps,omitempty"`     // JSON array of Step messages
+	Inputs        string `protobuf:"bytes,5,opt,name=inputs,proto3" json:"inputs,omitempty"`   // JSON
+	Outputs       string `protobuf:"bytes,6,opt,name=outputs,proto3" json:"outputs,omitempty"` // JSON
+	VersionNote   string `protobuf:"bytes,8,opt,name=version_note,json=versionNote,proto3" json:"version_note,omitempty"`
+	RequestId     string `protobuf:"bytes,9,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"` // idempotency (docs/07 §5.5)
+	Type          string `protobuf:"bytes,10,opt,name=type,proto3" json:"type,omitempty"`                           // "template" or "one_shot" (default "one_shot" when project_id is set, "template" when empty)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CreateWorkflowRequest) Reset() {
@@ -120,13 +119,6 @@ func (x *CreateWorkflowRequest) GetInputs() string {
 func (x *CreateWorkflowRequest) GetOutputs() string {
 	if x != nil {
 		return x.Outputs
-	}
-	return ""
-}
-
-func (x *CreateWorkflowRequest) GetRecoveryPolicyRef() string {
-	if x != nil {
-		return x.RecoveryPolicyRef
 	}
 	return ""
 }
@@ -1013,15 +1005,14 @@ func (*DeleteWorkflowVersionResponse) Descriptor() ([]byte, []int) {
 }
 
 type UpdateWorkflowVersionRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	WorkflowId        string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
-	Steps             string                 `protobuf:"bytes,2,opt,name=steps,proto3" json:"steps,omitempty"`     // JSON array of Step messages
-	Inputs            string                 `protobuf:"bytes,3,opt,name=inputs,proto3" json:"inputs,omitempty"`   // JSON
-	Outputs           string                 `protobuf:"bytes,4,opt,name=outputs,proto3" json:"outputs,omitempty"` // JSON
-	RecoveryPolicyRef string                 `protobuf:"bytes,5,opt,name=recovery_policy_ref,json=recoveryPolicyRef,proto3" json:"recovery_policy_ref,omitempty"`
-	VersionNote       string                 `protobuf:"bytes,6,opt,name=version_note,json=versionNote,proto3" json:"version_note,omitempty"` // optional: update the version note
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkflowId    string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	Steps         string                 `protobuf:"bytes,2,opt,name=steps,proto3" json:"steps,omitempty"`                                // JSON array of Step messages
+	Inputs        string                 `protobuf:"bytes,3,opt,name=inputs,proto3" json:"inputs,omitempty"`                              // JSON
+	Outputs       string                 `protobuf:"bytes,4,opt,name=outputs,proto3" json:"outputs,omitempty"`                            // JSON
+	VersionNote   string                 `protobuf:"bytes,6,opt,name=version_note,json=versionNote,proto3" json:"version_note,omitempty"` // optional: update the version note
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *UpdateWorkflowVersionRequest) Reset() {
@@ -1078,13 +1069,6 @@ func (x *UpdateWorkflowVersionRequest) GetInputs() string {
 func (x *UpdateWorkflowVersionRequest) GetOutputs() string {
 	if x != nil {
 		return x.Outputs
-	}
-	return ""
-}
-
-func (x *UpdateWorkflowVersionRequest) GetRecoveryPolicyRef() string {
-	if x != nil {
-		return x.RecoveryPolicyRef
 	}
 	return ""
 }
@@ -2048,7 +2032,7 @@ var File_orchicon_api_v1_workflow_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_workflow_service_proto_rawDesc = "" +
 	"\n" +
-	"&orchicon/api/v1/workflow_service.proto\x12\x0forchicon.api.v1\x1a\x1eorchicon/api/v1/workflow.proto\x1a\x1corchicon/api/v1/worker.proto\"\xb5\x02\n" +
+	"&orchicon/api/v1/workflow_service.proto\x12\x0forchicon.api.v1\x1a\x1eorchicon/api/v1/workflow.proto\x1a\x1corchicon/api/v1/worker.proto\"\x8b\x02\n" +
 	"\x15CreateWorkflowRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1d\n" +
 	"\n" +
@@ -2056,13 +2040,12 @@ const file_orchicon_api_v1_workflow_service_proto_rawDesc = "" +
 	"\x04name\x18\x03 \x01(\tR\x04name\x12\x14\n" +
 	"\x05steps\x18\x04 \x01(\tR\x05steps\x12\x16\n" +
 	"\x06inputs\x18\x05 \x01(\tR\x06inputs\x12\x18\n" +
-	"\aoutputs\x18\x06 \x01(\tR\aoutputs\x12.\n" +
-	"\x13recovery_policy_ref\x18\a \x01(\tR\x11recoveryPolicyRef\x12!\n" +
+	"\aoutputs\x18\x06 \x01(\tR\aoutputs\x12!\n" +
 	"\fversion_note\x18\b \x01(\tR\vversionNote\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\t \x01(\tR\trequestId\x12\x12\n" +
 	"\x04type\x18\n" +
-	" \x01(\tR\x04type\"\x8b\x01\n" +
+	" \x01(\tR\x04typeJ\x04\b\a\x10\b\"\x8b\x01\n" +
 	"\x16CreateWorkflowResponse\x125\n" +
 	"\bworkflow\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkflowR\bworkflow\x12:\n" +
 	"\aversion\x18\x02 \x01(\v2 .orchicon.api.v1.WorkflowVersionR\aversion\"\\\n" +
@@ -2120,15 +2103,14 @@ const file_orchicon_api_v1_workflow_service_proto_rawDesc = "" +
 	"workflowId\x12\x1d\n" +
 	"\n" +
 	"version_id\x18\x02 \x01(\tR\tversionId\"\x1f\n" +
-	"\x1dDeleteWorkflowVersionResponse\"\xda\x01\n" +
+	"\x1dDeleteWorkflowVersionResponse\"\xb0\x01\n" +
 	"\x1cUpdateWorkflowVersionRequest\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
 	"workflowId\x12\x14\n" +
 	"\x05steps\x18\x02 \x01(\tR\x05steps\x12\x16\n" +
 	"\x06inputs\x18\x03 \x01(\tR\x06inputs\x12\x18\n" +
-	"\aoutputs\x18\x04 \x01(\tR\aoutputs\x12.\n" +
-	"\x13recovery_policy_ref\x18\x05 \x01(\tR\x11recoveryPolicyRef\x12!\n" +
-	"\fversion_note\x18\x06 \x01(\tR\vversionNote\"[\n" +
+	"\aoutputs\x18\x04 \x01(\tR\aoutputs\x12!\n" +
+	"\fversion_note\x18\x06 \x01(\tR\vversionNoteJ\x04\b\x05\x10\x06\"[\n" +
 	"\x1dUpdateWorkflowVersionResponse\x12:\n" +
 	"\aversion\x18\x01 \x01(\v2 .orchicon.api.v1.WorkflowVersionR\aversion\"\x99\x01\n" +
 	"\x14StartWorkflowRequest\x12\x1f\n" +

@@ -1,4 +1,4 @@
-h1:UWgnRR4W0n2xmJDUsjJPllSZyp8JrvJ07reTtv+ITjw=
+h1:jFxzOultrgCazXgvkg4fw7c1Y4+l9b/n4IuSVL8GOKc=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712223028_add_outbox.sql h1:tlrMIs8ABXFMszWNaYd7gxjn3p42rmqrZeoxOJ1Vqvg=
 20260713012808_workers_workitems.sql h1:3li9AejCZaj9bcZz8wKOw0GG7UER3Uz9jbSNKF74Zo8=
@@ -25,3 +25,6 @@ h1:UWgnRR4W0n2xmJDUsjJPllSZyp8JrvJ07reTtv+ITjw=
 20260721060000_workflows_type.sql h1:Yr/H1Qrb0yV1K5JmvBKptP3Vn+j9Pl8MTH2eJ8d0Lls=
 20260722000000_worker_prompt_fields.sql h1:HgqvKr5tmqQfYAPq8aZztUcQV5WvDKOphQCumMcbe2E=
 20260722010000_seed_workers.sql h1:uVYgLzme86cft7VqvQ6Ck4djQFawd4MlebqypHqGSD4=
+20260723000000_execution_iteration.sql h1:QAJkk888drduTlcNkLKvzB9ayZN3Lex/TkA4+m8nnqI=
+20260724000000_update_worker_prompts.sql h1:lhgvC6w2ZLLEzdJBw3QEOpRFWEMgWP4z4ehXrsEAQBM=
+20260725000000_drop_recovery_policy_ref.sql h1:C0VLQfR4qOVLjY8XV+YVQ+m2HFcp+XMM/pFR8CpTah8=
