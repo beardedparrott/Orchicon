@@ -611,16 +611,10 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 			r.log.Error("transition work item: update", "task", exec.TaskID, "error", err)
 			return
 		}
-		// PR B: copy the summary onto the linked workflow step run
-		// (results._summary) so the WorkflowReconciler can compose
-		// it into the next stage's prompt. Best-effort — a missing
-		// step run (e.g. dispatched without a workflow) is logged
-		// and skipped, not fatal.
-		if summary != "" {
-			if err := r.propagateSummaryToStepRun(ctx, ttx.Tx, "tnt_dev", exec.TaskID, summary); err != nil {
-				r.log.Warn("propagate summary to step run", "task", exec.TaskID, "error", err)
-			}
-		}
+		// Copy the execution results onto the linked workflow step run
+		// so the run view can display decision/summary/issues/files
+		// without opening each execution. Best-effort.
+		r.propagateStepRunResults(ctx, ttx.Tx, exec.TaskID, results)
 	} else {
 		// Failure: transition to failed so the step run transitions to
 		// terminal-failed, allowing a downstream `recover` step to
@@ -1295,43 +1289,42 @@ func extractTouchedFiles(output string) []string {
 // Best-effort: a missing step run (e.g. dispatched without a
 // workflow) is logged at debug and skipped. An error is returned only
 // for genuine database errors.
-func (r *TaskReconciler) propagateSummaryToStepRun(ctx context.Context, tx pgx.Tx, tenantID, taskID, summary string) error {
+func (r *TaskReconciler) propagateStepRunResults(ctx context.Context, tx pgx.Tx, taskID string, results map[string]any) {
 	// Find the step run that references this task.
 	const q = `SELECT id, result, version FROM workflow_step_runs
 		WHERE tenant_id = $1 AND result::text LIKE $2
 		ORDER BY created_at DESC LIMIT 1`
-	// We can't pass JSONB -> text via bind, so use a LIKE on the
-	// result's text projection. The _work_item_id is a unique key in
-	// the result JSON for task steps dispatched by the workflow.
-	// Postgres's JSONB text representation has a space after each
-	// colon, so the pattern needs a wildcard between the colon and
-	// the id: "_work_item_id":<space?>01K...; the leading + trailing
-	// `%` cover anything before/after.
-	rows, err := tx.Query(ctx, q, tenantID, `%_work_item_id":%`+taskID+`%`)
+	rows, err := tx.Query(ctx, q, "tnt_dev", `%_work_item_id":%`+taskID+`%`)
 	if err != nil {
-		return fmt.Errorf("find step run for task: %w", err)
+		r.log.Warn("propagate step run results: query", "task", taskID, "error", err)
+		return
 	}
 	defer rows.Close()
 	if !rows.Next() {
-		r.log.Debug("no step run references task", "task", taskID)
-		return nil // no step run — task wasn't dispatched by a workflow
+		return
 	}
 	var stepRunID, rawResult string
 	var version int
 	if err := rows.Scan(&stepRunID, &rawResult, &version); err != nil {
-		return fmt.Errorf("scan step run: %w", err)
+		r.log.Warn("propagate step run results: scan", "task", taskID, "error", err)
+		return
 	}
 	rows.Close()
 	merged := map[string]any{}
 	if rawResult != "" {
 		_ = json.Unmarshal([]byte(rawResult), &merged)
 	}
-	merged["_summary"] = summary
+	// Propagate execution fields onto the step run so the run-view
+	// UI can show them without opening each execution.
+	for _, k := range []string{"_summary", "_decision", "_issues", "_touched_files"} {
+		if v, ok := results[k]; ok {
+			merged[k] = v
+		}
+	}
 	updated, _ := json.Marshal(merged)
-	if _, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, stepRunID, version, db.UpdateWorkflowStepRunFields{
+	if _, err := db.UpdateWorkflowStepRun(ctx, tx, "tnt_dev", stepRunID, version, db.UpdateWorkflowStepRunFields{
 		Result: &updated,
 	}); err != nil {
-		return fmt.Errorf("update step run result: %w", err)
+		r.log.Warn("propagate step run results: update", "task", taskID, "error", err)
 	}
-	return nil
 }
