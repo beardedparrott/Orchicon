@@ -186,12 +186,24 @@ function WorkerDetailPage() {
             natural width; gap-2 + flex-wrap drops them onto multiple
             lines cleanly. */}
         <div className="flex flex-wrap items-center gap-2">
-          {selectedVersionId && selectedVersion && selectedVersion.version !== worker.currentVersion && (
+          {selectedVersionId && selectedVersion && selectedVersion.version !== worker.currentVersion && selectedVersion.status === 2 && (
             <Button variant="outline" onClick={() => setActiveVersion.mutate({ workerId: id, version: selectedVersion.version })}>
               {setActiveVersion.isPending ? "Setting…" : "Make Active"}
             </Button>
           )}
-          {draftVersion && viewMode === "detail" && (
+          {selectedVersionId && selectedVersion && selectedVersion.status === 1 && (
+            <>
+              <Button onClick={() => setEditing(true)}>Edit</Button>
+              <Button variant="outline" className="text-destructive border-destructive/50" onClick={() => {
+                if (window.confirm("Delete this draft version? This cannot be undone.")) {
+                  deleteVersion.mutate({ workerId: id, versionId: selectedVersion.id });
+                }
+              }}>
+                Delete
+              </Button>
+            </>
+          )}
+          {draftVersion && viewMode === "detail" && !selectedVersionId && (
             <>
               {editing ? (
                 <>
@@ -705,6 +717,10 @@ function VersionDetailPanel({ version }: { version: import("@/api/gen/orchicon/a
         <JsonField label="Gated tools" value={version.gatedTools} />
         <JsonField label="Budget overrides" value={version.budgetOverrides} />
         <JsonField label="Context sources" value={version.contextSources} />
+      </div>
+      <div className="grid gap-4 md:grid-cols-2 text-sm">
+        <JsonField label="Runtime" value={version.runtimeRef || "—"} />
+        <JsonField label="Model" value={version.modelRef || "—"} />
       </div>
       <div className="grid gap-4 md:grid-cols-2 text-sm">
         <div>
