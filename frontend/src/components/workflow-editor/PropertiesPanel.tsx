@@ -39,14 +39,12 @@ export function PropertiesPanel({
   const { data: workers } = useListWorkers();
   const { data: policies } = useListPolicies({ status: PolicyStatus.PUBLISHED });
 
-  if (!node) return <EmptyProperties />;
-  const d = node.data;
-  const Icon = STEP_KIND_ICONS[d.kind] ?? STEP_KIND_ICONS[1];
-  const cfg = parseConfig(d.config) as StepConfig;
-
-  // Seed default config values for newly-created steps so the UI shows
-  // the actual persisted value, not just a display fallback.
+  // Seed default config values for newly-created steps. Must be before
+  // the early return to keep hook order stable across renders.
   useEffect(() => {
+    if (!node || readOnly) return;
+    const d = node.data;
+    const cfg = parseConfig(d.config) as StepConfig;
     let changed = false;
     const next = { ...cfg };
     if (d.kind === STEP_KIND.LOOP_DECISION && typeof cfg.max_iterations !== "number") {
@@ -54,21 +52,26 @@ export function PropertiesPanel({
       changed = true;
     }
     if (d.kind === STEP_KIND.TASK) {
-      if (typeof cfg.recovery?.strategy !== "string") {
-        next.recovery = { ...(cfg.recovery ?? {}), strategy: "retry" };
+      const rec = cfg.recovery ?? {};
+      if (typeof rec.strategy !== "string") {
+        next.recovery = { ...rec, strategy: "retry" };
         changed = true;
       }
-      if (typeof cfg.recovery?.max_attempts !== "number") {
-        next.recovery = { ...(next.recovery ?? cfg.recovery ?? {}), max_attempts: 3 };
+      if (typeof rec.max_attempts !== "number") {
+        next.recovery = { ...(next.recovery ?? rec), max_attempts: 3 };
         changed = true;
       }
     }
     if (changed) {
       onChange({ config: JSON.stringify(next) });
     }
-    // Run once on mount — the step id is stable for the lifecycle of the panel.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [node]);
+
+  if (!node) return <EmptyProperties />;
+  const d = node.data;
+  const Icon = STEP_KIND_ICONS[d.kind] ?? STEP_KIND_ICONS[1];
+  const cfg = parseConfig(d.config) as StepConfig;
 
   const publishedWorkers = (workers ?? []).filter(
     (w) => w.status === WorkerStatus.PUBLISHED,
