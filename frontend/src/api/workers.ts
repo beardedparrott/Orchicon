@@ -96,6 +96,33 @@ export function useGetWorkerVersion(versionId: string) {
   });
 }
 
+// useSetActiveWorkerVersion sets a published version as the worker's active version.
+export function useSetActiveWorkerVersion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { workerId: string; version: number }) => {
+      await workerClient.setActiveWorkerVersion(input);
+    },
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: workerKeys.detail(variables.workerId) });
+      qc.invalidateQueries({ queryKey: workerKeys.versions(variables.workerId) });
+    },
+  });
+}
+
+// useRevertWorkerVersionToDraft moves a published version back to draft.
+export function useRevertWorkerVersionToDraft() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { versionId: string }) => {
+      await workerClient.revertWorkerVersionToDraft(input);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: workerKeys.all });
+    },
+  });
+}
+
 // usePublishWorkerVersion publishes the draft version of a worker.
 export function usePublishWorkerVersion() {
   const qc = useQueryClient();
@@ -127,7 +154,7 @@ export function useDeprecateWorker() {
   });
 }
 
-// useDeleteWorkerVersion deletes a single draft worker version.
+// useDeleteWorkerVersion deletes a single worker version (any status).
 export function useDeleteWorkerVersion() {
   const qc = useQueryClient();
   return useMutation({

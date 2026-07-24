@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AcquireEditLockRequest, AcquireEditLockResponse, CreateWorkerRequest, CreateWorkerResponse, CreateWorkerVersionRequest, CreateWorkerVersionResponse, DeleteWorkerRequest, DeleteWorkerResponse, DeleteWorkerVersionRequest, DeleteWorkerVersionResponse, DeprecateWorkerRequest, DeprecateWorkerResponse, GetEditLockRequest, GetEditLockResponse, GetWorkerRequest, GetWorkerResponse, GetWorkerVersionRequest, GetWorkerVersionResponse, ListWorkersRequest, ListWorkersResponse, ListWorkerVersionsRequest, ListWorkerVersionsResponse, PublishWorkerVersionRequest, PublishWorkerVersionResponse, ReleaseEditLockRequest, ReleaseEditLockResponse, RetireWorkerRequest, RetireWorkerResponse, UpdateWorkerVersionRequest, UpdateWorkerVersionResponse } from "./worker_service_pb.js";
+import { AcquireEditLockRequest, AcquireEditLockResponse, CreateWorkerRequest, CreateWorkerResponse, CreateWorkerVersionRequest, CreateWorkerVersionResponse, DeleteWorkerRequest, DeleteWorkerResponse, DeleteWorkerVersionRequest, DeleteWorkerVersionResponse, DeprecateWorkerRequest, DeprecateWorkerResponse, GetEditLockRequest, GetEditLockResponse, GetWorkerRequest, GetWorkerResponse, GetWorkerVersionRequest, GetWorkerVersionResponse, ListWorkersRequest, ListWorkersResponse, ListWorkerVersionsRequest, ListWorkerVersionsResponse, PublishWorkerVersionRequest, PublishWorkerVersionResponse, ReleaseEditLockRequest, ReleaseEditLockResponse, RetireWorkerRequest, RetireWorkerResponse, RevertWorkerVersionToDraftRequest, RevertWorkerVersionToDraftResponse, SetActiveWorkerVersionRequest, SetActiveWorkerVersionResponse, UpdateWorkerVersionRequest, UpdateWorkerVersionResponse } from "./worker_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -82,8 +82,7 @@ export const WorkerService = {
       kind: MethodKind.Unary,
     },
     /**
-     * DeleteWorkerVersion hard-deletes a single draft version. Published
-     * versions are immutable and cannot be deleted — only deprecated.
+     * DeleteWorkerVersion hard-deletes a single worker version.
      *
      * @generated from rpc orchicon.api.v1.WorkerService.DeleteWorkerVersion
      */
@@ -91,6 +90,31 @@ export const WorkerService = {
       name: "DeleteWorkerVersion",
       I: DeleteWorkerVersionRequest,
       O: DeleteWorkerVersionResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * SetActiveWorkerVersion sets a published version as the worker's current
+     * version. The worker must be in published status.
+     *
+     * @generated from rpc orchicon.api.v1.WorkerService.SetActiveWorkerVersion
+     */
+    setActiveWorkerVersion: {
+      name: "SetActiveWorkerVersion",
+      I: SetActiveWorkerVersionRequest,
+      O: SetActiveWorkerVersionResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * RevertWorkerVersionToDraft moves a published version back to draft so
+     * it can be edited. The worker's current_version is not changed; if this
+     * version was the active one it remains active until another is published.
+     *
+     * @generated from rpc orchicon.api.v1.WorkerService.RevertWorkerVersionToDraft
+     */
+    revertWorkerVersionToDraft: {
+      name: "RevertWorkerVersionToDraft",
+      I: RevertWorkerVersionToDraftRequest,
+      O: RevertWorkerVersionToDraftResponse,
       kind: MethodKind.Unary,
     },
     /**

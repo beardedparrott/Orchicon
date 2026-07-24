@@ -14,6 +14,8 @@ import {
   useListWorkerVersions,
   usePublishWorkerVersion,
   useRetireWorker,
+  useRevertWorkerVersionToDraft,
+  useSetActiveWorkerVersion,
   useUpdateWorkerVersion,
 } from "@/api/workers";
 import { EntityYamlView } from "@/components/EntityYamlView";
@@ -91,6 +93,8 @@ function WorkerDetailPage() {
   const createWorker = useCreateWorker();
   const navigate = useNavigate();
   const deleteMutation = useDeleteWorker();
+  const setActiveVersion = useSetActiveWorkerVersion();
+  const revertVersion = useRevertWorkerVersionToDraft();
   const { data: latestData } = useGetWorker(id);
   const latestVersion = latestData?.latestVersion;
   const [editing, setEditing] = useState(false);
@@ -182,9 +186,9 @@ function WorkerDetailPage() {
             natural width; gap-2 + flex-wrap drops them onto multiple
             lines cleanly. */}
         <div className="flex flex-wrap items-center gap-2">
-          {selectedVersionId && (
-            <Button variant="outline" onClick={() => setSelectedVersionId(undefined)}>
-              ← Back to active
+          {selectedVersionId && selectedVersion && selectedVersion.version !== worker.currentVersion && (
+            <Button variant="outline" onClick={() => setActiveVersion.mutate({ workerId: id, version: selectedVersion.version })}>
+              {setActiveVersion.isPending ? "Setting…" : "Make Active"}
             </Button>
           )}
           {draftVersion && viewMode === "detail" && (
@@ -570,6 +574,23 @@ function WorkerDetailPage() {
                             onClick={(e) => { e.stopPropagation(); setSelectedVersionId(ver.id); setEditing(true); }}
                           >
                             Edit
+                          </button>
+                          <DeleteVersionButton workerId={id} versionId={ver.id} />
+                        </>
+                      )}
+                      {ver.status === 2 && (
+                        <>
+                          <button
+                            type="button"
+                            className="rounded px-1.5 py-0.5 text-[10px] font-medium text-amber-600 hover:bg-accent"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (window.confirm("Revert v" + ver.version + " to draft?")) {
+                                revertVersion.mutate({ versionId: ver.id });
+                              }
+                            }}
+                          >
+                            Revert to draft
                           </button>
                           <DeleteVersionButton workerId={id} versionId={ver.id} />
                         </>

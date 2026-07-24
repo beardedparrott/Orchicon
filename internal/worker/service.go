@@ -365,6 +365,57 @@ func (s *Service) DeleteWorkerVersion(ctx context.Context, req *connect.Request[
 	return connect.NewResponse(&apiv1.DeleteWorkerVersionResponse{}), nil
 }
 
+// SetActiveWorkerVersion sets a published version as the worker's current version.
+func (s *Service) SetActiveWorkerVersion(ctx context.Context, req *connect.Request[apiv1.SetActiveWorkerVersionRequest]) (*connect.Response[apiv1.SetActiveWorkerVersionResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.WorkerId == "" || req.Msg.Version <= 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("worker_id and version are required"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetWorker(ctx, ttx.Tx, tenantID, req.Msg.WorkerId)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if _, err := db.SetActiveWorkerVersion(ctx, ttx.Tx, tenantID, req.Msg.WorkerId, current.Version, int(req.Msg.Version)); err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("active worker version set", "worker", req.Msg.WorkerId, "version", req.Msg.Version)
+	return connect.NewResponse(&apiv1.SetActiveWorkerVersionResponse{}), nil
+}
+
+// RevertWorkerVersionToDraft moves a published version back to draft for editing.
+func (s *Service) RevertWorkerVersionToDraft(ctx context.Context, req *connect.Request[apiv1.RevertWorkerVersionToDraftRequest]) (*connect.Response[apiv1.RevertWorkerVersionToDraftResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.VersionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("version_id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	if err := db.RevertWorkerVersionToDraft(ctx, ttx.Tx, tenantID, req.Msg.VersionId); err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	return connect.NewResponse(&apiv1.RevertWorkerVersionToDraftResponse{}), nil
+}
+
 // GetWorker returns a single worker header by id, with its latest
 // published version (if any).
 func (s *Service) GetWorker(ctx context.Context, req *connect.Request[apiv1.GetWorkerRequest]) (*connect.Response[apiv1.GetWorkerResponse], error) {

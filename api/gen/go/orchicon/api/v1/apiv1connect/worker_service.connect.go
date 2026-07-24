@@ -59,6 +59,12 @@ const (
 	// WorkerServiceDeleteWorkerVersionProcedure is the fully-qualified name of the WorkerService's
 	// DeleteWorkerVersion RPC.
 	WorkerServiceDeleteWorkerVersionProcedure = "/orchicon.api.v1.WorkerService/DeleteWorkerVersion"
+	// WorkerServiceSetActiveWorkerVersionProcedure is the fully-qualified name of the WorkerService's
+	// SetActiveWorkerVersion RPC.
+	WorkerServiceSetActiveWorkerVersionProcedure = "/orchicon.api.v1.WorkerService/SetActiveWorkerVersion"
+	// WorkerServiceRevertWorkerVersionToDraftProcedure is the fully-qualified name of the
+	// WorkerService's RevertWorkerVersionToDraft RPC.
+	WorkerServiceRevertWorkerVersionToDraftProcedure = "/orchicon.api.v1.WorkerService/RevertWorkerVersionToDraft"
 	// WorkerServiceGetWorkerProcedure is the fully-qualified name of the WorkerService's GetWorker RPC.
 	WorkerServiceGetWorkerProcedure = "/orchicon.api.v1.WorkerService/GetWorker"
 	// WorkerServiceListWorkersProcedure is the fully-qualified name of the WorkerService's ListWorkers
@@ -105,9 +111,15 @@ type WorkerServiceClient interface {
 	RetireWorker(context.Context, *connect.Request[v1.RetireWorkerRequest]) (*connect.Response[v1.RetireWorkerResponse], error)
 	// DeleteWorker hard-deletes a Worker and all its versions.
 	DeleteWorker(context.Context, *connect.Request[v1.DeleteWorkerRequest]) (*connect.Response[v1.DeleteWorkerResponse], error)
-	// DeleteWorkerVersion hard-deletes a single draft version. Published
-	// versions are immutable and cannot be deleted — only deprecated.
+	// DeleteWorkerVersion hard-deletes a single worker version.
 	DeleteWorkerVersion(context.Context, *connect.Request[v1.DeleteWorkerVersionRequest]) (*connect.Response[v1.DeleteWorkerVersionResponse], error)
+	// SetActiveWorkerVersion sets a published version as the worker's current
+	// version. The worker must be in published status.
+	SetActiveWorkerVersion(context.Context, *connect.Request[v1.SetActiveWorkerVersionRequest]) (*connect.Response[v1.SetActiveWorkerVersionResponse], error)
+	// RevertWorkerVersionToDraft moves a published version back to draft so
+	// it can be edited. The worker's current_version is not changed; if this
+	// version was the active one it remains active until another is published.
+	RevertWorkerVersionToDraft(context.Context, *connect.Request[v1.RevertWorkerVersionToDraftRequest]) (*connect.Response[v1.RevertWorkerVersionToDraftResponse], error)
 	// GetWorker returns a single Worker header by id.
 	GetWorker(context.Context, *connect.Request[v1.GetWorkerRequest]) (*connect.Response[v1.GetWorkerResponse], error)
 	// ListWorkers returns a page of Workers for the tenant.
@@ -180,6 +192,18 @@ func NewWorkerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(workerServiceMethods.ByName("DeleteWorkerVersion")),
 			connect.WithClientOptions(opts...),
 		),
+		setActiveWorkerVersion: connect.NewClient[v1.SetActiveWorkerVersionRequest, v1.SetActiveWorkerVersionResponse](
+			httpClient,
+			baseURL+WorkerServiceSetActiveWorkerVersionProcedure,
+			connect.WithSchema(workerServiceMethods.ByName("SetActiveWorkerVersion")),
+			connect.WithClientOptions(opts...),
+		),
+		revertWorkerVersionToDraft: connect.NewClient[v1.RevertWorkerVersionToDraftRequest, v1.RevertWorkerVersionToDraftResponse](
+			httpClient,
+			baseURL+WorkerServiceRevertWorkerVersionToDraftProcedure,
+			connect.WithSchema(workerServiceMethods.ByName("RevertWorkerVersionToDraft")),
+			connect.WithClientOptions(opts...),
+		),
 		getWorker: connect.NewClient[v1.GetWorkerRequest, v1.GetWorkerResponse](
 			httpClient,
 			baseURL+WorkerServiceGetWorkerProcedure,
@@ -239,21 +263,23 @@ func NewWorkerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 
 // workerServiceClient implements WorkerServiceClient.
 type workerServiceClient struct {
-	createWorker         *connect.Client[v1.CreateWorkerRequest, v1.CreateWorkerResponse]
-	publishWorkerVersion *connect.Client[v1.PublishWorkerVersionRequest, v1.PublishWorkerVersionResponse]
-	deprecateWorker      *connect.Client[v1.DeprecateWorkerRequest, v1.DeprecateWorkerResponse]
-	retireWorker         *connect.Client[v1.RetireWorkerRequest, v1.RetireWorkerResponse]
-	deleteWorker         *connect.Client[v1.DeleteWorkerRequest, v1.DeleteWorkerResponse]
-	deleteWorkerVersion  *connect.Client[v1.DeleteWorkerVersionRequest, v1.DeleteWorkerVersionResponse]
-	getWorker            *connect.Client[v1.GetWorkerRequest, v1.GetWorkerResponse]
-	listWorkers          *connect.Client[v1.ListWorkersRequest, v1.ListWorkersResponse]
-	listWorkerVersions   *connect.Client[v1.ListWorkerVersionsRequest, v1.ListWorkerVersionsResponse]
-	getWorkerVersion     *connect.Client[v1.GetWorkerVersionRequest, v1.GetWorkerVersionResponse]
-	updateWorkerVersion  *connect.Client[v1.UpdateWorkerVersionRequest, v1.UpdateWorkerVersionResponse]
-	createWorkerVersion  *connect.Client[v1.CreateWorkerVersionRequest, v1.CreateWorkerVersionResponse]
-	acquireEditLock      *connect.Client[v1.AcquireEditLockRequest, v1.AcquireEditLockResponse]
-	releaseEditLock      *connect.Client[v1.ReleaseEditLockRequest, v1.ReleaseEditLockResponse]
-	getEditLock          *connect.Client[v1.GetEditLockRequest, v1.GetEditLockResponse]
+	createWorker               *connect.Client[v1.CreateWorkerRequest, v1.CreateWorkerResponse]
+	publishWorkerVersion       *connect.Client[v1.PublishWorkerVersionRequest, v1.PublishWorkerVersionResponse]
+	deprecateWorker            *connect.Client[v1.DeprecateWorkerRequest, v1.DeprecateWorkerResponse]
+	retireWorker               *connect.Client[v1.RetireWorkerRequest, v1.RetireWorkerResponse]
+	deleteWorker               *connect.Client[v1.DeleteWorkerRequest, v1.DeleteWorkerResponse]
+	deleteWorkerVersion        *connect.Client[v1.DeleteWorkerVersionRequest, v1.DeleteWorkerVersionResponse]
+	setActiveWorkerVersion     *connect.Client[v1.SetActiveWorkerVersionRequest, v1.SetActiveWorkerVersionResponse]
+	revertWorkerVersionToDraft *connect.Client[v1.RevertWorkerVersionToDraftRequest, v1.RevertWorkerVersionToDraftResponse]
+	getWorker                  *connect.Client[v1.GetWorkerRequest, v1.GetWorkerResponse]
+	listWorkers                *connect.Client[v1.ListWorkersRequest, v1.ListWorkersResponse]
+	listWorkerVersions         *connect.Client[v1.ListWorkerVersionsRequest, v1.ListWorkerVersionsResponse]
+	getWorkerVersion           *connect.Client[v1.GetWorkerVersionRequest, v1.GetWorkerVersionResponse]
+	updateWorkerVersion        *connect.Client[v1.UpdateWorkerVersionRequest, v1.UpdateWorkerVersionResponse]
+	createWorkerVersion        *connect.Client[v1.CreateWorkerVersionRequest, v1.CreateWorkerVersionResponse]
+	acquireEditLock            *connect.Client[v1.AcquireEditLockRequest, v1.AcquireEditLockResponse]
+	releaseEditLock            *connect.Client[v1.ReleaseEditLockRequest, v1.ReleaseEditLockResponse]
+	getEditLock                *connect.Client[v1.GetEditLockRequest, v1.GetEditLockResponse]
 }
 
 // CreateWorker calls orchicon.api.v1.WorkerService.CreateWorker.
@@ -284,6 +310,16 @@ func (c *workerServiceClient) DeleteWorker(ctx context.Context, req *connect.Req
 // DeleteWorkerVersion calls orchicon.api.v1.WorkerService.DeleteWorkerVersion.
 func (c *workerServiceClient) DeleteWorkerVersion(ctx context.Context, req *connect.Request[v1.DeleteWorkerVersionRequest]) (*connect.Response[v1.DeleteWorkerVersionResponse], error) {
 	return c.deleteWorkerVersion.CallUnary(ctx, req)
+}
+
+// SetActiveWorkerVersion calls orchicon.api.v1.WorkerService.SetActiveWorkerVersion.
+func (c *workerServiceClient) SetActiveWorkerVersion(ctx context.Context, req *connect.Request[v1.SetActiveWorkerVersionRequest]) (*connect.Response[v1.SetActiveWorkerVersionResponse], error) {
+	return c.setActiveWorkerVersion.CallUnary(ctx, req)
+}
+
+// RevertWorkerVersionToDraft calls orchicon.api.v1.WorkerService.RevertWorkerVersionToDraft.
+func (c *workerServiceClient) RevertWorkerVersionToDraft(ctx context.Context, req *connect.Request[v1.RevertWorkerVersionToDraftRequest]) (*connect.Response[v1.RevertWorkerVersionToDraftResponse], error) {
+	return c.revertWorkerVersionToDraft.CallUnary(ctx, req)
 }
 
 // GetWorker calls orchicon.api.v1.WorkerService.GetWorker.
@@ -349,9 +385,15 @@ type WorkerServiceHandler interface {
 	RetireWorker(context.Context, *connect.Request[v1.RetireWorkerRequest]) (*connect.Response[v1.RetireWorkerResponse], error)
 	// DeleteWorker hard-deletes a Worker and all its versions.
 	DeleteWorker(context.Context, *connect.Request[v1.DeleteWorkerRequest]) (*connect.Response[v1.DeleteWorkerResponse], error)
-	// DeleteWorkerVersion hard-deletes a single draft version. Published
-	// versions are immutable and cannot be deleted — only deprecated.
+	// DeleteWorkerVersion hard-deletes a single worker version.
 	DeleteWorkerVersion(context.Context, *connect.Request[v1.DeleteWorkerVersionRequest]) (*connect.Response[v1.DeleteWorkerVersionResponse], error)
+	// SetActiveWorkerVersion sets a published version as the worker's current
+	// version. The worker must be in published status.
+	SetActiveWorkerVersion(context.Context, *connect.Request[v1.SetActiveWorkerVersionRequest]) (*connect.Response[v1.SetActiveWorkerVersionResponse], error)
+	// RevertWorkerVersionToDraft moves a published version back to draft so
+	// it can be edited. The worker's current_version is not changed; if this
+	// version was the active one it remains active until another is published.
+	RevertWorkerVersionToDraft(context.Context, *connect.Request[v1.RevertWorkerVersionToDraftRequest]) (*connect.Response[v1.RevertWorkerVersionToDraftResponse], error)
 	// GetWorker returns a single Worker header by id.
 	GetWorker(context.Context, *connect.Request[v1.GetWorkerRequest]) (*connect.Response[v1.GetWorkerResponse], error)
 	// ListWorkers returns a page of Workers for the tenant.
@@ -418,6 +460,18 @@ func NewWorkerServiceHandler(svc WorkerServiceHandler, opts ...connect.HandlerOp
 		WorkerServiceDeleteWorkerVersionProcedure,
 		svc.DeleteWorkerVersion,
 		connect.WithSchema(workerServiceMethods.ByName("DeleteWorkerVersion")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workerServiceSetActiveWorkerVersionHandler := connect.NewUnaryHandler(
+		WorkerServiceSetActiveWorkerVersionProcedure,
+		svc.SetActiveWorkerVersion,
+		connect.WithSchema(workerServiceMethods.ByName("SetActiveWorkerVersion")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workerServiceRevertWorkerVersionToDraftHandler := connect.NewUnaryHandler(
+		WorkerServiceRevertWorkerVersionToDraftProcedure,
+		svc.RevertWorkerVersionToDraft,
+		connect.WithSchema(workerServiceMethods.ByName("RevertWorkerVersionToDraft")),
 		connect.WithHandlerOptions(opts...),
 	)
 	workerServiceGetWorkerHandler := connect.NewUnaryHandler(
@@ -488,6 +542,10 @@ func NewWorkerServiceHandler(svc WorkerServiceHandler, opts ...connect.HandlerOp
 			workerServiceDeleteWorkerHandler.ServeHTTP(w, r)
 		case WorkerServiceDeleteWorkerVersionProcedure:
 			workerServiceDeleteWorkerVersionHandler.ServeHTTP(w, r)
+		case WorkerServiceSetActiveWorkerVersionProcedure:
+			workerServiceSetActiveWorkerVersionHandler.ServeHTTP(w, r)
+		case WorkerServiceRevertWorkerVersionToDraftProcedure:
+			workerServiceRevertWorkerVersionToDraftHandler.ServeHTTP(w, r)
 		case WorkerServiceGetWorkerProcedure:
 			workerServiceGetWorkerHandler.ServeHTTP(w, r)
 		case WorkerServiceListWorkersProcedure:
@@ -537,6 +595,14 @@ func (UnimplementedWorkerServiceHandler) DeleteWorker(context.Context, *connect.
 
 func (UnimplementedWorkerServiceHandler) DeleteWorkerVersion(context.Context, *connect.Request[v1.DeleteWorkerVersionRequest]) (*connect.Response[v1.DeleteWorkerVersionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkerService.DeleteWorkerVersion is not implemented"))
+}
+
+func (UnimplementedWorkerServiceHandler) SetActiveWorkerVersion(context.Context, *connect.Request[v1.SetActiveWorkerVersionRequest]) (*connect.Response[v1.SetActiveWorkerVersionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkerService.SetActiveWorkerVersion is not implemented"))
+}
+
+func (UnimplementedWorkerServiceHandler) RevertWorkerVersionToDraft(context.Context, *connect.Request[v1.RevertWorkerVersionToDraftRequest]) (*connect.Response[v1.RevertWorkerVersionToDraftResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkerService.RevertWorkerVersionToDraft is not implemented"))
 }
 
 func (UnimplementedWorkerServiceHandler) GetWorker(context.Context, *connect.Request[v1.GetWorkerRequest]) (*connect.Response[v1.GetWorkerResponse], error) {

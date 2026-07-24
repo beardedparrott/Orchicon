@@ -390,13 +390,42 @@ func DeleteWorker(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
 	return nil
 }
 
-// DeleteWorkerVersion hard-deletes a single draft worker version.
-// Published/deprecated versions cannot be deleted.
+// DeleteWorkerVersion hard-deletes a single worker version (any status).
 func DeleteWorkerVersion(ctx context.Context, tx pgx.Tx, tenantID, workerID, versionID string) error {
-	const q = `DELETE FROM worker_versions WHERE id = $1 AND tenant_id = $2 AND worker_id = $3 AND status = 'draft'`
+	const q = `DELETE FROM worker_versions WHERE id = $1 AND tenant_id = $2 AND worker_id = $3`
 	tag, err := tx.Exec(ctx, q, versionID, tenantID, workerID)
 	if err != nil {
 		return fmt.Errorf("db: delete worker version: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetActiveWorkerVersion sets a published version as the worker's current
+// version. If versionNum <= 0 the operation is a no-op.
+func SetActiveWorkerVersion(ctx context.Context, tx pgx.Tx, tenantID, workerID string, expectedWorkerVersion int, versionNum int) (WorkerRow, error) {
+	// First verify the version exists and is published.
+	const verifyQ = `SELECT 1 FROM worker_versions WHERE worker_id = $1 AND tenant_id = $2 AND version = $3 AND status = 'published'`
+	var ok int
+	if err := tx.QueryRow(ctx, verifyQ, workerID, tenantID, versionNum).Scan(&ok); err != nil {
+		return WorkerRow{}, ErrNotFound
+	}
+	// Update the worker's current_version.
+	updated, err := UpdateWorkerCurrentVersion(ctx, tx, tenantID, workerID, expectedWorkerVersion, versionNum)
+	if err != nil {
+		return WorkerRow{}, fmt.Errorf("db: set active worker version: %w", err)
+	}
+	return updated, nil
+}
+
+// RevertWorkerVersionToDraft sets a published version back to draft status.
+func RevertWorkerVersionToDraft(ctx context.Context, tx pgx.Tx, tenantID, versionID string) error {
+	const q = `UPDATE worker_versions SET status = 'draft' WHERE id = $1 AND tenant_id = $2 AND status = 'published'`
+	tag, err := tx.Exec(ctx, q, versionID, tenantID)
+	if err != nil {
+		return fmt.Errorf("db: revert worker version to draft: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound

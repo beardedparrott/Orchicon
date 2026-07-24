@@ -33,9 +33,17 @@ service WorkerService {
   // DeleteWorker hard-deletes a Worker and all its versions.
   rpc DeleteWorker(DeleteWorkerRequest) returns (DeleteWorkerResponse);
 
-  // DeleteWorkerVersion hard-deletes a single draft version. Published
-  // versions are immutable and cannot be deleted — only deprecated.
+  // DeleteWorkerVersion hard-deletes a single worker version.
   rpc DeleteWorkerVersion(DeleteWorkerVersionRequest) returns (DeleteWorkerVersionResponse);
+
+  // SetActiveWorkerVersion sets a published version as the worker's current
+  // version. The worker must be in published status.
+  rpc SetActiveWorkerVersion(SetActiveWorkerVersionRequest) returns (SetActiveWorkerVersionResponse);
+
+  // RevertWorkerVersionToDraft moves a published version back to draft so
+  // it can be edited. The worker's current_version is not changed; if this
+  // version was the active one it remains active until another is published.
+  rpc RevertWorkerVersionToDraft(RevertWorkerVersionToDraftRequest) returns (RevertWorkerVersionToDraftResponse);
 
   // GetWorker returns a single Worker header by id.
   rpc GetWorker(GetWorkerRequest) returns (GetWorkerResponse);
@@ -135,6 +143,19 @@ message DeleteWorkerVersionRequest {
 }
 
 message DeleteWorkerVersionResponse {}
+
+message SetActiveWorkerVersionRequest {
+  string worker_id = 1;
+  int32 version = 2; // the version number to set as active
+}
+
+message SetActiveWorkerVersionResponse {}
+
+message RevertWorkerVersionToDraftRequest {
+  string version_id = 1;
+}
+
+message RevertWorkerVersionToDraftResponse {}
 
 message GetWorkerRequest {
   string id = 1;
