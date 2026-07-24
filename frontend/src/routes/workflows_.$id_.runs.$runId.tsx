@@ -518,7 +518,11 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
                 }
               >
                 <ExecStatusBadge status={ex.status} />
-                <span className="font-medium min-w-0 truncate">{ex.workflowName || ex.workerId}</span>
+                <span className="font-medium min-w-0 truncate">
+                  {ex.workflowName
+                    ? `${ex.workflowName} — ${workerLabel(ex.workerId)}${ex.iteration > 0 ? ` (Loop #${ex.iteration})` : ""}`
+                    : `${workerLabel(ex.workerId)}${ex.iteration > 0 ? ` (loop #${ex.iteration})` : ""}`}
+                </span>
                 <span className="font-mono text-xs text-muted-foreground shrink-0">{ex.id.slice(0, 12)}…</span>
                 <LiveDuration startedAt={ex.startedAt} endedAt={ex.endedAt} />
                 {ex.startedAt && (
@@ -703,6 +707,18 @@ function EventDot({ eventType }: { eventType: string }) {
   if (eventType.includes("blocked")) return <span className="text-sm text-red-700">⛔</span>;
   if (eventType.includes("approval")) return <span className="text-sm text-amber-600">⚠</span>;
   return <span className="text-sm text-muted-foreground">•</span>;
+}
+
+function workerLabel(id: string): string {
+  const prefix = "w_se_";
+  if (id.startsWith(prefix)) {
+    const rest = id.slice(prefix.length);
+    return rest
+      .split("_")
+      .map((w) => (w.length > 0 ? w[0].toUpperCase() + w.slice(1) : w))
+      .join(" ");
+  }
+  return id;
 }
 
 function formatPayload(data: Uint8Array): string {
