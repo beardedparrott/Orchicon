@@ -1040,6 +1040,22 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 					r.log.Warn("recover step: trigger recovery", "work_item", depResult.WorkItemID, "error", err)
 				}
 			}
+			// Mark the RECOVER step as RUNNING so the poll phase
+			// tracks recovery completion. Without this the step
+			// stays READY, gets re-dispatched every pass, and the
+			// terminal-state check sees the failed dep and marks
+			// the workflow run FAILED immediately.
+			recoveryStepUpdated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:    strPtr(domain.StepRunRunning),
+				StartedAt: &now,
+			})
+			if err != nil {
+				return fmt.Errorf("mark recover step running: %w", err)
+			}
+			runs[step.ID] = recoveryStepUpdated
+			if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepStarted, run, recoveryStepUpdated); err != nil {
+				return fmt.Errorf("enqueue recover step_started: %w", err)
+			}
 			r.log.Info("recover step triggered recovery", "run", run.ID, "step", step.ID, "work_item", depResult.WorkItemID)
 			break
 		}
