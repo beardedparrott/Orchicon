@@ -577,18 +577,28 @@ function SystemNote({ text, ts }: { text: string; ts: Date }) {
 function AssistantBubble({ chunks, artifacts }: { chunks: ParsedTextChunk[]; artifacts: ParsedArtifact[] }) {
   const text = chunks.map((c) => c.text).join("");
   const lastTs = chunks[chunks.length - 1].occurredAt;
+  const [showRaw, setShowRaw] = useState(false);
   return (
     <div className="flex justify-start">
       <div className="max-w-[85%] rounded-lg rounded-tl-sm border border-border bg-card px-3 py-2 text-sm leading-relaxed shadow-sm">
         <div className="mb-1 flex items-center gap-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
           <span>assistant</span>
           <span className="opacity-60">{lastTs.toLocaleTimeString()}</span>
-          <span className="ml-auto">
-            <CopyButton text={text} />
-          </span>
+          <button
+            type="button"
+            className="ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium hover:bg-accent hover:text-accent-foreground"
+            onClick={() => setShowRaw((v) => !v)}
+          >
+            {showRaw ? "Render markdown" : "Raw text"}
+          </button>
+          <CopyButton text={text} />
         </div>
         <div className="break-words [overflow-wrap:anywhere]">
-          <Markdown>{text}</Markdown>
+          {showRaw ? (
+            <pre className="whitespace-pre-wrap font-mono text-xs leading-relaxed">{text}</pre>
+          ) : (
+            <Markdown>{text}</Markdown>
+          )}
         </div>
         {/* Inline artifacts: write-tool outputs are embedded inside the
             assistant bubble so they don't break the message flow. */}

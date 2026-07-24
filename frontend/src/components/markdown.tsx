@@ -1,4 +1,5 @@
 import ReactMarkdown from "react-markdown";
+import remarkEmoji from "remark-emoji";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 
@@ -81,7 +82,7 @@ export function Markdown({ children, className }: { children?: string | null; cl
   if (!children) return null;
   return (
     <div className={cn("prose-custom text-sm leading-relaxed break-words [overflow-wrap:anywhere]", className)}>
-      <ReactMarkdown components={COMPONENTS} remarkPlugins={[remarkGfm]}>
+      <ReactMarkdown components={COMPONENTS} remarkPlugins={[remarkGfm, remarkEmoji]}>
         {children}
       </ReactMarkdown>
     </div>
