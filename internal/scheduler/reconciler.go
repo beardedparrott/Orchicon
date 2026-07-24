@@ -553,19 +553,20 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	// canonical downstream input.
 	//
 	// We start fresh — previous results from an earlier execution
-	// (e.g. SSE) carry stale _decision/_issues that must NOT survive
-	// into this execution (the new output may not explicitly overwrite
-	// them via _decision: markers). Only _parent_execution_id and
-	// _recovery_summary are preserved from prior results.
+	// (e.g. SSE) carry stale _decision that must NOT survive into this
+	// execution (the new output may not explicitly overwrite it via a
+	// _decision: marker). But _issues (review feedback) IS preserved
+	// across loop iterations so each loop-back has the reviewer's
+	// findings. _parent_execution_id and _recovery_summary are also
+	// carried forward.
 	results := map[string]any{}
 	if len(wi.Results) > 0 {
 		var existing map[string]any
 		if err := json.Unmarshal(wi.Results, &existing); err == nil {
-			if pid, ok := existing["_parent_execution_id"]; ok {
-				results["_parent_execution_id"] = pid
-			}
-			if rs, ok := existing["_recovery_summary"]; ok {
-				results["_recovery_summary"] = rs
+			for _, k := range []string{"_parent_execution_id", "_recovery_summary", "_issues"} {
+				if v, ok := existing[k]; ok {
+					results[k] = v
+				}
 			}
 		}
 	}
