@@ -740,6 +740,10 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 				return fmt.Errorf("load worker version for %s: %w", step.Ref, err)
 			}
 		}
+		// Set the WorkflowStepID before building the prompt so
+		// upstreamContext marks THIS step as the current one, not
+		// the step from a prior dispatch of the same work item.
+		wi.WorkflowStepID = sr.StepID
 		composite, err := r.buildCompositePrompt(ctx, tx, tenantID, wi, workerVer, allSteps, runs)
 		if err != nil {
 			return fmt.Errorf("build composite prompt for %s: %w", wid, err)
