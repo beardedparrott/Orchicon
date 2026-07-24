@@ -10,6 +10,7 @@ import {
   useDeleteWorkerVersion,
   useDeprecateWorker,
   useGetWorker,
+  useGetWorkerVersion,
   useListWorkerVersions,
   usePublishWorkerVersion,
   useRetireWorker,
@@ -619,19 +620,19 @@ function WorkerDetailPage() {
             <div className="grid gap-4 md:grid-cols-2">
               <JsonField
                 label="Permissions"
-                value={latestVersion.permissions}
+                value={selectedVersion.permissions}
               />
               <JsonField
                 label="Gated tools"
-                value={latestVersion.gatedTools}
+                value={selectedVersion.gatedTools}
               />
               <JsonField
                 label="Budget overrides"
-                value={latestVersion.budgetOverrides}
+                value={selectedVersion.budgetOverrides}
               />
               <JsonField
                 label="Context sources"
-                value={latestVersion.contextSources}
+                value={selectedVersion.contextSources}
               />
             </div>
             <div className="grid gap-4 md:grid-cols-2">
@@ -640,7 +641,7 @@ function WorkerDetailPage() {
                   Concurrency limit
                 </h4>
                 <p className="mt-1 text-sm">
-                  {latestVersion.concurrencyLimit}
+                  {selectedVersion.concurrencyLimit}
                 </p>
               </div>
               <div>
@@ -648,7 +649,7 @@ function WorkerDetailPage() {
                   Execution policy ref
                 </h4>
                 <p className="mt-1 font-mono text-xs">
-                  {latestVersion.executionPolicyRef || "—"}
+                  {selectedVersion.executionPolicyRef || "—"}
                 </p>
               </div>
             </div>
