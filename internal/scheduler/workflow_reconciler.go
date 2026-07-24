@@ -387,6 +387,38 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			}
 		}
 
+		// Poll running LOOP_DECISION steps: check if their re-entered
+		// chain (SSE → … → upstream reviewer) has all completed.
+		// When a loop decision re-enters, it marks itself RUNNING;
+		// once the chain terminal-states, the loop decision goes back
+		// to READY so it re-evaluates the new decision.
+		for i, sr := range stepRuns {
+			if sr.SupersededBy != "" {
+				continue
+			}
+			if sr.Status != domain.StepRunRunning || sr.StepKind != domain.StepKindLoopDecision {
+				continue
+			}
+			if ok, _ := r.pollLoopDecisionChain(ctx, ttx.Tx, tenantID, sr, steps); ok {
+				endNow := time.Now().UTC()
+				// re-check the decision; if it's still failure,
+				// dispatchStep will re-enter again (bounded by
+				// max_iterations).
+				updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+					Status:  strPtr(domain.StepRunReady),
+					EndedAt: &endNow,
+				})
+				if err != nil {
+					return fmt.Errorf("mark loop_decision step ready: %w", err)
+				}
+				stepRuns[i] = updated
+				runByID[sr.StepID] = updated
+				madeProgress = true
+				r.log.Info("loop_decision chain complete, re-evaluating",
+					"run", run.ID, "step", sr.StepID)
+			}
+		}
+
 		if !madeProgress {
 			break
 		}
@@ -878,7 +910,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			}
 			r.log.Info("loop_decision: rejected, looping back",
 				"run", run.ID, "step", step.ID, "loop_branch", cfg.LoopBranch, "iteration", currentIter)
-			if err := r.loopDecisionReenter(ctx, tx, tenantID, run, sr, step, runs, cfg.LoopBranch, currentIter, now); err != nil {
+			if err := r.loopDecisionReenter(ctx, tx, tenantID, run, sr, step, runs, cfg.LoopBranch, currentIter, now, allSteps); err != nil {
 				return err
 			}
 
@@ -2183,51 +2215,166 @@ func (r *WorkflowReconciler) createLoopDecisionIteration(ctx context.Context, tx
 	return nil
 }
 
-// loopDecisionReenter creates a new step run for the loop branch target
-// and creates a new loop decision iteration so downstream steps block.
-// Shared by the step-run-failure path and the reviewer-rejection path.
-func (r *WorkflowReconciler) loopDecisionReenter(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, step workflow.StepWire, runs map[string]db.WorkflowStepRunRow, loopBranch string, currentIter int, now time.Time) error {
+// loopDecisionReenter creates a new step run for the loop branch
+// target, then marks the loop decision as RUNNING. Downstream steps
+// are blocked because the loop decision is no longer terminal.
+// Previously it created a new loop decision iteration (PENDING),
+// but the new iteration's deps (PR Reviewer) were already SUCCEEDED,
+// so it dispatched immediately and re-entered again — infinite loop.
+func (r *WorkflowReconciler) loopDecisionReenter(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, step workflow.StepWire, runs map[string]db.WorkflowStepRunRow, loopBranch string, currentIter int, now time.Time, allSteps []workflow.StepWire) error {
 	nextIter := currentIter + 1
 
-	// Supersede the previous run of the loop branch step.
-	srList, err := listStepRunsByStepID(ctx, tx, tenantID, run.ID, loopBranch)
+	// Create new step runs for every step between the loop target
+	// and this loop decision (inclusive of target, exclusive of
+	// decision) so the whole chain re-executes.
+	chainIDs := chainStepIDs(allSteps, loopBranch, step.ID)
+	if err := r.createChainRuns(ctx, tx, tenantID, run.ID, chainIDs, nextIter, allSteps); err != nil {
+		return fmt.Errorf("loop_decision step %q: create chain runs: %w", step.Name, err)
+	}
+
+	// Mark the loop decision as RUNNING so it blocks downstream
+	// steps (QA Engineer). The poll phase checks whether the
+	// re-entered chain completed.
+	updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+		Status:  strPtr(domain.StepRunRunning),
+		Result:  func() *[]byte { r := []byte(`{"loop":"re-entered"}`); return &r }(),
+	})
 	if err != nil {
-		return fmt.Errorf("loop_decision step %q: list prior runs: %w", step.Name, err)
+		return fmt.Errorf("loop_decision step %q: mark running: %w", step.Name, err)
 	}
-	for _, prior := range srList {
-		if prior.SupersededBy == "" {
-			if _, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, prior.ID, prior.Version, db.UpdateWorkflowStepRunFields{
-				SupersededBy: &sr.ID,
-			}); err != nil {
-				return fmt.Errorf("loop_decision step %q: supersede prior run: %w", step.Name, err)
-			}
-		}
-	}
-
-	// Create a new step run for the loop branch target.
-	newStepRun := db.WorkflowStepRunRow{
-		ID:            db.NewID(),
-		TenantID:      tenantID,
-		WorkflowRunID: run.ID,
-		StepID:        loopBranch,
-		StepName:      step.Name + " (loop)",
-		StepKind:      domain.StepKindTask,
-		Status:        domain.StepRunPending,
-		Iteration:     nextIter,
-	}
-	if _, err := db.CreateWorkflowStepRun(ctx, tx, newStepRun); err != nil {
-		return fmt.Errorf("loop_decision step %q: create re-entry run: %w", step.Name, err)
-	}
-
-	// Create a new loop decision iteration so downstream steps block
-	// until the loop target finishes and the loop decision re-evaluates.
-	if err := r.createLoopDecisionIteration(ctx, tx, tenantID, run, sr, step, runs, nextIter, now, `{"loop":"re-entered"}`); err != nil {
-		return err
+	runs[step.ID] = updated
+	if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepStarted, run, updated); err != nil {
+		return fmt.Errorf("enqueue loop_decision step_started: %w", err)
 	}
 	r.log.Info("loop_decision re-entered",
 		"run", run.ID, "step", step.ID, "loop_branch", loopBranch,
-		"iteration", nextIter)
+		"iteration", nextIter, "chain", chainIDs)
 	return nil
+}
+
+// chainStepIDs returns the IDs of every step from `fromID` (inclusive)
+// to `toID` (exclusive) in DAG order. allSteps is the workflow
+// version's step list in canvas order, which for a linear chain is
+// DAG order. Returns nil if either step is not found or the range
+// is inverted.
+func chainStepIDs(allSteps []workflow.StepWire, fromID, toID string) []string {
+	start, end := -1, -1
+	for i, s := range allSteps {
+		if s.ID == fromID {
+			start = i
+		}
+		if s.ID == toID {
+			end = i
+			break
+		}
+	}
+	if start < 0 || end < 0 || start >= end {
+		return nil
+	}
+	ids := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
+		ids = append(ids, allSteps[i].ID)
+	}
+	return ids
+}
+
+// createChainRuns supersedes existing step runs for each step in the
+// given list and creates new PENDING iterations. The step kind is
+// looked up from allSteps (the workflow version so recover steps
+// are correctly typed). Each new run carries the provided iteration.
+func (r *WorkflowReconciler) createChainRuns(ctx context.Context, tx pgx.Tx, tenantID, runID string, stepIDs []string, iteration int, allSteps []workflow.StepWire) error {
+	// Build a stepKind lookup from the workflow version.
+	kindByID := make(map[string]string, len(allSteps))
+	for _, s := range allSteps {
+		kindByID[s.ID] = s.Kind
+	}
+	for _, sid := range stepIDs {
+		srList, err := listStepRunsByStepID(ctx, tx, tenantID, runID, sid)
+		if err != nil {
+			return fmt.Errorf("list runs for chain step %s: %w", sid, err)
+		}
+		var priorID string
+		for _, prior := range srList {
+			if prior.SupersededBy == "" {
+				newID := db.NewID()
+				priorID = newID
+				if _, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, prior.ID, prior.Version, db.UpdateWorkflowStepRunFields{
+					SupersededBy: &newID,
+				}); err != nil {
+					return fmt.Errorf("supersede chain step %s: %w", sid, err)
+				}
+				break
+			}
+		}
+		if priorID == "" {
+			priorID = db.NewID()
+		}
+		kind := kindByID[sid]
+		if kind == "" {
+			kind = domain.StepKindTask
+		}
+		newRun := db.WorkflowStepRunRow{
+			ID:            priorID,
+			TenantID:      tenantID,
+			WorkflowRunID: runID,
+			StepID:        sid,
+			StepName:      sid + " (loop)",
+			StepKind:      kind,
+			Status:        domain.StepRunPending,
+			Iteration:     iteration,
+		}
+		if _, err := db.CreateWorkflowStepRun(ctx, tx, newRun); err != nil {
+			return fmt.Errorf("create chain step run %s: %w", sid, err)
+		}
+	}
+	return nil
+}
+
+// pollLoopDecisionChain checks whether every step in the chain between
+// the loop decision's loop_branch target and its upstream dependency
+// has completed (all terminal). Callers re-mark the loop decision as
+// READY when true.
+func (r *WorkflowReconciler) pollLoopDecisionChain(ctx context.Context, tx pgx.Tx, tenantID string, sr db.WorkflowStepRunRow, allSteps []workflow.StepWire) (bool, error) {
+	// Find the loop decision's configuration to get loop_branch.
+	var stepDef *workflow.StepWire
+	for _, s := range allSteps {
+		if s.ID == sr.StepID {
+			stepDef = &s
+			break
+		}
+	}
+	if stepDef == nil {
+		return false, fmt.Errorf("step %s not found in version", sr.StepID)
+	}
+	cfg := parseLoopDecisionConfig(stepDef.Config)
+	if cfg.LoopBranch == "" {
+		return false, nil
+	}
+
+	chain := chainStepIDs(allSteps, cfg.LoopBranch, sr.StepID)
+	if len(chain) == 0 {
+		return false, nil
+	}
+
+	// Load the latest run for each chain step and check if it is terminal.
+	for _, cid := range chain {
+		srList, err := listStepRunsByStepID(ctx, tx, tenantID, sr.WorkflowRunID, cid)
+		if err != nil {
+			return false, fmt.Errorf("list chain %s: %w", cid, err)
+		}
+		// Find the active (non-superseded) run.
+			var active db.WorkflowStepRunRow
+		for _, s := range srList {
+			if s.SupersededBy == "" {
+				active = s
+				break
+			}
+		}
+		if active.ID == "" || active.Status != domain.StepRunSucceeded {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func nowPtr(t time.Time) *time.Time { return &t }
