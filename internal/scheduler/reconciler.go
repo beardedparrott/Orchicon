@@ -22,6 +22,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -639,6 +641,9 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 		return
 	}
 
+	// Write .orchicon/ files for the next worker to read.
+	r.writeOrchiconFiles(ctx, exec, wi, succeeded, results)
+
 	// Follow-up write-back: if this work item has a parent execution
 	// (created via CreateFollowUpExecution), append the assistant's
 	// output to the parent execution's conversation so the follow-up
@@ -657,6 +662,73 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 
 	// Recovery is NOT triggered automatically — explicit `recover`
 	// steps on the workflow canvas handle this (docs/06 §1).
+}
+
+// writeOrchiconFiles writes the execution results to .orchicon/ files
+// in the project directory so the next worker can read previous step
+// results from disk instead of receiving them inline in the prompt.
+// Files are overwritten on every execution so disk always reflects
+// the latest state. Best-effort — failures are logged but not fatal.
+func (r *TaskReconciler) writeOrchiconFiles(ctx context.Context, exec db.ExecutionRow, wi db.WorkItemRow, succeeded bool, results map[string]any) {
+	projectDir := r.lookupProjectDir(ctx, wi.ProjectID)
+	if projectDir == "" {
+		return
+	}
+	orchDir := filepath.Join(projectDir, ".orchicon")
+	if err := os.MkdirAll(orchDir, 0755); err != nil {
+		r.log.Warn("write .orchicon files: mkdir", "dir", orchDir, "error", err)
+		return
+	}
+
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(orchDir, name), []byte(content), 0644); err != nil {
+			r.log.Warn("write .orchicon file", "file", name, "error", err)
+		}
+	}
+
+	write("status", map[bool]string{true: "success", false: "failure"}[succeeded])
+	write("worker", exec.WorkerID)
+
+	if summary, ok := results["_summary"].(string); ok && summary != "" {
+		write("summary", summary)
+	}
+	if issues, ok := results["_issues"].(string); ok && issues != "" {
+		write("issues", issues)
+	}
+	if files, ok := results["_touched_files"].([]any); ok && len(files) > 0 {
+		var sb strings.Builder
+		for _, f := range files {
+			if s, ok := f.(string); ok {
+				sb.WriteString(s)
+				sb.WriteString("\n")
+			}
+		}
+		write("touched_files", strings.TrimSpace(sb.String()))
+	}
+}
+
+// lookupProjectDir returns the project directory for a project id.
+// Returns "" if the project is not found.
+func (r *TaskReconciler) lookupProjectDir(ctx context.Context, projectID string) string {
+	if projectID == "" {
+		return ""
+	}
+	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		r.log.Warn("lookup project dir: begin tx", "error", err)
+		return ""
+	}
+	defer ttx.Rollback(ctx)
+	var dir string
+	err = ttx.Tx.QueryRow(ctx,
+		`SELECT project_dir FROM projects WHERE id = $1 AND tenant_id = $2`,
+		projectID, "tnt_dev",
+	).Scan(&dir)
+	if err != nil || dir == "" {
+		return ""
+	}
+	ttx.Commit(ctx)
+	return dir
 }
 
 // OnHealth is called by the adapter bridge to update the execution's

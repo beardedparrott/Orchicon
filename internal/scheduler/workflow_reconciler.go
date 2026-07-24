@@ -1087,14 +1087,11 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 // The composite is the opencode adapter's "message" (passed via the
 // manifest Goal). Sections in order:
 //
-//  0. ROLE — bold, one-line purpose statement
-//  0a. Worker identity (system prompt)
+//  0. Role — the worker's purpose
 //  1. Task — the work item
-//  2. Previous review feedback (if looping back)
-//  3. Workflow context — compact cards (decision + summary + files)
-//  4. Recovery context (if recovered)
-//  5. Project context — ancestors, directory, context files
-//  6. Instructions — output format including decision prefix
+//  2. Project context — directory and file contents
+//  3. Instructions — read .orchicon/ for previous step results,
+//     then output format including decision prefix
 func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, worker db.WorkerVersionRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, error) {
 	var sb strings.Builder
 
@@ -1112,8 +1109,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		fmt.Fprintf(&sb, "# Role\n\n%s\n\n", workerPurpose)
 	}
 
-	// 1. Task — immediately after the role so the worker knows what
-	// to do before reading context.
+	// 1. Task.
 	sb.WriteString("# Task\n\n")
 	fmt.Fprintf(&sb, "Original work item: \"%s\"\n\n", strings.TrimSpace(wi.Title))
 	if d := strings.TrimSpace(wi.Description); d != "" {
@@ -1123,63 +1119,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		fmt.Fprintf(&sb, "Acceptance criteria:\n%s\n\n", ac)
 	}
 
-	// 2. Previous review feedback — when the loop routes back to
-	// SSE after PR Reviewer found issues, the _issues field carries
-	// the PR Reviewer's findings. Show this right after the task
-	// so the SSE knows what to fix before reading the full context.
-	if len(wi.Results) > 0 {
-		var wiParsed map[string]any
-		if err := json.Unmarshal(wi.Results, &wiParsed); err == nil {
-			if issues, ok := wiParsed["_issues"].(string); ok && issues != "" {
-				sb.WriteString("# Previous review feedback\n\n")
-				sb.WriteString("The following issues were identified. Address them in your work:\n\n")
-				sb.WriteString(issues)
-				sb.WriteString("\n\n")
-			}
-		}
-	}
-
-	// 3. Workflow context — compact cards with only the essential
-	// info: decision, summary, and touched files. No full output.
-	wctx, err := r.upstreamContext(ctx, tx, tenantID, wi, allSteps, runs)
-	if err != nil {
-		return "", fmt.Errorf("build workflow context: %w", err)
-	}
-	if wctx != "" {
-		sb.WriteString(wctx)
-		sb.WriteString("\n")
-	}
-
-	// 4. Recovery context (this task) — set by the recovery engine
-	// when a failed work item is resumed.
-	if len(wi.Results) > 0 {
-		var wiParsed map[string]any
-		if err := json.Unmarshal(wi.Results, &wiParsed); err == nil {
-			if rSummary, ok := wiParsed["_recovery_summary"].(string); ok && rSummary != "" {
-				sb.WriteString("# Recovery context\n\n")
-				sb.WriteString("The previous execution failed and was recovered. Summary:\n\n")
-				sb.WriteString(rSummary)
-				sb.WriteString("\n\n")
-			}
-		}
-	}
-
-	// 5. Project context — ancestors + directory + context files.
-	ancestors, err := walkAncestors(ctx, tx, tenantID, wi)
-	if err != nil {
-		return "", fmt.Errorf("walk ancestors: %w", err)
-	}
-	if len(ancestors) > 0 {
-		sb.WriteString("# Project context\n\n")
-		sb.WriteString("Ancestor work items (epic → feature → task):\n\n")
-		for _, a := range ancestors {
-			fmt.Fprintf(&sb, "- **%s** (%s)\n", strings.TrimSpace(a.Title), workItemKindLabel(a.Kind))
-			if d := strings.TrimSpace(a.Description); d != "" {
-				fmt.Fprintf(&sb, "  %s\n", d)
-			}
-		}
-		sb.WriteString("\n")
-	}
+	// 2. Project context — directory + context files.
 	if wi.ProjectID != "" {
 		var p db.ProjectRow
 		if err := tx.QueryRow(ctx,
@@ -1209,9 +1149,14 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		}
 	}
 
-	// 6. Output format instructions.
+	// 3. Instructions.
 	sb.WriteString("# Instructions\n\n")
-	sb.WriteString("Complete the task above. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — either `success` or `failure` — and a short paragraph summarizing what you did.\n\n")
+	sb.WriteString("Before starting, read the project's `.orchicon/` files from the working directory to see the previous step's results. Key files:\n\n")
+	sb.WriteString("- `.orchicon/status` — `success` or `failure` from the previous step\n")
+	sb.WriteString("- `.orchicon/summary` — what the previous worker did\n")
+	sb.WriteString("- `.orchicon/issues` — issues found by the previous reviewer (if any)\n")
+	sb.WriteString("- `.orchicon/worker` — which worker produced the previous results\n\n")
+	sb.WriteString("Then complete the task above. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — either `success` or `failure` — and a short paragraph summarizing what you did.\n\n")
 	sb.WriteString("Format:\n")
 	sb.WriteString("```\nORCHICON WORKER SUMMARY: success — Implemented the feature.\n```\n")
 	sb.WriteString("or\n")
