@@ -53,7 +53,17 @@ The project's model spend is rising. Be economical but **never at the expense of
 - **Never create a pull request without asking the user for approval first.** Ask, wait for a yes, then proceed.
 - Once work is complete and properly tested, ask the user to verify.
 - After the user confirms, create a PR and merge. PRs MUST carry the `release` label to kick off the release creation on GitHub.
-- **Before every PR merge**, ALWAYS ASK THE USER BEFORE MERGING, update the "Last Release Changes" section in `README.md` with the new version tag and a one-paragraph summary of the most recent changes.
+- **Before every PR merge**, ALWAYS ASK THE USER BEFORE MERGING, update the "Last Release Changes" section in `README.md` with a table listing each feature/bug fix in the release. Only the most recent release info should be present — remove older entries. Table format:
+
+  ```
+  ### v0.1.NNN (date)
+
+  | Type | Change |
+  |---|---|
+  | Feature | Short description |
+  | Bug fix | Short description |
+  | Chore | Short description |
+  ```
 - Before starting work, always `git pull origin main` to get the latest. Before pushing, `git fetch origin && git rebase origin/main` if the branch has been open for a while.
 
 ## Local development loop
@@ -75,7 +85,7 @@ Every task follows this sequence:
 2. Read any docs or code necessary to perform the work.
 3. Create a branch and do the work, committing changes often.
 4. Fully test and verify.
-5. Before the final commit on your branch, update **both** `README.md` (Last Release Changes section) and `UPDATES.md` (new table row) with a one-paragraph summary describing the changes in this PR. This is the commit that will be PR'd and merged.
+5. Before the final commit on your branch, update **both** `README.md` (Last Release Changes section — table format, most recent only) and `UPDATES.md` (new table row) with a one-paragraph summary describing the changes in this PR. This is the commit that will be PR'd and merged.
 6. Follow the Git Workflow above.
 7. Inform the user every time UPDATES have been made. Show them in a tabled format what was changed and updated.
 

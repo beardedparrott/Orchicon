@@ -42,25 +42,26 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-**v0.1.143** — HF models script: robustness + error handling.
-Reworked `scripts/hf-latest-models.sh` with several robustness improvements — pagination now uses the full next URL from the `Link` header (extracting the URL between `<` and `>` angle brackets) instead of parsing/reconstructing the cursor, making it resilient to changes in API URL structure. Added HTTP status code checking with specific handling for 429 (rate limit), 5xx (server errors), and non-200 responses. Added network error detection (curl exit code). Added tool dependency check (curl, jq) with helpful error messages. Added macOS `date` fallback (`-v-7d`). Error messages now go to stderr. Stats display shows `—` instead of zero values for cleaner output of new models with no downloads.
+### v0.1.142 (2026-07-24)
 
-**v0.1.142** — HF models script: pagination fix + optimization.
-Fixed critical pagination bug in `scripts/hf-latest-models.sh`: the Hugging Face API uses cursor-based pagination (via the `Link` response header), but the script was using `offset` which the API silently ignores — every page returned the same 100 models. The claimed "500 models" was actually just 100 unique models duplicated 5×. Replaced offset-based pagination with cursor-based pagination by parsing the `Link` header's `rel="next"` cursor. Also replaced the per-model `jq` subprocess loop (5+ calls per model) with a single `jq` invocation, making `--week` mode (3000 models) fast.
-
-**v0.1.141** — Worker system prompt delivery fix + workflow run state recovery.
-The OpenCode adapter now delivers the worker's composed system prompt (Role + Skills + Behavior + AGENTS.md) to the model on every turn. The previous code set `OPENCODE_SYSTEM_PROMPT` as an env var, but opencode v1.x does not read it — the prompt was silently dropped. The adapter now writes a custom `orchicon-worker` agent into `OPENCODE_CONFIG_CONTENT` and selects it via `--agent`, which is the mechanism opencode actually consumes. The `stepKind` constant for `LOOP_DECISION` is now 8 (matching the proto); previously the frontend had it as 9, breaking the run view's edge styling and the new `--kind-*` CSS variables. The workflow reconciler now skips superseded step runs in every pass — a `loop_decision` re-ask creates a fresh step run with `SupersededBy` set on the prior run; the old code kept re-applying `mark step ready` to the superseded run, producing a version-mismatch `db: not found` every 200ms that wedged the whole run. The run view now mirrors the editor canvas: loop-back edges are colored by source-kind, animated when the loop decision is running, and the run view's `RunStepNode` renders the same source-success / source-loop handles with success/loop labels. Loop decision step nodes now display the recorded outcome (`re-ask reviewer`, `decision made`, `max iterations reached`) inline so the operator can see the decision fired without expanding a step.
-
-**v0.1.139** — Worker prompt fields refactor + recovery overhaul + scheduling improvements.
-Replaced the single `system_prompt` field on workers with four structured fields: Role, Skills, Behavior, and AGENTS.md, stored separately in the DB and composed at dispatch time. Recovery is now exclusively triggered by explicit `recover` steps on the workflow canvas — the old auto-trigger was removed. Added `WORK_ITEM_STATUS_SCHEDULED` status: work items transition `pending → scheduled → running → succeeded/failed`. The scheduled run reconciler uses a 5-minute window to prevent stale fires. New `text_loop` stall signal catches workers stuck in text-only loops (10min without meaningful action). Canvas handle colors clarify input (emerald) vs output (amber) direction. Loop decision steps auto-set `success_branch`/`loop_branch` from edge connections. Project directory and context file pickers are now separate UI cards. YAML code view on work items is editable with Save support. All workflow versions can be deleted. Work item `workflow_run_id` can be cleared to re-schedule.
-
-**v0.1.136** — Hugging Face latest models script.
-Added `scripts/hf-latest-models.sh` — fetches the latest AI models released today or this week from the Hugging Face API, with paginated results, pipeline_tag distribution summary, and clean output to `/tmp/hf-latest-models-{today|week}.txt`.
-
-**v0.1.135** — No-op retag of v0.1.134.
-
-**v0.1.134** — Workflow types (template vs one-shot) + content-aware loop decision.
-Added a proper `type` column to workflows (`one_shot` or `template`) replacing the implicit "empty project_id = template" convention — templates are tenant-level bindable workflows, one-shots are project-scoped single runs. The create form has a type dropdown, the palette hides Project/Work Item tiles for templates, and the WorkItem workflow selector shows only templates. The loop decision step now evaluates a structured `_decision` signal from the reviewer's output (`success`/`failure`) and re-asks up to 3 times if no signal is found, amending the prompt with "YOU MUST" instructions on each re-attempt.
+| Type | Change |
+|---|---|
+| Bug fix | Worker system prompts (Role, Skills, Behavior, AGENTS.md) now delivered to model via OPENCODE_CONFIG_CONTENT — previous OPENCODE_SYSTEM_PROMPT env var was silently ignored by opencode |
+| Bug fix | Workflow reconciler no longer wedges on loop_decision re-asks — step runs reloaded each pass, superseded runs skipped, new chain runs created on re-enter |
+| Bug fix | Loop decision blocks downstream steps during re-ask/re-enter by marking itself RUNNING instead of SUCCEEDED |
+| Bug fix | Recovery step now transitions to RUNNING when triggered, so poll phase tracks completion instead of the run failing immediately |
+| Bug fix | `_decision` extraction handles any delimiter (`_decision:failure`, `_decision: failure _issues:...`, `_decision:failureissues`) |
+| Bug fix | Run view edges now visible — added Tailwind className fallback; CSS var was undefined in SVG context |
+| Bug fix | `--dir` flag now correctly passed to opencode (was appended after exec.CommandContext, silently dropped) |
+| Bug fix | New Work Item button always visible (no longer hidden when no project filter selected) |
+| Feature | Worker purpose field (from `workers.purpose`) shown in composite prompt as "Your purpose on this step" |
+| Feature | Human-readable worker names in execution list, detail, and run views |
+| Feature | Execution iteration (loop number) displayed in naming |
+| Feature | Worker detail page: consolidated Versions card with expandable rows, Make Active/Revert to Draft/Delete buttons, version switching |
+| Feature | DeleteWorkerVersion + GetWorkerVersion + SetActiveWorkerVersion + RevertWorkerVersionToDraft RPCs |
+| Feature | Raw/markdown toggle on AssistantBubble, emoji support via remark-emoji |
+| Chore | Updated PR Reviewer and QA Engineer prompts with clear role delineation (review only / test only, never write code) |
+| Chore | AGENTS.md now specifies table format for README.md Last Release Changes section |
 
 ## Installation
 
