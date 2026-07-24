@@ -668,7 +668,7 @@ func (r *TaskReconciler) writeOrchiconFiles(ctx context.Context, exec db.Executi
 	if projectDir == "" {
 		return
 	}
-	orchDir := filepath.Join(projectDir, ".orchicon")
+	orchDir := filepath.Join(projectDir, ".orchicon", exec.WorkflowRunID)
 	if err := os.MkdirAll(orchDir, 0755); err != nil {
 		r.log.Warn("write .orchicon files: mkdir", "dir", orchDir, "error", err)
 		return

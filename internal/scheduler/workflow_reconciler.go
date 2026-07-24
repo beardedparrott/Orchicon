@@ -1161,11 +1161,11 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		}
 	}
 	if hasPriorSteps {
-		sb.WriteString("Read the project's `.orchicon/` files from the working directory to see the previous step's results:\n\n")
-		sb.WriteString("- `.orchicon/status` — `success` or `failure` from the previous step\n")
-		sb.WriteString("- `.orchicon/summary` — what the previous worker did\n")
-		sb.WriteString("- `.orchicon/issues` — issues found by the previous reviewer (if any)\n")
-		sb.WriteString("- `.orchicon/worker` — which worker produced the previous results\n\n")
+		sb.WriteString("Read this run's `.orchicon/` files from the working directory to see the previous step's results:\n\n")
+		fmt.Fprintf(&sb, "- `.orchicon/%s/status` — `success` or `failure` from the previous step\n", wi.WorkflowRunID)
+		fmt.Fprintf(&sb, "- `.orchicon/%s/summary` — what the previous worker did\n", wi.WorkflowRunID)
+		fmt.Fprintf(&sb, "- `.orchicon/%s/issues` — issues found by the previous reviewer (if any)\n", wi.WorkflowRunID)
+		fmt.Fprintf(&sb, "- `.orchicon/%s/worker` — which worker produced the previous results\n\n", wi.WorkflowRunID)
 	}
 	sb.WriteString("Complete the task above. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — either `success` or `failure` — and a short paragraph summarizing what you did.\n\n")
 	sb.WriteString("Format:\n")
