@@ -900,20 +900,16 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 				return fmt.Errorf("loop_decision step %q: re-ask: %w", step.Name, err)
 			}
 
-			// Mark the loop node succeeded so the reviewer step's deps are
-			// satisfied on the next reconcile pass.
-			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-				Status:    strPtr(domain.StepRunSucceeded),
-				StartedAt: &now,
-				EndedAt:   &now,
-				Result:    func() *[]byte { r := []byte(`{"loop":"re-ask"}`); return &r }(),
-			})
-			if err != nil {
-				return fmt.Errorf("mark loop_decision step re-ask: %w", err)
-			}
-			runs[step.ID] = updated
-			if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
-				return fmt.Errorf("enqueue loop_decision step_succeeded (re-ask): %w", err)
+			// Create a new loop decision iteration (supersedes the
+			// current one) so downstream steps (e.g. QA Engineer)
+			// do NOT start until the re-asked reviewer finishes.
+			// The old code marked the loop decision as SUCCEEDED
+			// immediately, which satisfied the downstream step's
+			// dependency check and let it run in parallel with the
+			// re-ask — wrong.
+			nextIter := currentLoopIteration(runs, step.ID) + 1
+			if err := r.createLoopDecisionIteration(ctx, tx, tenantID, run, sr, step, runs, nextIter, now, `{"loop":"re-ask"}`); err != nil {
+				return err
 			}
 		}
 
@@ -2119,9 +2115,53 @@ func (r *WorkflowReconciler) reaskDecisionStep(ctx context.Context, tx pgx.Tx, t
 	return upResult.WorkItemID, nil
 }
 
+// createLoopDecisionIteration creates a new iteration of a loop_decision
+// step run with PENDING status (blocking downstream steps) and supersedes
+// the current iteration. The new iteration runs when its deps (the
+// re-asked reviewer) complete.
+func (r *WorkflowReconciler) createLoopDecisionIteration(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, step workflow.StepWire, runs map[string]db.WorkflowStepRunRow, nextIter int, now time.Time, resultJSON string) error {
+	// Create the new iteration first so we can set SupersededBy.
+	newID := db.NewID()
+	resultRaw := []byte(resultJSON)
+	newIter := db.WorkflowStepRunRow{
+		ID:            newID,
+		TenantID:      tenantID,
+		WorkflowRunID: run.ID,
+		StepID:        step.ID,
+		StepName:      step.Name,
+		StepKind:      domain.StepKindLoopDecision,
+		Status:        domain.StepRunPending,
+		Iteration:     nextIter,
+	}
+	if _, err := db.CreateWorkflowStepRun(ctx, tx, newIter); err != nil {
+		return fmt.Errorf("loop_decision step %q: create next iteration: %w", step.Name, err)
+	}
+
+	// Supersede the current loop decision run, pointing at the new one.
+	superseded, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+		Status:       strPtr(domain.StepRunSucceeded),
+		StartedAt:    &now,
+		EndedAt:      &now,
+		SupersededBy: &newID,
+		Result:       &resultRaw,
+	})
+	if err != nil {
+		return fmt.Errorf("loop_decision step %q: supersede prior iteration: %w", step.Name, err)
+	}
+	// put the superseded run in the map for the event; the new pending
+	// run will be loaded on the next pass and overwrite in runByID.
+	runs[step.ID] = superseded
+	if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, superseded); err != nil {
+		return fmt.Errorf("enqueue loop_decision step_succeeded (supersede): %w", err)
+	}
+	r.log.Info("loop_decision iteration created",
+		"run", run.ID, "step", step.ID, "iteration", nextIter)
+	return nil
+}
+
 // loopDecisionReenter creates a new step run for the loop branch target
-// and marks the loop node succeeded. Shared by the step-run-failure path
-// and the reviewer-rejection path.
+// and creates a new loop decision iteration so downstream steps block.
+// Shared by the step-run-failure path and the reviewer-rejection path.
 func (r *WorkflowReconciler) loopDecisionReenter(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, step workflow.StepWire, runs map[string]db.WorkflowStepRunRow, loopBranch string, currentIter int, now time.Time) error {
 	nextIter := currentIter + 1
 
@@ -2155,19 +2195,10 @@ func (r *WorkflowReconciler) loopDecisionReenter(ctx context.Context, tx pgx.Tx,
 		return fmt.Errorf("loop_decision step %q: create re-entry run: %w", step.Name, err)
 	}
 
-	// Mark the loop node succeeded so the loop-back occurs on the next pass.
-	updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-		Status:    strPtr(domain.StepRunSucceeded),
-		StartedAt: &now,
-		EndedAt:   &now,
-		Result:    func() *[]byte { r := []byte(`{"loop":"re-entered"}`); return &r }(),
-	})
-	if err != nil {
-		return fmt.Errorf("mark loop_decision step re-entered: %w", err)
-	}
-	runs[step.ID] = updated
-	if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
-		return fmt.Errorf("enqueue loop_decision step_succeeded (re-entry): %w", err)
+	// Create a new loop decision iteration so downstream steps block
+	// until the loop target finishes and the loop decision re-evaluates.
+	if err := r.createLoopDecisionIteration(ctx, tx, tenantID, run, sr, step, runs, nextIter, now, `{"loop":"re-entered"}`); err != nil {
+		return err
 	}
 	r.log.Info("loop_decision re-entered",
 		"run", run.ID, "step", step.ID, "loop_branch", loopBranch,

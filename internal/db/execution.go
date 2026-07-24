@@ -32,6 +32,7 @@ type ExecutionRow struct {
 	WorkflowRunID   string
 	WorkflowStepID  string
 	WorkflowName    string
+	TaskName        string // work item title (denormalised via LEFT JOIN at query time)
 	ErrorMessage    string
 	Output          string
 	Conversation    []byte // jsonb: follow-up conversation array
