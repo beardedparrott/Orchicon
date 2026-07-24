@@ -193,6 +193,16 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID string) error 
 		}
 	}
 	now := time.Now().UTC()
+	// Look up the workflow step run's iteration (loop number) so the
+	// execution can display "Work Item Name - Worker Name - Loop #" in
+	// the frontend. Defaults to 0 for direct-dispatch (no workflow).
+	var iteration int
+	if task.WorkflowRunID != "" && task.WorkflowStepID != "" {
+		sr, err := db.GetWorkflowStepRunByStep(ctx, ttx.Tx, tenantID, task.WorkflowRunID, task.WorkflowStepID)
+		if err == nil {
+			iteration = sr.Iteration
+		}
+	}
 	execRow := db.ExecutionRow{
 		ID:             db.NewID(),
 		TenantID:       tenantID,
@@ -207,6 +217,7 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID string) error 
 		WorkflowRunID:  task.WorkflowRunID,
 		WorkflowStepID: task.WorkflowStepID,
 		IsFollowUp:     isFollowUp,
+		Iteration:      iteration,
 	}
 	created, err := db.CreateExecution(ctx, ttx.Tx, execRow)
 	if err != nil {
@@ -273,38 +284,55 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID string) error 
 // adapter call (docs/03 §8: no SELECT FOR UPDATE held across external
 // calls). The bridge updates the execution status as telemetry arrives.
 func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow, adapter db.AdapterRow) {
-	// PR B (context propagation): if the WorkflowReconciler populated
-	// the work item's prompt_context, the composite prompt is the
-	// Goal — it carries the work item's title + description + AC +
-	// ancestor chain + upstream step summaries. Otherwise fall back
-	// to task.Title (the legacy direct-dispatch path).
-	goal := task.Title
-	if len(task.PromptContext) > 0 {
-		var pc struct {
-			Composite string `json:"composite"`
-		}
-		if err := json.Unmarshal(task.PromptContext, &pc); err == nil && pc.Composite != "" {
-			goal = pc.Composite
-		}
-	}
 	// Resolve the project directory so the adapter runs in the correct
 	// working directory (avoids picking up Orchicon's own AGENTS.md etc.).
+	// Use a background context (the reconciler's ctx may expire before
+	// this goroutine gets a chance to query).
 	var projectDir string
-	var projDir string
-	if err := r.pool.QueryRow(ctx,
-		`SELECT project_dir FROM projects WHERE id = $1 AND tenant_id = $2`,
-		exec.ProjectID, "tnt_dev",
-	).Scan(&projDir); err == nil {
-		projectDir = projDir
+	{
+		var p db.ProjectRow
+		qCtx := context.Background()
+		if err := r.pool.QueryRow(qCtx,
+			`SELECT project_dir FROM projects WHERE id = $1 AND tenant_id = $2`,
+			exec.ProjectID, exec.TenantID,
+		).Scan(&p.ProjectDir); err == nil {
+			projectDir = p.ProjectDir
+		}
 	}
+	// The system prompt is the full context the model sees on every
+	// turn. The WorkflowReconciler (when this work item was bound to
+	// a workflow step) wrote a comprehensive composite into
+	// task.PromptContext that already contains the worker identity,
+	// the project directory + context files, the task, the ancestor
+	// chain, the recovery narrative, and the worker's contract
+	// (ORCHICON WORKER SUMMARY marker). The opencode adapter delivers
+	// this as the agent's `prompt` via OPENCODE_CONFIG_CONTENT so
+	// every conversation turn carries the same context.
+	composite, _ := extractComposite(task.PromptContext)
+	systemPrompt := composite
+	// Fall back to a minimal worker-prompt if no composite was set
+	// (legacy direct-dispatch path: work item dispatched outside a
+	// workflow, so the workflow reconciler never built a composite).
+	if systemPrompt == "" {
+		systemPrompt = composeSystemPrompt(version)
+		if strings.TrimSpace(systemPrompt) == "" {
+			systemPrompt = "You are a worker in the Orchicon orchestration system. " +
+				"Complete the work item described in the user message and report back."
+		}
+	}
+	// User message (Goal): just the work item title. The composite
+	// (with the full task + project + recovery context) is the
+	// system message, not the user message, so the worker
+	// instruction to end with ORCHICON WORKER SUMMARY is consistent
+	// across the first turn and every subsequent turn.
 	manifest := ExecutionManifest{
 		ExecutionID:        exec.ID,
 		TaskID:             exec.TaskID,
 		ProjectID:          exec.ProjectID,
 		WorkerID:           version.WorkerID,
 		WorkerVersion:      version.Version,
-		SystemPrompt:       composeSystemPrompt(version),
-		Goal:               goal,
+		SystemPrompt:       systemPrompt,
+		Goal:               task.Title,
 		AcceptanceCriteria: task.AcceptanceCriteria,
 		ModelRef:           version.ModelRef,
 		ContextSources:     version.ContextSources,
@@ -533,6 +561,14 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	if summary != "" {
 		results["_summary"] = summary
 	}
+	// Extract structured fields from worker output for the
+	// loop_decision step: _decision (success/failure) and _issues.
+	// The worker's AGENTS.md instructs it to emit these on their
+	// own line at the end of the response. Without this extraction
+	// the _decision signal stays buried in _output text and the
+	// loop decision can't route to success/failure — it falls
+	// through to re-ask every time.
+	extractStructuredResult(output, results)
 	resultsJSON, _ := json.Marshal(results)
 	if succeeded {
 		fields := db.UpdateWorkItemFields{
@@ -927,9 +963,112 @@ func enqueueWorkItemEvent(ctx context.Context, tx pgx.Tx, eventType string, w db
 
 func strPtr(s string) *string { return &s }
 
-// composeSystemPrompt assembles the full system prompt from the worker's
-// four structured fields (role, skills, behavior, agents_md). Falls back
-// to the legacy SystemPrompt field if the new fields are empty.
+// extractStructuredResult scans the worker's text output for structured
+// fields that the loop_decision step reads from the work item's top-level
+// results JSON. Recognised fields:
+//
+//	_decision: success  — the work was accepted (forward)
+//	_decision: failure  — the work was rejected (loop back)
+//	_issues: <text>      — details about what needs fixing
+//
+// Only fields at the start of a line (with optional code-fence markers)
+// are extracted — inline references like "The team decided: failure" are
+// ignored to avoid false matches. Each extracted field is written into
+// `results` under its key so the loop_decision's code path at
+// workflow_reconciler.go:838 finds it via wiResult[cfg.DecisionField].
+func extractStructuredResult(output string, results map[string]any) {
+	if output == "" {
+		return
+	}
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Strip markdown code-fence markers the worker might have
+		// wrapped the signal in (e.g. `_decision: success`).
+		trimmed = strings.TrimPrefix(trimmed, "```")
+		trimmed = strings.TrimSuffix(trimmed, "```")
+		trimmed = strings.TrimSpace(trimmed)
+	}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		trimmed = strings.TrimPrefix(trimmed, "```")
+		trimmed = strings.TrimSuffix(trimmed, "```")
+		trimmed = strings.TrimSpace(trimmed)
+
+		// Extract _decision: handles any delimiter (":" alone or
+		// ":space") and concatenated tokens like
+		// "_decision:failuresomething" by prefix-matching the first
+		// word for "success" or "failure".
+		if idx := strings.Index(trimmed, "_decision:"); idx >= 0 {
+			after := strings.TrimSpace(trimmed[idx+len("_decision:"):])
+			parts := strings.Fields(after)
+			if len(parts) > 0 {
+				first := parts[0]
+				var decision string
+				switch {
+				case strings.HasPrefix(first, "success"):
+					decision = "success"
+				case strings.HasPrefix(first, "failure"):
+					decision = "failure"
+				}
+				if decision != "" {
+					results["_decision"] = decision
+					// Extract _issues whether it follows as a
+					// separate token or is concatenated with the
+					// decision token (e.g. "failure_issues:...").
+					rest := strings.TrimSpace(strings.TrimPrefix(after, first))
+					if i := strings.Index(rest, "_issues:"); i >= 0 {
+						issues := strings.TrimSpace(rest[i+len("_issues:"):])
+						if issues != "" {
+							results["_issues"] = issues
+						}
+					} else if i := strings.Index(first, "_issues:"); i >= 0 {
+						// Concatenated: "failure_issues:..."
+						issues := strings.TrimSpace(first[i+len("_issues:"):])
+						if issues != "" {
+							results["_issues"] = issues
+						}
+					}
+				}
+			}
+		}
+
+		// Extract _issues: when it's on its own line (not already
+		// captured from the _decision line above).
+		if i := strings.Index(trimmed, "_issues:"); i >= 0 {
+			if _, ok := results["_issues"]; !ok {
+				issues := strings.TrimSpace(trimmed[i+len("_issues:"):])
+				if issues != "" {
+					results["_issues"] = issues
+				}
+			}
+		}
+	}
+}
+
+// extractComposite pulls the "composite" string out of a work item's
+// prompt_context JSON (set by the WorkflowReconciler's buildCompositePrompt).
+// Returns "" if the field is absent or unparseable.
+func extractComposite(pc []byte) (string, error) {
+	if len(pc) == 0 {
+		return "", nil
+	}
+	var parsed struct {
+		Composite string `json:"composite"`
+	}
+	if err := json.Unmarshal(pc, &parsed); err != nil {
+		return "", err
+	}
+	return parsed.Composite, nil
+}
+
+// composeSystemPrompt assembles the worker-only system prompt from the
+// four structured fields (role, skills, behavior, agents_md). Used as
+// a fallback when the WorkflowReconciler did not build a composite
+// (i.e. a work item dispatched outside a workflow, on the legacy
+// direct path). The full system prompt the model sees on every turn
+// is the composite — which itself contains composeSystemPrompt's
+// output prepended under a "# Worker" section.
 func composeSystemPrompt(v db.WorkerVersionRow) string {
 	if v.Role == "" && v.Skills == "" && v.Behavior == "" && v.AgentsMD == "" {
 		return v.SystemPrompt

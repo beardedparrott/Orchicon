@@ -77,16 +77,11 @@ function WorkItemsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {projectId && (
-            <Button asChild>
-              <Link
-                to="/work-items/new"
-                search={{ projectId: projectId, parentId: "" }}
-              >
-                New Work Item
-              </Link>
-            </Button>
-          )}
+          <Button asChild>
+            <Link to="/work-items/new" search={{ projectId: projectId ?? "", parentId: "" }}>
+              New Work Item
+            </Link>
+          </Button>
         </div>
       </div>
 

@@ -42,6 +42,7 @@ message WorkerExecution {
   string error_message = 20; // Markdown: human-readable failure reason (docs/02 §2.7)
   string output = 21; // Markdown: accumulated model text output (docs/02 §2.7)
   bytes conversation = 22; // JSONB: follow-up conversation array [{role, content, type, created_at}]
+  int32 iteration = 23; // loop number: 0 = first dispatch, 1+ = loop_decision re-ask/re-entry
 }
 
 // ExecutionStatus — lifecycle of a WorkerExecution

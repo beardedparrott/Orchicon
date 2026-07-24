@@ -84,6 +84,45 @@ export function useCreateWorker() {
   });
 }
 
+// useGetWorkerVersion fetches a single version by id.
+export function useGetWorkerVersion(versionId: string) {
+  return useQuery({
+    queryKey: [...workerKeys.all, "version", versionId] as const,
+    queryFn: async () => {
+      const res = await workerClient.getWorkerVersion({ id: versionId });
+      return res.version as WorkerVersion;
+    },
+    enabled: !!versionId,
+  });
+}
+
+// useSetActiveWorkerVersion sets a published version as the worker's active version.
+export function useSetActiveWorkerVersion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { workerId: string; version: number }) => {
+      await workerClient.setActiveWorkerVersion(input);
+    },
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: workerKeys.detail(variables.workerId) });
+      qc.invalidateQueries({ queryKey: workerKeys.versions(variables.workerId) });
+    },
+  });
+}
+
+// useRevertWorkerVersionToDraft moves a published version back to draft.
+export function useRevertWorkerVersionToDraft() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { versionId: string }) => {
+      await workerClient.revertWorkerVersionToDraft(input);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: workerKeys.all });
+    },
+  });
+}
+
 // usePublishWorkerVersion publishes the draft version of a worker.
 export function usePublishWorkerVersion() {
   const qc = useQueryClient();
@@ -111,6 +150,19 @@ export function useDeprecateWorker() {
     onSuccess: (worker) => {
       qc.invalidateQueries({ queryKey: workerKeys.list() });
       qc.invalidateQueries({ queryKey: workerKeys.detail(worker.id) });
+    },
+  });
+}
+
+// useDeleteWorkerVersion deletes a single worker version (any status).
+export function useDeleteWorkerVersion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { workerId: string; versionId: string }) => {
+      await workerClient.deleteWorkerVersion(input);
+    },
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: workerKeys.versions(variables.workerId) });
     },
   });
 }

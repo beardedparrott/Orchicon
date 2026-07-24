@@ -33,6 +33,18 @@ service WorkerService {
   // DeleteWorker hard-deletes a Worker and all its versions.
   rpc DeleteWorker(DeleteWorkerRequest) returns (DeleteWorkerResponse);
 
+  // DeleteWorkerVersion hard-deletes a single worker version.
+  rpc DeleteWorkerVersion(DeleteWorkerVersionRequest) returns (DeleteWorkerVersionResponse);
+
+  // SetActiveWorkerVersion sets a published version as the worker's current
+  // version. The worker must be in published status.
+  rpc SetActiveWorkerVersion(SetActiveWorkerVersionRequest) returns (SetActiveWorkerVersionResponse);
+
+  // RevertWorkerVersionToDraft moves a published version back to draft so
+  // it can be edited. The worker's current_version is not changed; if this
+  // version was the active one it remains active until another is published.
+  rpc RevertWorkerVersionToDraft(RevertWorkerVersionToDraftRequest) returns (RevertWorkerVersionToDraftResponse);
+
   // GetWorker returns a single Worker header by id.
   rpc GetWorker(GetWorkerRequest) returns (GetWorkerResponse);
 
@@ -41,6 +53,9 @@ service WorkerService {
 
   // ListWorkerVersions returns all versions of a Worker, newest first.
   rpc ListWorkerVersions(ListWorkerVersionsRequest) returns (ListWorkerVersionsResponse);
+
+  // GetWorkerVersion returns a single version by its id.
+  rpc GetWorkerVersion(GetWorkerVersionRequest) returns (GetWorkerVersionResponse);
 
   // UpdateWorkerVersion updates the mutable fields of a draft WorkerVersion.
   // Only draft versions can be updated; published versions are immutable.
@@ -122,6 +137,26 @@ message DeleteWorkerRequest {
 
 message DeleteWorkerResponse {}
 
+message DeleteWorkerVersionRequest {
+  string worker_id = 1;
+  string version_id = 2;
+}
+
+message DeleteWorkerVersionResponse {}
+
+message SetActiveWorkerVersionRequest {
+  string worker_id = 1;
+  int32 version = 2; // the version number to set as active
+}
+
+message SetActiveWorkerVersionResponse {}
+
+message RevertWorkerVersionToDraftRequest {
+  string version_id = 1;
+}
+
+message RevertWorkerVersionToDraftResponse {}
+
 message GetWorkerRequest {
   string id = 1;
 }
@@ -152,6 +187,14 @@ message ListWorkerVersionsRequest {
 
 message ListWorkerVersionsResponse {
   repeated WorkerVersion versions = 1;
+}
+
+message GetWorkerVersionRequest {
+  string id = 1; // version id
+}
+
+message GetWorkerVersionResponse {
+  WorkerVersion version = 1;
 }
 
 message UpdateWorkerVersionRequest {

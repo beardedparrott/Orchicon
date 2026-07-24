@@ -39,6 +39,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -165,18 +166,11 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		stepByID[s.ID] = s
 	}
 
-	stepRuns, err := db.ListWorkflowStepRuns(ctx, ttx.Tx, tenantID, runID)
-	if err != nil {
-		return fmt.Errorf("list step runs: %w", err)
-	}
-	r.log.Debug("DEBUG: step runs loaded", "count", len(stepRuns))
-	for _, sr := range stepRuns {
-		r.log.Debug("DEBUG: step run detail", "id", sr.ID, "stepID", sr.StepID, "stepKind", sr.StepKind, "status", sr.Status, "version", sr.Version)
-	}
-	runByID := make(map[string]db.WorkflowStepRunRow, len(stepRuns))
-	for _, sr := range stepRuns {
-		runByID[sr.StepID] = sr
-	}
+	// stepRuns + runByID are built inside the outer-progress loop so
+	// newly-created step runs (loop_decision iterations, loop-back
+	// re-entry runs) are visible on subsequent passes.
+	var stepRuns []db.WorkflowStepRunRow
+	runByID := map[string]db.WorkflowStepRunRow{}
 	r.log.Debug("DEBUG: runByID built", "keys", len(runByID))
 	for k, v := range runByID {
 		r.log.Debug("DEBUG: runByID entry", "key", k, "id", v.ID, "status", v.Status, "version", v.Version)
@@ -196,17 +190,55 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	for {
 		madeProgress := false
 
+		// Reload step runs on every outer iteration so newly-created
+		// step runs (e.g. loop_decision iterations, loop-back re-entry
+		// runs) are visible to the terminal-state check and to the
+		// next dispatch phase. Without this, the original stepRuns
+		// snapshot is stale — new runs are orphaned and the run can
+		// be marked COMPLETED while children are still PENDING.
+		stepRuns, err = db.ListWorkflowStepRuns(ctx, ttx.Tx, tenantID, runID)
+		if err != nil {
+			return fmt.Errorf("reload step runs: %w", err)
+		}
+		runByID = make(map[string]db.WorkflowStepRunRow, len(stepRuns))
+		for _, sr := range stepRuns {
+			runByID[sr.StepID] = sr
+		}
+
 		// Progress pending steps whose deps are satisfied → ready.
-		// Use runByID (which reflects in-pass updates) for both the
-		// pending check AND the dependency check so steps progressed
-		// by Phase 2/3 in a prior outer iteration are not re-processed
-		// with a stale version (fix: "db: not found" on re-update).
+		// Use runByID (which reflects in-pass updates) for the
+		// dependency check so steps progressed by Phase 2/3 in a
+		// prior outer iteration are not re-processed. The
+		// outer-progress loop iterates with the same stepRuns slice,
+		// so once a step has been moved past PENDING in this pass
+		// (or any prior pass) the original `sr.Version` is stale —
+		// re-applying a "mark step ready" against it produces a
+		// version-mismatch "db: not found" that wedges the whole run.
 		// Loop re-entry: a step run with iteration > 0 is a fresh
 		// re-entry run and must be processed even if runByID has a
 		// non-pending entry for the same StepID from a prior iteration.
+		// Superseded runs: a step run that has been superseded by a
+		// later iteration (e.g. loop_decision re-ask created a fresh
+		// run for the same step) is no longer the active run for
+		// that step and must be skipped. The original PR Reviewer
+		// run, for example, has SupersededBy set once a re-ask is
+		// created; trying to re-update it as ready/failed produces
+		// a version-mismatch "db: not found" error that wedges the
+		// whole run.
 		for _, sr := range stepRuns {
-			if cur, ok := runByID[sr.StepID]; ok && cur.Status != domain.StepRunPending && sr.Iteration == 0 {
-				r.log.Debug("DEBUG: skipping step run (not pending in runByID)", "stepID", sr.StepID, "id", sr.ID, "status", cur.Status)
+			if sr.SupersededBy != "" {
+				r.log.Debug("DEBUG: skipping superseded step run", "stepID", sr.StepID, "id", sr.ID, "supersededBy", sr.SupersededBy)
+				continue
+			}
+			// Skip if the active run for this StepID has already
+			// been moved past PENDING in a prior pass (avoid
+			// version-mismatch on re-update).
+			active := sr
+			if cur, ok := runByID[sr.StepID]; ok {
+				active = cur
+			}
+			if active.Status != domain.StepRunPending {
+				r.log.Debug("DEBUG: skipping step run (already past pending)", "stepID", sr.StepID, "id", sr.ID, "status", active.Status, "iteration", sr.Iteration)
 				continue
 			}
 			r.log.Debug("DEBUG: checking step for ready", "stepID", sr.StepID, "id", sr.ID, "status", sr.Status, "version", sr.Version)
@@ -239,6 +271,9 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 
 		// Dispatch ready steps by kind, evaluating gates first.
 		for _, sr := range stepRuns {
+			if sr.SupersededBy != "" {
+				continue
+			}
 			if sr.Status != domain.StepRunReady {
 				if r2, ok := runByID[sr.StepID]; ok && r2.Status == domain.StepRunReady {
 					sr = r2
@@ -277,6 +312,9 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 
 		// Poll running task steps: check their linked WorkItem status.
 		for i, sr := range stepRuns {
+			if sr.SupersededBy != "" {
+				continue
+			}
 			if sr.Status != domain.StepRunRunning || sr.StepKind != domain.StepKindTask {
 				continue
 			}
@@ -313,6 +351,9 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		// Poll running RECOVER steps: check if their linked recovery
 		// execution has completed (terminal).
 		for i, sr := range stepRuns {
+			if sr.SupersededBy != "" {
+				continue
+			}
 			if sr.Status != domain.StepRunRunning || sr.StepKind != domain.StepKindRecover {
 				continue
 			}
@@ -346,6 +387,38 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			}
 		}
 
+		// Poll running LOOP_DECISION steps: check if their re-entered
+		// chain (SSE → … → upstream reviewer) has all completed.
+		// When a loop decision re-enters, it marks itself RUNNING;
+		// once the chain terminal-states, the loop decision goes back
+		// to READY so it re-evaluates the new decision.
+		for i, sr := range stepRuns {
+			if sr.SupersededBy != "" {
+				continue
+			}
+			if sr.Status != domain.StepRunRunning || sr.StepKind != domain.StepKindLoopDecision {
+				continue
+			}
+			if ok, _ := r.pollLoopDecisionChain(ctx, ttx.Tx, tenantID, sr, steps); ok {
+				endNow := time.Now().UTC()
+				// re-check the decision; if it's still failure,
+				// dispatchStep will re-enter again (bounded by
+				// max_iterations).
+				updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+					Status:  strPtr(domain.StepRunReady),
+					EndedAt: &endNow,
+				})
+				if err != nil {
+					return fmt.Errorf("mark loop_decision step ready: %w", err)
+				}
+				stepRuns[i] = updated
+				runByID[sr.StepID] = updated
+				madeProgress = true
+				r.log.Info("loop_decision chain complete, re-evaluating",
+					"run", run.ID, "step", sr.StepID)
+			}
+		}
+
 		if !madeProgress {
 			break
 		}
@@ -355,11 +428,19 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// Determine run terminal state: all steps succeeded → completed;
 	// any failed → failed. Also skip any remaining pending steps so
 	// they don't incorrectly display as "pending" in a failed run.
+	// Superseded step runs (e.g. a PR Reviewer run replaced by a
+	// loop_decision re-ask) are ignored — the active run for that
+	// step_id is whichever run is not superseded. This prevents a
+	// stuck "running" state when a superseded SUCCEEDED run is left
+	// in the list alongside a fresh PENDING re-ask run.
 	allSucceeded := true
 	anyFailed := false
 	hasSteps := false
 	var toSkip []string
 	for _, sr := range stepRuns {
+		if sr.SupersededBy != "" {
+			continue
+		}
 		hasSteps = true
 		if latest, ok := runByID[sr.StepID]; ok {
 			sr = latest
@@ -638,19 +719,40 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 				}
 				return fmt.Errorf("load work item: %w", err)
 			}
-			// PR B (context propagation): build the composite prompt
-			// the worker should see. The prompt is the work item
-			// itself + ancestor chain + summaries from upstream
-			// stages in this run. It is stored on the work item
-			// before dispatch; the opencode adapter reads it via
-			// the TaskReconciler → manifest Goal.
-			composite, err := r.buildCompositePrompt(ctx, tx, tenantID, wi, allSteps, runs)
-			if err != nil {
-				return fmt.Errorf("build composite prompt for %s: %w", wid, err)
+		// PR B (context propagation): build the composite prompt
+		// the worker should see. The prompt is the work item
+		// itself + ancestor chain + summaries from upstream
+		// stages in this run. It is stored on the work item
+		// before dispatch; the opencode adapter reads it via
+		// the TaskReconciler → manifest Goal.
+		//
+		// Worker identity (Role / Skills / Behavior / AGENTS.md) is
+		// prepended so the visible prompt the operator inspects in
+		// the execution detail page is the full context the model
+		// actually sees. The runtime delivers this same content as
+		// the system prompt via OPENCODE_CONFIG_CONTENT (see the
+		// opencode adapter) so the worker identity lands on every
+		// conversation turn, not just the first.
+		workerVer, err := db.GetWorkerVersionByID(ctx, tx, tenantID, step.Ref, fmt.Sprintf("v%d", step.WorkerVersion))
+		if err != nil {
+			if err == db.ErrNotFound {
+				// Fall back to latest published — supports workflows
+				// that don't pin a specific version.
+				workerVer, err = db.GetLatestWorkerVersion(ctx, tx, tenantID, step.Ref, true)
+				if err != nil {
+					return fmt.Errorf("load worker version for %s: %w", step.Ref, err)
+				}
+			} else {
+				return fmt.Errorf("load worker version for %s: %w", step.Ref, err)
 			}
-			pcJSON, _ := json.Marshal(map[string]any{
-				"composite": composite,
-			})
+		}
+		composite, err := r.buildCompositePrompt(ctx, tx, tenantID, wi, workerVer, allSteps, runs)
+		if err != nil {
+			return fmt.Errorf("build composite prompt for %s: %w", wid, err)
+		}
+		pcJSON, _ := json.Marshal(map[string]any{
+			"composite": composite,
+		})
 			assignFields := db.UpdateWorkItemFields{
 				AssignedWorkerRef: &workerRef,
 				WorkflowID:        &wfID,
@@ -742,7 +844,12 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		}
 
 		// If upstream failed (crash, stall, tool error), trigger recovery
-		// and succeed the step so the DAG can continue.
+		// and create a new loop decision iteration so downstream steps
+		// (e.g. QA Engineer) block until the recovery cycle completes
+		// and the re-dispatched reviewer produces a valid decision.
+		// The old code marked the loop decision SUCCEEDED here, which
+		// satisfied downstream deps and let them run in parallel with
+		// the recovery — wrong.
 		if upstreamStatus != domain.StepRunSucceeded {
 			if r.recovery != nil && upResult.WorkItemID != "" {
 				failedExecID := ""
@@ -753,16 +860,11 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 					r.log.Warn("loop_decision: trigger recovery on failure", "run", run.ID, "step", step.ID, "work_item", upResult.WorkItemID, "error", err)
 				}
 			}
-			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-				Status:    strPtr(domain.StepRunSucceeded),
-				StartedAt: &now,
-				EndedAt:   &now,
-			})
-			if err != nil {
-				return fmt.Errorf("mark loop_decision step succeeded (upstream failed): %w", err)
+			nextIter := currentLoopIteration(runs, step.ID) + 1
+			if err := r.createLoopDecisionIteration(ctx, tx, tenantID, run, sr, step, runs, nextIter, now, `{"loop":"recovered"}`); err != nil {
+				return err
 			}
-			runs[step.ID] = updated
-			r.log.Info("loop_decision: upstream failed, triggered recovery", "run", run.ID, "step", step.ID)
+			r.log.Info("loop_decision: upstream failed, new iteration waiting", "run", run.ID, "step", step.ID)
 			break
 		}
 
@@ -808,7 +910,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			}
 			r.log.Info("loop_decision: rejected, looping back",
 				"run", run.ID, "step", step.ID, "loop_branch", cfg.LoopBranch, "iteration", currentIter)
-			if err := r.loopDecisionReenter(ctx, tx, tenantID, run, sr, step, runs, cfg.LoopBranch, currentIter, now); err != nil {
+			if err := r.loopDecisionReenter(ctx, tx, tenantID, run, sr, step, runs, cfg.LoopBranch, currentIter, now, allSteps); err != nil {
 				return err
 			}
 
@@ -838,20 +940,16 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 				return fmt.Errorf("loop_decision step %q: re-ask: %w", step.Name, err)
 			}
 
-			// Mark the loop node succeeded so the reviewer step's deps are
-			// satisfied on the next reconcile pass.
-			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-				Status:    strPtr(domain.StepRunSucceeded),
-				StartedAt: &now,
-				EndedAt:   &now,
-				Result:    func() *[]byte { r := []byte(`{"loop":"re-ask"}`); return &r }(),
-			})
-			if err != nil {
-				return fmt.Errorf("mark loop_decision step re-ask: %w", err)
-			}
-			runs[step.ID] = updated
-			if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
-				return fmt.Errorf("enqueue loop_decision step_succeeded (re-ask): %w", err)
+			// Create a new loop decision iteration (supersedes the
+			// current one) so downstream steps (e.g. QA Engineer)
+			// do NOT start until the re-asked reviewer finishes.
+			// The old code marked the loop decision as SUCCEEDED
+			// immediately, which satisfied the downstream step's
+			// dependency check and let it run in parallel with the
+			// re-ask — wrong.
+			nextIter := currentLoopIteration(runs, step.ID) + 1
+			if err := r.createLoopDecisionIteration(ctx, tx, tenantID, run, sr, step, runs, nextIter, now, `{"loop":"re-ask"}`); err != nil {
+				return err
 			}
 		}
 
@@ -941,6 +1039,22 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 				if err := r.recovery.TriggerOnFailure(ctx, tenantID, depResult.WorkItemID, failedExecID, "workflow_recover_step"); err != nil {
 					r.log.Warn("recover step: trigger recovery", "work_item", depResult.WorkItemID, "error", err)
 				}
+			}
+			// Mark the RECOVER step as RUNNING so the poll phase
+			// tracks recovery completion. Without this the step
+			// stays READY, gets re-dispatched every pass, and the
+			// terminal-state check sees the failed dep and marks
+			// the workflow run FAILED immediately.
+			recoveryStepUpdated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:    strPtr(domain.StepRunRunning),
+				StartedAt: &now,
+			})
+			if err != nil {
+				return fmt.Errorf("mark recover step running: %w", err)
+			}
+			runs[step.ID] = recoveryStepUpdated
+			if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepStarted, run, recoveryStepUpdated); err != nil {
+				return fmt.Errorf("enqueue recover step_started: %w", err)
 			}
 			r.log.Info("recover step triggered recovery", "run", run.ID, "step", step.ID, "work_item", depResult.WorkItemID)
 			break
@@ -1094,11 +1208,21 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 // when this work item is dispatched (PR B — context propagation). It
 // has the following sections:
 //
-//   1. # Task — the work item itself: title, description, acceptance
+//   0. # Worker — the worker's identity (Role / Skills / Behavior /
+//      AGENTS.md). Prepended so the visible prompt the operator
+//      inspects in the execution detail page is the full context
+//      the model actually sees. The runtime delivers the same
+//      content as the system prompt via OPENCODE_CONFIG_CONTENT
+//      (see the opencode adapter) so the worker identity lands on
+//      every conversation turn, not just the first.
+//   1. # Project — the project directory (working dir) + the
+//      contents of every file in `context_files` so the model
+//      doesn't have to guess at file paths.
+//   2. # Task — the work item itself: title, description, acceptance
 //      criteria. This is THE task; everything else is context.
-//   2. # Project context — the ancestor chain walked via
+//   3. # Project context — the ancestor chain walked via
 //      work_items.parent_id (oldest first).
-//   3. # Workflow context — a chronological timeline of every step in
+//   4. # Workflow context — a chronological timeline of every step in
 //      this run, in DAG order, with each step's status and the
 //      execution results it produced. The current step is marked so
 //      the worker can see what has come before and what is expected
@@ -1112,14 +1236,12 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 //          description (passive context markers).
 //        - DECISION / APPROVAL / PARALLEL steps: status only.
 //
-//   4. # Recovery context (this task) — if THIS work item was
+//   5. # Recovery context (this task) — if THIS work item was
 //      recovered from a previous execution failure, the recovery
 //      summary is included here verbatim (recovery engine writes it
 //      to the work item's results). Distinct from the per-step
 //      recovery timeline above: this is the recovery for the task
 //      the worker is about to execute, not for prior steps.
-//   5. # File context — selected project files (PR: project context
-//      files).
 //   6. # Instructions — the worker's contract: emit the
 //      ORCHICON WORKER SUMMARY marker at the end of the response so
 //      the next stage can read it as upstream context.
@@ -1128,16 +1250,84 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 // manifest Goal). The worker is instructed via the prompt's footer to
 // end its response with `ORCHICON WORKER SUMMARY:` followed by a short
 // summary that becomes the next stage's upstream context.
-func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, error) {
+func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, worker db.WorkerVersionRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, error) {
 	var sb strings.Builder
+	// 0. Worker identity (prepended so it's visible in the prompt
+	// the operator inspects).
+	workerIdentity := composeSystemPrompt(worker)
+	if workerIdentity != "" {
+		sb.WriteString("# Worker\n\n")
+		sb.WriteString(workerIdentity)
+		sb.WriteString("\n\n")
+	}
+	// 0b. Project (directory + context file contents). We read
+	// contents from disk so the model doesn't have to. Best-effort:
+	// a missing file logs a note but doesn't abort dispatch.
+	if wi.ProjectID != "" {
+		var p db.ProjectRow
+		if err := tx.QueryRow(ctx,
+			`SELECT project_dir, context_files FROM projects WHERE id = $1 AND tenant_id = $2`,
+			wi.ProjectID, tenantID,
+		).Scan(&p.ProjectDir, &p.ContextFiles); err == nil {
+			hasProject := false
+			if p.ProjectDir != "" {
+				if !hasProject {
+					sb.WriteString("# Project\n\n")
+					hasProject = true
+				}
+				fmt.Fprintf(&sb, "Project directory (working dir for all file operations): `%s`\n\n", p.ProjectDir)
+			}
+			var files []string
+			_ = json.Unmarshal(p.ContextFiles, &files)
+			for _, f := range files {
+				resolved := f
+				if !filepath.IsAbs(resolved) && p.ProjectDir != "" {
+					resolved = filepath.Join(p.ProjectDir, resolved)
+				}
+				if !filepath.IsAbs(resolved) {
+					continue
+				}
+				data, err := os.ReadFile(resolved)
+				if err != nil {
+					if !hasProject {
+						sb.WriteString("# Project\n\n")
+						hasProject = true
+					}
+					fmt.Fprintf(&sb, "**Note:** failed to read context file `%s`: %v\n\n", resolved, err)
+					continue
+				}
+				if !hasProject {
+					sb.WriteString("# Project\n\n")
+					hasProject = true
+				}
+				fmt.Fprintf(&sb, "## %s\n\n```\n%s\n```\n\n", resolved, string(data))
+			}
+		}
+	}
 	// 1. Task.
+	// Show the original work item as the overall goal, then anchor
+	// the worker to its purpose so the task title ("Create a bash
+	// script") doesn't override the worker's actual role ("Review,
+	// don't write code"). The worker's Purpose field is set on the
+	// Worker profile by the author and travels with every dispatch.
+	var workerPurpose string
+	var wkrRow db.WorkerRow
+	if err := tx.QueryRow(ctx,
+		`SELECT purpose FROM workers WHERE id = $1 AND tenant_id = $2`,
+		worker.WorkerID, tenantID,
+	).Scan(&wkrRow.Purpose); err == nil {
+		workerPurpose = strings.TrimSpace(wkrRow.Purpose)
+	}
 	sb.WriteString("# Task\n\n")
-	fmt.Fprintf(&sb, "Title: %s\n\n", strings.TrimSpace(wi.Title))
+	fmt.Fprintf(&sb, "Original work item: \"%s\"\n\n", strings.TrimSpace(wi.Title))
 	if d := strings.TrimSpace(wi.Description); d != "" {
 		fmt.Fprintf(&sb, "Description:\n%s\n\n", d)
 	}
 	if ac := strings.TrimSpace(wi.AcceptanceCriteria); ac != "" {
 		fmt.Fprintf(&sb, "Acceptance criteria:\n%s\n\n", ac)
+	}
+	if workerPurpose != "" {
+		fmt.Fprintf(&sb, "---\n\n**Your purpose on this step:** %s\n\nFocus on the acceptance criteria above — they define what \"done\" looks like. The overall goal is described above; your specific job is to execute your purpose against it, not to reproduce the original task literally.\n\n---\n\n", workerPurpose)
 	}
 	// 2. Project context — ancestors, oldest first.
 	ancestors, err := walkAncestors(ctx, tx, tenantID, wi)
@@ -1167,7 +1357,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	if wctx != "" {
 		sb.WriteString(wctx)
 	}
-	// 4. Recovery context (this task) — this work item may have been
+	// 4a. Recovery context (this task) — this work item may have been
 	// recovered from a previous execution failure. The recovery engine
 	// writes _recovery_summary into the work item's results when it
 	// transitions the task back to ready; inject it here so the
@@ -1184,7 +1374,27 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 			}
 		}
 	}
-	// 5. File context — selected project files (PR: project context files).
+	// 4b. Previous review feedback — when the loop routes back to
+	// SSE after PR Reviewer found issues, the _issues field carries
+	// the PR Reviewer's findings. Include them here so the SSE knows
+	// what needs fixing even though the previous PR Reviewer step
+	// run was superseded and its output is no longer in the active
+	// workflow context (the new cycle's PR Reviewer hasn't run yet).
+	if len(wi.Results) > 0 {
+		var wiParsed map[string]any
+		if err := json.Unmarshal(wi.Results, &wiParsed); err == nil {
+			if issues, ok := wiParsed["_issues"].(string); ok && issues != "" {
+				sb.WriteString("# Previous review feedback\n\n")
+				sb.WriteString("The following issues were identified by the reviewer. Address them in your work:\n\n")
+				sb.WriteString(issues)
+				sb.WriteString("\n\n")
+			}
+		}
+	}
+	// 5. File context — kept for backward compatibility (old
+	// composite shape). The prepended # Project block above already
+	// inlines file contents; this section is a fallback if a caller
+	// still has it set without a ProjectID.
 	if wi.ProjectID != "" {
 		fileCtx, err := r.readProjectContextFiles(ctx, tx, tenantID, wi.ProjectID)
 		if err != nil {
@@ -1945,12 +2155,28 @@ func (r *WorkflowReconciler) reaskDecisionStep(ctx context.Context, tx pgx.Tx, t
 	if upResult.WorkItemID != "" {
 		wi, err := db.GetWorkItem(ctx, tx, tenantID, upResult.WorkItemID)
 		if err == nil {
-			reaskMsg := "\n\n**RE-ASK ATTEMPT " + fmt.Sprint(nextIter) + "**\n" +
+			reaskMsg := "\n\n# Re-ask\n\n**RE-ASK ATTEMPT " + fmt.Sprint(nextIter) + "**\n" +
 				"You MUST include `_decision` in your response with a value of `success` or `failure`.\n" +
 				"- `_decision: success` — the work is complete and correct\n" +
 				"- `_decision: failure` — there are issues that need fixing (include `_issues` with details)"
+
+			// Preserve the existing composite (worker identity, project,
+			// task, ancestors, workflow context, recovery, instructions)
+			// and append the re-ask instruction so the worker doesn't lose
+			// all context on a re-ask turn. Previously this overwrote the
+			// entire promptContext with just the re-ask message — the
+			// worker saw only "RE-ASK ATTEMPT 1" and nothing else.
+			var pc struct {
+				Composite string `json:"composite"`
+			}
+			existingPC := ""
+			_ = json.Unmarshal(wi.PromptContext, &pc)
+			if pc.Composite != "" {
+				existingPC = pc.Composite
+			}
+			combined := existingPC + reaskMsg
 			pcJSON, _ := json.Marshal(map[string]any{
-				"composite": reaskMsg,
+				"composite": combined,
 			})
 			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, wi.ID, wi.Version, db.UpdateWorkItemFields{
 				PromptContext: &pcJSON,
@@ -1978,60 +2204,210 @@ func (r *WorkflowReconciler) reaskDecisionStep(ctx context.Context, tx pgx.Tx, t
 	return upResult.WorkItemID, nil
 }
 
-// loopDecisionReenter creates a new step run for the loop branch target
-// and marks the loop node succeeded. Shared by the step-run-failure path
-// and the reviewer-rejection path.
-func (r *WorkflowReconciler) loopDecisionReenter(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, step workflow.StepWire, runs map[string]db.WorkflowStepRunRow, loopBranch string, currentIter int, now time.Time) error {
-	nextIter := currentIter + 1
-
-	// Supersede the previous run of the loop branch step.
-	srList, err := listStepRunsByStepID(ctx, tx, tenantID, run.ID, loopBranch)
-	if err != nil {
-		return fmt.Errorf("loop_decision step %q: list prior runs: %w", step.Name, err)
-	}
-	for _, prior := range srList {
-		if prior.SupersededBy == "" {
-			if _, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, prior.ID, prior.Version, db.UpdateWorkflowStepRunFields{
-				SupersededBy: &sr.ID,
-			}); err != nil {
-				return fmt.Errorf("loop_decision step %q: supersede prior run: %w", step.Name, err)
-			}
-		}
-	}
-
-	// Create a new step run for the loop branch target.
-	newStepRun := db.WorkflowStepRunRow{
-		ID:            db.NewID(),
+// createLoopDecisionIteration creates a new iteration of a loop_decision
+// step run with PENDING status (blocking downstream steps) and supersedes
+// the current iteration. The new iteration runs when its deps (the
+// re-asked reviewer) complete.
+func (r *WorkflowReconciler) createLoopDecisionIteration(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, step workflow.StepWire, runs map[string]db.WorkflowStepRunRow, nextIter int, now time.Time, resultJSON string) error {
+	// Create the new iteration first so we can set SupersededBy.
+	newID := db.NewID()
+	resultRaw := []byte(resultJSON)
+	newIter := db.WorkflowStepRunRow{
+		ID:            newID,
 		TenantID:      tenantID,
 		WorkflowRunID: run.ID,
-		StepID:        loopBranch,
-		StepName:      step.Name + " (loop)",
-		StepKind:      domain.StepKindTask,
+		StepID:        step.ID,
+		StepName:      step.Name,
+		StepKind:      domain.StepKindLoopDecision,
 		Status:        domain.StepRunPending,
 		Iteration:     nextIter,
 	}
-	if _, err := db.CreateWorkflowStepRun(ctx, tx, newStepRun); err != nil {
-		return fmt.Errorf("loop_decision step %q: create re-entry run: %w", step.Name, err)
+	if _, err := db.CreateWorkflowStepRun(ctx, tx, newIter); err != nil {
+		return fmt.Errorf("loop_decision step %q: create next iteration: %w", step.Name, err)
 	}
 
-	// Mark the loop node succeeded so the loop-back occurs on the next pass.
-	updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-		Status:    strPtr(domain.StepRunSucceeded),
-		StartedAt: &now,
-		EndedAt:   &now,
-		Result:    func() *[]byte { r := []byte(`{"loop":"re-entered"}`); return &r }(),
+	// Supersede the current loop decision run, pointing at the new one.
+	superseded, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+		Status:       strPtr(domain.StepRunSucceeded),
+		StartedAt:    &now,
+		EndedAt:      &now,
+		SupersededBy: &newID,
+		Result:       &resultRaw,
 	})
 	if err != nil {
-		return fmt.Errorf("mark loop_decision step re-entered: %w", err)
+		return fmt.Errorf("loop_decision step %q: supersede prior iteration: %w", step.Name, err)
+	}
+	// put the superseded run in the map for the event; the new pending
+	// run will be loaded on the next pass and overwrite in runByID.
+	runs[step.ID] = superseded
+	if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, superseded); err != nil {
+		return fmt.Errorf("enqueue loop_decision step_succeeded (supersede): %w", err)
+	}
+	r.log.Info("loop_decision iteration created",
+		"run", run.ID, "step", step.ID, "iteration", nextIter)
+	return nil
+}
+
+// loopDecisionReenter creates a new step run for the loop branch
+// target, then marks the loop decision as RUNNING. Downstream steps
+// are blocked because the loop decision is no longer terminal.
+// Previously it created a new loop decision iteration (PENDING),
+// but the new iteration's deps (PR Reviewer) were already SUCCEEDED,
+// so it dispatched immediately and re-entered again — infinite loop.
+func (r *WorkflowReconciler) loopDecisionReenter(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, step workflow.StepWire, runs map[string]db.WorkflowStepRunRow, loopBranch string, currentIter int, now time.Time, allSteps []workflow.StepWire) error {
+	nextIter := currentIter + 1
+
+	// Create new step runs for every step between the loop target
+	// and this loop decision (inclusive of target, exclusive of
+	// decision) so the whole chain re-executes.
+	chainIDs := chainStepIDs(allSteps, loopBranch, step.ID)
+	if err := r.createChainRuns(ctx, tx, tenantID, run.ID, chainIDs, nextIter, allSteps); err != nil {
+		return fmt.Errorf("loop_decision step %q: create chain runs: %w", step.Name, err)
+	}
+
+	// Mark the loop decision as RUNNING so it blocks downstream
+	// steps (QA Engineer). The poll phase checks whether the
+	// re-entered chain completed.
+	updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+		Status:  strPtr(domain.StepRunRunning),
+		Result:  func() *[]byte { r := []byte(`{"loop":"re-entered"}`); return &r }(),
+	})
+	if err != nil {
+		return fmt.Errorf("loop_decision step %q: mark running: %w", step.Name, err)
 	}
 	runs[step.ID] = updated
-	if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
-		return fmt.Errorf("enqueue loop_decision step_succeeded (re-entry): %w", err)
+	if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepStarted, run, updated); err != nil {
+		return fmt.Errorf("enqueue loop_decision step_started: %w", err)
 	}
 	r.log.Info("loop_decision re-entered",
 		"run", run.ID, "step", step.ID, "loop_branch", loopBranch,
-		"iteration", nextIter)
+		"iteration", nextIter, "chain", chainIDs)
 	return nil
+}
+
+// chainStepIDs returns the IDs of every step from `fromID` (inclusive)
+// to `toID` (exclusive) in DAG order. allSteps is the workflow
+// version's step list in canvas order, which for a linear chain is
+// DAG order. Returns nil if either step is not found or the range
+// is inverted.
+func chainStepIDs(allSteps []workflow.StepWire, fromID, toID string) []string {
+	start, end := -1, -1
+	for i, s := range allSteps {
+		if s.ID == fromID {
+			start = i
+		}
+		if s.ID == toID {
+			end = i
+			break
+		}
+	}
+	if start < 0 || end < 0 || start >= end {
+		return nil
+	}
+	ids := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
+		ids = append(ids, allSteps[i].ID)
+	}
+	return ids
+}
+
+// createChainRuns supersedes existing step runs for each step in the
+// given list and creates new PENDING iterations. The step kind is
+// looked up from allSteps (the workflow version so recover steps
+// are correctly typed). Each new run carries the provided iteration.
+func (r *WorkflowReconciler) createChainRuns(ctx context.Context, tx pgx.Tx, tenantID, runID string, stepIDs []string, iteration int, allSteps []workflow.StepWire) error {
+	// Build a stepKind lookup from the workflow version.
+	kindByID := make(map[string]string, len(allSteps))
+	for _, s := range allSteps {
+		kindByID[s.ID] = s.Kind
+	}
+	for _, sid := range stepIDs {
+		srList, err := listStepRunsByStepID(ctx, tx, tenantID, runID, sid)
+		if err != nil {
+			return fmt.Errorf("list runs for chain step %s: %w", sid, err)
+		}
+		var priorID string
+		for _, prior := range srList {
+			if prior.SupersededBy == "" {
+				newID := db.NewID()
+				priorID = newID
+				if _, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, prior.ID, prior.Version, db.UpdateWorkflowStepRunFields{
+					SupersededBy: &newID,
+				}); err != nil {
+					return fmt.Errorf("supersede chain step %s: %w", sid, err)
+				}
+				break
+			}
+		}
+		if priorID == "" {
+			priorID = db.NewID()
+		}
+		kind := kindByID[sid]
+		if kind == "" {
+			kind = domain.StepKindTask
+		}
+		newRun := db.WorkflowStepRunRow{
+			ID:            priorID,
+			TenantID:      tenantID,
+			WorkflowRunID: runID,
+			StepID:        sid,
+			StepName:      sid + " (loop)",
+			StepKind:      kind,
+			Status:        domain.StepRunPending,
+			Iteration:     iteration,
+		}
+		if _, err := db.CreateWorkflowStepRun(ctx, tx, newRun); err != nil {
+			return fmt.Errorf("create chain step run %s: %w", sid, err)
+		}
+	}
+	return nil
+}
+
+// pollLoopDecisionChain checks whether every step in the chain between
+// the loop decision's loop_branch target and its upstream dependency
+// has completed (all terminal). Callers re-mark the loop decision as
+// READY when true.
+func (r *WorkflowReconciler) pollLoopDecisionChain(ctx context.Context, tx pgx.Tx, tenantID string, sr db.WorkflowStepRunRow, allSteps []workflow.StepWire) (bool, error) {
+	// Find the loop decision's configuration to get loop_branch.
+	var stepDef *workflow.StepWire
+	for _, s := range allSteps {
+		if s.ID == sr.StepID {
+			stepDef = &s
+			break
+		}
+	}
+	if stepDef == nil {
+		return false, fmt.Errorf("step %s not found in version", sr.StepID)
+	}
+	cfg := parseLoopDecisionConfig(stepDef.Config)
+	if cfg.LoopBranch == "" {
+		return false, nil
+	}
+
+	chain := chainStepIDs(allSteps, cfg.LoopBranch, sr.StepID)
+	if len(chain) == 0 {
+		return false, nil
+	}
+
+	// Load the latest run for each chain step and check if it is terminal.
+	for _, cid := range chain {
+		srList, err := listStepRunsByStepID(ctx, tx, tenantID, sr.WorkflowRunID, cid)
+		if err != nil {
+			return false, fmt.Errorf("list chain %s: %w", cid, err)
+		}
+		// Find the active (non-superseded) run.
+			var active db.WorkflowStepRunRow
+		for _, s := range srList {
+			if s.SupersededBy == "" {
+				active = s
+				break
+			}
+		}
+		if active.ID == "" || active.Status != domain.StepRunSucceeded {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func nowPtr(t time.Time) *time.Time { return &t }

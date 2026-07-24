@@ -7,11 +7,15 @@ import {
   useCreateWorker,
   useCreateWorkerVersion,
   useDeleteWorker,
+  useDeleteWorkerVersion,
   useDeprecateWorker,
   useGetWorker,
+  useGetWorkerVersion,
   useListWorkerVersions,
   usePublishWorkerVersion,
   useRetireWorker,
+  useRevertWorkerVersionToDraft,
+  useSetActiveWorkerVersion,
   useUpdateWorkerVersion,
 } from "@/api/workers";
 import { EntityYamlView } from "@/components/EntityYamlView";
@@ -89,11 +93,18 @@ function WorkerDetailPage() {
   const createWorker = useCreateWorker();
   const navigate = useNavigate();
   const deleteMutation = useDeleteWorker();
-
+  const setActiveVersion = useSetActiveWorkerVersion();
+  const revertVersion = useRevertWorkerVersionToDraft();
+  const deleteVersion = useDeleteWorkerVersion();
   const { data: latestData } = useGetWorker(id);
   const latestVersion = latestData?.latestVersion;
   const [editing, setEditing] = useState(false);
   const [viewMode, setViewMode] = useState<"detail" | "code">("detail");
+  const [selectedVersionId, setSelectedVersionId] = useState<string | undefined>();
+  const { data: selectedVersionData } = useGetWorkerVersion(selectedVersionId ?? "");
+  const selectedVersion = selectedVersionId
+    ? selectedVersionData ?? versions?.find((v) => v.id === selectedVersionId)
+    : latestVersion;
 
   const { register, handleSubmit, setValue, watch, formState: { errors } } = useForm<EditFormData>({
     defaultValues: {
@@ -176,7 +187,35 @@ function WorkerDetailPage() {
             natural width; gap-2 + flex-wrap drops them onto multiple
             lines cleanly. */}
         <div className="flex flex-wrap items-center gap-2">
-          {draftVersion && viewMode === "detail" && (
+          {selectedVersionId && selectedVersion && selectedVersion.version !== worker.currentVersion && selectedVersion.status === 2 && (
+            <Button variant="outline" onClick={() => setActiveVersion.mutate({ workerId: id, version: selectedVersion.version })}>
+              {setActiveVersion.isPending ? "Setting…" : "Make Active"}
+            </Button>
+          )}
+          {selectedVersionId && selectedVersion && (
+            <>
+              {selectedVersion.status === 1 && (
+                <Button onClick={() => setEditing(true)}>Edit</Button>
+              )}
+              {selectedVersion.status === 2 && (
+                <Button onClick={async () => {
+                  await revertVersion.mutateAsync({ versionId: selectedVersion.id });
+                  setSelectedVersionId(undefined);
+                  // Force refetch versions
+                }}>
+                  Edit (revert to draft)
+                </Button>
+              )}
+              <Button variant="outline" className="text-destructive border-destructive/50" onClick={() => {
+                if (window.confirm("Delete version v" + selectedVersion.version + "? This cannot be undone.")) {
+                  deleteVersion.mutate({ workerId: id, versionId: selectedVersion.id });
+                }
+              }}>
+                Delete
+              </Button>
+            </>
+          )}
+          {draftVersion && viewMode === "detail" && !selectedVersionId && (
             <>
               {editing ? (
                 <>
@@ -511,127 +550,55 @@ function WorkerDetailPage() {
         </Card>
       )}
 
-      {/* Read-only version detail (shown when not editing) */}
-      {!isEditingEnabled && latestVersion && (
-        <Card>
-          <CardHeader>
-            <CardTitle>
-              Version v{latestVersion.version}
-              {latestVersion.versionNote
-                ? ` — ${latestVersion.versionNote}`
-                : ""}
-            </CardTitle>
-            <CardDescription>
-              {versionStatusLabel(latestVersion.status)}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {(() => {
-              const sp = latestVersion.systemPrompt || "";
-              const extract = (heading: string) => {
-                const re = new RegExp(`# ${heading}\n\n([\\s\\S]*?)(?=\\n# |\\n*$)`);
-                return sp.match(re)?.[1]?.trim() || "";
-              };
-              const role = extract("Role");
-              const skills = extract("Skills");
-              const behavior = extract("Behavior");
-              const agents = extract("AGENTS.md");
-              return (
-                <>
-                  {role && <div><h4 className="text-xs font-medium uppercase text-muted-foreground">Role</h4><Markdown>{role}</Markdown></div>}
-                  {skills && <div><h4 className="text-xs font-medium uppercase text-muted-foreground">Skills</h4><Markdown>{skills}</Markdown></div>}
-                  {behavior && <div><h4 className="text-xs font-medium uppercase text-muted-foreground">Behavior</h4><Markdown>{behavior}</Markdown></div>}
-                  {agents && <div><h4 className="text-xs font-medium uppercase text-muted-foreground">AGENTS.md</h4><Markdown>{agents}</Markdown></div>}
-                </>
-              );
-            })()}
-            <div className="grid gap-4 md:grid-cols-2">
-              <JsonField
-                label="Permissions"
-                value={latestVersion.permissions}
-              />
-              <JsonField
-                label="Gated tools"
-                value={latestVersion.gatedTools}
-              />
-              <JsonField
-                label="Budget overrides"
-                value={latestVersion.budgetOverrides}
-              />
-              <JsonField
-                label="Context sources"
-                value={latestVersion.contextSources}
-              />
-            </div>
-            <div className="grid gap-4 md:grid-cols-2">
-              <div>
-                <h4 className="text-xs font-medium uppercase text-muted-foreground">
-                  Concurrency limit
-                </h4>
-                <p className="mt-1 text-sm">
-                  {latestVersion.concurrencyLimit}
-                </p>
-              </div>
-              <div>
-                <h4 className="text-xs font-medium uppercase text-muted-foreground">
-                  Execution policy ref
-                </h4>
-                <p className="mt-1 font-mono text-xs">
-                  {latestVersion.executionPolicyRef || "—"}
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Version history */}
+      {/* Versions card — list + detail in one place */}
       <Card>
         <CardHeader>
-          <CardTitle>Version history</CardTitle>
+          <CardTitle>Versions</CardTitle>
           <CardDescription>
-            All versions of this worker, newest first. A published version is
-            immutable; changes create a new version.
+            Published versions are immutable. Click a version to view its details. Drafts can be edited and deleted.
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          {versions && versions.length === 0 && (
-            <p className="text-sm text-muted-foreground">No versions yet.</p>
-          )}
-          {versions && versions.length > 0 && (
-            <div className="space-y-2">
-              {versions.map((v) => (
-                <div
-                  key={v.id}
-                  className="flex flex-col gap-2 rounded-md border p-3 text-sm sm:flex-row sm:items-start sm:gap-3"
-                >
-                  <span className="font-mono text-xs font-medium">
-                    v{v.version}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <VersionStatusBadge status={v.status} />
-                      <span className="break-all font-mono text-xs text-muted-foreground">
-                        {v.modelRef}
-                      </span>
-                    </div>
-                    {v.versionNote && (
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {v.versionNote}
-                      </p>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            {(versions ?? []).length === 0 ? (
+              <p className="text-sm text-muted-foreground">No versions yet.</p>
+            ) : (
+              (versions ?? []).map((ver) => {
+                const isLatest = ver.version === worker.currentVersion;
+                const isSelected = selectedVersionId === ver.id || (!selectedVersionId && isLatest && !selectedVersionData);
+                return (
+                  <div key={ver.id} className={cn("rounded-md border", isSelected && "border-primary")}>
+                    <button
+                      type="button"
+                      className={cn(
+                        "flex w-full items-center gap-3 p-2 text-left text-sm hover:bg-accent",
+                        isSelected && "bg-accent/50",
+                      )}
+                      onClick={() => setSelectedVersionId(selectedVersionId === ver.id ? undefined : ver.id)}
+                    >
+                      <span className="font-mono font-medium">v{ver.version}</span>
+                      <WorkerVersionStatusBadge status={ver.status} />
+                      {ver.versionNote && <span className="min-w-0 truncate text-xs text-muted-foreground">{ver.versionNote}</span>}
+                      {ver.publishedAt && (
+                        <span className="shrink-0 text-xs text-muted-foreground">
+                          {new Date(Number(ver.publishedAt.seconds) * 1000).toLocaleDateString()}
+                        </span>
+                      )}
+                      {isLatest && (
+                        <span className="shrink-0 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-800 dark:bg-blue-950/60 dark:text-blue-100">
+                          active
+                        </span>
+                      )}
+                      <span className="flex-1" />
+                    </button>
+                    {isSelected && selectedVersion && selectedVersion.id === ver.id && !isEditingEnabled && (
+                      <VersionDetailPanel version={selectedVersion} />
                     )}
                   </div>
-                  {v.publishedAt && (
-                    <span className="text-xs text-muted-foreground sm:shrink-0">
-                      {new Date(
-                        Number(v.publishedAt.seconds) * 1000,
-                      ).toLocaleDateString()}
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+                );
+              })
+            )}
+          </div>
         </CardContent>
       </Card>
         </>
@@ -646,29 +613,6 @@ function safeParseJson(s: string): unknown {
   } catch {
     return s;
   }
-}
-
-function VersionStatusBadge({ status }: { status: number }) {
-  const labels: Record<number, string> = {
-    1: "draft",
-    2: "published",
-    3: "deprecated",
-  };
-  const styles: Record<number, string> = {
-    1: "bg-blue-100 text-blue-800",
-    2: "bg-green-100 text-green-800",
-    3: "bg-yellow-100 text-yellow-800",
-  };
-  return (
-    <span
-      className={cn(
-        "rounded-full px-2 py-0.5 text-xs font-medium",
-        styles[status] ?? "bg-muted text-muted-foreground",
-      )}
-    >
-      {labels[status] ?? "unknown"}
-    </span>
-  );
 }
 
 function JsonField({ label, value }: { label: string; value: string }) {
@@ -701,6 +645,58 @@ function versionStatusLabel(status: number): string {
     3: "Deprecated — no new bindings",
   };
   return labels[status] ?? "unknown";
+}
+
+function WorkerVersionStatusBadge({ status }: { status: number }) {
+  const labels: Record<number, string> = { 1: "draft", 2: "published", 3: "deprecated", 4: "retired" };
+  const styles: Record<number, string> = {
+    1: "bg-yellow-100 text-yellow-800",
+    2: "bg-green-100 text-green-800",
+    3: "bg-orange-100 text-orange-800",
+    4: "bg-gray-200 text-gray-600",
+  };
+  return <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium", styles[status] ?? "")}>{labels[status] ?? "unknown"}</span>;
+}
+function VersionDetailPanel({ version }: { version: import("@/api/gen/orchicon/api/v1/worker_pb").WorkerVersion }) {
+  const sp = version.systemPrompt || "";
+  const extract = (heading: string) => {
+    const re = new RegExp(`# ${heading}\n\n([\\s\\S]*?)(?=\\n# |\\n*$)`);
+    return sp.match(re)?.[1]?.trim() || "";
+  };
+  const role = extract("Role");
+  const skills = extract("Skills");
+  const behavior = extract("Behavior");
+  const agents = extract("AGENTS\\.md");
+  return (
+    <div className="border-t p-3 space-y-4">
+      <div className="grid gap-4 md:grid-cols-2">
+        {role && <div><h4 className="text-xs font-medium uppercase text-muted-foreground">Role</h4><Markdown>{role}</Markdown></div>}
+        {skills && <div><h4 className="text-xs font-medium uppercase text-muted-foreground">Skills</h4><Markdown>{skills}</Markdown></div>}
+        {behavior && <div><h4 className="text-xs font-medium uppercase text-muted-foreground">Behavior</h4><Markdown>{behavior}</Markdown></div>}
+        {agents && <div><h4 className="text-xs font-medium uppercase text-muted-foreground">AGENTS.md</h4><Markdown>{agents}</Markdown></div>}
+      </div>
+      <div className="grid gap-4 md:grid-cols-2 text-sm">
+        <JsonField label="Permissions" value={version.permissions} />
+        <JsonField label="Gated tools" value={version.gatedTools} />
+        <JsonField label="Budget overrides" value={version.budgetOverrides} />
+        <JsonField label="Context sources" value={version.contextSources} />
+      </div>
+      <div className="grid gap-4 md:grid-cols-2 text-sm">
+        <JsonField label="Runtime" value={version.runtimeRef || "—"} />
+        <JsonField label="Model" value={version.modelRef || "—"} />
+      </div>
+      <div className="grid gap-4 md:grid-cols-2 text-sm">
+        <div>
+          <h4 className="text-xs font-medium uppercase text-muted-foreground">Concurrency limit</h4>
+          <p className="mt-1">{version.concurrencyLimit}</p>
+        </div>
+        <div>
+          <h4 className="text-xs font-medium uppercase text-muted-foreground">Execution policy ref</h4>
+          <p className="mt-1 font-mono text-xs">{version.executionPolicyRef || "—"}</p>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function formatJson(s: string): string {

@@ -19,8 +19,8 @@ export const STEP_KIND = {
   RECOVER: 5,
   WORK_ITEM: 6,
   PROJECT: 7,
-  POLICY: 8,
-  LOOP_DECISION: 9,
+  LOOP_DECISION: 8,
+  POLICY: 9,
 } as const;
 
 // Wire-format kind strings — must match Go domain constants exactly.
@@ -34,8 +34,8 @@ export const STEP_KIND_WIRE: Record<number, string> = {
   [STEP_KIND.RECOVER]: "recover",
   [STEP_KIND.WORK_ITEM]: "work_item",
   [STEP_KIND.PROJECT]: "project",
-  [STEP_KIND.POLICY]: "policy",
   [STEP_KIND.LOOP_DECISION]: "loop_decision",
+  [STEP_KIND.POLICY]: "policy",
 };
 
 // Display labels (capitalized, user-facing).
@@ -47,8 +47,8 @@ export const STEP_KIND_DISPLAY_LABELS: Record<number, string> = {
   5: "Recovery",
   6: "Work Item",
   7: "Project",
-  8: "Policy",
-  9: "Loop Decision",
+  8: "Loop Decision",
+  9: "Policy",
 };
 
 // Backward-compatible short labels for the run view and legacy use.
@@ -60,8 +60,8 @@ export const STEP_KIND_LABELS: Record<number, string> = {
   5: "recover",
   6: "work_item",
   7: "project",
-  8: "policy",
-  9: "loop_decision",
+  8: "loop_decision",
+  9: "policy",
 };
 
 export const STEP_KIND_TO_ENUM: Record<number, StepKind> = {
@@ -72,7 +72,7 @@ export const STEP_KIND_TO_ENUM: Record<number, StepKind> = {
   5: StepKind.RECOVER,
   6: StepKind.WORK_ITEM,
   7: StepKind.PROJECT,
-  9: StepKind.LOOP_DECISION,
+  8: StepKind.LOOP_DECISION,
 };
 
 export const STR_TO_KIND: Record<string, number> = {
@@ -83,8 +83,8 @@ export const STR_TO_KIND: Record<string, number> = {
   recover: 5,
   work_item: 6,
   project: 7,
-  policy: 8,
-  loop_decision: 9,
+  loop_decision: 8,
+  policy: 9,
 };
 
 export const KIND_TO_STR = (k: number): string => STEP_KIND_WIRE[k] ?? "task";
@@ -97,8 +97,8 @@ export const STEP_KIND_ICONS: Record<number, LucideIcon> = {
   5: LifeBuoy,
   6: FileText,
   7: FileText,
-  8: ShieldCheck,
-  9: Repeat2,
+  8: Repeat2,
+  9: ShieldCheck,
 };
 
 export const KIND_ACCENT: Record<number, string> = {
@@ -109,8 +109,8 @@ export const KIND_ACCENT: Record<number, string> = {
   [STEP_KIND.RECOVER]: "rose",
   [STEP_KIND.WORK_ITEM]: "emerald",
   [STEP_KIND.PROJECT]: "indigo",
-  [STEP_KIND.POLICY]: "amber",
   [STEP_KIND.LOOP_DECISION]: "cyan",
+  [STEP_KIND.POLICY]: "amber",
 };
 
 export const ACCENT_STROKE: Record<string, string> = {

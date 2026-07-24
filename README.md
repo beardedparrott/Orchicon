@@ -42,16 +42,26 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-**v0.1.139** — Worker prompt fields refactor + recovery overhaul + scheduling improvements.
-Replaced the single `system_prompt` field on workers with four structured fields: Role, Skills, Behavior, and AGENTS.md, stored separately in the DB and composed at dispatch time. Recovery is now exclusively triggered by explicit `recover` steps on the workflow canvas — the old auto-trigger was removed. Added `WORK_ITEM_STATUS_SCHEDULED` status: work items transition `pending → scheduled → running → succeeded/failed`. The scheduled run reconciler uses a 5-minute window to prevent stale fires. New `text_loop` stall signal catches workers stuck in text-only loops (10min without meaningful action). Canvas handle colors clarify input (emerald) vs output (amber) direction. Loop decision steps auto-set `success_branch`/`loop_branch` from edge connections. Project directory and context file pickers are now separate UI cards. YAML code view on work items is editable with Save support. All workflow versions can be deleted. Work item `workflow_run_id` can be cleared to re-schedule.
+### v0.1.142 (2026-07-24)
 
-**v0.1.136** — Hugging Face latest models script.
-Added `scripts/hf-latest-models.sh` — fetches the latest AI models released today or this week from the Hugging Face API, with paginated results, pipeline_tag distribution summary, and clean output to `/tmp/hf-latest-models-{today|week}.txt`.
-
-**v0.1.135** — No-op retag of v0.1.134.
-
-**v0.1.134** — Workflow types (template vs one-shot) + content-aware loop decision.
-Added a proper `type` column to workflows (`one_shot` or `template`) replacing the implicit "empty project_id = template" convention — templates are tenant-level bindable workflows, one-shots are project-scoped single runs. The create form has a type dropdown, the palette hides Project/Work Item tiles for templates, and the WorkItem workflow selector shows only templates. The loop decision step now evaluates a structured `_decision` signal from the reviewer's output (`success`/`failure`) and re-asks up to 3 times if no signal is found, amending the prompt with "YOU MUST" instructions on each re-attempt.
+| Type | Change |
+|---|---|
+| Bug fix | Worker system prompts (Role, Skills, Behavior, AGENTS.md) now delivered to model via OPENCODE_CONFIG_CONTENT — previous OPENCODE_SYSTEM_PROMPT env var was silently ignored by opencode |
+| Bug fix | Workflow reconciler no longer wedges on loop_decision re-asks — step runs reloaded each pass, superseded runs skipped, new chain runs created on re-enter |
+| Bug fix | Loop decision blocks downstream steps during re-ask/re-enter by marking itself RUNNING instead of SUCCEEDED |
+| Bug fix | Recovery step now transitions to RUNNING when triggered, so poll phase tracks completion instead of the run failing immediately |
+| Bug fix | `_decision` extraction handles any delimiter (`_decision:failure`, `_decision: failure _issues:...`, `_decision:failureissues`) |
+| Bug fix | Run view edges now visible — added Tailwind className fallback; CSS var was undefined in SVG context |
+| Bug fix | `--dir` flag now correctly passed to opencode (was appended after exec.CommandContext, silently dropped) |
+| Bug fix | New Work Item button always visible (no longer hidden when no project filter selected) |
+| Feature | Worker purpose field (from `workers.purpose`) shown in composite prompt as "Your purpose on this step" |
+| Feature | Human-readable worker names in execution list, detail, and run views |
+| Feature | Execution iteration (loop number) displayed in naming |
+| Feature | Worker detail page: consolidated Versions card with expandable rows, Make Active/Revert to Draft/Delete buttons, version switching |
+| Feature | DeleteWorkerVersion + GetWorkerVersion + SetActiveWorkerVersion + RevertWorkerVersionToDraft RPCs |
+| Feature | Raw/markdown toggle on AssistantBubble, emoji support via remark-emoji |
+| Chore | Updated PR Reviewer and QA Engineer prompts with clear role delineation (review only / test only, never write code) |
+| Chore | AGENTS.md now specifies table format for README.md Last Release Changes section |
 
 ## Installation
 

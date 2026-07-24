@@ -31,6 +31,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { ACCENT_STROKE, KIND_ACCENT } from "@/components/workflow-editor/stepKinds";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -63,7 +64,8 @@ const STEP_KIND_LABELS: Record<number, string> = {
   5: "recover",
   6: "work_item",
   7: "project",
-  8: "policy",
+  8: "loop_decision",
+  9: "policy",
 };
 
 const STEP_KIND_COLORS: Record<number, string> = {
@@ -74,7 +76,8 @@ const STEP_KIND_COLORS: Record<number, string> = {
   5: "border-rose-400",
   6: "border-emerald-400",
   7: "border-indigo-400",
-  8: "border-amber-400",
+  8: "border-cyan-400",
+  9: "border-amber-400",
 };
 
 const STEP_RUN_STATUS_COLORS: Record<number, string> = {
@@ -109,7 +112,9 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
   });
 
   // Build the canvas from the published version's steps, overlaying the
-  // step-run status on each node.
+  // step-run status on each node. Mirrors the editor's stepsToCanvas so
+  // loop-back edges, source/target handles, and per-kind accent colors
+  // are preserved on the run view.
   const { nodes, edges } = useMemo(() => {
     const stepsJson = wfData?.latestVersion?.steps ?? "[]";
     let steps: {
@@ -129,11 +134,66 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
     }
     const kindStrToNum: Record<string, number> = {
       task: 1, decision: 2, approval: 3, parallel: 4, recover: 5,
-      work_item: 6, project: 7, policy: 8,
+      work_item: 6, project: 7, loop_decision: 8, policy: 9,
     };
+    // Per-kind accent tokens. KIND_ACCENT maps the proto kind to a
+    // tailwind color name; ACCENT_STROKE maps that name to the
+    // tailwind class applied to the SVG edge. We use BOTH the
+    // className (so the tailwind stroke-*-400 utility draws the
+    // line — required when var(--kind-*) is undefined in the SVG
+    // context) AND the CSS-var style (so dark/light theme tokens
+    // can override without retouching every edge).
+    const kindAccent: Record<number, string> = {
+      1: KIND_ACCENT[1] ?? "sky",
+      2: KIND_ACCENT[2] ?? "amber",
+      3: KIND_ACCENT[3] ?? "yellow",
+      4: KIND_ACCENT[4] ?? "violet",
+      5: KIND_ACCENT[5] ?? "rose",
+      6: KIND_ACCENT[6] ?? "emerald",
+      7: KIND_ACCENT[7] ?? "indigo",
+      8: KIND_ACCENT[8] ?? "cyan",
+      9: KIND_ACCENT[9] ?? "amber",
+    };
+    // Map each step_id → active step run (ignoring superseded rows so
+    // a loop_decision re-ask that replaced the prior run doesn't
+    // shadow the new run's status).
     const statusByStep = new Map<string, number>();
-    for (const sr of stepRuns ?? []) {
-      statusByStep.set(sr.stepId, sr.status);
+    const loopOutcomeByStep = new Map<string, string>();
+    const sortByIteration = (a: { iteration: number }, b: { iteration: number }) =>
+      b.iteration - a.iteration;
+    type StepRunT = NonNullable<typeof stepRuns>[number];
+    const latestByStep = new Map<string, StepRunT>();
+    const sortedStepRuns = [...(stepRuns ?? [])].sort(sortByIteration);
+    for (const sr of sortedStepRuns) {
+      if (sr.supersededBy) continue;
+      latestByStep.set(sr.stepId, sr);
+    }
+    for (const [stepID, sr] of latestByStep) {
+      statusByStep.set(stepID, sr.status);
+      // For loop_decision steps, surface the recorded outcome so the
+      // operator can see at a glance whether the decision looped
+      // back, re-asked, or accepted (recover-pending surfaces as
+      // "recover pending" since the step's result holds a status
+      // hint).
+      if (sr.stepKind === 8) {
+        try {
+          const parsed = sr.result ? JSON.parse(sr.result) : null;
+          if (parsed && typeof parsed === "object") {
+            if (parsed.loop === "re-ask") loopOutcomeByStep.set(stepID, "re-ask reviewer");
+            else if (parsed.loop) loopOutcomeByStep.set(stepID, `loop → ${String(parsed.loop).slice(0, 16)}`);
+            else if (parsed.decision) loopOutcomeByStep.set(stepID, `decision: ${String(parsed.decision)}`);
+            else if (sr.status === 4) loopOutcomeByStep.set(stepID, "decision made");
+            else if (sr.status === 3) loopOutcomeByStep.set(stepID, "evaluating…");
+            else if (sr.status === 5) loopOutcomeByStep.set(stepID, "max iterations reached");
+          } else if (sr.status === 4) {
+            loopOutcomeByStep.set(stepID, "decision made");
+          } else if (sr.status === 5) {
+            loopOutcomeByStep.set(stepID, "max iterations reached");
+          }
+        } catch {
+          /* ignore malformed result */
+        }
+      }
     }
     const nodes: Node[] = steps.map((s) => {
       const runStatus = statusByStep.get(s.id) ?? 1; // pending default
@@ -146,6 +206,8 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
           name: s.name,
           ref: s.ref,
           runStatus,
+          stepId: s.id,
+          loopOutcome: loopOutcomeByStep.get(s.id),
         },
       };
     });
@@ -155,12 +217,16 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
       if (s.edge_handles) Object.assign(edgeHandles, s.edge_handles);
     }
     const nodeIds = new Set(nodes.map((n) => n.id));
+    const kindById = new Map<string, number>();
+    for (const n of nodes) kindById.set(n.id, (n.data as { kind: number }).kind);
     const seen = new Set<string>();
     for (const s of steps) {
       for (const dep of s.depends_on ?? []) {
         const edgeKey = `e-${dep}-${s.id}`;
         seen.add(edgeKey);
         const handles = edgeHandles[edgeKey];
+        const srcKind = kindById.get(dep) ?? 1;
+        const accent = kindAccent[srcKind] ?? "sky";
         edges.push({
           id: edgeKey,
           source: dep,
@@ -169,10 +235,19 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
           targetHandle: handles?.targetHandle,
           markerEnd: { type: MarkerType.ArrowClosed },
           animated: statusByStep.get(s.id) === 3,
+          // className is the visible stroke (Tailwind stroke-*-400
+          // utility). The style.stroke is the same color via a CSS
+          // variable so dark/light themes can override it. Without
+          // the className, an undefined --kind-${accent} CSS var
+          // makes the SVG stroke "none" and the edge is invisible.
+          className: ACCENT_STROKE[accent] ?? "",
+          style: { stroke: `var(--kind-${accent})` },
         });
       }
     }
-    // Restore loop-back edges from edge_handles not covered by depends_on.
+    // Restore loop-back edges from edge_handles not covered by depends_on
+    // (e.g. loop_decision source-loop / source-success handles). Match
+    // by node-id prefix against known node IDs (mirrors canvas.ts:120-145).
     for (const [edgeKey, handles] of Object.entries(edgeHandles)) {
       if (seen.has(edgeKey)) continue;
       for (const srcId of nodeIds) {
@@ -180,6 +255,8 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
         if (edgeKey.startsWith(prefix)) {
           const tgtId = edgeKey.slice(prefix.length);
           if (nodeIds.has(tgtId)) {
+            const srcKind = kindById.get(srcId) ?? 1;
+            const accent = kindAccent[srcKind] ?? "sky";
             edges.push({
               id: edgeKey,
               source: srcId,
@@ -187,7 +264,12 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
               sourceHandle: handles?.sourceHandle,
               targetHandle: handles?.targetHandle,
               markerEnd: { type: MarkerType.ArrowClosed },
-              animated: false,
+              // Loop-back edges animate when the loop decision is
+              // actively routing (status 3 = running) so the user
+              // can see the cycle in motion.
+              animated: statusByStep.get(srcId) === 3,
+              className: ACCENT_STROKE[accent] ?? "",
+              style: { stroke: `var(--kind-${accent})` },
             });
           }
           break;
@@ -436,7 +518,11 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
                 }
               >
                 <ExecStatusBadge status={ex.status} />
-                <span className="font-medium min-w-0 truncate">{ex.workflowName || ex.workerId}</span>
+                <span className="font-medium min-w-0 truncate">
+                  {ex.workflowName
+                    ? `${ex.workflowName} — ${workerLabel(ex.workerId)}${ex.iteration > 0 ? ` (Loop #${ex.iteration})` : ""}`
+                    : `${workerLabel(ex.workerId)}${ex.iteration > 0 ? ` (loop #${ex.iteration})` : ""}`}
+                </span>
                 <span className="font-mono text-xs text-muted-foreground shrink-0">{ex.id.slice(0, 12)}…</span>
                 <LiveDuration startedAt={ex.startedAt} endedAt={ex.endedAt} />
                 {ex.startedAt && (
@@ -454,28 +540,106 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
 }
 
 // --- Run step node (overlays step-run status on the canvas) ---
-function RunStepNode({ data }: { data: { kind: number; name: string; ref: string; runStatus: number } }) {
+function RunStepNode({
+  data,
+}: {
+  data: {
+    kind: number;
+    name: string;
+    ref: string;
+    runStatus: number;
+    stepId?: string;
+    loopOutcome?: string;
+    loopBranch?: string;
+  };
+}) {
   const statusColor = STEP_RUN_STATUS_COLORS[data.runStatus] ?? "bg-gray-200";
-  const statusLabel =
-    STEP_RUN_STATUS_LABELS[data.runStatus] ?? "pending";
+  const statusLabel = STEP_RUN_STATUS_LABELS[data.runStatus] ?? "pending";
+  const isLoopDecision = data.kind === 8;
+  // For loop_decision steps, surface the outcome the reconciler
+  // recorded on the step run's result JSON (e.g. "loop: PR Reviewer"
+  // or "re-ask"). This is the visual the operator asked for: a
+  // clear indicator that the decision fired and where the run went.
+  const loopTag = (() => {
+    if (!isLoopDecision) return null;
+    if (data.loopOutcome) return data.loopOutcome;
+    if (data.runStatus === 4) return "decision made";
+    if (data.runStatus === 3) return "evaluating…";
+    return null;
+  })();
   return (
     <div
       className={cn(
-        "min-w-[140px] rounded-md border px-3 py-2 text-center shadow-sm",
+        "relative min-w-[160px] rounded-md border px-3 py-2 text-center shadow-sm",
         STEP_KIND_COLORS[data.kind] ?? "border-gray-300",
       )}
     >
-      <Handle type="target" id="target-left" position={Position.Left} className="!h-2.5 !w-2.5 !border-2 !border-background" />
-      <Handle type="target" id="target-top" position={Position.Top} className="!h-2 !w-2 !border-2 !border-background" />
+      <Handle
+        type="target"
+        id="target-left"
+        position={Position.Left}
+        className="!h-2.5 !w-2.5 !border-2 !border-background !bg-emerald-400"
+      />
+      <Handle
+        type="target"
+        id="target-top"
+        position={Position.Top}
+        className="!h-2 !w-2 !border-2 !border-background !bg-emerald-400"
+      />
       <div className="text-[10px] font-medium uppercase text-muted-foreground">
         {STEP_KIND_LABELS[data.kind] ?? "step"}
       </div>
-      <div className="truncate text-sm font-semibold">{data.name}</div>
+      <div className="truncate text-sm font-semibold" title={data.name}>
+        {data.name}
+      </div>
       <div className={cn("mt-1 inline-block rounded-full px-2 py-0.5 text-[10px] font-medium", statusColor)}>
         {statusLabel}
       </div>
-      <Handle type="source" id="source-right" position={Position.Right} className="!h-2.5 !w-2.5 !border-2 !border-background" />
-      <Handle type="source" id="source-bottom" position={Position.Bottom} className="!h-2 !w-2 !border-2 !border-background" />
+      {loopTag && (
+        <div
+          className="mt-1 inline-block max-w-full truncate rounded bg-cyan-100 px-1.5 py-0.5 text-[10px] font-medium text-cyan-900 dark:bg-cyan-950/60 dark:text-cyan-100"
+          title={loopTag}
+        >
+          {loopTag}
+        </div>
+      )}
+      {isLoopDecision ? (
+        <>
+          <Handle
+            type="source"
+            id="source-success"
+            position={Position.Bottom}
+            className="!h-2.5 !w-2.5 !border-2 !border-background !bg-emerald-500"
+          />
+          <span className="pointer-events-none absolute -bottom-4 left-1/2 -translate-x-1/2 text-[9px] font-medium text-emerald-600 dark:text-emerald-400">
+            success
+          </span>
+          <Handle
+            type="source"
+            id="source-loop"
+            position={Position.Right}
+            className="!h-2.5 !w-2.5 !border-2 !border-background !bg-rose-500"
+          />
+          <span className="pointer-events-none absolute -right-9 top-1/2 -translate-y-1/2 text-[9px] font-medium text-rose-600 dark:text-rose-400">
+            loop
+          </span>
+        </>
+      ) : (
+        <>
+          <Handle
+            type="source"
+            id="source-right"
+            position={Position.Right}
+            className="!h-2.5 !w-2.5 !border-2 !border-background !bg-amber-500"
+          />
+          <Handle
+            type="source"
+            id="source-bottom"
+            position={Position.Bottom}
+            className="!h-2 !w-2 !border-2 !border-background !bg-amber-500"
+          />
+        </>
+      )}
     </div>
   );
 }
@@ -543,6 +707,18 @@ function EventDot({ eventType }: { eventType: string }) {
   if (eventType.includes("blocked")) return <span className="text-sm text-red-700">⛔</span>;
   if (eventType.includes("approval")) return <span className="text-sm text-amber-600">⚠</span>;
   return <span className="text-sm text-muted-foreground">•</span>;
+}
+
+function workerLabel(id: string): string {
+  const prefix = "w_se_";
+  if (id.startsWith(prefix)) {
+    const rest = id.slice(prefix.length);
+    return rest
+      .split("_")
+      .map((w) => (w.length > 0 ? w[0].toUpperCase() + w.slice(1) : w))
+      .join(" ");
+  }
+  return id;
 }
 
 function formatPayload(data: Uint8Array): string {
