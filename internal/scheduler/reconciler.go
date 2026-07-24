@@ -996,14 +996,34 @@ func extractStructuredResult(output string, results map[string]any) {
 		trimmed = strings.TrimSpace(trimmed)
 		if strings.HasPrefix(trimmed, "_decision: ") {
 			val := strings.TrimSpace(strings.TrimPrefix(trimmed, "_decision: "))
-			if val == "success" || val == "failure" {
-				results["_decision"] = val
+			// The worker may put _issues on the same line:
+			//   "_decision: failure _issues: something"
+			// Split on whitespace and check the first token.
+			parts := strings.Fields(val)
+			if len(parts) > 0 {
+				first := parts[0]
+				if first == "success" || first == "failure" {
+					results["_decision"] = first
+					// If _issues is on the same line after _decision,
+					// extract the rest as the issues text.
+					rest := strings.TrimSpace(strings.TrimPrefix(val, first))
+					if strings.HasPrefix(rest, "_issues: ") {
+						issues := strings.TrimSpace(strings.TrimPrefix(rest, "_issues: "))
+						if issues != "" {
+							results["_issues"] = issues
+						}
+					}
+				}
 			}
 		}
 		if strings.HasPrefix(trimmed, "_issues: ") {
 			val := strings.TrimSpace(strings.TrimPrefix(trimmed, "_issues: "))
 			if val != "" {
-				results["_issues"] = val
+				// Only set if _decision wasn't already extracted
+				// from the same line above (avoids duplicate).
+				if _, ok := results["_issues"]; !ok {
+					results["_issues"] = val
+				}
 			}
 		}
 	}
