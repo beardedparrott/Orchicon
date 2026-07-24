@@ -11,23 +11,10 @@ governance, while pluggable runtimes execute the work.
 
 ## Documentation
 
-All architecture and design documents live in [`docs/`](./docs):
-
-| # | Document | Concern |
-|---|---|---|
-| 00 | [Architecture Design Document](./docs/00_Architecture_Design_Document.md) | Original design brief — vision, principles, core concepts |
-| 01 | [Architecture Vision](./docs/01_Architecture_Vision.md) | Tech direction, system topology, design principles |
-| 02 | [Domain Model](./docs/02_Domain_Model.md) | Projects, Workers, Tasks, Workflows, Policies, Recovery |
-| 03 | [Scheduler & Runtime Design](./docs/03_Scheduler_and_Runtime_Design.md) | Reconciler architecture, dispatch flow, health monitoring |
-| 04 | [Runtime Adapter SDK](./docs/04_Runtime_Adapter_SDK.md) | gRPC adapter contract, OpenCode first |
-| 05 | [Worker Specification](./docs/05_Worker_Specification.md) | Worker entity, permissions, budgets, versioning |
-| 06 | [Recovery Workflow Engine](./docs/06_Recovery_Workflow_Engine.md) | Triggers, default workflow, escalation, continuation plans |
-| 07 | [API Specification](./docs/07_API_Specification.md) | REST/gRPC/WebSocket via Protobuf + Connect |
-| 08 | [Event Bus & Telemetry Model](./docs/08_Event_Bus_and_Telemetry_Model.md) | NATS JetStream, OTel, SigNoz/ClickHouse |
-| 09 | [Database Schema](./docs/09_Database_Schema.md) | PostgreSQL, outbox, RLS, Atlas migrations |
-| 10 | [Frontend Architecture](./docs/10_Frontend_Architecture.md) | React/Vite, Connect-ES, visual workflow editor |
-
-The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Architecture_Design_Document.md)
+The comprehensive project documentation lives in
+[`DOCUMENTATION.md`](./DOCUMENTATION.md) at the project root. It
+covers architecture, project structure, installation, development,
+deployment, troubleshooting, and every subsystem.
 
 ## Technology Stack
 
@@ -173,12 +160,13 @@ clients:
 make gen          # buf generate → api/gen/go + frontend/src/api/gen
 ```
 
-Generated code is committed (docs/10 §3.1).
+Generated code is committed (see DOCUMENTATION.md §Code Generation).
 
 ### Layout
 
 | Path | Concern |
-|---|---|
+|---|---|---|
+| `DOCUMENTATION.md` | Comprehensive project documentation |
 | `cmd/orchicon/` | Control-plane binary entry point + `dev` subcommand |
 | `internal/` | api, auth, config, db, domain, eventbus, outbox, reconciler, server, telemetry, migrate, middleware, rbac, tenant, blobstore, webhook, version |
 | `assets.go` | go:embed directives for compose, migrations, frontend |
@@ -187,7 +175,8 @@ Generated code is committed (docs/10 §3.1).
 | `db/` | Atlas declarative schema + versioned migrations |
 | `deploy/compose/` | Local dev Docker Compose stack |
 | `frontend/` | Vite + React + Connect-ES + TanStack Router + shadcn/ui |
-| `scripts/` | CI gates (RLS check) |
+| `site/` | Static landing page (`orchicon.dev`) |
+| `scripts/` | Installers, CI gates, dev controller |
 
 ### CI gate
 
@@ -195,7 +184,7 @@ Generated code is committed (docs/10 §3.1).
 make ci          # buf lint + codegen + go vet/test + RLS gate
 ```
 
-The RLS gate (docs/09 §8.5) fails if any `tenant_id`-bearing table
+The RLS gate (see DOCUMENTATION.md §Key Architecture Invariants) fails if any `tenant_id`-bearing table
 lacks the `tenant_isolation` policy.
 
 ## License

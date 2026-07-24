@@ -7,7 +7,7 @@
 
 - **Repo**: https://github.com/beardedparrott/Orchicon.git
 - **Language**: Go (control plane) + TypeScript (frontend)
-- **Design docs**: `docs/` — read the relevant doc before touching a subsystem
+- **Design docs**: `DOCUMENTATION.md` — single comprehensive documentation file
 
 ## WARNING
 
@@ -124,7 +124,7 @@ Every piece of functionality built in this repo must follow these security stand
 
 - **No secrets in code or commits.** DSNs, API keys, tokens, and passwords come from the environment (`internal/config`) or a secret store — never hardcoded, never committed. The `.env.example` file documents the variables without containing real values.
 - **No secrets in logs.** Never log DSNs, tokens, passwords, or full request payloads that may carry credentials. The slog setup in `cmd/orchicon/main.go` logs structured fields; only log non-sensitive identifiers (tenant id, project id, trace id).
-- **Hashed at rest.** API keys are hashed before storage (never plaintext). Passwords are never stored by the control plane (OIDC handles authentication). See docs/07 §6.1.
+- **Hashed at rest.** API keys are hashed before storage (never plaintext). Passwords are never stored by the control plane (OIDC handles authentication). See DOCUMENTATION.md §Authentication.
 - **The dev stack credentials** in `deploy/compose/docker-compose.yml` (e.g. `orchicon:orchicon`) are local-dev-only placeholders. They must never appear in a production deployment config.
 
 ### Input validation & sanitization
@@ -137,12 +137,12 @@ Every piece of functionality built in this repo must follow these security stand
 
 ### Tenant isolation
 
-- **Every request is tenant-scoped.** The middleware resolves the tenant and the data-access layer sets `app.tenant_id` per transaction. RLS is the backstop — even a buggy query cannot leak cross-tenant data (docs/09 §8.5).
+- **Every request is tenant-scoped.** The middleware resolves the tenant and the data-access layer sets `app.tenant_id` per transaction. RLS is the backstop — even a buggy query cannot leak cross-tenant data.
 - **No cross-tenant queries.** The data-access layer injects `tenant_id` into every `WHERE` and `INSERT`. A query without a tenant scope is a bug, not an optimization.
 
 ### Frontend
 
-- **The browser never stores long-lived secrets.** Access tokens live in memory; refresh tokens in HttpOnly secure cookies (docs/10 §7). API keys are for headless/CI clients only.
+- **The browser never stores long-lived secrets.** Access tokens live in memory; refresh tokens in HttpOnly secure cookies. API keys are for headless/CI clients only.
 - **Client-side validation is UX, not security.** Zod schemas in forms improve the user experience but every rule is re-validated server-side. Never trust client-side validation as the security gate.
 - **No business logic in the frontend** (invariant #1). The UI does not make policy, scheduling, or recovery decisions.
 
@@ -170,7 +170,7 @@ Before marking a phase or task as complete, verify the following at minimum (ada
 4. **Control plane boots and serves** — `make build && make run`, then `curl http://localhost:8080/healthz` returns `{"status":"ok"}`. Time this command — if the telemetry stack is starting, the boot should still be <2s (not 20s+). Check the control plane logs for `"otel pipeline initialized"` — if it appears before the 2s mark, the non-blocking OTel dial is working.
 5. **Frontend renders** — `make fe-dev` (or `npx vite`), then `curl http://localhost:5173/` returns HTTP 200 with the app shell.
 6. **Runtime calls are real, not simulated** — end-to-end verification that exercises adapter dispatch MUST call the real `opencode` runtime with a **free model** (e.g. `opencode/deepseek-v4-flash-free`), never the simulation-mode fallback. Simulation mode is a development aid for the offline case only; it must not be used to "verify" dispatch, recovery, or any flow that depends on adapter telemetry. If `opencode` is absent from PATH, fix the environment (install it) — do not fall back to simulation and claim the slice works. Seed workers / executions used for verification must pin a free model in `model_ref` so verification is reproducible at no cost.
-   - **Stall + wall-clock guardrails** (docs/06 §2 triggers): the opencode adapter bridge runs a per-execution progress monitor that detects stuck-looping and triggers recovery (opt-out, idempotent). Three stall signals, configurable via env: `ORCHICON_STALL_NO_PROGRESS_WINDOW` (default 120s — no step_finish/token progress), `ORCHICON_STALL_NO_FILE_DIFF_WINDOW` (default 180s — no file modifications), `ORCHICON_STALL_REPETITION_COUNT` (default 5 — same tool_call signature repeated within `ORCHICON_STALL_REPETITION_WINDOW`, default 300s). The worker's `budget_overrides.wall_clock_seconds` (default 3600) is the hard per-execution timeout backstop (context deadline → subprocess kill → recovery). Verification that exercises stall/timeout paths must use tight env windows + a free model.
+   - **Stall + wall-clock guardrails**: the opencode adapter bridge runs a per-execution progress monitor that detects stuck-looping and triggers recovery (opt-out, idempotent). Three stall signals, configurable via env: `ORCHICON_STALL_NO_PROGRESS_WINDOW` (default 120s — no step_finish/token progress), `ORCHICON_STALL_NO_FILE_DIFF_WINDOW` (default 180s — no file modifications), `ORCHICON_STALL_REPETITION_COUNT` (default 5 — same tool_call signature repeated within `ORCHICON_STALL_REPETITION_WINDOW`, default 300s). The worker's `budget_overrides.wall_clock_seconds` (default 3600) is the hard per-execution timeout backstop (context deadline → subprocess kill → recovery). Verification that exercises stall/timeout paths must use tight env windows + a free model.
 
 ### Docker / infrastructure changes
 
@@ -225,21 +225,14 @@ When a phase changes what ships in the binary — a new subcommand, a new depend
 
 Verify by running the installer against a draft release at minimum (`bash scripts/install.sh --version vX.Y.Z --dry-run` on each target platform, or `--uninstall` to test cleanup).
 
-## Design Doc Index
+## Documentation
 
-| Doc | Subsystem |
-|---|---|
-| `docs/01_Architecture_Vision.md` | Tech direction, topology, principles |
-| `docs/02_Domain_Model.md` | Entities, relationships, lifecycles |
-| `docs/03_Scheduler_and_Runtime_Design.md` | Reconcilers, dispatch, health |
-| `docs/04_Runtime_Adapter_SDK.md` | gRPC adapter contract, OpenCode |
-| `docs/05_Worker_Specification.md` | Worker entity, permissions, budgets |
-| `docs/06_Recovery_Workflow_Engine.md` | Triggers, recovery workflow, escalation |
-| `docs/07_API_Specification.md` | Services, streaming, auth, webhooks |
-| `docs/08_Event_Bus_and_Telemetry_Model.md` | NATS, OTel, SigNoz, events |
-| `docs/09_Database_Schema.md` | Tables, outbox, RLS, migrations |
-| `docs/10_Frontend_Architecture.md` | React, Connect-ES, workflow editor |
-| `docs/11_Workflow_Templates_and_Binding.md` | Repeatable workflow templates, work-item binding, loop decision step |
+The single comprehensive documentation file is
+[`DOCUMENTATION.md`](./DOCUMENTATION.md) at the project root. It
+replaces the old `docs/` directory and covers all subsystems:
+architecture, project structure, installation, development,
+deployment, troubleshooting, and more. Read it before touching any
+subsystem you are unfamiliar with.
 
 ## E2E Testing & Cleanup
 
@@ -274,7 +267,7 @@ Every E2E test creates real data (projects, workers, work items, workflow runs) 
      AND NOT EXISTS (SELECT 1 FROM work_items wi WHERE wi.id = wr.work_item_id);
    ```
 
-5. **Verify migration idempotency**: Every `ALTER TABLE ADD COLUMN` must use `ADD COLUMN IF NOT EXISTS`. Without it, re-running migrations on an existing database errors with "column already exists". This is mandatory for all new migrations (docs/11 §9).
+5. **Verify migration idempotency**: Every `ALTER TABLE ADD COLUMN` must use `ADD COLUMN IF NOT EXISTS`. Without it, re-running migrations on an existing database errors with "column already exists". This is mandatory for all new migrations (see DOCUMENTATION.md §Database Migrations).
 
 6. **Delete test resources via the API**: After creating test workers, workflows, etc. during E2E, delete them through the UI or API. Do not leave published workers, workflows, or work items behind.
 
