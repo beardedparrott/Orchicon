@@ -484,8 +484,8 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
                                 </span>
                               )}
                               {r._summary && (
-                                <span className="truncate max-w-[300px]" title={r._summary}>
-                                  {r._summary.slice(0, 80)}{r._summary.length > 80 ? "…" : ""}
+                                <span className="truncate max-w-[400px]" title={r._summary}>
+                                  {r._summary.split("\n")[0].slice(0, 120)}{r._summary.length > 120 ? "…" : ""}
                                 </span>
                               )}
                               {Array.isArray(r._touched_files) && r._touched_files.length > 0 && (
