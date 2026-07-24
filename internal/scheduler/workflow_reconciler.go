@@ -2005,9 +2005,13 @@ func (r *WorkflowReconciler) reaskDecisionStep(ctx context.Context, tx pgx.Tx, t
 		wi, err := db.GetWorkItem(ctx, tx, tenantID, upResult.WorkItemID)
 		if err == nil {
 			reaskMsg := "\n\n# Re-ask\n\n**RE-ASK ATTEMPT " + fmt.Sprint(nextIter) + "**\n" +
-				"You MUST include `_decision` in your response with a value of `success` or `failure`.\n" +
-				"- `_decision: success` — the work is complete and correct\n" +
-				"- `_decision: failure` — there are issues that need fixing (include `_issues` with details)"
+				"Your response must end with:\n" +
+				"```\nORCHICON WORKER SUMMARY: success — <summary>\n```\n" +
+				"or\n" +
+				"```\nORCHICON WORKER SUMMARY: failure — <summary>\n```\n" +
+				"The first word (`success` or `failure`) routes the workflow. " +
+				"If the work is complete and correct, use `success`. " +
+				"If there are issues that need fixing, use `failure` and include `_issues` with details."
 
 			// Preserve the existing composite (worker identity, project,
 			// task, ancestors, workflow context, recovery, instructions)
