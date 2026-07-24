@@ -874,6 +874,82 @@ export class ListWorkerVersionsResponse extends Message<ListWorkerVersionsRespon
 }
 
 /**
+ * @generated from message orchicon.api.v1.GetWorkerVersionRequest
+ */
+export class GetWorkerVersionRequest extends Message<GetWorkerVersionRequest> {
+  /**
+   * version id
+   *
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  constructor(data?: PartialMessage<GetWorkerVersionRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GetWorkerVersionRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetWorkerVersionRequest {
+    return new GetWorkerVersionRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetWorkerVersionRequest {
+    return new GetWorkerVersionRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetWorkerVersionRequest {
+    return new GetWorkerVersionRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetWorkerVersionRequest | PlainMessage<GetWorkerVersionRequest> | undefined, b: GetWorkerVersionRequest | PlainMessage<GetWorkerVersionRequest> | undefined): boolean {
+    return proto3.util.equals(GetWorkerVersionRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.GetWorkerVersionResponse
+ */
+export class GetWorkerVersionResponse extends Message<GetWorkerVersionResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.WorkerVersion version = 1;
+   */
+  version?: WorkerVersion;
+
+  constructor(data?: PartialMessage<GetWorkerVersionResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GetWorkerVersionResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "version", kind: "message", T: WorkerVersion },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetWorkerVersionResponse {
+    return new GetWorkerVersionResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetWorkerVersionResponse {
+    return new GetWorkerVersionResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetWorkerVersionResponse {
+    return new GetWorkerVersionResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetWorkerVersionResponse | PlainMessage<GetWorkerVersionResponse> | undefined, b: GetWorkerVersionResponse | PlainMessage<GetWorkerVersionResponse> | undefined): boolean {
+    return proto3.util.equals(GetWorkerVersionResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.UpdateWorkerVersionRequest
  */
 export class UpdateWorkerVersionRequest extends Message<UpdateWorkerVersionRequest> {

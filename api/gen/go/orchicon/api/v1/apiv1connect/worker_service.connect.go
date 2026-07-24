@@ -67,6 +67,9 @@ const (
 	// WorkerServiceListWorkerVersionsProcedure is the fully-qualified name of the WorkerService's
 	// ListWorkerVersions RPC.
 	WorkerServiceListWorkerVersionsProcedure = "/orchicon.api.v1.WorkerService/ListWorkerVersions"
+	// WorkerServiceGetWorkerVersionProcedure is the fully-qualified name of the WorkerService's
+	// GetWorkerVersion RPC.
+	WorkerServiceGetWorkerVersionProcedure = "/orchicon.api.v1.WorkerService/GetWorkerVersion"
 	// WorkerServiceUpdateWorkerVersionProcedure is the fully-qualified name of the WorkerService's
 	// UpdateWorkerVersion RPC.
 	WorkerServiceUpdateWorkerVersionProcedure = "/orchicon.api.v1.WorkerService/UpdateWorkerVersion"
@@ -111,6 +114,8 @@ type WorkerServiceClient interface {
 	ListWorkers(context.Context, *connect.Request[v1.ListWorkersRequest]) (*connect.Response[v1.ListWorkersResponse], error)
 	// ListWorkerVersions returns all versions of a Worker, newest first.
 	ListWorkerVersions(context.Context, *connect.Request[v1.ListWorkerVersionsRequest]) (*connect.Response[v1.ListWorkerVersionsResponse], error)
+	// GetWorkerVersion returns a single version by its id.
+	GetWorkerVersion(context.Context, *connect.Request[v1.GetWorkerVersionRequest]) (*connect.Response[v1.GetWorkerVersionResponse], error)
 	// UpdateWorkerVersion updates the mutable fields of a draft WorkerVersion.
 	// Only draft versions can be updated; published versions are immutable.
 	UpdateWorkerVersion(context.Context, *connect.Request[v1.UpdateWorkerVersionRequest]) (*connect.Response[v1.UpdateWorkerVersionResponse], error)
@@ -193,6 +198,12 @@ func NewWorkerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(workerServiceMethods.ByName("ListWorkerVersions")),
 			connect.WithClientOptions(opts...),
 		),
+		getWorkerVersion: connect.NewClient[v1.GetWorkerVersionRequest, v1.GetWorkerVersionResponse](
+			httpClient,
+			baseURL+WorkerServiceGetWorkerVersionProcedure,
+			connect.WithSchema(workerServiceMethods.ByName("GetWorkerVersion")),
+			connect.WithClientOptions(opts...),
+		),
 		updateWorkerVersion: connect.NewClient[v1.UpdateWorkerVersionRequest, v1.UpdateWorkerVersionResponse](
 			httpClient,
 			baseURL+WorkerServiceUpdateWorkerVersionProcedure,
@@ -237,6 +248,7 @@ type workerServiceClient struct {
 	getWorker            *connect.Client[v1.GetWorkerRequest, v1.GetWorkerResponse]
 	listWorkers          *connect.Client[v1.ListWorkersRequest, v1.ListWorkersResponse]
 	listWorkerVersions   *connect.Client[v1.ListWorkerVersionsRequest, v1.ListWorkerVersionsResponse]
+	getWorkerVersion     *connect.Client[v1.GetWorkerVersionRequest, v1.GetWorkerVersionResponse]
 	updateWorkerVersion  *connect.Client[v1.UpdateWorkerVersionRequest, v1.UpdateWorkerVersionResponse]
 	createWorkerVersion  *connect.Client[v1.CreateWorkerVersionRequest, v1.CreateWorkerVersionResponse]
 	acquireEditLock      *connect.Client[v1.AcquireEditLockRequest, v1.AcquireEditLockResponse]
@@ -287,6 +299,11 @@ func (c *workerServiceClient) ListWorkers(ctx context.Context, req *connect.Requ
 // ListWorkerVersions calls orchicon.api.v1.WorkerService.ListWorkerVersions.
 func (c *workerServiceClient) ListWorkerVersions(ctx context.Context, req *connect.Request[v1.ListWorkerVersionsRequest]) (*connect.Response[v1.ListWorkerVersionsResponse], error) {
 	return c.listWorkerVersions.CallUnary(ctx, req)
+}
+
+// GetWorkerVersion calls orchicon.api.v1.WorkerService.GetWorkerVersion.
+func (c *workerServiceClient) GetWorkerVersion(ctx context.Context, req *connect.Request[v1.GetWorkerVersionRequest]) (*connect.Response[v1.GetWorkerVersionResponse], error) {
+	return c.getWorkerVersion.CallUnary(ctx, req)
 }
 
 // UpdateWorkerVersion calls orchicon.api.v1.WorkerService.UpdateWorkerVersion.
@@ -341,6 +358,8 @@ type WorkerServiceHandler interface {
 	ListWorkers(context.Context, *connect.Request[v1.ListWorkersRequest]) (*connect.Response[v1.ListWorkersResponse], error)
 	// ListWorkerVersions returns all versions of a Worker, newest first.
 	ListWorkerVersions(context.Context, *connect.Request[v1.ListWorkerVersionsRequest]) (*connect.Response[v1.ListWorkerVersionsResponse], error)
+	// GetWorkerVersion returns a single version by its id.
+	GetWorkerVersion(context.Context, *connect.Request[v1.GetWorkerVersionRequest]) (*connect.Response[v1.GetWorkerVersionResponse], error)
 	// UpdateWorkerVersion updates the mutable fields of a draft WorkerVersion.
 	// Only draft versions can be updated; published versions are immutable.
 	UpdateWorkerVersion(context.Context, *connect.Request[v1.UpdateWorkerVersionRequest]) (*connect.Response[v1.UpdateWorkerVersionResponse], error)
@@ -419,6 +438,12 @@ func NewWorkerServiceHandler(svc WorkerServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(workerServiceMethods.ByName("ListWorkerVersions")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workerServiceGetWorkerVersionHandler := connect.NewUnaryHandler(
+		WorkerServiceGetWorkerVersionProcedure,
+		svc.GetWorkerVersion,
+		connect.WithSchema(workerServiceMethods.ByName("GetWorkerVersion")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workerServiceUpdateWorkerVersionHandler := connect.NewUnaryHandler(
 		WorkerServiceUpdateWorkerVersionProcedure,
 		svc.UpdateWorkerVersion,
@@ -469,6 +494,8 @@ func NewWorkerServiceHandler(svc WorkerServiceHandler, opts ...connect.HandlerOp
 			workerServiceListWorkersHandler.ServeHTTP(w, r)
 		case WorkerServiceListWorkerVersionsProcedure:
 			workerServiceListWorkerVersionsHandler.ServeHTTP(w, r)
+		case WorkerServiceGetWorkerVersionProcedure:
+			workerServiceGetWorkerVersionHandler.ServeHTTP(w, r)
 		case WorkerServiceUpdateWorkerVersionProcedure:
 			workerServiceUpdateWorkerVersionHandler.ServeHTTP(w, r)
 		case WorkerServiceCreateWorkerVersionProcedure:
@@ -522,6 +549,10 @@ func (UnimplementedWorkerServiceHandler) ListWorkers(context.Context, *connect.R
 
 func (UnimplementedWorkerServiceHandler) ListWorkerVersions(context.Context, *connect.Request[v1.ListWorkerVersionsRequest]) (*connect.Response[v1.ListWorkerVersionsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkerService.ListWorkerVersions is not implemented"))
+}
+
+func (UnimplementedWorkerServiceHandler) GetWorkerVersion(context.Context, *connect.Request[v1.GetWorkerVersionRequest]) (*connect.Response[v1.GetWorkerVersionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkerService.GetWorkerVersion is not implemented"))
 }
 
 func (UnimplementedWorkerServiceHandler) UpdateWorkerVersion(context.Context, *connect.Request[v1.UpdateWorkerVersionRequest]) (*connect.Response[v1.UpdateWorkerVersionResponse], error) {

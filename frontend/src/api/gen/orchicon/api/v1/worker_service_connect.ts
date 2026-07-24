@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AcquireEditLockRequest, AcquireEditLockResponse, CreateWorkerRequest, CreateWorkerResponse, CreateWorkerVersionRequest, CreateWorkerVersionResponse, DeleteWorkerRequest, DeleteWorkerResponse, DeleteWorkerVersionRequest, DeleteWorkerVersionResponse, DeprecateWorkerRequest, DeprecateWorkerResponse, GetEditLockRequest, GetEditLockResponse, GetWorkerRequest, GetWorkerResponse, ListWorkersRequest, ListWorkersResponse, ListWorkerVersionsRequest, ListWorkerVersionsResponse, PublishWorkerVersionRequest, PublishWorkerVersionResponse, ReleaseEditLockRequest, ReleaseEditLockResponse, RetireWorkerRequest, RetireWorkerResponse, UpdateWorkerVersionRequest, UpdateWorkerVersionResponse } from "./worker_service_pb.js";
+import { AcquireEditLockRequest, AcquireEditLockResponse, CreateWorkerRequest, CreateWorkerResponse, CreateWorkerVersionRequest, CreateWorkerVersionResponse, DeleteWorkerRequest, DeleteWorkerResponse, DeleteWorkerVersionRequest, DeleteWorkerVersionResponse, DeprecateWorkerRequest, DeprecateWorkerResponse, GetEditLockRequest, GetEditLockResponse, GetWorkerRequest, GetWorkerResponse, GetWorkerVersionRequest, GetWorkerVersionResponse, ListWorkersRequest, ListWorkersResponse, ListWorkerVersionsRequest, ListWorkerVersionsResponse, PublishWorkerVersionRequest, PublishWorkerVersionResponse, ReleaseEditLockRequest, ReleaseEditLockResponse, RetireWorkerRequest, RetireWorkerResponse, UpdateWorkerVersionRequest, UpdateWorkerVersionResponse } from "./worker_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -124,6 +124,17 @@ export const WorkerService = {
       name: "ListWorkerVersions",
       I: ListWorkerVersionsRequest,
       O: ListWorkerVersionsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * GetWorkerVersion returns a single version by its id.
+     *
+     * @generated from rpc orchicon.api.v1.WorkerService.GetWorkerVersion
+     */
+    getWorkerVersion: {
+      name: "GetWorkerVersion",
+      I: GetWorkerVersionRequest,
+      O: GetWorkerVersionResponse,
       kind: MethodKind.Unary,
     },
     /**

@@ -84,6 +84,18 @@ export function useCreateWorker() {
   });
 }
 
+// useGetWorkerVersion fetches a single version by id.
+export function useGetWorkerVersion(versionId: string) {
+  return useQuery({
+    queryKey: [...workerKeys.all, "version", versionId] as const,
+    queryFn: async () => {
+      const res = await workerClient.getWorkerVersion({ id: versionId });
+      return res.version as WorkerVersion;
+    },
+    enabled: !!versionId,
+  });
+}
+
 // usePublishWorkerVersion publishes the draft version of a worker.
 export function usePublishWorkerVersion() {
   const qc = useQueryClient();

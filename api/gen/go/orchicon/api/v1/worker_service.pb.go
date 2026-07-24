@@ -1038,6 +1038,94 @@ func (x *ListWorkerVersionsResponse) GetVersions() []*WorkerVersion {
 	return nil
 }
 
+type GetWorkerVersionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"` // version id
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetWorkerVersionRequest) Reset() {
+	*x = GetWorkerVersionRequest{}
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetWorkerVersionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetWorkerVersionRequest) ProtoMessage() {}
+
+func (x *GetWorkerVersionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetWorkerVersionRequest.ProtoReflect.Descriptor instead.
+func (*GetWorkerVersionRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *GetWorkerVersionRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+type GetWorkerVersionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Version       *WorkerVersion         `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetWorkerVersionResponse) Reset() {
+	*x = GetWorkerVersionResponse{}
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetWorkerVersionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetWorkerVersionResponse) ProtoMessage() {}
+
+func (x *GetWorkerVersionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetWorkerVersionResponse.ProtoReflect.Descriptor instead.
+func (*GetWorkerVersionResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *GetWorkerVersionResponse) GetVersion() *WorkerVersion {
+	if x != nil {
+		return x.Version
+	}
+	return nil
+}
+
 type UpdateWorkerVersionRequest struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	WorkerId  string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
@@ -1061,7 +1149,7 @@ type UpdateWorkerVersionRequest struct {
 
 func (x *UpdateWorkerVersionRequest) Reset() {
 	*x = UpdateWorkerVersionRequest{}
-	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[18]
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1073,7 +1161,7 @@ func (x *UpdateWorkerVersionRequest) String() string {
 func (*UpdateWorkerVersionRequest) ProtoMessage() {}
 
 func (x *UpdateWorkerVersionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[18]
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1086,7 +1174,7 @@ func (x *UpdateWorkerVersionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateWorkerVersionRequest.ProtoReflect.Descriptor instead.
 func (*UpdateWorkerVersionRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{18}
+	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *UpdateWorkerVersionRequest) GetWorkerId() string {
@@ -1196,7 +1284,7 @@ type UpdateWorkerVersionResponse struct {
 
 func (x *UpdateWorkerVersionResponse) Reset() {
 	*x = UpdateWorkerVersionResponse{}
-	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[19]
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1208,7 +1296,7 @@ func (x *UpdateWorkerVersionResponse) String() string {
 func (*UpdateWorkerVersionResponse) ProtoMessage() {}
 
 func (x *UpdateWorkerVersionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[19]
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1221,7 +1309,7 @@ func (x *UpdateWorkerVersionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateWorkerVersionResponse.ProtoReflect.Descriptor instead.
 func (*UpdateWorkerVersionResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{19}
+	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *UpdateWorkerVersionResponse) GetVersion() *WorkerVersion {
@@ -1253,7 +1341,7 @@ type CreateWorkerVersionRequest struct {
 
 func (x *CreateWorkerVersionRequest) Reset() {
 	*x = CreateWorkerVersionRequest{}
-	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[20]
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1265,7 +1353,7 @@ func (x *CreateWorkerVersionRequest) String() string {
 func (*CreateWorkerVersionRequest) ProtoMessage() {}
 
 func (x *CreateWorkerVersionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[20]
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1278,7 +1366,7 @@ func (x *CreateWorkerVersionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateWorkerVersionRequest.ProtoReflect.Descriptor instead.
 func (*CreateWorkerVersionRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{20}
+	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *CreateWorkerVersionRequest) GetWorkerId() string {
@@ -1381,7 +1469,7 @@ type CreateWorkerVersionResponse struct {
 
 func (x *CreateWorkerVersionResponse) Reset() {
 	*x = CreateWorkerVersionResponse{}
-	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[21]
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1393,7 +1481,7 @@ func (x *CreateWorkerVersionResponse) String() string {
 func (*CreateWorkerVersionResponse) ProtoMessage() {}
 
 func (x *CreateWorkerVersionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[21]
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1406,7 +1494,7 @@ func (x *CreateWorkerVersionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateWorkerVersionResponse.ProtoReflect.Descriptor instead.
 func (*CreateWorkerVersionResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{21}
+	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *CreateWorkerVersionResponse) GetVersion() *WorkerVersion {
@@ -1426,7 +1514,7 @@ type AcquireEditLockRequest struct {
 
 func (x *AcquireEditLockRequest) Reset() {
 	*x = AcquireEditLockRequest{}
-	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[22]
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1438,7 +1526,7 @@ func (x *AcquireEditLockRequest) String() string {
 func (*AcquireEditLockRequest) ProtoMessage() {}
 
 func (x *AcquireEditLockRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[22]
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1451,7 +1539,7 @@ func (x *AcquireEditLockRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AcquireEditLockRequest.ProtoReflect.Descriptor instead.
 func (*AcquireEditLockRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{22}
+	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *AcquireEditLockRequest) GetWorkerId() string {
@@ -1478,7 +1566,7 @@ type AcquireEditLockResponse struct {
 
 func (x *AcquireEditLockResponse) Reset() {
 	*x = AcquireEditLockResponse{}
-	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[23]
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1490,7 +1578,7 @@ func (x *AcquireEditLockResponse) String() string {
 func (*AcquireEditLockResponse) ProtoMessage() {}
 
 func (x *AcquireEditLockResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[23]
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1503,7 +1591,7 @@ func (x *AcquireEditLockResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AcquireEditLockResponse.ProtoReflect.Descriptor instead.
 func (*AcquireEditLockResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{23}
+	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *AcquireEditLockResponse) GetLock() *EditLock {
@@ -1530,7 +1618,7 @@ type ReleaseEditLockRequest struct {
 
 func (x *ReleaseEditLockRequest) Reset() {
 	*x = ReleaseEditLockRequest{}
-	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[24]
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1542,7 +1630,7 @@ func (x *ReleaseEditLockRequest) String() string {
 func (*ReleaseEditLockRequest) ProtoMessage() {}
 
 func (x *ReleaseEditLockRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[24]
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1555,7 +1643,7 @@ func (x *ReleaseEditLockRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseEditLockRequest.ProtoReflect.Descriptor instead.
 func (*ReleaseEditLockRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{24}
+	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ReleaseEditLockRequest) GetWorkerId() string {
@@ -1580,7 +1668,7 @@ type ReleaseEditLockResponse struct {
 
 func (x *ReleaseEditLockResponse) Reset() {
 	*x = ReleaseEditLockResponse{}
-	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[25]
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1592,7 +1680,7 @@ func (x *ReleaseEditLockResponse) String() string {
 func (*ReleaseEditLockResponse) ProtoMessage() {}
 
 func (x *ReleaseEditLockResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[25]
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1605,7 +1693,7 @@ func (x *ReleaseEditLockResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseEditLockResponse.ProtoReflect.Descriptor instead.
 func (*ReleaseEditLockResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{25}
+	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{27}
 }
 
 type GetEditLockRequest struct {
@@ -1617,7 +1705,7 @@ type GetEditLockRequest struct {
 
 func (x *GetEditLockRequest) Reset() {
 	*x = GetEditLockRequest{}
-	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[26]
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1629,7 +1717,7 @@ func (x *GetEditLockRequest) String() string {
 func (*GetEditLockRequest) ProtoMessage() {}
 
 func (x *GetEditLockRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[26]
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1642,7 +1730,7 @@ func (x *GetEditLockRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetEditLockRequest.ProtoReflect.Descriptor instead.
 func (*GetEditLockRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{26}
+	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *GetEditLockRequest) GetWorkerId() string {
@@ -1661,7 +1749,7 @@ type GetEditLockResponse struct {
 
 func (x *GetEditLockResponse) Reset() {
 	*x = GetEditLockResponse{}
-	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[27]
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1673,7 +1761,7 @@ func (x *GetEditLockResponse) String() string {
 func (*GetEditLockResponse) ProtoMessage() {}
 
 func (x *GetEditLockResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[27]
+	mi := &file_orchicon_api_v1_worker_service_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1686,7 +1774,7 @@ func (x *GetEditLockResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetEditLockResponse.ProtoReflect.Descriptor instead.
 func (*GetEditLockResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{27}
+	return file_orchicon_api_v1_worker_service_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *GetEditLockResponse) GetLock() *EditLock {
@@ -1771,7 +1859,11 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\x19ListWorkerVersionsRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\"X\n" +
 	"\x1aListWorkerVersionsResponse\x12:\n" +
-	"\bversions\x18\x01 \x03(\v2\x1e.orchicon.api.v1.WorkerVersionR\bversions\"\xba\x06\n" +
+	"\bversions\x18\x01 \x03(\v2\x1e.orchicon.api.v1.WorkerVersionR\bversions\")\n" +
+	"\x17GetWorkerVersionRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"T\n" +
+	"\x18GetWorkerVersionResponse\x128\n" +
+	"\aversion\x18\x01 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"\xba\x06\n" +
 	"\x1aUpdateWorkerVersionRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x1d\n" +
 	"\n" +
@@ -1853,7 +1945,7 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\x12GetEditLockRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\"D\n" +
 	"\x13GetEditLockResponse\x12-\n" +
-	"\x04lock\x18\x01 \x01(\v2\x19.orchicon.api.v1.EditLockR\x04lock2\x9a\v\n" +
+	"\x04lock\x18\x01 \x01(\v2\x19.orchicon.api.v1.EditLockR\x04lock2\x83\f\n" +
 	"\rWorkerService\x12[\n" +
 	"\fCreateWorker\x12$.orchicon.api.v1.CreateWorkerRequest\x1a%.orchicon.api.v1.CreateWorkerResponse\x12s\n" +
 	"\x14PublishWorkerVersion\x12,.orchicon.api.v1.PublishWorkerVersionRequest\x1a-.orchicon.api.v1.PublishWorkerVersionResponse\x12d\n" +
@@ -1863,7 +1955,8 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\x13DeleteWorkerVersion\x12+.orchicon.api.v1.DeleteWorkerVersionRequest\x1a,.orchicon.api.v1.DeleteWorkerVersionResponse\x12R\n" +
 	"\tGetWorker\x12!.orchicon.api.v1.GetWorkerRequest\x1a\".orchicon.api.v1.GetWorkerResponse\x12X\n" +
 	"\vListWorkers\x12#.orchicon.api.v1.ListWorkersRequest\x1a$.orchicon.api.v1.ListWorkersResponse\x12m\n" +
-	"\x12ListWorkerVersions\x12*.orchicon.api.v1.ListWorkerVersionsRequest\x1a+.orchicon.api.v1.ListWorkerVersionsResponse\x12p\n" +
+	"\x12ListWorkerVersions\x12*.orchicon.api.v1.ListWorkerVersionsRequest\x1a+.orchicon.api.v1.ListWorkerVersionsResponse\x12g\n" +
+	"\x10GetWorkerVersion\x12(.orchicon.api.v1.GetWorkerVersionRequest\x1a).orchicon.api.v1.GetWorkerVersionResponse\x12p\n" +
 	"\x13UpdateWorkerVersion\x12+.orchicon.api.v1.UpdateWorkerVersionRequest\x1a,.orchicon.api.v1.UpdateWorkerVersionResponse\x12p\n" +
 	"\x13CreateWorkerVersion\x12+.orchicon.api.v1.CreateWorkerVersionRequest\x1a,.orchicon.api.v1.CreateWorkerVersionResponse\x12d\n" +
 	"\x0fAcquireEditLock\x12'.orchicon.api.v1.AcquireEditLockRequest\x1a(.orchicon.api.v1.AcquireEditLockResponse\x12d\n" +
@@ -1883,7 +1976,7 @@ func file_orchicon_api_v1_worker_service_proto_rawDescGZIP() []byte {
 	return file_orchicon_api_v1_worker_service_proto_rawDescData
 }
 
-var file_orchicon_api_v1_worker_service_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
+var file_orchicon_api_v1_worker_service_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
 var file_orchicon_api_v1_worker_service_proto_goTypes = []any{
 	(*CreateWorkerRequest)(nil),          // 0: orchicon.api.v1.CreateWorkerRequest
 	(*CreateWorkerResponse)(nil),         // 1: orchicon.api.v1.CreateWorkerResponse
@@ -1903,70 +1996,75 @@ var file_orchicon_api_v1_worker_service_proto_goTypes = []any{
 	(*ListWorkersResponse)(nil),          // 15: orchicon.api.v1.ListWorkersResponse
 	(*ListWorkerVersionsRequest)(nil),    // 16: orchicon.api.v1.ListWorkerVersionsRequest
 	(*ListWorkerVersionsResponse)(nil),   // 17: orchicon.api.v1.ListWorkerVersionsResponse
-	(*UpdateWorkerVersionRequest)(nil),   // 18: orchicon.api.v1.UpdateWorkerVersionRequest
-	(*UpdateWorkerVersionResponse)(nil),  // 19: orchicon.api.v1.UpdateWorkerVersionResponse
-	(*CreateWorkerVersionRequest)(nil),   // 20: orchicon.api.v1.CreateWorkerVersionRequest
-	(*CreateWorkerVersionResponse)(nil),  // 21: orchicon.api.v1.CreateWorkerVersionResponse
-	(*AcquireEditLockRequest)(nil),       // 22: orchicon.api.v1.AcquireEditLockRequest
-	(*AcquireEditLockResponse)(nil),      // 23: orchicon.api.v1.AcquireEditLockResponse
-	(*ReleaseEditLockRequest)(nil),       // 24: orchicon.api.v1.ReleaseEditLockRequest
-	(*ReleaseEditLockResponse)(nil),      // 25: orchicon.api.v1.ReleaseEditLockResponse
-	(*GetEditLockRequest)(nil),           // 26: orchicon.api.v1.GetEditLockRequest
-	(*GetEditLockResponse)(nil),          // 27: orchicon.api.v1.GetEditLockResponse
-	(*Worker)(nil),                       // 28: orchicon.api.v1.Worker
-	(*WorkerVersion)(nil),                // 29: orchicon.api.v1.WorkerVersion
-	(WorkerStatus)(0),                    // 30: orchicon.api.v1.WorkerStatus
-	(*EditLock)(nil),                     // 31: orchicon.api.v1.EditLock
+	(*GetWorkerVersionRequest)(nil),      // 18: orchicon.api.v1.GetWorkerVersionRequest
+	(*GetWorkerVersionResponse)(nil),     // 19: orchicon.api.v1.GetWorkerVersionResponse
+	(*UpdateWorkerVersionRequest)(nil),   // 20: orchicon.api.v1.UpdateWorkerVersionRequest
+	(*UpdateWorkerVersionResponse)(nil),  // 21: orchicon.api.v1.UpdateWorkerVersionResponse
+	(*CreateWorkerVersionRequest)(nil),   // 22: orchicon.api.v1.CreateWorkerVersionRequest
+	(*CreateWorkerVersionResponse)(nil),  // 23: orchicon.api.v1.CreateWorkerVersionResponse
+	(*AcquireEditLockRequest)(nil),       // 24: orchicon.api.v1.AcquireEditLockRequest
+	(*AcquireEditLockResponse)(nil),      // 25: orchicon.api.v1.AcquireEditLockResponse
+	(*ReleaseEditLockRequest)(nil),       // 26: orchicon.api.v1.ReleaseEditLockRequest
+	(*ReleaseEditLockResponse)(nil),      // 27: orchicon.api.v1.ReleaseEditLockResponse
+	(*GetEditLockRequest)(nil),           // 28: orchicon.api.v1.GetEditLockRequest
+	(*GetEditLockResponse)(nil),          // 29: orchicon.api.v1.GetEditLockResponse
+	(*Worker)(nil),                       // 30: orchicon.api.v1.Worker
+	(*WorkerVersion)(nil),                // 31: orchicon.api.v1.WorkerVersion
+	(WorkerStatus)(0),                    // 32: orchicon.api.v1.WorkerStatus
+	(*EditLock)(nil),                     // 33: orchicon.api.v1.EditLock
 }
 var file_orchicon_api_v1_worker_service_proto_depIdxs = []int32{
-	28, // 0: orchicon.api.v1.CreateWorkerResponse.worker:type_name -> orchicon.api.v1.Worker
-	29, // 1: orchicon.api.v1.CreateWorkerResponse.version:type_name -> orchicon.api.v1.WorkerVersion
-	28, // 2: orchicon.api.v1.PublishWorkerVersionResponse.worker:type_name -> orchicon.api.v1.Worker
-	29, // 3: orchicon.api.v1.PublishWorkerVersionResponse.version:type_name -> orchicon.api.v1.WorkerVersion
-	28, // 4: orchicon.api.v1.DeprecateWorkerResponse.worker:type_name -> orchicon.api.v1.Worker
-	28, // 5: orchicon.api.v1.RetireWorkerResponse.worker:type_name -> orchicon.api.v1.Worker
-	28, // 6: orchicon.api.v1.GetWorkerResponse.worker:type_name -> orchicon.api.v1.Worker
-	29, // 7: orchicon.api.v1.GetWorkerResponse.latest_version:type_name -> orchicon.api.v1.WorkerVersion
-	30, // 8: orchicon.api.v1.ListWorkersRequest.status:type_name -> orchicon.api.v1.WorkerStatus
-	28, // 9: orchicon.api.v1.ListWorkersResponse.workers:type_name -> orchicon.api.v1.Worker
-	29, // 10: orchicon.api.v1.ListWorkerVersionsResponse.versions:type_name -> orchicon.api.v1.WorkerVersion
-	29, // 11: orchicon.api.v1.UpdateWorkerVersionResponse.version:type_name -> orchicon.api.v1.WorkerVersion
-	29, // 12: orchicon.api.v1.CreateWorkerVersionResponse.version:type_name -> orchicon.api.v1.WorkerVersion
-	31, // 13: orchicon.api.v1.AcquireEditLockResponse.lock:type_name -> orchicon.api.v1.EditLock
-	31, // 14: orchicon.api.v1.GetEditLockResponse.lock:type_name -> orchicon.api.v1.EditLock
-	0,  // 15: orchicon.api.v1.WorkerService.CreateWorker:input_type -> orchicon.api.v1.CreateWorkerRequest
-	2,  // 16: orchicon.api.v1.WorkerService.PublishWorkerVersion:input_type -> orchicon.api.v1.PublishWorkerVersionRequest
-	4,  // 17: orchicon.api.v1.WorkerService.DeprecateWorker:input_type -> orchicon.api.v1.DeprecateWorkerRequest
-	6,  // 18: orchicon.api.v1.WorkerService.RetireWorker:input_type -> orchicon.api.v1.RetireWorkerRequest
-	8,  // 19: orchicon.api.v1.WorkerService.DeleteWorker:input_type -> orchicon.api.v1.DeleteWorkerRequest
-	10, // 20: orchicon.api.v1.WorkerService.DeleteWorkerVersion:input_type -> orchicon.api.v1.DeleteWorkerVersionRequest
-	12, // 21: orchicon.api.v1.WorkerService.GetWorker:input_type -> orchicon.api.v1.GetWorkerRequest
-	14, // 22: orchicon.api.v1.WorkerService.ListWorkers:input_type -> orchicon.api.v1.ListWorkersRequest
-	16, // 23: orchicon.api.v1.WorkerService.ListWorkerVersions:input_type -> orchicon.api.v1.ListWorkerVersionsRequest
-	18, // 24: orchicon.api.v1.WorkerService.UpdateWorkerVersion:input_type -> orchicon.api.v1.UpdateWorkerVersionRequest
-	20, // 25: orchicon.api.v1.WorkerService.CreateWorkerVersion:input_type -> orchicon.api.v1.CreateWorkerVersionRequest
-	22, // 26: orchicon.api.v1.WorkerService.AcquireEditLock:input_type -> orchicon.api.v1.AcquireEditLockRequest
-	24, // 27: orchicon.api.v1.WorkerService.ReleaseEditLock:input_type -> orchicon.api.v1.ReleaseEditLockRequest
-	26, // 28: orchicon.api.v1.WorkerService.GetEditLock:input_type -> orchicon.api.v1.GetEditLockRequest
-	1,  // 29: orchicon.api.v1.WorkerService.CreateWorker:output_type -> orchicon.api.v1.CreateWorkerResponse
-	3,  // 30: orchicon.api.v1.WorkerService.PublishWorkerVersion:output_type -> orchicon.api.v1.PublishWorkerVersionResponse
-	5,  // 31: orchicon.api.v1.WorkerService.DeprecateWorker:output_type -> orchicon.api.v1.DeprecateWorkerResponse
-	7,  // 32: orchicon.api.v1.WorkerService.RetireWorker:output_type -> orchicon.api.v1.RetireWorkerResponse
-	9,  // 33: orchicon.api.v1.WorkerService.DeleteWorker:output_type -> orchicon.api.v1.DeleteWorkerResponse
-	11, // 34: orchicon.api.v1.WorkerService.DeleteWorkerVersion:output_type -> orchicon.api.v1.DeleteWorkerVersionResponse
-	13, // 35: orchicon.api.v1.WorkerService.GetWorker:output_type -> orchicon.api.v1.GetWorkerResponse
-	15, // 36: orchicon.api.v1.WorkerService.ListWorkers:output_type -> orchicon.api.v1.ListWorkersResponse
-	17, // 37: orchicon.api.v1.WorkerService.ListWorkerVersions:output_type -> orchicon.api.v1.ListWorkerVersionsResponse
-	19, // 38: orchicon.api.v1.WorkerService.UpdateWorkerVersion:output_type -> orchicon.api.v1.UpdateWorkerVersionResponse
-	21, // 39: orchicon.api.v1.WorkerService.CreateWorkerVersion:output_type -> orchicon.api.v1.CreateWorkerVersionResponse
-	23, // 40: orchicon.api.v1.WorkerService.AcquireEditLock:output_type -> orchicon.api.v1.AcquireEditLockResponse
-	25, // 41: orchicon.api.v1.WorkerService.ReleaseEditLock:output_type -> orchicon.api.v1.ReleaseEditLockResponse
-	27, // 42: orchicon.api.v1.WorkerService.GetEditLock:output_type -> orchicon.api.v1.GetEditLockResponse
-	29, // [29:43] is the sub-list for method output_type
-	15, // [15:29] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	30, // 0: orchicon.api.v1.CreateWorkerResponse.worker:type_name -> orchicon.api.v1.Worker
+	31, // 1: orchicon.api.v1.CreateWorkerResponse.version:type_name -> orchicon.api.v1.WorkerVersion
+	30, // 2: orchicon.api.v1.PublishWorkerVersionResponse.worker:type_name -> orchicon.api.v1.Worker
+	31, // 3: orchicon.api.v1.PublishWorkerVersionResponse.version:type_name -> orchicon.api.v1.WorkerVersion
+	30, // 4: orchicon.api.v1.DeprecateWorkerResponse.worker:type_name -> orchicon.api.v1.Worker
+	30, // 5: orchicon.api.v1.RetireWorkerResponse.worker:type_name -> orchicon.api.v1.Worker
+	30, // 6: orchicon.api.v1.GetWorkerResponse.worker:type_name -> orchicon.api.v1.Worker
+	31, // 7: orchicon.api.v1.GetWorkerResponse.latest_version:type_name -> orchicon.api.v1.WorkerVersion
+	32, // 8: orchicon.api.v1.ListWorkersRequest.status:type_name -> orchicon.api.v1.WorkerStatus
+	30, // 9: orchicon.api.v1.ListWorkersResponse.workers:type_name -> orchicon.api.v1.Worker
+	31, // 10: orchicon.api.v1.ListWorkerVersionsResponse.versions:type_name -> orchicon.api.v1.WorkerVersion
+	31, // 11: orchicon.api.v1.GetWorkerVersionResponse.version:type_name -> orchicon.api.v1.WorkerVersion
+	31, // 12: orchicon.api.v1.UpdateWorkerVersionResponse.version:type_name -> orchicon.api.v1.WorkerVersion
+	31, // 13: orchicon.api.v1.CreateWorkerVersionResponse.version:type_name -> orchicon.api.v1.WorkerVersion
+	33, // 14: orchicon.api.v1.AcquireEditLockResponse.lock:type_name -> orchicon.api.v1.EditLock
+	33, // 15: orchicon.api.v1.GetEditLockResponse.lock:type_name -> orchicon.api.v1.EditLock
+	0,  // 16: orchicon.api.v1.WorkerService.CreateWorker:input_type -> orchicon.api.v1.CreateWorkerRequest
+	2,  // 17: orchicon.api.v1.WorkerService.PublishWorkerVersion:input_type -> orchicon.api.v1.PublishWorkerVersionRequest
+	4,  // 18: orchicon.api.v1.WorkerService.DeprecateWorker:input_type -> orchicon.api.v1.DeprecateWorkerRequest
+	6,  // 19: orchicon.api.v1.WorkerService.RetireWorker:input_type -> orchicon.api.v1.RetireWorkerRequest
+	8,  // 20: orchicon.api.v1.WorkerService.DeleteWorker:input_type -> orchicon.api.v1.DeleteWorkerRequest
+	10, // 21: orchicon.api.v1.WorkerService.DeleteWorkerVersion:input_type -> orchicon.api.v1.DeleteWorkerVersionRequest
+	12, // 22: orchicon.api.v1.WorkerService.GetWorker:input_type -> orchicon.api.v1.GetWorkerRequest
+	14, // 23: orchicon.api.v1.WorkerService.ListWorkers:input_type -> orchicon.api.v1.ListWorkersRequest
+	16, // 24: orchicon.api.v1.WorkerService.ListWorkerVersions:input_type -> orchicon.api.v1.ListWorkerVersionsRequest
+	18, // 25: orchicon.api.v1.WorkerService.GetWorkerVersion:input_type -> orchicon.api.v1.GetWorkerVersionRequest
+	20, // 26: orchicon.api.v1.WorkerService.UpdateWorkerVersion:input_type -> orchicon.api.v1.UpdateWorkerVersionRequest
+	22, // 27: orchicon.api.v1.WorkerService.CreateWorkerVersion:input_type -> orchicon.api.v1.CreateWorkerVersionRequest
+	24, // 28: orchicon.api.v1.WorkerService.AcquireEditLock:input_type -> orchicon.api.v1.AcquireEditLockRequest
+	26, // 29: orchicon.api.v1.WorkerService.ReleaseEditLock:input_type -> orchicon.api.v1.ReleaseEditLockRequest
+	28, // 30: orchicon.api.v1.WorkerService.GetEditLock:input_type -> orchicon.api.v1.GetEditLockRequest
+	1,  // 31: orchicon.api.v1.WorkerService.CreateWorker:output_type -> orchicon.api.v1.CreateWorkerResponse
+	3,  // 32: orchicon.api.v1.WorkerService.PublishWorkerVersion:output_type -> orchicon.api.v1.PublishWorkerVersionResponse
+	5,  // 33: orchicon.api.v1.WorkerService.DeprecateWorker:output_type -> orchicon.api.v1.DeprecateWorkerResponse
+	7,  // 34: orchicon.api.v1.WorkerService.RetireWorker:output_type -> orchicon.api.v1.RetireWorkerResponse
+	9,  // 35: orchicon.api.v1.WorkerService.DeleteWorker:output_type -> orchicon.api.v1.DeleteWorkerResponse
+	11, // 36: orchicon.api.v1.WorkerService.DeleteWorkerVersion:output_type -> orchicon.api.v1.DeleteWorkerVersionResponse
+	13, // 37: orchicon.api.v1.WorkerService.GetWorker:output_type -> orchicon.api.v1.GetWorkerResponse
+	15, // 38: orchicon.api.v1.WorkerService.ListWorkers:output_type -> orchicon.api.v1.ListWorkersResponse
+	17, // 39: orchicon.api.v1.WorkerService.ListWorkerVersions:output_type -> orchicon.api.v1.ListWorkerVersionsResponse
+	19, // 40: orchicon.api.v1.WorkerService.GetWorkerVersion:output_type -> orchicon.api.v1.GetWorkerVersionResponse
+	21, // 41: orchicon.api.v1.WorkerService.UpdateWorkerVersion:output_type -> orchicon.api.v1.UpdateWorkerVersionResponse
+	23, // 42: orchicon.api.v1.WorkerService.CreateWorkerVersion:output_type -> orchicon.api.v1.CreateWorkerVersionResponse
+	25, // 43: orchicon.api.v1.WorkerService.AcquireEditLock:output_type -> orchicon.api.v1.AcquireEditLockResponse
+	27, // 44: orchicon.api.v1.WorkerService.ReleaseEditLock:output_type -> orchicon.api.v1.ReleaseEditLockResponse
+	29, // 45: orchicon.api.v1.WorkerService.GetEditLock:output_type -> orchicon.api.v1.GetEditLockResponse
+	31, // [31:46] is the sub-list for method output_type
+	16, // [16:31] is the sub-list for method input_type
+	16, // [16:16] is the sub-list for extension type_name
+	16, // [16:16] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_worker_service_proto_init() }
@@ -1976,15 +2074,15 @@ func file_orchicon_api_v1_worker_service_proto_init() {
 	}
 	file_orchicon_api_v1_worker_proto_init()
 	file_orchicon_api_v1_worker_service_proto_msgTypes[14].OneofWrappers = []any{}
-	file_orchicon_api_v1_worker_service_proto_msgTypes[18].OneofWrappers = []any{}
 	file_orchicon_api_v1_worker_service_proto_msgTypes[20].OneofWrappers = []any{}
+	file_orchicon_api_v1_worker_service_proto_msgTypes[22].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_worker_service_proto_rawDesc), len(file_orchicon_api_v1_worker_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   28,
+			NumMessages:   30,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

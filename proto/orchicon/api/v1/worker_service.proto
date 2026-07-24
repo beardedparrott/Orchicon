@@ -46,6 +46,9 @@ service WorkerService {
   // ListWorkerVersions returns all versions of a Worker, newest first.
   rpc ListWorkerVersions(ListWorkerVersionsRequest) returns (ListWorkerVersionsResponse);
 
+  // GetWorkerVersion returns a single version by its id.
+  rpc GetWorkerVersion(GetWorkerVersionRequest) returns (GetWorkerVersionResponse);
+
   // UpdateWorkerVersion updates the mutable fields of a draft WorkerVersion.
   // Only draft versions can be updated; published versions are immutable.
   rpc UpdateWorkerVersion(UpdateWorkerVersionRequest) returns (UpdateWorkerVersionResponse);
@@ -163,6 +166,14 @@ message ListWorkerVersionsRequest {
 
 message ListWorkerVersionsResponse {
   repeated WorkerVersion versions = 1;
+}
+
+message GetWorkerVersionRequest {
+  string id = 1; // version id
+}
+
+message GetWorkerVersionResponse {
+  WorkerVersion version = 1;
 }
 
 message UpdateWorkerVersionRequest {

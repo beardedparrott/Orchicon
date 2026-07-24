@@ -455,6 +455,27 @@ func (s *Service) ListWorkerVersions(ctx context.Context, req *connect.Request[a
 	return connect.NewResponse(resp), nil
 }
 
+// GetWorkerVersion returns a single version by its id.
+func (s *Service) GetWorkerVersion(ctx context.Context, req *connect.Request[apiv1.GetWorkerVersionRequest]) (*connect.Response[apiv1.GetWorkerVersionResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	v, err := db.GetWorkerVersionByID(ctx, ttx.Tx, tenantID, "", req.Msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	return connect.NewResponse(&apiv1.GetWorkerVersionResponse{Version: versionRowToProto(v)}), nil
+}
+
 // UpdateWorkerVersion updates the mutable fields of a draft WorkerVersion.
 // Only versions with status='draft' may be updated; published versions are
 // immutable. The service reads the current version first, then applies

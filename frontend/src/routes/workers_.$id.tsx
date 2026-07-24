@@ -94,6 +94,11 @@ function WorkerDetailPage() {
   const latestVersion = latestData?.latestVersion;
   const [editing, setEditing] = useState(false);
   const [viewMode, setViewMode] = useState<"detail" | "code">("detail");
+  const [selectedVersionId, setSelectedVersionId] = useState<string | undefined>();
+  const { data: selectedVersionData } = useGetWorkerVersion(selectedVersionId ?? "");
+  const selectedVersion = selectedVersionId
+    ? selectedVersionData ?? versions?.find((v) => v.id === selectedVersionId)
+    : latestVersion;
 
   const { register, handleSubmit, setValue, watch, formState: { errors } } = useForm<EditFormData>({
     defaultValues: {
@@ -524,51 +529,76 @@ function WorkerDetailPage() {
             {(versions ?? []).length === 0 ? (
               <p className="text-sm text-muted-foreground">No versions yet.</p>
             ) : (
-              (versions ?? []).map((ver) => (
-                <div
-                  key={ver.id}
-                  className="flex items-center gap-3 rounded-md border p-2 text-sm"
-                >
-                  <span className="font-mono font-medium">v{ver.version}</span>
-                  <WorkerVersionStatusBadge status={ver.status} />
-                  {ver.versionNote && (
-                    <span className="text-xs text-muted-foreground truncate">
-                      {ver.versionNote}
-                    </span>
-                  )}
-                  {ver.publishedAt && (
-                    <span className="text-xs text-muted-foreground shrink-0">
-                      {new Date(Number(ver.publishedAt.seconds) * 1000).toLocaleDateString()}
-                    </span>
-                  )}
-                  <span className="flex-1" />
-                  {ver.status === 1 && ( // draft
-                    <DeleteVersionButton workerId={id} versionId={ver.id} />
-                  )}
-                </div>
-              ))
+              (versions ?? []).map((ver) => {
+                const isLatest = ver.version === worker.currentVersion;
+                const isSelected = selectedVersionId === ver.id || (!selectedVersionId && isLatest && !selectedVersionData);
+                return (
+                  <button
+                    key={ver.id}
+                    type="button"
+                    className={cn(
+                      "flex w-full items-center gap-3 rounded-md border p-2 text-left text-sm hover:bg-accent",
+                      isSelected && "border-primary bg-accent/50",
+                    )}
+                    onClick={() => setSelectedVersionId(ver.id)}
+                  >
+                    <span className="font-mono font-medium">v{ver.version}</span>
+                    <WorkerVersionStatusBadge status={ver.status} />
+                    {ver.versionNote && (
+                      <span className="min-w-0 truncate text-xs text-muted-foreground">
+                        {ver.versionNote}
+                      </span>
+                    )}
+                    {ver.publishedAt && (
+                      <span className="shrink-0 text-xs text-muted-foreground">
+                        {new Date(Number(ver.publishedAt.seconds) * 1000).toLocaleDateString()}
+                      </span>
+                    )}
+                    {isLatest && (
+                      <span className="shrink-0 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-800 dark:bg-blue-950/60 dark:text-blue-100">
+                        active
+                      </span>
+                    )}
+                    <span className="flex-1" />
+                    {ver.status === 1 && ( // draft
+                      <DeleteVersionButton workerId={id} versionId={ver.id} />
+                    )}
+                  </button>
+                );
+              })
             )}
           </div>
         </CardContent>
       </Card>
 
       {/* Read-only version detail (shown when not editing) */}
-      {!isEditingEnabled && latestVersion && (
+      {!isEditingEnabled && selectedVersion && (
         <Card>
           <CardHeader>
-            <CardTitle>
-              Version v{latestVersion.version}
-              {latestVersion.versionNote
-                ? ` — ${latestVersion.versionNote}`
-                : ""}
-            </CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle>
+                Version v{selectedVersion.version}
+                {selectedVersion.versionNote
+                  ? ` — ${selectedVersion.versionNote}`
+                  : ""}
+              </CardTitle>
+              {selectedVersionId && (
+                <button
+                  type="button"
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => setSelectedVersionId(undefined)}
+                >
+                  Back to active
+                </button>
+              )}
+            </div>
             <CardDescription>
-              {versionStatusLabel(latestVersion.status)}
+              {versionStatusLabel(selectedVersion.status)}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {(() => {
-              const sp = latestVersion.systemPrompt || "";
+              const sp = selectedVersion.systemPrompt || "";
               const extract = (heading: string) => {
                 const re = new RegExp(`# ${heading}\n\n([\\s\\S]*?)(?=\\n# |\\n*$)`);
                 return sp.match(re)?.[1]?.trim() || "";
