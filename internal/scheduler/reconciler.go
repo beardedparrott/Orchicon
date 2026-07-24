@@ -994,21 +994,44 @@ func extractStructuredResult(output string, results map[string]any) {
 		trimmed = strings.TrimPrefix(trimmed, "```")
 		trimmed = strings.TrimSuffix(trimmed, "```")
 		trimmed = strings.TrimSpace(trimmed)
-		if strings.HasPrefix(trimmed, "_decision: ") {
-			val := strings.TrimSpace(strings.TrimPrefix(trimmed, "_decision: "))
-			// The worker may put _issues on the same line:
-			//   "_decision: failure _issues: something"
-			// Split on whitespace and check the first token.
-			parts := strings.Fields(val)
+
+		// Extract _decision: handles any delimiter (":" alone or
+		// ":space") and concatenated tokens like
+		// "_decision:failuresomething" by prefix-matching the first
+		// word for "success" or "failure".
+		if idx := strings.Index(trimmed, "_decision:"); idx >= 0 {
+			after := strings.TrimSpace(trimmed[idx+len("_decision:"):])
+			parts := strings.Fields(after)
 			if len(parts) > 0 {
 				first := parts[0]
-				if first == "success" || first == "failure" {
-					results["_decision"] = first
-					// If _issues is on the same line after _decision,
-					// extract the rest as the issues text.
-					rest := strings.TrimSpace(strings.TrimPrefix(val, first))
-					if strings.HasPrefix(rest, "_issues: ") {
-						issues := strings.TrimSpace(strings.TrimPrefix(rest, "_issues: "))
+				var decision string
+				switch {
+				case strings.HasPrefix(first, "success") && first != "successfully":
+					decision = "success"
+				case strings.HasPrefix(first, "failure"):
+					decision = "failure"
+				default:
+					// Mixed prefix — treat by longest match.
+					if len(first) >= 7 && first[:7] == "failure" {
+						decision = "failure"
+					} else if len(first) >= 7 && first[:7] == "success" {
+						decision = "success"
+					}
+				}
+				if decision != "" {
+					results["_decision"] = decision
+					// Extract _issues whether it follows as a
+					// separate token or is concatenated with the
+					// decision token (e.g. "failure_issues:...").
+					rest := strings.TrimSpace(strings.TrimPrefix(after, first))
+					if i := strings.Index(rest, "_issues:"); i >= 0 {
+						issues := strings.TrimSpace(rest[i+len("_issues:"):])
+						if issues != "" {
+							results["_issues"] = issues
+						}
+					} else if i := strings.Index(first, "_issues:"); i >= 0 {
+						// Concatenated: "failure_issues:..."
+						issues := strings.TrimSpace(first[i+len("_issues:"):])
 						if issues != "" {
 							results["_issues"] = issues
 						}
@@ -1016,13 +1039,14 @@ func extractStructuredResult(output string, results map[string]any) {
 				}
 			}
 		}
-		if strings.HasPrefix(trimmed, "_issues: ") {
-			val := strings.TrimSpace(strings.TrimPrefix(trimmed, "_issues: "))
-			if val != "" {
-				// Only set if _decision wasn't already extracted
-				// from the same line above (avoids duplicate).
-				if _, ok := results["_issues"]; !ok {
-					results["_issues"] = val
+
+		// Extract _issues: when it's on its own line (not already
+		// captured from the _decision line above).
+		if i := strings.Index(trimmed, "_issues:"); i >= 0 {
+			if _, ok := results["_issues"]; !ok {
+				issues := strings.TrimSpace(trimmed[i+len("_issues:"):])
+				if issues != "" {
+					results["_issues"] = issues
 				}
 			}
 		}
