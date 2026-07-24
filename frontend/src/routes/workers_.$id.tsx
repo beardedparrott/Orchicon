@@ -95,6 +95,7 @@ function WorkerDetailPage() {
   const deleteMutation = useDeleteWorker();
   const setActiveVersion = useSetActiveWorkerVersion();
   const revertVersion = useRevertWorkerVersionToDraft();
+  const deleteVersion = useDeleteWorkerVersion();
   const { data: latestData } = useGetWorker(id);
   const latestVersion = latestData?.latestVersion;
   const [editing, setEditing] = useState(false);
@@ -191,11 +192,22 @@ function WorkerDetailPage() {
               {setActiveVersion.isPending ? "Setting…" : "Make Active"}
             </Button>
           )}
-          {selectedVersionId && selectedVersion && selectedVersion.status === 1 && (
+          {selectedVersionId && selectedVersion && (
             <>
-              <Button onClick={() => setEditing(true)}>Edit</Button>
+              {selectedVersion.status === 1 && (
+                <Button onClick={() => setEditing(true)}>Edit</Button>
+              )}
+              {selectedVersion.status === 2 && (
+                <Button onClick={async () => {
+                  await revertVersion.mutateAsync({ versionId: selectedVersion.id });
+                  setSelectedVersionId(undefined);
+                  // Force refetch versions
+                }}>
+                  Edit (revert to draft)
+                </Button>
+              )}
               <Button variant="outline" className="text-destructive border-destructive/50" onClick={() => {
-                if (window.confirm("Delete this draft version? This cannot be undone.")) {
+                if (window.confirm("Delete version v" + selectedVersion.version + "? This cannot be undone.")) {
                   deleteVersion.mutate({ workerId: id, versionId: selectedVersion.id });
                 }
               }}>
@@ -578,35 +590,6 @@ function WorkerDetailPage() {
                         </span>
                       )}
                       <span className="flex-1" />
-                      {ver.status === 1 && (
-                        <>
-                          <button
-                            type="button"
-                            className="rounded px-1.5 py-0.5 text-[10px] font-medium text-primary hover:bg-accent"
-                            onClick={(e) => { e.stopPropagation(); setSelectedVersionId(ver.id); setEditing(true); }}
-                          >
-                            Edit
-                          </button>
-                          <DeleteVersionButton workerId={id} versionId={ver.id} />
-                        </>
-                      )}
-                      {ver.status === 2 && (
-                        <>
-                          <button
-                            type="button"
-                            className="rounded px-1.5 py-0.5 text-[10px] font-medium text-amber-600 hover:bg-accent"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (window.confirm("Revert v" + ver.version + " to draft?")) {
-                                revertVersion.mutate({ versionId: ver.id });
-                              }
-                            }}
-                          >
-                            Revert to draft
-                          </button>
-                          <DeleteVersionButton workerId={id} versionId={ver.id} />
-                        </>
-                      )}
                     </button>
                     {isSelected && selectedVersion && selectedVersion.id === ver.id && !isEditingEnabled && (
                       <VersionDetailPanel version={selectedVersion} />
@@ -674,26 +657,6 @@ function WorkerVersionStatusBadge({ status }: { status: number }) {
   };
   return <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium", styles[status] ?? "")}>{labels[status] ?? "unknown"}</span>;
 }
-
-function DeleteVersionButton({ workerId, versionId }: { workerId: string; versionId: string }) {
-  const deleteVersion = useDeleteWorkerVersion();
-  return (
-    <button
-      type="button"
-      className="rounded px-1.5 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/10"
-      onClick={() => {
-        if (window.confirm("Delete this draft version? This cannot be undone.")) {
-          deleteVersion.mutate({ workerId, versionId });
-        }
-      }}
-      disabled={deleteVersion.isPending}
-    >
-      {deleteVersion.isPending ? "Deleting…" : "Delete"}
-    </button>
-  );
-}
-
-/** Inline version detail panel shown when a version row is expanded. */
 function VersionDetailPanel({ version }: { version: import("@/api/gen/orchicon/api/v1/worker_pb").WorkerVersion }) {
   const sp = version.systemPrompt || "";
   const extract = (heading: string) => {
