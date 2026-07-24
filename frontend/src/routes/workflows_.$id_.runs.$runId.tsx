@@ -97,7 +97,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
   const { data: wfData } = useGetWorkflow(workflowId);
   const { data: run, isLoading, error } = useGetWorkflowRun(runId);
   const { data: stepRuns } = useGetWorkflowStepRuns(runId);
-  const { data: runExecs } = useListExecutions({ workflowRunId: runId });
+  const { data: runExecs } = useListExecutions({ workflowRunId: runId, sortOrder: "asc" });
   const abortRun = useAbortWorkflow();
 
   // Live event stream (docs/10 §4). Subscribes to StreamWorkflowEvents

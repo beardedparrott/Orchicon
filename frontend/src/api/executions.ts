@@ -51,8 +51,8 @@ export function useGetAdapterCapabilities(id: string) {
 
 export const executionKeys = {
   all: ["executions"] as const,
-  list: (projectId?: string, status?: number) =>
-    [...executionKeys.all, "list", projectId, status] as const,
+  list: (projectId?: string, status?: number, sortOrder?: string) =>
+    [...executionKeys.all, "list", projectId, status, sortOrder] as const,
   detail: (id: string) => [...executionKeys.all, "detail", id] as const,
   pendingApprovals: (executionId?: string) =>
     [...executionKeys.all, "approvals", executionId] as const,
@@ -69,7 +69,7 @@ export function useListExecutions(opts?: {
   enabled?: boolean;
 }) {
   return useQuery({
-    queryKey: executionKeys.list(opts?.projectId, opts?.status),
+      queryKey: executionKeys.list(opts?.projectId, opts?.status, opts?.sortOrder),
     queryFn: async () => {
       const res = await executionClient.listExecutions({
         pageSize: 200,

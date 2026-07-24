@@ -202,7 +202,7 @@ const (
 
 // StepRun lifecycle states (docs/03 §2, docs/09 §3.4):
 // pending → ready → running → succeeded | failed | skipped | blocked |
-// approval_pending.
+// approval_pending | recovering.
 const (
 	StepRunPending          = "pending"
 	StepRunReady            = "ready"
@@ -212,6 +212,7 @@ const (
 	StepRunSkipped          = "skipped"
 	StepRunBlocked          = "blocked"
 	StepRunApprovalPending  = "approval_pending"
+	StepRunRecovering       = "recovering"
 )
 
 // WorkflowEventType — event kinds streamed via StreamWorkflowEvents
@@ -227,6 +228,7 @@ const (
 	WorkflowEventStepFailed       = "workflow.step_failed"
 	WorkflowEventStepSkipped      = "workflow.step_skipped"
 	WorkflowEventStepBlocked      = "workflow.step_blocked"
+	WorkflowEventStepRecovering   = "workflow.step_recovering"
 	WorkflowEventStepApproval     = "workflow.step_approval_pending"
 )
 

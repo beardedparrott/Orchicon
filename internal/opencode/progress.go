@@ -52,7 +52,7 @@ type stallWindows struct {
 
 func defaultStallWindows() stallWindows {
 	return stallWindows{
-		noProgress:   envDuration("ORCHICON_STALL_NO_PROGRESS_WINDOW", 120*time.Second),
+		noProgress:   envDuration("ORCHICON_STALL_NO_PROGRESS_WINDOW", 300*time.Second),
 		noFileDiff:   envDuration("ORCHICON_STALL_NO_FILE_DIFF_WINDOW", 15*time.Minute),
 		textLoop:     envDuration("ORCHICON_STALL_TEXT_LOOP_WINDOW", 10*time.Minute),
 		repetitionN:  envInt("ORCHICON_STALL_REPETITION_COUNT", 5),

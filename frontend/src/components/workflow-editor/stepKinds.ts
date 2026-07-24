@@ -125,10 +125,10 @@ export const ACCENT_STROKE: Record<string, string> = {
 };
 
 export const RECOVERY_STRATEGY_LABELS: Record<string, string> = {
+  retry: "Blind retry",
   summarize_restart: "Summarize + restart",
   stop: "Stop",
   human_escalation: "Human escalation",
-  retry_n: "Retry N",
 };
 
 export const RECOVERY_STRATEGY_OPTIONS = [

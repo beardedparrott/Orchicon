@@ -131,6 +131,14 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
           ) : null}
         </div>
       )}
+      {kind === STEP_KIND.TASK && typeof cfg.recovery?.strategy === "string" && cfg.recovery.strategy !== "retry" && (
+        <div className="mt-1 flex items-center gap-1 truncate rounded px-1 py-0.5 text-[10px] font-medium text-sky-600 dark:text-sky-300">
+          <span>recovery: {RECOVERY_STRATEGY_LABELS[cfg.recovery.strategy] ?? cfg.recovery.strategy}</span>
+          {typeof cfg.recovery.max_attempts === "number" && (
+            <span className="ml-1 opacity-70">· {cfg.recovery.max_attempts} max</span>
+          )}
+        </div>
+      )}
 
       {kind === STEP_KIND.LOOP_DECISION && (
         <div className="mt-1 flex items-center gap-1 truncate rounded px-1 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-300">
