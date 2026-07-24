@@ -166,18 +166,11 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		stepByID[s.ID] = s
 	}
 
-	stepRuns, err := db.ListWorkflowStepRuns(ctx, ttx.Tx, tenantID, runID)
-	if err != nil {
-		return fmt.Errorf("list step runs: %w", err)
-	}
-	r.log.Debug("DEBUG: step runs loaded", "count", len(stepRuns))
-	for _, sr := range stepRuns {
-		r.log.Debug("DEBUG: step run detail", "id", sr.ID, "stepID", sr.StepID, "stepKind", sr.StepKind, "status", sr.Status, "version", sr.Version)
-	}
-	runByID := make(map[string]db.WorkflowStepRunRow, len(stepRuns))
-	for _, sr := range stepRuns {
-		runByID[sr.StepID] = sr
-	}
+	// stepRuns + runByID are built inside the outer-progress loop so
+	// newly-created step runs (loop_decision iterations, loop-back
+	// re-entry runs) are visible on subsequent passes.
+	var stepRuns []db.WorkflowStepRunRow
+	runByID := map[string]db.WorkflowStepRunRow{}
 	r.log.Debug("DEBUG: runByID built", "keys", len(runByID))
 	for k, v := range runByID {
 		r.log.Debug("DEBUG: runByID entry", "key", k, "id", v.ID, "status", v.Status, "version", v.Version)
@@ -196,6 +189,21 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	progressed := false
 	for {
 		madeProgress := false
+
+		// Reload step runs on every outer iteration so newly-created
+		// step runs (e.g. loop_decision iterations, loop-back re-entry
+		// runs) are visible to the terminal-state check and to the
+		// next dispatch phase. Without this, the original stepRuns
+		// snapshot is stale — new runs are orphaned and the run can
+		// be marked COMPLETED while children are still PENDING.
+		stepRuns, err = db.ListWorkflowStepRuns(ctx, ttx.Tx, tenantID, runID)
+		if err != nil {
+			return fmt.Errorf("reload step runs: %w", err)
+		}
+		runByID = make(map[string]db.WorkflowStepRunRow, len(stepRuns))
+		for _, sr := range stepRuns {
+			runByID[sr.StepID] = sr
+		}
 
 		// Progress pending steps whose deps are satisfied → ready.
 		// Use runByID (which reflects in-pass updates) for the
