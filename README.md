@@ -11,23 +11,10 @@ governance, while pluggable runtimes execute the work.
 
 ## Documentation
 
-All architecture and design documents live in [`docs/`](./docs):
-
-| # | Document | Concern |
-|---|---|---|
-| 00 | [Architecture Design Document](./docs/00_Architecture_Design_Document.md) | Original design brief — vision, principles, core concepts |
-| 01 | [Architecture Vision](./docs/01_Architecture_Vision.md) | Tech direction, system topology, design principles |
-| 02 | [Domain Model](./docs/02_Domain_Model.md) | Projects, Workers, Tasks, Workflows, Policies, Recovery |
-| 03 | [Scheduler & Runtime Design](./docs/03_Scheduler_and_Runtime_Design.md) | Reconciler architecture, dispatch flow, health monitoring |
-| 04 | [Runtime Adapter SDK](./docs/04_Runtime_Adapter_SDK.md) | gRPC adapter contract, OpenCode first |
-| 05 | [Worker Specification](./docs/05_Worker_Specification.md) | Worker entity, permissions, budgets, versioning |
-| 06 | [Recovery Workflow Engine](./docs/06_Recovery_Workflow_Engine.md) | Triggers, default workflow, escalation, continuation plans |
-| 07 | [API Specification](./docs/07_API_Specification.md) | REST/gRPC/WebSocket via Protobuf + Connect |
-| 08 | [Event Bus & Telemetry Model](./docs/08_Event_Bus_and_Telemetry_Model.md) | NATS JetStream, OTel, SigNoz/ClickHouse |
-| 09 | [Database Schema](./docs/09_Database_Schema.md) | PostgreSQL, outbox, RLS, Atlas migrations |
-| 10 | [Frontend Architecture](./docs/10_Frontend_Architecture.md) | React/Vite, Connect-ES, visual workflow editor |
-
-The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Architecture_Design_Document.md)
+The comprehensive project documentation lives in
+[`DOCUMENTATION.md`](./DOCUMENTATION.md) at the project root. It
+covers architecture, project structure, installation, development,
+deployment, troubleshooting, and every subsystem.
 
 ## Technology Stack
 
@@ -42,23 +29,11 @@ The original design brief: [`00_Architecture_Design_Document.md`](./docs/00_Arch
 
 ## Last Release Changes
 
-### v0.1.143 (2026-07-24)
+### v0.1.144 (2026-07-24)
 
 | Type | Change |
 |---|---|
-| Feature | Replaced DAG recovery step with per-step recovery config (retry/summarize_restart/human_escalation/stop) — inline step-level retry with 3 attempts before permanent failure |
-| Feature | Decision signal parsed from `ORCHICON WORKER SUMMARY: success|failure — <text>` prefix — more reliable than separate `_decision:` text markers |
-| Feature | `.orchicon/<run_id>/` files written after each execution — workers read previous step results from disk instead of inline prompt context |
-| Feature | Per-step run results (decision, summary, worker, file count) displayed inline on workflow run page |
-| Feature | Increased stall timeout default from 120s to 300s |
-| Feature | Canned worker prompts updated to use summary-based decision format |
-| Bug fix | Stale `_decision` from prior execution no longer leaks into next step's results |
-| Bug fix | `_issues` (review feedback) preserved across loop iterations |
-| Bug fix | Workflow context marks correct step as current (not prior dispatch's step) |
-| Bug fix | Worker edit: Save/Cancel buttons always visible when editing, Edit (revert to draft) enters edit mode |
-| Bug fix | Step config defaults (max_iterations, recovery strategy) now persisted on first render |
-| Bug fix | React error #310 (hook count mismatch) on PropertiesPanel |
-| Chore | Removed `recovery_policy_ref` end-to-end (proto, DB, backend, frontend) |
+| Docs | Replaced old 11-file `/docs/` directory with single comprehensive `DOCUMENTATION.md` covering architecture, technologies, structure, installation, usage, development, deployment, env vars, troubleshooting — with Mermaid diagrams, full directory tree, and cross-references |
 
 ## Installation
 
@@ -173,12 +148,13 @@ clients:
 make gen          # buf generate → api/gen/go + frontend/src/api/gen
 ```
 
-Generated code is committed (docs/10 §3.1).
+Generated code is committed (see DOCUMENTATION.md §Code Generation).
 
 ### Layout
 
 | Path | Concern |
-|---|---|
+|---|---|---|
+| `DOCUMENTATION.md` | Comprehensive project documentation |
 | `cmd/orchicon/` | Control-plane binary entry point + `dev` subcommand |
 | `internal/` | api, auth, config, db, domain, eventbus, outbox, reconciler, server, telemetry, migrate, middleware, rbac, tenant, blobstore, webhook, version |
 | `assets.go` | go:embed directives for compose, migrations, frontend |
@@ -187,7 +163,8 @@ Generated code is committed (docs/10 §3.1).
 | `db/` | Atlas declarative schema + versioned migrations |
 | `deploy/compose/` | Local dev Docker Compose stack |
 | `frontend/` | Vite + React + Connect-ES + TanStack Router + shadcn/ui |
-| `scripts/` | CI gates (RLS check) |
+| `site/` | Static landing page (`orchicon.dev`) |
+| `scripts/` | Installers, CI gates, dev controller |
 
 ### CI gate
 
@@ -195,7 +172,7 @@ Generated code is committed (docs/10 §3.1).
 make ci          # buf lint + codegen + go vet/test + RLS gate
 ```
 
-The RLS gate (docs/09 §8.5) fails if any `tenant_id`-bearing table
+The RLS gate (see DOCUMENTATION.md §Key Architecture Invariants) fails if any `tenant_id`-bearing table
 lacks the `tenant_isolation` policy.
 
 ## License
