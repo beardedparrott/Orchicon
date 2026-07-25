@@ -29,23 +29,11 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
-### v0.1.143 (2026-07-24)
+### v0.1.144 (2026-07-24)
 
 | Type | Change |
 |---|---|
-| Feature | Replaced DAG recovery step with per-step recovery config (retry/summarize_restart/human_escalation/stop) — inline step-level retry with 3 attempts before permanent failure |
-| Feature | Decision signal parsed from `ORCHICON WORKER SUMMARY: success|failure — <text>` prefix — more reliable than separate `_decision:` text markers |
-| Feature | `.orchicon/<run_id>/` files written after each execution — workers read previous step results from disk instead of inline prompt context |
-| Feature | Per-step run results (decision, summary, worker, file count) displayed inline on workflow run page |
-| Feature | Increased stall timeout default from 120s to 300s |
-| Feature | Canned worker prompts updated to use summary-based decision format |
-| Bug fix | Stale `_decision` from prior execution no longer leaks into next step's results |
-| Bug fix | `_issues` (review feedback) preserved across loop iterations |
-| Bug fix | Workflow context marks correct step as current (not prior dispatch's step) |
-| Bug fix | Worker edit: Save/Cancel buttons always visible when editing, Edit (revert to draft) enters edit mode |
-| Bug fix | Step config defaults (max_iterations, recovery strategy) now persisted on first render |
-| Bug fix | React error #310 (hook count mismatch) on PropertiesPanel |
-| Chore | Removed `recovery_policy_ref` end-to-end (proto, DB, backend, frontend) |
+| Docs | Replaced old 11-file `/docs/` directory with single comprehensive `DOCUMENTATION.md` covering architecture, technologies, structure, installation, usage, development, deployment, env vars, troubleshooting — with Mermaid diagrams, full directory tree, and cross-references |
 
 ## Installation
 
