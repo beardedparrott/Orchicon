@@ -929,17 +929,49 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                     right: mmPos.right,
                     width: 180,
                     height: 120,
+                    resize: 'both',
+                    overflow: 'hidden',
+                    minWidth: 120,
+                    minHeight: 80,
+                    maxWidth: 400,
+                    maxHeight: 300,
                     zIndex: 10,
                   }}
                   className="!bg-background/90 !border-border !shadow-lg"
                 />
-                  <MiniMap
-                    pannable
-                    zoomable
-                    nodeStrokeWidth={2}
-                    style={{ width: '100%', height: 'calc(100% - 12px)' }}
-                    className="!bg-background/90 !border-border !shadow-lg"
-                  />
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: mmPos.top - 10,
+                    right: mmPos.right,
+                    width: 180,
+                    height: 10,
+                    cursor: 'grab',
+                    zIndex: 11,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                  onMouseDown={(e) => {
+                    e.stopPropagation();
+                    const startX = e.clientX;
+                    const startY = e.clientY;
+                    const startTop = mmPos.top;
+                    const startRight = mmPos.right;
+                    const onMove = (ev: MouseEvent) => {
+                      const dx = ev.clientX - startX;
+                      const dy = ev.clientY - startY;
+                      setMmPos({ top: Math.max(0, startTop + dy), right: Math.max(0, startRight - dx) });
+                    };
+                    const onUp = () => {
+                      document.removeEventListener('mousemove', onMove);
+                      document.removeEventListener('mouseup', onUp);
+                    };
+                    document.addEventListener('mousemove', onMove);
+                    document.addEventListener('mouseup', onUp);
+                  }}
+                >
+                  <div style={{ width: 24, height: 3, borderRadius: 2, background: '#999', opacity: 0.6 }} />
                 </div>
               </ReactFlow>
               {dropActive && (
