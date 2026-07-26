@@ -469,7 +469,12 @@ function EditorInner({ workflowId }: { workflowId: string }) {
     try { return JSON.parse(localStorage.getItem('orchicon:mmPos') ?? '{"top":10,"right":10}'); }
     catch { return { top: 10, right: 10 }; }
   });
+  const [mmSize, setMmSize] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('orchicon:mmSize') ?? '{"w":180,"h":120}'); }
+    catch { return { w: 180, h: 120 }; }
+  });
   useEffect(() => { localStorage.setItem('orchicon:mmPos', JSON.stringify(mmPos)); }, [mmPos]);
+  useEffect(() => { localStorage.setItem('orchicon:mmSize', JSON.stringify(mmSize)); }, [mmSize]);
   const updateSelected = (patch: Partial<StepData>) => {
     if (!selectedNode) return;
     setNodes((nds) =>
@@ -927,51 +932,81 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                     position: 'absolute',
                     top: mmPos.top,
                     right: mmPos.right,
-                    width: 180,
-                    height: 120,
-                    resize: 'both',
-                    overflow: 'hidden',
-                    minWidth: 120,
-                    minHeight: 80,
-                    maxWidth: 400,
-                    maxHeight: 300,
+                    width: mmSize.w,
+                    height: mmSize.h,
                     zIndex: 10,
                   }}
-                  className="!bg-background/90 !border-border !shadow-lg"
+                  className="!bg-background/95 !shadow-lg"
                 />
                 <div
                   style={{
                     position: 'absolute',
-                    top: mmPos.top - 10,
+                    top: mmPos.top,
                     right: mmPos.right,
-                    width: 180,
-                    height: 10,
-                    cursor: 'grab',
+                    width: mmSize.w,
+                    height: mmSize.h,
                     zIndex: 11,
+                    pointerEvents: 'none',
+                    border: '2px solid rgba(150,150,150,0.4)',
+                    borderRadius: 6,
+                    boxSizing: 'border-box',
+                  }}
+                />
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: mmPos.top,
+                    right: mmPos.right,
+                    width: mmSize.w,
+                    height: 14,
+                    cursor: 'grab',
+                    zIndex: 12,
+                    pointerEvents: 'auto',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                   }}
                   onMouseDown={(e) => {
                     e.stopPropagation();
-                    const startX = e.clientX;
-                    const startY = e.clientY;
-                    const startTop = mmPos.top;
-                    const startRight = mmPos.right;
+                    const startX = e.clientX, startY = e.clientY;
+                    const sTop = mmPos.top, sRight = mmPos.right;
                     const onMove = (ev: MouseEvent) => {
-                      const dx = ev.clientX - startX;
-                      const dy = ev.clientY - startY;
-                      setMmPos({ top: Math.max(0, startTop + dy), right: Math.max(0, startRight - dx) });
+                      setMmPos({ top: Math.max(0, sTop + (ev.clientY - startY)), right: Math.max(0, sRight - (ev.clientX - startX)) });
                     };
-                    const onUp = () => {
-                      document.removeEventListener('mousemove', onMove);
-                      document.removeEventListener('mouseup', onUp);
-                    };
+                    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
                     document.addEventListener('mousemove', onMove);
                     document.addEventListener('mouseup', onUp);
                   }}
                 >
-                  <div style={{ width: 24, height: 3, borderRadius: 2, background: '#999', opacity: 0.6 }} />
+                  <div style={{ width: 24, height: 3, borderRadius: 2, background: '#999', opacity: 0.5 }} />
+                </div>
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: mmPos.top + mmSize.h - 16,
+                    right: mmPos.right,
+                    width: 16,
+                    height: 16,
+                    cursor: 'nwse-resize',
+                    zIndex: 12,
+                  }}
+                  onMouseDown={(e) => {
+                    e.stopPropagation();
+                    const startX = e.clientX, startY = e.clientY;
+                    const sW = mmSize.w, sH = mmSize.h;
+                    const onMove = (ev: MouseEvent) => {
+                      const w = Math.max(120, Math.min(400, sW + (ev.clientX - startX)));
+                      const h = Math.max(80, Math.min(300, sH + (ev.clientY - startY)));
+                      setMmSize({ w, h });
+                    };
+                    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+                    document.addEventListener('mousemove', onMove);
+                    document.addEventListener('mouseup', onUp);
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <path d="M16 14 L14 16 M16 10 L10 16 M16 6 L6 16 M16 2 L2 16" stroke="#999" strokeWidth="1.5" strokeLinecap="round"/>
+                  </svg>
                 </div>
               </ReactFlow>
               {dropActive && (
