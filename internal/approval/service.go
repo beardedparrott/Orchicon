@@ -333,6 +333,15 @@ func listApprovalItems(ctx context.Context, tx pgx.Tx, tenantID string, req *api
 			files = []string{}
 		}
 
+		// Map domain statuses to proto contract values ("pending" / "approved" / "rejected").
+		mappedStatus := r.Status
+		switch r.Status {
+		case domain.StepRunApprovalPending:
+			mappedStatus = "pending"
+		case domain.StepRunSucceeded:
+			mappedStatus = "approved"
+		}
+
 		item := &apiv1.ApprovalItem{
 			StepRunId:         r.StepRunID,
 			WorkflowRunId:     r.WorkflowRunID,
@@ -343,7 +352,7 @@ func listApprovalItems(ctx context.Context, tx pgx.Tx, tenantID string, req *api
 			UpstreamSummary:   r.UpstreamSummary,
 			TouchedFiles:      files,
 			AcceptanceCriteria: r.AcceptanceCrit,
-			Status:            r.Status,
+			Status:            mappedStatus,
 			CreatedAt:         timestamppb.New(r.CreatedAt),
 		}
 		out = append(out, item)

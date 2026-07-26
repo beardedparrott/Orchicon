@@ -5,7 +5,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { approvalClient } from "@/api/clients";
 import type { ApprovalItem } from "@/api/gen/orchicon/api/v1/approval_service_pb";
-import type { PartialMessage } from "@bufbuild/protobuf";
 
 export const approvalKeys = {
   all: ["approvals"] as const,
@@ -37,7 +36,7 @@ export function useListPendingStepApprovals(opts?: {
     refetchInterval: (query) => {
       const items = query.state.data;
       if (!items) return 5000;
-      return items.some((i) => i.status === "approval_pending" || i.status === "pending") ? 3000 : false;
+      return items.some((i) => i.status === "pending") ? 3000 : false;
     },
   });
 }
@@ -46,12 +45,12 @@ export function useApproveStep() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (req: PartialMessage<{
+    mutationFn: async (req: {
       stepRunId: string;
       approved: boolean;
       reason: string;
       reviewedBy: string;
-    }>) => {
+    }) => {
       const res = await approvalClient.approveStep({
         stepRunId: req.stepRunId!,
         approved: req.approved!,

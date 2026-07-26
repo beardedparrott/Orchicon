@@ -53,7 +53,7 @@ function ApprovalsPage() {
   const approvals = useMemo(() => {
     if (!items) return undefined;
     if (statusFilter === "pending") {
-      return items.filter((a) => a.status === "approval_pending" || a.status === "pending");
+      return items.filter((a) => a.status === "pending");
     }
     return items;
   }, [items, statusFilter]);
@@ -143,17 +143,18 @@ function ApprovalsPage() {
       {/* Approval cards */}
       <div className="space-y-4">
         {approvals?.map((item) => {
-          const isPending = item.status === "approval_pending" || item.status === "pending";
-          const isApproved = item.status === "succeeded" && item.status === "approved";
-          const isRejected = item.status === "succeeded" && item.status === "rejected";
+          const isPending = item.status === "pending";
+          const isApproved = item.status === "approved";
+          const isRejected = item.status === "rejected";
 
           let StatusIcon = Clock;
           let statusColor = "text-amber-600 bg-amber-50 dark:bg-amber-950/40";
-          if (!isPending) {
-            StatusIcon = isApproved ? CheckCircle2 : XCircle;
-            statusColor = isApproved
-              ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40"
-              : "text-red-600 bg-red-50 dark:bg-red-950/40";
+          if (isApproved) {
+            StatusIcon = CheckCircle2;
+            statusColor = "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40";
+          } else if (isRejected) {
+            StatusIcon = XCircle;
+            statusColor = "text-red-600 bg-red-50 dark:bg-red-950/40";
           }
 
           return (

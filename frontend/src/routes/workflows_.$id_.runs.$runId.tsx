@@ -531,7 +531,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
               .map((sr) => {
                 if (sr.stepKind === StepKind.APPROVAL && (sr.status === StepRunStatus.APPROVAL_PENDING || sr.status === StepRunStatus.SUCCEEDED)) {
                   // APPROVAL step — show the approval panel inline.
-                  return <ApprovalStepCard key={sr.id} stepRun={sr} runId={runId} />;
+                  return <ApprovalStepCard key={sr.id} stepRun={sr} />;
                 }
                 return (
                   <div key={sr.id} className="flex items-center gap-3 rounded-md border p-2 text-sm text-muted-foreground">
@@ -577,7 +577,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
 
 // --- Approval step card (inline approve/reject panel for the run view) ---
 
-function ApprovalStepCard({ stepRun, runId }: { stepRun: WorkflowStepRun; runId: string }) {
+function ApprovalStepCard({ stepRun }: { stepRun: WorkflowStepRun }) {
   const [reason, setReason] = useState("");
   const [showContext, setShowContext] = useState(false);
   const approveMutation = useApproveStep();
