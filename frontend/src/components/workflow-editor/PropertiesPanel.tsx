@@ -294,23 +294,21 @@ export function PropertiesPanel({
             </p>
           </Field>
 
-          {cfg.loop_branch && (
-            <Field label="Max rejections" hint="How many times the workflow loops back after rejection before failing the run.">
-              <input
-                type="number"
-                min={1}
-                max={20}
-                className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-                value={typeof cfg.max_iterations === "number" ? cfg.max_iterations : 3}
-                disabled={readOnly}
-                onChange={(e) => {
-                  const maxIter = Math.max(1, Math.min(20, parseInt(e.target.value, 10) || 3));
-                  const next = { ...cfg, max_iterations: maxIter };
-                  onChange({ config: JSON.stringify(next) });
-                }}
-              />
-            </Field>
-          )}
+          <Field label="Max rejections" hint="How many times the workflow loops back after rejection before failing the run.">
+            <input
+              type="number"
+              min={1}
+              max={20}
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              value={typeof cfg.max_iterations === "number" ? cfg.max_iterations : 3}
+              disabled={readOnly}
+              onChange={(e) => {
+                const maxIter = Math.max(1, Math.min(20, parseInt(e.target.value, 10) || 3));
+                const next = { ...cfg, max_iterations: maxIter };
+                onChange({ config: JSON.stringify(next) });
+              }}
+            />
+          </Field>
           </>
         )}
 
