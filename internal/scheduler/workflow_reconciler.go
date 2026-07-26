@@ -1287,18 +1287,18 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, worker db.WorkerVersionRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, error) {
 	var sb strings.Builder
 
-	// 0. Role reinforcement — a single-line, emphatic statement at the
-	// absolute top so the worker never loses sight of its job.
-	var workerPurpose string
-	var wkrRow db.WorkerRow
-	if err := tx.QueryRow(ctx,
-		`SELECT purpose FROM workers WHERE id = $1 AND tenant_id = $2`,
-		worker.WorkerID, tenantID,
-	).Scan(&wkrRow.Purpose); err == nil {
-		workerPurpose = strings.TrimSpace(wkrRow.Purpose)
+	// 0. Worker identity — role, skills, behavior, and AGENTS.md.
+	if r := strings.TrimSpace(worker.Role); r != "" {
+		fmt.Fprintf(&sb, "# Role\n\n%s\n\n", r)
 	}
-	if workerPurpose != "" {
-		fmt.Fprintf(&sb, "# Role\n\n%s\n\n", workerPurpose)
+	if s := strings.TrimSpace(worker.Skills); s != "" {
+		fmt.Fprintf(&sb, "## Skills\n\n%s\n\n", s)
+	}
+	if b := strings.TrimSpace(worker.Behavior); b != "" {
+		fmt.Fprintf(&sb, "## Behavior\n\n%s\n\n", b)
+	}
+	if a := strings.TrimSpace(worker.AgentsMD); a != "" {
+		fmt.Fprintf(&sb, "## AGENTS.md\n\n%s\n\n", a)
 	}
 
 	// 1. Task.
