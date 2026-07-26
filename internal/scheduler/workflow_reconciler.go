@@ -205,6 +205,42 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			runByID[sr.StepID] = sr
 		}
 
+		// Phase 0: Handle rejected approval steps (those with
+		// _decision: "rejected" and a loop_branch in config). Trigger
+		// re-entry of the chain from loop_branch so the work gets
+		// re-evaluated.
+		for _, sr := range runByID {
+			if sr.SupersededBy != "" || sr.StepKind != domain.StepKindApproval {
+				continue
+			}
+			if sr.Status != domain.StepRunSucceeded {
+				continue
+			}
+			var result struct {
+				Decision string `json:"_decision"`
+			}
+			if err := json.Unmarshal(sr.Result, &result); err != nil || result.Decision != "rejected" {
+				continue
+			}
+			step, ok := stepByID[sr.StepID]
+			if !ok {
+				continue
+			}
+			cfg := parseApprovalConfig(step.Config)
+			if cfg.LoopBranch == "" || cfg.MaxIterations < 1 {
+				continue
+			}
+			currentIter := currentLoopIteration(runByID, cfg.LoopBranch)
+			if currentIter >= cfg.MaxIterations {
+				return r.failStep(ctx, ttx.Tx, tenantID, run, sr, runByID,
+					fmt.Errorf("approval step %q: max_iterations (%d) exhausted (rejected)", step.Name, cfg.MaxIterations))
+			}
+			if err := r.approvalReenter(ctx, ttx.Tx, tenantID, run, sr, step, runByID, cfg.LoopBranch, currentIter, time.Now().UTC(), steps); err != nil {
+				return err
+			}
+			madeProgress = true
+		}
+
 		// Progress pending steps whose deps are satisfied → ready.
 		// Use runByID (which reflects in-pass updates) for the
 		// dependency check so steps progressed by Phase 2/3 in a
@@ -327,12 +363,16 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			dispatchedWIDs = append(dispatchedWIDs, stepWIDs...)
 		}
 
-		// Poll running task steps: check their linked WorkItem status.
+		// Poll running task steps + worker-backed approval steps: check
+		// their linked WorkItem status.
 		for i, sr := range stepRuns {
 			if sr.SupersededBy != "" {
 				continue
 			}
-			if sr.Status != domain.StepRunRunning || sr.StepKind != domain.StepKindTask {
+			if sr.Status != domain.StepRunRunning {
+				continue
+			}
+			if sr.StepKind != domain.StepKindTask && sr.StepKind != domain.StepKindApproval {
 				continue
 			}
 			stepCfg := ""
@@ -969,6 +1009,8 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		}
 
 	case domain.StepKindApproval:
+		cfg := parseApprovalConfig(step.Config)
+
 		// Capture upstream context from preceding steps for the reviewer.
 		upstreamWorker := ""
 		upstreamSummary := ""
@@ -1016,31 +1058,99 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 				}
 			}
 		}
-		resultPayload, _ := json.Marshal(map[string]any{
-			"_work_item_id": upstreamWorkItemID,
-			"_review_context": map[string]any{
-				"_upstream_worker":  upstreamWorker,
-				"_upstream_summary": upstreamSummary,
-				"_upstream_files":   upstreamFiles,
-				"_ac":               ac,
-			},
-			"_decision": "pending",
-		})
-		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-			Status:    strPtr(domain.StepRunApprovalPending),
-			StartedAt: &now,
-			Result:    &resultPayload,
-		})
-		if err != nil {
-			return fmt.Errorf("mark approval step pending: %w", err)
+
+		if cfg.Reviewer == "worker" && cfg.WorkerRef != "" {
+			// Worker-backed approval: dispatch like a task step to the
+			// configured approver worker. The worker's output should
+			// contain _decision: "approved" or _decision: "rejected".
+			workerRef, _ := json.Marshal(map[string]any{
+				"worker_id": cfg.WorkerRef,
+				"version":   cfg.WorkerVersion,
+			})
+			wid := db.NewID()
+			now := time.Now().UTC()
+			wi := db.WorkItemRow{
+				ID:                 wid,
+				TenantID:           tenantID,
+				ProjectID:          run.ProjectID,
+				Kind:               "task",
+				Title:              "Approval: " + step.Name + " (" + run.WorkflowID + ")",
+				Description:        "Worker-backed approval gate. Review the upstream context and approve or reject.",
+				Status:             domain.WorkItemReady,
+				WorkflowRunID:      run.ID,
+				WorkflowStepID:     sr.StepID,
+				AssignedWorkerRef:  workerRef,
+			}
+			if _, err := db.CreateWorkItem(ctx, tx, wi); err != nil {
+				return fmt.Errorf("create approval work item: %w", err)
+			}
+			workerVer, err := db.GetLatestWorkerVersion(ctx, tx, tenantID, cfg.WorkerRef, true)
+			if err != nil {
+				return fmt.Errorf("load approver worker version: %w", err)
+			}
+			composite, err := r.buildCompositePrompt(ctx, tx, tenantID, wi, workerVer, allSteps, runs)
+			if err != nil {
+				return fmt.Errorf("build composite prompt for approver: %w", err)
+			}
+			pcJSON, _ := json.Marshal(map[string]any{"composite": composite})
+			assignFields := db.UpdateWorkItemFields{
+				AssignedWorkerRef: &workerRef,
+				WorkflowID:        &run.WorkflowID,
+				WorkflowRunID:     &run.ID,
+				WorkflowStepID:    &sr.StepID,
+				Status:            strPtr(domain.WorkItemReady),
+				PromptContext:     &pcJSON,
+			}
+			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, wid, 1, assignFields); err != nil {
+				return fmt.Errorf("assign approver work item: %w", err)
+			}
+			if dispatchedWIDs != nil {
+				*dispatchedWIDs = []string{wid}
+			}
+			resultPayload, _ := json.Marshal(map[string]any{
+				"_work_item_id":    wid,
+				"_upstream_worker": upstreamWorker,
+				"_decision":        "pending",
+			})
+			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:    strPtr(domain.StepRunRunning),
+				StartedAt: &now,
+				Result:    &resultPayload,
+			})
+			if err != nil {
+				return fmt.Errorf("mark approval step running: %w", err)
+			}
+			runs[step.ID] = updated
+			if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepStarted, run, updated); err != nil {
+				return fmt.Errorf("enqueue approval step_started: %w", err)
+			}
+		} else {
+			// Human approval: set to approval_pending and wait for
+			// human review via the ApproveStep RPC.
+			resultPayload, _ := json.Marshal(map[string]any{
+				"_work_item_id": upstreamWorkItemID,
+				"_review_context": map[string]any{
+					"_upstream_worker":  upstreamWorker,
+					"_upstream_summary": upstreamSummary,
+					"_upstream_files":   upstreamFiles,
+					"_ac":               ac,
+				},
+				"_decision": "pending",
+			})
+			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:    strPtr(domain.StepRunApprovalPending),
+				StartedAt: &now,
+				Result:    &resultPayload,
+			})
+			if err != nil {
+				return fmt.Errorf("mark approval step pending: %w", err)
+			}
+			runs[step.ID] = updated
+			if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepApproval, run, updated); err != nil {
+				return fmt.Errorf("enqueue step_approval: %w", err)
+			}
+			r.writeApprovalInitFiles(ctx, tx, tenantID, run, updated, upstreamWorker, upstreamSummary, upstreamFiles)
 		}
-		runs[step.ID] = updated
-		if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepApproval, run, updated); err != nil {
-			return fmt.Errorf("enqueue step_approval: %w", err)
-		}
-		// Write initial .orchicon/ files so the downstream worker
-		// sees "pending" while waiting for human review.
-		r.writeApprovalInitFiles(ctx, tx, tenantID, run, updated, upstreamWorker, upstreamSummary, upstreamFiles)
 
 	default:
 		// Unknown kind → fail the step rather than stall the run.
@@ -1957,6 +2067,62 @@ func currentLoopIteration(runs map[string]db.WorkflowStepRunRow, stepID string) 
 		}
 	}
 	return maxIter
+}
+
+// approvalConfig is the step-level configuration for APPROVAL steps.
+type approvalConfig struct {
+	Reviewer      string `json:"reviewer"`
+	WorkerRef     string `json:"worker_ref"`
+	WorkerVersion int    `json:"worker_version"`
+
+	LoopBranch    string `json:"loop_branch"`
+	MaxIterations int    `json:"max_iterations"`
+
+	DecisionField string `json:"decision_field"`
+	SuccessValue  string `json:"success_value"`
+	FailureValue  string `json:"failure_value"`
+}
+
+func parseApprovalConfig(cfgJSON string) approvalConfig {
+	cfg := approvalConfig{
+		DecisionField: "_decision",
+		SuccessValue:  "approved",
+		FailureValue:  "rejected",
+	}
+	json.Unmarshal([]byte(cfgJSON), &cfg)
+	return cfg
+}
+
+// approvalReenter creates a new chain of step runs from loop_branch to the
+// approval step, supersedes the current approval run, and creates a new
+// PENDING iteration. Downstream steps are blocked because the new approval
+// iteration is PENDING (not SUCCEEDED).
+func (r *WorkflowReconciler) approvalReenter(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, step workflow.StepWire, runs map[string]db.WorkflowStepRunRow, loopBranch string, currentIter int, now time.Time, allSteps []workflow.StepWire) error {
+	nextIter := currentIter + 1
+
+	chainIDs := chainStepIDs(allSteps, loopBranch, step.ID)
+	if err := r.createChainRuns(ctx, tx, tenantID, run.ID, chainIDs, nextIter, allSteps); err != nil {
+		return fmt.Errorf("approval step %q: create chain runs: %w", step.Name, err)
+	}
+
+	supersededResult, _ := json.Marshal(map[string]string{"_decision": "rejected", "_loop": "re-entered"})
+	superseded, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+		EndedAt:      &now,
+		SupersededBy: strPtr(db.NewID()),
+		Result:       &supersededResult,
+	})
+	if err != nil {
+		return fmt.Errorf("approval step %q: supersede: %w", step.Name, err)
+	}
+	runs[step.ID] = superseded
+	if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, superseded); err != nil {
+		return fmt.Errorf("enqueue approval step_succeeded (supersede): %w", err)
+	}
+
+	r.log.Info("approval re-entered",
+		"run", run.ID, "step", step.ID, "loop_branch", loopBranch,
+		"iteration", nextIter, "chain", chainIDs)
+	return nil
 }
 
 // listStepRunsByStepID fetches all step runs for a given run+step.
