@@ -274,6 +274,7 @@ export function useUpdateWorkerVersion() {
       return res.version as WorkerVersion;
     },
     onSuccess: (version) => {
+      qc.invalidateQueries({ queryKey: workerKeys.detail(version.workerId) });
       qc.invalidateQueries({ queryKey: workerKeys.versions(version.workerId) });
       qc.invalidateQueries({ queryKey: [...workerKeys.all, "version", version.id] as const });
     },
@@ -290,6 +291,7 @@ export function useCreateWorkerVersion() {
       return res.version as WorkerVersion;
     },
     onSuccess: (version) => {
+      qc.invalidateQueries({ queryKey: workerKeys.detail(version.workerId) });
       qc.invalidateQueries({ queryKey: workerKeys.versions(version.workerId) });
       qc.invalidateQueries({ queryKey: [...workerKeys.all, "version", version.id] as const });
     },

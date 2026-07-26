@@ -122,19 +122,19 @@ function WorkerDetailPage() {
       contextSources: "[]",
       versionNote: "",
     },
-    values: latestVersion
+    values: (selectedVersion ?? latestVersion)
       ? {
-          runtimeRef: latestVersion.runtimeRef ?? "",
-          modelRef: latestVersion.modelRef ?? "",
-          role: latestVersion.systemPrompt?.match(/# Role\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
-          skills: latestVersion.systemPrompt?.match(/# Skills\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
-          behavior: latestVersion.systemPrompt?.match(/# Behavior\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
-          agentsMd: latestVersion.systemPrompt?.match(/# AGENTS\.md\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
-          permissions: latestVersion.permissions || DEFAULT_PERMISSIONS,
-          gatedTools: latestVersion.gatedTools || "[]",
-          budgetOverrides: latestVersion.budgetOverrides || DEFAULT_BUDGETS,
-          contextSources: latestVersion.contextSources || "[]",
-          versionNote: latestVersion.versionNote ?? "",
+          runtimeRef: (selectedVersion ?? latestVersion)!.runtimeRef ?? "",
+          modelRef: (selectedVersion ?? latestVersion)!.modelRef ?? "",
+          role: (selectedVersion ?? latestVersion)!.systemPrompt?.match(/# Role\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
+          skills: (selectedVersion ?? latestVersion)!.systemPrompt?.match(/# Skills\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
+          behavior: (selectedVersion ?? latestVersion)!.systemPrompt?.match(/# Behavior\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
+          agentsMd: (selectedVersion ?? latestVersion)!.systemPrompt?.match(/# AGENTS\.md\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
+          permissions: (selectedVersion ?? latestVersion)!.permissions || DEFAULT_PERMISSIONS,
+          gatedTools: (selectedVersion ?? latestVersion)!.gatedTools || "[]",
+          budgetOverrides: (selectedVersion ?? latestVersion)!.budgetOverrides || DEFAULT_BUDGETS,
+          contextSources: (selectedVersion ?? latestVersion)!.contextSources || "[]",
+          versionNote: (selectedVersion ?? latestVersion)!.versionNote ?? "",
         }
       : undefined,
   });
@@ -228,7 +228,7 @@ function WorkerDetailPage() {
           )}
           {draftVersion && viewMode === "detail" && !editing && !selectedVersionId && (
             <>
-              <Button onClick={() => setEditing(true)}>Edit</Button>
+              <Button onClick={() => { setEditing(true); setSelectedVersionId(draftVersion.id); }}>Edit</Button>
               <Button
                 onClick={() => {
                   handleSubmit(async (formData) => {
@@ -398,7 +398,7 @@ function WorkerDetailPage() {
           <CardHeader>
             <CardDescription>Runtime</CardDescription>
             <CardTitle className="break-all text-base font-mono text-sm">
-              {latestVersion?.runtimeRef || "—"}
+              {(selectedVersion ?? latestVersion)?.runtimeRef || "—"}
             </CardTitle>
           </CardHeader>
         </Card>
@@ -406,7 +406,7 @@ function WorkerDetailPage() {
           <CardHeader>
             <CardDescription>Model</CardDescription>
             <CardTitle className="break-all text-base font-mono text-sm">
-              {latestVersion?.modelRef || "—"}
+              {(selectedVersion ?? latestVersion)?.modelRef || "—"}
             </CardTitle>
           </CardHeader>
         </Card>
