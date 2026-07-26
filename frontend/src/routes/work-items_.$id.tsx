@@ -319,7 +319,7 @@ function WorkItemDetailPage() {
                 id="scheduledStart"
                 type="datetime-local"
                 value={editScheduledStartAt}
-                onChange={(e) => setEditScheduledStartAt(e.target.value)}
+                onChange={(e) => { setEditScheduledStartAt(e.target.value); if (e.target.value) setEditAutoStartWorkflow(false); }}
                 className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm"
               />
             </div>
@@ -328,7 +328,7 @@ function WorkItemDetailPage() {
                 type="checkbox"
                 id="autoStart"
                 checked={editAutoStartWorkflow}
-                onChange={(e) => setEditAutoStartWorkflow(e.target.checked)}
+                onChange={(e) => { setEditAutoStartWorkflow(e.target.checked); if (e.target.checked) setEditScheduledStartAt(""); }}
                 className="h-4 w-4 rounded border-input"
               />
               <Label htmlFor="autoStart">Start immediately on save</Label>

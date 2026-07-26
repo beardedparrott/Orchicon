@@ -340,6 +340,13 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
+	// Auto-start workflow if the work item has a binding, no scheduled
+	// time, and auto_start_workflow is true (same logic as CreateWorkItem).
+	if updated.WorkflowID != nil && *updated.WorkflowID != "" && updated.ScheduledStartAt == nil && updated.AutoStartWorkflow && s.startWorkflowFn != nil {
+		if err := s.startWorkflowFn(ctx, tenantID, *updated.WorkflowID, updated.ProjectID, updated.ID); err != nil {
+			s.log.Warn("auto-start workflow after update failed", "work_item", updated.ID, "error", err)
+		}
+	}
 	s.log.Info("work item updated", "id", updated.ID, "version", updated.Version)
 	return connect.NewResponse(&apiv1.UpdateWorkItemResponse{WorkItem: rowToProto(updated)}), nil
 }
