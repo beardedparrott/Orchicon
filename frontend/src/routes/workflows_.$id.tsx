@@ -469,9 +469,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
     try { return JSON.parse(localStorage.getItem('orchicon:mmPos') ?? '{"top":10,"right":10}'); }
     catch { return { top: 10, right: 10 }; }
   });
-  const mmDrag = useRef<{ startX: number; startY: number; startTop: number; startRight: number } | null>(null);
-  const mmPosRef = useRef(mmPos);
-  mmPosRef.current = mmPos;
+  useEffect(() => { localStorage.setItem('orchicon:mmPos', JSON.stringify(mmPos)); }, [mmPos]);
   const updateSelected = (patch: Partial<StepData>) => {
     if (!selectedNode) return;
     setNodes((nds) =>
@@ -921,62 +919,20 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                     )}
                   </button>
                 </Controls>
-                <div
+                <MiniMap
+                  pannable
+                  zoomable
+                  nodeStrokeWidth={2}
                   style={{
                     position: 'absolute',
                     top: mmPos.top,
                     right: mmPos.right,
                     width: 180,
-                    height: 130,
-                    resize: 'both',
-                    overflow: 'hidden',
-                    minWidth: 120,
-                    minHeight: 100,
-                    maxWidth: 400,
-                    maxHeight: 400,
+                    height: 120,
                     zIndex: 10,
-                    background: 'transparent',
                   }}
-                >
-                  <div
-                    style={{
-                      height: 12,
-                      cursor: mmDrag.current ? 'grabbing' : 'grab',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      userSelect: 'none',
-                    }}
-                    onMouseDown={(e) => {
-                      e.stopPropagation();
-                      const el = (e.currentTarget as HTMLElement).parentElement!;
-                      const r = el.getBoundingClientRect();
-                      mmDrag.current = {
-                        startX: e.clientX, startY: e.clientY,
-                        startTop: r.top, startRight: window.innerWidth - r.right,
-                      };
-                      const onMove = (ev: MouseEvent) => {
-                        if (!mmDrag.current) return;
-                        const dx = ev.clientX - mmDrag.current.startX;
-                        const dy = ev.clientY - mmDrag.current.startY;
-                        const t = Math.max(0, mmDrag.current.startTop + dy);
-                        const ri = Math.max(0, mmDrag.current.startRight - dx);
-                        setMmPos({ top: t, right: ri });
-                        el.style.top = t + 'px';
-                        el.style.right = ri + 'px';
-                      };
-                      const onUp = () => {
-                        mmDrag.current = null;
-                        localStorage.setItem('orchicon:mmPos', JSON.stringify(mmPosRef.current));
-                        document.removeEventListener('mousemove', onMove);
-                        document.removeEventListener('mouseup', onUp);
-                      };
-                      document.addEventListener('mousemove', onMove);
-                      document.addEventListener('mouseup', onUp);
-                    }}
-                  >
-                    <div style={{ width: 24, height: 3, borderRadius: 2, background: '#999' }} />
-                  </div>
+                  className="!bg-background/90 !border-border !shadow-lg"
+                />
                   <MiniMap
                     pannable
                     zoomable
