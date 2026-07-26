@@ -41,6 +41,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -1346,10 +1347,10 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 
 	// Workflow-aware role context: tell the worker where they fit in the
 	// overall workflow so they don't perform work meant for other steps.
-	// Only count worker-facing steps (task and approval). Routing nodes
-	// like loop_decision, decision, parallel, project, and work_item are
-	// invisible to the worker — they don't correspond to a person's work.
-	type stepPos struct{ idx int; name string }
+	// Count worker-facing steps (task and approval) in DAG/canvas order
+	// (top-to-bottom, left-to-right). Routing nodes like loop_decision,
+	// decision, parallel, project, and work_item are invisible.
+	type stepPos struct{ idx int; name string; id string }
 	var activeSteps []stepPos
 	myPos := -1
 	myName := ""
@@ -1357,11 +1358,27 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		if s.Kind != "task" && s.Kind != "approval" {
 			continue
 		}
-		pos := len(activeSteps)
-		activeSteps = append(activeSteps, stepPos{pos, s.Name})
-		if s.ID == wi.WorkflowStepID {
-			myPos = pos
-			myName = s.Name
+		activeSteps = append(activeSteps, stepPos{0, s.Name, s.ID})
+	}
+	// Sort by canvas position (Y first for row-major, then X) so the
+	// ordering matches the visual DAG layout, not JSON insertion order.
+	sort.SliceStable(activeSteps, func(i, j int) bool {
+		// Find the matching StepWire for each active step to get its position.
+		var si, sj workflow.StepWire
+		for _, s := range allSteps {
+			if s.ID == activeSteps[i].id { si = s }
+			if s.ID == activeSteps[j].id { sj = s }
+		}
+		if si.PositionY != sj.PositionY {
+			return si.PositionY < sj.PositionY
+		}
+		return si.PositionX < sj.PositionX
+	})
+	for i, s := range activeSteps {
+		activeSteps[i].idx = i
+		if s.id == wi.WorkflowStepID {
+			myPos = i
+			myName = s.name
 		}
 	}
 	if myPos >= 0 && len(activeSteps) > 0 {
