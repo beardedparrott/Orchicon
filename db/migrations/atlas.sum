@@ -1,4 +1,4 @@
-h1:g+d8Y+va/zPtqwA/SmIr5Cns9U8CHhgNs1Dk8MGWQMY=
+h1:H7OkQSQ6Y+yoh/Tjq3bNSW5zBm+omI1b3z/xnZbhJGY=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712223028_add_outbox.sql h1:tlrMIs8ABXFMszWNaYd7gxjn3p42rmqrZeoxOJ1Vqvg=
 20260713012808_workers_workitems.sql h1:3li9AejCZaj9bcZz8wKOw0GG7UER3Uz9jbSNKF74Zo8=
@@ -33,4 +33,5 @@ h1:g+d8Y+va/zPtqwA/SmIr5Cns9U8CHhgNs1Dk8MGWQMY=
 20260728000000_seed_ai_approver_and_update_template.sql h1:r8boRVLP9GWt+DdDO5WLlO58O9z15onDniOOjwA3TdQ=
 20260729000000_set_worker_purposes.sql h1:tDHklRkpMJIewSaMVkYs49Viz0R/jaCf+xe5Md3NRe0=
 20260730000000_unify_worker_decision_format.sql h1:qDXjBOSwrIwLY7vDS7fLgyd7uz/3oKf7ABvzbu+SdtM=
-20260731000000_fix_worker_agents_md.sql h1:uJp6y0/M6vgBecFQHBaPBHxMWpACE6d8+L2JRq0SRUs=
+20260731000000_fix_worker_agents_md.sql h1:vqtWqRyX0jUpw9poM6Q7girTLZ7uWU18yegzZmImULY=
+20260731000001_clear_sse_agents_md.sql h1:UD5/TAImldPECacyW0PulG/2kTqTLFhFv90aFQWiDzI=
