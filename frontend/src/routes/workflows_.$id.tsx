@@ -924,7 +924,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                   }}
                   className="!bg-background/90 !border-border !shadow-lg"
                   onMouseDown={(e) => {
-                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    const rect = (e.currentTarget as unknown as HTMLElement).getBoundingClientRect();
                     mmDrag.current = {
                       startX: e.clientX, startY: e.clientY,
                       startTop: rect.top, startRight: window.innerWidth - rect.right,
