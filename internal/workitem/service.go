@@ -344,11 +344,23 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
 	// Auto-start workflow if the work item has a binding, no scheduled
-	// time, auto_start_workflow is true, and no run has been started yet
-	// (same logic as CreateWorkItem).
-	if updated.WorkflowID != nil && *updated.WorkflowID != "" && updated.ScheduledStartAt == nil && updated.AutoStartWorkflow && updated.WorkflowRunID == "" && s.startWorkflowFn != nil {
-		if err := s.startWorkflowFn(ctx, tenantID, *updated.WorkflowID, updated.ProjectID, updated.ID); err != nil {
-			s.log.Warn("auto-start workflow after update failed", "work_item", updated.ID, "error", err)
+	// time, and auto_start_workflow is true. If a previous run exists it
+	// must be terminal (completed/failed/aborted) — active runs are not
+	// duplicated.
+	if updated.WorkflowID != nil && *updated.WorkflowID != "" && updated.ScheduledStartAt == nil && updated.AutoStartWorkflow && s.startWorkflowFn != nil {
+		shouldStart := true
+		if updated.WorkflowRunID != "" {
+			var runStatus string
+			if err := s.pool.Pool.QueryRow(ctx, `SELECT status FROM workflow_runs WHERE id = $1 AND tenant_id = $2`, updated.WorkflowRunID, tenantID).Scan(&runStatus); err == nil {
+				if runStatus != domain.WorkflowRunCompleted && runStatus != domain.WorkflowRunFailed && runStatus != domain.WorkflowRunAborted {
+					shouldStart = false
+				}
+			}
+		}
+		if shouldStart {
+			if err := s.startWorkflowFn(ctx, tenantID, *updated.WorkflowID, updated.ProjectID, updated.ID); err != nil {
+				s.log.Warn("auto-start workflow after update failed", "work_item", updated.ID, "error", err)
+			}
 		}
 	}
 	s.log.Info("work item updated", "id", updated.ID, "version", updated.Version)
