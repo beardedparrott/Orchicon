@@ -974,6 +974,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		upstreamSummary := ""
 		var upstreamFiles []string
 		ac := ""
+		upstreamWorkItemID := ""
 		for _, depID := range step.DependsOn {
 			us, ok := runs[depID]
 			if !ok || us.Status != domain.StepRunSucceeded {
@@ -985,6 +986,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			if err := json.Unmarshal(us.Result, &upResult); err != nil || upResult.WorkItemID == "" {
 				continue
 			}
+			upstreamWorkItemID = upResult.WorkItemID
 			wi, err := db.GetWorkItem(ctx, tx, tenantID, upResult.WorkItemID)
 			if err != nil {
 				continue
@@ -1015,6 +1017,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			}
 		}
 		resultPayload, _ := json.Marshal(map[string]any{
+			"_work_item_id": upstreamWorkItemID,
 			"_review_context": map[string]any{
 				"_upstream_worker":  upstreamWorker,
 				"_upstream_summary": upstreamSummary,

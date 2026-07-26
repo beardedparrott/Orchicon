@@ -135,6 +135,12 @@ func (s *Service) ApproveStep(ctx context.Context, req *connect.Request[apiv1.Ap
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("enqueue step event: %w", err))
 	}
 
+	// Propagate the decision to the bound work item's results so
+	// downstream loop_decision steps can read it.
+	if err := s.writeDecisionToWorkItem(ctx, ttx.Tx, tenantID, sr, decisionStatus); err != nil {
+		s.log.Warn("write decision to work item", "step_run", sr.ID, "error", err)
+	}
+
 	// Write .orchicon/ files so downstream workers read the decision.
 	if err := s.writeApprovalOrchiconFiles(ctx, ttx.Tx, tenantID, sr, msg.Approved, msg.Reason); err != nil {
 		s.log.Warn("write approval .orchicon files", "step_run", sr.ID, "error", err)
@@ -187,6 +193,37 @@ func (s *Service) writeApprovalOrchiconFiles(ctx context.Context, tx pgx.Tx, ten
 	writeFile("status", map[bool]string{true: "success", false: "failure"}[approved])
 	writeFile("summary", reason)
 
+	return nil
+}
+
+// writeDecisionToWorkItem propagates the approval decision to the bound
+// work item's results so downstream loop_decision steps can read it.
+func (s *Service) writeDecisionToWorkItem(ctx context.Context, tx pgx.Tx, tenantID string, sr db.WorkflowStepRunRow, decision string) error {
+	var stepResult struct {
+		WorkItemID string `json:"_work_item_id"`
+	}
+	if err := json.Unmarshal(sr.Result, &stepResult); err != nil || stepResult.WorkItemID == "" {
+		return nil // no work item bound — nothing to propagate
+	}
+	wi, err := db.GetWorkItem(ctx, tx, tenantID, stepResult.WorkItemID)
+	if err != nil {
+		return fmt.Errorf("get work item: %w", err)
+	}
+	var results map[string]any
+	if len(wi.Results) > 0 {
+		json.Unmarshal(wi.Results, &results)
+	}
+	if results == nil {
+		results = make(map[string]any)
+	}
+	results["_decision"] = decision
+	updatedResults, _ := json.Marshal(results)
+	_, err = db.UpdateWorkItem(ctx, tx, tenantID, wi.ID, wi.Version, db.UpdateWorkItemFields{
+		Results: &updatedResults,
+	})
+	if err != nil {
+		return fmt.Errorf("update work item results: %w", err)
+	}
 	return nil
 }
 
