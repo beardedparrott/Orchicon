@@ -343,7 +343,6 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
           nodesDraggable={false}
           nodesConnectable={false}
           elementsSelectable={false}
-          panOnDrag={false}
         >
           <Background />
           <Controls showInteractive={false} />
