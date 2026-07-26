@@ -466,14 +466,14 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   // --- inline property editing ---
   const selectedNode = nodes.find((n) => n.id === selectedId) ?? null;
   const [mmPos, setMmPos] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('orchicon:mmPos') ?? '{"top":10,"right":10}'); }
+    try { return JSON.parse(localStorage.getItem('orchicon:mmPos2') ?? '{"top":10,"right":10}'); }
     catch { return { top: 10, right: 10 }; }
   });
   const [mmSize, setMmSize] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('orchicon:mmSize') ?? '{"w":180,"h":120}'); }
-    catch { return { w: 180, h: 120 }; }
+    try { return JSON.parse(localStorage.getItem('orchicon:mmSize') ?? '{"w":200,"h":140}'); }
+    catch { return { w: 200, h: 140 }; }
   });
-  useEffect(() => { localStorage.setItem('orchicon:mmPos', JSON.stringify(mmPos)); }, [mmPos]);
+  useEffect(() => { localStorage.setItem('orchicon:mmPos2', JSON.stringify(mmPos)); }, [mmPos]);
   useEffect(() => { localStorage.setItem('orchicon:mmSize', JSON.stringify(mmSize)); }, [mmSize]);
   const updateSelected = (patch: Partial<StepData>) => {
     if (!selectedNode) return;
@@ -935,6 +935,10 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                     width: mmSize.w,
                     height: mmSize.h,
                     zIndex: 10,
+                    border: '2px solid rgba(150,150,150,0.35)',
+                    borderRadius: 6,
+                    boxSizing: 'border-box',
+                    overflow: 'hidden',
                   }}
                   className="!bg-background/95 !shadow-lg"
                 />
@@ -944,24 +948,9 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                     top: mmPos.top,
                     right: mmPos.right,
                     width: mmSize.w,
-                    height: mmSize.h,
-                    zIndex: 11,
-                    pointerEvents: 'none',
-                    border: '2px solid rgba(150,150,150,0.4)',
-                    borderRadius: 6,
-                    boxSizing: 'border-box',
-                  }}
-                />
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: mmPos.top,
-                    right: mmPos.right,
-                    width: mmSize.w,
                     height: 14,
                     cursor: 'grab',
-                    zIndex: 12,
-                    pointerEvents: 'auto',
+                    zIndex: 11,
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
@@ -978,25 +967,25 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                     document.addEventListener('mouseup', onUp);
                   }}
                 >
-                  <div style={{ width: 24, height: 3, borderRadius: 2, background: '#999', opacity: 0.5 }} />
+                  <div style={{ width: 24, height: 3, borderRadius: 2, background: 'rgba(150,150,150,0.5)' }} />
                 </div>
                 <div
                   style={{
                     position: 'absolute',
-                    top: mmPos.top + mmSize.h - 16,
-                    right: mmPos.right,
-                    width: 16,
-                    height: 16,
+                    top: mmPos.top + mmSize.h - 14,
+                    right: mmPos.right + 2,
+                    width: 14,
+                    height: 14,
                     cursor: 'nwse-resize',
-                    zIndex: 12,
+                    zIndex: 11,
                   }}
                   onMouseDown={(e) => {
                     e.stopPropagation();
                     const startX = e.clientX, startY = e.clientY;
                     const sW = mmSize.w, sH = mmSize.h;
                     const onMove = (ev: MouseEvent) => {
-                      const w = Math.max(120, Math.min(400, sW + (ev.clientX - startX)));
-                      const h = Math.max(80, Math.min(300, sH + (ev.clientY - startY)));
+                      const w = Math.max(160, Math.min(500, sW + (ev.clientX - startX)));
+                      const h = Math.max(100, Math.min(400, sH + (ev.clientY - startY)));
                       setMmSize({ w, h });
                     };
                     const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
@@ -1004,8 +993,8 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                     document.addEventListener('mouseup', onUp);
                   }}
                 >
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                    <path d="M16 14 L14 16 M16 10 L10 16 M16 6 L6 16 M16 2 L2 16" stroke="#999" strokeWidth="1.5" strokeLinecap="round"/>
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                    <path d="M14 12 L12 14 M14 8 L8 14 M14 4 L4 14" stroke="rgba(150,150,150,0.5)" strokeWidth="1.5" strokeLinecap="round"/>
                   </svg>
                 </div>
               </ReactFlow>
