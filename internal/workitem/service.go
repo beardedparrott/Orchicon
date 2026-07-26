@@ -305,6 +305,9 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if msg.AutoStartWorkflow != nil {
 		v := *msg.AutoStartWorkflow
 		fields.AutoStartWorkflow = &v
+		if v && msg.ScheduledStartAt == nil {
+			fields.ClearScheduledStartAt = true
+		}
 	}
 	if msg.WorkflowRunId != nil {
 		v := *msg.WorkflowRunId
