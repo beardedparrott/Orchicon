@@ -978,6 +978,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                     <div style={{ width: 24, height: 3, borderRadius: 2, background: '#999' }} />
                   </div>
                   <MiniMap
+                    pannable
                     zoomable
                     nodeStrokeWidth={2}
                     style={{ width: '100%', height: 'calc(100% - 12px)' }}
