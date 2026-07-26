@@ -135,6 +135,7 @@ export function usePublishWorkerVersion() {
       qc.invalidateQueries({ queryKey: workerKeys.list() });
       qc.invalidateQueries({ queryKey: workerKeys.detail(data.worker.id) });
       qc.invalidateQueries({ queryKey: workerKeys.versions(data.worker.id) });
+      qc.invalidateQueries({ queryKey: [...workerKeys.all, "version", data.version.id] as const });
     },
   });
 }
@@ -274,6 +275,7 @@ export function useUpdateWorkerVersion() {
     },
     onSuccess: (version) => {
       qc.invalidateQueries({ queryKey: workerKeys.versions(version.workerId) });
+      qc.invalidateQueries({ queryKey: [...workerKeys.all, "version", version.id] as const });
     },
   });
 }
@@ -289,6 +291,7 @@ export function useCreateWorkerVersion() {
     },
     onSuccess: (version) => {
       qc.invalidateQueries({ queryKey: workerKeys.versions(version.workerId) });
+      qc.invalidateQueries({ queryKey: [...workerKeys.all, "version", version.id] as const });
     },
   });
 }
