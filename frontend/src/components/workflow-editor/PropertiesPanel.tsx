@@ -52,7 +52,7 @@ export function PropertiesPanel({
         next.reviewer = "human";
         changed = true;
       }
-      if (typeof cfg.loop_branch === "string" && cfg.loop_branch && typeof cfg.max_iterations !== "number") {
+      if (typeof cfg.max_iterations !== "number") {
         next.max_iterations = 3;
         changed = true;
       }

@@ -440,7 +440,9 @@ function EditorInner({ workflowId }: { workflowId: string }) {
       const initialConfig =
         kind === STEP_KIND.RECOVER
           ? JSON.stringify({ strategy: "summarize_restart", max_retries: 5, retry_delay_seconds: 10 })
-          : "{}";
+          : kind === STEP_KIND.APPROVAL
+            ? JSON.stringify({ reviewer: "human", max_iterations: 3 })
+            : "{}";
       const data: StepData = {
         kind,
         name: name ?? `step-${id.slice(5, 9)}`,
