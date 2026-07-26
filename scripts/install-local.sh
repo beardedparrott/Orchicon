@@ -26,14 +26,7 @@ echo "▸ Installing to $DEST/orchicon…"
 cp bin/orchicon "$DEST/orchicon"
 chmod +x "$DEST/orchicon"
 
-echo "▸ Applying pending migrations…"
-if make migrate 2>/dev/null; then
-  echo "  ✓ Migrations applied"
-else
-  echo "  ! Could not apply migrations (Postgres might not be running)"
-  echo "    They will be applied automatically on:  orchicon start"
-fi
-
 echo "  ✓ orchicon v$(bin/orchicon version) installed at $DEST/orchicon"
 echo ""
 echo "Run:  orchicon start"
+echo "  (migrations apply automatically on start)"
