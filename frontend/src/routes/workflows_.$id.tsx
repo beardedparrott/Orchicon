@@ -329,8 +329,8 @@ function EditorInner({ workflowId }: { workflowId: string }) {
       const accent = KIND_ACCENT[srcKind] ?? "sky";
       const edgeStyle = { stroke: `var(--kind-${accent})` };
       const edgeClass = ACCENT_STROKE[accent] ?? "";
-      // For loop decision nodes, auto-set the config from the handle used.
-      if (srcKind === STEP_KIND.LOOP_DECISION && conn.sourceHandle) {
+      // For loop decision / approval nodes, auto-set the config from the handle used.
+      if ((srcKind === STEP_KIND.LOOP_DECISION || srcKind === STEP_KIND.APPROVAL) && conn.sourceHandle) {
         const targetId = conn.target!;
         const cfg = parseConfig(srcNode?.data?.config ?? "{}");
         const key =
@@ -517,21 +517,29 @@ function EditorInner({ workflowId }: { workflowId: string }) {
           `Step "${d.name || n.id}" is a loop decision but has no max iterations set.`,
         );
       }
+      if (d.kind === STEP_KIND.APPROVAL && cfg.loop_branch && !cfg.max_iterations) {
+        errs.push(
+          `Step "${d.name || n.id}" has a loop branch set but no max iterations.`,
+        );
+      }
       if (!d.name) {
         errs.push(`Step ${n.id} has no name.`);
       }
     }
     // Cycle detection (depends_on must form a DAG), except for back-edges
-    // from loop_decision steps (docs/11 §3.1). A loop_decision node may
-    // have an edge to a topologically-prior step; that edge is the loop
-    // back-edge and is permitted.
+    // from loop_decision or approval steps (docs/11 §3.1). A loop_decision
+    // or approval node may have an edge to a topologically-prior step;
+    // that edge is the loop back-edge and is permitted.
     const loopNodeIds = new Set(
-      nodes.filter((n) => n.data.kind === STEP_KIND.LOOP_DECISION).map((n) => n.id),
+      nodes.filter((n) =>
+        n.data.kind === STEP_KIND.LOOP_DECISION ||
+        n.data.kind === STEP_KIND.APPROVAL
+      ).map((n) => n.id),
     );
     const adj = new Map<string, string[]>();
     for (const n of nodes) adj.set(n.id, []);
     for (const e of edges) {
-      // Skip back-edges that originate from a loop_decision node.
+      // Skip back-edges that originate from a loop_decision or approval node.
       if (loopNodeIds.has(e.source)) continue;
       adj.get(e.source)?.push(e.target);
     }
