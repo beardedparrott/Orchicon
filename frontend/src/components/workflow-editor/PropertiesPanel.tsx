@@ -280,16 +280,12 @@ export function PropertiesPanel({
             </div>
           )}
 
-          <Field label="Loop branch (rejection)" hint="Step ID to re-enter when rejected. Leave empty to proceed downstream on rejection instead of looping.">
-            <Input
-              value={typeof cfg.loop_branch === "string" ? cfg.loop_branch : ""}
-              disabled={readOnly}
-              placeholder="e.g. step-3"
-              onChange={(e) => {
-                const next = { ...cfg, loop_branch: e.target.value };
-                onChange({ config: JSON.stringify(next) });
-              }}
-            />
+          <Field label="Loop branch" hint="The step id to loop back to on rejection. Connect the loop outlet (right handle) to a topologically-prior step to set the loop branch.">
+            <p className="text-xs text-muted-foreground">
+              {typeof cfg.loop_branch === "string" && cfg.loop_branch
+                ? `Loop target: ${cfg.loop_branch}`
+                : "Connect the loop outlet (right handle) to a topologically-prior step to set the loop branch."}
+            </p>
           </Field>
 
           {cfg.loop_branch && (
