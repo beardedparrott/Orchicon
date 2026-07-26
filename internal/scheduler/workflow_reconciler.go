@@ -1346,14 +1346,15 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 
 	// Workflow-aware role context: tell the worker where they fit in the
 	// overall workflow so they don't perform work meant for other steps.
-	// Only count dispatching steps (task, approval, loop_decision) —
-	// passive markers (project, work_item) are excluded.
+	// Only count worker-facing steps (task and approval). Routing nodes
+	// like loop_decision, decision, parallel, project, and work_item are
+	// invisible to the worker — they don't correspond to a person's work.
 	type stepPos struct{ idx int; name string }
 	var activeSteps []stepPos
 	myPos := -1
 	myName := ""
 	for _, s := range allSteps {
-		if s.Kind == "project" || s.Kind == "work_item" {
+		if s.Kind != "task" && s.Kind != "approval" {
 			continue
 		}
 		pos := len(activeSteps)
