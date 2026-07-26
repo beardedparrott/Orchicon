@@ -205,10 +205,15 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			runByID[sr.StepID] = sr
 		}
 
-		// Phase 0: Handle rejected approval steps (those with
-		// _decision: "rejected" and a loop_branch in config). Trigger
-		// re-entry of the chain from loop_branch so the work gets
-		// re-evaluated.
+		// Phase 0: Handle rejected approval steps. Read the decision
+		// from two sources:
+		//   a) Step run result (human approval via ApproveStep RPC writes
+		//      _decision: "rejected")
+		//   b) Work item results (worker-backed approval — the standard
+		//      ORCHICON WORKER SUMMARY produces _decision: "success" /
+		//      "failure"; human propagation also produces "approved" /
+		//      "rejected")
+		// Map: success/approved → forward, failure/rejected → loop back.
 		for _, sr := range runByID {
 			if sr.SupersededBy != "" || sr.StepKind != domain.StepKindApproval {
 				continue
@@ -216,12 +221,32 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			if sr.Status != domain.StepRunSucceeded {
 				continue
 			}
-			var result struct {
-				Decision string `json:"_decision"`
+
+			// Check step run result for _decision (human approval).
+			var srResult struct {
+				Decision    string `json:"_decision"`
+				WorkItemID  string `json:"_work_item_id"`
 			}
-			if err := json.Unmarshal(sr.Result, &result); err != nil || result.Decision != "rejected" {
+			json.Unmarshal(sr.Result, &srResult)
+
+			// If not rejected in the step run, check the work item.
+			decision := srResult.Decision
+			if decision != "rejected" && srResult.WorkItemID != "" {
+				if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, srResult.WorkItemID); err == nil && len(wi.Results) > 0 {
+					var wiResult map[string]any
+					if json.Unmarshal(wi.Results, &wiResult) == nil {
+						if v, ok := wiResult["_decision"].(string); ok {
+							decision = v
+						}
+					}
+				}
+			}
+
+			// Map: success/approved → forward; failure/rejected → loop.
+			if decision != "failure" && decision != "rejected" {
 				continue
 			}
+
 			step, ok := stepByID[sr.StepID]
 			if !ok {
 				continue
