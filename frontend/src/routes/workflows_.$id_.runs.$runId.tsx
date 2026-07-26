@@ -93,7 +93,7 @@ const STEP_RUN_STATUS_COLORS: Record<number, string> = {
   5: "bg-red-100 text-red-800", // failed
   6: "bg-gray-300 text-gray-600", // skipped
   7: "bg-red-200 text-red-900", // blocked
-  8: "bg-cyan-100 text-cyan-900", // approval_pending
+  8: "bg-amber-100 text-amber-900", // approval_pending
 };
 
 function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string }) {
@@ -151,7 +151,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
     const kindAccent: Record<number, string> = {
       1: KIND_ACCENT[1] ?? "sky",
       2: KIND_ACCENT[2] ?? "amber",
-      3: "cyan",
+      3: KIND_ACCENT[3] ?? "yellow",
       4: KIND_ACCENT[4] ?? "violet",
       5: KIND_ACCENT[5] ?? "rose",
       6: KIND_ACCENT[6] ?? "emerald",
@@ -600,10 +600,10 @@ function ApprovalStepCard({ stepRun }: { stepRun: WorkflowStepRun }) {
   const isResolved = stepRun.status === StepRunStatus.SUCCEEDED;
 
   return (
-    <div className="rounded-md border border-cyan-300 bg-cyan-50 p-3 text-sm dark:border-cyan-800 dark:bg-cyan-950/30">
+    <div className="rounded-md border border-yellow-300 bg-yellow-50 p-3 text-sm dark:border-yellow-800 dark:bg-yellow-950/30">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Badge variant="outline" className="bg-cyan-100 text-cyan-900">
+          <Badge variant="outline" className="bg-amber-100 text-amber-900">
             {isPending ? "Approval pending" : isResolved ? (decision === "approved" ? "Approved" : "Rejected") : "Unknown"}
           </Badge>
           <span className="font-medium">{stepRun.stepName || stepRun.stepId.slice(0, 12)}</span>
@@ -648,7 +648,7 @@ function ApprovalStepCard({ stepRun }: { stepRun: WorkflowStepRun }) {
 
       {/* Approve/Reject buttons for pending steps */}
       {isPending && (
-        <div className="mt-2 space-y-2 border-t border-cyan-200 pt-2 dark:border-cyan-800">
+        <div className="mt-2 space-y-2 border-t border-yellow-200 pt-2 dark:border-yellow-800">
           <textarea
             placeholder="Reason / feedback (optional)..."
             className="w-full rounded-md border bg-white px-2 py-1.5 text-sm dark:bg-black/10"
@@ -681,7 +681,7 @@ function ApprovalStepCard({ stepRun }: { stepRun: WorkflowStepRun }) {
 
       {/* Show result for resolved steps */}
       {isResolved && decision !== "" && (
-        <div className="mt-2 border-t border-cyan-200 pt-2 text-xs dark:border-cyan-800">
+        <div className="mt-2 border-t border-yellow-200 pt-2 text-xs dark:border-yellow-800">
           <span className="text-muted-foreground">Decision: </span>
           <span className={cn("font-medium", decision === "approved" ? "text-emerald-600" : "text-red-600")}>
             {decision}

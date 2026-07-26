@@ -104,7 +104,7 @@ export const STEP_KIND_ICONS: Record<number, LucideIcon> = {
 export const KIND_ACCENT: Record<number, string> = {
   [STEP_KIND.TASK]: "sky",
   [STEP_KIND.DECISION]: "amber",
-  [STEP_KIND.APPROVAL]: "cyan",
+  [STEP_KIND.APPROVAL]: "yellow",
   [STEP_KIND.PARALLEL]: "violet",
   [STEP_KIND.RECOVER]: "rose",
   [STEP_KIND.WORK_ITEM]: "emerald",

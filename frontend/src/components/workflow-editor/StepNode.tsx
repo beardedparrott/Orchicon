@@ -14,7 +14,7 @@ import {
 export const stepKindClasses: Record<number, string> = {
   [STEP_KIND.TASK]: "border-sky-400/70 bg-sky-50 text-sky-950 dark:bg-sky-950/40 dark:text-sky-100",
   [STEP_KIND.DECISION]: "border-amber-400/70 bg-amber-50 text-amber-950 dark:bg-amber-950/40 dark:text-amber-100",
-  [STEP_KIND.APPROVAL]: "border-cyan-400/70 bg-cyan-50 text-cyan-950 dark:bg-cyan-950/40 dark:text-cyan-100",
+  [STEP_KIND.APPROVAL]: "border-yellow-500/70 bg-yellow-50 text-yellow-950 dark:bg-yellow-950/40 dark:text-yellow-100",
   [STEP_KIND.PARALLEL]: "border-violet-400/70 bg-violet-50 text-violet-950 dark:bg-violet-950/40 dark:text-violet-100",
   [STEP_KIND.RECOVER]: "border-rose-400/70 bg-rose-50 text-rose-950 dark:bg-rose-950/40 dark:text-rose-100",
   [STEP_KIND.WORK_ITEM]:
