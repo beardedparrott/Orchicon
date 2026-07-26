@@ -902,11 +902,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                 proOptions={{ hideAttribution: true }}
               >
                 <Background gap={20} size={1} />
-                <Controls showInteractive={false} />
-                <div
-                  className="react-flow__controls"
-                  style={{ position: 'absolute', left: 10, bottom: 186, zIndex: 10 }}
-                >
+                <Controls showInteractive={false}>
                   <button
                     type="button"
                     title={viewLocked ? 'Unlock view' : 'Lock view'}
@@ -924,54 +920,70 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                       </svg>
                     )}
                   </button>
-                </div>
-                <MiniMap
-                  pannable
-                  zoomable
-                  nodeStrokeWidth={2}
+                </Controls>
+                <div
                   style={{
                     position: 'absolute',
                     top: mmPos.top,
                     right: mmPos.right,
-                    bottom: 'auto',
-                    left: 'auto',
                     width: 180,
-                    height: 120,
+                    height: 130,
                     resize: 'both',
-                    overflow: 'auto',
+                    overflow: 'hidden',
+                    minWidth: 120,
+                    minHeight: 100,
                     maxWidth: 400,
-                    maxHeight: 300,
-                    minWidth: 100,
-                    minHeight: 80,
-                    cursor: mmDrag.current ? 'grabbing' : 'grab',
+                    maxHeight: 400,
                     zIndex: 10,
+                    background: 'transparent',
                   }}
-                  className="!bg-background/90 !border-border !shadow-lg"
-                  onMouseDown={(e) => {
-                    e.stopPropagation();
-                    const rect = (e.currentTarget as unknown as HTMLElement).getBoundingClientRect();
-                    mmDrag.current = {
-                      startX: e.clientX, startY: e.clientY,
-                      startTop: rect.top, startRight: window.innerWidth - rect.right,
-                    };
-                    const onMove = (ev: MouseEvent) => {
-                      if (!mmDrag.current) return;
-                      const dx = ev.clientX - mmDrag.current.startX;
-                      const dy = ev.clientY - mmDrag.current.startY;
-                      const newTop = Math.max(0, mmDrag.current.startTop + dy);
-                      const newRight = Math.max(0, mmDrag.current.startRight - dx);
-                      setMmPos({ top: newTop, right: newRight });
-                    };
-                    const onUp = () => {
-                      mmDrag.current = null;
-                      localStorage.setItem('orchicon:mmPos', JSON.stringify(mmPosRef.current));
-                      document.removeEventListener('mousemove', onMove);
-                      document.removeEventListener('mouseup', onUp);
-                    };
-                    document.addEventListener('mousemove', onMove);
-                    document.addEventListener('mouseup', onUp);
-                  }}
-                />
+                >
+                  <div
+                    style={{
+                      height: 12,
+                      cursor: mmDrag.current ? 'grabbing' : 'grab',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      userSelect: 'none',
+                    }}
+                    onMouseDown={(e) => {
+                      e.stopPropagation();
+                      const el = (e.currentTarget as HTMLElement).parentElement!;
+                      const r = el.getBoundingClientRect();
+                      mmDrag.current = {
+                        startX: e.clientX, startY: e.clientY,
+                        startTop: r.top, startRight: window.innerWidth - r.right,
+                      };
+                      const onMove = (ev: MouseEvent) => {
+                        if (!mmDrag.current) return;
+                        const dx = ev.clientX - mmDrag.current.startX;
+                        const dy = ev.clientY - mmDrag.current.startY;
+                        const t = Math.max(0, mmDrag.current.startTop + dy);
+                        const ri = Math.max(0, mmDrag.current.startRight - dx);
+                        setMmPos({ top: t, right: ri });
+                        el.style.top = t + 'px';
+                        el.style.right = ri + 'px';
+                      };
+                      const onUp = () => {
+                        mmDrag.current = null;
+                        localStorage.setItem('orchicon:mmPos', JSON.stringify(mmPosRef.current));
+                        document.removeEventListener('mousemove', onMove);
+                        document.removeEventListener('mouseup', onUp);
+                      };
+                      document.addEventListener('mousemove', onMove);
+                      document.addEventListener('mouseup', onUp);
+                    }}
+                  >
+                    <div style={{ width: 24, height: 3, borderRadius: 2, background: '#999' }} />
+                  </div>
+                  <MiniMap
+                    zoomable
+                    nodeStrokeWidth={2}
+                    style={{ width: '100%', height: 'calc(100% - 12px)' }}
+                    className="!bg-background/90 !border-border !shadow-lg"
+                  />
+                </div>
               </ReactFlow>
               {dropActive && (
                 <div
