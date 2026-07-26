@@ -1,4 +1,4 @@
-h1:nR08/VkX6okVyj70rFRy100HV5G2B6gfxjJmjbhSwfk=
+h1:sHmrvwfPzpkIxo+hqpLpUWN2EtqJz553+6Qha8j+SWQ=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712223028_add_outbox.sql h1:tlrMIs8ABXFMszWNaYd7gxjn3p42rmqrZeoxOJ1Vqvg=
 20260713012808_workers_workitems.sql h1:3li9AejCZaj9bcZz8wKOw0GG7UER3Uz9jbSNKF74Zo8=
@@ -36,3 +36,4 @@ h1:nR08/VkX6okVyj70rFRy100HV5G2B6gfxjJmjbhSwfk=
 20260731000000_fix_worker_agents_md.sql h1:vqtWqRyX0jUpw9poM6Q7girTLZ7uWU18yegzZmImULY=
 20260731000001_clear_sse_agents_md.sql h1:UD5/TAImldPECacyW0PulG/2kTqTLFhFv90aFQWiDzI=
 20260731000002_set_worker_agents_md.sql h1:aCd5FSoWMT65q7iRS6j7cWERDmjilZF2GVBhMD1bdxE=
+20260731000003_update_devops_behavior.sql h1:3YASY1aBQz5lTi5OeiFmfvjIAb3lHkM8rh0AEgg7ewY=

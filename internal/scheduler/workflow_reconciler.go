@@ -1343,6 +1343,23 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 
 	// 3. Instructions.
 	sb.WriteString("# Instructions\n\n")
+
+	// Workflow-aware role context: tell the worker where they fit in the
+	// overall workflow so they don't perform work meant for other steps.
+	stepPosition := 0
+	totalSteps := len(allSteps)
+	thisStepName := ""
+	for i, s := range allSteps {
+		if s.ID == wi.WorkflowStepID {
+			stepPosition = i + 1
+			thisStepName = s.Name
+			break
+		}
+	}
+	if stepPosition > 0 && totalSteps > 0 {
+		fmt.Fprintf(&sb, "This workflow has %d steps. You are step %d — %s. Focus on your specific role and let other workers handle their steps.\n\n", totalSteps, stepPosition, thisStepName)
+	}
+
 	// Only instruct the worker to read .orchicon/ files when prior
 	// steps have completed. On the first step there's nothing to read.
 	hasPriorSteps := false
@@ -1359,7 +1376,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		fmt.Fprintf(&sb, "- `.orchicon/%s/issues` — issues found by the previous reviewer (if any)\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/worker` — which worker produced the previous results\n\n", wi.WorkflowRunID)
 	}
-	sb.WriteString("Complete the task above. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — either `success` or `failure` — and a short paragraph summarizing what you did.\n\n")
+	sb.WriteString("Review the task above, but only complete the work that matches your Role and the step you are assigned to. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — either `success` or `failure` — and a short paragraph summarizing what you did.\n\n")
 	sb.WriteString("Format:\n")
 	sb.WriteString("```\nORCHICON WORKER SUMMARY: success — Implemented the feature.\n```\n")
 	sb.WriteString("or\n")
