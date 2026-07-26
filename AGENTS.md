@@ -234,6 +234,13 @@ architecture, project structure, installation, development,
 deployment, troubleshooting, and more. Read it before touching any
 subsystem you are unfamiliar with.
 
+**Keep DOCUMENTATION.md in sync.** Whenever you add, delete, or change
+a main feature or architectural component — a new service, RPC, proto,
+reconciler, frontend route, database table, adapter, or significant
+policy — update DOCUMENTATION.md to reflect it. If the change is
+entirely internal refactoring with no user-visible or architectural
+impact, you may skip the update, but err on the side of updating.
+
 ## E2E Testing & Cleanup
 
 Every E2E test creates real data (projects, workers, work items, workflow runs) in the database. This data leaks into the dev environment and causes:
