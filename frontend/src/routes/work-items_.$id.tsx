@@ -535,7 +535,7 @@ function WorkItemDetailPage() {
                   scheduledStartAt: editScheduledStartAt
                     ? Timestamp.fromDate(new Date(editScheduledStartAt))
                     : undefined,
-                  autoStartWorkflow: editScheduledStartAt ? editAutoStartWorkflow : undefined,
+                  autoStartWorkflow: editAutoStartWorkflow,
                 },
                 { onSuccess: () => setEditing(false) },
               )
