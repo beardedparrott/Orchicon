@@ -1346,18 +1346,25 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 
 	// Workflow-aware role context: tell the worker where they fit in the
 	// overall workflow so they don't perform work meant for other steps.
-	stepPosition := 0
-	totalSteps := len(allSteps)
-	thisStepName := ""
-	for i, s := range allSteps {
+	// Only count dispatching steps (task, approval, loop_decision) —
+	// passive markers (project, work_item) are excluded.
+	type stepPos struct{ idx int; name string }
+	var activeSteps []stepPos
+	myPos := -1
+	myName := ""
+	for _, s := range allSteps {
+		if s.Kind == "project" || s.Kind == "work_item" {
+			continue
+		}
+		pos := len(activeSteps)
+		activeSteps = append(activeSteps, stepPos{pos, s.Name})
 		if s.ID == wi.WorkflowStepID {
-			stepPosition = i + 1
-			thisStepName = s.Name
-			break
+			myPos = pos
+			myName = s.Name
 		}
 	}
-	if stepPosition > 0 && totalSteps > 0 {
-		fmt.Fprintf(&sb, "This workflow has %d steps. You are step %d — %s. Focus on your specific role and let other workers handle their steps.\n\n", totalSteps, stepPosition, thisStepName)
+	if myPos >= 0 && len(activeSteps) > 0 {
+		fmt.Fprintf(&sb, "This workflow has %d steps. You are step %d — %s. Focus on your specific role and let other workers handle their steps.\n\n", len(activeSteps), myPos+1, myName)
 	}
 
 	// Only instruct the worker to read .orchicon/ files when prior

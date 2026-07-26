@@ -730,7 +730,7 @@ function RunStepNode({
 }) {
   const statusColor = STEP_RUN_STATUS_COLORS[data.runStatus] ?? "bg-gray-200";
   const statusLabel = STEP_RUN_STATUS_LABELS[data.runStatus] ?? "pending";
-  const isLoopDecision = data.kind === 8;
+  const isLoopDecision = data.kind === 8 || data.kind === 3;
   // For loop_decision steps, surface the outcome the reconciler
   // recorded on the step run's result JSON (e.g. "loop: PR Reviewer"
   // or "re-ask"). This is the visual the operator asked for: a
