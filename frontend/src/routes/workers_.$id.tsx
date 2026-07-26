@@ -16,6 +16,7 @@ import {
   useRetireWorker,
   useRevertWorkerVersionToDraft,
   useSetActiveWorkerVersion,
+  useUpdateWorker,
   useUpdateWorkerVersion,
 } from "@/api/workers";
 import { EntityYamlView } from "@/components/EntityYamlView";
@@ -88,6 +89,7 @@ function WorkerDetailPage() {
   const publishVersion = usePublishWorkerVersion();
   const deprecateWorker = useDeprecateWorker();
   const retireWorker = useRetireWorker();
+  const updateWorker = useUpdateWorker();
   const updateVersion = useUpdateWorkerVersion();
   const createVersion = useCreateWorkerVersion();
   const createWorker = useCreateWorker();
@@ -417,6 +419,61 @@ function WorkerDetailPage() {
           </CardHeader>
         </Card>
       </div>
+
+      {/* Worker header editor (visible when a draft version exists) */}
+      {isEditingEnabled && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Worker details</CardTitle>
+            <CardDescription>
+              Name, description, and purpose — saved on blur.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="editName">Name</Label>
+              <Input
+                id="editName"
+                defaultValue={worker.name}
+                onBlur={(e) => {
+                  const val = e.target.value.trim();
+                  if (val && val !== worker.name) {
+                    updateWorker.mutate({ id: worker.id, name: val });
+                  }
+                }}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="editDesc">Description</Label>
+              <Textarea
+                id="editDesc"
+                className="min-h-[60px] text-sm"
+                defaultValue={worker.description}
+                onBlur={(e) => {
+                  const val = e.target.value.trim();
+                  if (val !== worker.description) {
+                    updateWorker.mutate({ id: worker.id, description: val });
+                  }
+                }}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="editPurpose">Purpose</Label>
+              <Textarea
+                id="editPurpose"
+                className="min-h-[60px] text-sm"
+                defaultValue={worker.purpose}
+                onBlur={(e) => {
+                  const val = e.target.value.trim();
+                  if (val !== worker.purpose) {
+                    updateWorker.mutate({ id: worker.id, purpose: val });
+                  }
+                }}
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Inline editor for draft versions */}
       {isEditingEnabled && (

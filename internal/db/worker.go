@@ -197,6 +197,54 @@ func UpdateWorkerStatus(ctx context.Context, tx pgx.Tx, tenantID, id string, exp
 	return w, nil
 }
 
+// UpdateWorkerFields is a partial update for worker header fields.
+// Only non-nil fields are written (field-mask semantics).
+type UpdateWorkerFields struct {
+	Name        *string
+	Description *string
+	Purpose     *string
+}
+
+// UpdateWorker applies a partial update to worker header fields with
+// optimistic concurrency. Returns ErrNotFound if no row matches the
+// id+tenant+version. Only draft workers can be updated.
+func UpdateWorker(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, f UpdateWorkerFields) (WorkerRow, error) {
+	q := `UPDATE workers SET updated_at = now(), version = version + 1`
+	args := []any{tenantID, id, expectedVersion}
+	setIdx := len(args) + 1
+	if f.Name != nil {
+		q += fmt.Sprintf(`, name = $%d`, setIdx)
+		args = append(args, *f.Name)
+		setIdx++
+	}
+	if f.Description != nil {
+		q += fmt.Sprintf(`, description = $%d`, setIdx)
+		args = append(args, *f.Description)
+		setIdx++
+	}
+	if f.Purpose != nil {
+		q += fmt.Sprintf(`, purpose = $%d`, setIdx)
+		args = append(args, *f.Purpose)
+		setIdx++
+	}
+	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
+	q += ` AND status = 'draft' RETURNING id, tenant_id, name, slug, description, purpose, status,
+		current_version, created_by, version, created_at, updated_at`
+	var w WorkerRow
+	err := tx.QueryRow(ctx, q, args...).Scan(
+		&w.ID, &w.TenantID, &w.Name, &w.Slug, &w.Description, &w.Purpose,
+		&w.Status, &w.CurrentVersion, &w.CreatedBy, &w.Version,
+		&w.CreatedAt, &w.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return WorkerRow{}, ErrNotFound
+	}
+	if err != nil {
+		return WorkerRow{}, fmt.Errorf("db: update worker: %w", err)
+	}
+	return w, nil
+}
+
 // UpdateWorkerCurrentVersion bumps the current_version pointer to the
 // newly published version. Uses optimistic concurrency on the header row.
 func UpdateWorkerCurrentVersion(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion, newVersion int) (WorkerRow, error) {

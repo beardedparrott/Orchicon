@@ -216,6 +216,100 @@ export class CreateWorkerResponse extends Message<CreateWorkerResponse> {
 }
 
 /**
+ * @generated from message orchicon.api.v1.UpdateWorkerRequest
+ */
+export class UpdateWorkerRequest extends Message<UpdateWorkerRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * @generated from field: string name = 2;
+   */
+  name = "";
+
+  /**
+   * Markdown
+   *
+   * @generated from field: string description = 3;
+   */
+  description = "";
+
+  /**
+   * @generated from field: string purpose = 4;
+   */
+  purpose = "";
+
+  constructor(data?: PartialMessage<UpdateWorkerRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.UpdateWorkerRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "description", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "purpose", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkerRequest {
+    return new UpdateWorkerRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UpdateWorkerRequest {
+    return new UpdateWorkerRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UpdateWorkerRequest {
+    return new UpdateWorkerRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: UpdateWorkerRequest | PlainMessage<UpdateWorkerRequest> | undefined, b: UpdateWorkerRequest | PlainMessage<UpdateWorkerRequest> | undefined): boolean {
+    return proto3.util.equals(UpdateWorkerRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.UpdateWorkerResponse
+ */
+export class UpdateWorkerResponse extends Message<UpdateWorkerResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.Worker worker = 1;
+   */
+  worker?: Worker;
+
+  constructor(data?: PartialMessage<UpdateWorkerResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.UpdateWorkerResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "worker", kind: "message", T: Worker },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkerResponse {
+    return new UpdateWorkerResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UpdateWorkerResponse {
+    return new UpdateWorkerResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UpdateWorkerResponse {
+    return new UpdateWorkerResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: UpdateWorkerResponse | PlainMessage<UpdateWorkerResponse> | undefined, b: UpdateWorkerResponse | PlainMessage<UpdateWorkerResponse> | undefined): boolean {
+    return proto3.util.equals(UpdateWorkerResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.PublishWorkerVersionRequest
  */
 export class PublishWorkerVersionRequest extends Message<PublishWorkerVersionRequest> {

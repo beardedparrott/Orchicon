@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AcquireEditLockRequest, AcquireEditLockResponse, CreateWorkerRequest, CreateWorkerResponse, CreateWorkerVersionRequest, CreateWorkerVersionResponse, DeleteWorkerRequest, DeleteWorkerResponse, DeleteWorkerVersionRequest, DeleteWorkerVersionResponse, DeprecateWorkerRequest, DeprecateWorkerResponse, GetEditLockRequest, GetEditLockResponse, GetWorkerRequest, GetWorkerResponse, GetWorkerVersionRequest, GetWorkerVersionResponse, ListWorkersRequest, ListWorkersResponse, ListWorkerVersionsRequest, ListWorkerVersionsResponse, PublishWorkerVersionRequest, PublishWorkerVersionResponse, ReleaseEditLockRequest, ReleaseEditLockResponse, RetireWorkerRequest, RetireWorkerResponse, RevertWorkerVersionToDraftRequest, RevertWorkerVersionToDraftResponse, SetActiveWorkerVersionRequest, SetActiveWorkerVersionResponse, UpdateWorkerVersionRequest, UpdateWorkerVersionResponse } from "./worker_service_pb.js";
+import { AcquireEditLockRequest, AcquireEditLockResponse, CreateWorkerRequest, CreateWorkerResponse, CreateWorkerVersionRequest, CreateWorkerVersionResponse, DeleteWorkerRequest, DeleteWorkerResponse, DeleteWorkerVersionRequest, DeleteWorkerVersionResponse, DeprecateWorkerRequest, DeprecateWorkerResponse, GetEditLockRequest, GetEditLockResponse, GetWorkerRequest, GetWorkerResponse, GetWorkerVersionRequest, GetWorkerVersionResponse, ListWorkersRequest, ListWorkersResponse, ListWorkerVersionsRequest, ListWorkerVersionsResponse, PublishWorkerVersionRequest, PublishWorkerVersionResponse, ReleaseEditLockRequest, ReleaseEditLockResponse, RetireWorkerRequest, RetireWorkerResponse, RevertWorkerVersionToDraftRequest, RevertWorkerVersionToDraftResponse, SetActiveWorkerVersionRequest, SetActiveWorkerVersionResponse, UpdateWorkerRequest, UpdateWorkerResponse, UpdateWorkerVersionRequest, UpdateWorkerVersionResponse } from "./worker_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -68,6 +68,19 @@ export const WorkerService = {
       name: "RetireWorker",
       I: RetireWorkerRequest,
       O: RetireWorkerResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * UpdateWorker updates the mutable header fields of a Worker (name,
+     * description, purpose). The worker must be in draft status to be
+     * updated; published workers must create a new version instead.
+     *
+     * @generated from rpc orchicon.api.v1.WorkerService.UpdateWorker
+     */
+    updateWorker: {
+      name: "UpdateWorker",
+      I: UpdateWorkerRequest,
+      O: UpdateWorkerResponse,
       kind: MethodKind.Unary,
     },
     /**

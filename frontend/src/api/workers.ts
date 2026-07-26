@@ -193,6 +193,20 @@ export function useBatchDeleteWorkers() {
   });
 }
 
+// useUpdateWorker updates the mutable header fields of a draft worker.
+export function useUpdateWorker() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (req: { id: string; name?: string; description?: string; purpose?: string }) => {
+      const res = await workerClient.updateWorker(req);
+      return res.worker;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: workerKeys.all });
+    },
+  });
+}
+
 // useRetireWorker retires a deprecated worker.
 export function useRetireWorker() {
   const qc = useQueryClient();
