@@ -1,0 +1,68 @@
+// Orchicon ApprovalService.
+//
+// The ApprovalService manages the human-in-the-loop approval gate for
+// workflow steps. An APPROVAL step in a workflow blocks at
+// approval_pending until a human reviews the upstream context (diff,
+// summary, AC) and approves or rejects it. The decision is written to
+// .orchicon/ files so downstream workers and loop-back steps can read
+// the outcome.
+//
+// Future: notifications (SMS, email, browser), RBAC enforcement
+// (which users/groups can approve at project/work-item scope).
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service ApprovalService {
+  // ApproveStep resolves a workflow step that is awaiting human approval.
+  // The step must be in approval_pending status. On approval the step
+  // transitions to succeeded; on rejection it also succeeds but carries
+  // the rejection reason as data — a downstream LOOP_DECISION can branch
+  // on the decision.
+  rpc ApproveStep(ApproveStepRequest) returns (ApproveStepResponse);
+
+  // ListPendingStepApprovals returns unresolved approval_pending step runs
+  // across the tenant, joined with project/work-item/workflow names for
+  // display. Supports the same filter/sort/search pattern as other lists.
+  rpc ListPendingStepApprovals(ListPendingStepApprovalsRequest) returns (ListPendingStepApprovalsResponse);
+}
+
+message ApproveStepRequest {
+  string step_run_id = 1;
+  bool approved = 2;       // true = approve, false = reject
+  string reason = 3;       // human's feedback — written to .orchicon/<run_id>/summary
+  string reviewed_by = 4;  // who reviewed — identity from auth; skeleton for future RBAC
+}
+
+message ApproveStepResponse {}
+
+message ApprovalItem {
+  string step_run_id = 1;
+  string workflow_run_id = 2;
+  string project_name = 3;
+  string work_item_name = 4;
+  string workflow_name = 5;
+  string upstream_worker = 6;      // who sent it — the engineer worker name/ID
+  string upstream_summary = 7;     // what the upstream worker did
+  repeated string touched_files = 8;
+  string acceptance_criteria = 9;
+  string status = 10;              // "pending" | "approved" | "rejected"
+  google.protobuf.Timestamp created_at = 11;
+}
+
+message ListPendingStepApprovalsRequest {
+  optional string workflow_run_id = 1;  // scope to a run
+  optional string status = 2;           // "pending" | "approved" | "rejected"
+  string search = 3;                    // free-text search
+  string sort_by = 4;                   // "created_at", "project_name", "workflow_name"
+  string sort_order = 5;
+  string page_token = 6;
+  int32 page_size = 7;
+}
+
+message ListPendingStepApprovalsResponse {
+  repeated ApprovalItem items = 1;
+  string next_page_token = 2;
+}

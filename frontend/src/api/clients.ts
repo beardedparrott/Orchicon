@@ -20,6 +20,7 @@ import { PolicyService } from "@/api/gen/orchicon/api/v1/policy_service_connect"
 import { RecoveryService } from "@/api/gen/orchicon/api/v1/recovery_service_connect";
 import { TelemetryService } from "@/api/gen/orchicon/api/v1/telemetry_service_connect";
 import { AIGatewayService } from "@/api/gen/orchicon/api/v1/ai_gateway_service_connect";
+import { ApprovalService } from "@/api/gen/orchicon/api/v1/approval_service_connect";
 import { AuthService } from "@/api/gen/orchicon/api/v1/auth_service_connect";
 import { WebhookService } from "@/api/gen/orchicon/api/v1/webhook_service_connect";
 import { getAccessToken, refreshAccessToken } from "@/auth/session";
@@ -94,6 +95,7 @@ export const policyClient = createClient(PolicyService, connectTransport);
 export const recoveryClient = createClient(RecoveryService, connectTransport);
 export const telemetryClient = createClient(TelemetryService, connectTransport);
 export const aiGatewayClient = createClient(AIGatewayService, connectTransport);
+export const approvalClient = createClient(ApprovalService, connectTransport);
 export const authClient = createClient(AuthService, connectTransport);
 export const webhookClient = createClient(WebhookService, connectTransport);
 

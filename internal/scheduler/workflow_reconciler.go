@@ -969,13 +969,64 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		}
 
 	case domain.StepKindApproval:
-		// Block at approval_pending (docs/02 §2.4). Human approval
-		// wiring (an ApproveStep RPC + Policy-derived decision) arrives
-		// with the Policy engine, Phase 7. The run view shows the step
-		// waiting.
+		// Capture upstream context from preceding steps for the reviewer.
+		upstreamWorker := ""
+		upstreamSummary := ""
+		var upstreamFiles []string
+		ac := ""
+		for _, depID := range step.DependsOn {
+			us, ok := runs[depID]
+			if !ok || us.Status != domain.StepRunSucceeded {
+				continue
+			}
+			var upResult struct {
+				WorkItemID string `json:"_work_item_id"`
+			}
+			if err := json.Unmarshal(us.Result, &upResult); err != nil || upResult.WorkItemID == "" {
+				continue
+			}
+			wi, err := db.GetWorkItem(ctx, tx, tenantID, upResult.WorkItemID)
+			if err != nil {
+				continue
+			}
+			ac = wi.AcceptanceCriteria
+			if len(wi.Results) > 0 {
+				var wiResult map[string]any
+				if json.Unmarshal(wi.Results, &wiResult) == nil {
+					if v, ok := wiResult["_summary"].(string); ok {
+						upstreamSummary = v
+					}
+					if files, ok := wiResult["_touched_files"].([]any); ok {
+						for _, f := range files {
+							if s, ok := f.(string); ok {
+								upstreamFiles = append(upstreamFiles, s)
+							}
+						}
+					}
+				}
+			}
+			if exec, err := db.GetLatestExecutionForTask(ctx, tx, tenantID, upResult.WorkItemID); err == nil && exec.WorkerID != "" {
+				if wrk, err := db.GetWorker(ctx, tx, tenantID, exec.WorkerID); err == nil {
+					upstreamWorker = wrk.Name
+				}
+				if upstreamWorker == "" {
+					upstreamWorker = exec.WorkerID
+				}
+			}
+		}
+		resultPayload, _ := json.Marshal(map[string]any{
+			"_review_context": map[string]any{
+				"_upstream_worker":  upstreamWorker,
+				"_upstream_summary": upstreamSummary,
+				"_upstream_files":   upstreamFiles,
+				"_ac":               ac,
+			},
+			"_decision": "pending",
+		})
 		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 			Status:    strPtr(domain.StepRunApprovalPending),
 			StartedAt: &now,
+			Result:    &resultPayload,
 		})
 		if err != nil {
 			return fmt.Errorf("mark approval step pending: %w", err)
@@ -984,6 +1035,9 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepApproval, run, updated); err != nil {
 			return fmt.Errorf("enqueue step_approval: %w", err)
 		}
+		// Write initial .orchicon/ files so the downstream worker
+		// sees "pending" while waiting for human review.
+		r.writeApprovalInitFiles(ctx, tx, tenantID, run, updated, upstreamWorker, upstreamSummary, upstreamFiles)
 
 	default:
 		// Unknown kind → fail the step rather than stall the run.
@@ -2217,3 +2271,37 @@ func nowPtr(t time.Time) *time.Time { return &t }
 // (nowPtr currently unused after refactor; retained for step-run
 // timestamp fields as the reconciler grows.)
 var _ = nowPtr
+
+// writeApprovalInitFiles writes initial .orchicon/ files when an
+// APPROVAL step enters approval_pending. The files signal to downstream
+// workers that human review is pending. Called within dispatchStep's
+// transaction so the project query reuses the same tx.
+func (r *WorkflowReconciler) writeApprovalInitFiles(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, upstreamWorker, upstreamSummary string, upstreamFiles []string) {
+	if run.ProjectID == "" {
+		return
+	}
+	proj, err := db.GetProject(ctx, tx, tenantID, run.ProjectID)
+	if err != nil {
+		r.log.Warn("write approval init files: get project", "project", run.ProjectID, "error", err)
+		return
+	}
+	if proj.ProjectDir == "" {
+		return
+	}
+
+	orchDir := filepath.Join(proj.ProjectDir, ".orchicon", sr.WorkflowRunID)
+	if err := os.MkdirAll(orchDir, 0755); err != nil {
+		r.log.Warn("write approval init files: mkdir", "dir", orchDir, "error", err)
+		return
+	}
+
+	writeFile := func(name, content string) {
+		if err2 := os.WriteFile(filepath.Join(orchDir, name), []byte(content), 0644); err2 != nil {
+			r.log.Warn("write approval init file", "file", name, "error", err2)
+		}
+	}
+
+	writeFile("worker", "human_approval")
+	writeFile("status", "pending")
+	writeFile("summary", upstreamSummary)
+}

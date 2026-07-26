@@ -19,6 +19,7 @@ import (
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/aigateway"
+	"github.com/beardedparrott/orchicon/internal/approval"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/blobstore"
 	"github.com/beardedparrott/orchicon/internal/config"
@@ -137,6 +138,10 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// Phase 9: WebhookService (docs/07 §3.11) — subscriptions + deliveries.
 	webhookSvc := webhook.NewService(deps.Pool, deps.Log, deps.WebhookDispatcher, deps.Subscriber)
 	mux.Handle(apiv1connect.NewWebhookServiceHandler(webhookSvc, interceptorOpt))
+
+	// ApprovalService — human-in-the-loop approval gates for workflow steps.
+	approvalSvc := approval.NewService(deps.Pool, deps.Log)
+	mux.Handle(apiv1connect.NewApprovalServiceHandler(approvalSvc, interceptorOpt))
 
 	// SigNoz UI reverse proxy (docs/10 §11): serves the SigNoz frontend
 	// same-origin under /signoz so the embedded iframe in the Telemetry

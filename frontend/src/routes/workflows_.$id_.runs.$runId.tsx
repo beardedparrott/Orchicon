@@ -1,5 +1,6 @@
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
+import { CheckCircle2, XCircle } from "lucide-react";
 import ReactFlow, {
   Background,
   Controls,
@@ -13,7 +14,10 @@ import ReactFlow, {
 } from "reactflow";
 import { useQueryClient } from "@tanstack/react-query";
 import type { Timestamp } from "@bufbuild/protobuf";
+import type { WorkflowStepRun } from "@/api/gen/orchicon/api/v1/workflow_pb";
+import { StepKind, StepRunStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
 
+import { useApproveStep } from "@/api/approvals";
 import {
   useAbortWorkflow,
   useGetWorkflow,
@@ -31,6 +35,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { ACCENT_STROKE, KIND_ACCENT } from "@/components/workflow-editor/stepKinds";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
@@ -523,13 +528,19 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
             {/* Pending step runs (no workerExecutionId yet) */}
             {(stepRuns ?? [])
               .filter((sr) => !sr.workerExecutionId)
-              .map((sr) => (
-                <div key={sr.id} className="flex items-center gap-3 rounded-md border p-2 text-sm text-muted-foreground">
-                  <StepStatusPill status={sr.status} />
-                  <span className="font-medium">{sr.stepName || sr.stepId.slice(0, 12)}</span>
-                  <span className="text-xs text-muted-foreground/60">waiting for dispatch…</span>
-                </div>
-              ))}
+              .map((sr) => {
+                if (sr.stepKind === StepKind.APPROVAL && (sr.status === StepRunStatus.APPROVAL_PENDING || sr.status === StepRunStatus.SUCCEEDED)) {
+                  // APPROVAL step — show the approval panel inline.
+                  return <ApprovalStepCard key={sr.id} stepRun={sr} runId={runId} />;
+                }
+                return (
+                  <div key={sr.id} className="flex items-center gap-3 rounded-md border p-2 text-sm text-muted-foreground">
+                    <StepStatusPill status={sr.status} />
+                    <span className="font-medium">{sr.stepName || sr.stepId.slice(0, 12)}</span>
+                    <span className="text-xs text-muted-foreground/60">waiting for dispatch…</span>
+                  </div>
+                );
+              })}
             {/* Actual WorkerExecutions */}
             {(runExecs ?? []).length === 0 && (stepRuns ?? []).filter((sr) => !sr.workerExecutionId).length === 0 && (
               <p className="text-sm text-muted-foreground">No executions yet.</p>
@@ -560,6 +571,123 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
           </div>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+// --- Approval step card (inline approve/reject panel for the run view) ---
+
+function ApprovalStepCard({ stepRun, runId }: { stepRun: WorkflowStepRun; runId: string }) {
+  const [reason, setReason] = useState("");
+  const [showContext, setShowContext] = useState(false);
+  const approveMutation = useApproveStep();
+
+  // Parse the review context from the step run result.
+  let context: {
+    upstreamWorker?: string;
+    upstreamSummary?: string;
+    upstreamFiles?: string[];
+    ac?: string;
+  } = {};
+  let decision = "";
+  try {
+    const result = JSON.parse(stepRun.result ?? "{}");
+    if (result._review_context) context = result._review_context;
+    decision = result._decision ?? "";
+  } catch {}
+
+  const isPending = stepRun.status === StepRunStatus.APPROVAL_PENDING;
+  const isResolved = stepRun.status === StepRunStatus.SUCCEEDED;
+
+  return (
+    <div className="rounded-md border border-yellow-300 bg-yellow-50 p-3 text-sm dark:border-yellow-800 dark:bg-yellow-950/30">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Badge variant="outline" className="bg-amber-100 text-amber-900">
+            {isPending ? "Approval pending" : isResolved ? (decision === "approved" ? "Approved" : "Rejected") : "Unknown"}
+          </Badge>
+          <span className="font-medium">{stepRun.stepName || stepRun.stepId.slice(0, 12)}</span>
+        </div>
+        <button
+          className="text-xs text-muted-foreground hover:underline"
+          onClick={() => setShowContext(!showContext)}
+        >
+          {showContext ? "Hide context" : "Show context"}
+        </button>
+      </div>
+
+      {showContext && context.upstreamSummary && (
+        <div className="mt-2 space-y-2">
+          {context.upstreamWorker && (
+            <p className="text-xs text-muted-foreground">
+              From worker: <span className="font-medium">{context.upstreamWorker}</span>
+            </p>
+          )}
+          <div className="rounded-md bg-white/50 p-2 dark:bg-black/10">
+            <p className="text-xs font-medium text-muted-foreground">Upstream summary</p>
+            <p className="mt-0.5 text-sm whitespace-pre-wrap">{context.upstreamSummary}</p>
+          </div>
+          {context.upstreamFiles && context.upstreamFiles.length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-muted-foreground">Files changed</p>
+              <div className="mt-0.5 flex flex-wrap gap-1">
+                {context.upstreamFiles.map((f) => (
+                  <code key={f} className="rounded bg-muted px-1 py-0.5 text-xs">{f}</code>
+                ))}
+              </div>
+            </div>
+          )}
+          {context.ac && (
+            <div>
+              <p className="text-xs font-medium text-muted-foreground">Acceptance criteria</p>
+              <p className="mt-0.5 text-sm whitespace-pre-wrap">{context.ac}</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Approve/Reject buttons for pending steps */}
+      {isPending && (
+        <div className="mt-2 space-y-2 border-t border-yellow-200 pt-2 dark:border-yellow-800">
+          <textarea
+            placeholder="Reason / feedback (optional)..."
+            className="w-full rounded-md border bg-white px-2 py-1.5 text-sm dark:bg-black/10"
+            rows={2}
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+          />
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="default"
+              onClick={() => approveMutation.mutate({ stepRunId: stepRun.id, approved: true, reason, reviewedBy: "" })}
+              disabled={approveMutation.isPending}
+            >
+              <CheckCircle2 className="mr-1 h-4 w-4" />
+              Approve
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => approveMutation.mutate({ stepRunId: stepRun.id, approved: false, reason, reviewedBy: "" })}
+              disabled={approveMutation.isPending}
+            >
+              <XCircle className="mr-1 h-4 w-4" />
+              Reject
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Show result for resolved steps */}
+      {isResolved && decision !== "" && (
+        <div className="mt-2 border-t border-yellow-200 pt-2 text-xs dark:border-yellow-800">
+          <span className="text-muted-foreground">Decision: </span>
+          <span className={cn("font-medium", decision === "approved" ? "text-emerald-600" : "text-red-600")}>
+            {decision}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
