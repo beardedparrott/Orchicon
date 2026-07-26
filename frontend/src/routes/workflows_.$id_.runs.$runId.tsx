@@ -345,7 +345,28 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
         >
           <Background />
           <Controls showInteractive={false} />
-          <MiniMap />
+          <MiniMap
+            pannable
+            zoomable
+            nodeStrokeWidth={2}
+            style={{
+              position: 'absolute',
+              top: 10,
+              right: 10,
+              bottom: 'auto',
+              left: 'auto',
+              width: 180,
+              height: 120,
+              resize: 'both',
+              overflow: 'auto',
+              maxWidth: 400,
+              maxHeight: 300,
+              minWidth: 100,
+              minHeight: 80,
+              zIndex: 10,
+            }}
+            className="!bg-background/90 !border-border !shadow-lg"
+          />
         </ReactFlow>
       </div>
 

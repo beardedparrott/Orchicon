@@ -47,9 +47,15 @@ export function PropertiesPanel({
     const cfg = parseConfig(d.config) as StepConfig;
     let changed = false;
     const next = { ...cfg };
-    if (d.kind === STEP_KIND.APPROVAL && typeof cfg.reviewer !== "string") {
-      next.reviewer = "human";
-      changed = true;
+    if (d.kind === STEP_KIND.APPROVAL) {
+      if (typeof cfg.reviewer !== "string") {
+        next.reviewer = "human";
+        changed = true;
+      }
+      if (typeof cfg.loop_branch === "string" && cfg.loop_branch && typeof cfg.max_iterations !== "number") {
+        next.max_iterations = 3;
+        changed = true;
+      }
     }
     if (d.kind === STEP_KIND.LOOP_DECISION && typeof cfg.max_iterations !== "number") {
       next.max_iterations = 3;

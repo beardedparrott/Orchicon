@@ -464,6 +464,13 @@ function EditorInner({ workflowId }: { workflowId: string }) {
 
   // --- inline property editing ---
   const selectedNode = nodes.find((n) => n.id === selectedId) ?? null;
+  const [mmPos, setMmPos] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('orchicon:mmPos') ?? '{"top":10,"right":10}'); }
+    catch { return { top: 10, right: 10 }; }
+  });
+  const mmDrag = useRef<{ startX: number; startY: number; startTop: number; startRight: number } | null>(null);
+  const mmPosRef = useRef(mmPos);
+  mmPosRef.current = mmPos;
   const updateSelected = (patch: Partial<StepData>) => {
     if (!selectedNode) return;
     setNodes((nds) =>
@@ -897,7 +904,48 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                 <MiniMap
                   pannable
                   zoomable
-                  className="!bg-background/80 !border-border"
+                  nodeStrokeWidth={2}
+                  style={{
+                    position: 'absolute',
+                    top: mmPos.top,
+                    right: mmPos.right,
+                    bottom: 'auto',
+                    left: 'auto',
+                    width: 180,
+                    height: 120,
+                    resize: 'both',
+                    overflow: 'auto',
+                    maxWidth: 400,
+                    maxHeight: 300,
+                    minWidth: 100,
+                    minHeight: 80,
+                    cursor: mmDrag.current ? 'grabbing' : 'grab',
+                    zIndex: 10,
+                  }}
+                  className="!bg-background/90 !border-border !shadow-lg"
+                  onMouseDown={(e) => {
+                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    mmDrag.current = {
+                      startX: e.clientX, startY: e.clientY,
+                      startTop: rect.top, startRight: window.innerWidth - rect.right,
+                    };
+                    const onMove = (ev: MouseEvent) => {
+                      if (!mmDrag.current) return;
+                      const dx = ev.clientX - mmDrag.current.startX;
+                      const dy = ev.clientY - mmDrag.current.startY;
+                      const newTop = Math.max(0, mmDrag.current.startTop + dy);
+                      const newRight = Math.max(0, mmDrag.current.startRight - dx);
+                      setMmPos({ top: newTop, right: newRight });
+                    };
+                    const onUp = () => {
+                      mmDrag.current = null;
+                      localStorage.setItem('orchicon:mmPos', JSON.stringify(mmPosRef.current));
+                      document.removeEventListener('mousemove', onMove);
+                      document.removeEventListener('mouseup', onUp);
+                    };
+                    document.addEventListener('mousemove', onMove);
+                    document.addEventListener('mouseup', onUp);
+                  }}
                 />
               </ReactFlow>
               {dropActive && (
