@@ -238,7 +238,8 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   }, [workflowId]);
 
   const lockHeldByOther = !!editLock && editLock.heldBy !== lockActor;
-  const readOnly = !lockAcquired || lockHeldByOther;
+  const [viewLocked, setViewLocked] = useState(false);
+  const readOnly = !lockAcquired || lockHeldByOther || viewLocked;
 
   // --- load steps from the latest draft version into the canvas ---
   const latestVersion = versions && versions.length > 0 ? versions[0] : undefined;
@@ -896,11 +897,25 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                 maxZoom={2}
                 nodesConnectable={!readOnly}
                 nodesDraggable={!readOnly}
-                elementsSelectable
+                elementsSelectable={!readOnly}
+                panOnDrag={!readOnly}
                 proOptions={{ hideAttribution: true }}
               >
                 <Background gap={20} size={1} />
-                <Controls showInteractive={!readOnly} />
+                <Controls showInteractive={false} />
+                <button
+                  type="button"
+                  title={viewLocked ? 'Unlock view' : 'Lock view'}
+                  onClick={() => setViewLocked((v) => !v)}
+                  className="react-flow__controls react-flow__controls-button"
+                  style={{ position: 'absolute', left: 10, bottom: 130, zIndex: 10, width: 28, height: 28 }}
+                >
+                  {viewLocked ? (
+                    <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 17c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm6-9h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6h1.9c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm0 12H6V10h12v10z"/></svg>
+                  )}
+                </button>
                 <MiniMap
                   pannable
                   zoomable
@@ -924,6 +939,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                   }}
                   className="!bg-background/90 !border-border !shadow-lg"
                   onMouseDown={(e) => {
+                    e.stopPropagation();
                     const rect = (e.currentTarget as unknown as HTMLElement).getBoundingClientRect();
                     mmDrag.current = {
                       startX: e.clientX, startY: e.clientY,
