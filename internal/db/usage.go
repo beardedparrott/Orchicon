@@ -289,11 +289,13 @@ func GetWorkflowCostRollup(ctx context.Context, tx pgx.Tx, tenantID, workflowRun
 }
 
 // GetWorkflowExecutionCosts returns per-execution cost breakdown for a
-// single workflow run, with worker names and work item titles.
+// single workflow run, with worker names and work item titles. Uses the
+// same base (usage_records JOIN work_items) as GetWorkflowCostRollup so
+// the costs are guaranteed to sum to the workflow total.
 func GetWorkflowExecutionCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowRunID string) ([]WorkflowExecutionCostRow, error) {
 	const q = `SELECT
-		we.id AS execution_id,
-		COALESCE(wi.id, '') AS work_item_id,
+		COALESCE(we.id, '') AS execution_id,
+		wi.id AS work_item_id,
 		COALESCE(wi.title, '') AS work_item_title,
 		COALESCE(we.worker_id, '') AS worker_id,
 		COALESCE(w.name, '') AS worker_name,
@@ -302,13 +304,13 @@ func GetWorkflowExecutionCosts(ctx context.Context, tx pgx.Tx, tenantID, workflo
 		SUM(ur.total_tokens) AS total_tokens,
 		SUM(ur.prompt_tokens) AS prompt_tokens,
 		SUM(ur.completion_tokens) AS completion_tokens
-		FROM worker_executions we
-		JOIN usage_records ur ON ur.execution_id = we.id
-		LEFT JOIN work_items wi ON wi.id = we.task_id
-		LEFT JOIN workers w ON w.id = we.worker_id
-		WHERE we.tenant_id = $1 AND we.workflow_run_id = $2
+		FROM usage_records ur
+		JOIN work_items wi ON ur.task_id = wi.id
+		LEFT JOIN worker_executions we ON we.id = ur.execution_id
+		LEFT JOIN workers w ON w.id = COALESCE(we.worker_id, '')
+		WHERE ur.tenant_id = $1 AND wi.workflow_run_id = $2
 		GROUP BY we.id, wi.id, wi.title, we.worker_id, w.name, we.workflow_step_id, wi.workflow_step_id
-		ORDER BY we.started_at`
+		ORDER BY MIN(we.started_at)`
 	rows, err := tx.Query(ctx, q, tenantID, workflowRunID)
 	if err != nil {
 		return nil, fmt.Errorf("db: workflow execution costs: %w", err)
