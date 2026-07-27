@@ -159,6 +159,31 @@ func (s *Service) GetCost(ctx context.Context, req *connect.Request[apiv1.GetCos
 	for i := range rows {
 		summaries = append(summaries, costRowToProto(&rows[i], string(level), "", start, end))
 	}
+	// Enrich execution-level summaries with human-readable names.
+	if level == db.RollupExecution {
+		execIDs := make([]string, 0, len(rows))
+		for i := range rows {
+			if rows[i].GroupKey != "" {
+				execIDs = append(execIDs, rows[i].GroupKey)
+			}
+		}
+		if names, err := db.ResolveExecutionDisplayNames(ctx, ttx.Tx, tenantID, execIDs); err == nil {
+			for i := range summaries {
+				if info, ok := names[summaries[i].GroupKey]; ok {
+					if info.WorkerName != "" {
+						summaries[i].DisplayName = info.WorkerName
+						if info.TaskTitle != "" {
+							summaries[i].DisplayName += " · " + info.TaskTitle
+						}
+					} else if info.TaskTitle != "" {
+						summaries[i].DisplayName = info.TaskTitle
+					}
+				}
+			}
+		} else {
+			s.log.Warn("resolve execution display names", "error", err)
+		}
+	}
 	totalRow, err := db.GetCostTotal(ctx, ttx.Tx, tenantID, req.Msg.ProjectId, req.Msg.TaskId, req.Msg.ExecutionId, start, end)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)

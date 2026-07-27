@@ -62,6 +62,8 @@ func usageRowToProto(r *db.UsageRecordRow) *apiv1.UsageRecord {
 		CostUsd:          r.CostUSD,
 		CorrelationId:    r.CorrelationID,
 		OccurredAt:       timestamppb.New(r.OccurredAt),
+		WorkerName:       r.WorkerName,
+		TaskTitle:        r.TaskTitle,
 	}
 }
 
@@ -70,6 +72,7 @@ func costRowToProto(r *db.CostSummaryRow, groupBy, parentKey string, start, end 
 		GroupBy:           groupBy,
 		GroupKey:          r.GroupKey,
 		ParentKey:         parentKey,
+		DisplayName:       r.DisplayName,
 		TotalTokens:       r.TotalTokens,
 		PromptTokens:      r.PromptTokens,
 		CompletionTokens:  r.CompletionTokens,

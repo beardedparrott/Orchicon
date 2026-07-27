@@ -66,6 +66,8 @@ message UsageRecord {
   double cost_usd = 12;      // computed from provider pricing
   string correlation_id = 13;
   google.protobuf.Timestamp occurred_at = 14;
+  string worker_name = 15;   // human-readable worker name (JOINed from workers table)
+  string task_title = 16;    // human-readable work item title (JOINed from work_items table)
 }
 
 // CostSummary is a roll-up of cost + tokens over a time window, grouped
@@ -85,6 +87,9 @@ message CostSummary {
   google.protobuf.Timestamp window_end = 11;
   // Children for the next drill-down level (Tenant→Project→Task→Execution).
   repeated CostSummary children = 12;
+  // Human-readable display name for the group_key. Populated on the backend
+  // so all sections (drill-down, usage table, etc.) show meaningful names.
+  string display_name = 13;
 }
 
 // OpenCodeModel is a model discovered from the `opencode models --verbose`

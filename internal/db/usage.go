@@ -31,6 +31,8 @@ type UsageRecordRow struct {
 	TraceID          string
 	OccurredAt       time.Time
 	CreatedAt        time.Time
+	WorkerName       string // denormalised via LEFT JOIN at query time
+	TaskTitle        string // denormalised via LEFT JOIN at query time
 }
 
 // CreateUsageRecord inserts a usage record within the given tenant-scoped
@@ -87,18 +89,23 @@ func ListUsageRecords(ctx context.Context, tx pgx.Tx, f ListUsageRecordsFilter) 
 	if f.PageSize <= 0 || f.PageSize > 200 {
 		f.PageSize = 100
 	}
-	const q = `SELECT id, tenant_id, project_id, task_id, execution_id, worker_id,
-		provider, model, prompt_tokens, completion_tokens, total_tokens,
-		cost_usd, correlation_id, trace_id, occurred_at, created_at
-		FROM usage_records
-		WHERE tenant_id = $1
-		  AND ($2 = '' OR project_id = $2)
-		  AND ($3 = '' OR task_id = $3)
-		  AND ($4 = '' OR execution_id = $4)
-		  AND ($5 = '' OR provider = $5)
-		  AND ($6 = '' OR model = $6)
-		  AND ($7::timestamptz <= 'epoch'::timestamptz OR occurred_at >= $7::timestamptz)
-		  AND ($8::timestamptz <= 'epoch'::timestamptz OR occurred_at <  $8::timestamptz)
+	const q = `SELECT ur.id, ur.tenant_id, ur.project_id, ur.task_id, ur.execution_id, ur.worker_id,
+		ur.provider, ur.model, ur.prompt_tokens, ur.completion_tokens, ur.total_tokens,
+		ur.cost_usd, ur.correlation_id, ur.trace_id, ur.occurred_at, ur.created_at,
+		COALESCE(w.name, '') AS worker_name,
+		COALESCE(wi.title, '') AS task_title
+		FROM usage_records ur
+		LEFT JOIN worker_executions we ON we.id = ur.execution_id
+		LEFT JOIN workers w ON w.id = we.worker_id
+		LEFT JOIN work_items wi ON wi.id = ur.task_id
+		WHERE ur.tenant_id = $1
+		  AND ($2 = '' OR ur.project_id = $2)
+		  AND ($3 = '' OR ur.task_id = $3)
+		  AND ($4 = '' OR ur.execution_id = $4)
+		  AND ($5 = '' OR ur.provider = $5)
+		  AND ($6 = '' OR ur.model = $6)
+		  AND ($7::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at >= $7::timestamptz)
+		  AND ($8::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at <  $8::timestamptz)
 		ORDER BY occurred_at DESC
 		LIMIT $9`
 	rows, err := tx.Query(ctx, q,
@@ -124,6 +131,7 @@ func ListUsageRecords(ctx context.Context, tx pgx.Tx, f ListUsageRecordsFilter) 
 // (docs/10 §11: Tenant → Project → Task → Execution).
 type CostSummaryRow struct {
 	GroupKey          string
+	DisplayName       string // human-readable name populated by the service layer
 	TotalTokens       int64
 	PromptTokens      int64
 	CompletionTokens  int64
@@ -258,6 +266,8 @@ type WorkflowWorkerCostRow struct {
 
 // GetWorkflowAggregateCosts returns cost grouped by workflow (across all
 // runs). Used for the top-level "By Workflow" view.
+// Uses worker_executions.workflow_run_id (immutable, set at creation time)
+// rather than work_items.workflow_run_id (mutable, overwritten on re-dispatch).
 func GetWorkflowAggregateCosts(ctx context.Context, tx pgx.Tx, tenantID string, start, end time.Time) ([]WorkflowAggregateRow, error) {
 	const q = `SELECT
 		w.id AS workflow_id,
@@ -267,8 +277,8 @@ func GetWorkflowAggregateCosts(ctx context.Context, tx pgx.Tx, tenantID string, 
 		COUNT(DISTINCT wr.id) AS run_count,
 		COUNT(DISTINCT ur.execution_id) AS execution_count
 		FROM usage_records ur
-		JOIN work_items wi ON ur.task_id = wi.id
-		JOIN workflow_runs wr ON wi.workflow_run_id = wr.id
+		JOIN worker_executions we ON we.id = ur.execution_id
+		JOIN workflow_runs wr ON we.workflow_run_id = wr.id
 		JOIN workflows w ON wr.workflow_id = w.id
 		WHERE ur.tenant_id = $1
 		  AND ($2::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at >= $2::timestamptz)
@@ -295,6 +305,7 @@ func GetWorkflowAggregateCosts(ctx context.Context, tx pgx.Tx, tenantID string, 
 
 // GetWorkflowRunCosts returns cost grouped by workflow run for a given
 // workflow. Used to populate the runs inside a WorkflowCostAggregate.
+// Uses worker_executions.workflow_run_id (immutable, set at creation time).
 func GetWorkflowRunCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowID string, start, end time.Time) ([]WorkflowRunCostRow, error) {
 	const q = `SELECT
 		wr.id AS workflow_run_id,
@@ -303,8 +314,8 @@ func GetWorkflowRunCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowID st
 		COALESCE(SUM(ur.total_tokens), 0) AS total_tokens,
 		COUNT(DISTINCT ur.execution_id) AS execution_count
 		FROM usage_records ur
-		JOIN work_items wi ON ur.task_id = wi.id
-		JOIN workflow_runs wr ON wi.workflow_run_id = wr.id
+		JOIN worker_executions we ON we.id = ur.execution_id
+		JOIN workflow_runs wr ON we.workflow_run_id = wr.id
 		JOIN workflows w ON wr.workflow_id = w.id
 		WHERE ur.tenant_id = $1 AND w.id = $2
 		  AND ($3::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at >= $3::timestamptz)
@@ -330,8 +341,7 @@ func GetWorkflowRunCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowID st
 }
 
 // GetWorkflowWorkerCosts returns cost grouped by worker type within a
-// single workflow run. Uses usage_records as base (same as aggregate
-// queries) so costs sum correctly.
+// single workflow run. Uses worker_executions.workflow_run_id (immutable).
 func GetWorkflowWorkerCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowRunID string) ([]WorkflowWorkerCostRow, error) {
 	const q = `SELECT
 		COALESCE(we.worker_id, '') AS worker_id,
@@ -342,10 +352,9 @@ func GetWorkflowWorkerCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowRu
 		SUM(ur.completion_tokens) AS completion_tokens,
 		COUNT(DISTINCT ur.execution_id) AS execution_count
 		FROM usage_records ur
-		JOIN work_items wi ON ur.task_id = wi.id
-		LEFT JOIN worker_executions we ON we.id = ur.execution_id
+		JOIN worker_executions we ON we.id = ur.execution_id
 		LEFT JOIN workers w ON w.id = we.worker_id
-		WHERE ur.tenant_id = $1 AND wi.workflow_run_id = $2
+		WHERE ur.tenant_id = $1 AND we.workflow_run_id = $2
 		GROUP BY we.worker_id, w.name
 		ORDER BY cost_usd DESC`
 	rows, err := tx.Query(ctx, q, tenantID, workflowRunID)
@@ -367,6 +376,43 @@ func GetWorkflowWorkerCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowRu
 	return out, rows.Err()
 }
 
+// ExecutionDisplayInfo holds human-readable names for an execution.
+type ExecutionDisplayInfo struct {
+	ExecutionID string
+	WorkerName  string
+	TaskTitle   string
+}
+
+// ResolveExecutionDisplayNames returns display info for the given
+// execution IDs. Results are deduplicated by execution_id.
+func ResolveExecutionDisplayNames(ctx context.Context, tx pgx.Tx, tenantID string, execIDs []string) (map[string]ExecutionDisplayInfo, error) {
+	if len(execIDs) == 0 {
+		return nil, nil
+	}
+	// Build a parameterised IN list.
+	const q = `SELECT DISTINCT we.id,
+		COALESCE(w.name, '') AS worker_name,
+		COALESCE(wi.title, '') AS task_title
+		FROM worker_executions we
+		LEFT JOIN workers w ON w.id = we.worker_id
+		LEFT JOIN work_items wi ON wi.id = we.task_id
+		WHERE we.tenant_id = $1 AND we.id = ANY($2)`
+	rows, err := tx.Query(ctx, q, tenantID, execIDs)
+	if err != nil {
+		return nil, fmt.Errorf("db: resolve execution display names: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]ExecutionDisplayInfo, len(execIDs))
+	for rows.Next() {
+		var info ExecutionDisplayInfo
+		if err := rows.Scan(&info.ExecutionID, &info.WorkerName, &info.TaskTitle); err != nil {
+			return nil, fmt.Errorf("db: scan execution display info: %w", err)
+		}
+		out[info.ExecutionID] = info
+	}
+	return out, rows.Err()
+}
+
 func scanUsageRecord(ctx context.Context, rows pgx.Rows) (UsageRecordRow, error) {
 	var r UsageRecordRow
 	var occurredAt, createdAt pgtype.Timestamptz
@@ -374,6 +420,7 @@ func scanUsageRecord(ctx context.Context, rows pgx.Rows) (UsageRecordRow, error)
 		&r.ID, &r.TenantID, &r.ProjectID, &r.TaskID, &r.ExecutionID, &r.WorkerID,
 		&r.Provider, &r.Model, &r.PromptTokens, &r.CompletionTokens, &r.TotalTokens,
 		&r.CostUSD, &r.CorrelationID, &r.TraceID, &occurredAt, &createdAt,
+		&r.WorkerName, &r.TaskTitle,
 	); err != nil {
 		return UsageRecordRow{}, fmt.Errorf("db: scan usage record: %w", err)
 	}

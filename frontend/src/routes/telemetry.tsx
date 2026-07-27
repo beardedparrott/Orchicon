@@ -245,11 +245,11 @@ function CostExplorer() {
     }
   }
 
-  function displayName(s: { groupBy: string; groupKey: string }): string {
+  function displayName(s: { groupBy: string; groupKey: string; displayName?: string }): string {
+    if (s.displayName) return s.displayName;
     if (s.groupBy === "project") return projectNameMap.get(s.groupKey) || s.groupKey.slice(0, 12);
     if (s.groupBy === "task") return taskNameMap.get(s.groupKey) || s.groupKey.slice(0, 12);
-    if (s.groupBy === "execution") return s.groupKey.slice(0, 12);
-    return s.groupKey;
+    return s.groupKey.slice(0, 12);
   }
 
   return (
@@ -496,7 +496,8 @@ function UsageRecordsTable({
             <table className="w-full text-sm">
               <thead className="text-left text-muted-foreground">
                 <tr>
-                  <th className="py-1 pr-3">Execution</th>
+                  <th className="py-1 pr-3">Worker</th>
+                  <th className="py-1 pr-3">Task</th>
                   <th className="py-1 pr-3">Provider</th>
                   <th className="py-1 pr-3">Model</th>
                   <th className="py-1 pr-3 text-right">Tokens</th>
@@ -507,8 +508,11 @@ function UsageRecordsTable({
               <tbody className="divide-y">
                 {data.map((r) => (
                   <tr key={r.id}>
-                    <td className="py-1 pr-3 font-mono text-xs">
-                      {(r.executionId || "—").slice(0, 12)}
+                    <td className="py-1 pr-3 text-sm">
+                      {r.workerName || (r.workerId || "—").slice(0, 12)}
+                    </td>
+                    <td className="py-1 pr-3 text-xs text-muted-foreground">
+                      {r.taskTitle || (r.taskId || "—").slice(0, 12)}
                     </td>
                     <td className="py-1 pr-3">{r.provider || "—"}</td>
                     <td className="py-1 pr-3 font-mono text-xs">
