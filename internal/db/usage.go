@@ -266,9 +266,9 @@ type WorkflowWorkerCostRow struct {
 }
 
 // GetWorkflowAggregateCosts returns cost grouped by workflow (across all
-// runs). Used for the top-level "By Workflow" view.
-// Uses worker_executions.workflow_run_id (immutable, set at creation time)
-// rather than work_items.workflow_run_id (mutable, overwritten on re-dispatch).
+// runs). Uses worker_executions.workflow_run_id (immutable, set at creation
+// time) when available, falling back to work_items.workflow_run_id (mutable,
+// latest-run value) for old executions where the column was not populated.
 func GetWorkflowAggregateCosts(ctx context.Context, tx pgx.Tx, tenantID string, start, end time.Time) ([]WorkflowAggregateRow, error) {
 	const q = `SELECT
 		w.id AS workflow_id,
@@ -278,8 +278,9 @@ func GetWorkflowAggregateCosts(ctx context.Context, tx pgx.Tx, tenantID string, 
 		COUNT(DISTINCT wr.id) AS run_count,
 		COUNT(DISTINCT ur.execution_id) AS execution_count
 		FROM usage_records ur
-		JOIN worker_executions we ON we.id = ur.execution_id
-		JOIN workflow_runs wr ON we.workflow_run_id = wr.id
+		JOIN work_items wi ON ur.task_id = wi.id
+		LEFT JOIN worker_executions we ON we.id = ur.execution_id
+		JOIN workflow_runs wr ON COALESCE(we.workflow_run_id, wi.workflow_run_id, '') = wr.id
 		JOIN workflows w ON wr.workflow_id = w.id
 		WHERE ur.tenant_id = $1
 		  AND ($2::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at >= $2::timestamptz)
@@ -305,8 +306,8 @@ func GetWorkflowAggregateCosts(ctx context.Context, tx pgx.Tx, tenantID string, 
 }
 
 // GetWorkflowRunCosts returns cost grouped by workflow run for a given
-// workflow. Used to populate the runs inside a WorkflowCostAggregate.
-// Uses worker_executions.workflow_run_id (immutable, set at creation time).
+// workflow. Uses COALESCE fallback to work_items.workflow_run_id for old
+// executions where the column was not populated.
 func GetWorkflowRunCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowID string, start, end time.Time) ([]WorkflowRunCostRow, error) {
 	const q = `SELECT
 		wr.id AS workflow_run_id,
@@ -316,8 +317,9 @@ func GetWorkflowRunCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowID st
 		COUNT(DISTINCT ur.execution_id) AS execution_count,
 		wr.status AS run_status
 		FROM usage_records ur
-		JOIN worker_executions we ON we.id = ur.execution_id
-		JOIN workflow_runs wr ON we.workflow_run_id = wr.id
+		JOIN work_items wi ON ur.task_id = wi.id
+		LEFT JOIN worker_executions we ON we.id = ur.execution_id
+		JOIN workflow_runs wr ON COALESCE(we.workflow_run_id, wi.workflow_run_id, '') = wr.id
 		JOIN workflows w ON wr.workflow_id = w.id
 		WHERE ur.tenant_id = $1 AND w.id = $2
 		  AND ($3::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at >= $3::timestamptz)
@@ -343,7 +345,8 @@ func GetWorkflowRunCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowID st
 }
 
 // GetWorkflowWorkerCosts returns cost grouped by worker type within a
-// single workflow run. Uses worker_executions.workflow_run_id (immutable).
+// single workflow run. Uses COALESCE fallback to work_items.workflow_run_id
+// for old executions where the column was not populated.
 func GetWorkflowWorkerCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowRunID string) ([]WorkflowWorkerCostRow, error) {
 	const q = `SELECT
 		COALESCE(we.worker_id, '') AS worker_id,
@@ -354,9 +357,10 @@ func GetWorkflowWorkerCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowRu
 		SUM(ur.completion_tokens) AS completion_tokens,
 		COUNT(DISTINCT ur.execution_id) AS execution_count
 		FROM usage_records ur
-		JOIN worker_executions we ON we.id = ur.execution_id
-		LEFT JOIN workers w ON w.id = we.worker_id
-		WHERE ur.tenant_id = $1 AND we.workflow_run_id = $2
+		JOIN work_items wi ON ur.task_id = wi.id
+		LEFT JOIN worker_executions we ON we.id = ur.execution_id
+		LEFT JOIN workers w ON w.id = COALESCE(we.worker_id, '')
+		WHERE ur.tenant_id = $1 AND COALESCE(we.workflow_run_id, wi.workflow_run_id, '') = $2
 		GROUP BY we.worker_id, w.name
 		ORDER BY cost_usd DESC`
 	rows, err := tx.Query(ctx, q, tenantID, workflowRunID)
