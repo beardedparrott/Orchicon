@@ -1347,42 +1347,70 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 
 	// Workflow-aware role context: tell the worker where they fit in the
 	// overall workflow so they don't perform work meant for other steps.
-	// Count worker-facing steps (task and approval) in DAG/canvas order
-	// (top-to-bottom, left-to-right). Routing nodes like loop_decision,
-	// decision, parallel, project, and work_item are invisible.
-	type stepPos struct{ idx int; name string; id string }
-	var activeSteps []stepPos
+	// Count worker-facing steps (task and approval) in topological order
+	// (execution flow determined by depends_on edges, not canvas position).
+	// Routing nodes like loop_decision, decision, parallel, project, and
+	// work_item are excluded from the count.
+	type stepMeta struct{ idx int; name string; id string }
+	var allMeta []stepMeta // all steps, used to build the dependency graph
+	var activeMeta []stepMeta // only task + approval
 	myPos := -1
 	myName := ""
-	for _, s := range allSteps {
-		if s.Kind != "task" && s.Kind != "approval" {
-			continue
+	stepIdx := make(map[string]int)
+	for i, s := range allSteps {
+		stepIdx[s.ID] = i
+		allMeta = append(allMeta, stepMeta{i, s.Name, s.ID})
+		if s.Kind == "task" || s.Kind == "approval" {
+			activeMeta = append(activeMeta, stepMeta{0, s.Name, s.ID})
 		}
-		activeSteps = append(activeSteps, stepPos{0, s.Name, s.ID})
 	}
-	// Sort by canvas position (Y first for row-major, then X) so the
-	// ordering matches the visual DAG layout, not JSON insertion order.
-	sort.SliceStable(activeSteps, func(i, j int) bool {
-		// Find the matching StepWire for each active step to get its position.
-		var si, sj workflow.StepWire
-		for _, s := range allSteps {
-			if s.ID == activeSteps[i].id { si = s }
-			if s.ID == activeSteps[j].id { sj = s }
+	// Kahn's algorithm for topological order over all steps.
+	inDeg := make([]int, len(allSteps))
+	adj := make([][]int, len(allSteps))
+	for _, s := range allSteps {
+		for _, dep := range s.DependsOn {
+			if dIdx, ok := stepIdx[dep]; ok {
+				adj[dIdx] = append(adj[dIdx], stepIdx[s.ID])
+				inDeg[stepIdx[s.ID]]++
+			}
 		}
-		if si.PositionY != sj.PositionY {
-			return si.PositionY < sj.PositionY
+	}
+	var topo []int
+	q := make([]int, 0, len(allSteps))
+	for i, d := range inDeg {
+		if d == 0 {
+			q = append(q, i)
 		}
-		return si.PositionX < sj.PositionX
+	}
+	for len(q) > 0 {
+		u := q[0]
+		q = q[1:]
+		topo = append(topo, u)
+		for _, v := range adj[u] {
+			inDeg[v]--
+			if inDeg[v] == 0 {
+				q = append(q, v)
+			}
+		}
+	}
+	// Build a position map: index in topological sort → step ID.
+	topoPos := make(map[string]int)
+	for i, idx := range topo {
+		topoPos[allSteps[idx].ID] = i
+	}
+	// Sort active steps by their topological position in the full DAG.
+	sort.SliceStable(activeMeta, func(i, j int) bool {
+		return topoPos[activeMeta[i].id] < topoPos[activeMeta[j].id]
 	})
-	for i, s := range activeSteps {
-		activeSteps[i].idx = i
+	for i, s := range activeMeta {
+		activeMeta[i].idx = i
 		if s.id == wi.WorkflowStepID {
 			myPos = i
 			myName = s.name
 		}
 	}
-	if myPos >= 0 && len(activeSteps) > 0 {
-		fmt.Fprintf(&sb, "This workflow has %d steps. You are step %d — %s. Focus on your specific role and let other workers handle their steps.\n\n", len(activeSteps), myPos+1, myName)
+	if myPos >= 0 && len(activeMeta) > 0 {
+		fmt.Fprintf(&sb, "This workflow has %d steps. You are step %d — %s. Focus on your specific role and let other workers handle their steps.\n\n", len(activeMeta), myPos+1, myName)
 	}
 
 	// Only instruct the worker to read .orchicon/ files when prior
