@@ -382,6 +382,7 @@ function CostExplorer() {
 function WorkflowCostPanel() {
   const { data: workflows, isLoading, error } = useGetWorkflowCosts();
   const [expandedWorkflow, setExpandedWorkflow] = useState<string | null>(null);
+  const [expandedRun, setExpandedRun] = useState<string | null>(null);
 
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading workflow costs…</p>;
   if (error) return <p className="text-sm text-destructive">Failed to load workflow costs: {String(error)}</p>;
@@ -390,47 +391,78 @@ function WorkflowCostPanel() {
 
   return (
     <div className="space-y-2">
-      {workflows.map((wf) => (
-        <div key={wf.workflowRunId} className="rounded-md border">
-          <button
-            onClick={() => setExpandedWorkflow(expandedWorkflow === wf.workflowRunId ? null : wf.workflowRunId)}
-            className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-accent"
-          >
-            <span className="text-sm font-medium">{wf.workflowName || wf.workflowRunId.slice(0, 12)}</span>
-            <span className="text-sm">
-              ${(wf.totalCostUsd ?? 0).toFixed(4)} · {fmtInt(wf.totalTokens ?? 0)} tok · {wf.executionCount ?? 0} execs
-            </span>
-          </button>
-          {expandedWorkflow === wf.workflowRunId && wf.executions && wf.executions.length > 0 && (
-            <div className="border-t divide-y">
-              {wf.executions.map((ex: any) => (
-                <div
-                  key={ex.executionId}
-                  className="flex items-center justify-between px-6 py-2 text-sm"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="font-medium truncate">
-                      {ex.workerName || ex.workerId || "Unknown worker"}
+      {workflows.map((wf) => {
+        const wfExpanded = expandedWorkflow === wf.workflowId;
+        return (
+          <div key={wf.workflowId} className="rounded-md border">
+            {/* Workflow level (aggregated across all runs) */}
+            <button
+              onClick={() => setExpandedWorkflow(wfExpanded ? null : wf.workflowId)}
+              className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-accent"
+            >
+              <span className="text-sm font-medium">
+                {wf.workflowName || wf.workflowId?.slice(0, 12)}
+              </span>
+              <span className="text-sm">
+                ${(wf.totalCostUsd ?? 0).toFixed(4)} · {fmtInt(wf.totalTokens ?? 0)} tok · {wf.runCount ?? 0} runs · {wf.executionCount ?? 0} execs
+              </span>
+            </button>
+
+            {/* Runs level */}
+            {wfExpanded && wf.runs && wf.runs.length > 0 && (
+              <div className="border-t divide-y">
+                {wf.runs.map((run: any) => {
+                  const runExpanded = expandedRun === run.workflowRunId;
+                  return (
+                    <div key={run.workflowRunId}>
+                      <button
+                        onClick={() => setExpandedRun(runExpanded ? null : run.workflowRunId)}
+                        className="flex w-full items-center justify-between px-5 py-2 text-left hover:bg-accent/50"
+                      >
+                        <span className="text-xs font-mono text-muted-foreground">
+                          Run {run.workflowRunId?.slice(0, 12)}
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          ${(run.totalCostUsd ?? 0).toFixed(4)} · {fmtInt(run.totalTokens ?? 0)} tok · {run.executionCount ?? 0} execs
+                        </span>
+                      </button>
+
+                      {/* Worker level inside run */}
+                      {runExpanded && run.workers && run.workers.length > 0 && (
+                        <div className="border-t divide-y bg-muted/20">
+                          {run.workers.map((worker: any) => (
+                            <div
+                              key={worker.workerId || "unknown"}
+                              className="flex items-center justify-between px-7 py-2 text-sm"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="font-medium truncate">
+                                  {worker.workerName || worker.workerId || "Unknown worker"}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  {worker.executionCount ?? 0} execution{(worker.executionCount ?? 0) !== 1 ? "s" : ""}
+                                </div>
+                              </div>
+                              <div className="text-right shrink-0 ml-4">
+                                <div className="text-xs font-medium">
+                                  ${(worker.totalCostUsd ?? 0).toFixed(4)}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  {fmtInt(worker.totalTokens ?? 0)} tok · {fmtInt(worker.promptTokens ?? 0)} in / {fmtInt(worker.completionTokens ?? 0)} out
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                    <div className="text-xs text-muted-foreground truncate">
-                      {ex.workItemTitle || ex.workItemId?.slice(0, 12) || "—"}
-                      {ex.workflowStepId && <span className="ml-2">Step {ex.workflowStepId}</span>}
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0 ml-4">
-                    <div className="text-xs font-medium">
-                      ${(ex.costUsd ?? 0).toFixed(4)}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      {fmtInt(ex.totalTokens ?? 0)} tok · {fmtInt(ex.promptTokens ?? 0)} in / {fmtInt(ex.completionTokens ?? 0)} out
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ))}
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

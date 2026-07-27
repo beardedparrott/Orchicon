@@ -169,8 +169,8 @@ func (s *Service) GetCost(ctx context.Context, req *connect.Request[apiv1.GetCos
 	}), nil
 }
 
-// GetWorkflowCosts returns cost broken down by workflow run with
-// per-step detail (Cost Explorer "By Workflow" tab).
+// GetWorkflowCosts returns cost broken down by workflow (aggregated across
+// all runs), with per-run and per-worker detail (Cost Explorer "By Workflow").
 func (s *Service) GetWorkflowCosts(ctx context.Context, req *connect.Request[apiv1.GetWorkflowCostsRequest]) (*connect.Response[apiv1.GetWorkflowCostsResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -182,38 +182,52 @@ func (s *Service) GetWorkflowCosts(ctx context.Context, req *connect.Request[api
 	}
 	defer ttx.Rollback(ctx)
 	start, end := tsToTime(req.Msg.Start), tsToTime(req.Msg.End)
-	rows, err := db.GetWorkflowCostRollup(ctx, ttx.Tx, tenantID, req.Msg.WorkflowRunId, start, end)
+
+	// Top level: cost grouped by workflow (all runs aggregated).
+	aggregates, err := db.GetWorkflowAggregateCosts(ctx, ttx.Tx, tenantID, start, end)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	out := make([]*apiv1.WorkflowCostSummary, 0, len(rows))
-	for i := range rows {
-		wf := &apiv1.WorkflowCostSummary{
-			WorkflowRunId:  rows[i].WorkflowRunID,
-			WorkflowId:     rows[i].WorkflowID,
-			WorkflowName:   rows[i].WorkflowName,
-			TotalCostUsd:   rows[i].TotalCostUSD,
-			TotalTokens:    rows[i].TotalTokens,
-			ExecutionCount: rows[i].ExecutionCount,
+	out := make([]*apiv1.WorkflowCostAggregate, 0, len(aggregates))
+	for i := range aggregates {
+		wf := &apiv1.WorkflowCostAggregate{
+			WorkflowId:     aggregates[i].WorkflowID,
+			WorkflowName:   aggregates[i].WorkflowName,
+			TotalCostUsd:   aggregates[i].TotalCostUSD,
+			TotalTokens:    aggregates[i].TotalTokens,
+			RunCount:       aggregates[i].RunCount,
+			ExecutionCount: aggregates[i].ExecutionCount,
 		}
-		// Fetch per-execution breakdown for this workflow run.
-		execs, err := db.GetWorkflowExecutionCosts(ctx, ttx.Tx, tenantID, rows[i].WorkflowRunID)
+		// Mid level: individual runs for this workflow.
+		runs, err := db.GetWorkflowRunCosts(ctx, ttx.Tx, tenantID, aggregates[i].WorkflowID, start, end)
 		if err != nil {
-			s.log.Warn("workflow execution costs", "workflow_run_id", rows[i].WorkflowRunID, "error", err)
+			s.log.Warn("workflow run costs", "workflow_id", aggregates[i].WorkflowID, "error", err)
 		} else {
-			for j := range execs {
-				wf.Executions = append(wf.Executions, &apiv1.WorkflowExecutionCost{
-					ExecutionId:     execs[j].ExecutionID,
-					WorkItemId:      execs[j].WorkItemID,
-					WorkItemTitle:   execs[j].WorkItemTitle,
-					WorkerId:        execs[j].WorkerID,
-					WorkerName:      execs[j].WorkerName,
-					WorkflowStepId:  execs[j].WorkflowStepID,
-					CostUsd:         execs[j].CostUSD,
-					TotalTokens:     execs[j].TotalTokens,
-					PromptTokens:    execs[j].PromptTokens,
-					CompletionTokens: execs[j].CompletionTokens,
-				})
+			for j := range runs {
+				run := &apiv1.WorkflowRunCost{
+					WorkflowRunId:  runs[j].WorkflowRunID,
+					TotalCostUsd:   runs[j].TotalCostUSD,
+					TotalTokens:    runs[j].TotalTokens,
+					ExecutionCount: runs[j].ExecutionCount,
+				}
+				// Leaf level: per-worker cost summary within this run.
+				workers, err := db.GetWorkflowWorkerCosts(ctx, ttx.Tx, tenantID, runs[j].WorkflowRunID)
+				if err != nil {
+					s.log.Warn("workflow worker costs", "workflow_run_id", runs[j].WorkflowRunID, "error", err)
+				} else {
+					for k := range workers {
+						run.Workers = append(run.Workers, &apiv1.WorkflowWorkerCost{
+							WorkerId:        workers[k].WorkerID,
+							WorkerName:      workers[k].WorkerName,
+							TotalCostUsd:    workers[k].TotalCostUSD,
+							TotalTokens:     workers[k].TotalTokens,
+							PromptTokens:    workers[k].PromptTokens,
+							CompletionTokens: workers[k].CompletionTokens,
+							ExecutionCount:  workers[k].ExecutionCount,
+						})
+					}
+				}
+				wf.Runs = append(wf.Runs, run)
 			}
 		}
 		out = append(out, wf)

@@ -117,30 +117,40 @@ message GetWorkflowCostsRequest {
   google.protobuf.Timestamp end = 7;
 }
 
-message WorkflowCostSummary {
-  string workflow_run_id = 1;
-  string workflow_id = 2;
-  string workflow_name = 3;
-  double total_cost_usd = 4;
-  int64 total_tokens = 5;
-  int32 execution_count = 6;
-  // Per-execution breakdown within this workflow run.
-  repeated WorkflowExecutionCost executions = 7;
-}
-
-message WorkflowExecutionCost {
-  string execution_id = 1;
-  string work_item_id = 2;
-  string work_item_title = 3;
-  string worker_id = 4;
-  string worker_name = 5;
-  string workflow_step_id = 6;
-  double cost_usd = 7;
-  int64 total_tokens = 8;
-  int64 prompt_tokens = 9;
-  int64 completion_tokens = 10;
-}
-
 message GetWorkflowCostsResponse {
-  repeated WorkflowCostSummary workflows = 1;
+  repeated WorkflowCostAggregate workflows = 1;
+}
+
+// WorkflowCostAggregate is the top-level cost for a workflow, aggregating
+// all runs (templates fire multiple runs). Expand to see individual runs.
+message WorkflowCostAggregate {
+  string workflow_id = 1;
+  string workflow_name = 2;
+  double total_cost_usd = 3;
+  int64 total_tokens = 4;
+  int32 run_count = 5;
+  int32 execution_count = 6;
+  repeated WorkflowRunCost runs = 7;
+}
+
+// WorkflowRunCost is a single run within a workflow. Expand to see
+// per-worker cost summaries.
+message WorkflowRunCost {
+  string workflow_run_id = 1;
+  double total_cost_usd = 2;
+  int64 total_tokens = 3;
+  int32 execution_count = 4;
+  repeated WorkflowWorkerCost workers = 5;
+}
+
+// WorkflowWorkerCost is the aggregated cost for one worker type within
+// a workflow run (all executions by that worker summed).
+message WorkflowWorkerCost {
+  string worker_id = 1;
+  string worker_name = 2;
+  double total_cost_usd = 3;
+  int64 total_tokens = 4;
+  int64 prompt_tokens = 5;
+  int64 completion_tokens = 6;
+  int32 execution_count = 7;
 }

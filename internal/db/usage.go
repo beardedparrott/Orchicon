@@ -225,38 +225,80 @@ func GetCostTotal(ctx context.Context, tx pgx.Tx, tenantID, projectID, taskID, e
 	return r, nil
 }
 
-// WorkflowCostRow is a cost roll-up grouped by workflow run.
-type WorkflowCostRow struct {
-	WorkflowRunID  string
+// WorkflowAggregateRow is a cost roll-up grouped by workflow (across all
+// runs). Used for the top-level "By Workflow" hierarchy.
+type WorkflowAggregateRow struct {
 	WorkflowID     string
 	WorkflowName   string
+	TotalCostUSD   float64
+	TotalTokens    int64
+	RunCount       int32
+	ExecutionCount int32
+}
+
+// WorkflowRunCostRow is a cost roll-up grouped by workflow run.
+type WorkflowRunCostRow struct {
+	WorkflowRunID  string
+	WorkflowID     string
 	TotalCostUSD   float64
 	TotalTokens    int64
 	ExecutionCount int32
 }
 
-// WorkflowExecutionCostRow is a per-execution cost within a workflow run.
-type WorkflowExecutionCostRow struct {
-	ExecutionID     string
-	WorkItemID      string
-	WorkItemTitle   string
+// WorkflowWorkerCostRow is a per-worker cost summary within one run.
+type WorkflowWorkerCostRow struct {
 	WorkerID        string
 	WorkerName      string
-	WorkflowStepID  string
-	CostUSD         float64
+	TotalCostUSD    float64
 	TotalTokens     int64
 	PromptTokens    int64
 	CompletionTokens int64
+	ExecutionCount  int32
 }
 
-// GetWorkflowCostRollup returns cost grouped by workflow run, joining
-// usage_records with work_items and workflow_runs to attribute costs to
-// workflows. When workflowRunID is non-empty, only that run is queried.
-func GetWorkflowCostRollup(ctx context.Context, tx pgx.Tx, tenantID, workflowRunID string, start, end time.Time) ([]WorkflowCostRow, error) {
+// GetWorkflowAggregateCosts returns cost grouped by workflow (across all
+// runs). Used for the top-level "By Workflow" view.
+func GetWorkflowAggregateCosts(ctx context.Context, tx pgx.Tx, tenantID string, start, end time.Time) ([]WorkflowAggregateRow, error) {
+	const q = `SELECT
+		w.id AS workflow_id,
+		w.name AS workflow_name,
+		COALESCE(SUM(ur.cost_usd), 0) AS total_cost,
+		COALESCE(SUM(ur.total_tokens), 0) AS total_tokens,
+		COUNT(DISTINCT wr.id) AS run_count,
+		COUNT(DISTINCT ur.execution_id) AS execution_count
+		FROM usage_records ur
+		JOIN work_items wi ON ur.task_id = wi.id
+		JOIN workflow_runs wr ON wi.workflow_run_id = wr.id
+		JOIN workflows w ON wr.workflow_id = w.id
+		WHERE ur.tenant_id = $1
+		  AND ($2::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at >= $2::timestamptz)
+		  AND ($3::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at <  $3::timestamptz)
+		GROUP BY w.id, w.name
+		ORDER BY total_cost DESC`
+	rows, err := tx.Query(ctx, q, tenantID, start, end)
+	if err != nil {
+		return nil, fmt.Errorf("db: workflow aggregate costs: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkflowAggregateRow
+	for rows.Next() {
+		var r WorkflowAggregateRow
+		if err := rows.Scan(&r.WorkflowID, &r.WorkflowName,
+			&r.TotalCostUSD, &r.TotalTokens, &r.RunCount, &r.ExecutionCount,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan workflow aggregate: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// GetWorkflowRunCosts returns cost grouped by workflow run for a given
+// workflow. Used to populate the runs inside a WorkflowCostAggregate.
+func GetWorkflowRunCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowID string, start, end time.Time) ([]WorkflowRunCostRow, error) {
 	const q = `SELECT
 		wr.id AS workflow_run_id,
 		w.id AS workflow_id,
-		w.name AS workflow_name,
 		COALESCE(SUM(ur.cost_usd), 0) AS total_cost,
 		COALESCE(SUM(ur.total_tokens), 0) AS total_tokens,
 		COUNT(DISTINCT ur.execution_id) AS execution_count
@@ -264,66 +306,61 @@ func GetWorkflowCostRollup(ctx context.Context, tx pgx.Tx, tenantID, workflowRun
 		JOIN work_items wi ON ur.task_id = wi.id
 		JOIN workflow_runs wr ON wi.workflow_run_id = wr.id
 		JOIN workflows w ON wr.workflow_id = w.id
-		WHERE ur.tenant_id = $1
-		  AND ($2 = '' OR wi.workflow_run_id = $2)
+		WHERE ur.tenant_id = $1 AND w.id = $2
 		  AND ($3::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at >= $3::timestamptz)
 		  AND ($4::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at <  $4::timestamptz)
-		GROUP BY wr.id, w.id, w.name
+		GROUP BY wr.id, w.id
 		ORDER BY total_cost DESC`
-	rows, err := tx.Query(ctx, q, tenantID, workflowRunID, start, end)
+	rows, err := tx.Query(ctx, q, tenantID, workflowID, start, end)
 	if err != nil {
-		return nil, fmt.Errorf("db: workflow cost rollup: %w", err)
+		return nil, fmt.Errorf("db: workflow run costs: %w", err)
 	}
 	defer rows.Close()
-	var out []WorkflowCostRow
+	var out []WorkflowRunCostRow
 	for rows.Next() {
-		var r WorkflowCostRow
-		if err := rows.Scan(&r.WorkflowRunID, &r.WorkflowID, &r.WorkflowName,
+		var r WorkflowRunCostRow
+		if err := rows.Scan(&r.WorkflowRunID, &r.WorkflowID,
 			&r.TotalCostUSD, &r.TotalTokens, &r.ExecutionCount,
 		); err != nil {
-			return nil, fmt.Errorf("db: scan workflow cost: %w", err)
+			return nil, fmt.Errorf("db: scan workflow run cost: %w", err)
 		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
 }
 
-// GetWorkflowExecutionCosts returns per-execution cost breakdown for a
-// single workflow run, with worker names and work item titles. Uses the
-// same base (usage_records JOIN work_items) as GetWorkflowCostRollup so
-// the costs are guaranteed to sum to the workflow total.
-func GetWorkflowExecutionCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowRunID string) ([]WorkflowExecutionCostRow, error) {
+// GetWorkflowWorkerCosts returns cost grouped by worker type within a
+// single workflow run. Uses usage_records as base (same as aggregate
+// queries) so costs sum correctly.
+func GetWorkflowWorkerCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowRunID string) ([]WorkflowWorkerCostRow, error) {
 	const q = `SELECT
-		COALESCE(we.id, '') AS execution_id,
-		wi.id AS work_item_id,
-		COALESCE(wi.title, '') AS work_item_title,
 		COALESCE(we.worker_id, '') AS worker_id,
 		COALESCE(w.name, '') AS worker_name,
-		COALESCE(we.workflow_step_id, wi.workflow_step_id, '') AS workflow_step_id,
 		SUM(ur.cost_usd) AS cost_usd,
 		SUM(ur.total_tokens) AS total_tokens,
 		SUM(ur.prompt_tokens) AS prompt_tokens,
-		SUM(ur.completion_tokens) AS completion_tokens
+		SUM(ur.completion_tokens) AS completion_tokens,
+		COUNT(DISTINCT ur.execution_id) AS execution_count
 		FROM usage_records ur
 		JOIN work_items wi ON ur.task_id = wi.id
 		LEFT JOIN worker_executions we ON we.id = ur.execution_id
-		LEFT JOIN workers w ON w.id = COALESCE(we.worker_id, '')
+		LEFT JOIN workers w ON w.id = we.worker_id
 		WHERE ur.tenant_id = $1 AND wi.workflow_run_id = $2
-		GROUP BY we.id, wi.id, wi.title, we.worker_id, w.name, we.workflow_step_id, wi.workflow_step_id
-		ORDER BY MIN(we.started_at)`
+		GROUP BY we.worker_id, w.name
+		ORDER BY cost_usd DESC`
 	rows, err := tx.Query(ctx, q, tenantID, workflowRunID)
 	if err != nil {
-		return nil, fmt.Errorf("db: workflow execution costs: %w", err)
+		return nil, fmt.Errorf("db: workflow worker costs: %w", err)
 	}
 	defer rows.Close()
-	var out []WorkflowExecutionCostRow
+	var out []WorkflowWorkerCostRow
 	for rows.Next() {
-		var r WorkflowExecutionCostRow
-		if err := rows.Scan(&r.ExecutionID, &r.WorkItemID, &r.WorkItemTitle,
-			&r.WorkerID, &r.WorkerName, &r.WorkflowStepID,
-			&r.CostUSD, &r.TotalTokens, &r.PromptTokens, &r.CompletionTokens,
+		var r WorkflowWorkerCostRow
+		if err := rows.Scan(&r.WorkerID, &r.WorkerName,
+			&r.TotalCostUSD, &r.TotalTokens, &r.PromptTokens, &r.CompletionTokens,
+			&r.ExecutionCount,
 		); err != nil {
-			return nil, fmt.Errorf("db: scan workflow execution cost: %w", err)
+			return nil, fmt.Errorf("db: scan workflow worker cost: %w", err)
 		}
 		out = append(out, r)
 	}
