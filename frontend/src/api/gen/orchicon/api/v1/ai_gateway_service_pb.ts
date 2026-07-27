@@ -698,11 +698,11 @@ export class WorkflowCostSummary extends Message<WorkflowCostSummary> {
   executionCount = 0;
 
   /**
-   * Per-step breakdown within this workflow run.
+   * Per-execution breakdown within this workflow run.
    *
-   * @generated from field: repeated orchicon.api.v1.WorkflowStepCost steps = 7;
+   * @generated from field: repeated orchicon.api.v1.WorkflowExecutionCost executions = 7;
    */
-  steps: WorkflowStepCost[] = [];
+  executions: WorkflowExecutionCost[] = [];
 
   constructor(data?: PartialMessage<WorkflowCostSummary>) {
     super();
@@ -718,7 +718,7 @@ export class WorkflowCostSummary extends Message<WorkflowCostSummary> {
     { no: 4, name: "total_cost_usd", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
     { no: 5, name: "total_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 6, name: "execution_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
-    { no: 7, name: "steps", kind: "message", T: WorkflowStepCost, repeated: true },
+    { no: 7, name: "executions", kind: "message", T: WorkflowExecutionCost, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowCostSummary {
@@ -739,69 +739,93 @@ export class WorkflowCostSummary extends Message<WorkflowCostSummary> {
 }
 
 /**
- * @generated from message orchicon.api.v1.WorkflowStepCost
+ * @generated from message orchicon.api.v1.WorkflowExecutionCost
  */
-export class WorkflowStepCost extends Message<WorkflowStepCost> {
+export class WorkflowExecutionCost extends Message<WorkflowExecutionCost> {
   /**
-   * @generated from field: string work_item_id = 1;
+   * @generated from field: string execution_id = 1;
+   */
+  executionId = "";
+
+  /**
+   * @generated from field: string work_item_id = 2;
    */
   workItemId = "";
 
   /**
-   * @generated from field: string title = 2;
+   * @generated from field: string work_item_title = 3;
    */
-  title = "";
+  workItemTitle = "";
 
   /**
-   * @generated from field: string workflow_step_id = 3;
+   * @generated from field: string worker_id = 4;
+   */
+  workerId = "";
+
+  /**
+   * @generated from field: string worker_name = 5;
+   */
+  workerName = "";
+
+  /**
+   * @generated from field: string workflow_step_id = 6;
    */
   workflowStepId = "";
 
   /**
-   * @generated from field: double cost_usd = 4;
+   * @generated from field: double cost_usd = 7;
    */
   costUsd = 0;
 
   /**
-   * @generated from field: int64 total_tokens = 5;
+   * @generated from field: int64 total_tokens = 8;
    */
   totalTokens = protoInt64.zero;
 
   /**
-   * @generated from field: int32 execution_count = 6;
+   * @generated from field: int64 prompt_tokens = 9;
    */
-  executionCount = 0;
+  promptTokens = protoInt64.zero;
 
-  constructor(data?: PartialMessage<WorkflowStepCost>) {
+  /**
+   * @generated from field: int64 completion_tokens = 10;
+   */
+  completionTokens = protoInt64.zero;
+
+  constructor(data?: PartialMessage<WorkflowExecutionCost>) {
     super();
     proto3.util.initPartial(data, this);
   }
 
   static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "orchicon.api.v1.WorkflowStepCost";
+  static readonly typeName = "orchicon.api.v1.WorkflowExecutionCost";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "work_item_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 2, name: "title", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 3, name: "workflow_step_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 4, name: "cost_usd", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
-    { no: 5, name: "total_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
-    { no: 6, name: "execution_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 1, name: "execution_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "work_item_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "work_item_title", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "worker_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "worker_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "workflow_step_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 7, name: "cost_usd", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+    { no: 8, name: "total_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 9, name: "prompt_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 10, name: "completion_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
   ]);
 
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowStepCost {
-    return new WorkflowStepCost().fromBinary(bytes, options);
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowExecutionCost {
+    return new WorkflowExecutionCost().fromBinary(bytes, options);
   }
 
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): WorkflowStepCost {
-    return new WorkflowStepCost().fromJson(jsonValue, options);
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): WorkflowExecutionCost {
+    return new WorkflowExecutionCost().fromJson(jsonValue, options);
   }
 
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): WorkflowStepCost {
-    return new WorkflowStepCost().fromJsonString(jsonString, options);
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): WorkflowExecutionCost {
+    return new WorkflowExecutionCost().fromJsonString(jsonString, options);
   }
 
-  static equals(a: WorkflowStepCost | PlainMessage<WorkflowStepCost> | undefined, b: WorkflowStepCost | PlainMessage<WorkflowStepCost> | undefined): boolean {
-    return proto3.util.equals(WorkflowStepCost, a, b);
+  static equals(a: WorkflowExecutionCost | PlainMessage<WorkflowExecutionCost> | undefined, b: WorkflowExecutionCost | PlainMessage<WorkflowExecutionCost> | undefined): boolean {
+    return proto3.util.equals(WorkflowExecutionCost, a, b);
   }
 }
 

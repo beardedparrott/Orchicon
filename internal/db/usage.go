@@ -235,14 +235,18 @@ type WorkflowCostRow struct {
 	ExecutionCount int32
 }
 
-// WorkflowStepCostRow is a per-step cost within a workflow run.
-type WorkflowStepCostRow struct {
-	WorkItemID     string
-	Title          string
-	WorkflowStepID string
-	CostUSD        float64
-	TotalTokens    int64
-	ExecutionCount int32
+// WorkflowExecutionCostRow is a per-execution cost within a workflow run.
+type WorkflowExecutionCostRow struct {
+	ExecutionID     string
+	WorkItemID      string
+	WorkItemTitle   string
+	WorkerID        string
+	WorkerName      string
+	WorkflowStepID  string
+	CostUSD         float64
+	TotalTokens     int64
+	PromptTokens    int64
+	CompletionTokens int64
 }
 
 // GetWorkflowCostRollup returns cost grouped by workflow run, joining
@@ -284,33 +288,40 @@ func GetWorkflowCostRollup(ctx context.Context, tx pgx.Tx, tenantID, workflowRun
 	return out, rows.Err()
 }
 
-// GetWorkflowStepCosts returns per-step cost breakdown for a single
-// workflow run.
-func GetWorkflowStepCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowRunID string) ([]WorkflowStepCostRow, error) {
+// GetWorkflowExecutionCosts returns per-execution cost breakdown for a
+// single workflow run, with worker names and work item titles.
+func GetWorkflowExecutionCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowRunID string) ([]WorkflowExecutionCostRow, error) {
 	const q = `SELECT
-		wi.id AS work_item_id,
-		wi.title,
-		COALESCE(wi.workflow_step_id, '') AS workflow_step_id,
-		COALESCE(SUM(ur.cost_usd), 0) AS step_cost,
-		COALESCE(SUM(ur.total_tokens), 0) AS step_tokens,
-		COUNT(DISTINCT ur.execution_id) AS execution_count
-		FROM usage_records ur
-		JOIN work_items wi ON ur.task_id = wi.id
-		WHERE ur.tenant_id = $1 AND wi.workflow_run_id = $2
-		GROUP BY wi.id, wi.title, wi.workflow_step_id
-		ORDER BY wi.workflow_step_id`
+		we.id AS execution_id,
+		COALESCE(wi.id, '') AS work_item_id,
+		COALESCE(wi.title, '') AS work_item_title,
+		COALESCE(we.worker_id, '') AS worker_id,
+		COALESCE(w.name, '') AS worker_name,
+		COALESCE(we.workflow_step_id, wi.workflow_step_id, '') AS workflow_step_id,
+		SUM(ur.cost_usd) AS cost_usd,
+		SUM(ur.total_tokens) AS total_tokens,
+		SUM(ur.prompt_tokens) AS prompt_tokens,
+		SUM(ur.completion_tokens) AS completion_tokens
+		FROM worker_executions we
+		JOIN usage_records ur ON ur.execution_id = we.id
+		LEFT JOIN work_items wi ON wi.id = we.task_id
+		LEFT JOIN workers w ON w.id = we.worker_id
+		WHERE we.tenant_id = $1 AND we.workflow_run_id = $2
+		GROUP BY we.id, wi.id, wi.title, we.worker_id, w.name, we.workflow_step_id, wi.workflow_step_id
+		ORDER BY we.started_at`
 	rows, err := tx.Query(ctx, q, tenantID, workflowRunID)
 	if err != nil {
-		return nil, fmt.Errorf("db: workflow step costs: %w", err)
+		return nil, fmt.Errorf("db: workflow execution costs: %w", err)
 	}
 	defer rows.Close()
-	var out []WorkflowStepCostRow
+	var out []WorkflowExecutionCostRow
 	for rows.Next() {
-		var r WorkflowStepCostRow
-		if err := rows.Scan(&r.WorkItemID, &r.Title, &r.WorkflowStepID,
-			&r.CostUSD, &r.TotalTokens, &r.ExecutionCount,
+		var r WorkflowExecutionCostRow
+		if err := rows.Scan(&r.ExecutionID, &r.WorkItemID, &r.WorkItemTitle,
+			&r.WorkerID, &r.WorkerName, &r.WorkflowStepID,
+			&r.CostUSD, &r.TotalTokens, &r.PromptTokens, &r.CompletionTokens,
 		); err != nil {
-			return nil, fmt.Errorf("db: scan workflow step cost: %w", err)
+			return nil, fmt.Errorf("db: scan workflow execution cost: %w", err)
 		}
 		out = append(out, r)
 	}

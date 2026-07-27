@@ -401,22 +401,30 @@ function WorkflowCostPanel() {
               ${(wf.totalCostUsd ?? 0).toFixed(4)} · {fmtInt(wf.totalTokens ?? 0)} tok · {wf.executionCount ?? 0} execs
             </span>
           </button>
-          {expandedWorkflow === wf.workflowRunId && wf.steps && wf.steps.length > 0 && (
+          {expandedWorkflow === wf.workflowRunId && wf.executions && wf.executions.length > 0 && (
             <div className="border-t divide-y">
-              {wf.steps.map((step: any) => (
+              {wf.executions.map((ex: any) => (
                 <div
-                  key={step.workItemId}
+                  key={ex.executionId}
                   className="flex items-center justify-between px-6 py-2 text-sm"
                 >
-                  <div>
-                    <span className="font-medium">{step.title || step.workItemId.slice(0, 12)}</span>
-                    {step.workflowStepId && (
-                      <span className="ml-2 text-xs text-muted-foreground">Step {step.workflowStepId}</span>
-                    )}
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium truncate">
+                      {ex.workerName || ex.workerId || "Unknown worker"}
+                    </div>
+                    <div className="text-xs text-muted-foreground truncate">
+                      {ex.workItemTitle || ex.workItemId?.slice(0, 12) || "—"}
+                      {ex.workflowStepId && <span className="ml-2">Step {ex.workflowStepId}</span>}
+                    </div>
                   </div>
-                  <span className="text-xs text-muted-foreground">
-                    ${(step.costUsd ?? 0).toFixed(4)} · {fmtInt(step.totalTokens ?? 0)} tok · {step.executionCount ?? 0} execs
-                  </span>
+                  <div className="text-right shrink-0 ml-4">
+                    <div className="text-xs font-medium">
+                      ${(ex.costUsd ?? 0).toFixed(4)}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {fmtInt(ex.totalTokens ?? 0)} tok · {fmtInt(ex.promptTokens ?? 0)} in / {fmtInt(ex.completionTokens ?? 0)} out
+                    </div>
+                  </div>
                 </div>
               ))}
             </div>

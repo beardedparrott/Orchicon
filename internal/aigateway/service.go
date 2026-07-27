@@ -196,19 +196,23 @@ func (s *Service) GetWorkflowCosts(ctx context.Context, req *connect.Request[api
 			TotalTokens:    rows[i].TotalTokens,
 			ExecutionCount: rows[i].ExecutionCount,
 		}
-		// Fetch per-step breakdown for this workflow run.
-		steps, err := db.GetWorkflowStepCosts(ctx, ttx.Tx, tenantID, rows[i].WorkflowRunID)
+		// Fetch per-execution breakdown for this workflow run.
+		execs, err := db.GetWorkflowExecutionCosts(ctx, ttx.Tx, tenantID, rows[i].WorkflowRunID)
 		if err != nil {
-			s.log.Warn("workflow step costs", "workflow_run_id", rows[i].WorkflowRunID, "error", err)
+			s.log.Warn("workflow execution costs", "workflow_run_id", rows[i].WorkflowRunID, "error", err)
 		} else {
-			for j := range steps {
-				wf.Steps = append(wf.Steps, &apiv1.WorkflowStepCost{
-					WorkItemId:     steps[j].WorkItemID,
-					Title:          steps[j].Title,
-					WorkflowStepId: steps[j].WorkflowStepID,
-					CostUsd:        steps[j].CostUSD,
-					TotalTokens:    steps[j].TotalTokens,
-					ExecutionCount: steps[j].ExecutionCount,
+			for j := range execs {
+				wf.Executions = append(wf.Executions, &apiv1.WorkflowExecutionCost{
+					ExecutionId:     execs[j].ExecutionID,
+					WorkItemId:      execs[j].WorkItemID,
+					WorkItemTitle:   execs[j].WorkItemTitle,
+					WorkerId:        execs[j].WorkerID,
+					WorkerName:      execs[j].WorkerName,
+					WorkflowStepId:  execs[j].WorkflowStepID,
+					CostUsd:         execs[j].CostUSD,
+					TotalTokens:     execs[j].TotalTokens,
+					PromptTokens:    execs[j].PromptTokens,
+					CompletionTokens: execs[j].CompletionTokens,
 				})
 			}
 		}
