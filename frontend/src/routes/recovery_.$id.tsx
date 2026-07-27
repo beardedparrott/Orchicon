@@ -161,7 +161,7 @@ function RecoveryDetailPage() {
             <CardDescription>
               The 6-step workflow (capture → summarize → preserve → review →
               plan → resume). Each step carries why/what/how/where/when
-              (docs/06 §11).
+              Each step carries why/what/how/where/when.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -245,7 +245,7 @@ function RecoveryDetailPage() {
             <CardHeader>
               <CardTitle>Continuation plan</CardTitle>
               <CardDescription>
-                Produced by the plan step (docs/06 §8). L3 escalation
+                Produced by the plan step. L3 escalation
                 requires human approval before resume.
               </CardDescription>
             </CardHeader>
@@ -352,7 +352,7 @@ function RecoveryDetailPage() {
               <CardTitle>Mark task succeeded</CardTitle>
               <CardDescription>
                 The Reviewer Worker (during recovery) or a human can mark
-                the Task succeeded (docs/06 §11, docs/02 §4 #2). Emits an
+                the Task succeeded. Emits an
                 audit event with the actor recorded.
               </CardDescription>
             </CardHeader>
@@ -389,8 +389,7 @@ function RecoveryDetailPage() {
             <CardHeader>
               <CardTitle>Live events</CardTitle>
               <CardDescription>
-                Streaming recovery events (StreamRecoveryEvents — docs/07
-                §3.6).
+                Streaming recovery events from the control plane.
               </CardDescription>
             </CardHeader>
             <CardContent>

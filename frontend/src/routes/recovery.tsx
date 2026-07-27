@@ -1,6 +1,6 @@
 import { Link, createRoute } from "@tanstack/react-router";
-import { useState } from "react";
-import { SearchX } from "lucide-react";
+import { useState, useMemo } from "react";
+import { SearchX, ArrowUpDown } from "lucide-react";
 
 import { useBatchCancelRecoveries, useBatchDeleteRecoveries, useListRecoveries } from "@/api/recovery";
 import type { RecoveryStatus } from "@/api/gen/orchicon/api/v1/recovery_pb";
@@ -23,14 +23,28 @@ export const Route = createRoute({
 
 function RecoveryPage() {
   const [status, setStatus] = useState("all");
+  const [sortBy, setSortBy] = useState<"created_at" | "updated_at">("created_at");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const statusFilter: RecoveryStatus | undefined =
     status === "all" ? undefined : (Number(status) as RecoveryStatus);
 
-  const { data: recoveries, isLoading, error } = useListRecoveries({
+  const { data: rawRecoveries, isLoading, error } = useListRecoveries({
     status: statusFilter,
   });
+
+  const recoveries = useMemo(() => {
+    if (!rawRecoveries) return undefined;
+    const sorted = [...rawRecoveries].sort((a, b) => {
+      const aTime = sortBy === "created_at" ? a.createdAt : a.updatedAt;
+      const bTime = sortBy === "created_at" ? b.createdAt : b.updatedAt;
+      const aVal = aTime ? new Date(aTime.toDate()).getTime() : 0;
+      const bVal = bTime ? new Date(bTime.toDate()).getTime() : 0;
+      return sortOrder === "desc" ? bVal - aVal : aVal - bVal;
+    });
+    return sorted;
+  }, [rawRecoveries, sortBy, sortOrder]);
   const batchCancel = useBatchCancelRecoveries();
   const batchDelete = useBatchDeleteRecoveries();
 
@@ -68,8 +82,7 @@ function RecoveryPage() {
           <h1 className="text-2xl font-semibold tracking-tight">Recovery</h1>
           <p className="text-sm text-muted-foreground">
             Recovery workflow executions. When a task fails, recovery runs
-            automatically (opt-out, not opt-in — docs/06 §1). Open one to see
-            the full narrative.
+            automatically. Open one to see the full narrative.
           </p>
         </div>
       </div>
@@ -89,6 +102,23 @@ function RecoveryPage() {
           <option value="6">Cancelled</option>
           <option value="7">Blocked</option>
         </select>
+        <div className="flex items-center gap-2">
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as "created_at" | "updated_at")}
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+          >
+            <option value="created_at">Created</option>
+            <option value="updated_at">Updated</option>
+          </select>
+          <button
+            onClick={() => setSortOrder(sortOrder === "desc" ? "asc" : "desc")}
+            className="flex h-9 items-center gap-1 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm hover:bg-accent"
+          >
+            <ArrowUpDown className="h-3 w-3" />
+            {sortOrder === "desc" ? "Newest" : "Oldest"}
+          </button>
+        </div>
         {selected.size > 0 && (
           <>
           <Button
@@ -134,8 +164,7 @@ function RecoveryPage() {
             <CardDescription>
               When a WorkerExecution fails, the engine creates a
               RecoveryExecution and progresses it through the default
-              6-step workflow (capture → summarize → preserve → review →
-              plan → resume).
+              6-step workflow.
             </CardDescription>
           </CardHeader>
         </Card>
@@ -182,6 +211,9 @@ function RecoveryPage() {
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground sm:shrink-0">
                         <span>{r.triggerReason}</span>
                         <span>{r.resumptionPath}</span>
+                        <span className="whitespace-nowrap font-mono">
+                          {r.createdAt ? new Date(r.createdAt.toDate()).toLocaleString() : "—"}
+                        </span>
                       </div>
                     </CardContent>
                   </Card>

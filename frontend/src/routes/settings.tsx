@@ -1,6 +1,6 @@
 import { createRoute } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
-import { Sun, Moon, Check, Save } from "lucide-react";
+import { Sun, Moon, Check, Save, BookOpen, Palette, SlidersHorizontal } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -18,53 +18,10 @@ export const Route = createRoute({
   component: SettingsPage,
 });
 
+type SettingsTab = "appearance" | "defaults" | "guide";
+
 function SettingsPage() {
-  const currentTheme = useThemeStore((s) => s.theme);
-  const currentMode = useThemeStore((s) => s.mode);
-  const setTheme = useThemeStore((s) => s.setTheme);
-  const setMode = useThemeStore((s) => s.setMode);
-
-  const { data: settings, isLoading } = useGetSettings();
-  const updateSettings = useUpdateSettings();
-
-  const [draftWorkerModel, setDraftWorkerModel] = useState("");
-  const [draftAskOrchiconModel, setDraftAskOrchiconModel] = useState("");
-  const [draftNoProgress, setDraftNoProgress] = useState("");
-  const [draftNoFileDiff, setDraftNoFileDiff] = useState("");
-  const [draftTextLoop, setDraftTextLoop] = useState("");
-  const [draftRepetitionCount, setDraftRepetitionCount] = useState("");
-  const [draftRepetitionWindow, setDraftRepetitionWindow] = useState("");
-  const [saving, setSaving] = useState(false);
-
-  // Initialize draft fields when settings load
-  useEffect(() => {
-    if (settings) {
-      setDraftWorkerModel(settings.defaultWorkerModel ?? "");
-      setDraftAskOrchiconModel(settings.defaultAskOrchiconModel ?? "");
-      setDraftNoProgress(String(settings.stallNoProgressWindowSeconds ?? ""));
-      setDraftNoFileDiff(String(settings.stallNoFileDiffWindowSeconds ?? ""));
-      setDraftTextLoop(String(settings.stallTextLoopWindowSeconds ?? ""));
-      setDraftRepetitionCount(String(settings.stallRepetitionCount ?? ""));
-      setDraftRepetitionWindow(String(settings.stallRepetitionWindowSeconds ?? ""));
-    }
-  }, [settings]);
-
-  async function handleSave() {
-    setSaving(true);
-    try {
-      await updateSettings.mutateAsync({
-        defaultWorkerModel: draftWorkerModel,
-        defaultAskOrchiconModel: draftAskOrchiconModel,
-        stallNoProgressWindowSeconds: parseInt(draftNoProgress) || 0,
-        stallNoFileDiffWindowSeconds: parseInt(draftNoFileDiff) || 0,
-        stallTextLoopWindowSeconds: parseInt(draftTextLoop) || 0,
-        stallRepetitionCount: parseInt(draftRepetitionCount) || 0,
-        stallRepetitionWindowSeconds: parseInt(draftRepetitionWindow) || 0,
-      } as any);
-    } finally {
-      setSaving(false);
-    }
-  }
+  const [tab, setTab] = useState<SettingsTab>("appearance");
 
   return (
     <div className="mx-auto max-w-4xl space-y-8">
@@ -75,7 +32,43 @@ function SettingsPage() {
         </p>
       </div>
 
-      {/* === Appearance === */}
+      <div className="flex flex-wrap gap-2 border-b pb-px">
+        {[
+          ["appearance", "Appearance", Palette],
+          ["defaults", "Defaults", SlidersHorizontal],
+          ["guide", "User Guide", BookOpen],
+        ].map(([id, label, Icon]) => (
+          <button
+            key={id}
+            onClick={() => setTab(id as SettingsTab)}
+            className={cn(
+              "flex items-center gap-2 rounded-t-md px-3 py-2 text-sm font-medium transition-colors",
+              tab === id
+                ? "border-b-2 border-primary text-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <Icon className="h-4 w-4" />
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "appearance" && <AppearanceTab />}
+      {tab === "defaults" && <DefaultsTab />}
+      {tab === "guide" && <UserGuideTab />}
+    </div>
+  );
+}
+
+function AppearanceTab() {
+  const currentTheme = useThemeStore((s) => s.theme);
+  const currentMode = useThemeStore((s) => s.mode);
+  const setTheme = useThemeStore((s) => s.setTheme);
+  const setMode = useThemeStore((s) => s.setMode);
+
+  return (
+    <div className="space-y-8">
       <section>
         <h2 className="mb-3 text-sm font-medium text-muted-foreground">APPEARANCE</h2>
         <Card>
@@ -110,7 +103,6 @@ function SettingsPage() {
         </Card>
       </section>
 
-      {/* Light themes */}
       <section>
         <h2 className="mb-3 flex items-center gap-2 text-sm font-medium text-muted-foreground">
           <Sun className="h-4 w-4" />
@@ -131,7 +123,6 @@ function SettingsPage() {
         </div>
       </section>
 
-      {/* Dark themes */}
       <section>
         <h2 className="mb-3 flex items-center gap-2 text-sm font-medium text-muted-foreground">
           <Moon className="h-4 w-4" />
@@ -151,107 +142,225 @@ function SettingsPage() {
           ))}
         </div>
       </section>
-
-      {/* === Defaults === */}
-      <section>
-        <h2 className="mb-3 text-sm font-medium text-muted-foreground">DEFAULTS</h2>
-
-        {isLoading && <p className="text-sm text-muted-foreground">Loading settings…</p>}
-
-        {!isLoading && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Default models</CardTitle>
-              <CardDescription>
-                When a worker does not specify a model, or when a feature has no model
-                configured, these defaults are used. If both are empty, dispatch will fail.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div>
-                <label className="mb-1 block text-sm font-medium">
-                  Default worker model
-                </label>
-                <ModelPicker
-                  value={draftWorkerModel}
-                  onChange={setDraftWorkerModel}
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium">
-                  Default Ask Orchicon model
-                </label>
-                <ModelPicker
-                  value={draftAskOrchiconModel}
-                  onChange={setDraftAskOrchiconModel}
-                />
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {!isLoading && (
-          <Card className="mt-4">
-            <CardHeader>
-              <CardTitle>Recovery stall parameters</CardTitle>
-              <CardDescription>
-                Per-execution stall detection thresholds. Zero means "use the env-var
-                default or sensible built-in default". These are read at dispatch time
-                with env-var fallback for dev/debugging overrides.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid gap-4 sm:grid-cols-2">
-                <StallField
-                  label="No progress window (seconds)"
-                  description="No step_finish or new tokens within this window"
-                  value={draftNoProgress}
-                  onChange={setDraftNoProgress}
-                  placeholder="300"
-                />
-                <StallField
-                  label="No file diff window (seconds)"
-                  description="No file modifications within this window. 0 = disabled"
-                  value={draftNoFileDiff}
-                  onChange={setDraftNoFileDiff}
-                  placeholder="900"
-                />
-                <StallField
-                  label="Text loop window (seconds)"
-                  description="No meaningful action within this window. 0 = disabled"
-                  value={draftTextLoop}
-                  onChange={setDraftTextLoop}
-                  placeholder="600"
-                />
-                <StallField
-                  label="Repetition count"
-                  description="Same tool-call signature repeated this many times"
-                  value={draftRepetitionCount}
-                  onChange={setDraftRepetitionCount}
-                  placeholder="5"
-                />
-                <StallField
-                  label="Repetition window (seconds)"
-                  description="Window for repetition detection"
-                  value={draftRepetitionWindow}
-                  onChange={setDraftRepetitionWindow}
-                  placeholder="300"
-                />
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {!isLoading && (
-          <div className="mt-4 flex justify-end">
-            <Button onClick={handleSave} disabled={saving}>
-              <Save className="mr-2 h-4 w-4" />
-              {saving ? "Saving…" : "Save settings"}
-            </Button>
-          </div>
-        )}
-      </section>
     </div>
+  );
+}
+
+function DefaultsTab() {
+  const { data: settings, isLoading } = useGetSettings();
+  const updateSettings = useUpdateSettings();
+
+  const [draftWorkerModel, setDraftWorkerModel] = useState("");
+  const [draftAskOrchiconModel, setDraftAskOrchiconModel] = useState("");
+  const [draftNoProgress, setDraftNoProgress] = useState("");
+  const [draftNoFileDiff, setDraftNoFileDiff] = useState("");
+  const [draftTextLoop, setDraftTextLoop] = useState("");
+  const [draftRepetitionCount, setDraftRepetitionCount] = useState("");
+  const [draftRepetitionWindow, setDraftRepetitionWindow] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (settings) {
+      setDraftWorkerModel(settings.defaultWorkerModel ?? "");
+      setDraftAskOrchiconModel(settings.defaultAskOrchiconModel ?? "");
+      setDraftNoProgress(String(settings.stallNoProgressWindowSeconds ?? ""));
+      setDraftNoFileDiff(String(settings.stallNoFileDiffWindowSeconds ?? ""));
+      setDraftTextLoop(String(settings.stallTextLoopWindowSeconds ?? ""));
+      setDraftRepetitionCount(String(settings.stallRepetitionCount ?? ""));
+      setDraftRepetitionWindow(String(settings.stallRepetitionWindowSeconds ?? ""));
+    }
+  }, [settings]);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await updateSettings.mutateAsync({
+        defaultWorkerModel: draftWorkerModel,
+        defaultAskOrchiconModel: draftAskOrchiconModel,
+        stallNoProgressWindowSeconds: parseInt(draftNoProgress) || 0,
+        stallNoFileDiffWindowSeconds: parseInt(draftNoFileDiff) || 0,
+        stallTextLoopWindowSeconds: parseInt(draftTextLoop) || 0,
+        stallRepetitionCount: parseInt(draftRepetitionCount) || 0,
+        stallRepetitionWindowSeconds: parseInt(draftRepetitionWindow) || 0,
+      } as any);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="space-y-8">
+      {isLoading && <p className="text-sm text-muted-foreground">Loading settings…</p>}
+
+      {!isLoading && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Default models</CardTitle>
+            <CardDescription>
+              When a worker does not specify a model, or when a feature has no model
+              configured, these defaults are used. If both are empty, dispatch will fail.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <label className="mb-1 block text-sm font-medium">
+                Default worker model
+              </label>
+              <ModelPicker
+                value={draftWorkerModel}
+                onChange={setDraftWorkerModel}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium">
+                Default Ask Orchicon model
+              </label>
+              <ModelPicker
+                value={draftAskOrchiconModel}
+                onChange={setDraftAskOrchiconModel}
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {!isLoading && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Recovery stall parameters</CardTitle>
+            <CardDescription>
+              Per-execution stall detection thresholds. Zero means "use the env-var
+              default or sensible built-in default". These are read at dispatch time
+              with env-var fallback for dev/debugging overrides.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <StallField
+                label="No progress window (seconds)"
+                description="No step_finish or new tokens within this window"
+                value={draftNoProgress}
+                onChange={setDraftNoProgress}
+                placeholder="300"
+              />
+              <StallField
+                label="No file diff window (seconds)"
+                description="No file modifications within this window. 0 = disabled"
+                value={draftNoFileDiff}
+                onChange={setDraftNoFileDiff}
+                placeholder="900"
+              />
+              <StallField
+                label="Text loop window (seconds)"
+                description="No meaningful action within this window. 0 = disabled"
+                value={draftTextLoop}
+                onChange={setDraftTextLoop}
+                placeholder="600"
+              />
+              <StallField
+                label="Repetition count"
+                description="Same tool-call signature repeated this many times"
+                value={draftRepetitionCount}
+                onChange={setDraftRepetitionCount}
+                placeholder="5"
+              />
+              <StallField
+                label="Repetition window (seconds)"
+                description="Window for repetition detection"
+                value={draftRepetitionWindow}
+                onChange={setDraftRepetitionWindow}
+                placeholder="300"
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {!isLoading && (
+        <div className="flex justify-end">
+          <Button onClick={handleSave} disabled={saving}>
+            <Save className="mr-2 h-4 w-4" />
+            {saving ? "Saving…" : "Save settings"}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UserGuideTab() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <BookOpen className="h-5 w-5" />
+          Orchicon User Guide
+        </CardTitle>
+        <CardDescription>
+          Quick-reference guide to the control plane. See DOCUMENTATION.md for
+          the full reference.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6 text-sm leading-relaxed">
+        <div>
+          <h3 className="font-medium mb-1">Projects</h3>
+          <p className="text-muted-foreground">
+            Top-level organizational unit. Each project has a directory, goals,
+            and context files that workers use as reference.
+          </p>
+        </div>
+        <div>
+          <h3 className="font-medium mb-1">Workers</h3>
+          <p className="text-muted-foreground">
+            Reusable execution profiles with Role, Skills, Behavior, and AGENTS.md
+            fields. Workers are versioned; published versions are immutable.
+          </p>
+        </div>
+        <div>
+          <h3 className="font-medium mb-1">Work Items</h3>
+          <p className="text-muted-foreground">
+            Units of work dispatched to workers. Forms a DAG (Epic → Feature →
+            Task → Subtask). Dependencies enforce ordering.
+          </p>
+        </div>
+        <div>
+          <h3 className="font-medium mb-1">Workflows</h3>
+          <p className="text-muted-foreground">
+            DAG of steps (Task, Approval, Loop Decision, Work Item, Project) that
+            orchestrates autonomous work. Templates can be run multiple times.
+          </p>
+        </div>
+        <div>
+          <h3 className="font-medium mb-1">Recovery</h3>
+          <p className="text-muted-foreground">
+            When a worker execution fails, recovery runs automatically through a
+            6-step workflow (capture → summarize → preserve → review → plan →
+            resume). L1→L2→L3 escalation on repeated failures.
+          </p>
+        </div>
+        <div>
+          <h3 className="font-medium mb-1">Policies</h3>
+          <p className="text-muted-foreground">
+            Rego-based policy engine evaluated at decision points (admission,
+            dispatch, budget, approval, recovery).
+          </p>
+        </div>
+        <div>
+          <h3 className="font-medium mb-1">Telemetry & Cost</h3>
+          <p className="text-muted-foreground">
+            OpenTelemetry pipeline exporting to SigNoz/ClickHouse. Cost Explorer
+            shows spend by Project, Task, Execution, Model, or Workflow.
+          </p>
+        </div>
+        <div>
+          <h3 className="font-medium mb-1">Settings</h3>
+          <p className="text-muted-foreground">
+            Tenant-level defaults for models and recovery stall parameters.
+            Appearance controls light/dark mode and theme selection.
+          </p>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
