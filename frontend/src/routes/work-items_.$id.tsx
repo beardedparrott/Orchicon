@@ -287,11 +287,11 @@ function WorkItemDetailPage() {
               `Clone of ${item.title}`,
             );
             if (!title) return;
-            const cloneKind = item.parentId ? item.kind : 1;
             const result = await createWorkItem.mutateAsync({
               title,
               projectId: item.projectId,
-              kind: cloneKind,
+              kind: item.kind,
+              parentId: item.parentId ?? undefined,
               description: item.description,
               acceptanceCriteria: item.acceptanceCriteria,
               priority: item.priority,
