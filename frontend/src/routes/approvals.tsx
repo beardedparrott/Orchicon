@@ -81,7 +81,7 @@ function ApprovalsPage() {
     if (selected.size === 0) return;
     const label = approved ? "approve" : "reject";
     if (!window.confirm(`${label.charAt(0).toUpperCase() + label.slice(1)} ${selected.size} selected approval${selected.size === 1 ? "" : "s"}?`)) return;
-    Promise.all(
+    Promise.allSettled(
       Array.from(selected).map((id) =>
         approveMutation.mutateAsync({ stepRunId: id, approved, reason: "", reviewedBy: "" }),
       ),
