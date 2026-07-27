@@ -314,6 +314,64 @@ func (s *Service) RetireWorker(ctx context.Context, req *connect.Request[apiv1.R
 	return connect.NewResponse(&apiv1.RetireWorkerResponse{Worker: workerRowToProto(updated)}), nil
 }
 
+// UpdateWorker updates the mutable header fields of a draft Worker.
+func (s *Service) UpdateWorker(ctx context.Context, req *connect.Request[apiv1.UpdateWorkerRequest]) (*connect.Response[apiv1.UpdateWorkerResponse], error) {
+	msg := req.Msg
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("worker id must not be empty"))
+	}
+
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("begin tx: %w", err))
+	}
+	defer ttx.Rollback(ctx)
+
+	current, err := db.GetWorker(ctx, ttx.Tx, tenantID, msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+
+	var fields db.UpdateWorkerFields
+	if msg.Name != "" {
+		name, err := validateName(msg.Name)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		fields.Name = &name
+	}
+	if msg.Description != "" {
+		desc, err := validateTextField(msg.Description, maxDescLen, "description")
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		fields.Description = &desc
+	}
+	if msg.Purpose != "" {
+		purpose, err := validateTextField(msg.Purpose, maxPurposeLen, "purpose")
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		fields.Purpose = &purpose
+	}
+
+	updated, err := db.UpdateWorker(ctx, ttx.Tx, tenantID, msg.Id, current.Version, fields)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+
+	s.log.Info("worker updated", "id", updated.ID)
+	return connect.NewResponse(&apiv1.UpdateWorkerResponse{Worker: workerRowToProto(updated)}), nil
+}
+
 // DeleteWorker hard-deletes a Worker and all its versions (cascade).
 func (s *Service) DeleteWorker(ctx context.Context, req *connect.Request[apiv1.DeleteWorkerRequest]) (*connect.Response[apiv1.DeleteWorkerResponse], error) {
 	tenantID, err := requireTenant(ctx)

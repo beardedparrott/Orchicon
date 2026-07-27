@@ -135,6 +135,7 @@ export function usePublishWorkerVersion() {
       qc.invalidateQueries({ queryKey: workerKeys.list() });
       qc.invalidateQueries({ queryKey: workerKeys.detail(data.worker.id) });
       qc.invalidateQueries({ queryKey: workerKeys.versions(data.worker.id) });
+      qc.invalidateQueries({ queryKey: [...workerKeys.all, "version", data.version.id] as const });
     },
   });
 }
@@ -186,6 +187,20 @@ export function useBatchDeleteWorkers() {
   return useMutation({
     mutationFn: async (ids: string[]) => {
       await Promise.all(ids.map((id) => workerClient.deleteWorker({ id })));
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: workerKeys.all });
+    },
+  });
+}
+
+// useUpdateWorker updates the mutable header fields of a draft worker.
+export function useUpdateWorker() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (req: { id: string; name?: string; description?: string; purpose?: string }) => {
+      const res = await workerClient.updateWorker(req);
+      return res.worker;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: workerKeys.all });
@@ -259,7 +274,9 @@ export function useUpdateWorkerVersion() {
       return res.version as WorkerVersion;
     },
     onSuccess: (version) => {
+      qc.invalidateQueries({ queryKey: workerKeys.detail(version.workerId) });
       qc.invalidateQueries({ queryKey: workerKeys.versions(version.workerId) });
+      qc.invalidateQueries({ queryKey: [...workerKeys.all, "version", version.id] as const });
     },
   });
 }
@@ -274,7 +291,9 @@ export function useCreateWorkerVersion() {
       return res.version as WorkerVersion;
     },
     onSuccess: (version) => {
+      qc.invalidateQueries({ queryKey: workerKeys.detail(version.workerId) });
       qc.invalidateQueries({ queryKey: workerKeys.versions(version.workerId) });
+      qc.invalidateQueries({ queryKey: [...workerKeys.all, "version", version.id] as const });
     },
   });
 }

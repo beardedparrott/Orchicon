@@ -30,6 +30,11 @@ service WorkerService {
   // dispatches; in-flight executions run to completion (docs/05 §4).
   rpc RetireWorker(RetireWorkerRequest) returns (RetireWorkerResponse);
 
+  // UpdateWorker updates the mutable header fields of a Worker (name,
+  // description, purpose). The worker must be in draft status to be
+  // updated; published workers must create a new version instead.
+  rpc UpdateWorker(UpdateWorkerRequest) returns (UpdateWorkerResponse);
+
   // DeleteWorker hard-deletes a Worker and all its versions.
   rpc DeleteWorker(DeleteWorkerRequest) returns (DeleteWorkerResponse);
 
@@ -103,6 +108,17 @@ message CreateWorkerRequest {
 message CreateWorkerResponse {
   Worker worker = 1;
   WorkerVersion version = 2;
+}
+
+message UpdateWorkerRequest {
+  string id = 1;
+  string name = 2;
+  string description = 3; // Markdown
+  string purpose = 4;
+}
+
+message UpdateWorkerResponse {
+  Worker worker = 1;
 }
 
 message PublishWorkerVersionRequest {

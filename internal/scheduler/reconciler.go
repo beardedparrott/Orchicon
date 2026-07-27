@@ -555,17 +555,15 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	// canonical downstream input.
 	//
 	// We start fresh — previous results from an earlier execution
-	// (e.g. SSE) carry stale _decision that must NOT survive into this
-	// execution (the new output may not explicitly overwrite it via a
-	// _decision: marker). But _issues (review feedback) IS preserved
-	// across loop iterations so each loop-back has the reviewer's
-	// findings. _parent_execution_id and _recovery_summary are also
-	// carried forward.
+	// (e.g. SSE) carry stale fields that must NOT survive into this
+	// execution. _parent_execution_id and _recovery_summary are
+	// carried forward for traceability. _issues is NOT preserved —
+	// the execution history in the prompt already shows prior issues.
 	results := map[string]any{}
 	if len(wi.Results) > 0 {
 		var existing map[string]any
 		if err := json.Unmarshal(wi.Results, &existing); err == nil {
-			for _, k := range []string{"_parent_execution_id", "_recovery_summary", "_issues"} {
+			for _, k := range []string{"_parent_execution_id", "_recovery_summary"} {
 				if v, ok := existing[k]; ok {
 					results[k] = v
 				}
@@ -587,12 +585,20 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	// loop decision can't route to success/failure — it falls
 	// through to re-ask every time.
 	extractStructuredResult(output, results)
+
 	// Fallback: if no explicit _decision marker was found, parse it
 	// from the ORCHICON WORKER SUMMARY: <decision> — <text> format.
 	if _, ok := results["_decision"]; !ok {
 		if d := extractSummaryDecision(output); d != "" {
 			results["_decision"] = d
 		}
+	}
+	// Hard rule: if the worker explicitly wrote _issues: in its output,
+	// the work is not accepted regardless of what _decision the model
+	// chose. _issues is no longer auto-preserved from prior iterations,
+	// so any _issues present must come from the current worker's output.
+	if issues, ok := results["_issues"].(string); ok && strings.TrimSpace(issues) != "" {
+		results["_decision"] = "failure"
 	}
 	// Extract list of modified files from diff markers in the output.
 	if output != "" {

@@ -594,6 +594,21 @@ open http://localhost:8080
 4. Publish the worker (draft → published)
 5. Workers are versioned; published versions are immutable
 
+**Canned workers** are pre-seeded in the dev tenant and available immediately:
+
+| Worker | Purpose |
+|--------|---------|
+| Senior Software Engineer | Full-stack development, implements features and fixes bugs |
+| PR Reviewer | Code review — finds bugs, security issues, and correctness problems |
+| QA Engineer | Functional and regression testing — validates acceptance criteria |
+| DevOps Engineer | Repository setup (early steps) and PR/merge after approval (late steps) |
+| AI Approver | Worker-backed approval — evaluates context and outputs approve/reject |
+| Principal Software Architect | Architecture design, ADR documentation, and technical strategy |
+
+The worker identity (Role, Skills, Behavior, AGENTS.md) is included in every dispatch prompt. Workers also receive workflow-aware context: step position, iteration count, execution history, and prior issues found.
+
+Worker output is parsed for the standard `ORCHICON WORKER SUMMARY: success|failure — <summary>` marker, which routes the workflow to the next step or triggers a loop-back.
+
 #### Creating Work Items
 1. Navigate to **Work Items** → **New Work Item**
 2. Select a Project and Work Item kind (Epic → Feature → Task → Subtask)
@@ -604,10 +619,42 @@ open http://localhost:8080
 1. Navigate to **Workflows** → **New Workflow**
 2. Open the React Flow canvas editor
 3. Drag steps from the palette: Task, Decision, Approval, Parallel, Loop Decision, Work Item, Project, Policy
-4. Connect steps with edges (directed acyclic graph with loop-back edge support)
+4. Connect steps with edges (directed acyclic graph with loop-back and success edge support)
 5. Configure each step's properties in the Properties Panel
 6. Save draft, then publish when ready
 7. Start a workflow run and watch step-by-step progression
+
+#### Approval Gates
+The **Approval** step kind blocks a workflow at a human (or AI) review gate. It handles loop-back natively — no separate loop_decision node needed.
+
+**Human approval (default):**
+1. The step waits in `approval_pending` status until a human reviews it
+2. Navigate to **Approvals** in the sidebar or open the workflow run view
+3. Review the upstream context (worker summary, touched files, acceptance criteria)
+4. Click **Approve** or **Reject** with an optional reason
+5. On rejection, the workflow loops back to the loop_branch step (if configured)
+6. On approval, the workflow proceeds to the next downstream step
+
+**Worker-backed approval (AI Approver):**
+1. In the step's Properties Panel, set **Reviewer** to **Worker**
+2. Select an approver worker (e.g. AI Approver — an opinionated worker that outputs approve/reject)
+3. The step dispatches the approver worker like a task step
+4. The worker's `ORCHICON WORKER SUMMARY` output determines the decision:
+   - `success` → approved, workflow proceeds
+   - `failure` → rejected, workflow loops back (if loop_branch configured)
+5. The decision is visible in the Approvals list alongside human reviews
+
+**Loop-back configuration:**
+- **Loop branch**: Set by connecting the loop outlet (right, rose handle) to a topologically-prior step
+- **Max rejections**: How many times the workflow can loop back before failing the run
+- The step N of M context in the worker prompt tells each worker their position in the DAG
+
+**Execution history:**
+Workers now receive full execution context including:
+- Their position (step N of M) via topological sort
+- Which iteration of a loop-back they are on
+- The execution history timeline of all prior steps and their results
+- Previous issues found by reviewers
 
 #### Viewing Execution Results
 1. Navigate to **Executions** for the full list

@@ -20,6 +20,7 @@ import { Route as PreferencesRouteImport } from './routes/preferences'
 import { Route as PoliciesRouteImport } from './routes/policies'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ExecutionsRouteImport } from './routes/executions'
+import { Route as ApprovalsRouteImport } from './routes/approvals'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as AdaptersRouteImport } from './routes/adapters'
 import { Route as IndexRouteImport } from './routes/index'
@@ -92,6 +93,11 @@ const LoginRoute = LoginRouteImport.update({
 const ExecutionsRoute = ExecutionsRouteImport.update({
   id: '/executions',
   path: '/executions',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApprovalsRoute = ApprovalsRouteImport.update({
+  id: '/approvals',
+  path: '/approvals',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AdminRoute = AdminRouteImport.update({
@@ -189,6 +195,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/adapters': typeof AdaptersRoute
   '/admin': typeof AdminRoute
+  '/approvals': typeof ApprovalsRoute
   '/executions': typeof ExecutionsRoute
   '/login': typeof LoginRoute
   '/policies': typeof PoliciesRoute
@@ -220,6 +227,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/adapters': typeof AdaptersRoute
   '/admin': typeof AdminRoute
+  '/approvals': typeof ApprovalsRoute
   '/executions': typeof ExecutionsRoute
   '/login': typeof LoginRoute
   '/policies': typeof PoliciesRoute
@@ -252,6 +260,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/adapters': typeof AdaptersRoute
   '/admin': typeof AdminRoute
+  '/approvals': typeof ApprovalsRoute
   '/executions': typeof ExecutionsRoute
   '/login': typeof LoginRoute
   '/policies': typeof PoliciesRoute
@@ -285,6 +294,7 @@ export interface FileRouteTypes {
     | '/'
     | '/adapters'
     | '/admin'
+    | '/approvals'
     | '/executions'
     | '/login'
     | '/policies'
@@ -316,6 +326,7 @@ export interface FileRouteTypes {
     | '/'
     | '/adapters'
     | '/admin'
+    | '/approvals'
     | '/executions'
     | '/login'
     | '/policies'
@@ -347,6 +358,7 @@ export interface FileRouteTypes {
     | '/'
     | '/adapters'
     | '/admin'
+    | '/approvals'
     | '/executions'
     | '/login'
     | '/policies'
@@ -379,6 +391,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AdaptersRoute: typeof AdaptersRoute
   AdminRoute: typeof AdminRoute
+  ApprovalsRoute: typeof ApprovalsRoute
   ExecutionsRoute: typeof ExecutionsRoute
   LoginRoute: typeof LoginRoute
   PoliciesRoute: typeof PoliciesRoute
@@ -484,6 +497,13 @@ declare module '@tanstack/react-router' {
       path: '/executions'
       fullPath: '/executions'
       preLoaderRoute: typeof ExecutionsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/approvals': {
+      id: '/approvals'
+      path: '/approvals'
+      fullPath: '/approvals'
+      preLoaderRoute: typeof ApprovalsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/admin': {
@@ -619,6 +639,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdaptersRoute: AdaptersRoute,
   AdminRoute: AdminRoute,
+  ApprovalsRoute: ApprovalsRoute,
   ExecutionsRoute: ExecutionsRoute,
   LoginRoute: LoginRoute,
   PoliciesRoute: PoliciesRoute,

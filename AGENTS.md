@@ -153,6 +153,7 @@ Every piece of functionality built in this repo must follow these security stand
 - LSP servers (gopls, typescript, eslint, yaml-ls) are enabled — diagnostics surface in the edit loop. Treat them as fast feedback; `make ci` is the authoritative gate.
 - Playwright MCP is configured in `opencode.jsonc` for browser testing. Use Chrome and/or Playwright for frontend verification. NEVER use Firefox — the developer uses Firefox and testing needs a separate browser.
 - The `site/` landing page and `README.md` document the `orchicon` commands and installed files. Keep both in sync when commands, flags, or install paths change. The CloudFlare Pages build copies `scripts/install.{sh,ps1}` to the deployed site.
+- **UI consistency**: Every list page must follow the same visual pattern: search input, filter/sort dropdowns, select-all checkbox, per-item checkboxes, a selection count label, and a bulk action button (delete / approve / reject etc.) that appears when ≥1 item is selected. Do not add a page with a different interaction model — new list pages must replicate this pattern exactly. The Approvals, Work Items, Executions, Workers, and Policies pages all follow this pattern; use them as reference.
 
 ## Verification
 
@@ -233,6 +234,13 @@ replaces the old `docs/` directory and covers all subsystems:
 architecture, project structure, installation, development,
 deployment, troubleshooting, and more. Read it before touching any
 subsystem you are unfamiliar with.
+
+**Keep DOCUMENTATION.md in sync.** Whenever you add, delete, or change
+a main feature or architectural component — a new service, RPC, proto,
+reconciler, frontend route, database table, adapter, or significant
+policy — update DOCUMENTATION.md to reflect it. If the change is
+entirely internal refactoring with no user-visible or architectural
+impact, you may skip the update, but err on the side of updating.
 
 ## E2E Testing & Cleanup
 

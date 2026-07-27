@@ -47,6 +47,16 @@ export function PropertiesPanel({
     const cfg = parseConfig(d.config) as StepConfig;
     let changed = false;
     const next = { ...cfg };
+    if (d.kind === STEP_KIND.APPROVAL) {
+      if (typeof cfg.reviewer !== "string") {
+        next.reviewer = "human";
+        changed = true;
+      }
+      if (typeof cfg.max_iterations !== "number") {
+        next.max_iterations = 3;
+        changed = true;
+      }
+    }
     if (d.kind === STEP_KIND.LOOP_DECISION && typeof cfg.max_iterations !== "number") {
       next.max_iterations = 3;
       changed = true;
@@ -232,13 +242,74 @@ export function PropertiesPanel({
         )}
 
         {d.kind === STEP_KIND.APPROVAL && (
-          <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-            <p className="font-medium">Approval gate</p>
-            <p className="mt-1">
-              This step blocks until a human approves. The approval wiring (who approves,
-              notification channels, SLA, escalation) will be wired in a follow-up.
+          <>
+          <Field label="Reviewer" hint="Who evaluates this approval gate. Human blocks for an API call; Worker dispatches to an AI approver.">
+            <select
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              value={typeof cfg.reviewer === "string" ? cfg.reviewer : "human"}
+              disabled={readOnly}
+              onChange={(e) => {
+                const next = { ...cfg, reviewer: e.target.value };
+                onChange({ config: JSON.stringify(next) });
+              }}
+            >
+              <option value="human">Human</option>
+              <option value="worker">Worker</option>
+            </select>
+          </Field>
+
+          {cfg.reviewer === "worker" ? (
+            <Field label="Approver worker" hint="The AI worker that reviews context and decides approve/reject.">
+              <select
+                className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+                value={d.ref}
+                disabled={readOnly}
+                onChange={(e) => {
+                  const wid = e.target.value;
+                  const worker = publishedWorkers.find((w) => w.id === wid);
+                  if (worker) {
+                    onChange({ name: worker.name, ref: wid, workerVersion: 0 });
+                  }
+                }}
+              >
+                <option value="">-- Select a worker --</option>
+                {publishedWorkers.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          ) : (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+              Human approval: blocks until the reviewer approves or rejects via the Approvals UI or run view panel.
+            </div>
+          )}
+
+          <Field label="Loop branch" hint="The step id to loop back to on rejection. Connect the loop outlet (right handle) to a topologically-prior step to set the loop branch.">
+            <p className="text-xs text-muted-foreground">
+              {typeof cfg.loop_branch === "string" && cfg.loop_branch
+                ? `Loop target: ${cfg.loop_branch}`
+                : "Connect the loop outlet (right handle) to a topologically-prior step to set the loop branch."}
             </p>
-          </div>
+          </Field>
+
+          <Field label="Max rejections" hint="How many times the workflow loops back after rejection before failing the run.">
+            <input
+              type="number"
+              min={1}
+              max={20}
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              value={typeof cfg.max_iterations === "number" ? cfg.max_iterations : 3}
+              disabled={readOnly}
+              onChange={(e) => {
+                const maxIter = Math.max(1, Math.min(20, parseInt(e.target.value, 10) || 3));
+                const next = { ...cfg, max_iterations: maxIter };
+                onChange({ config: JSON.stringify(next) });
+              }}
+            />
+          </Field>
+          </>
         )}
 
         {d.kind === STEP_KIND.PARALLEL && (

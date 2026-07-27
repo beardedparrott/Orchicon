@@ -41,6 +41,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -205,6 +206,67 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			runByID[sr.StepID] = sr
 		}
 
+		// Phase 0: Handle rejected approval steps. Read the decision
+		// from two sources:
+		//   a) Step run result (human approval via ApproveStep RPC writes
+		//      _decision: "rejected")
+		//   b) Work item results (worker-backed approval — the standard
+		//      ORCHICON WORKER SUMMARY produces _decision: "success" /
+		//      "failure"; human propagation also produces "approved" /
+		//      "rejected")
+		// Map: success/approved → forward, failure/rejected → loop back.
+		for _, sr := range runByID {
+			if sr.SupersededBy != "" || sr.StepKind != domain.StepKindApproval {
+				continue
+			}
+			if sr.Status != domain.StepRunSucceeded {
+				continue
+			}
+
+			// Check step run result for _decision (human approval).
+			var srResult struct {
+				Decision    string `json:"_decision"`
+				WorkItemID  string `json:"_work_item_id"`
+			}
+			json.Unmarshal(sr.Result, &srResult)
+
+			// If not rejected in the step run, check the work item.
+			decision := srResult.Decision
+			if decision != "rejected" && srResult.WorkItemID != "" {
+				if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, srResult.WorkItemID); err == nil && len(wi.Results) > 0 {
+					var wiResult map[string]any
+					if json.Unmarshal(wi.Results, &wiResult) == nil {
+						if v, ok := wiResult["_decision"].(string); ok {
+							decision = v
+						}
+					}
+				}
+			}
+
+			// Map: success/approved → forward; failure/rejected → loop.
+			if decision != "failure" && decision != "rejected" {
+				continue
+			}
+
+			step, ok := stepByID[sr.StepID]
+			if !ok {
+				continue
+			}
+			cfg := parseApprovalConfig(step.Config)
+			if cfg.LoopBranch == "" || cfg.MaxIterations < 1 {
+				continue
+			}
+			currentIter := currentLoopIteration(runByID, cfg.LoopBranch)
+			if currentIter >= cfg.MaxIterations {
+				return r.failStep(ctx, ttx.Tx, tenantID, run, sr, runByID,
+					fmt.Errorf("approval step %q: max_iterations (%d) exhausted (rejected)", step.Name, cfg.MaxIterations))
+			}
+			if err := r.approvalReenter(ctx, ttx.Tx, tenantID, run, sr, step, runByID, cfg.LoopBranch, currentIter, time.Now().UTC(), steps); err != nil {
+				return err
+			}
+			madeProgress = true
+		}
+
 		// Progress pending steps whose deps are satisfied → ready.
 		// Use runByID (which reflects in-pass updates) for the
 		// dependency check so steps progressed by Phase 2/3 in a
@@ -327,12 +389,16 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			dispatchedWIDs = append(dispatchedWIDs, stepWIDs...)
 		}
 
-		// Poll running task steps: check their linked WorkItem status.
+		// Poll running task steps + worker-backed approval steps: check
+		// their linked WorkItem status.
 		for i, sr := range stepRuns {
 			if sr.SupersededBy != "" {
 				continue
 			}
-			if sr.Status != domain.StepRunRunning || sr.StepKind != domain.StepKindTask {
+			if sr.Status != domain.StepRunRunning {
+				continue
+			}
+			if sr.StepKind != domain.StepKindTask && sr.StepKind != domain.StepKindApproval {
 				continue
 			}
 			stepCfg := ""
@@ -969,20 +1035,147 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		}
 
 	case domain.StepKindApproval:
-		// Block at approval_pending (docs/02 §2.4). Human approval
-		// wiring (an ApproveStep RPC + Policy-derived decision) arrives
-		// with the Policy engine, Phase 7. The run view shows the step
-		// waiting.
-		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-			Status:    strPtr(domain.StepRunApprovalPending),
-			StartedAt: &now,
-		})
-		if err != nil {
-			return fmt.Errorf("mark approval step pending: %w", err)
+		cfg := parseApprovalConfig(step.Config)
+
+		// Capture upstream context from preceding steps for the reviewer.
+		upstreamWorker := ""
+		upstreamSummary := ""
+		var upstreamFiles []string
+		ac := ""
+		upstreamWorkItemID := ""
+		for _, depID := range step.DependsOn {
+			us, ok := runs[depID]
+			if !ok || us.Status != domain.StepRunSucceeded {
+				continue
+			}
+			var upResult struct {
+				WorkItemID string `json:"_work_item_id"`
+			}
+			if err := json.Unmarshal(us.Result, &upResult); err != nil || upResult.WorkItemID == "" {
+				continue
+			}
+			upstreamWorkItemID = upResult.WorkItemID
+			wi, err := db.GetWorkItem(ctx, tx, tenantID, upResult.WorkItemID)
+			if err != nil {
+				continue
+			}
+			ac = wi.AcceptanceCriteria
+			if len(wi.Results) > 0 {
+				var wiResult map[string]any
+				if json.Unmarshal(wi.Results, &wiResult) == nil {
+					if v, ok := wiResult["_summary"].(string); ok {
+						upstreamSummary = v
+					}
+					if files, ok := wiResult["_touched_files"].([]any); ok {
+						for _, f := range files {
+							if s, ok := f.(string); ok {
+								upstreamFiles = append(upstreamFiles, s)
+							}
+						}
+					}
+				}
+			}
+			if exec, err := db.GetLatestExecutionForTask(ctx, tx, tenantID, upResult.WorkItemID); err == nil && exec.WorkerID != "" {
+				if wrk, err := db.GetWorker(ctx, tx, tenantID, exec.WorkerID); err == nil {
+					upstreamWorker = wrk.Name
+				}
+				if upstreamWorker == "" {
+					upstreamWorker = exec.WorkerID
+				}
+			}
 		}
-		runs[step.ID] = updated
-		if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepApproval, run, updated); err != nil {
-			return fmt.Errorf("enqueue step_approval: %w", err)
+
+		if cfg.Reviewer == "worker" && cfg.WorkerRef != "" {
+			// Worker-backed approval: dispatch like a task step to the
+			// configured approver worker. The worker's output should
+			// contain _decision: "approved" or _decision: "rejected".
+			workerRef, _ := json.Marshal(map[string]any{
+				"worker_id": cfg.WorkerRef,
+				"version":   cfg.WorkerVersion,
+			})
+			wid := db.NewID()
+			now := time.Now().UTC()
+			wi := db.WorkItemRow{
+				ID:                 wid,
+				TenantID:           tenantID,
+				ProjectID:          run.ProjectID,
+				Kind:               "task",
+				Title:              "Approval: " + step.Name + " (" + run.WorkflowID + ")",
+				Description:        "Worker-backed approval gate. Review the upstream context and approve or reject.",
+				Status:             domain.WorkItemReady,
+				WorkflowRunID:      run.ID,
+				WorkflowStepID:     sr.StepID,
+				AssignedWorkerRef:  workerRef,
+			}
+			if _, err := db.CreateWorkItem(ctx, tx, wi); err != nil {
+				return fmt.Errorf("create approval work item: %w", err)
+			}
+			workerVer, err := db.GetLatestWorkerVersion(ctx, tx, tenantID, cfg.WorkerRef, true)
+			if err != nil {
+				return fmt.Errorf("load approver worker version: %w", err)
+			}
+			composite, err := r.buildCompositePrompt(ctx, tx, tenantID, wi, workerVer, allSteps, runs)
+			if err != nil {
+				return fmt.Errorf("build composite prompt for approver: %w", err)
+			}
+			pcJSON, _ := json.Marshal(map[string]any{"composite": composite})
+			assignFields := db.UpdateWorkItemFields{
+				AssignedWorkerRef: &workerRef,
+				WorkflowID:        &run.WorkflowID,
+				WorkflowRunID:     &run.ID,
+				WorkflowStepID:    &sr.StepID,
+				Status:            strPtr(domain.WorkItemReady),
+				PromptContext:     &pcJSON,
+			}
+			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, wid, 1, assignFields); err != nil {
+				return fmt.Errorf("assign approver work item: %w", err)
+			}
+			if dispatchedWIDs != nil {
+				*dispatchedWIDs = []string{wid}
+			}
+			resultPayload, _ := json.Marshal(map[string]any{
+				"_work_item_id":    wid,
+				"_upstream_worker": upstreamWorker,
+				"_decision":        "pending",
+			})
+			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:    strPtr(domain.StepRunRunning),
+				StartedAt: &now,
+				Result:    &resultPayload,
+			})
+			if err != nil {
+				return fmt.Errorf("mark approval step running: %w", err)
+			}
+			runs[step.ID] = updated
+			if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepStarted, run, updated); err != nil {
+				return fmt.Errorf("enqueue approval step_started: %w", err)
+			}
+		} else {
+			// Human approval: set to approval_pending and wait for
+			// human review via the ApproveStep RPC.
+			resultPayload, _ := json.Marshal(map[string]any{
+				"_work_item_id": upstreamWorkItemID,
+				"_review_context": map[string]any{
+					"_upstream_worker":  upstreamWorker,
+					"_upstream_summary": upstreamSummary,
+					"_upstream_files":   upstreamFiles,
+					"_ac":               ac,
+				},
+				"_decision": "pending",
+			})
+			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:    strPtr(domain.StepRunApprovalPending),
+				StartedAt: &now,
+				Result:    &resultPayload,
+			})
+			if err != nil {
+				return fmt.Errorf("mark approval step pending: %w", err)
+			}
+			runs[step.ID] = updated
+			if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepApproval, run, updated); err != nil {
+				return fmt.Errorf("enqueue step_approval: %w", err)
+			}
+			r.writeApprovalInitFiles(ctx, tx, tenantID, run, updated, upstreamWorker, upstreamSummary, upstreamFiles)
 		}
 
 	default:
@@ -1095,18 +1288,18 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, worker db.WorkerVersionRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, error) {
 	var sb strings.Builder
 
-	// 0. Role reinforcement — a single-line, emphatic statement at the
-	// absolute top so the worker never loses sight of its job.
-	var workerPurpose string
-	var wkrRow db.WorkerRow
-	if err := tx.QueryRow(ctx,
-		`SELECT purpose FROM workers WHERE id = $1 AND tenant_id = $2`,
-		worker.WorkerID, tenantID,
-	).Scan(&wkrRow.Purpose); err == nil {
-		workerPurpose = strings.TrimSpace(wkrRow.Purpose)
+	// 0. Worker identity — role, skills, behavior, and AGENTS.md.
+	if r := strings.TrimSpace(worker.Role); r != "" {
+		fmt.Fprintf(&sb, "# Role\n\n%s\n\n", r)
 	}
-	if workerPurpose != "" {
-		fmt.Fprintf(&sb, "# Role\n\n%s\n\n", workerPurpose)
+	if s := strings.TrimSpace(worker.Skills); s != "" {
+		fmt.Fprintf(&sb, "## Skills\n\n%s\n\n", s)
+	}
+	if b := strings.TrimSpace(worker.Behavior); b != "" {
+		fmt.Fprintf(&sb, "## Behavior\n\n%s\n\n", b)
+	}
+	if a := strings.TrimSpace(worker.AgentsMD); a != "" {
+		fmt.Fprintf(&sb, "## AGENTS.md\n\n%s\n\n", a)
 	}
 
 	// 1. Task.
@@ -1151,6 +1344,94 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 
 	// 3. Instructions.
 	sb.WriteString("# Instructions\n\n")
+
+	// Guidance on _issues: only include blocking problems that the next
+	// worker MUST address. Cosmetic nitpicks or optional suggestions do
+	// not count as issues. If you include _issues:, the workflow treats
+	// the result as FAILURE regardless of the ORCHICON WORKER SUMMARY
+	// status word — so only use _issues: when work genuinely cannot
+	// proceed without fixes.
+	sb.WriteString("If you find bugs or problems that block acceptance, include `_issues:` with a brief description of what needs fixing. Only use `_issues:` for genuine blockers — the system treats any `_issues:` content as a failure signal.\n\n")
+
+	// Workflow-aware role context: tell the worker where they fit in the
+	// overall workflow so they don't perform work meant for other steps.
+	// Count worker-facing steps (task and approval) in topological order
+	// (execution flow determined by depends_on edges, not canvas position).
+	// Routing nodes like loop_decision, decision, parallel, project, and
+	// work_item are excluded from the count.
+	type stepMeta struct{ idx int; name string; id string }
+	var allMeta []stepMeta // all steps, used to build the dependency graph
+	var activeMeta []stepMeta // only task + approval
+	myPos := -1
+	myName := ""
+	stepIdx := make(map[string]int)
+	for i, s := range allSteps {
+		stepIdx[s.ID] = i
+		allMeta = append(allMeta, stepMeta{i, s.Name, s.ID})
+		if s.Kind == "task" || s.Kind == "approval" {
+			activeMeta = append(activeMeta, stepMeta{0, s.Name, s.ID})
+		}
+	}
+	// Kahn's algorithm for topological order over all steps.
+	inDeg := make([]int, len(allSteps))
+	adj := make([][]int, len(allSteps))
+	for _, s := range allSteps {
+		for _, dep := range s.DependsOn {
+			if dIdx, ok := stepIdx[dep]; ok {
+				adj[dIdx] = append(adj[dIdx], stepIdx[s.ID])
+				inDeg[stepIdx[s.ID]]++
+			}
+		}
+	}
+	var topo []int
+	q := make([]int, 0, len(allSteps))
+	for i, d := range inDeg {
+		if d == 0 {
+			q = append(q, i)
+		}
+	}
+	for len(q) > 0 {
+		u := q[0]
+		q = q[1:]
+		topo = append(topo, u)
+		for _, v := range adj[u] {
+			inDeg[v]--
+			if inDeg[v] == 0 {
+				q = append(q, v)
+			}
+		}
+	}
+	// Build a position map: index in topological sort → step ID.
+	topoPos := make(map[string]int)
+	for i, idx := range topo {
+		topoPos[allSteps[idx].ID] = i
+	}
+	// Sort active steps by their topological position in the full DAG.
+	sort.SliceStable(activeMeta, func(i, j int) bool {
+		return topoPos[activeMeta[i].id] < topoPos[activeMeta[j].id]
+	})
+	for i, s := range activeMeta {
+		activeMeta[i].idx = i
+		if s.id == wi.WorkflowStepID {
+			myPos = i
+			myName = s.name
+		}
+	}
+	if myPos >= 0 && len(activeMeta) > 0 {
+		fmt.Fprintf(&sb, "This workflow has %d steps. You are step %d — %s. Focus on your specific role and let other workers handle their steps.\n\n", len(activeMeta), myPos+1, myName)
+	}
+
+	// Iteration context: tell the worker if this is a re-do (loop-back).
+	// The step run's iteration counter starts at 0 for the first pass
+	// and increments each time the chain re-enters.
+	if currentRun, ok := runs[wi.WorkflowStepID]; ok && currentRun.Iteration > 0 {
+		fmt.Fprintf(&sb, "This is iteration %d of this step. You may have done this work before — review your previous output and the feedback from downstream steps before repeating yourself.\n\n", currentRun.Iteration)
+	}
+
+	// Git branch guidance: avoid creating multiple branches across
+	// iterations. The worker should use the existing branch.
+	sb.WriteString("Use the existing git branch from the previous iteration if one exists. Do NOT create a new branch unless the previous work was on `main`.\n\n")
+
 	// Only instruct the worker to read .orchicon/ files when prior
 	// steps have completed. On the first step there's nothing to read.
 	hasPriorSteps := false
@@ -1167,12 +1448,94 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		fmt.Fprintf(&sb, "- `.orchicon/%s/issues` — issues found by the previous reviewer (if any)\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/worker` — which worker produced the previous results\n\n", wi.WorkflowRunID)
 	}
-	sb.WriteString("Complete the task above. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — either `success` or `failure` — and a short paragraph summarizing what you did.\n\n")
+	sb.WriteString("Review the task above, but only complete the work that matches your Role and the step you are assigned to. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — either `success` or `failure` — and a short paragraph summarizing what you did.\n\n")
 	sb.WriteString("Format:\n")
 	sb.WriteString("```\nORCHICON WORKER SUMMARY: success — Implemented the feature.\n```\n")
 	sb.WriteString("or\n")
 	sb.WriteString("```\nORCHICON WORKER SUMMARY: failure — Found 3 bugs in the implementation.\n```\n\n")
 	sb.WriteString("The first word (`success` or `failure`) is used to route the workflow. The text after `—` is passed to the next stage as the summary of your work.\n\n")
+	sb.WriteString("**Important:** If you include `_issues:` in your response, the workflow treats the result as `failure` regardless of the status word. Only use `_issues:` when you find blocking problems. If you have minor suggestions that don't block progress, leave them out of `_issues:` and mention them in your summary text instead.\n\n")
+
+	// Prior execution timeline: show what each completed step produced,
+	// so the worker understands the full context including loop-backs.
+	sb.WriteString("## Execution history\n\n")
+	sb.WriteString("The following steps have completed in this workflow run. If a step ran multiple times (loop-back), each iteration is listed.\n")
+	// Build a step-ID→name lookup from allSteps.
+	stepNameByID := make(map[string]string)
+	for _, s := range allSteps {
+		stepNameByID[s.ID] = s.Name
+	}
+	type histEntry struct{ stepName, status, summary, issues, iteration string }
+	var history []histEntry
+	seen := make(map[string]bool)
+	for stepID, sr := range runs {
+		sr := sr
+		if _, ok := stepNameByID[stepID]; !ok {
+			continue
+		}
+		if sr.Status != domain.StepRunSucceeded && sr.Status != domain.StepRunFailed {
+			continue
+		}
+		var rData struct {
+			Summary string `json:"_summary"`
+			Issues  string `json:"_issues"`
+		}
+		json.Unmarshal(sr.Result, &rData)
+		iterLabel := "first"
+		if sr.Iteration > 0 {
+			iterLabel = fmt.Sprintf("iteration %d", sr.Iteration)
+		}
+		entry := histEntry{
+			stepName:  stepNameByID[stepID],
+			status:    sr.Status,
+			summary:   rData.Summary,
+			issues:    rData.Issues,
+			iteration: iterLabel,
+		}
+		if !seen[sr.ID] {
+			history = append(history, entry)
+			seen[sr.ID] = true
+		}
+	}
+	// Sort by topological order.
+	sort.SliceStable(history, func(i, j int) bool {
+		var pi, pj int
+		for _, s := range allSteps {
+			if s.Name == history[i].stepName { pi = topoPos[s.ID] }
+			if s.Name == history[j].stepName { pj = topoPos[s.ID] }
+		}
+		return pi < pj
+	})
+	if len(history) > 0 {
+		for _, h := range history {
+			statusSym := "✓"
+			if h.status == domain.StepRunFailed {
+				statusSym = "✗"
+			}
+			fmt.Fprintf(&sb, "- **%s** %s [%s]", h.stepName, statusSym, h.iteration)
+			if h.status == domain.StepRunSucceeded {
+				sb.WriteString(" succeeded")
+			} else {
+				sb.WriteString(" failed")
+			}
+			if h.summary != "" {
+				if len(h.summary) > 120 {
+					h.summary = h.summary[:120] + "…"
+				}
+				fmt.Fprintf(&sb, ": %s", h.summary)
+			}
+			sb.WriteString("\n")
+			if h.issues != "" {
+				if len(h.issues) > 120 {
+					h.issues = h.issues[:120] + "…"
+				}
+				fmt.Fprintf(&sb, "  - Issues: %s\n", h.issues)
+			}
+		}
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString("No steps have completed yet. You are the first.\n\n")
+	}
 	sb.WriteString("If you produce an output file, use the `write` tool (not `bash` with a heredoc). The `write` tool saves the file and orchicon captures it as an inline artifact.\n")
 	return sb.String(), nil
 }
@@ -1902,6 +2265,62 @@ func currentLoopIteration(runs map[string]db.WorkflowStepRunRow, stepID string) 
 	return maxIter
 }
 
+// approvalConfig is the step-level configuration for APPROVAL steps.
+type approvalConfig struct {
+	Reviewer      string `json:"reviewer"`
+	WorkerRef     string `json:"worker_ref"`
+	WorkerVersion int    `json:"worker_version"`
+
+	LoopBranch    string `json:"loop_branch"`
+	MaxIterations int    `json:"max_iterations"`
+
+	DecisionField string `json:"decision_field"`
+	SuccessValue  string `json:"success_value"`
+	FailureValue  string `json:"failure_value"`
+}
+
+func parseApprovalConfig(cfgJSON string) approvalConfig {
+	cfg := approvalConfig{
+		DecisionField: "_decision",
+		SuccessValue:  "approved",
+		FailureValue:  "rejected",
+	}
+	json.Unmarshal([]byte(cfgJSON), &cfg)
+	return cfg
+}
+
+// approvalReenter creates a new chain of step runs from loop_branch to the
+// approval step, supersedes the current approval run, and creates a new
+// PENDING iteration. Downstream steps are blocked because the new approval
+// iteration is PENDING (not SUCCEEDED).
+func (r *WorkflowReconciler) approvalReenter(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, step workflow.StepWire, runs map[string]db.WorkflowStepRunRow, loopBranch string, currentIter int, now time.Time, allSteps []workflow.StepWire) error {
+	nextIter := currentIter + 1
+
+	chainIDs := chainStepIDs(allSteps, loopBranch, step.ID)
+	if err := r.createChainRuns(ctx, tx, tenantID, run.ID, chainIDs, nextIter, allSteps); err != nil {
+		return fmt.Errorf("approval step %q: create chain runs: %w", step.Name, err)
+	}
+
+	supersededResult, _ := json.Marshal(map[string]string{"_decision": "rejected", "_loop": "re-entered"})
+	superseded, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+		EndedAt:      &now,
+		SupersededBy: strPtr(db.NewID()),
+		Result:       &supersededResult,
+	})
+	if err != nil {
+		return fmt.Errorf("approval step %q: supersede: %w", step.Name, err)
+	}
+	runs[step.ID] = superseded
+	if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, superseded); err != nil {
+		return fmt.Errorf("enqueue approval step_succeeded (supersede): %w", err)
+	}
+
+	r.log.Info("approval re-entered",
+		"run", run.ID, "step", step.ID, "loop_branch", loopBranch,
+		"iteration", nextIter, "chain", chainIDs)
+	return nil
+}
+
 // listStepRunsByStepID fetches all step runs for a given run+step.
 func listStepRunsByStepID(ctx context.Context, tx pgx.Tx, tenantID, runID, stepID string) ([]db.WorkflowStepRunRow, error) {
 	all, err := db.ListWorkflowStepRuns(ctx, tx, tenantID, runID)
@@ -2217,3 +2636,37 @@ func nowPtr(t time.Time) *time.Time { return &t }
 // (nowPtr currently unused after refactor; retained for step-run
 // timestamp fields as the reconciler grows.)
 var _ = nowPtr
+
+// writeApprovalInitFiles writes initial .orchicon/ files when an
+// APPROVAL step enters approval_pending. The files signal to downstream
+// workers that human review is pending. Called within dispatchStep's
+// transaction so the project query reuses the same tx.
+func (r *WorkflowReconciler) writeApprovalInitFiles(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, upstreamWorker, upstreamSummary string, upstreamFiles []string) {
+	if run.ProjectID == "" {
+		return
+	}
+	proj, err := db.GetProject(ctx, tx, tenantID, run.ProjectID)
+	if err != nil {
+		r.log.Warn("write approval init files: get project", "project", run.ProjectID, "error", err)
+		return
+	}
+	if proj.ProjectDir == "" {
+		return
+	}
+
+	orchDir := filepath.Join(proj.ProjectDir, ".orchicon", sr.WorkflowRunID)
+	if err := os.MkdirAll(orchDir, 0755); err != nil {
+		r.log.Warn("write approval init files: mkdir", "dir", orchDir, "error", err)
+		return
+	}
+
+	writeFile := func(name, content string) {
+		if err2 := os.WriteFile(filepath.Join(orchDir, name), []byte(content), 0644); err2 != nil {
+			r.log.Warn("write approval init file", "file", name, "error", err2)
+		}
+	}
+
+	writeFile("worker", "human_approval")
+	writeFile("status", "pending")
+	writeFile("summary", upstreamSummary)
+}

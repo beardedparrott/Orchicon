@@ -237,6 +237,9 @@ type UpdateWorkItemFields struct {
 	// runs (docs/11 §5.1). Set on create/update.
 	ScheduledStartAt   *time.Time
 	AutoStartWorkflow  *bool
+	// ClearScheduledStartAt, when true, sets scheduled_start_at = NULL.
+	// Used when auto_start_workflow is enabled to clear a prior schedule.
+	ClearScheduledStartAt bool
 }
 
 // UpdateWorkItem applies a partial update with optimistic concurrency.
@@ -320,7 +323,9 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 		args = append(args, *f.WorkflowStepID)
 		setIdx++
 	}
-	if f.ScheduledStartAt != nil {
+	if f.ClearScheduledStartAt {
+		q += `, scheduled_start_at = NULL`
+	} else if f.ScheduledStartAt != nil {
 		q += fmt.Sprintf(`, scheduled_start_at = $%d`, setIdx)
 		args = append(args, *f.ScheduledStartAt)
 		setIdx++

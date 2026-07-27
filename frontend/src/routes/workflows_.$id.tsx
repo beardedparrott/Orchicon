@@ -238,7 +238,8 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   }, [workflowId]);
 
   const lockHeldByOther = !!editLock && editLock.heldBy !== lockActor;
-  const readOnly = !lockAcquired || lockHeldByOther;
+  const [viewLocked, setViewLocked] = useState(false);
+  const readOnly = !lockAcquired || lockHeldByOther || viewLocked;
 
   // --- load steps from the latest draft version into the canvas ---
   const latestVersion = versions && versions.length > 0 ? versions[0] : undefined;
@@ -329,8 +330,8 @@ function EditorInner({ workflowId }: { workflowId: string }) {
       const accent = KIND_ACCENT[srcKind] ?? "sky";
       const edgeStyle = { stroke: `var(--kind-${accent})` };
       const edgeClass = ACCENT_STROKE[accent] ?? "";
-      // For loop decision nodes, auto-set the config from the handle used.
-      if (srcKind === STEP_KIND.LOOP_DECISION && conn.sourceHandle) {
+      // For loop decision / approval nodes, auto-set the config from the handle used.
+      if ((srcKind === STEP_KIND.LOOP_DECISION || srcKind === STEP_KIND.APPROVAL) && conn.sourceHandle) {
         const targetId = conn.target!;
         const cfg = parseConfig(srcNode?.data?.config ?? "{}");
         const key =
@@ -439,7 +440,9 @@ function EditorInner({ workflowId }: { workflowId: string }) {
       const initialConfig =
         kind === STEP_KIND.RECOVER
           ? JSON.stringify({ strategy: "summarize_restart", max_retries: 5, retry_delay_seconds: 10 })
-          : "{}";
+          : kind === STEP_KIND.APPROVAL
+            ? JSON.stringify({ reviewer: "human", max_iterations: 3 })
+            : "{}";
       const data: StepData = {
         kind,
         name: name ?? `step-${id.slice(5, 9)}`,
@@ -464,6 +467,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
 
   // --- inline property editing ---
   const selectedNode = nodes.find((n) => n.id === selectedId) ?? null;
+
   const updateSelected = (patch: Partial<StepData>) => {
     if (!selectedNode) return;
     setNodes((nds) =>
@@ -517,21 +521,29 @@ function EditorInner({ workflowId }: { workflowId: string }) {
           `Step "${d.name || n.id}" is a loop decision but has no max iterations set.`,
         );
       }
+      if (d.kind === STEP_KIND.APPROVAL && cfg.loop_branch && !cfg.max_iterations) {
+        errs.push(
+          `Step "${d.name || n.id}" has a loop branch set but no max iterations.`,
+        );
+      }
       if (!d.name) {
         errs.push(`Step ${n.id} has no name.`);
       }
     }
     // Cycle detection (depends_on must form a DAG), except for back-edges
-    // from loop_decision steps (docs/11 §3.1). A loop_decision node may
-    // have an edge to a topologically-prior step; that edge is the loop
-    // back-edge and is permitted.
+    // from loop_decision or approval steps (docs/11 §3.1). A loop_decision
+    // or approval node may have an edge to a topologically-prior step;
+    // that edge is the loop back-edge and is permitted.
     const loopNodeIds = new Set(
-      nodes.filter((n) => n.data.kind === STEP_KIND.LOOP_DECISION).map((n) => n.id),
+      nodes.filter((n) =>
+        n.data.kind === STEP_KIND.LOOP_DECISION ||
+        n.data.kind === STEP_KIND.APPROVAL
+      ).map((n) => n.id),
     );
     const adj = new Map<string, string[]>();
     for (const n of nodes) adj.set(n.id, []);
     for (const e of edges) {
-      // Skip back-edges that originate from a loop_decision node.
+      // Skip back-edges that originate from a loop_decision or approval node.
       if (loopNodeIds.has(e.source)) continue;
       adj.get(e.source)?.push(e.target);
     }
@@ -881,15 +893,43 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                 maxZoom={2}
                 nodesConnectable={!readOnly}
                 nodesDraggable={!readOnly}
-                elementsSelectable
+                elementsSelectable={!readOnly}
+                panOnDrag={!readOnly}
                 proOptions={{ hideAttribution: true }}
               >
                 <Background gap={20} size={1} />
-                <Controls showInteractive={!readOnly} />
+                <Controls showInteractive={false}>
+                  <button
+                    type="button"
+                    title={viewLocked ? 'Unlock view' : 'Lock view'}
+                    aria-label={viewLocked ? 'Unlock view' : 'Lock view'}
+                    onClick={() => setViewLocked((v) => !v)}
+                    className="react-flow__controls-button"
+                  >
+                    {viewLocked ? (
+                      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="#555">
+                        <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/>
+                      </svg>
+                    ) : (
+                      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="#555">
+                        <path d="M12 17c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm6-9h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6h1.9c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm0 12H6V10h12v10z"/>
+                      </svg>
+                    )}
+                  </button>
+                </Controls>
                 <MiniMap
                   pannable
                   zoomable
-                  className="!bg-background/80 !border-border"
+                  nodeStrokeWidth={2}
+                  style={{
+                    position: 'absolute',
+                    top: 10,
+                    right: 10,
+                    width: 200,
+                    height: 140,
+                    zIndex: 10,
+                  }}
+                  className="!bg-background/90 !border-border !shadow-lg"
                 />
               </ReactFlow>
               {dropActive && (

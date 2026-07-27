@@ -141,7 +141,7 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
         </div>
       )}
 
-      {kind === STEP_KIND.LOOP_DECISION && (
+      {(kind === STEP_KIND.LOOP_DECISION || kind === STEP_KIND.APPROVAL) && (
         <div className="mt-1 flex items-center gap-1 truncate rounded px-1 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-300">
           {typeof cfg.max_iterations === "number" ? (
             <span>max {cfg.max_iterations} iterations</span>
@@ -176,7 +176,7 @@ export function StepNode({ data, selected }: NodeProps<StepData>) {
         </div>
       )}
 
-      {kind === STEP_KIND.LOOP_DECISION ? (
+      {kind === STEP_KIND.LOOP_DECISION || kind === STEP_KIND.APPROVAL ? (
         <>
           <Handle
             type="source"

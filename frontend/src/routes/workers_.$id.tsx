@@ -16,6 +16,7 @@ import {
   useRetireWorker,
   useRevertWorkerVersionToDraft,
   useSetActiveWorkerVersion,
+  useUpdateWorker,
   useUpdateWorkerVersion,
 } from "@/api/workers";
 import { EntityYamlView } from "@/components/EntityYamlView";
@@ -88,6 +89,7 @@ function WorkerDetailPage() {
   const publishVersion = usePublishWorkerVersion();
   const deprecateWorker = useDeprecateWorker();
   const retireWorker = useRetireWorker();
+  const updateWorker = useUpdateWorker();
   const updateVersion = useUpdateWorkerVersion();
   const createVersion = useCreateWorkerVersion();
   const createWorker = useCreateWorker();
@@ -120,19 +122,19 @@ function WorkerDetailPage() {
       contextSources: "[]",
       versionNote: "",
     },
-    values: latestVersion
+    values: (selectedVersion ?? latestVersion)
       ? {
-          runtimeRef: latestVersion.runtimeRef ?? "",
-          modelRef: latestVersion.modelRef ?? "",
-          role: latestVersion.systemPrompt?.match(/# Role\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
-          skills: latestVersion.systemPrompt?.match(/# Skills\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
-          behavior: latestVersion.systemPrompt?.match(/# Behavior\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
-          agentsMd: latestVersion.systemPrompt?.match(/# AGENTS\.md\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
-          permissions: latestVersion.permissions || DEFAULT_PERMISSIONS,
-          gatedTools: latestVersion.gatedTools || "[]",
-          budgetOverrides: latestVersion.budgetOverrides || DEFAULT_BUDGETS,
-          contextSources: latestVersion.contextSources || "[]",
-          versionNote: latestVersion.versionNote ?? "",
+          runtimeRef: (selectedVersion ?? latestVersion)!.runtimeRef ?? "",
+          modelRef: (selectedVersion ?? latestVersion)!.modelRef ?? "",
+          role: (selectedVersion ?? latestVersion)!.systemPrompt?.match(/# Role\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
+          skills: (selectedVersion ?? latestVersion)!.systemPrompt?.match(/# Skills\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
+          behavior: (selectedVersion ?? latestVersion)!.systemPrompt?.match(/# Behavior\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
+          agentsMd: (selectedVersion ?? latestVersion)!.systemPrompt?.match(/# AGENTS\.md\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
+          permissions: (selectedVersion ?? latestVersion)!.permissions || DEFAULT_PERMISSIONS,
+          gatedTools: (selectedVersion ?? latestVersion)!.gatedTools || "[]",
+          budgetOverrides: (selectedVersion ?? latestVersion)!.budgetOverrides || DEFAULT_BUDGETS,
+          contextSources: (selectedVersion ?? latestVersion)!.contextSources || "[]",
+          versionNote: (selectedVersion ?? latestVersion)!.versionNote ?? "",
         }
       : undefined,
   });
@@ -226,7 +228,7 @@ function WorkerDetailPage() {
           )}
           {draftVersion && viewMode === "detail" && !editing && !selectedVersionId && (
             <>
-              <Button onClick={() => setEditing(true)}>Edit</Button>
+              <Button onClick={() => { setEditing(true); setSelectedVersionId(draftVersion.id); }}>Edit</Button>
               <Button
                 onClick={() => {
                   handleSubmit(async (formData) => {
@@ -396,7 +398,7 @@ function WorkerDetailPage() {
           <CardHeader>
             <CardDescription>Runtime</CardDescription>
             <CardTitle className="break-all text-base font-mono text-sm">
-              {latestVersion?.runtimeRef || "—"}
+              {(selectedVersion ?? latestVersion)?.runtimeRef || "—"}
             </CardTitle>
           </CardHeader>
         </Card>
@@ -404,7 +406,7 @@ function WorkerDetailPage() {
           <CardHeader>
             <CardDescription>Model</CardDescription>
             <CardTitle className="break-all text-base font-mono text-sm">
-              {latestVersion?.modelRef || "—"}
+              {(selectedVersion ?? latestVersion)?.modelRef || "—"}
             </CardTitle>
           </CardHeader>
         </Card>
@@ -417,6 +419,61 @@ function WorkerDetailPage() {
           </CardHeader>
         </Card>
       </div>
+
+      {/* Worker header editor (visible when a draft version exists) */}
+      {isEditingEnabled && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Worker details</CardTitle>
+            <CardDescription>
+              Name, description, and purpose — saved on blur.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="editName">Name</Label>
+              <Input
+                id="editName"
+                defaultValue={worker.name}
+                onBlur={(e) => {
+                  const val = e.target.value.trim();
+                  if (val && val !== worker.name) {
+                    updateWorker.mutate({ id: worker.id, name: val });
+                  }
+                }}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="editDesc">Description</Label>
+              <Textarea
+                id="editDesc"
+                className="min-h-[60px] text-sm"
+                defaultValue={worker.description}
+                onBlur={(e) => {
+                  const val = e.target.value.trim();
+                  if (val !== worker.description) {
+                    updateWorker.mutate({ id: worker.id, description: val });
+                  }
+                }}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="editPurpose">Purpose</Label>
+              <Textarea
+                id="editPurpose"
+                className="min-h-[60px] text-sm"
+                defaultValue={worker.purpose}
+                onBlur={(e) => {
+                  const val = e.target.value.trim();
+                  if (val !== worker.purpose) {
+                    updateWorker.mutate({ id: worker.id, purpose: val });
+                  }
+                }}
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Inline editor for draft versions */}
       {isEditingEnabled && (

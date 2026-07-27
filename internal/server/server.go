@@ -278,6 +278,13 @@ func (s *Server) Run(ctx context.Context) error {
 	s.log.Info("starting orchicon control plane",
 		"version", version.Current().String(), "http", s.cfg.HTTPAddr)
 
+	// Clear stale edit locks from a prior server session. Locks have a
+	// 5-minute TTL; on restart any lock still in the DB is orphaned and
+	// would block the same user on a fresh page load.
+	if _, err := s.pool.Exec(ctx, "DELETE FROM edit_locks"); err != nil {
+		s.log.Warn("startup: clear edit locks", "error", err)
+	}
+
 	errCh := make(chan error, 4)
 	go func() { errCh <- s.httpSrv.ListenAndServe() }()
 
