@@ -594,6 +594,12 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 			results["_decision"] = d
 		}
 	}
+	// Hard rule: if the reviewer listed issues, the work is not accepted
+	// regardless of what _decision the model chose. Issues mean something
+	// needs fixing before the next stage can proceed.
+	if issues, ok := results["_issues"].(string); ok && strings.TrimSpace(issues) != "" {
+		results["_decision"] = "failure"
+	}
 	// Extract list of modified files from diff markers in the output.
 	if output != "" {
 		if files := extractTouchedFiles(output); len(files) > 0 {
