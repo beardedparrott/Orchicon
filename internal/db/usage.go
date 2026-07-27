@@ -349,8 +349,8 @@ func GetWorkflowRunCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowID st
 // for old executions where the column was not populated.
 func GetWorkflowWorkerCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowRunID string) ([]WorkflowWorkerCostRow, error) {
 	const q = `SELECT
-		COALESCE(we.worker_id, '') AS worker_id,
-		COALESCE(w.name, '') AS worker_name,
+		COALESCE(we.worker_id, ur.worker_id, '') AS worker_id,
+		COALESCE(w2.name, '') AS worker_name,
 		SUM(ur.cost_usd) AS cost_usd,
 		SUM(ur.total_tokens) AS total_tokens,
 		SUM(ur.prompt_tokens) AS prompt_tokens,
@@ -359,9 +359,9 @@ func GetWorkflowWorkerCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowRu
 		FROM usage_records ur
 		JOIN work_items wi ON ur.task_id = wi.id
 		LEFT JOIN worker_executions we ON we.id = ur.execution_id
-		LEFT JOIN workers w ON w.id = COALESCE(we.worker_id, '')
+		LEFT JOIN workers w2 ON w2.id = COALESCE(we.worker_id, ur.worker_id, '')
 		WHERE ur.tenant_id = $1 AND COALESCE(we.workflow_run_id, wi.workflow_run_id, '') = $2
-		GROUP BY we.worker_id, w.name
+		GROUP BY COALESCE(we.worker_id, ur.worker_id, ''), w2.name
 		ORDER BY cost_usd DESC`
 	rows, err := tx.Query(ctx, q, tenantID, workflowRunID)
 	if err != nil {
