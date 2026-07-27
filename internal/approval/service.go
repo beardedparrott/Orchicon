@@ -264,6 +264,7 @@ type approvalItemRow struct {
 	TouchedFilesJSON string
 	AcceptanceCrit   string
 	Status           string
+	Decision         string
 	CreatedAt        time.Time
 }
 
@@ -283,13 +284,15 @@ func listApprovalItems(ctx context.Context, tx pgx.Tx, tenantID string, req *api
 		COALESCE(wsr.result::jsonb->>'_upstream_files', '[]'),
 		COALESCE(wi.acceptance_criteria, ''),
 		wsr.status,
+		COALESCE(wsr.result::jsonb->>'_decision', ''),
 		wsr.created_at
 		FROM workflow_step_runs wsr
 		JOIN workflow_runs wr ON wr.id = wsr.workflow_run_id AND wr.tenant_id = wsr.tenant_id
 		JOIN workflows w ON w.id = wr.workflow_id AND w.tenant_id = wr.tenant_id
 		LEFT JOIN work_items wi ON wi.workflow_run_id = wr.id AND wi.id = wr.work_item_id
 		LEFT JOIN projects p ON p.id = wr.project_id AND p.tenant_id = wr.tenant_id
-		WHERE wsr.tenant_id = $1 AND wsr.step_kind = 'approval'`
+		WHERE wsr.tenant_id = $1 AND wsr.step_kind = 'approval'
+		  AND wsr.status IN ('approval_pending', 'succeeded')`
 
 	args := []any{tenantID}
 	argIdx := 2
@@ -359,7 +362,7 @@ func listApprovalItems(ctx context.Context, tx pgx.Tx, tenantID string, req *api
 			&r.ProjectName, &r.WorkItemTitle,
 			&r.WorkflowName, &r.UpstreamWorker,
 			&r.UpstreamSummary, &r.TouchedFilesJSON,
-			&r.AcceptanceCrit, &r.Status, &r.CreatedAt,
+			&r.AcceptanceCrit, &r.Status, &r.Decision, &r.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan approval item: %w", err)
 		}
@@ -376,7 +379,11 @@ func listApprovalItems(ctx context.Context, tx pgx.Tx, tenantID string, req *api
 		case domain.StepRunApprovalPending:
 			mappedStatus = "pending"
 		case domain.StepRunSucceeded:
-			mappedStatus = "approved"
+			if r.Decision == "rejected" {
+				mappedStatus = "rejected"
+			} else {
+				mappedStatus = "approved"
+			}
 		}
 
 		item := &apiv1.ApprovalItem{
