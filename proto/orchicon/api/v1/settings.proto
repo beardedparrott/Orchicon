@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// TenantSettings are the tenant-level configuration defaults stored in the
+// control plane database (tenant_settings table). Settings are read by
+// services at dispatch time with env-var fallback for dev overrides.
+//
+// Sections mirror the UI layout:
+//   - appearance:    theme/mode (client-side, persisted in localStorage)
+//   - defaults:      model refs, stall parameters, etc.
+//   - future:        additional sections as the product grows
+message TenantSettings {
+  // Default model ref used when a worker version has no model_ref set.
+  // If empty, dispatch fails (no hardcoded free-model fallback).
+  string default_worker_model = 1;
+
+  // Default model ref for the "Ask Orchicon" feature (placeholder for a
+  // future conversational assistant).
+  string default_ask_orchicon_model = 2;
+
+  // --- Stall detection defaults ---
+  // These are read by the progress monitor at execution dispatch time.
+  // Each field has an env-var counterpart that overrides the DB value
+  // for dev/debugging (ORCHICON_STALL_*). An empty/zero value means
+  // "use the env var or code default".
+
+  // No step_finish or new tokens within this window triggers stalled.
+  // Seconds. Default 300 (5 min).
+  int64 stall_no_progress_window_seconds = 10;
+
+  // No file modifications within this window triggers stalled.
+  // Seconds. Default 900 (15 min). Zero disables.
+  int64 stall_no_file_diff_window_seconds = 11;
+
+  // No meaningful action (tool call, file diff, step finish) within this
+  // window triggers text-loop stall. Seconds. Default 600 (10 min).
+  // Zero disables.
+  int64 stall_text_loop_window_seconds = 12;
+
+  // Same tool-call signature repeated this many times within the
+  // repetition window triggers repeated-call stall. Default 5.
+  // Zero disables.
+  int32 stall_repetition_count = 13;
+
+  // Window for repetition detection. Seconds. Default 300 (5 min).
+  int64 stall_repetition_window_seconds = 14;
+
+  google.protobuf.Timestamp created_at = 100;
+  google.protobuf.Timestamp updated_at = 101;
+}

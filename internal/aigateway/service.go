@@ -169,6 +169,54 @@ func (s *Service) GetCost(ctx context.Context, req *connect.Request[apiv1.GetCos
 	}), nil
 }
 
+// GetWorkflowCosts returns cost broken down by workflow run with
+// per-step detail (Cost Explorer "By Workflow" tab).
+func (s *Service) GetWorkflowCosts(ctx context.Context, req *connect.Request[apiv1.GetWorkflowCostsRequest]) (*connect.Response[apiv1.GetWorkflowCostsResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	start, end := tsToTime(req.Msg.Start), tsToTime(req.Msg.End)
+	rows, err := db.GetWorkflowCostRollup(ctx, ttx.Tx, tenantID, req.Msg.WorkflowRunId, start, end)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	out := make([]*apiv1.WorkflowCostSummary, 0, len(rows))
+	for i := range rows {
+		wf := &apiv1.WorkflowCostSummary{
+			WorkflowRunId:  rows[i].WorkflowRunID,
+			WorkflowId:     rows[i].WorkflowID,
+			WorkflowName:   rows[i].WorkflowName,
+			TotalCostUsd:   rows[i].TotalCostUSD,
+			TotalTokens:    rows[i].TotalTokens,
+			ExecutionCount: rows[i].ExecutionCount,
+		}
+		// Fetch per-step breakdown for this workflow run.
+		steps, err := db.GetWorkflowStepCosts(ctx, ttx.Tx, tenantID, rows[i].WorkflowRunID)
+		if err != nil {
+			s.log.Warn("workflow step costs", "workflow_run_id", rows[i].WorkflowRunID, "error", err)
+		} else {
+			for j := range steps {
+				wf.Steps = append(wf.Steps, &apiv1.WorkflowStepCost{
+					WorkItemId:     steps[j].WorkItemID,
+					Title:          steps[j].Title,
+					WorkflowStepId: steps[j].WorkflowStepID,
+					CostUsd:        steps[j].CostUSD,
+					TotalTokens:    steps[j].TotalTokens,
+					ExecutionCount: steps[j].ExecutionCount,
+				})
+			}
+		}
+		out = append(out, wf)
+	}
+	return connect.NewResponse(&apiv1.GetWorkflowCostsResponse{Workflows: out}), nil
+}
+
 // StreamUsageEvents is the server-stream RPC that fans out live usage/cost
 // events from NATS to connected clients (docs/07 §4, docs/08 §5.2).
 func (s *Service) StreamUsageEvents(ctx context.Context, req *connect.Request[apiv1.StreamUsageEventsRequest], stream *connect.ServerStream[apiv1.StreamUsageEventsResponse]) error {

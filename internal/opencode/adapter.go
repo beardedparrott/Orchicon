@@ -158,8 +158,11 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	}
 	modelRef := manifest.ModelRef
 	if modelRef == "" {
-		modelRef = "opencode/deepseek-v4-flash-free"
-		a.log.Info("no model_ref specified, defaulting to free model", "model", modelRef, "execution", execRow.ID)
+		modelRef = manifest.DefaultModelRef
+		if modelRef == "" {
+			return fmt.Errorf("no model_ref specified on worker and no default model set in tenant settings — dispatch rejected")
+		}
+		a.log.Info("no model_ref on worker, using tenant default", "model", modelRef, "execution", execRow.ID)
 	}
 	args = append(args, "--model", modelRef)
 	// Inject the worker's composed system prompt via a custom agent
@@ -327,7 +330,9 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// changes, repeated tool calls) and raises OnStall → triggers
 	// recovery (docs/06 §2 stalled trigger; docs/03 §5). One monitor
 	// per execution; closed when the subprocess exits.
-	monitor := newProgressMonitor(execRow.ID, defaultStallWindows())
+	// Stall thresholds come from tenant settings (ExecutionManifest)
+	// with env-var fallback for dev debugging overrides.
+	monitor := newProgressMonitor(execRow.ID, stallWindowsFromManifest(manifest))
 	go monitor.run(ctx, func(execID, reason string) {
 		callbacks.OnStall(ctx, execID, reason)
 	})

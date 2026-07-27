@@ -327,20 +327,48 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	// system message, not the user message, so the worker
 	// instruction to end with ORCHICON WORKER SUMMARY is consistent
 	// across the first turn and every subsequent turn.
+	// Fetch tenant settings for default model and stall thresholds.
+	var defaultModelRef string
+	var stallNoProgress, stallNoFileDiff, stallTextLoop int64
+	var stallRepCount int32
+	var stallRepWindow int64
+	{
+		settingsCtx := context.Background()
+		stx, err := r.pool.BeginTenantTx(settingsCtx, exec.TenantID)
+		if err == nil {
+			s, err := db.GetTenantSettings(settingsCtx, stx.Tx, exec.TenantID)
+			if err == nil {
+				defaultModelRef = s.DefaultWorkerModel
+				stallNoProgress = s.StallNoProgressWindowSeconds
+				stallNoFileDiff = s.StallNoFileDiffWindowSeconds
+				stallTextLoop = s.StallTextLoopWindowSeconds
+				stallRepCount = s.StallRepetitionCount
+				stallRepWindow = s.StallRepetitionWindowSeconds
+			}
+			stx.Rollback(settingsCtx)
+		}
+	}
+
 	manifest := ExecutionManifest{
-		ExecutionID:        exec.ID,
-		TaskID:             exec.TaskID,
-		ProjectID:          exec.ProjectID,
-		WorkerID:           version.WorkerID,
-		WorkerVersion:      version.Version,
-		SystemPrompt:       systemPrompt,
-		Goal:               task.Title,
-		AcceptanceCriteria: task.AcceptanceCriteria,
-		ModelRef:           version.ModelRef,
-		ContextSources:     version.ContextSources,
-		Budgets:            version.BudgetOverrides,
-		Permissions:        version.Permissions,
-		ProjectDir:         projectDir,
+		ExecutionID:                 exec.ID,
+		TaskID:                      exec.TaskID,
+		ProjectID:                   exec.ProjectID,
+		WorkerID:                    version.WorkerID,
+		WorkerVersion:               version.Version,
+		SystemPrompt:                systemPrompt,
+		Goal:                        task.Title,
+		AcceptanceCriteria:          task.AcceptanceCriteria,
+		ModelRef:                    version.ModelRef,
+		DefaultModelRef:             defaultModelRef,
+		ContextSources:              version.ContextSources,
+		Budgets:                     version.BudgetOverrides,
+		Permissions:                 version.Permissions,
+		ProjectDir:                  projectDir,
+		StallNoProgressWindowSeconds:  stallNoProgress,
+		StallNoFileDiffWindowSeconds:  stallNoFileDiff,
+		StallTextLoopWindowSeconds:    stallTextLoop,
+		StallRepetitionCount:          stallRepCount,
+		StallRepetitionWindowSeconds:  stallRepWindow,
 	}
 	if err := r.bridge.Start(ctx, exec, manifest, r); err != nil {
 		r.log.Error("adapter start failed", "execution", exec.ID, "error", err)

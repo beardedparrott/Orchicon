@@ -12,7 +12,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { GetCostRequest, GetCostResponse, GetUsageRequest, GetUsageResponse, ListOpenCodeMCPsRequest, ListOpenCodeMCPsResponse, ListOpenCodeModelsRequest, ListOpenCodeModelsResponse, ListProvidersRequest, ListProvidersResponse, StreamUsageEventsRequest, StreamUsageEventsResponse } from "./ai_gateway_service_pb.js";
+import { GetCostRequest, GetCostResponse, GetUsageRequest, GetUsageResponse, GetWorkflowCostsRequest, GetWorkflowCostsResponse, ListOpenCodeMCPsRequest, ListOpenCodeMCPsResponse, ListOpenCodeModelsRequest, ListOpenCodeModelsResponse, ListProvidersRequest, ListProvidersResponse, StreamUsageEventsRequest, StreamUsageEventsResponse } from "./ai_gateway_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -97,6 +97,18 @@ export const AIGatewayService = {
       I: StreamUsageEventsRequest,
       O: StreamUsageEventsResponse,
       kind: MethodKind.ServerStreaming,
+    },
+    /**
+     * GetWorkflowCosts returns cost broken down by workflow run, with
+     * per-step detail inside each workflow (Cost Explorer "By Workflow").
+     *
+     * @generated from rpc orchicon.api.v1.AIGatewayService.GetWorkflowCosts
+     */
+    getWorkflowCosts: {
+      name: "GetWorkflowCosts",
+      I: GetWorkflowCostsRequest,
+      O: GetWorkflowCostsResponse,
+      kind: MethodKind.Unary,
     },
   }
 } as const;

@@ -42,6 +42,10 @@ service AIGatewayService {
   // usage/cost events from NATS to connected clients (docs/07 §4,
   // docs/08 §5.2). Each event mirrors a usage_records Postgres row.
   rpc StreamUsageEvents(StreamUsageEventsRequest) returns (stream StreamUsageEventsResponse);
+
+  // GetWorkflowCosts returns cost broken down by workflow run, with
+  // per-step detail inside each workflow (Cost Explorer "By Workflow").
+  rpc GetWorkflowCosts(GetWorkflowCostsRequest) returns (GetWorkflowCostsResponse);
 }
 
 message ListOpenCodeModelsRequest {
@@ -105,4 +109,34 @@ message StreamUsageEventsRequest {
 message StreamUsageEventsResponse {
   UsageEvent event = 1; // from ai_gateway.proto
   int64 sequence = 2;
+}
+
+message GetWorkflowCostsRequest {
+  string workflow_run_id = 1; // optional: scope to a single run
+  google.protobuf.Timestamp start = 6;
+  google.protobuf.Timestamp end = 7;
+}
+
+message WorkflowCostSummary {
+  string workflow_run_id = 1;
+  string workflow_id = 2;
+  string workflow_name = 3;
+  double total_cost_usd = 4;
+  int64 total_tokens = 5;
+  int32 execution_count = 6;
+  // Per-step breakdown within this workflow run.
+  repeated WorkflowStepCost steps = 7;
+}
+
+message WorkflowStepCost {
+  string work_item_id = 1;
+  string title = 2;
+  string workflow_step_id = 3;
+  double cost_usd = 4;
+  int64 total_tokens = 5;
+  int32 execution_count = 6;
+}
+
+message GetWorkflowCostsResponse {
+  repeated WorkflowCostSummary workflows = 1;
 }

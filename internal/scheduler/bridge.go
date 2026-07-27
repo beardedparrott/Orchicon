@@ -20,10 +20,18 @@ type ExecutionManifest struct {
 	Goal               string
 	AcceptanceCriteria string
 	ModelRef           string // human-defined; no auto-failover (docs/05 §11)
+	DefaultModelRef    string // tenant-level default from settings; fallback if ModelRef empty
 	ContextSources     []byte // jsonb
 	Budgets            []byte // jsonb
 	Permissions        []byte // jsonb
 	ProjectDir         string // working directory for the adapter subprocess
+	// Stall detection thresholds from tenant settings. Zero means "use
+	// env-var or built-in default".
+	StallNoProgressWindowSeconds  int64
+	StallNoFileDiffWindowSeconds  int64
+	StallTextLoopWindowSeconds    int64
+	StallRepetitionCount          int32
+	StallRepetitionWindowSeconds  int64
 }
 
 // ExecutionCallbacks are the status callbacks the adapter bridge uses to

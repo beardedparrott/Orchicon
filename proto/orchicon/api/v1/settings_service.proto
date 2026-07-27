@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "orchicon/api/v1/settings.proto";
+
+// SettingsService provides read/write access to tenant-level settings.
+// Settings are stored per-tenant in the control plane database and are
+// read by services (reconcilers, adapters) at dispatch time, with env-var
+// fallback for dev overrides.
+service SettingsService {
+  // GetSettings returns the current settings for the calling tenant.
+  // Returns default values if no settings have been saved yet.
+  rpc GetSettings(GetSettingsRequest) returns (GetSettingsResponse);
+
+  // UpdateSettings merges the provided fields into the tenant's settings.
+  // Only non-zero/non-empty fields are applied (partial update).
+  rpc UpdateSettings(UpdateSettingsRequest) returns (UpdateSettingsResponse);
+}
+
+message GetSettingsRequest {}
+
+message GetSettingsResponse {
+  TenantSettings settings = 1;
+}
+
+message UpdateSettingsRequest {
+  TenantSettings settings = 1;
+}
+
+message UpdateSettingsResponse {
+  TenantSettings settings = 1;
+}

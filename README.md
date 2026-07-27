@@ -29,6 +29,18 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.150 (2026-07-27)
+
+| Type | Change |
+|---|---|
+| Feature | Settings page replaces Preferences — adds Defaults sections (default models, stall params) |
+| Feature | Tenant-level settings stored in DB (tenant_settings table) with GetSettings/UpdateSettings RPCs |
+| Feature | Default worker model in settings — dispatch fails if both worker model_ref and default are empty |
+| Feature | Default Ask Orchicon model setting (placeholder for forthcoming feature) |
+| Feature | Recovery stall parameters configurable in Settings UI (DB-backed, env-var override) |
+| Feature | Cost Explorer "By Workflow" tab — cost breakdown per workflow run with per-step drill-down |
+| Feature | Adapter reads stall thresholds from tenant settings at dispatch time (env fallback) |
+
 ### v0.1.149 (2026-07-27)
 
 | Type | Change |

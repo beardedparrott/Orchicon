@@ -30,6 +30,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/policy"
 	"github.com/beardedparrott/orchicon/internal/project"
 	"github.com/beardedparrott/orchicon/internal/recovery"
+	"github.com/beardedparrott/orchicon/internal/settings"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
 	"github.com/beardedparrott/orchicon/internal/webhook"
@@ -142,6 +143,10 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// ApprovalService — human-in-the-loop approval gates for workflow steps.
 	approvalSvc := approval.NewService(deps.Pool, deps.Log)
 	mux.Handle(apiv1connect.NewApprovalServiceHandler(approvalSvc, interceptorOpt))
+
+	// SettingsService — tenant-level configuration defaults.
+	settingsSvc := settings.New(deps.Pool, deps.Log)
+	mux.Handle(apiv1connect.NewSettingsServiceHandler(settingsSvc, interceptorOpt))
 
 	// SigNoz UI reverse proxy (docs/10 §11): serves the SigNoz frontend
 	// same-origin under /signoz so the embedded iframe in the Telemetry

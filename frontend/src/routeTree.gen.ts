@@ -14,9 +14,9 @@ import { Route as WorkersRouteImport } from './routes/workers'
 import { Route as WorkItemsRouteImport } from './routes/work-items'
 import { Route as WebhooksRouteImport } from './routes/webhooks'
 import { Route as TelemetryRouteImport } from './routes/telemetry'
+import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RecoveryRouteImport } from './routes/recovery'
 import { Route as ProjectsRouteImport } from './routes/projects'
-import { Route as PreferencesRouteImport } from './routes/preferences'
 import { Route as PoliciesRouteImport } from './routes/policies'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ExecutionsRouteImport } from './routes/executions'
@@ -65,6 +65,11 @@ const TelemetryRoute = TelemetryRouteImport.update({
   path: '/telemetry',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const RecoveryRoute = RecoveryRouteImport.update({
   id: '/recovery',
   path: '/recovery',
@@ -73,11 +78,6 @@ const RecoveryRoute = RecoveryRouteImport.update({
 const ProjectsRoute = ProjectsRouteImport.update({
   id: '/projects',
   path: '/projects',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const PreferencesRoute = PreferencesRouteImport.update({
-  id: '/preferences',
-  path: '/preferences',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PoliciesRoute = PoliciesRouteImport.update({
@@ -199,9 +199,9 @@ export interface FileRoutesByFullPath {
   '/executions': typeof ExecutionsRoute
   '/login': typeof LoginRoute
   '/policies': typeof PoliciesRoute
-  '/preferences': typeof PreferencesRoute
   '/projects': typeof ProjectsRoute
   '/recovery': typeof RecoveryRoute
+  '/settings': typeof SettingsRoute
   '/telemetry': typeof TelemetryRoute
   '/webhooks': typeof WebhooksRoute
   '/work-items': typeof WorkItemsRoute
@@ -231,9 +231,9 @@ export interface FileRoutesByTo {
   '/executions': typeof ExecutionsRoute
   '/login': typeof LoginRoute
   '/policies': typeof PoliciesRoute
-  '/preferences': typeof PreferencesRoute
   '/projects': typeof ProjectsRoute
   '/recovery': typeof RecoveryRoute
+  '/settings': typeof SettingsRoute
   '/telemetry': typeof TelemetryRoute
   '/webhooks': typeof WebhooksRoute
   '/work-items': typeof WorkItemsRoute
@@ -264,9 +264,9 @@ export interface FileRoutesById {
   '/executions': typeof ExecutionsRoute
   '/login': typeof LoginRoute
   '/policies': typeof PoliciesRoute
-  '/preferences': typeof PreferencesRoute
   '/projects': typeof ProjectsRoute
   '/recovery': typeof RecoveryRoute
+  '/settings': typeof SettingsRoute
   '/telemetry': typeof TelemetryRoute
   '/webhooks': typeof WebhooksRoute
   '/work-items': typeof WorkItemsRoute
@@ -298,9 +298,9 @@ export interface FileRouteTypes {
     | '/executions'
     | '/login'
     | '/policies'
-    | '/preferences'
     | '/projects'
     | '/recovery'
+    | '/settings'
     | '/telemetry'
     | '/webhooks'
     | '/work-items'
@@ -330,9 +330,9 @@ export interface FileRouteTypes {
     | '/executions'
     | '/login'
     | '/policies'
-    | '/preferences'
     | '/projects'
     | '/recovery'
+    | '/settings'
     | '/telemetry'
     | '/webhooks'
     | '/work-items'
@@ -362,9 +362,9 @@ export interface FileRouteTypes {
     | '/executions'
     | '/login'
     | '/policies'
-    | '/preferences'
     | '/projects'
     | '/recovery'
+    | '/settings'
     | '/telemetry'
     | '/webhooks'
     | '/work-items'
@@ -395,9 +395,9 @@ export interface RootRouteChildren {
   ExecutionsRoute: typeof ExecutionsRoute
   LoginRoute: typeof LoginRoute
   PoliciesRoute: typeof PoliciesRoute
-  PreferencesRoute: typeof PreferencesRoute
   ProjectsRoute: typeof ProjectsRoute
   RecoveryRoute: typeof RecoveryRoute
+  SettingsRoute: typeof SettingsRoute
   TelemetryRoute: typeof TelemetryRoute
   WebhooksRoute: typeof WebhooksRoute
   WorkItemsRoute: typeof WorkItemsRoute
@@ -457,6 +457,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TelemetryRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/recovery': {
       id: '/recovery'
       path: '/recovery'
@@ -469,13 +476,6 @@ declare module '@tanstack/react-router' {
       path: '/projects'
       fullPath: '/projects'
       preLoaderRoute: typeof ProjectsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/preferences': {
-      id: '/preferences'
-      path: '/preferences'
-      fullPath: '/preferences'
-      preLoaderRoute: typeof PreferencesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/policies': {
@@ -643,9 +643,9 @@ const rootRouteChildren: RootRouteChildren = {
   ExecutionsRoute: ExecutionsRoute,
   LoginRoute: LoginRoute,
   PoliciesRoute: PoliciesRoute,
-  PreferencesRoute: PreferencesRoute,
   ProjectsRoute: ProjectsRoute,
   RecoveryRoute: RecoveryRoute,
+  SettingsRoute: SettingsRoute,
   TelemetryRoute: TelemetryRoute,
   WebhooksRoute: WebhooksRoute,
   WorkItemsRoute: WorkItemsRoute,

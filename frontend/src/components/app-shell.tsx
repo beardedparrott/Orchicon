@@ -32,7 +32,7 @@ const NAV: NavItem[] = [
   { label: "Telemetry", to: "/telemetry" },
   { label: "Adapters", to: "/adapters" },
   { label: "Webhooks", to: "/webhooks" },
-  { label: "Preferences", to: "/preferences" },
+  { label: "Settings", to: "/settings" },
   { label: "Admin", to: "/admin", admin: true },
 ];
 
@@ -110,9 +110,9 @@ function TopBar() {
       <div className="flex items-center gap-3 text-xs text-muted-foreground">
         <ThemeToggleButton mode={mode} onToggle={toggleMode} />
         <Link
-          to="/preferences"
+          to="/settings"
           className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-          title="Preferences"
+          title="Settings"
         >
           <Palette className="h-4 w-4" />
         </Link>
