@@ -29,11 +29,35 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
-### v0.1.144 (2026-07-24)
+### v0.1.149 (2026-07-27)
 
 | Type | Change |
 |---|---|
-| Docs | Replaced old 11-file `/docs/` directory with single comprehensive `DOCUMENTATION.md` covering architecture, technologies, structure, installation, usage, development, deployment, env vars, troubleshooting — with Mermaid diagrams, full directory tree, and cross-references |
+| Feature | Human-in-the-loop APPROVAL step kind with approve/reject UI and loop-back on rejection |
+| Feature | Worker-backed approval: AI Approver worker evaluates and decides approve/reject automatically |
+| Feature | Native loop-back in approval steps (no separate loop_decision node needed) |
+| Feature | DevOps Engineer worker (GitOps, repo setup, PR/merge after approval) |
+| Feature | AI Approver worker (evaluates context, outputs approve/reject) |
+| Feature | Principal Software Architect worker (seeded for fresh installs) |
+| Feature | Worker identity (Role, Skills, Behavior, AGENTS.md) included in composite prompt |
+| Feature | Workflow-aware step numbering with topological sort (step N of M) |
+| Feature | Iteration context and execution history timeline in worker prompts |
+| Feature | Bulk select/approve/reject on Approvals page |
+| Feature | Editable worker purpose field (UpdateWorker RPC) |
+| Feature | Auto-start workflow on save (create + update), mutually exclusive with scheduled time |
+| Feature | Custom lock button that disables pan, select, and drag |
+| Feature | MiniMap positioned top-right, resizable, smaller default |
+| Bug fix | Workers know who they are (Role/Skills/Behavior/AGENTS.md now in prompt) |
+| Bug fix | Stale edit locks cleared on server restart (DELETE FROM edit_locks on startup) |
+| Bug fix | `_issues:` no longer auto-preserved across iterations — prevents false failure signals |
+| Bug fix | PR Reviewer and QA Engineer focus on real bugs, not nitpicks |
+| Bug fix | Clone work item preserves kind and parentId |
+| Bug fix | Worker version cache invalidation — saved draft changes reflect immediately |
+| Bug fix | Approval list excludes skipped/blocked/pending step runs |
+| Bug fix | Approved vs rejected properly distinguished via _decision field |
+| Chore | AGENTS.md: DOCUMENTATION.md sync rule + UI consistency rule |
+| Chore | Migrations: publish AI Approver, seed Architect, unify decision format |
+| Chore | Install script runs migrations (graceful fallback) |
 
 ## Installation
 
