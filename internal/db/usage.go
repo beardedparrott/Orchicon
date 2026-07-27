@@ -384,19 +384,21 @@ type ExecutionDisplayInfo struct {
 }
 
 // ResolveExecutionDisplayNames returns display info for the given
-// execution IDs. Results are deduplicated by execution_id.
+// execution IDs. Queries usage_records directly JOINed with workers and
+// work_items (not via worker_executions) so names are always resolved
+// even if the execution row has been cleaned up.
 func ResolveExecutionDisplayNames(ctx context.Context, tx pgx.Tx, tenantID string, execIDs []string) (map[string]ExecutionDisplayInfo, error) {
 	if len(execIDs) == 0 {
 		return nil, nil
 	}
-	// Build a parameterised IN list.
-	const q = `SELECT DISTINCT we.id,
+	const q = `SELECT DISTINCT ur.execution_id,
 		COALESCE(w.name, '') AS worker_name,
 		COALESCE(wi.title, '') AS task_title
-		FROM worker_executions we
-		LEFT JOIN workers w ON w.id = we.worker_id
-		LEFT JOIN work_items wi ON wi.id = we.task_id
-		WHERE we.tenant_id = $1 AND we.id = ANY($2)`
+		FROM usage_records ur
+		LEFT JOIN worker_executions we ON we.id = ur.execution_id
+		LEFT JOIN workers w ON w.id = COALESCE(we.worker_id, ur.worker_id, '')
+		LEFT JOIN work_items wi ON wi.id = COALESCE(we.task_id, ur.task_id, '')
+		WHERE ur.tenant_id = $1 AND ur.execution_id = ANY($2)`
 	rows, err := tx.Query(ctx, q, tenantID, execIDs)
 	if err != nil {
 		return nil, fmt.Errorf("db: resolve execution display names: %w", err)
