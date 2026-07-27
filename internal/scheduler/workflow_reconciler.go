@@ -1345,6 +1345,14 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	// 3. Instructions.
 	sb.WriteString("# Instructions\n\n")
 
+	// Guidance on _issues: only include blocking problems that the next
+	// worker MUST address. Cosmetic nitpicks or optional suggestions do
+	// not count as issues. If you include _issues:, the workflow treats
+	// the result as FAILURE regardless of the ORCHICON WORKER SUMMARY
+	// status word — so only use _issues: when work genuinely cannot
+	// proceed without fixes.
+	sb.WriteString("If you find bugs or problems that block acceptance, include `_issues:` with a brief description of what needs fixing. Only use `_issues:` for genuine blockers — the system treats any `_issues:` content as a failure signal.\n\n")
+
 	// Workflow-aware role context: tell the worker where they fit in the
 	// overall workflow so they don't perform work meant for other steps.
 	// Count worker-facing steps (task and approval) in topological order
@@ -1435,6 +1443,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	sb.WriteString("or\n")
 	sb.WriteString("```\nORCHICON WORKER SUMMARY: failure — Found 3 bugs in the implementation.\n```\n\n")
 	sb.WriteString("The first word (`success` or `failure`) is used to route the workflow. The text after `—` is passed to the next stage as the summary of your work.\n\n")
+	sb.WriteString("**Important:** If you include `_issues:` in your response, the workflow treats the result as `failure` regardless of the status word. Only use `_issues:` when you find blocking problems. If you have minor suggestions that don't block progress, leave them out of `_issues:` and mention them in your summary text instead.\n\n")
 	sb.WriteString("If you produce an output file, use the `write` tool (not `bash` with a heredoc). The `write` tool saves the file and orchicon captures it as an inline artifact.\n")
 	return sb.String(), nil
 }
