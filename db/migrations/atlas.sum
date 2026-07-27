@@ -1,4 +1,4 @@
-h1:+cUSVZKbG+pUJTaubPznXVfY/Y16o9QZgiEnr3dRkFU=
+h1:ESk8VK7YgJaC48R7JgqUX6p6cWIsGZ+OZUcMWtpXPcY=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712223028_add_outbox.sql h1:tlrMIs8ABXFMszWNaYd7gxjn3p42rmqrZeoxOJ1Vqvg=
 20260713012808_workers_workitems.sql h1:3li9AejCZaj9bcZz8wKOw0GG7UER3Uz9jbSNKF74Zo8=
@@ -41,3 +41,4 @@ h1:+cUSVZKbG+pUJTaubPznXVfY/Y16o9QZgiEnr3dRkFU=
 20260731000005_add_git_branch_instructions.sql h1:9k2aHZYkWauzxy5KKwwNyXAQjXV1swSHTHODT4TUQGg=
 20260731000006_add_architect_git_instructions.sql h1:r0FW/uDtD1wPDcFxpzh1YE15Qy5NUffMG782GDlZMzU=
 20260731000007_seed_principal_architect.sql h1:0Tzdf3DtgzIvWmieVPYYEbl/5vhMIYxTSRuZrB52VEk=
+20260731000008_add_sse_branch_behavior.sql h1:g3vF+QSrCvAFkpGOpO15dBZCvjheq6fLUkkbnjd3F8Y=
