@@ -1421,6 +1421,17 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		fmt.Fprintf(&sb, "This workflow has %d steps. You are step %d — %s. Focus on your specific role and let other workers handle their steps.\n\n", len(activeMeta), myPos+1, myName)
 	}
 
+	// Iteration context: tell the worker if this is a re-do (loop-back).
+	// The step run's iteration counter starts at 0 for the first pass
+	// and increments each time the chain re-enters.
+	if currentRun, ok := runs[wi.WorkflowStepID]; ok && currentRun.Iteration > 0 {
+		fmt.Fprintf(&sb, "This is iteration %d of this step. You may have done this work before — review your previous output and the feedback from downstream steps before repeating yourself.\n\n", currentRun.Iteration)
+	}
+
+	// Git branch guidance: avoid creating multiple branches across
+	// iterations. The worker should use the existing branch.
+	sb.WriteString("Use the existing git branch from the previous iteration if one exists. Do NOT create a new branch unless the previous work was on `main`.\n\n")
+
 	// Only instruct the worker to read .orchicon/ files when prior
 	// steps have completed. On the first step there's nothing to read.
 	hasPriorSteps := false
@@ -1444,6 +1455,87 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	sb.WriteString("```\nORCHICON WORKER SUMMARY: failure — Found 3 bugs in the implementation.\n```\n\n")
 	sb.WriteString("The first word (`success` or `failure`) is used to route the workflow. The text after `—` is passed to the next stage as the summary of your work.\n\n")
 	sb.WriteString("**Important:** If you include `_issues:` in your response, the workflow treats the result as `failure` regardless of the status word. Only use `_issues:` when you find blocking problems. If you have minor suggestions that don't block progress, leave them out of `_issues:` and mention them in your summary text instead.\n\n")
+
+	// Prior execution timeline: show what each completed step produced,
+	// so the worker understands the full context including loop-backs.
+	sb.WriteString("## Execution history\n\n")
+	sb.WriteString("The following steps have completed in this workflow run. If a step ran multiple times (loop-back), each iteration is listed.\n")
+	// Build a step-ID→name lookup from allSteps.
+	stepNameByID := make(map[string]string)
+	for _, s := range allSteps {
+		stepNameByID[s.ID] = s.Name
+	}
+	type histEntry struct{ stepName, status, summary, issues, iteration string }
+	var history []histEntry
+	seen := make(map[string]bool)
+	for stepID, sr := range runs {
+		sr := sr
+		if _, ok := stepNameByID[stepID]; !ok {
+			continue
+		}
+		if sr.Status != domain.StepRunSucceeded && sr.Status != domain.StepRunFailed {
+			continue
+		}
+		var rData struct {
+			Summary string `json:"_summary"`
+			Issues  string `json:"_issues"`
+		}
+		json.Unmarshal(sr.Result, &rData)
+		iterLabel := "first"
+		if sr.Iteration > 0 {
+			iterLabel = fmt.Sprintf("iteration %d", sr.Iteration)
+		}
+		entry := histEntry{
+			stepName:  stepNameByID[stepID],
+			status:    sr.Status,
+			summary:   rData.Summary,
+			issues:    rData.Issues,
+			iteration: iterLabel,
+		}
+		if !seen[sr.ID] {
+			history = append(history, entry)
+			seen[sr.ID] = true
+		}
+	}
+	// Sort by topological order.
+	sort.SliceStable(history, func(i, j int) bool {
+		var pi, pj int
+		for _, s := range allSteps {
+			if s.Name == history[i].stepName { pi = topoPos[s.ID] }
+			if s.Name == history[j].stepName { pj = topoPos[s.ID] }
+		}
+		return pi < pj
+	})
+	if len(history) > 0 {
+		for _, h := range history {
+			statusSym := "✓"
+			if h.status == domain.StepRunFailed {
+				statusSym = "✗"
+			}
+			fmt.Fprintf(&sb, "- **%s** %s [%s]", h.stepName, statusSym, h.iteration)
+			if h.status == domain.StepRunSucceeded {
+				sb.WriteString(" succeeded")
+			} else {
+				sb.WriteString(" failed")
+			}
+			if h.summary != "" {
+				if len(h.summary) > 120 {
+					h.summary = h.summary[:120] + "…"
+				}
+				fmt.Fprintf(&sb, ": %s", h.summary)
+			}
+			sb.WriteString("\n")
+			if h.issues != "" {
+				if len(h.issues) > 120 {
+					h.issues = h.issues[:120] + "…"
+				}
+				fmt.Fprintf(&sb, "  - Issues: %s\n", h.issues)
+			}
+		}
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString("No steps have completed yet. You are the first.\n\n")
+	}
 	sb.WriteString("If you produce an output file, use the `write` tool (not `bash` with a heredoc). The `write` tool saves the file and orchicon captures it as an inline artifact.\n")
 	return sb.String(), nil
 }
