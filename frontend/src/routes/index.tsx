@@ -3,7 +3,6 @@ import { useMemo } from "react";
 
 import { Route as rootRoute } from "@/routes/__root";
 import { useListProjects } from "@/api/projects";
-import { useListProjects } from "@/api/projects";
 import { useListExecutions } from "@/api/executions";
 import { useListRecoveries } from "@/api/recovery";
 import { useGetCost, useGetUsage, useListOpenCodeModels } from "@/api/aigateway";

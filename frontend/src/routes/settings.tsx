@@ -33,11 +33,11 @@ function SettingsPage() {
       </div>
 
       <div className="flex flex-wrap gap-2 border-b pb-px">
-        {[
+        {([
           ["appearance", "Appearance", Palette],
           ["defaults", "Defaults", SlidersHorizontal],
           ["guide", "User Guide", BookOpen],
-        ].map(([id, label, Icon]) => (
+        ] as const).map(([id, label, Icon]) => (
           <button
             key={id}
             onClick={() => setTab(id as SettingsTab)}
