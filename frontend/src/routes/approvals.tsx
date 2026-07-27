@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link, createRoute } from "@tanstack/react-router";
-import { CheckCircle2, XCircle, Clock, ExternalLink } from "lucide-react";
+import { CheckCircle2, XCircle, Clock, ExternalLink, Trash2 } from "lucide-react";
 
 import { useApproveStep, useListPendingStepApprovals } from "@/api/approvals";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 
 export const Route = createRoute({
@@ -39,6 +40,7 @@ function ApprovalsPage() {
   const [sortBy, setSortBy] = useState("created_at");
   const [sortOrder, setSortOrder] = useState("desc");
   const [reasonText, setReasonText] = useState<Record<string, string>>({});
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const statusParam = statusFilter === "all" ? undefined : statusFilter;
   const { data: items, isLoading, error } = useListPendingStepApprovals({
@@ -48,8 +50,6 @@ function ApprovalsPage() {
     sortOrder,
   });
 
-  // Client-side: when statusFilter is "pending", only show pending items.
-  // The server filter handles the other cases.
   const approvals = useMemo(() => {
     if (!items) return undefined;
     if (statusFilter === "pending") {
@@ -59,6 +59,35 @@ function ApprovalsPage() {
   }, [items, statusFilter]);
 
   const approveMutation = useApproveStep();
+
+  const toggleSelect = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (!approvals) return;
+    if (selected.size === approvals.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(approvals.map((a) => a.stepRunId)));
+    }
+  };
+
+  const handleBulkAction = (approved: boolean) => {
+    if (selected.size === 0) return;
+    const label = approved ? "approve" : "reject";
+    if (!window.confirm(`${label.charAt(0).toUpperCase() + label.slice(1)} ${selected.size} selected approval${selected.size === 1 ? "" : "s"}?`)) return;
+    Promise.all(
+      Array.from(selected).map((id) =>
+        approveMutation.mutateAsync({ stepRunId: id, approved, reason: "", reviewedBy: "" }),
+      ),
+    ).then(() => setSelected(new Set()));
+  };
 
   const handleApprove = (stepRunId: string, approved: boolean) => {
     const reason = reasonText[stepRunId] ?? "";
@@ -119,6 +148,29 @@ function ApprovalsPage() {
           <option value="desc">Newest</option>
           <option value="asc">Oldest</option>
         </select>
+
+        {selected.size > 0 && (
+          <>
+            <Button
+              size="sm"
+              variant="default"
+              onClick={() => handleBulkAction(true)}
+              disabled={approveMutation.isPending}
+            >
+              <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+              Approve {selected.size} selected
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => handleBulkAction(false)}
+              disabled={approveMutation.isPending}
+            >
+              <XCircle className="mr-1 h-3.5 w-3.5" />
+              Reject {selected.size} selected
+            </Button>
+          </>
+        )}
       </div>
 
       {/* Error state */}
@@ -137,6 +189,23 @@ function ApprovalsPage() {
       {!isLoading && approvals?.length === 0 && (
         <div className="py-12 text-center">
           <p className="text-muted-foreground">No approvals found.</p>
+        </div>
+      )}
+
+      {/* Select-all header */}
+      {approvals && approvals.length > 0 && (
+        <div className="flex items-center gap-2 px-1">
+          <input
+            type="checkbox"
+            checked={approvals.length > 0 && selected.size === approvals.length}
+            onChange={toggleSelectAll}
+            className="h-4 w-4 rounded border-input"
+          />
+          <span className="text-xs text-muted-foreground">
+            {selected.size > 0
+              ? `${selected.size} of ${approvals.length} selected`
+              : `${approvals.length} approval${approvals.length === 1 ? "" : "s"}`}
+          </span>
         </div>
       )}
 
@@ -161,22 +230,30 @@ function ApprovalsPage() {
             <Card key={item.stepRunId}>
               <CardHeader className="pb-3">
                 <div className="flex items-start justify-between">
-                  <div className="space-y-1">
-                    <CardTitle className="text-base">
-                      <Link
-                        to="/workflows/$id/runs/$runId"
-                        params={{ id: "", runId: item.workflowRunId }}
-                        className="hover:underline"
-                      >
-                        {item.projectName && `${item.projectName} — `}
-                        {item.workItemName}
-                      </Link>
-                    </CardTitle>
-                    <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                      <span>Workflow: {item.workflowName}</span>
-                      {item.upstreamWorker && (
-                        <span>From: {item.upstreamWorker}</span>
-                      )}
+                  <div className="flex items-start gap-3">
+                    <input
+                      type="checkbox"
+                      checked={selected.has(item.stepRunId)}
+                      onChange={() => toggleSelect(item.stepRunId)}
+                      className="mt-1 h-4 w-4 rounded border-input"
+                    />
+                    <div className="space-y-1">
+                      <CardTitle className="text-base">
+                        <Link
+                          to="/workflows/$id/runs/$runId"
+                          params={{ id: "", runId: item.workflowRunId }}
+                          className="hover:underline"
+                        >
+                          {item.projectName && `${item.projectName} — `}
+                          {item.workItemName}
+                        </Link>
+                      </CardTitle>
+                      <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                        <span>Workflow: {item.workflowName}</span>
+                        {item.upstreamWorker && (
+                          <span>From: {item.upstreamWorker}</span>
+                        )}
+                      </div>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
