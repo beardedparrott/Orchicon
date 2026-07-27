@@ -1,5 +1,5 @@
 import { createRoute } from "@tanstack/react-router";
-import { useState, useMemo } from "react";
+import { useState, useEffect } from "react";
 import { Sun, Moon, Check, Save } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -37,7 +37,7 @@ function SettingsPage() {
   const [saving, setSaving] = useState(false);
 
   // Initialize draft fields when settings load
-  const initialized = useMemo(() => {
+  useEffect(() => {
     if (settings) {
       setDraftWorkerModel(settings.defaultWorkerModel ?? "");
       setDraftAskOrchiconModel(settings.defaultAskOrchiconModel ?? "");
@@ -46,9 +46,7 @@ function SettingsPage() {
       setDraftTextLoop(String(settings.stallTextLoopWindowSeconds ?? ""));
       setDraftRepetitionCount(String(settings.stallRepetitionCount ?? ""));
       setDraftRepetitionWindow(String(settings.stallRepetitionWindowSeconds ?? ""));
-      return true;
     }
-    return false;
   }, [settings]);
 
   async function handleSave() {
@@ -67,8 +65,6 @@ function SettingsPage() {
       setSaving(false);
     }
   }
-
-  const hasChanges = initialized;
 
   return (
     <div className="mx-auto max-w-4xl space-y-8">

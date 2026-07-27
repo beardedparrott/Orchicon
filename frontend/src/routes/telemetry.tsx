@@ -163,7 +163,7 @@ function CostExplorer() {
   const [taskId, setTaskId] = useState("");
   const [executionId, setExecutionId] = useState("");
   const { data, isLoading, error } = useGetCost({
-    rollup,
+    rollup: rollup === "workflow" ? UsageRollupEnum.PROJECT : rollup,
     projectId: projectId || undefined,
     taskId: taskId || undefined,
     executionId: executionId || undefined,
