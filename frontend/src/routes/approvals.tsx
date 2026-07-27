@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link, createRoute } from "@tanstack/react-router";
-import { CheckCircle2, XCircle, Clock, ExternalLink, Trash2 } from "lucide-react";
+import { CheckCircle2, XCircle, Clock, ExternalLink } from "lucide-react";
 
 import { useApproveStep, useListPendingStepApprovals } from "@/api/approvals";
 import { Button } from "@/components/ui/button";
@@ -12,7 +12,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 
 export const Route = createRoute({
