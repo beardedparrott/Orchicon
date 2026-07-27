@@ -427,7 +427,8 @@ Orchicon/
 │           ├── telemetry.tsx
 │           ├── adapters.tsx
 │           ├── webhooks.tsx
-│           ├── preferences.tsx
+│           ├── settings.tsx
+│           ├── settings.ts
 │           └── admin.tsx
 │
 ├── scripts/
@@ -677,8 +678,17 @@ Workers now receive full execution context including:
 #### Telemetry & Cost
 1. Navigate to **Telemetry** for: traces, metrics, logs dashboard
 2. Embedded SigNoz UI available at `/signoz`
-3. Cost Explorer: per-provider/model spend with drill-down
-4. Credits tab showing tenant-level usage
+3. Cost Explorer: per-provider/model spend with drill-down (Project → Task → Execution → Model)
+4. **By Workflow** tab: cost broken down per workflow run with per-step detail
+5. Credits tab showing tenant-level usage
+
+#### Settings
+1. Navigate to **Settings** (replaces the former Preferences page)
+2. **Appearance**: light/dark mode toggle with 20 theme variants (10 light + 10 dark)
+3. **Defaults → Default models**:
+   - **Default worker model**: fallback when a worker version has no `model_ref` set. If both are empty, dispatch fails (no hardcoded fallback).
+   - **Default Ask Orchicon model**: placeholder for the forthcoming Ask Orchicon assistant.
+4. **Defaults → Recovery stall parameters**: per-execution stall thresholds stored in the DB and read at dispatch time. Each field has an env-var override (`ORCHICON_STALL_*`) for dev debugging.
 
 ### Authentication
 
@@ -877,10 +887,10 @@ See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
 | `ORCHICON_OIDC_CLIENT_SECRET` | (none) | OIDC client secret |
 | `ORCHICON_SIGNING_KEY` | (auto-generated) | JWT signing key (required in production) |
 | `ORCHICON_SIMULATE_ADAPTER` | `false` | Enable adapter simulation mode (no-op dispatch) |
-| `ORCHICON_STALL_NO_PROGRESS_WINDOW` | `120s` | Time without step_finish/token progress before stall |
-| `ORCHICON_STALL_NO_FILE_DIFF_WINDOW` | `180s` | Time without file modifications before stall |
-| `ORCHICON_STALL_REPETITION_COUNT` | `5` | Repeated tool calls before stall (within window) |
-| `ORCHICON_STALL_REPETITION_WINDOW` | `300s` | Window for repetition count detection |
+| `ORCHICON_STALL_NO_PROGRESS_WINDOW` | `300s` | Time without step_finish/token progress before stall (overrides DB setting) |
+| `ORCHICON_STALL_NO_FILE_DIFF_WINDOW` | `15m` | Time without file modifications before stall (overrides DB setting) |
+| `ORCHICON_STALL_REPETITION_COUNT` | `5` | Repeated tool calls before stall within window (overrides DB setting) |
+| `ORCHICON_STALL_REPETITION_WINDOW` | `300s` | Window for repetition count detection (overrides DB setting) |
 | `SIGNOZ_IDENTN_IMPERSONATION_ENABLED` | `true` | SigNoz impersonation mode (disable for enterprise) |
 | `SIGNOZ_USER_ROOT_ENABLED` | `true` | SigNoz root user mode |
 

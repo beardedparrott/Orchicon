@@ -612,3 +612,315 @@ export class StreamUsageEventsResponse extends Message<StreamUsageEventsResponse
   }
 }
 
+/**
+ * @generated from message orchicon.api.v1.GetWorkflowCostsRequest
+ */
+export class GetWorkflowCostsRequest extends Message<GetWorkflowCostsRequest> {
+  /**
+   * optional: scope to a single run
+   *
+   * @generated from field: string workflow_run_id = 1;
+   */
+  workflowRunId = "";
+
+  /**
+   * @generated from field: google.protobuf.Timestamp start = 6;
+   */
+  start?: Timestamp;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp end = 7;
+   */
+  end?: Timestamp;
+
+  constructor(data?: PartialMessage<GetWorkflowCostsRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GetWorkflowCostsRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "workflow_run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "start", kind: "message", T: Timestamp },
+    { no: 7, name: "end", kind: "message", T: Timestamp },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetWorkflowCostsRequest {
+    return new GetWorkflowCostsRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetWorkflowCostsRequest {
+    return new GetWorkflowCostsRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetWorkflowCostsRequest {
+    return new GetWorkflowCostsRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetWorkflowCostsRequest | PlainMessage<GetWorkflowCostsRequest> | undefined, b: GetWorkflowCostsRequest | PlainMessage<GetWorkflowCostsRequest> | undefined): boolean {
+    return proto3.util.equals(GetWorkflowCostsRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.GetWorkflowCostsResponse
+ */
+export class GetWorkflowCostsResponse extends Message<GetWorkflowCostsResponse> {
+  /**
+   * @generated from field: repeated orchicon.api.v1.WorkflowCostAggregate workflows = 1;
+   */
+  workflows: WorkflowCostAggregate[] = [];
+
+  constructor(data?: PartialMessage<GetWorkflowCostsResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GetWorkflowCostsResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "workflows", kind: "message", T: WorkflowCostAggregate, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetWorkflowCostsResponse {
+    return new GetWorkflowCostsResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetWorkflowCostsResponse {
+    return new GetWorkflowCostsResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetWorkflowCostsResponse {
+    return new GetWorkflowCostsResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetWorkflowCostsResponse | PlainMessage<GetWorkflowCostsResponse> | undefined, b: GetWorkflowCostsResponse | PlainMessage<GetWorkflowCostsResponse> | undefined): boolean {
+    return proto3.util.equals(GetWorkflowCostsResponse, a, b);
+  }
+}
+
+/**
+ * WorkflowCostAggregate is the top-level cost for a workflow, aggregating
+ * all runs (templates fire multiple runs). Expand to see individual runs.
+ *
+ * @generated from message orchicon.api.v1.WorkflowCostAggregate
+ */
+export class WorkflowCostAggregate extends Message<WorkflowCostAggregate> {
+  /**
+   * @generated from field: string workflow_id = 1;
+   */
+  workflowId = "";
+
+  /**
+   * @generated from field: string workflow_name = 2;
+   */
+  workflowName = "";
+
+  /**
+   * @generated from field: double total_cost_usd = 3;
+   */
+  totalCostUsd = 0;
+
+  /**
+   * @generated from field: int64 total_tokens = 4;
+   */
+  totalTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: int32 run_count = 5;
+   */
+  runCount = 0;
+
+  /**
+   * @generated from field: int32 execution_count = 6;
+   */
+  executionCount = 0;
+
+  /**
+   * @generated from field: repeated orchicon.api.v1.WorkflowRunCost runs = 7;
+   */
+  runs: WorkflowRunCost[] = [];
+
+  constructor(data?: PartialMessage<WorkflowCostAggregate>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.WorkflowCostAggregate";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "workflow_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "workflow_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "total_cost_usd", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+    { no: 4, name: "total_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 5, name: "run_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 6, name: "execution_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 7, name: "runs", kind: "message", T: WorkflowRunCost, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowCostAggregate {
+    return new WorkflowCostAggregate().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): WorkflowCostAggregate {
+    return new WorkflowCostAggregate().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): WorkflowCostAggregate {
+    return new WorkflowCostAggregate().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: WorkflowCostAggregate | PlainMessage<WorkflowCostAggregate> | undefined, b: WorkflowCostAggregate | PlainMessage<WorkflowCostAggregate> | undefined): boolean {
+    return proto3.util.equals(WorkflowCostAggregate, a, b);
+  }
+}
+
+/**
+ * WorkflowRunCost is a single run within a workflow. Expand to see
+ * per-worker cost summaries.
+ *
+ * @generated from message orchicon.api.v1.WorkflowRunCost
+ */
+export class WorkflowRunCost extends Message<WorkflowRunCost> {
+  /**
+   * @generated from field: string workflow_run_id = 1;
+   */
+  workflowRunId = "";
+
+  /**
+   * @generated from field: double total_cost_usd = 2;
+   */
+  totalCostUsd = 0;
+
+  /**
+   * @generated from field: int64 total_tokens = 3;
+   */
+  totalTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: int32 execution_count = 4;
+   */
+  executionCount = 0;
+
+  /**
+   * "completed" | "failed" | "aborted" | "running" | "pending"
+   *
+   * @generated from field: string run_status = 5;
+   */
+  runStatus = "";
+
+  /**
+   * @generated from field: repeated orchicon.api.v1.WorkflowWorkerCost workers = 6;
+   */
+  workers: WorkflowWorkerCost[] = [];
+
+  constructor(data?: PartialMessage<WorkflowRunCost>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.WorkflowRunCost";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "workflow_run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "total_cost_usd", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+    { no: 3, name: "total_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 4, name: "execution_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 5, name: "run_status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "workers", kind: "message", T: WorkflowWorkerCost, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowRunCost {
+    return new WorkflowRunCost().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): WorkflowRunCost {
+    return new WorkflowRunCost().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): WorkflowRunCost {
+    return new WorkflowRunCost().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: WorkflowRunCost | PlainMessage<WorkflowRunCost> | undefined, b: WorkflowRunCost | PlainMessage<WorkflowRunCost> | undefined): boolean {
+    return proto3.util.equals(WorkflowRunCost, a, b);
+  }
+}
+
+/**
+ * WorkflowWorkerCost is the aggregated cost for one worker type within
+ * a workflow run (all executions by that worker summed).
+ *
+ * @generated from message orchicon.api.v1.WorkflowWorkerCost
+ */
+export class WorkflowWorkerCost extends Message<WorkflowWorkerCost> {
+  /**
+   * @generated from field: string worker_id = 1;
+   */
+  workerId = "";
+
+  /**
+   * @generated from field: string worker_name = 2;
+   */
+  workerName = "";
+
+  /**
+   * @generated from field: double total_cost_usd = 3;
+   */
+  totalCostUsd = 0;
+
+  /**
+   * @generated from field: int64 total_tokens = 4;
+   */
+  totalTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 prompt_tokens = 5;
+   */
+  promptTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 completion_tokens = 6;
+   */
+  completionTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: int32 execution_count = 7;
+   */
+  executionCount = 0;
+
+  constructor(data?: PartialMessage<WorkflowWorkerCost>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.WorkflowWorkerCost";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "worker_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "worker_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "total_cost_usd", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+    { no: 4, name: "total_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 5, name: "prompt_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 6, name: "completion_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 7, name: "execution_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowWorkerCost {
+    return new WorkflowWorkerCost().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): WorkflowWorkerCost {
+    return new WorkflowWorkerCost().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): WorkflowWorkerCost {
+    return new WorkflowWorkerCost().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: WorkflowWorkerCost | PlainMessage<WorkflowWorkerCost> | undefined, b: WorkflowWorkerCost | PlainMessage<WorkflowWorkerCost> | undefined): boolean {
+    return proto3.util.equals(WorkflowWorkerCost, a, b);
+  }
+}
+

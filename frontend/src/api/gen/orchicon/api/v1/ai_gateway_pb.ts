@@ -335,6 +335,20 @@ export class UsageRecord extends Message<UsageRecord> {
    */
   occurredAt?: Timestamp;
 
+  /**
+   * human-readable worker name (JOINed from workers table)
+   *
+   * @generated from field: string worker_name = 15;
+   */
+  workerName = "";
+
+  /**
+   * human-readable work item title (JOINed from work_items table)
+   *
+   * @generated from field: string task_title = 16;
+   */
+  taskTitle = "";
+
   constructor(data?: PartialMessage<UsageRecord>) {
     super();
     proto3.util.initPartial(data, this);
@@ -357,6 +371,8 @@ export class UsageRecord extends Message<UsageRecord> {
     { no: 12, name: "cost_usd", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
     { no: 13, name: "correlation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 14, name: "occurred_at", kind: "message", T: Timestamp },
+    { no: 15, name: "worker_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 16, name: "task_title", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UsageRecord {
@@ -457,6 +473,14 @@ export class CostSummary extends Message<CostSummary> {
    */
   children: CostSummary[] = [];
 
+  /**
+   * Human-readable display name for the group_key. Populated on the backend
+   * so all sections (drill-down, usage table, etc.) show meaningful names.
+   *
+   * @generated from field: string display_name = 13;
+   */
+  displayName = "";
+
   constructor(data?: PartialMessage<CostSummary>) {
     super();
     proto3.util.initPartial(data, this);
@@ -477,6 +501,7 @@ export class CostSummary extends Message<CostSummary> {
     { no: 10, name: "window_start", kind: "message", T: Timestamp },
     { no: 11, name: "window_end", kind: "message", T: Timestamp },
     { no: 12, name: "children", kind: "message", T: CostSummary, repeated: true },
+    { no: 13, name: "display_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CostSummary {

@@ -337,6 +337,8 @@ type UsageRecord struct {
 	CostUsd          float64                `protobuf:"fixed64,12,opt,name=cost_usd,json=costUsd,proto3" json:"cost_usd,omitempty"` // computed from provider pricing
 	CorrelationId    string                 `protobuf:"bytes,13,opt,name=correlation_id,json=correlationId,proto3" json:"correlation_id,omitempty"`
 	OccurredAt       *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
+	WorkerName       string                 `protobuf:"bytes,15,opt,name=worker_name,json=workerName,proto3" json:"worker_name,omitempty"` // human-readable worker name (JOINed from workers table)
+	TaskTitle        string                 `protobuf:"bytes,16,opt,name=task_title,json=taskTitle,proto3" json:"task_title,omitempty"`    // human-readable work item title (JOINed from work_items table)
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -469,6 +471,20 @@ func (x *UsageRecord) GetOccurredAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *UsageRecord) GetWorkerName() string {
+	if x != nil {
+		return x.WorkerName
+	}
+	return ""
+}
+
+func (x *UsageRecord) GetTaskTitle() string {
+	if x != nil {
+		return x.TaskTitle
+	}
+	return ""
+}
+
 // CostSummary is a roll-up of cost + tokens over a time window, grouped
 // at a drill-down level (docs/10 §11 cost explorer).
 type CostSummary struct {
@@ -486,7 +502,10 @@ type CostSummary struct {
 	WindowStart      *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=window_start,json=windowStart,proto3" json:"window_start,omitempty"`
 	WindowEnd        *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=window_end,json=windowEnd,proto3" json:"window_end,omitempty"`
 	// Children for the next drill-down level (Tenant→Project→Task→Execution).
-	Children      []*CostSummary `protobuf:"bytes,12,rep,name=children,proto3" json:"children,omitempty"`
+	Children []*CostSummary `protobuf:"bytes,12,rep,name=children,proto3" json:"children,omitempty"`
+	// Human-readable display name for the group_key. Populated on the backend
+	// so all sections (drill-down, usage table, etc.) show meaningful names.
+	DisplayName   string `protobuf:"bytes,13,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -603,6 +622,13 @@ func (x *CostSummary) GetChildren() []*CostSummary {
 		return x.Children
 	}
 	return nil
+}
+
+func (x *CostSummary) GetDisplayName() string {
+	if x != nil {
+		return x.DisplayName
+	}
+	return ""
 }
 
 // OpenCodeModel is a model discovered from the `opencode models --verbose`
@@ -1083,7 +1109,7 @@ const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
 	"\aenabled\x18\x03 \x01(\bR\aenabled\x12\x16\n" +
-	"\x06models\x18\x04 \x03(\tR\x06models\"\xd8\x03\n" +
+	"\x06models\x18\x04 \x03(\tR\x06models\"\x98\x04\n" +
 	"\vUsageRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -1101,7 +1127,11 @@ const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
 	"\bcost_usd\x18\f \x01(\x01R\acostUsd\x12%\n" +
 	"\x0ecorrelation_id\x18\r \x01(\tR\rcorrelationId\x12;\n" +
 	"\voccurred_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"occurredAt\"\xf4\x03\n" +
+	"occurredAt\x12\x1f\n" +
+	"\vworker_name\x18\x0f \x01(\tR\n" +
+	"workerName\x12\x1d\n" +
+	"\n" +
+	"task_title\x18\x10 \x01(\tR\ttaskTitle\"\x97\x04\n" +
 	"\vCostSummary\x12\x19\n" +
 	"\bgroup_by\x18\x01 \x01(\tR\agroupBy\x12\x1b\n" +
 	"\tgroup_key\x18\x02 \x01(\tR\bgroupKey\x12\x1d\n" +
@@ -1117,7 +1147,8 @@ const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
 	" \x01(\v2\x1a.google.protobuf.TimestampR\vwindowStart\x129\n" +
 	"\n" +
 	"window_end\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\twindowEnd\x128\n" +
-	"\bchildren\x18\f \x03(\v2\x1c.orchicon.api.v1.CostSummaryR\bchildren\"\x8e\x03\n" +
+	"\bchildren\x18\f \x03(\v2\x1c.orchicon.api.v1.CostSummaryR\bchildren\x12!\n" +
+	"\fdisplay_name\x18\r \x01(\tR\vdisplayName\"\x8e\x03\n" +
 	"\rOpenCodeModel\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vprovider_id\x18\x02 \x01(\tR\n" +

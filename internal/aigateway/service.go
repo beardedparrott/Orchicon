@@ -159,6 +159,31 @@ func (s *Service) GetCost(ctx context.Context, req *connect.Request[apiv1.GetCos
 	for i := range rows {
 		summaries = append(summaries, costRowToProto(&rows[i], string(level), "", start, end))
 	}
+	// Enrich execution-level summaries with human-readable names.
+	if level == db.RollupExecution {
+		execIDs := make([]string, 0, len(rows))
+		for i := range rows {
+			if rows[i].GroupKey != "" {
+				execIDs = append(execIDs, rows[i].GroupKey)
+			}
+		}
+		if names, err := db.ResolveExecutionDisplayNames(ctx, ttx.Tx, tenantID, execIDs); err == nil {
+			for i := range summaries {
+				if info, ok := names[summaries[i].GroupKey]; ok {
+					if info.WorkerName != "" {
+						summaries[i].DisplayName = info.WorkerName
+						if info.TaskTitle != "" {
+							summaries[i].DisplayName += " · " + info.TaskTitle
+						}
+					} else if info.TaskTitle != "" {
+						summaries[i].DisplayName = info.TaskTitle
+					}
+				}
+			}
+		} else {
+			s.log.Warn("resolve execution display names", "error", err)
+		}
+	}
 	totalRow, err := db.GetCostTotal(ctx, ttx.Tx, tenantID, req.Msg.ProjectId, req.Msg.TaskId, req.Msg.ExecutionId, start, end)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -167,6 +192,73 @@ func (s *Service) GetCost(ctx context.Context, req *connect.Request[apiv1.GetCos
 		Summaries: summaries,
 		Total:     costRowToProto(&totalRow, "total", "", start, end),
 	}), nil
+}
+
+// GetWorkflowCosts returns cost broken down by workflow (aggregated across
+// all runs), with per-run and per-worker detail (Cost Explorer "By Workflow").
+func (s *Service) GetWorkflowCosts(ctx context.Context, req *connect.Request[apiv1.GetWorkflowCostsRequest]) (*connect.Response[apiv1.GetWorkflowCostsResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	start, end := tsToTime(req.Msg.Start), tsToTime(req.Msg.End)
+
+	// Top level: cost grouped by workflow (all runs aggregated).
+	aggregates, err := db.GetWorkflowAggregateCosts(ctx, ttx.Tx, tenantID, start, end)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	out := make([]*apiv1.WorkflowCostAggregate, 0, len(aggregates))
+	for i := range aggregates {
+		wf := &apiv1.WorkflowCostAggregate{
+			WorkflowId:     aggregates[i].WorkflowID,
+			WorkflowName:   aggregates[i].WorkflowName,
+			TotalCostUsd:   aggregates[i].TotalCostUSD,
+			TotalTokens:    aggregates[i].TotalTokens,
+			RunCount:       aggregates[i].RunCount,
+			ExecutionCount: aggregates[i].ExecutionCount,
+		}
+		// Mid level: individual runs for this workflow.
+		runs, err := db.GetWorkflowRunCosts(ctx, ttx.Tx, tenantID, aggregates[i].WorkflowID, start, end)
+		if err != nil {
+			s.log.Warn("workflow run costs", "workflow_id", aggregates[i].WorkflowID, "error", err)
+		} else {
+			for j := range runs {
+				run := &apiv1.WorkflowRunCost{
+					WorkflowRunId:  runs[j].WorkflowRunID,
+					TotalCostUsd:   runs[j].TotalCostUSD,
+					TotalTokens:    runs[j].TotalTokens,
+					ExecutionCount: runs[j].ExecutionCount,
+					RunStatus:      runs[j].RunStatus,
+				}
+				// Leaf level: per-worker cost summary within this run.
+				workers, err := db.GetWorkflowWorkerCosts(ctx, ttx.Tx, tenantID, runs[j].WorkflowRunID)
+				if err != nil {
+					s.log.Warn("workflow worker costs", "workflow_run_id", runs[j].WorkflowRunID, "error", err)
+				} else {
+					for k := range workers {
+						run.Workers = append(run.Workers, &apiv1.WorkflowWorkerCost{
+							WorkerId:        workers[k].WorkerID,
+							WorkerName:      workers[k].WorkerName,
+							TotalCostUsd:    workers[k].TotalCostUSD,
+							TotalTokens:     workers[k].TotalTokens,
+							PromptTokens:    workers[k].PromptTokens,
+							CompletionTokens: workers[k].CompletionTokens,
+							ExecutionCount:  workers[k].ExecutionCount,
+						})
+					}
+				}
+				wf.Runs = append(wf.Runs, run)
+			}
+		}
+		out = append(out, wf)
+	}
+	return connect.NewResponse(&apiv1.GetWorkflowCostsResponse{Workflows: out}), nil
 }
 
 // StreamUsageEvents is the server-stream RPC that fans out live usage/cost

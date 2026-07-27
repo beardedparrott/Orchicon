@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/domain"
+	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
 // Stall detection (docs/06 §2: "stalled health state | no progress within
@@ -58,6 +59,39 @@ func defaultStallWindows() stallWindows {
 		repetitionN:  envInt("ORCHICON_STALL_REPETITION_COUNT", 5),
 		repetitionW:  envDuration("ORCHICON_STALL_REPETITION_WINDOW", 300*time.Second),
 	}
+}
+
+// stallWindowsFromManifest builds stallWindows from ExecutionManifest
+// settings, with env-var fallback for dev overrides. Zero values in the
+// manifest fall through to env vars, which fall through to code defaults.
+func stallWindowsFromManifest(m scheduler.ExecutionManifest) stallWindows {
+	w := defaultStallWindows()
+	if m.StallNoProgressWindowSeconds > 0 {
+		if v := time.Duration(m.StallNoProgressWindowSeconds) * time.Second; os.Getenv("ORCHICON_STALL_NO_PROGRESS_WINDOW") == "" {
+			w.noProgress = v
+		}
+	}
+	if m.StallNoFileDiffWindowSeconds > 0 {
+		if v := time.Duration(m.StallNoFileDiffWindowSeconds) * time.Second; os.Getenv("ORCHICON_STALL_NO_FILE_DIFF_WINDOW") == "" {
+			w.noFileDiff = v
+		}
+	}
+	if m.StallTextLoopWindowSeconds > 0 {
+		if v := time.Duration(m.StallTextLoopWindowSeconds) * time.Second; os.Getenv("ORCHICON_STALL_TEXT_LOOP_WINDOW") == "" {
+			w.textLoop = v
+		}
+	}
+	if m.StallRepetitionCount > 0 {
+		if os.Getenv("ORCHICON_STALL_REPETITION_COUNT") == "" {
+			w.repetitionN = int(m.StallRepetitionCount)
+		}
+	}
+	if m.StallRepetitionWindowSeconds > 0 {
+		if v := time.Duration(m.StallRepetitionWindowSeconds) * time.Second; os.Getenv("ORCHICON_STALL_REPETITION_WINDOW") == "" {
+			w.repetitionW = v
+		}
+	}
+	return w
 }
 
 // progressMonitor tracks per-execution progress signals and detects stalls.

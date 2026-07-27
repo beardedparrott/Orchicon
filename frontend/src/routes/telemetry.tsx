@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 
 import { useQueries } from "@tanstack/react-query";
 
-import { useGetCost, useGetUsage, useListProviders } from "@/api/aigateway";
+import { useGetCost, useGetUsage, useGetWorkflowCosts, useListProviders } from "@/api/aigateway";
 import { useGetDashboard, useQueryLogs, useQueryMetrics, useQueryTraces } from "@/api/telemetry";
 import { useListProjects } from "@/api/projects";
 import { workItemClient } from "@/api/clients";
@@ -151,17 +151,19 @@ function OverviewPanel() {
   );
 }
 
+type RollupMode = UsageRollup | "workflow";
+
 // CostExplorer is the custom cost explorer with drill-down
 // Project → Task → Execution → Model (docs/10 §11). The drill-down is
 // server-validated — the UI reflects state, it does not make policy
 // (AGENTS.md invariant #1).
 function CostExplorer() {
-  const [rollup, setRollup] = useState<UsageRollup>(UsageRollupEnum.PROJECT);
+  const [rollup, setRollup] = useState<RollupMode>(UsageRollupEnum.PROJECT);
   const [projectId, setProjectId] = useState("");
   const [taskId, setTaskId] = useState("");
   const [executionId, setExecutionId] = useState("");
   const { data, isLoading, error } = useGetCost({
-    rollup,
+    rollup: rollup === "workflow" ? UsageRollupEnum.PROJECT : rollup,
     projectId: projectId || undefined,
     taskId: taskId || undefined,
     executionId: executionId || undefined,
@@ -243,11 +245,11 @@ function CostExplorer() {
     }
   }
 
-  function displayName(s: { groupBy: string; groupKey: string }): string {
+  function displayName(s: { groupBy: string; groupKey: string; displayName?: string }): string {
+    if (s.displayName) return s.displayName;
     if (s.groupBy === "project") return projectNameMap.get(s.groupKey) || s.groupKey.slice(0, 12);
     if (s.groupBy === "task") return taskNameMap.get(s.groupKey) || s.groupKey.slice(0, 12);
-    if (s.groupBy === "execution") return s.groupKey.slice(0, 12);
-    return s.groupKey;
+    return s.groupKey.slice(0, 12);
   }
 
   return (
@@ -267,9 +269,10 @@ function CostExplorer() {
               [UsageRollupEnum.TASK, "By Task"],
               [UsageRollupEnum.EXECUTION, "By Execution"],
               [UsageRollupEnum.MODEL, "By Model"],
-            ] as [UsageRollup, string][]).map(([r, label]) => (
+              ["workflow", "By Workflow"],
+            ] as [RollupMode, string][]).map(([r, label]) => (
               <button
-                key={r}
+                key={String(r)}
                 onClick={() => {
                   setRollup(r);
                   if (r === UsageRollupEnum.PROJECT) clearScope();
@@ -284,12 +287,12 @@ function CostExplorer() {
                 {label}
               </button>
             ))}
-            {scopeLabel() && (
+            {rollup !== "workflow" && scopeLabel() && (
               <span className="ml-2 text-xs text-muted-foreground">
                 Scoped to {scopeLabel()}
               </span>
             )}
-            {(projectId || taskId) && (
+            {rollup !== "workflow" && (projectId || taskId) && (
               <>
                 <button
                   onClick={rollbackOneLevel}
@@ -306,64 +309,175 @@ function CostExplorer() {
               </>
             )}
           </div>
-          {error && (
-            <p className="text-sm text-destructive">
-              Failed to load cost: {String(error)}
-            </p>
-          )}
-          {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-          {data?.total && (
-            <div className="rounded-md border bg-muted/40 p-3">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">Window total</span>
-                <span className="font-medium">
-                  ${data.total.costUsd?.toFixed(4) ?? "0.0000"} ·{" "}
-                  {fmtInt(data.total.totalTokens ?? 0)} tokens ·{" "}
-                  {data.total.executionCount ?? 0} executions
-                </span>
-              </div>
-            </div>
-          )}
-          {data?.summaries && data.summaries.length > 0 && (
-            <div className="divide-y rounded-md border">
-              {data.summaries.map((s) => (
-                <button
-                  key={s.groupKey || "unknown"}
-                  onClick={() => {
-                    if (rollup !== UsageRollupEnum.MODEL) handleRowClick(s.groupKey);
-                  }}
-                  disabled={rollup === UsageRollupEnum.MODEL}
-                  className={cn(
-                    "flex w-full items-center justify-between px-3 py-2 text-left",
-                    rollup === UsageRollupEnum.MODEL
-                      ? "cursor-default"
-                      : "hover:bg-accent",
-                  )}
-                >
-                  <span className="text-sm font-medium">
-                    {displayName(s)}
-                  </span>
-                  <span className="text-sm">
-                    ${(s.costUsd ?? 0).toFixed(4)} ·{" "}
-                    {fmtInt(s.totalTokens ?? 0)} tok ·{" "}
-                    {s.executionCount ?? 0} execs
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-          {data?.summaries && data.summaries.length === 0 && (
-            <p className="text-sm text-muted-foreground">
-              No usage records in scope. Run an execution to populate cost.
-            </p>
+          {rollup === "workflow" ? (
+            <WorkflowCostPanel />
+          ) : (
+            <>
+              {error && (
+                <p className="text-sm text-destructive">
+                  Failed to load cost: {String(error)}
+                </p>
+              )}
+              {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+              {data?.total && (
+                <div className="rounded-md border bg-muted/40 p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium">Window total</span>
+                    <span className="font-medium">
+                      ${data.total.costUsd?.toFixed(4) ?? "0.0000"} ·{" "}
+                      {fmtInt(data.total.totalTokens ?? 0)} tokens ·{" "}
+                      {data.total.executionCount ?? 0} executions
+                    </span>
+                  </div>
+                </div>
+              )}
+              {data?.summaries && data.summaries.length > 0 && (
+                <div className="divide-y rounded-md border">
+                  {data.summaries.map((s) => (
+                    <button
+                      key={s.groupKey || "unknown"}
+                      onClick={() => {
+                        if (rollup !== UsageRollupEnum.MODEL) handleRowClick(s.groupKey);
+                      }}
+                      disabled={rollup === UsageRollupEnum.MODEL}
+                      className={cn(
+                        "flex w-full items-center justify-between px-3 py-2 text-left",
+                        rollup === UsageRollupEnum.MODEL
+                          ? "cursor-default"
+                          : "hover:bg-accent",
+                      )}
+                    >
+                      <span className="text-sm font-medium">
+                        {displayName(s)}
+                      </span>
+                      <span className="text-sm">
+                        ${(s.costUsd ?? 0).toFixed(4)} ·{" "}
+                        {fmtInt(s.totalTokens ?? 0)} tok ·{" "}
+                        {s.executionCount ?? 0} execs
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {data?.summaries && data.summaries.length === 0 && (
+                <p className="text-sm text-muted-foreground">
+                  No usage records in scope. Run an execution to populate cost.
+                </p>
+              )}
+            </>
           )}
         </CardContent>
       </Card>
-      <UsageRecordsTable
-        projectId={projectId}
-        taskId={taskId}
-        executionId={executionId}
-      />
+      {rollup !== "workflow" && (
+        <UsageRecordsTable
+          projectId={projectId}
+          taskId={taskId}
+          executionId={executionId}
+        />
+      )}
+    </div>
+  );
+}
+
+function statusBadge(status: string | undefined): { label: string; className: string } {
+  switch (status) {
+    case "completed": return { label: "Succeeded", className: "bg-green-600/10 text-green-600 border-green-600/20" };
+    case "failed": return { label: "Failed", className: "bg-red-600/10 text-red-600 border-red-600/20" };
+    case "aborted": return { label: "Aborted", className: "bg-yellow-600/10 text-yellow-600 border-yellow-600/20" };
+    default: return { label: status || "—", className: "bg-muted text-muted-foreground border-border" };
+  }
+}
+
+function WorkflowCostPanel() {
+  const { data: workflows, isLoading, error } = useGetWorkflowCosts();
+  const [expandedWorkflow, setExpandedWorkflow] = useState<string | null>(null);
+  const [expandedRun, setExpandedRun] = useState<string | null>(null);
+
+  if (isLoading) return <p className="text-sm text-muted-foreground">Loading workflow costs…</p>;
+  if (error) return <p className="text-sm text-destructive">Failed to load workflow costs: {String(error)}</p>;
+  if (!workflows || workflows.length === 0)
+    return <p className="text-sm text-muted-foreground">No workflow costs yet. Run a workflow to populate.</p>;
+
+  return (
+    <div className="space-y-2">
+      {workflows.map((wf) => {
+        const wfExpanded = expandedWorkflow === wf.workflowId;
+        return (
+          <div key={wf.workflowId} className="rounded-md border">
+            {/* Workflow level (aggregated across all runs) */}
+            <button
+              onClick={() => setExpandedWorkflow(wfExpanded ? null : wf.workflowId)}
+              className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-accent"
+            >
+              <span className="text-sm font-medium">
+                {wf.workflowName || wf.workflowId?.slice(0, 12)}
+              </span>
+              <span className="text-sm">
+                ${(wf.totalCostUsd ?? 0).toFixed(4)} · {fmtInt(wf.totalTokens ?? 0)} tok · {wf.runCount ?? 0} runs · {wf.executionCount ?? 0} execs
+              </span>
+            </button>
+
+            {/* Runs level */}
+            {wfExpanded && wf.runs && wf.runs.length > 0 && (
+              <div className="border-t divide-y">
+                {wf.runs.map((run: any) => {
+                  const runExpanded = expandedRun === run.workflowRunId;
+                  const badge = statusBadge(run.runStatus);
+                  return (
+                    <div key={run.workflowRunId}>
+                      <button
+                        onClick={() => setExpandedRun(runExpanded ? null : run.workflowRunId)}
+                        className="flex w-full items-center justify-between px-5 py-2 text-left hover:bg-accent/50"
+                      >
+                        <span className="flex items-center gap-2">
+                          <span className={cn("inline-block rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase leading-none", badge.className)}>
+                            {badge.label}
+                          </span>
+                          <span className="text-xs font-mono text-muted-foreground">
+                            {run.workflowRunId?.slice(0, 12)}
+                          </span>
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          ${(run.totalCostUsd ?? 0).toFixed(4)} · {fmtInt(run.totalTokens ?? 0)} tok · {run.executionCount ?? 0} execs
+                        </span>
+                      </button>
+
+                      {/* Worker level inside run */}
+                      {runExpanded && run.workers && run.workers.length > 0 && (
+                        <div className="border-t divide-y bg-muted/20">
+                          {run.workers.map((worker: any) => (
+                            <div
+                              key={worker.workerId || "unknown"}
+                              className="flex items-center justify-between px-7 py-2 text-sm"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="font-medium truncate">
+                                  {worker.workerName || worker.workerId || "Unknown worker"}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  {worker.executionCount ?? 0} execution{(worker.executionCount ?? 0) !== 1 ? "s" : ""}
+                                </div>
+                              </div>
+                              <div className="text-right shrink-0 ml-4">
+                                <div className="text-xs font-medium">
+                                  ${(worker.totalCostUsd ?? 0).toFixed(4)}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  {fmtInt(worker.totalTokens ?? 0)} tok · {fmtInt(worker.promptTokens ?? 0)} in / {fmtInt(worker.completionTokens ?? 0)} out
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -397,7 +511,8 @@ function UsageRecordsTable({
             <table className="w-full text-sm">
               <thead className="text-left text-muted-foreground">
                 <tr>
-                  <th className="py-1 pr-3">Execution</th>
+                  <th className="py-1 pr-3">Worker</th>
+                  <th className="py-1 pr-3">Task</th>
                   <th className="py-1 pr-3">Provider</th>
                   <th className="py-1 pr-3">Model</th>
                   <th className="py-1 pr-3 text-right">Tokens</th>
@@ -408,8 +523,11 @@ function UsageRecordsTable({
               <tbody className="divide-y">
                 {data.map((r) => (
                   <tr key={r.id}>
-                    <td className="py-1 pr-3 font-mono text-xs">
-                      {(r.executionId || "—").slice(0, 12)}
+                    <td className="py-1 pr-3 text-sm">
+                      {r.workerName || (r.workerId || "—").slice(0, 12)}
+                    </td>
+                    <td className="py-1 pr-3 text-xs text-muted-foreground">
+                      {r.taskTitle || (r.taskId || "—").slice(0, 12)}
                     </td>
                     <td className="py-1 pr-3">{r.provider || "—"}</td>
                     <td className="py-1 pr-3 font-mono text-xs">

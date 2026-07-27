@@ -79,6 +79,16 @@ export function useGetUsage(opts?: {
   });
 }
 
+export function useGetWorkflowCosts() {
+  return useQuery({
+    queryKey: ["usage", "workflow-costs"],
+    queryFn: async () => {
+      const res = await aiGatewayClient.getWorkflowCosts({});
+      return (res.workflows ?? []) as any[];
+    },
+  });
+}
+
 export function useGetCost(opts: {
   rollup?: UsageRollup;
   projectId?: string;

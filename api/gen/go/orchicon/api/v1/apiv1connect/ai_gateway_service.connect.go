@@ -60,6 +60,9 @@ const (
 	// AIGatewayServiceStreamUsageEventsProcedure is the fully-qualified name of the AIGatewayService's
 	// StreamUsageEvents RPC.
 	AIGatewayServiceStreamUsageEventsProcedure = "/orchicon.api.v1.AIGatewayService/StreamUsageEvents"
+	// AIGatewayServiceGetWorkflowCostsProcedure is the fully-qualified name of the AIGatewayService's
+	// GetWorkflowCosts RPC.
+	AIGatewayServiceGetWorkflowCostsProcedure = "/orchicon.api.v1.AIGatewayService/GetWorkflowCosts"
 )
 
 // AIGatewayServiceClient is a client for the orchicon.api.v1.AIGatewayService service.
@@ -87,6 +90,9 @@ type AIGatewayServiceClient interface {
 	// usage/cost events from NATS to connected clients (docs/07 §4,
 	// docs/08 §5.2). Each event mirrors a usage_records Postgres row.
 	StreamUsageEvents(context.Context, *connect.Request[v1.StreamUsageEventsRequest]) (*connect.ServerStreamForClient[v1.StreamUsageEventsResponse], error)
+	// GetWorkflowCosts returns cost broken down by workflow run, with
+	// per-step detail inside each workflow (Cost Explorer "By Workflow").
+	GetWorkflowCosts(context.Context, *connect.Request[v1.GetWorkflowCostsRequest]) (*connect.Response[v1.GetWorkflowCostsResponse], error)
 }
 
 // NewAIGatewayServiceClient constructs a client for the orchicon.api.v1.AIGatewayService service.
@@ -136,6 +142,12 @@ func NewAIGatewayServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(aIGatewayServiceMethods.ByName("StreamUsageEvents")),
 			connect.WithClientOptions(opts...),
 		),
+		getWorkflowCosts: connect.NewClient[v1.GetWorkflowCostsRequest, v1.GetWorkflowCostsResponse](
+			httpClient,
+			baseURL+AIGatewayServiceGetWorkflowCostsProcedure,
+			connect.WithSchema(aIGatewayServiceMethods.ByName("GetWorkflowCosts")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -147,6 +159,7 @@ type aIGatewayServiceClient struct {
 	getUsage           *connect.Client[v1.GetUsageRequest, v1.GetUsageResponse]
 	getCost            *connect.Client[v1.GetCostRequest, v1.GetCostResponse]
 	streamUsageEvents  *connect.Client[v1.StreamUsageEventsRequest, v1.StreamUsageEventsResponse]
+	getWorkflowCosts   *connect.Client[v1.GetWorkflowCostsRequest, v1.GetWorkflowCostsResponse]
 }
 
 // ListProviders calls orchicon.api.v1.AIGatewayService.ListProviders.
@@ -179,6 +192,11 @@ func (c *aIGatewayServiceClient) StreamUsageEvents(ctx context.Context, req *con
 	return c.streamUsageEvents.CallServerStream(ctx, req)
 }
 
+// GetWorkflowCosts calls orchicon.api.v1.AIGatewayService.GetWorkflowCosts.
+func (c *aIGatewayServiceClient) GetWorkflowCosts(ctx context.Context, req *connect.Request[v1.GetWorkflowCostsRequest]) (*connect.Response[v1.GetWorkflowCostsResponse], error) {
+	return c.getWorkflowCosts.CallUnary(ctx, req)
+}
+
 // AIGatewayServiceHandler is an implementation of the orchicon.api.v1.AIGatewayService service.
 type AIGatewayServiceHandler interface {
 	// ListProviders returns the LLM providers known to the gateway
@@ -204,6 +222,9 @@ type AIGatewayServiceHandler interface {
 	// usage/cost events from NATS to connected clients (docs/07 §4,
 	// docs/08 §5.2). Each event mirrors a usage_records Postgres row.
 	StreamUsageEvents(context.Context, *connect.Request[v1.StreamUsageEventsRequest], *connect.ServerStream[v1.StreamUsageEventsResponse]) error
+	// GetWorkflowCosts returns cost broken down by workflow run, with
+	// per-step detail inside each workflow (Cost Explorer "By Workflow").
+	GetWorkflowCosts(context.Context, *connect.Request[v1.GetWorkflowCostsRequest]) (*connect.Response[v1.GetWorkflowCostsResponse], error)
 }
 
 // NewAIGatewayServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -249,6 +270,12 @@ func NewAIGatewayServiceHandler(svc AIGatewayServiceHandler, opts ...connect.Han
 		connect.WithSchema(aIGatewayServiceMethods.ByName("StreamUsageEvents")),
 		connect.WithHandlerOptions(opts...),
 	)
+	aIGatewayServiceGetWorkflowCostsHandler := connect.NewUnaryHandler(
+		AIGatewayServiceGetWorkflowCostsProcedure,
+		svc.GetWorkflowCosts,
+		connect.WithSchema(aIGatewayServiceMethods.ByName("GetWorkflowCosts")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/orchicon.api.v1.AIGatewayService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case AIGatewayServiceListProvidersProcedure:
@@ -263,6 +290,8 @@ func NewAIGatewayServiceHandler(svc AIGatewayServiceHandler, opts ...connect.Han
 			aIGatewayServiceGetCostHandler.ServeHTTP(w, r)
 		case AIGatewayServiceStreamUsageEventsProcedure:
 			aIGatewayServiceStreamUsageEventsHandler.ServeHTTP(w, r)
+		case AIGatewayServiceGetWorkflowCostsProcedure:
+			aIGatewayServiceGetWorkflowCostsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -294,4 +323,8 @@ func (UnimplementedAIGatewayServiceHandler) GetCost(context.Context, *connect.Re
 
 func (UnimplementedAIGatewayServiceHandler) StreamUsageEvents(context.Context, *connect.Request[v1.StreamUsageEventsRequest], *connect.ServerStream[v1.StreamUsageEventsResponse]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AIGatewayService.StreamUsageEvents is not implemented"))
+}
+
+func (UnimplementedAIGatewayServiceHandler) GetWorkflowCosts(context.Context, *connect.Request[v1.GetWorkflowCostsRequest]) (*connect.Response[v1.GetWorkflowCostsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AIGatewayService.GetWorkflowCosts is not implemented"))
 }
