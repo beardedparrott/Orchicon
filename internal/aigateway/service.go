@@ -234,6 +234,7 @@ func (s *Service) GetWorkflowCosts(ctx context.Context, req *connect.Request[api
 					TotalCostUsd:   runs[j].TotalCostUSD,
 					TotalTokens:    runs[j].TotalTokens,
 					ExecutionCount: runs[j].ExecutionCount,
+					RunStatus:      runs[j].RunStatus,
 				}
 				// Leaf level: per-worker cost summary within this run.
 				workers, err := db.GetWorkflowWorkerCosts(ctx, ttx.Tx, tenantID, runs[j].WorkflowRunID)

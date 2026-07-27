@@ -379,6 +379,15 @@ function CostExplorer() {
   );
 }
 
+function statusBadge(status: string | undefined): { label: string; className: string } {
+  switch (status) {
+    case "completed": return { label: "Succeeded", className: "bg-green-600/10 text-green-600 border-green-600/20" };
+    case "failed": return { label: "Failed", className: "bg-red-600/10 text-red-600 border-red-600/20" };
+    case "aborted": return { label: "Aborted", className: "bg-yellow-600/10 text-yellow-600 border-yellow-600/20" };
+    default: return { label: status || "—", className: "bg-muted text-muted-foreground border-border" };
+  }
+}
+
 function WorkflowCostPanel() {
   const { data: workflows, isLoading, error } = useGetWorkflowCosts();
   const [expandedWorkflow, setExpandedWorkflow] = useState<string | null>(null);
@@ -413,14 +422,20 @@ function WorkflowCostPanel() {
               <div className="border-t divide-y">
                 {wf.runs.map((run: any) => {
                   const runExpanded = expandedRun === run.workflowRunId;
+                  const badge = statusBadge(run.runStatus);
                   return (
                     <div key={run.workflowRunId}>
                       <button
                         onClick={() => setExpandedRun(runExpanded ? null : run.workflowRunId)}
                         className="flex w-full items-center justify-between px-5 py-2 text-left hover:bg-accent/50"
                       >
-                        <span className="text-xs font-mono text-muted-foreground">
-                          Run {run.workflowRunId?.slice(0, 12)}
+                        <span className="flex items-center gap-2">
+                          <span className={cn("inline-block rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase leading-none", badge.className)}>
+                            {badge.label}
+                          </span>
+                          <span className="text-xs font-mono text-muted-foreground">
+                            {run.workflowRunId?.slice(0, 12)}
+                          </span>
                         </span>
                         <span className="text-xs text-muted-foreground">
                           ${(run.totalCostUsd ?? 0).toFixed(4)} · {fmtInt(run.totalTokens ?? 0)} tok · {run.executionCount ?? 0} execs

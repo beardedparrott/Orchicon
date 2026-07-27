@@ -140,7 +140,8 @@ message WorkflowRunCost {
   double total_cost_usd = 2;
   int64 total_tokens = 3;
   int32 execution_count = 4;
-  repeated WorkflowWorkerCost workers = 5;
+  string run_status = 5; // "completed" | "failed" | "aborted" | "running" | "pending"
+  repeated WorkflowWorkerCost workers = 6;
 }
 
 // WorkflowWorkerCost is the aggregated cost for one worker type within

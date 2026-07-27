@@ -251,6 +251,7 @@ type WorkflowRunCostRow struct {
 	TotalCostUSD   float64
 	TotalTokens    int64
 	ExecutionCount int32
+	RunStatus      string
 }
 
 // WorkflowWorkerCostRow is a per-worker cost summary within one run.
@@ -312,7 +313,8 @@ func GetWorkflowRunCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowID st
 		w.id AS workflow_id,
 		COALESCE(SUM(ur.cost_usd), 0) AS total_cost,
 		COALESCE(SUM(ur.total_tokens), 0) AS total_tokens,
-		COUNT(DISTINCT ur.execution_id) AS execution_count
+		COUNT(DISTINCT ur.execution_id) AS execution_count,
+		wr.status AS run_status
 		FROM usage_records ur
 		JOIN worker_executions we ON we.id = ur.execution_id
 		JOIN workflow_runs wr ON we.workflow_run_id = wr.id
@@ -320,7 +322,7 @@ func GetWorkflowRunCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowID st
 		WHERE ur.tenant_id = $1 AND w.id = $2
 		  AND ($3::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at >= $3::timestamptz)
 		  AND ($4::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at <  $4::timestamptz)
-		GROUP BY wr.id, w.id
+		GROUP BY wr.id, w.id, wr.status
 		ORDER BY total_cost DESC`
 	rows, err := tx.Query(ctx, q, tenantID, workflowID, start, end)
 	if err != nil {
@@ -331,7 +333,7 @@ func GetWorkflowRunCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowID st
 	for rows.Next() {
 		var r WorkflowRunCostRow
 		if err := rows.Scan(&r.WorkflowRunID, &r.WorkflowID,
-			&r.TotalCostUSD, &r.TotalTokens, &r.ExecutionCount,
+			&r.TotalCostUSD, &r.TotalTokens, &r.ExecutionCount, &r.RunStatus,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan workflow run cost: %w", err)
 		}

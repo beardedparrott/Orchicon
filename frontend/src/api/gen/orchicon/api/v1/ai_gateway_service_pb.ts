@@ -804,7 +804,14 @@ export class WorkflowRunCost extends Message<WorkflowRunCost> {
   executionCount = 0;
 
   /**
-   * @generated from field: repeated orchicon.api.v1.WorkflowWorkerCost workers = 5;
+   * "completed" | "failed" | "aborted" | "running" | "pending"
+   *
+   * @generated from field: string run_status = 5;
+   */
+  runStatus = "";
+
+  /**
+   * @generated from field: repeated orchicon.api.v1.WorkflowWorkerCost workers = 6;
    */
   workers: WorkflowWorkerCost[] = [];
 
@@ -820,7 +827,8 @@ export class WorkflowRunCost extends Message<WorkflowRunCost> {
     { no: 2, name: "total_cost_usd", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
     { no: 3, name: "total_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 4, name: "execution_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
-    { no: 5, name: "workers", kind: "message", T: WorkflowWorkerCost, repeated: true },
+    { no: 5, name: "run_status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "workers", kind: "message", T: WorkflowWorkerCost, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowRunCost {
