@@ -887,8 +887,8 @@ See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
 | `ORCHICON_OIDC_CLIENT_SECRET` | (none) | OIDC client secret |
 | `ORCHICON_SIGNING_KEY` | (auto-generated) | JWT signing key (required in production) |
 | `ORCHICON_SIMULATE_ADAPTER` | `false` | Enable adapter simulation mode (no-op dispatch) |
-| `ORCHICON_STALL_NO_PROGRESS_WINDOW` | `120s` | Time without step_finish/token progress before stall (overrides DB setting) |
-| `ORCHICON_STALL_NO_FILE_DIFF_WINDOW` | `180s` | Time without file modifications before stall (overrides DB setting) |
+| `ORCHICON_STALL_NO_PROGRESS_WINDOW` | `300s` | Time without step_finish/token progress before stall (overrides DB setting) |
+| `ORCHICON_STALL_NO_FILE_DIFF_WINDOW` | `15m` | Time without file modifications before stall (overrides DB setting) |
 | `ORCHICON_STALL_REPETITION_COUNT` | `5` | Repeated tool calls before stall within window (overrides DB setting) |
 | `ORCHICON_STALL_REPETITION_WINDOW` | `300s` | Window for repetition count detection (overrides DB setting) |
 | `SIGNOZ_IDENTN_IMPERSONATION_ENABLED` | `true` | SigNoz impersonation mode (disable for enterprise) |
