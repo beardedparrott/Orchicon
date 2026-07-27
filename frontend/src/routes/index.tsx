@@ -5,7 +5,7 @@ import { Route as rootRoute } from "@/routes/__root";
 import { useListProjects } from "@/api/projects";
 import { useListExecutions } from "@/api/executions";
 import { useListRecoveries } from "@/api/recovery";
-import { useGetCost, useListOpenCodeModels } from "@/api/aigateway";
+import { useGetCost, useGetWorkflowCosts, useListOpenCodeModels } from "@/api/aigateway";
 import { UsageRollup } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import { cn } from "@/lib/utils";
 
@@ -20,6 +20,7 @@ function DashboardPage() {
   const { data: executions } = useListExecutions({});
   const { data: recoveries } = useListRecoveries({});
   const { data: costData } = useGetCost({ rollup: UsageRollup.PROJECT });
+  const { data: workflowCosts } = useGetWorkflowCosts();
   const { data: models } = useListOpenCodeModels();
 
   const activeProjects = projects?.length ?? 0;
@@ -38,10 +39,26 @@ function DashboardPage() {
     return recoveries.filter((r) => r.status === 2).length;
   }, [recoveries]);
 
-  const totalRecoveries = recoveries?.length ?? 0;
-
   const modelCount = models?.length ?? 0;
   const totalExecs = executions?.length ?? 0;
+
+  // Workflow run stats from cost data (accurate even after execution deletion)
+  const wfRunStats = useMemo(() => {
+    const stats = { succeeded: 0, failed: 0, aborted: 0, other: 0 };
+    if (!workflowCosts) return stats;
+    for (const wf of workflowCosts) {
+      if (!wf.runs) continue;
+      for (const run of wf.runs) {
+        switch (run.runStatus) {
+          case "completed": stats.succeeded++; break;
+          case "failed": stats.failed++; break;
+          case "aborted": stats.aborted++; break;
+          default: stats.other++; break;
+        }
+      }
+    }
+    return stats;
+  }, [workflowCosts]);
 
   return (
     <div className="space-y-6">
@@ -62,8 +79,15 @@ function DashboardPage() {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Tile label="Total Spend (USD)" value={`$${totalCost.toFixed(4)}`} description="Lifetime AI model cost" />
         <Tile label="Total Tokens" value={fmtInt(totalTokens)} description="Lifetime token consumption" />
-        <Tile label="Active Recoveries" value={String(activeRecoveries)} description="Ongoing recovery workflows" className="text-yellow-600" />
-        <Tile label="Total Recoveries" value={fmtInt(totalRecoveries)} description="Recoveries triggered (all time)" />
+        <Tile label="Workflow Runs Succeeded" value={fmtInt(wfRunStats.succeeded)} description="Completed workflow runs" className="text-green-600" />
+        <Tile label="Workflow Runs Failed" value={fmtInt(wfRunStats.failed)} description="Failed workflow runs" className="text-red-600" />
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <Tile label="Workflow Runs Aborted" value={fmtInt(wfRunStats.aborted)} description="Aborted workflow runs" className="text-yellow-600" />
+        <Tile label="Active Recoveries" value={String(activeRecoveries)} description="Ongoing recovery workflows" />
+        <Tile label="Total Recoveries" value={fmtInt(recoveries?.length ?? 0)} description="Recoveries triggered (all time)" />
+        <Tile label="Other Workflow Runs" value={fmtInt(wfRunStats.other)} description="Pending/running workflow runs" />
       </div>
     </div>
   );
