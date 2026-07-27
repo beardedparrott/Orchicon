@@ -68,6 +68,7 @@ type UsageRecord struct {
 	CostUSD          float64
 	CorrelationID    string
 	TraceID          string
+	WorkflowRunID    string // immutable link to the workflow run; survives execution deletion
 }
 
 // UsageRecorderFunc records a usage sample. Decoupled from the
@@ -705,6 +706,7 @@ func (a *Adapter) recordUsage(ctx context.Context, execRow db.ExecutionRow, mani
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
 		CostUSD:          cost,
+		WorkflowRunID:    execRow.WorkflowRunID,
 	}
 	if err := a.usageRecorder(ctx, in); err != nil {
 		a.log.Warn("usage record failed", "execution", execRow.ID, "error", err)

@@ -33,6 +33,7 @@ type UsageRecordRow struct {
 	CreatedAt        time.Time
 	WorkerName       string // denormalised via LEFT JOIN at query time
 	TaskTitle        string // denormalised via LEFT JOIN at query time
+	WorkflowRunID    string // immutable; survives execution deletion
 }
 
 // CreateUsageRecord inserts a usage record within the given tenant-scoped
@@ -54,12 +55,14 @@ func CreateUsageRecord(ctx context.Context, tx pgx.Tx, row UsageRecordRow) (Usag
 	const q = `INSERT INTO usage_records
 		(id, tenant_id, project_id, task_id, execution_id, worker_id,
 		 provider, model, prompt_tokens, completion_tokens, total_tokens,
-		 cost_usd, correlation_id, trace_id, occurred_at, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`
+		 cost_usd, correlation_id, trace_id, occurred_at, created_at,
+		 workflow_run_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`
 	if _, err := tx.Exec(ctx, q,
 		row.ID, row.TenantID, row.ProjectID, row.TaskID, row.ExecutionID, row.WorkerID,
 		row.Provider, row.Model, row.PromptTokens, row.CompletionTokens, row.TotalTokens,
 		row.CostUSD, row.CorrelationID, row.TraceID, row.OccurredAt, row.CreatedAt,
+		row.WorkflowRunID,
 	); err != nil {
 		return UsageRecordRow{}, fmt.Errorf("db: create usage record: %w", err)
 	}
@@ -280,7 +283,7 @@ func GetWorkflowAggregateCosts(ctx context.Context, tx pgx.Tx, tenantID string, 
 		FROM usage_records ur
 		JOIN work_items wi ON ur.task_id = wi.id
 		LEFT JOIN worker_executions we ON we.id = ur.execution_id
-		JOIN workflow_runs wr ON COALESCE(we.workflow_run_id, wi.workflow_run_id, '') = wr.id
+		JOIN workflow_runs wr ON COALESCE(ur.workflow_run_id, we.workflow_run_id, wi.workflow_run_id, '') = wr.id
 		JOIN workflows w ON wr.workflow_id = w.id
 		WHERE ur.tenant_id = $1
 		  AND ($2::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at >= $2::timestamptz)
@@ -319,7 +322,7 @@ func GetWorkflowRunCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowID st
 		FROM usage_records ur
 		JOIN work_items wi ON ur.task_id = wi.id
 		LEFT JOIN worker_executions we ON we.id = ur.execution_id
-		JOIN workflow_runs wr ON COALESCE(we.workflow_run_id, wi.workflow_run_id, '') = wr.id
+		JOIN workflow_runs wr ON COALESCE(ur.workflow_run_id, we.workflow_run_id, wi.workflow_run_id, '') = wr.id
 		JOIN workflows w ON wr.workflow_id = w.id
 		WHERE ur.tenant_id = $1 AND w.id = $2
 		  AND ($3::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at >= $3::timestamptz)
@@ -360,7 +363,7 @@ func GetWorkflowWorkerCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowRu
 		JOIN work_items wi ON ur.task_id = wi.id
 		LEFT JOIN worker_executions we ON we.id = ur.execution_id
 		LEFT JOIN workers w2 ON w2.id = COALESCE(we.worker_id, ur.worker_id, '')
-		WHERE ur.tenant_id = $1 AND COALESCE(we.workflow_run_id, wi.workflow_run_id, '') = $2
+		WHERE ur.tenant_id = $1 AND COALESCE(ur.workflow_run_id, we.workflow_run_id, wi.workflow_run_id, '') = $2
 		GROUP BY COALESCE(we.worker_id, ur.worker_id, ''), w2.name
 		ORDER BY cost_usd DESC`
 	rows, err := tx.Query(ctx, q, tenantID, workflowRunID)

@@ -184,6 +184,7 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 			CostUSD:          in.CostUSD,
 			CorrelationID:    in.CorrelationID,
 			TraceID:          in.TraceID,
+			WorkflowRunID:    in.WorkflowRunID,
 		})
 		return err
 	})

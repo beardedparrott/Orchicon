@@ -42,6 +42,7 @@ type UsageInput struct {
 	CostUSD          float64
 	CorrelationID    string
 	TraceID          string
+	WorkflowRunID    string
 }
 
 // Record performs the dual-write: inserts a usage_records row in Postgres
@@ -66,6 +67,7 @@ func (u *UsageRecorder) Record(ctx context.Context, in UsageInput) (db.UsageReco
 		TraceID:          in.TraceID,
 		OccurredAt:       time.Now().UTC(),
 		CreatedAt:        time.Now().UTC(),
+		WorkflowRunID:    in.WorkflowRunID,
 	}
 
 	// Postgres write (source of truth). Own transaction — usage is
