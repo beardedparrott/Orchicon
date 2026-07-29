@@ -66,8 +66,9 @@ echo ""
 echo "  ✓ $(bin/orchicon-dev version) installed at $DEST/orchicon-dev"
 
 if [ "$FORCE" = true ]; then
-  echo "▸ Restarting dev instance…"
-  "$DEST/orchicon-dev" start 2>/dev/null
+  echo "▸ Starting dev instance…"
+  echo ""
+  "$DEST/orchicon-dev" start
 else
   echo ""
   echo "Run:  $DEST/orchicon-dev start"

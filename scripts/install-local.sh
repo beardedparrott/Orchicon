@@ -78,10 +78,10 @@ echo "    dev:  $DEST/orchicon-dev"
 echo "    prod: $DEST/orchicon-prod"
 
 if [ "$FORCE" = true ]; then
-  echo "▸ Restarting instances…"
-  "$DEST/orchicon-dev" start 2>/dev/null &
-  echo "  ✓ Dev instance starting (background)"
-  echo "  Note: Restart prod separately: scripts/dev-prod.sh start"
+  echo "▸ Starting dev instance (background)…"
+  echo ""
+  "$DEST/orchicon-dev" start &
+  echo "  Note: Start prod separately: scripts/dev-prod.sh start"
 else
   echo ""
   echo "Run:  orchicon start        (default dev instance)"
