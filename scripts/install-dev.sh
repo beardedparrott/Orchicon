@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# install-dev.sh — Build the Orchicon binary from local source to bin/.
+# install-dev.sh — Build the Orchicon dev binary from local source.
 #
-# The binary is placed in bin/orchicon (the default dev binary path).
-# It does not install to ~/.local/bin — that is the prod instance's
-# binary. For daily iteration: make build && scripts/dev.sh start.
+# Produces bin/orchicon-dev for the dev instance. Does not install
+# to ~/.local/bin — that is the prod instance's binary path.
 #
 # Run this from the Orchicon project root.
 

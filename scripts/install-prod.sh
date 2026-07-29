@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# install-prod.sh — Build the Orchicon binary from local source and
-# install it to ~/.local/bin/orchicon, which is the default binary
-# path for the prod instance (scripts/dev-prod.sh).
+# install-prod.sh — Build the Orchicon prod binary from local source and
+# install it to ~/.local/bin/orchicon-prod, which is the binary path
+# for the prod instance (scripts/dev-prod.sh).
 #
 # This builds from your local source checkout — same as install-dev.sh,
 # but targets a different path so dev rebuilds don't clobber the prod
 # binary.
 #
 # Usage:
-#   scripts/install-prod.sh                 # install to ~/.local/bin/orchicon
-#   scripts/install-prod.sh /custom/path     # install to /custom/path/orchicon
+#   scripts/install-prod.sh                 # install to ~/.local/bin/orchicon-prod
+#   scripts/install-prod.sh /custom/path     # install to /custom/path/orchicon-prod
 #
 # After installing, restart the prod instance:
 #   scripts/dev-prod.sh restart

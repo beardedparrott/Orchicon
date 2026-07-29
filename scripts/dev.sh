@@ -37,7 +37,7 @@ DB_URL="${ORCHICON_POSTGRES_DSN:-postgres://orchicon:orchicon@localhost:5432/orc
 # `orchicon dev` which embeds the compose stack, migrations, and frontend
 # bundle — the complete one-binary experience (AGENTS.md §Dev Control
 # Script).
-ORCHICON_BIN="${ORCHICON_BIN:-./bin/orchicon-dev}"
+ORCHICON_BIN="${ORCHICON_BIN:-./bin/orchicon}"
 if [ "${1:-}" != "--no-binary" ] && command -v "$ORCHICON_BIN" >/dev/null 2>&1; then
   case "${1:-}" in
     start|stop|status|restart|logs)
@@ -163,9 +163,9 @@ start_control_plane() {
     return 0
   fi
 	log "building control plane…"
-	go build -o bin/orchicon-dev ./cmd/orchicon
+	go build -o bin/orchicon ./cmd/orchicon
 	log "starting control plane…"
-	nohup ./bin/orchicon-dev >"$logfile" 2>&1 &
+	nohup ./bin/orchicon >"$logfile" 2>&1 &
   echo $! > "$pidfile"
   # Wait for healthz
   if wait_for_http "http://localhost:8080/healthz" "control plane" 15; then

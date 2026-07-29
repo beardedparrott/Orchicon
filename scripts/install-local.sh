@@ -18,8 +18,12 @@ mkdir -p "$DEST"
 echo "▸ Building frontend…"
 npm run --silent --prefix frontend build
 
-echo "▸ Building binaries…"
-make build --silent
+echo "▸ Building binaries (standard + dev + prod)…"
+make build --silent && make build-dev --silent && make build-prod --silent
+
+echo "▸ Installing to $DEST/orchicon…"
+cp bin/orchicon "$DEST/orchicon"
+chmod +x "$DEST/orchicon"
 
 echo "▸ Installing to $DEST/orchicon-dev…"
 cp bin/orchicon-dev "$DEST/orchicon-dev"
@@ -30,9 +34,10 @@ cp bin/orchicon-prod "$DEST/orchicon-prod"
 chmod +x "$DEST/orchicon-prod"
 
 echo ""
-echo "  ✓ orchicon v$(bin/orchicon-prod version) installed"
-echo "    Dev:  $DEST/orchicon-dev"
-echo "    Prod: $DEST/orchicon-prod"
+echo "  ✓ orchicon v$(bin/orchicon version) installed"
+echo "    std:  $DEST/orchicon"
+echo "    dev:  $DEST/orchicon-dev"
+echo "    prod: $DEST/orchicon-prod"
 echo ""
-echo "Run:  orchicon-dev start   (for the dev instance)"
-echo "      orchicon-prod start  (for the prod instance)"
+echo "Run:  orchicon start        (default dev instance)"
+echo "      orchicon-prod start   (prod instance)"
