@@ -71,9 +71,11 @@ The project's model spend is rising. Be economical but **never at the expense of
 During active development, iterate locally without creating PRs or releases:
 
 ```bash
-scripts/install-dev.sh      # builds frontend + Go binary to bin/orchicon
+scripts/install-dev.sh                # builds frontend + Go binary to bin/orchicon
 ./bin/orchicon dev stop && ./bin/orchicon dev start   # restart with the new binary
 ```
+
+**IMPORTANT:** Always use `./bin/orchicon` (not bare `orchicon`) for the dev instance. Bare `orchicon` resolves from your PATH to `~/.local/bin/orchicon` — the prod binary, which may be a different version. The dev binary lives at `./bin/orchicon`.
 
 The binary embeds everything (docker-compose.yml, frontend dist, migrations) via `go:embed` in `assets.go`. Any change to source files, docker-compose, or frontend code is included in the next build. No branches, commits, or PRs needed during the day — just build and test.
 

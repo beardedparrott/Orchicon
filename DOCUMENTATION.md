@@ -725,6 +725,8 @@ scripts/install-dev.sh              # build frontend + Go binary to bin/orchicon
 ./bin/orchicon dev stop && ./bin/orchicon dev start   # restart dev
 ```
 
+**IMPORTANT:** Always use `./bin/orchicon` (not bare `orchicon`) for the dev instance. Bare `orchicon` resolves from your PATH to `~/.local/bin/orchicon` — the prod binary, which may be a different version. The dev binary lives at `./bin/orchicon`.
+
 To deploy a build to the prod instance:
 
 ```bash
@@ -755,7 +757,8 @@ make install-prod             # build from source → ~/.local/bin/orchicon
 scripts/dev-prod.sh start     # → prod on :8090, Postgres :5433
 
 # Daily dev loop (prod is untouched by dev restarts)
-make install-dev && scripts/dev.sh start    # build to bin/ + start dev on :8080
+make install-dev            # build to bin/orchicon
+./bin/orchicon dev start    # start dev on :8080
 # ... break things, fix, restart, iterate ...
 ./bin/orchicon dev restart
 # prod on :8090 unaffected
