@@ -70,8 +70,8 @@ echo ""
 echo "  ✓ $(bin/orchicon-prod version) installed at $DEST/orchicon-prod"
 
 if [ "$FORCE" = true ]; then
-  echo "▸ Restarting prod instance…"
-  scripts/dev-prod.sh restart 2>/dev/null
+  echo "▸ Starting prod instance…"
+  scripts/dev-prod.sh start 2>/dev/null
 else
   echo ""
   echo "Run:  scripts/dev-prod.sh restart"
