@@ -725,12 +725,14 @@ scripts/install-dev.sh              # build frontend + Go binary to bin/orchicon
 ./bin/orchicon dev stop && ./bin/orchicon dev start   # restart dev
 ```
 
-To promote a build to the prod instance:
+To deploy a build to the prod instance:
 
 ```bash
 scripts/install-prod.sh             # build + install to ~/.local/bin/orchicon
 scripts/dev-prod.sh restart         # restart prod with the new binary
 ```
+
+Both scripts build from the same local source — the only difference is the destination path.
 
 The binary embeds everything via `go:embed` — no separate build steps needed.
 
@@ -740,25 +742,25 @@ Orchicon can run two isolated instances side by side: a **dev** instance for dai
 
 | Aspect | Dev instance | Prod instance |
 |---|---|---|
-| Purpose | Iteration: build, break, fix, restart | Stable orchestrator for development work |
-| Binary | `./bin/orchicon` (fresh builds) | `~/.local/bin/orchicon` (released builds) |
+| Purpose | Iteration: build, break, fix, restart | Persistent process immune to dev restarts |
+| Binary | `./bin/orchicon` (built by `make install-dev`) | `~/.local/bin/orchicon` (built by `make install-prod`) |
 | HTTP port | `:8080` | `:8090` |
 | Postgres port | `:5432` | `:5433` |
 | Compose project | `orchicon` | `orchicon-prod` |
 | State dir | `.dev/` | `.dev/prod/` |
 
 ```bash
-# One-time: build and install the prod binary
-make install-prod             # builds + installs to ~/.local/bin/orchicon
+# Build and start the prod instance
+make install-prod             # build from source → ~/.local/bin/orchicon
 scripts/dev-prod.sh start     # → prod on :8090, Postgres :5433
 
-# Daily dev loop (agents work here — prod is untouched)
+# Daily dev loop (prod is untouched by dev restarts)
 make install-dev && scripts/dev.sh start    # build to bin/ + start dev on :8080
 # ... break things, fix, restart, iterate ...
 ./bin/orchicon dev restart
-# prod on :8090 is unaffected
+# prod on :8090 unaffected
 
-# When a publishable release is ready
+# Deploy a fresh build to prod
 make install-prod
 scripts/dev-prod.sh restart
 ```
