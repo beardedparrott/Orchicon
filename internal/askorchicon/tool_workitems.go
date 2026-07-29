@@ -40,6 +40,9 @@ func toolListWorkItems(ctx context.Context, pool *db.Pool, args json.RawMessage)
 	if err != nil {
 		return nil, err
 	}
+	if items == nil {
+		return json.RawMessage("[]"), nil
+	}
 	return json.Marshal(items)
 }
 

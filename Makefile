@@ -47,10 +47,18 @@ lint: ## Lint the Protobuf schema (buf lint)
 proto: lint gen ## Lint + generate
 
 # --- Go control plane ------------------------------------------------------
-.PHONY: build run test vet tidy
+.PHONY: build build-dev build-prod run test vet tidy
 build: ## Build the control-plane binary into bin/
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon ./cmd/orchicon
+
+build-dev: ## Build the dev control-plane binary (bin/orchicon-dev)
+	@mkdir -p $(BIN_DIR)
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon-dev ./cmd/orchicon
+
+build-prod: ## Build the prod control-plane binary (bin/orchicon-prod)
+	@mkdir -p $(BIN_DIR)
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon-prod ./cmd/orchicon
 
 run: ## Run the control plane from source
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon
@@ -130,13 +138,36 @@ dev-restart: ## Restart the full dev environment
 dev-logs: ## Tail control-plane + frontend logs
 	scripts/dev.sh logs
 
+# --- Prod control script ---------------------------------------------------
+.PHONY: dev-prod-start dev-prod-stop dev-prod-status dev-prod-restart dev-prod-logs
+dev-prod-start: ## Start the production-like Orchicon instance (separate ports/infra)
+	scripts/dev-prod.sh start
+
+dev-prod-stop: ## Stop the production-like Orchicon instance
+	scripts/dev-prod.sh stop
+
+dev-prod-status: ## Show status of the production-like instance
+	scripts/dev-prod.sh status
+
+dev-prod-restart: ## Restart the production-like instance
+	scripts/dev-prod.sh restart
+
+dev-prod-logs: ## Tail prod control-plane logs
+	scripts/dev-prod.sh logs
+
 # --- Install ---------------------------------------------------------------
-.PHONY: install-dry-run install-uninstall
+.PHONY: install-dry-run install-uninstall install-dev install-prod
 install-dry-run: ## Dry-run the install script (no changes made)
 	scripts/install.sh --dry-run
 
 install-uninstall: ## Uninstall Orchicon via the install script
 	scripts/install.sh --uninstall
+
+install-dev: ## Build binary to bin/orchicon-dev for dev instance
+	scripts/install-dev.sh
+
+install-prod: ## Build + install to ~/.local/bin/orchicon-prod for prod instance
+	scripts/install-prod.sh
 
 # --- CI --------------------------------------------------------------------
 .PHONY: ci

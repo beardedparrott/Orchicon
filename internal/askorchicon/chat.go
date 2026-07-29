@@ -7,12 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
+	"syscall"
 	"time"
 
 	"connectrpc.com/connect"
@@ -20,6 +21,20 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 )
+
+// defaultTimeout is the default maximum duration for a single ChatStream
+// response. When the provider or model stalls beyond this limit the stream
+// terminates with a timeout error. Override via ORCHICON_ASK_TIMEOUT.
+const defaultTimeout = 600 * time.Second
+
+func askTimeout() time.Duration {
+	if v := os.Getenv("ORCHICON_ASK_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultTimeout
+}
 
 // opencodeEvent is a single JSON event from opencode's stdout.
 type opencodeEvent struct {
@@ -102,60 +117,23 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 
 	// Pre-execute: detect tool-callable intent and run matching read-only
 	// tools. The results are injected into the prompt so the model has
-	// real data to reason about — it never needs to call tools itself.
-	toolResults := s.preExecuteTools(ctx, tenantID, msg)
+	// real data to reason about. We also track which tools were executed
+	// so the prompt can tell the model NOT to re-call them.
+	toolResults, preExecNames := s.preExecuteTools(ctx, tenantID, msg)
 
-	fullPrompt := buildLLMPrompt(cfg, s.toolRegistry, prevMessages, msg, req.Msg.Attachments, toolResults)
+	fullPrompt := buildLLMPrompt(cfg, s.toolRegistry, prevMessages, msg, req.Msg.Attachments, toolResults, preExecNames)
 
 	// --- 4. Stream from opencode, stripping tool call markers.
-	// The frontend shows a "thinking" indicator during the initial latency
-	// (opencode startup + model first token). We'll send a progress update
-	// if the model takes more than a few seconds.
+	// The frontend shows its own thinking indicator during the initial
+	// latency (opencode startup + model first token). No backend progress
+	// messages are needed — they would render as markdown blockquotes in
+	// the streaming content and cause visual artifacts.
 	var fullResponse strings.Builder
-	var firstTextMu sync.Mutex
-	firstTextReceived := false
-
-	// Goroutine: send periodic progress messages while waiting for the
-	// model's first token.
-	go func() {
-		defer func() { recover() }() // protect against stream closed before goroutine exits
-		intervals := []struct {
-			delay time.Duration
-			msg   string
-		}{
-			{3 * time.Second, "Looking into it…"},
-			{4 * time.Second, "Still thinking…"},
-			{4 * time.Second, "Gathering the details…"},
-			{4 * time.Second, "Almost there…"},
-		}
-		for _, p := range intervals {
-			time.Sleep(p.delay)
-			// Check if the context is done before sending.
-			if ctx.Err() != nil {
-				return
-			}
-			firstTextMu.Lock()
-			if firstTextReceived {
-				firstTextMu.Unlock()
-				return
-			}
-			firstTextMu.Unlock()
-			stream.Send(&apiv1.ChatStreamResponse{
-				Event: &apiv1.ChatStreamResponse_TextChunk{
-					TextChunk: &apiv1.TextChunk{Content: "> *" + p.msg + "*"},
-				},
-			})
-		}
-	}()
 
 	cb := func(evt opencodeEvent) error {
 		switch evt.Type {
 		case "text":
-			firstTextMu.Lock()
-			if !firstTextReceived {
-				firstTextReceived = true
-			}
-			firstTextMu.Unlock()
+
 
 			rawText, _ := evt.Part["text"].(string)
 			if rawText == "" {
@@ -294,17 +272,21 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 // preExecuteTools detects tool-callable intents in the user's message,
 // executes matching read-only tools, and returns formatted results for
 // injection into the prompt. Mutating tools are NOT auto-executed.
-func (s *Service) preExecuteTools(ctx context.Context, tenantID, msg string) string {
+// The second return value lists the tool names that were executed, so
+// the prompt can tell the model not to re-call them.
+func (s *Service) preExecuteTools(ctx context.Context, tenantID, msg string) (string, []string) {
 	intents := s.toolRegistry.DetectToolIntents(msg)
 	if len(intents) == 0 {
-		return ""
+		return "", nil
 	}
 
 	var b strings.Builder
+	executed := make([]string, 0, len(intents))
 	for _, intent := range intents {
 		// Scheduling: detect "set number 3 to scheduled" patterns.
 		if intent.ToolName == "list_work_items" && isScheduleIntent(msg) {
 			s.handleScheduleIntent(ctx, &b, msg)
+			executed = append(executed, intent.ToolName)
 			continue
 		}
 		result, err := s.toolRegistry.Execute(ctx, s.pool, intent.ToolName, intent.Args)
@@ -317,8 +299,9 @@ func (s *Service) preExecuteTools(ctx context.Context, tenantID, msg string) str
 			resultStr = resultStr[:32000] + "\n...(truncated)"
 		}
 		b.WriteString(fmt.Sprintf("[%s result]\n%s\n\n", intent.ToolName, resultStr))
+		executed = append(executed, intent.ToolName)
 	}
-	return b.String()
+	return b.String(), executed
 }
 
 func isScheduleIntent(msg string) bool {
@@ -592,13 +575,21 @@ func formatDiagnosisSummary(raw json.RawMessage) string {
 }
 
 // buildLLMPrompt assembles the full text prompt sent to the LLM.
-func buildLLMPrompt(cfg db.AgentConfigRow, registry *ToolRegistry, history []db.MessageRow, userMsg string, attachments []*apiv1.AttachmentInput, toolResults string) string {
+// preExecNames lists tools that were already executed by preExecuteTools —
+// the prompt tells the model not to call them again.
+func buildLLMPrompt(cfg db.AgentConfigRow, registry *ToolRegistry, history []db.MessageRow, userMsg string, attachments []*apiv1.AttachmentInput, toolResults string, preExecNames []string) string {
 	var b strings.Builder
 
 	b.WriteString(BuildSystemPrompt(cfg, registry))
 	b.WriteString("\n\n")
 
 	b.WriteString("## Conversation history\n")
+	// history is in DESC (newest-first) order from the DB. Reverse it so
+	// we can take the LAST N items (which are the most recent in a
+	// chronologically-ordered slice).
+	for i, j := 0, len(history)-1; i < j; i, j = i+1, j-1 {
+		history[i], history[j] = history[j], history[i]
+	}
 	start := 0
 	if len(history) > 10 {
 		start = len(history) - 10
@@ -626,17 +617,15 @@ func buildLLMPrompt(cfg db.AgentConfigRow, registry *ToolRegistry, history []db.
 		b.WriteString("\n")
 	}
 
-	// Tool note — MCP handles discovery and calling, but we list them
-	// briefly so the model knows what's available.
 	b.WriteString("## Available tools\n")
 	for _, td := range registry.List() {
 		mutability := "read-only"
 		if td.Mutating {
 			mutability = "mutates data — requires user confirmation"
 		}
-		b.WriteString(fmt.Sprintf("- %s: %s (%s)\n", td.Name, td.Description, mutability))
+		b.WriteString(fmt.Sprintf("- `%s`: %s (%s)\n", td.Name, td.Description, mutability))
 	}
-	b.WriteString("\nThe tools above are available through the Orchicon MCP server. Use them when the user asks you to perform an action.\n\n")
+	b.WriteString("\nTo call a tool, emit a tool_call in your output with the tool name and JSON arguments. The system will execute it and return the result.\n\n")
 
 	b.WriteString("## User's request\n")
 	b.WriteString(userMsg + "\n\n")
@@ -650,6 +639,16 @@ func buildLLMPrompt(cfg db.AgentConfigRow, registry *ToolRegistry, history []db.
 		b.WriteString("Items are numbered starting from 1 in the order shown. If the user refers to an item by number (like \"number 3\" or \"#3\"), that refers to the Nth item in this list.\n\n")
 		b.WriteString(toolResults)
 		b.WriteString("\n")
+		// Tell the model which tools were already called so it doesn't
+		// re-invoke them through the tool_call mechanism.
+		if len(preExecNames) > 0 {
+			b.WriteString("These tools have already been called and their results are shown above. ")
+			b.WriteString("DO NOT call any of these tools again — use the data already provided:\n")
+			for _, name := range preExecNames {
+				b.WriteString(fmt.Sprintf("- %s\n", name))
+			}
+			b.WriteString("\n")
+		}
 	}
 
 	return b.String()
@@ -664,28 +663,31 @@ func (s *Service) runOpenCodeStream(ctx context.Context, modelRef, prompt, userM
 
 	cfgJSON := opencode.BuildConfigContent("orchicon-assistant", prompt, modelRef)
 
-	goal := userMessage
-	if len(goal) > 200 {
-		goal = goal[:200]
-	}
 	args := []string{
 		"run",
 		"--format", "json",
 		"--model", modelRef,
 		"--agent", "orchicon-assistant",
-		"--auto", goal,
+		"--auto",
+		userMessage,
 	}
 
-	// Use a 120-second timeout so a hanging model never blocks the
-	// conversation indefinitely. The derived context propagates from
-	// the request context (for client disconnect) capped at the timeout.
-	runCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	// Use a configurable timeout so a hanging model never blocks the
+	// conversation indefinitely. Default 300s, override via ORCHICON_ASK_TIMEOUT.
+	runCtx, cancel := context.WithTimeout(ctx, askTimeout())
 	defer cancel()
 
 	cmd := exec.CommandContext(runCtx, "opencode", args...)
 	cmd.Env = append(cmd.Environ(),
 		"OPENCODE_CONFIG_CONTENT="+cfgJSON,
 	)
+	// Place the opencode subprocess in its own process group so that when
+	// the parent server dies unexpectedly (e.g. SIGKILL during binary
+	// replacement), the orphaned opencode and its MCP sidecar can be
+	// found and cleaned up by the startup routine. The group leader PID
+	// is the subprocess PID; we can kill the whole group with
+	// syscall.Kill(-pgid, sig).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -699,6 +701,8 @@ func (s *Service) runOpenCodeStream(ctx context.Context, modelRef, prompt, userM
 	}
 
 	scanner := bufio.NewScanner(stdout)
+	const maxScannerToken = 512 * 1024 // 512KB — opencode JSON events can be large
+	scanner.Buffer(make([]byte, maxScannerToken), maxScannerToken)
 	for scanner.Scan() {
 		line := scanner.Text()
 		var evt opencodeEvent
@@ -717,7 +721,7 @@ func (s *Service) runOpenCodeStream(ctx context.Context, modelRef, prompt, userM
 
 	if waitErr != nil {
 		if errors.Is(waitErr, context.DeadlineExceeded) || errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-			return msgID, elapsed, fmt.Errorf("request timed out after 120 seconds — the model may be overloaded or unavailable")
+			return msgID, elapsed, fmt.Errorf("request timed out after %s — the model may be overloaded or unavailable", askTimeout())
 		}
 		stderrText := strings.TrimSpace(stderrBuf.String())
 		if stderrText != "" {

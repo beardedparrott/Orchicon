@@ -21,11 +21,23 @@ func (a *AskOrchiconRegistry) List() []ToolDef {
 	defs := a.inner.List()
 	out := make([]ToolDef, 0, len(defs))
 	for _, d := range defs {
-		out = append(out, ToolDef{
+		t := ToolDef{
 			Name:        d.Name,
 			Description: d.Description,
 			Mutating:    d.Mutating,
-		})
+		}
+		if len(d.Properties) > 0 {
+			props := make(map[string]propertySchema, len(d.Properties))
+			for k, v := range d.Properties {
+				props[k] = propertySchema{
+					Type:        v.Type,
+					Description: v.Description,
+				}
+			}
+			t.Properties = props
+			t.Required = d.Required
+		}
+		out = append(out, t)
 	}
 	return out
 }

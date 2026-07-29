@@ -434,7 +434,9 @@ Orchicon/
 ├── scripts/
 │   ├── install.sh               # Linux/macOS one-liner installer
 │   ├── install.ps1              # Windows PowerShell installer
-│   ├── install-local.sh         # Build & install from local source
+│   ├── install-local.sh         # Legacy: build & install to ~/.local/bin (deprecated, use install-{dev,prod}.sh)
+│   ├── install-dev.sh           # Build to bin/orchicon-dev (for the dev instance)
+│   ├── install-prod.sh           # Build & install to ~/.local/bin/orchicon-prod (for the prod instance)
 │   ├── dev.sh                   # Dev environment controller (start/stop/status/logs)
 │   ├── build-site.sh            # Cloudflare Pages build step
 │   ├── check-rls.sh             # RLS CI gate (tenant isolation verification)
@@ -719,11 +721,118 @@ Workers now receive full execution context including:
 The fastest local development cycle:
 
 ```bash
-scripts/install-local.sh          # builds frontend + Go binary
-orchicon stop && orchicon start   # restart with new binary
+scripts/install-dev.sh                # build frontend + Go binary to bin/orchicon-dev
+./bin/orchicon-dev dev stop && ./bin/orchicon-dev dev start   # restart dev
 ```
 
-The binary embeds everything via `go:embed` — no separate build steps needed.
+To deploy a build to the prod instance:
+
+```bash
+scripts/install-prod.sh               # build + install to ~/.local/bin/orchicon-prod
+scripts/dev-prod.sh restart           # restart prod with the new binary
+```
+
+### Multiple Instance Guide
+
+Orchicon can run two isolated instances side by side: a **dev** instance for daily development and a **prod** instance for dogfooding (using Orchicon to build Orchicon). They share no ports, databases, or state — restarts to one never affect the other.
+
+#### Binary Convention
+
+All three binaries are built from the same source. The binary name determines the compose project and default ports via auto-detection at startup:
+
+| Binary | Built by | Installed to | Compose project | Use case |
+|---|---|---|---|---|
+| `orchicon` | `make build` | `./bin/orchicon` | `orchicon` | Standard shipped binary |
+| `orchicon-dev` | `make build-dev` | `~/.local/bin/orchicon-dev` | `orchicon` | Dev instance (same as standard) |
+| `orchicon-prod` | `make build-prod` | `~/.local/bin/orchicon-prod` | `orchicon-prod` | Prod/dogfooding instance |
+
+The binary name is detected at startup via `init()` in `dev.go`. This configures the compose project, container names, PID/log file paths, and default ports accordingly.
+
+#### Port Allocation
+
+| Service | Dev instance | Prod instance |
+|---|---|---|
+| Control plane HTTP | `:8080` | `:8091` |
+| Control plane gRPC | `:9090` | `:9091` |
+| Postgres | `:5432` | `:5433` |
+| NATS client | `:4222` | `:4223` |
+| NATS monitor | `:8222` | `:8223` |
+| ClickHouse HTTP | `:8123` | `:8124` |
+| ClickHouse native | `:9000` | `:9001` |
+| OTel gRPC | `:4317` | `:4319` |
+| OTel HTTP | `:4318` | `:4320` |
+| SigNoz | `:3301` | `:3302` |
+
+#### Quick Start
+
+```bash
+# 1. Build and install the prod binary
+scripts/install-prod.sh --force   # builds frontend + Go, stops old instance, installs, starts
+
+# 2. Start the dev instance
+scripts/install-dev.sh            # installs orchicon-dev to ~/.local/bin/orchicon-dev
+orchicon-dev start                # starts dev on :8080
+```
+
+#### Daily Workflow
+
+```bash
+# Dev iteration (prod is untouched)
+make install-dev              # rebuild dev binary
+./bin/orchicon-dev restart    # restart dev
+
+# Promote a build to prod
+scripts/install-prod.sh --force   # rebuild → stop → install → start
+```
+
+#### Managing the Prod Instance
+
+```bash
+scripts/dev-prod.sh start     # start the full prod stack (compose → migrate → serve)
+scripts/dev-prod.sh stop      # stop everything
+scripts/dev-prod.sh status    # show status of all components
+scripts/dev-prod.sh restart   # stop then start
+scripts/dev-prod.sh logs      # tail prod control-plane logs
+```
+
+The `orchicon serve` subcommand runs the control plane with the embedded frontend and no Compose management — it is the server mode used internally by the prod instance.
+
+#### Managing the Dev Instance
+
+```bash
+orchicon-dev start      # start the dev stack (compose → migrate → serve)
+orchicon-dev stop       # stop everything
+orchicon-dev status     # show status
+orchicon-dev restart    # stop then start
+orchicon-dev logs       # tail dev control-plane logs
+```
+
+These are shorthand aliases — they delegate to `orchicon-dev dev {start|stop|status|restart|logs}`.
+
+#### Copying Data Between Instances
+
+```bash
+# Dump dev database and restore to prod
+pg_dump -U orchicon -h localhost -p 5432 orchicon > /tmp/dev-dump.sql
+psql -U orchicon -h localhost -p 5433 -d orchicon < /tmp/dev-dump.sql
+```
+
+#### Managing Binary Replacements
+
+When an instance is running you cannot overwrite its binary (`cp` fails with "Text file busy"). Use the `--force` flag to stop, install, and restart automatically:
+
+```bash
+scripts/install-prod.sh --force    # stop prod → install → start prod
+scripts/install-dev.sh --force     # stop dev → install → start dev
+```
+
+Without `--force`, the script prints a warning and exits. Stop the instance manually first:
+
+```bash
+scripts/dev-prod.sh stop            # stop prod
+scripts/install-prod.sh             # install (binary not in use)
+scripts/dev-prod.sh start           # restart prod
+```
 
 ### Manual Development Setup
 
@@ -777,6 +886,15 @@ make fe-install && make fe-dev    # Vite dev server on :5173
 | `dev-status` | Show status of all components |
 | `dev-restart` | Restart full dev environment |
 | `dev-logs` | Tail control-plane + frontend logs |
+| **Prod Control** | |
+| `dev-prod-start` | Start prod-like instance (via `scripts/dev-prod.sh`) |
+| `dev-prod-stop` | Stop prod-like instance |
+| `dev-prod-status` | Show prod-like instance status |
+| `dev-prod-restart` | Restart prod-like instance |
+| `dev-prod-logs` | Tail prod control-plane logs |
+| **Install** | |
+| `install-dev` | Build binary to `bin/orchicon-dev` for dev instance |
+| `install-prod` | Build + install to `~/.local/bin/orchicon-prod` for prod instance |
 | **CI** | |
 | `ci` | Full CI gate: lint → gen → vet → test → rls-check |
 

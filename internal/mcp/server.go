@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/tenant"
 	"connectrpc.com/connect"
 )
 
@@ -87,6 +88,8 @@ type ToolDef struct {
 	Name        string
 	Description string
 	Mutating    bool
+	Properties  map[string]propertySchema // input field definitions
+	Required    []string                  // required field names
 }
 
 // Ensure the askorchicon.ToolRegistry satisfies our interface via adapter.
@@ -160,11 +163,15 @@ func (s *Server) handleToolsList(req jsonRPCRequest) {
 	defs := s.tools.List()
 	tools := make([]mcpTool, 0, len(defs))
 	for _, td := range defs {
-		tools = append(tools, mcpTool{
+		t := mcpTool{
 			Name:        td.Name,
 			Description: td.Description + fmt.Sprintf(" (%s)", mutabilityLabel(td.Mutating)),
-			InputSchema: genericInputSchema(),
-		})
+		}
+		if len(td.Properties) > 0 {
+			t.InputSchema.Properties = td.Properties
+			t.InputSchema.Required = td.Required
+		}
+		tools = append(tools, t)
 	}
 	s.writeResult(req.ID, map[string]any{"tools": tools})
 }
@@ -185,6 +192,12 @@ func (s *Server) handleToolsCall(ctx context.Context, req jsonRPCRequest) {
 	if params.Arguments == nil {
 		params.Arguments = json.RawMessage("{}")
 	}
+
+	// MCP runs over stdio with no HTTP middleware to inject the tenant,
+	// so we default to the dev tenant. Every tool function reads the
+	// tenant from context via tenant.FromContext() and scopes its DB
+	// operations accordingly.
+	ctx = tenant.WithID(ctx, "tnt_dev")
 
 	result, err := s.tools.Execute(ctx, s.pool, params.Name, params.Arguments)
 	if err != nil {

@@ -49,6 +49,12 @@ func toolListProjects(ctx context.Context, pool *db.Pool, args json.RawMessage) 
 	if err != nil {
 		return nil, err
 	}
+	// json.Marshal on a nil slice produces "null". The model reacts poorly
+	// to that — "The tool returned null" — and assumes a failure. Ensure
+	// an empty JSON array is returned instead.
+	if projects == nil {
+		return json.RawMessage("[]"), nil
+	}
 	return json.Marshal(projects)
 }
 

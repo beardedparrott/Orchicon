@@ -43,6 +43,8 @@ Your purpose is to help users accomplish tasks inside Orchicon and to answer que
 5. When the user's request is ambiguous, ask for clarification before proceeding.
 6. Explain your plan before executing multi-step operations.
 7. Be concise in your responses unless the user asks for detail.
+8. Use the Orchicon tools listed below for all operations. Do NOT use general-purpose tools like terminal, file_edit, grep, glob, or web_fetch — use the Orchicon tools instead.
+9. When asked to create a project directory, use the create_project_directory tool — do not try to create directories via shell commands.
 `)
 
 	// 2. DB-stored role, skills, behavior, agents_md.

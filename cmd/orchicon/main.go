@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/beardedparrott/orchicon/internal/askorchicon"
@@ -52,6 +53,8 @@ func main() {
 			os.Exit(runDev([]string{"stop"}))
 		case "status":
 			os.Exit(runDev([]string{"status"}))
+		case "serve":
+			os.Exit(runServe())
 		case "restart":
 			os.Exit(runDev([]string{"restart"}))
 		case "logs":
@@ -95,25 +98,31 @@ func main() {
 }
 
 func printHelp() {
-	fmt.Printf(`orchicon %s — Orchicon control plane
+	bin := filepath.Base(os.Args[0])
+	fmt.Printf(`%s %s — Orchicon control plane
 
 Usage:
-  orchicon              Run the control plane (API + relay + reconcilers)
-  orchicon dev start    Start the full dev stack (compose → migrate → serve)
-  orchicon dev stop     Stop the dev stack
-  orchicon dev status   Show what's running
-  orchicon mcp          Start the MCP stdio server (for opencode tool integration)
+  %s                Run the control plane (API + relay + reconcilers)
+  %s dev start      Start the dev stack (compose → migrate → serve)
+  %s dev stop       Stop the dev stack
+  %s dev status     Show what's running
+  %s serve          Run the control plane with embedded frontend (no compose)
+  %s mcp            Start the MCP stdio server (for opencode tool integration)
+`, bin, version.Current().Tag, bin, bin, bin, bin, bin, bin)
 
+	fmt.Printf(`
 Short aliases:
-  orchicon start        Same as "orchicon dev start"
-  orchicon stop         Same as "orchicon dev stop"
-  orchicon logs         Same as "orchicon dev logs"
+  %s start         Same as "%s dev start"
+  %s stop          Same as "%s dev stop"
+  %s logs          Same as "%s dev logs"
+`, bin, bin, bin, bin, bin, bin)
 
-  orchicon version      Print version info
+	fmt.Printf(`
+  %s version       Print version info
 
 The binary embeds the Docker Compose stack, migrations, and the frontend
-bundle, so `+"`orchicon start`"+` is the complete one-command experience.
-`, version.Current().Tag)
+bundle, so `+"`%s start`"+` is the complete one-command experience.
+`, bin, bin)
 }
 
 func runMCP(ctx context.Context, args []string, log *slog.Logger) int {

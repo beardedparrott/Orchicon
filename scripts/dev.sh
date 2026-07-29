@@ -162,10 +162,10 @@ start_control_plane() {
     log_dim "control plane is already running (pid $(cat "$pidfile"))"
     return 0
   fi
-  log "building control plane…"
-  go build -o bin/orchicon ./cmd/orchicon
-  log "starting control plane…"
-  nohup ./bin/orchicon >"$logfile" 2>&1 &
+	log "building control plane…"
+	go build -o bin/orchicon ./cmd/orchicon
+	log "starting control plane…"
+	nohup ./bin/orchicon >"$logfile" 2>&1 &
   echo $! > "$pidfile"
   # Wait for healthz
   if wait_for_http "http://localhost:8080/healthz" "control plane" 15; then
@@ -211,8 +211,12 @@ do_start() {
   echo -e "  SigNoz UI:      ${C_DIM}http://localhost:3301${C_RESET}"
   echo -e "  NATS monitor:   ${C_DIM}http://localhost:8222${C_RESET}"
   echo ""
-  echo -e "  Logs:           ${C_DIM}tail -f $LOG_DIR/orchicon.log $LOG_DIR/vite.log${C_RESET}"
+  echo -e "  Logs:           ${C_DIM}$LOG_DIR/orchicon.log + $LOG_DIR/vite.log${C_RESET}"
   echo -e "  Stop:           ${C_DIM}scripts/dev.sh stop${C_RESET}"
+  echo ""
+  echo "→ Tailing control plane + frontend logs (Ctrl+C to stop tailing; server continues in background)"
+  echo ""
+  tail -f "$LOG_DIR/orchicon.log" "$LOG_DIR/vite.log"
 }
 
 do_stop() {

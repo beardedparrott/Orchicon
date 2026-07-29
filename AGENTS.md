@@ -48,7 +48,7 @@ The project's model spend is rising. Be economical but **never at the expense of
   fi
   ```
 - Branch naming: `<type>/<short-description>` (e.g. `feat/project-crud`, `fix/outbox-relay-dedup`, `chore/docker-compose-setup`). Types: `feat`, `fix`, `chore`, `refactor`, `docs`, `test`.
-- **Before starting work on a new branch**, bump the version tag: `git tag -a v0.1.<next> -m "v0.1.<next>"`. This ensures the binary reports the correct version during local development and `scripts/install-local.sh` embeds the new tag.
+- **Before starting work on a new branch**, bump the version tag: `git tag -a v0.1.<next> -m "v0.1.<next>"`. This ensures the binary reports the correct version during local development and `scripts/install-prod.sh` (or `install-dev.sh`) embeds the new tag.
 - Commit early and often on your branch. Write clear commit messages in present tense: `Add project CRUD service and data-access layer`. Stage only the files relevant to the commit.
 - **Never create a pull request without asking the user for approval first.** Ask, wait for a yes, then proceed.
 - Once work is complete and properly tested, ask the user to verify.
@@ -71,9 +71,14 @@ The project's model spend is rising. Be economical but **never at the expense of
 During active development, iterate locally without creating PRs or releases:
 
 ```bash
-scripts/install-local.sh    # builds frontend + Go binary, installs to ~/.local/bin/orchicon
-orchicon stop && orchicon start   # restart with the new binary
+scripts/install-dev.sh                  # builds frontend + Go binary to bin/orchicon-dev
+./bin/orchicon-dev dev stop && ./bin/orchicon-dev dev start   # restart with the new binary
 ```
+
+**IMPORTANT:** The binary name determines which instance the binary manages:
+- `orchicon-dev` (at `./bin/orchicon-dev`) manages the dev compose project on default ports
+- `orchicon-prod` (at `~/.local/bin/orchicon-prod`) manages the prod compose project on offset ports
+Both are built from the same source. See DOCUMENTATION.md §Dual-Instance Dogfooding Setup.
 
 The binary embeds everything (docker-compose.yml, frontend dist, migrations) via `go:embed` in `assets.go`. Any change to source files, docker-compose, or frontend code is included in the next build. No branches, commits, or PRs needed during the day — just build and test.
 

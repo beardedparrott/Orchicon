@@ -7,10 +7,15 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 )
+
+// binaryName returns the executable's basename (e.g. "orchicon" or
+// "orchicon-prod"), used by the orphan killer to find matching processes.
+func binaryName() string { return filepath.Base(os.Args[0]) }
 
 // killOrphanOrchiconProcs finds any running `orchicon` processes that
 // are NOT us and NOT the PID we already stopped, and SIGKILLs them.
@@ -47,7 +52,7 @@ func killOrphanOrchiconProcs(exclude ...int) int {
 		return killOrphanOrchiconProcsProcFS(exclude...)
 	}
 
-	out, err := exec.Command(pgrep, "-x", "orchicon").Output()
+	out, err := exec.Command(pgrep, "-x", binaryName()).Output()
 	if err != nil {
 		// pgrep returns exit 1 when no processes match. That's the
 		// happy path — no orphans.
@@ -79,14 +84,14 @@ func killOrphanOrchiconProcs(exclude ...int) int {
 		}
 	}
 	if killed > 0 {
-		fmt.Printf("  ✓ Killed %d orphan orchicon process(es)\n", killed)
+		fmt.Printf("  ✓ Killed %d orphan %s process(es)\n", killed, binaryName())
 	}
 	return killed
 }
 
 // killOrphanOrchiconProcsProcFS is the fallback when pgrep isn't on
 // PATH (small Alpine / distroless containers). It walks /proc,
-// resolves each PID's exe link, and matches on the basename "orchicon".
+// resolves each PID's exe link, and matches on the binary's basename.
 func killOrphanOrchiconProcsProcFS(exclude ...int) int {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -116,7 +121,7 @@ func killOrphanOrchiconProcsProcFS(exclude ...int) int {
 		if i := strings.LastIndex(target, "/"); i >= 0 {
 			base = target[i+1:]
 		}
-		if base != "orchicon" {
+		if base != binaryName() {
 			continue
 		}
 		if proc, err := os.FindProcess(pid); err == nil {
@@ -125,7 +130,7 @@ func killOrphanOrchiconProcsProcFS(exclude ...int) int {
 		}
 	}
 	if killed > 0 {
-		fmt.Printf("  ✓ Killed %d orphan orchicon process(es) (via /proc)\n", killed)
+		fmt.Printf("  ✓ Killed %d orphan %s process(es) (via /proc)\n", killed, binaryName())
 	}
 	return killed
 }

@@ -86,6 +86,10 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		log.Warn("seed dev workers failed (continuing)", "error", err)
 	}
 
+	if err := db.SeedDevWorkflows(context.Background(), pool); err != nil {
+		log.Warn("seed dev workflows failed (continuing)", "error", err)
+	}
+
 	// Connect to NATS and start the outbox relay. If NATS is unavailable
 	// at boot, the relay logs and retries; events stay safely in the
 	// outbox table until NATS recovers (docs/09 §6).

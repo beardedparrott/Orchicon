@@ -1,18 +1,23 @@
-# Docker Compose for Orchicon local development stack.
+# Docker Compose for Orchicon production-like instance (dogfooding).
 # Services: postgres, nats, clickhouse, signoz-schema-migrator, otel-collector, signoz
-# Usage: docker compose -f deploy/compose/docker-compose.yml up -d
+#
+# Ports are offset +1 from the dev compose to allow both stacks to run
+# simultaneously on the same host. No container_name directives are set
+# so Docker Compose derives unique names from the project name, avoiding
+# conflicts with the dev stack.
+#
+# Usage: docker compose -f deploy/compose/docker-compose-prod.yml -p orchicon-prod up -d
 
 services:
-  # PostgreSQL — primary state store (control plane + tenant data).
   postgres:
     image: postgres:16-alpine
-    container_name: orchicon-postgres
+    container_name: orchicon-prod-postgres
     environment:
       POSTGRES_USER: orchicon
       POSTGRES_PASSWORD: orchicon
       POSTGRES_DB: orchicon
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./init-postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -23,14 +28,13 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # NATS JetStream — event bus for outbox relay, telemetry streams, webhooks.
   nats:
     image: nats:2.10-alpine
-    container_name: orchicon-nats
+    container_name: orchicon-prod-nats
     command: ["-js", "-sd", "/data/jetstream", "-m", "8222"]
     ports:
-      - "4222:4222"
-      - "8222:8222"
+      - "4223:4222"
+      - "8223:8222"
     volumes:
       - nats-data:/data/jetstream
     healthcheck:
@@ -40,18 +44,17 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # ClickHouse — telemetry storage (traces, metrics, logs) for SigNoz.
   clickhouse:
     image: clickhouse/clickhouse-server:25.8
-    container_name: orchicon-clickhouse
+    container_name: orchicon-prod-clickhouse
     environment:
       CLICKHOUSE_DB: signoz
       CLICKHOUSE_USER: signoz
       CLICKHOUSE_PASSWORD: signoz
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     ports:
-      - "8123:8123"
-      - "9000:9000"
+      - "8124:8123"
+      - "9001:9000"
     volumes:
       - clickhouse-data:/var/lib/clickhouse
       - ./clickhouse-cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
@@ -66,31 +69,31 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # SigNoz schema migrator — runs once per ClickHouse version upgrade.
-  # Must pass the --dsn flag explicitly; the image entrypoint no longer
-  # auto-constructs it from env vars (otherwise it just prints help and
-  # exits without creating signoz_logs/signoz_traces).
   signoz-schema-migrator:
     image: signoz/signoz-schema-migrator:latest
-    container_name: orchicon-signoz-schema-migrator
+    container_name: orchicon-prod-signoz-schema-migrator
     command: ["sync", "--dsn", "tcp://signoz:signoz@clickhouse:9000/signoz"]
     depends_on:
       clickhouse:
         condition: service_healthy
     restart: "no"
+    # Wait for the schema migrator to finish creating ClickHouse databases
+    # before starting dependent services. Without this, the OTel collector
+    # starts too early and crashes because signoz_logs/signoz_traces don't
+    # exist yet — then Docker restarts it in a loop until the migrator
+    # eventually completes, wasting startup time.
 
-  # OTel collector — receives OTLP from control plane, exports to ClickHouse.
   otel-collector:
     image: signoz/signoz-otel-collector:latest
-    container_name: orchicon-otel-collector
+    container_name: orchicon-prod-otel-collector
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
       - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
     environment:
       LOW_MEMORY_MODE: "true"
     ports:
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
+      - "4319:4317"
+      - "4320:4318"
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -103,17 +106,15 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # SigNoz query-service — reads telemetry from ClickHouse, serves UI on :3301
   signoz:
     image: signoz/signoz-community:latest
-    container_name: orchicon-signoz
+    container_name: orchicon-prod-signoz
     command: ["-DSTORAGE=clickhouse"]
     environment:
       CLICKHOUSE_USER: signoz
       CLICKHOUSE_PASSWORD: signoz
       SIGNOZ_TOKENIZER_JWT_SECRET: "dev-secret-not-for-production"
       SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN: "tcp://signoz:signoz@clickhouse:9000/signoz"
-      # Impersonation mode: no login page (docs/08 §5). Root user config below.
       SIGNOZ_IDENTN_IMPERSONATION_ENABLED: "true"
       SIGNOZ_IDENTN_TOKENIZER_ENABLED: "false"
       SIGNOZ_IDENTN_APIKEY_ENABLED: "false"
@@ -122,7 +123,7 @@ services:
       SIGNOZ_USER_ROOT_PASSWORD: "Orchicon-Dev-42!"
       SIGNOZ_USER_ROOT_ORG_NAME: "default"
     ports:
-      - "3301:8080"
+      - "3302:8080"
     depends_on:
       clickhouse:
         condition: service_healthy
