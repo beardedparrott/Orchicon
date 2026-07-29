@@ -1,0 +1,135 @@
+# Docker Compose for Orchicon production-like instance (dogfooding).
+# Services: postgres, nats, clickhouse, signoz-schema-migrator, otel-collector, signoz
+#
+# Ports are offset +1 from the dev compose to allow both stacks to run
+# simultaneously on the same host. No container_name directives are set
+# so Docker Compose derives unique names from the project name, avoiding
+# conflicts with the dev stack.
+#
+# Usage: docker compose -f deploy/compose/docker-compose-prod.yml -p orchicon-prod up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: orchicon
+      POSTGRES_PASSWORD: orchicon
+      POSTGRES_DB: orchicon
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orchicon -d orchicon"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-sd", "/data/jetstream", "-m", "8222"]
+    ports:
+      - "4223:4222"
+      - "8223:8222"
+    volumes:
+      - nats-data:/data/jetstream
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8222/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    environment:
+      CLICKHOUSE_DB: signoz
+      CLICKHOUSE_USER: signoz
+      CLICKHOUSE_PASSWORD: signoz
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "8124:8123"
+      - "9001:9000"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./clickhouse-cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "-u", "signoz", "--password", "signoz", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  signoz-schema-migrator:
+    image: signoz/signoz-schema-migrator:latest
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 9000
+      CLICKHOUSE_USER: signoz
+      CLICKHOUSE_PASSWORD: signoz
+      CLICKHOUSE_DATABASE: signoz
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: "no"
+
+  otel-collector:
+    image: signoz/signoz-otel-collector:latest
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    environment:
+      LOW_MEMORY_MODE: "true"
+    ports:
+      - "4319:4317"
+      - "4320:4318"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/13133' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  signoz:
+    image: signoz/signoz-community:latest
+    command: ["-DSTORAGE=clickhouse"]
+    environment:
+      CLICKHOUSE_USER: signoz
+      CLICKHOUSE_PASSWORD: signoz
+      SIGNOZ_TOKENIZER_JWT_SECRET: "dev-secret-not-for-production"
+      SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN: "tcp://signoz:signoz@clickhouse:9000/signoz"
+      SIGNOZ_IDENTN_IMPERSONATION_ENABLED: "true"
+      SIGNOZ_IDENTN_TOKENIZER_ENABLED: "false"
+      SIGNOZ_IDENTN_APIKEY_ENABLED: "false"
+      SIGNOZ_USER_ROOT_ENABLED: "true"
+      SIGNOZ_USER_ROOT_EMAIL: "admin@orchicon.local"
+      SIGNOZ_USER_ROOT_PASSWORD: "Orchicon-Dev-42!"
+      SIGNOZ_USER_ROOT_ORG_NAME: "default"
+    ports:
+      - "3302:8080"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/api/v1/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    volumes:
+      - signoz-data:/var/lib/signoz
+
+volumes:
+  postgres-data:
+  nats-data:
+  clickhouse-data:
+  signoz-data:

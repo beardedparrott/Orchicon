@@ -725,6 +725,56 @@ orchicon stop && orchicon start   # restart with new binary
 
 The binary embeds everything via `go:embed` — no separate build steps needed.
 
+### Dual-Instance Dogfooding Setup
+
+Orchicon can run two isolated instances side by side: a **dev** instance for daily iteration and a **prod** instance for dogfooding (using Orchicon to build Orchicon). The prod instance uses separate ports, volumes, and binary path so dev restarts never affect it.
+
+| Aspect | Dev instance | Prod instance |
+|---|---|---|
+| Purpose | Iteration: build, break, fix, restart | Stable orchestrator for development work |
+| Binary | `./bin/orchicon` (fresh builds) | `~/.local/bin/orchicon` (released builds) |
+| HTTP port | `:8080` | `:8090` |
+| Postgres port | `:5432` | `:5433` |
+| Compose project | `orchicon` | `orchicon-prod` |
+| State dir | `.dev/` | `.dev/prod/` |
+
+```bash
+# One-time: build and install the prod binary
+make build && cp ./bin/orchicon ~/.local/bin/orchicon
+scripts/dev-prod.sh start   # → prod on :8090, Postgres :5433
+
+# Daily dev loop (agents work here — prod is untouched)
+make build && scripts/dev.sh start    # dev on :8080
+# ... break things, fix, restart, iterate ...
+scripts/dev.sh restart
+# prod on :8090 is unaffected
+
+# When a publishable release is ready
+make build && cp ./bin/orchicon ~/.local/bin/orchicon
+scripts/dev-prod.sh restart
+```
+
+The prod instance is managed by `scripts/dev-prod.sh`:
+
+```bash
+scripts/dev-prod.sh start     # start the prod stack
+scripts/dev-prod.sh stop      # stop it
+scripts/dev-prod.sh status    # show status
+scripts/dev-prod.sh restart   # stop then start
+scripts/dev-prod.sh logs      # tail prod control-plane logs
+```
+
+The `orchicon serve` subcommand runs the control plane with the embedded frontend and no Compose management — it is the server mode used by the prod instance.
+
+### Copy Dev Database to Prod
+
+When you need to migrate data from dev to prod (e.g. after building features):
+
+```bash
+pg_dump -U orchicon -h localhost -p 5432 orchicon > /tmp/dev-dump.sql
+psql -U orchicon -h localhost -p 5433 -d orchicon < /tmp/dev-dump.sql
+```
+
 ### Manual Development Setup
 
 ```bash
@@ -777,6 +827,12 @@ make fe-install && make fe-dev    # Vite dev server on :5173
 | `dev-status` | Show status of all components |
 | `dev-restart` | Restart full dev environment |
 | `dev-logs` | Tail control-plane + frontend logs |
+| **Prod Control** | |
+| `dev-prod-start` | Start prod-like instance (via `scripts/dev-prod.sh`) |
+| `dev-prod-stop` | Stop prod-like instance |
+| `dev-prod-status` | Show prod-like instance status |
+| `dev-prod-restart` | Restart prod-like instance |
+| `dev-prod-logs` | Tail prod control-plane logs |
 | **CI** | |
 | `ci` | Full CI gate: lint → gen → vet → test → rls-check |
 

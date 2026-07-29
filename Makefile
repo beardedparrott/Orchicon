@@ -130,6 +130,23 @@ dev-restart: ## Restart the full dev environment
 dev-logs: ## Tail control-plane + frontend logs
 	scripts/dev.sh logs
 
+# --- Prod control script ---------------------------------------------------
+.PHONY: dev-prod-start dev-prod-stop dev-prod-status dev-prod-restart dev-prod-logs
+dev-prod-start: ## Start the production-like Orchicon instance (separate ports/infra)
+	scripts/dev-prod.sh start
+
+dev-prod-stop: ## Stop the production-like Orchicon instance
+	scripts/dev-prod.sh stop
+
+dev-prod-status: ## Show status of the production-like instance
+	scripts/dev-prod.sh status
+
+dev-prod-restart: ## Restart the production-like instance
+	scripts/dev-prod.sh restart
+
+dev-prod-logs: ## Tail prod control-plane logs
+	scripts/dev-prod.sh logs
+
 # --- Install ---------------------------------------------------------------
 .PHONY: install-dry-run install-uninstall
 install-dry-run: ## Dry-run the install script (no changes made)

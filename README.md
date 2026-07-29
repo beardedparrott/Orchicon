@@ -29,35 +29,11 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
-### v0.1.151 (2026-07-28)
+### v0.1.152 (2026-07-28)
 
 | Type | Change |
 |---|---|
-| Feature | Ask Orchicon conversational agent — 11 RPCs, server-streaming ChatStream, ToolRegistry with 25+ tools, MCP server, frontend /ask-orchicon route |
-| Feature | MCP auto-injection — user's opencode config MCP servers merged into every worker execution and Ask Orchicon chat |
-| Feature | Dynamic adapter capabilities — reflects MCP servers and model providers from user's opencode config |
-| Feature | Seed data rework — canned workers moved from SQL migrations to Go code (idempotent startup seeding) |
-| Chore | AGENTS.md cleanup — removed destructive E2E cleanup checklist, added database backup protocol |
-| Bug fix | Worker-backed approval dispatch stuck in approval_pending — step.Ref now used as worker reference |
-| Feature | RetryStepRun RPC + "Retry step" UI button to re-dispatch stuck step runs |
-
-### v0.1.150 (2026-07-27)
-
-| Type | Change |
-|---|---|
-| Feature | Settings page replaces Preferences — adds Defaults sections (default models, stall params) |
-| Feature | Tenant-level settings stored in DB (tenant_settings table) with GetSettings/UpdateSettings RPCs |
-| Feature | Default worker model in settings — dispatch fails if both worker model_ref and default are empty |
-| Feature | Default Ask Orchicon model setting (placeholder for forthcoming feature) |
-| Feature | Recovery stall parameters configurable in Settings UI (DB-backed, env-var override) |
-| Feature | Cost Explorer "By Workflow" tab — cost breakdown per workflow run with per-step drill-down |
-| Feature | Adapter reads stall thresholds from tenant settings at dispatch time (env fallback) |
-
-### v0.1.149 (2026-07-27)
-
-| Type | Change |
-|---|---|
-| Feature | Human-in-the-loop APPROVAL step kind with approve/reject UI and loop-back on rejection |
+| Feature | Production-like Orchicon instance for dogfooding — `docker-compose-prod.yml` (ports offset +1), `orchicon serve` subcommand (server with embedded frontend, no compose), `scripts/dev-prod.sh` (lifecycle manager), `make dev-prod-*` targets, dual-instance documentation with DB copy workflow |
 | Feature | Worker-backed approval: AI Approver worker evaluates and decides approve/reject automatically |
 | Feature | Native loop-back in approval steps (no separate loop_decision node needed) |
 | Feature | DevOps Engineer worker (GitOps, repo setup, PR/merge after approval) |

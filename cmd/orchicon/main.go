@@ -52,6 +52,8 @@ func main() {
 			os.Exit(runDev([]string{"stop"}))
 		case "status":
 			os.Exit(runDev([]string{"status"}))
+		case "serve":
+			os.Exit(runServe())
 		case "restart":
 			os.Exit(runDev([]string{"restart"}))
 		case "logs":
@@ -102,6 +104,7 @@ Usage:
   orchicon dev start    Start the full dev stack (compose → migrate → serve)
   orchicon dev stop     Stop the dev stack
   orchicon dev status   Show what's running
+  orchicon serve        Run the control plane with embedded frontend (no compose)
   orchicon mcp          Start the MCP stdio server (for opencode tool integration)
 
 Short aliases:
