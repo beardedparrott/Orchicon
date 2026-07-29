@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -124,54 +123,16 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 	fullPrompt := buildLLMPrompt(cfg, s.toolRegistry, prevMessages, msg, req.Msg.Attachments, toolResults, preExecNames)
 
 	// --- 4. Stream from opencode, stripping tool call markers.
-	// The frontend shows a "thinking" indicator during the initial latency
-	// (opencode startup + model first token). We'll send a progress update
-	// if the model takes more than a few seconds.
+	// The frontend shows its own thinking indicator during the initial
+	// latency (opencode startup + model first token). No backend progress
+	// messages are needed — they would render as markdown blockquotes in
+	// the streaming content and cause visual artifacts.
 	var fullResponse strings.Builder
-	var firstTextMu sync.Mutex
-	firstTextReceived := false
-
-	// Goroutine: send periodic progress messages while waiting for the
-	// model's first token.
-	go func() {
-		defer func() { recover() }() // protect against stream closed before goroutine exits
-		intervals := []struct {
-			delay time.Duration
-			msg   string
-		}{
-			{3 * time.Second, "Looking into it…"},
-			{4 * time.Second, "Still thinking…"},
-			{4 * time.Second, "Gathering the details…"},
-			{4 * time.Second, "Almost there…"},
-		}
-		for _, p := range intervals {
-			time.Sleep(p.delay)
-			// Check if the context is done before sending.
-			if ctx.Err() != nil {
-				return
-			}
-			firstTextMu.Lock()
-			if firstTextReceived {
-				firstTextMu.Unlock()
-				return
-			}
-			firstTextMu.Unlock()
-			stream.Send(&apiv1.ChatStreamResponse{
-				Event: &apiv1.ChatStreamResponse_TextChunk{
-					TextChunk: &apiv1.TextChunk{Content: "> *" + p.msg + "*"},
-				},
-			})
-		}
-	}()
 
 	cb := func(evt opencodeEvent) error {
 		switch evt.Type {
 		case "text":
-			firstTextMu.Lock()
-			if !firstTextReceived {
-				firstTextReceived = true
-			}
-			firstTextMu.Unlock()
+
 
 			rawText, _ := evt.Part["text"].(string)
 			if rawText == "" {

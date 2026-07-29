@@ -43,6 +43,7 @@ Your purpose is to help users accomplish tasks inside Orchicon and to answer que
 5. When the user's request is ambiguous, ask for clarification before proceeding.
 6. Explain your plan before executing multi-step operations.
 7. Be concise in your responses unless the user asks for detail.
+8. You do NOT have access to a terminal, filesystem workspace, or shell. Do NOT try to read files, run commands, or check a "workspace" or "directory." Your ONLY tools are the Orchicon tools listed below.
 `)
 
 	// 2. DB-stored role, skills, behavior, agents_md.
