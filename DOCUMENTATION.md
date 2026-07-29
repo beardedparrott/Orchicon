@@ -732,63 +732,106 @@ scripts/install-prod.sh               # build + install to ~/.local/bin/orchicon
 scripts/dev-prod.sh restart           # restart prod with the new binary
 ```
 
-**Binary name convention:** Both binaries are built from the same source. The binary name determines the compose project and port selection:
-- `orchicon-dev` → compose project `orchicon`, dev ports (`:8080`, `:5432`, ...)
-- `orchicon-prod` → compose project `orchicon-prod`, prod ports (`:8091`, `:5433`, ...)
+### Multiple Instance Guide
 
-Both scripts build from the same local source — the only difference is the destination path.
+Orchicon can run two isolated instances side by side: a **dev** instance for daily development and a **prod** instance for dogfooding (using Orchicon to build Orchicon). They share no ports, databases, or state — restarts to one never affect the other.
 
-The binary embeds everything via `go:embed` — no separate build steps needed.
+#### Binary Convention
 
-### Dual-Instance Dogfooding Setup
+All three binaries are built from the same source. The binary name determines the compose project and default ports via auto-detection at startup:
 
-Orchicon can run two isolated instances side by side: a **dev** instance for daily iteration and a **prod** instance for dogfooding (using Orchicon to build Orchicon). The prod instance uses separate ports, volumes, and binary path so dev restarts never affect it.
+| Binary | Built by | Installed to | Compose project | Use case |
+|---|---|---|---|---|
+| `orchicon` | `make build` | `./bin/orchicon` | `orchicon` | Standard shipped binary |
+| `orchicon-dev` | `make build-dev` | `~/.local/bin/orchicon-dev` | `orchicon` | Dev instance (same as standard) |
+| `orchicon-prod` | `make build-prod` | `~/.local/bin/orchicon-prod` | `orchicon-prod` | Prod/dogfooding instance |
 
-| Aspect | Dev instance | Prod instance |
+The binary name is detected at startup via `init()` in `dev.go`. This configures the compose project, container names, PID/log file paths, and default ports accordingly.
+
+#### Port Allocation
+
+| Service | Dev instance | Prod instance |
 |---|---|---|
-| Purpose | Iteration: build, break, fix, restart | Persistent process immune to dev restarts |
-| Binary | `./bin/orchicon-dev` (built by `make install-dev`) | `~/.local/bin/orchicon-prod` (built by `make install-prod`) |
-| HTTP port | `:8080` | `:8091` |
-| Postgres port | `:5432` | `:5433` |
-| Compose project | `orchicon` | `orchicon-prod` |
-| State dir | `.dev/` | `.dev/prod/` |
+| Control plane HTTP | `:8080` | `:8091` |
+| Control plane gRPC | `:9090` | `:9091` |
+| Postgres | `:5432` | `:5433` |
+| NATS client | `:4222` | `:4223` |
+| NATS monitor | `:8222` | `:8223` |
+| ClickHouse HTTP | `:8123` | `:8124` |
+| ClickHouse native | `:9000` | `:9001` |
+| OTel gRPC | `:4317` | `:4319` |
+| OTel HTTP | `:4318` | `:4320` |
+| SigNoz | `:3301` | `:3302` |
+
+#### Quick Start
 
 ```bash
-# Build and start the prod instance
-make install-prod               # build from source → ~/.local/bin/orchicon-prod
-scripts/dev-prod.sh start       # → prod on :8091, Postgres :5433
+# 1. Build and install the prod binary
+scripts/install-prod.sh --force   # builds frontend + Go, stops old instance, installs, starts
 
-# Daily dev loop (prod is untouched by dev restarts)
-make install-dev              # build to bin/orchicon-dev
-./bin/orchicon-dev start      # start dev on :8080
-# ... break things, fix, restart, iterate ...
-./bin/orchicon-dev restart
-# prod on :8091 unaffected
-
-# Deploy a fresh build to prod
-make install-prod
-scripts/dev-prod.sh restart
+# 2. Start the dev instance
+scripts/install-dev.sh            # installs orchicon-dev to ~/.local/bin/orchicon-dev
+orchicon-dev start                # starts dev on :8080
 ```
 
-The prod instance is managed by `scripts/dev-prod.sh`:
+#### Daily Workflow
 
 ```bash
-scripts/dev-prod.sh start     # start the prod stack
-scripts/dev-prod.sh stop      # stop it
-scripts/dev-prod.sh status    # show status
+# Dev iteration (prod is untouched)
+make install-dev              # rebuild dev binary
+./bin/orchicon-dev restart    # restart dev
+
+# Promote a build to prod
+scripts/install-prod.sh --force   # rebuild → stop → install → start
+```
+
+#### Managing the Prod Instance
+
+```bash
+scripts/dev-prod.sh start     # start the full prod stack (compose → migrate → serve)
+scripts/dev-prod.sh stop      # stop everything
+scripts/dev-prod.sh status    # show status of all components
 scripts/dev-prod.sh restart   # stop then start
 scripts/dev-prod.sh logs      # tail prod control-plane logs
 ```
 
-The `orchicon serve` subcommand runs the control plane with the embedded frontend and no Compose management — it is the server mode used by the prod instance.
+The `orchicon serve` subcommand runs the control plane with the embedded frontend and no Compose management — it is the server mode used internally by the prod instance.
 
-### Copy Dev Database to Prod
-
-When you need to migrate data from dev to prod (e.g. after building features):
+#### Managing the Dev Instance
 
 ```bash
+orchicon-dev start      # start the dev stack (compose → migrate → serve)
+orchicon-dev stop       # stop everything
+orchicon-dev status     # show status
+orchicon-dev restart    # stop then start
+orchicon-dev logs       # tail dev control-plane logs
+```
+
+These are shorthand aliases — they delegate to `orchicon-dev dev {start|stop|status|restart|logs}`.
+
+#### Copying Data Between Instances
+
+```bash
+# Dump dev database and restore to prod
 pg_dump -U orchicon -h localhost -p 5432 orchicon > /tmp/dev-dump.sql
 psql -U orchicon -h localhost -p 5433 -d orchicon < /tmp/dev-dump.sql
+```
+
+#### Managing Binary Replacements
+
+When an instance is running you cannot overwrite its binary (`cp` fails with "Text file busy"). Use the `--force` flag to stop, install, and restart automatically:
+
+```bash
+scripts/install-prod.sh --force    # stop prod → install → start prod
+scripts/install-dev.sh --force     # stop dev → install → start dev
+```
+
+Without `--force`, the script prints a warning and exits. Stop the instance manually first:
+
+```bash
+scripts/dev-prod.sh stop            # stop prod
+scripts/install-prod.sh             # install (binary not in use)
+scripts/dev-prod.sh start           # restart prod
 ```
 
 ### Manual Development Setup
