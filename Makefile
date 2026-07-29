@@ -148,12 +148,18 @@ dev-prod-logs: ## Tail prod control-plane logs
 	scripts/dev-prod.sh logs
 
 # --- Install ---------------------------------------------------------------
-.PHONY: install-dry-run install-uninstall
+.PHONY: install-dry-run install-uninstall install-dev install-prod
 install-dry-run: ## Dry-run the install script (no changes made)
 	scripts/install.sh --dry-run
 
 install-uninstall: ## Uninstall Orchicon via the install script
 	scripts/install.sh --uninstall
+
+install-dev: ## Build binary to bin/orchicon for dev instance
+	scripts/install-dev.sh
+
+install-prod: ## Build + install to ~/.local/bin/orchicon for prod instance
+	scripts/install-prod.sh
 
 # --- CI --------------------------------------------------------------------
 .PHONY: ci

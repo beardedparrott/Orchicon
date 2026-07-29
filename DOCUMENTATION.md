@@ -434,7 +434,9 @@ Orchicon/
 ├── scripts/
 │   ├── install.sh               # Linux/macOS one-liner installer
 │   ├── install.ps1              # Windows PowerShell installer
-│   ├── install-local.sh         # Build & install from local source
+│   ├── install-local.sh         # Legacy: build & install to ~/.local/bin (deprecated, use install-{dev,prod}.sh)
+│   ├── install-dev.sh           # Build to bin/orchicon (for the dev instance)
+│   ├── install-prod.sh           # Build & install to ~/.local/bin (for the prod instance)
 │   ├── dev.sh                   # Dev environment controller (start/stop/status/logs)
 │   ├── build-site.sh            # Cloudflare Pages build step
 │   ├── check-rls.sh             # RLS CI gate (tenant isolation verification)
@@ -719,8 +721,15 @@ Workers now receive full execution context including:
 The fastest local development cycle:
 
 ```bash
-scripts/install-local.sh          # builds frontend + Go binary
-orchicon stop && orchicon start   # restart with new binary
+scripts/install-dev.sh              # build frontend + Go binary to bin/orchicon
+./bin/orchicon dev stop && ./bin/orchicon dev start   # restart dev
+```
+
+To promote a build to the prod instance:
+
+```bash
+scripts/install-prod.sh             # build + install to ~/.local/bin/orchicon
+scripts/dev-prod.sh restart         # restart prod with the new binary
 ```
 
 The binary embeds everything via `go:embed` — no separate build steps needed.
@@ -740,17 +749,17 @@ Orchicon can run two isolated instances side by side: a **dev** instance for dai
 
 ```bash
 # One-time: build and install the prod binary
-make build && cp ./bin/orchicon ~/.local/bin/orchicon
-scripts/dev-prod.sh start   # → prod on :8090, Postgres :5433
+make install-prod             # builds + installs to ~/.local/bin/orchicon
+scripts/dev-prod.sh start     # → prod on :8090, Postgres :5433
 
 # Daily dev loop (agents work here — prod is untouched)
-make build && scripts/dev.sh start    # dev on :8080
+make install-dev && scripts/dev.sh start    # build to bin/ + start dev on :8080
 # ... break things, fix, restart, iterate ...
-scripts/dev.sh restart
+./bin/orchicon dev restart
 # prod on :8090 is unaffected
 
 # When a publishable release is ready
-make build && cp ./bin/orchicon ~/.local/bin/orchicon
+make install-prod
 scripts/dev-prod.sh restart
 ```
 
@@ -833,6 +842,9 @@ make fe-install && make fe-dev    # Vite dev server on :5173
 | `dev-prod-status` | Show prod-like instance status |
 | `dev-prod-restart` | Restart prod-like instance |
 | `dev-prod-logs` | Tail prod control-plane logs |
+| **Install** | |
+| `install-dev` | Build binary to `bin/orchicon` for dev instance |
+| `install-prod` | Build + install to `~/.local/bin/orchicon` for prod instance |
 | **CI** | |
 | `ci` | Full CI gate: lint → gen → vet → test → rls-check |
 
