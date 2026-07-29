@@ -4,7 +4,10 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 
 	assets "github.com/beardedparrott/orchicon"
@@ -15,6 +18,36 @@ import (
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
 )
+
+// killOrphans kills any leftover opencode and orchicon mcp processes from
+// a prior crash. These can accumulate when the server is killed before the
+// ChatStream subprocess exits (e.g. during a forced binary replacement).
+func killOrphans() {
+	pgrep, err := exec.LookPath("pgrep")
+	if err != nil {
+		return
+	}
+	for _, name := range []string{"opencode", "orchicon mcp"} {
+		// Split so the argument becomes "-f" (pattern match) + the name.
+		args := []string{"-x"}
+		if strings.Contains(name, " ") {
+			args = []string{"-f"} // use -f for multi-word patterns
+		}
+		out, err := exec.Command(pgrep, append(args, name)...).Output()
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			pid, err := strconv.Atoi(strings.TrimSpace(line))
+			if err != nil || pid == os.Getpid() {
+				continue
+			}
+			if proc, err := os.FindProcess(pid); err == nil {
+				proc.Signal(syscall.SIGTERM)
+			}
+		}
+	}
+}
 
 // runServe loads configuration from the environment, applies pending
 // migrations (same as devStartParent), constructs the control plane server,
@@ -35,6 +68,7 @@ func runServe() int {
 		slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}),
 		telemetry.NewOtelSlogHandler(),
 	))
+	killOrphans()
 	log.Info("orchicon serve starting", "version", version.Current().String())
 
 	cfg := config.Default()

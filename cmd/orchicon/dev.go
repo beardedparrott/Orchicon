@@ -154,6 +154,7 @@ func devStartChild() int {
 	// LoggerProvider below.
 	jsonHandler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})
 	log := slog.New(telemetry.MultiHandler(jsonHandler, telemetry.NewOtelSlogHandler()))
+	killOrphans()
 	log.Info("orchicon control plane starting", "version", version.Current().String())
 
 	cfg := config.Default()
