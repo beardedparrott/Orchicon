@@ -11,6 +11,7 @@
 services:
   postgres:
     image: postgres:16-alpine
+    container_name: orchicon-prod-postgres
     environment:
       POSTGRES_USER: orchicon
       POSTGRES_PASSWORD: orchicon
@@ -29,6 +30,7 @@ services:
 
   nats:
     image: nats:2.10-alpine
+    container_name: orchicon-prod-nats
     command: ["-js", "-sd", "/data/jetstream", "-m", "8222"]
     ports:
       - "4223:4222"
@@ -44,6 +46,7 @@ services:
 
   clickhouse:
     image: clickhouse/clickhouse-server:25.8
+    container_name: orchicon-prod-clickhouse
     environment:
       CLICKHOUSE_DB: signoz
       CLICKHOUSE_USER: signoz
@@ -68,19 +71,21 @@ services:
 
   signoz-schema-migrator:
     image: signoz/signoz-schema-migrator:latest
-    environment:
-      CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PORT: 9000
-      CLICKHOUSE_USER: signoz
-      CLICKHOUSE_PASSWORD: signoz
-      CLICKHOUSE_DATABASE: signoz
+    container_name: orchicon-prod-signoz-schema-migrator
+    command: ["sync", "--dsn", "tcp://signoz:signoz@clickhouse:9000/signoz"]
     depends_on:
       clickhouse:
         condition: service_healthy
     restart: "no"
+    # Wait for the schema migrator to finish creating ClickHouse databases
+    # before starting dependent services. Without this, the OTel collector
+    # starts too early and crashes because signoz_logs/signoz_traces don't
+    # exist yet — then Docker restarts it in a loop until the migrator
+    # eventually completes, wasting startup time.
 
   otel-collector:
     image: signoz/signoz-otel-collector:latest
+    container_name: orchicon-prod-otel-collector
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
       - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
@@ -92,6 +97,8 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
+      signoz-schema-migrator:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/13133' || exit 1"]
       interval: 10s
@@ -101,6 +108,7 @@ services:
 
   signoz:
     image: signoz/signoz-community:latest
+    container_name: orchicon-prod-signoz
     command: ["-DSTORAGE=clickhouse"]
     environment:
       CLICKHOUSE_USER: signoz
@@ -119,6 +127,8 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
+      signoz-schema-migrator:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/api/v1/health"]
       interval: 10s

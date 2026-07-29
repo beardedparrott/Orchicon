@@ -41,7 +41,7 @@ mkdir -p "$PID_DIR" "$LOG_DIR"
 ORCHICON_BIN="${ORCHICON_BIN:-$HOME/.local/bin/orchicon-prod}"
 
 # Prod instance environment: all ports offset +1 from dev defaults.
-export ORCHICON_HTTP_ADDR="${ORCHICON_HTTP_ADDR:-:8090}"
+export ORCHICON_HTTP_ADDR="${ORCHICON_HTTP_ADDR:-:8091}"
 export ORCHICON_GRPC_ADDR="${ORCHICON_GRPC_ADDR:-:9091}"
 export ORCHICON_POSTGRES_DSN="${ORCHICON_POSTGRES_DSN:-postgres://orchicon:orchicon@localhost:5433/orchicon?sslmode=disable}"
 export ORCHICON_NATS_URL="${ORCHICON_NATS_URL:-nats://localhost:4223}"

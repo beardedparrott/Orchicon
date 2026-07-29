@@ -734,7 +734,7 @@ scripts/dev-prod.sh restart           # restart prod with the new binary
 
 **Binary name convention:** Both binaries are built from the same source. The binary name determines the compose project and port selection:
 - `orchicon-dev` → compose project `orchicon`, dev ports (`:8080`, `:5432`, ...)
-- `orchicon-prod` → compose project `orchicon-prod`, prod ports (`:8090`, `:5433`, ...)
+- `orchicon-prod` → compose project `orchicon-prod`, prod ports (`:8091`, `:5433`, ...)
 
 Both scripts build from the same local source — the only difference is the destination path.
 
@@ -748,7 +748,7 @@ Orchicon can run two isolated instances side by side: a **dev** instance for dai
 |---|---|---|
 | Purpose | Iteration: build, break, fix, restart | Persistent process immune to dev restarts |
 | Binary | `./bin/orchicon-dev` (built by `make install-dev`) | `~/.local/bin/orchicon-prod` (built by `make install-prod`) |
-| HTTP port | `:8080` | `:8090` |
+| HTTP port | `:8080` | `:8091` |
 | Postgres port | `:5432` | `:5433` |
 | Compose project | `orchicon` | `orchicon-prod` |
 | State dir | `.dev/` | `.dev/prod/` |
@@ -756,14 +756,14 @@ Orchicon can run two isolated instances side by side: a **dev** instance for dai
 ```bash
 # Build and start the prod instance
 make install-prod               # build from source → ~/.local/bin/orchicon-prod
-scripts/dev-prod.sh start       # → prod on :8090, Postgres :5433
+scripts/dev-prod.sh start       # → prod on :8091, Postgres :5433
 
 # Daily dev loop (prod is untouched by dev restarts)
 make install-dev              # build to bin/orchicon-dev
 ./bin/orchicon-dev start      # start dev on :8080
 # ... break things, fix, restart, iterate ...
 ./bin/orchicon-dev restart
-# prod on :8090 unaffected
+# prod on :8091 unaffected
 
 # Deploy a fresh build to prod
 make install-prod

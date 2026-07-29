@@ -70,7 +70,7 @@ func init() {
 		devEnvChild = "ORCHICON_PROD_CHILD"
 		devProject = "orchicon-prod"
 		devCompose = "docker-compose-prod.yml"
-		devHTTPPort = ":8090"
+		devHTTPPort = ":8091"
 		devSigNozPort = "3302"
 		devNATSPort = "8223"
 	} else {
