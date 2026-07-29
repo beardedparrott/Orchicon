@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/tenant"
 	"connectrpc.com/connect"
 )
 
@@ -191,6 +192,12 @@ func (s *Server) handleToolsCall(ctx context.Context, req jsonRPCRequest) {
 	if params.Arguments == nil {
 		params.Arguments = json.RawMessage("{}")
 	}
+
+	// MCP runs over stdio with no HTTP middleware to inject the tenant,
+	// so we default to the dev tenant. Every tool function reads the
+	// tenant from context via tenant.FromContext() and scopes its DB
+	// operations accordingly.
+	ctx = tenant.WithID(ctx, "tnt_dev")
 
 	result, err := s.tools.Execute(ctx, s.pool, params.Name, params.Arguments)
 	if err != nil {
