@@ -159,16 +159,7 @@ do_start() {
     fi
   done
 
-  # 3. Apply migrations.
-  log "applying migrations…"
-  if command -v atlas >/dev/null 2>&1; then
-    (cd db && atlas migrate apply --env local --url "$ORCHICON_POSTGRES_DSN") 2>&1 | tail -5
-    log_ok "migrations applied"
-  else
-    log_warn "atlas not on PATH — skipping migrations (run 'make tools' to install)"
-  fi
-
-  # 4. Verify binary exists.
+	# 3. Verify binary exists.
 	if [ ! -x "$ORCHICON_BIN" ]; then
 		log_err "binary not found or not executable: $ORCHICON_BIN"
 		log_err "Set ORCHICON_BIN or build & install first: make install-prod"
