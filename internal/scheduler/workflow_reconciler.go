@@ -1085,12 +1085,21 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			}
 		}
 
-		if cfg.Reviewer == "worker" && cfg.WorkerRef != "" {
+		if cfg.Reviewer == "worker" {
 			// Worker-backed approval: dispatch like a task step to the
-			// configured approver worker. The worker's output should
-			// contain _decision: "approved" or _decision: "rejected".
+			// approver worker. The step's "ref" field carries the worker
+			// ID (same as TASK steps — docs/02 §2.4). Fall back to
+			// config.worker_ref for backward compatibility with older
+			// workflows that stored the ref in the config instead.
+			workerRefStr := step.Ref
+			if workerRefStr == "" {
+				workerRefStr = cfg.WorkerRef
+			}
+			if workerRefStr == "" {
+				return fmt.Errorf("worker-backed approval step %s has no worker ref", step.ID)
+			}
 			workerRef, _ := json.Marshal(map[string]any{
-				"worker_id": cfg.WorkerRef,
+				"worker_id": workerRefStr,
 				"version":   cfg.WorkerVersion,
 			})
 			wid := db.NewID()
@@ -1110,7 +1119,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			if _, err := db.CreateWorkItem(ctx, tx, wi); err != nil {
 				return fmt.Errorf("create approval work item: %w", err)
 			}
-			workerVer, err := db.GetLatestWorkerVersion(ctx, tx, tenantID, cfg.WorkerRef, true)
+			workerVer, err := db.GetLatestWorkerVersion(ctx, tx, tenantID, workerRefStr, true)
 			if err != nil {
 				return fmt.Errorf("load approver worker version: %w", err)
 			}

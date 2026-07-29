@@ -20,6 +20,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/aigateway"
 	"github.com/beardedparrott/orchicon/internal/approval"
+	"github.com/beardedparrott/orchicon/internal/askorchicon"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/blobstore"
 	"github.com/beardedparrott/orchicon/internal/config"
@@ -59,6 +60,8 @@ type Dependencies struct {
 	// ModelDiscoverer enumerates models from opencode CLI.
 	ModelDiscoverer   *aigateway.ModelDiscoverer
 	MCPDiscoverer     *aigateway.MCPDiscoverer
+	// BlobStore is the object storage abstraction (local filesystem + S3).
+	BlobStore blobstore.Store
 }
 
 // Mount returns an http.Handler serving the Orchicon API. Generated
@@ -147,6 +150,10 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// SettingsService — tenant-level configuration defaults.
 	settingsSvc := settings.New(deps.Pool, deps.Log)
 	mux.Handle(apiv1connect.NewSettingsServiceHandler(settingsSvc, interceptorOpt))
+
+	// AskOrchiconService — conversational agent.
+	askSvc := askorchicon.New(deps.Pool, deps.Log, deps.BlobStore, deps.ModelDiscoverer)
+	mux.Handle(apiv1connect.NewAskOrchiconServiceHandler(askSvc, interceptorOpt))
 
 	// SigNoz UI reverse proxy (docs/10 §11): serves the SigNoz frontend
 	// same-origin under /signoz so the embedded iframe in the Telemetry

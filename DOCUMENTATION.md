@@ -687,8 +687,21 @@ Workers now receive full execution context including:
 2. **Appearance**: light/dark mode toggle with 20 theme variants (10 light + 10 dark)
 3. **Defaults → Default models**:
    - **Default worker model**: fallback when a worker version has no `model_ref` set. If both are empty, dispatch fails (no hardcoded fallback).
-   - **Default Ask Orchicon model**: placeholder for the forthcoming Ask Orchicon assistant.
+   - **Default Ask Orchicon model**: model used by the Ask Orchicon conversational agent. If empty, dispatch will fail.
 4. **Defaults → Recovery stall parameters**: per-execution stall thresholds stored in the DB and read at dispatch time. Each field has an env-var override (`ORCHICON_STALL_*`) for dev debugging.
+
+#### Ask Orchicon
+1. Navigate to the **Ask Orchicon** tab in the sidebar
+2. Click **+ New Conversation** to start a new chat session
+3. Orchicon can:
+   - **Answer questions** about Orchicon, your projects, workers, work items, and workflows
+   - **Create, read, update, and delete** projects, work items, workers, workflows, and other entities
+   - **Create project directories** on the filesystem with optional scaffolding (`src/`, `docs/`, `tests/`)
+   - **Diagnose failures** — ask "Why did the last workflow fail?" to get failure analysis
+   - **Check usage and costs** — ask "How much have I spent?" for cost breakdowns
+   - **View and update settings** — ask "Show my settings" or "Update my default model"
+4. Chat history appears in the right sidebar — switch between or resume past conversations
+5. The agent always asks clarifying questions before mutating data and refuses non-Orchicon requests
 
 ### Authentication
 

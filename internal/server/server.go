@@ -79,6 +79,13 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		log.Warn("seed dev tenant failed (continuing)", "error", err)
 	}
 
+	// Seed canned workers for the dev tenant so they're available for
+	// workflow templates and manual dispatch. Idempotent — workers that
+	// already exist are skipped or updated with current data.
+	if err := db.SeedDevWorkers(context.Background(), pool); err != nil {
+		log.Warn("seed dev workers failed (continuing)", "error", err)
+	}
+
 	// Connect to NATS and start the outbox relay. If NATS is unavailable
 	// at boot, the relay logs and retries; events stay safely in the
 	// outbox table until NATS recovers (docs/09 §6).
@@ -206,6 +213,7 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		Mode:              cfg.Mode,
 		ModelDiscoverer:   modelDiscoverer,
 		MCPDiscoverer:     mcpDiscoverer,
+		BlobStore:         blobs,
 	}
 	handler := api.Mount(mux, deps)
 
@@ -350,12 +358,12 @@ func (s *Server) shutdownOTel() {
 func (s *Server) heartbeatDevAdapter(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
-	caps := `{"model_providers":["anthropic","openai","local"],"tools":["file_edit","terminal","web_fetch","git"],"context":["file_index"],"telemetry":["tool_calls_streamed","file_diffs"],"execution":["checkpoint","pause_resume","cancellation"]}`
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			caps := opencode.BuildCapabilitiesJSON()
 			ttx, err := s.pool.BeginTenantTx(ctx, "tnt_dev")
 			if err != nil {
 				continue
@@ -376,7 +384,6 @@ func (s *Server) heartbeatDevAdapter(ctx context.Context) {
 func seedDevAdapter(ctx context.Context, pool *db.Pool, log *slog.Logger) {
 	tenantID := "tnt_dev"
 	adapterID := "adp_opencode_dev"
-	capabilities := `{"model_providers":["anthropic","openai","local"],"tools":["file_edit","terminal","web_fetch","git"],"context":["file_index"],"telemetry":["tool_calls_streamed","file_diffs"],"execution":["checkpoint","pause_resume","cancellation"]}`
 
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -389,7 +396,8 @@ func seedDevAdapter(ctx context.Context, pool *db.Pool, log *slog.Logger) {
 	_, err = db.GetAdapter(ctx, ttx.Tx, tenantID, adapterID)
 	if err == nil {
 		// Already registered — just heartbeat.
-		if err := db.HeartbeatAdapter(ctx, ttx.Tx, tenantID, adapterID, []byte(capabilities)); err != nil {
+		caps := opencode.BuildCapabilitiesJSON()
+		if err := db.HeartbeatAdapter(ctx, ttx.Tx, tenantID, adapterID, []byte(caps)); err != nil {
 			log.Warn("seed dev adapter: heartbeat failed", "error", err)
 			return
 		}
@@ -406,7 +414,7 @@ func seedDevAdapter(ctx context.Context, pool *db.Pool, log *slog.Logger) {
 		Kind:                    "opencode",
 		Version:                 "0.1.0",
 		Endpoint:                "in-process",
-		Capabilities:            []byte(capabilities),
+		Capabilities:            []byte(opencode.BuildCapabilitiesJSON()),
 		Status:                  domain.AdapterReady,
 		MaxConcurrentExecutions: 5,
 	}

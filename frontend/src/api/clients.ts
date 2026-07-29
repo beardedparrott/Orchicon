@@ -21,6 +21,7 @@ import { RecoveryService } from "@/api/gen/orchicon/api/v1/recovery_service_conn
 import { TelemetryService } from "@/api/gen/orchicon/api/v1/telemetry_service_connect";
 import { AIGatewayService } from "@/api/gen/orchicon/api/v1/ai_gateway_service_connect";
 import { ApprovalService } from "@/api/gen/orchicon/api/v1/approval_service_connect";
+import { AskOrchiconService } from "@/api/gen/orchicon/api/v1/ask_orchicon_service_connect";
 import { AuthService } from "@/api/gen/orchicon/api/v1/auth_service_connect";
 import { WebhookService } from "@/api/gen/orchicon/api/v1/webhook_service_connect";
 import { SettingsService } from "@/api/gen/orchicon/api/v1/settings_service_connect";
@@ -100,6 +101,7 @@ export const approvalClient = createClient(ApprovalService, connectTransport);
 export const authClient = createClient(AuthService, connectTransport);
 export const webhookClient = createClient(WebhookService, connectTransport);
 export const settingsClient = createClient(SettingsService, connectTransport);
+export const askOrchiconClient = createClient(AskOrchiconService, connectTransport);
 
 // SigNoz UI base URL for the embedded telemetry explorer (docs/10 §11).
 export const SIGNOZ_UI_URL = "/signoz";

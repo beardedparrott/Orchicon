@@ -29,6 +29,18 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.151 (2026-07-28)
+
+| Type | Change |
+|---|---|
+| Feature | Ask Orchicon conversational agent — 11 RPCs, server-streaming ChatStream, ToolRegistry with 25+ tools, MCP server, frontend /ask-orchicon route |
+| Feature | MCP auto-injection — user's opencode config MCP servers merged into every worker execution and Ask Orchicon chat |
+| Feature | Dynamic adapter capabilities — reflects MCP servers and model providers from user's opencode config |
+| Feature | Seed data rework — canned workers moved from SQL migrations to Go code (idempotent startup seeding) |
+| Chore | AGENTS.md cleanup — removed destructive E2E cleanup checklist, added database backup protocol |
+| Bug fix | Worker-backed approval dispatch stuck in approval_pending — step.Ref now used as worker reference |
+| Feature | RetryStepRun RPC + "Retry step" UI button to re-dispatch stuck step runs |
+
 ### v0.1.150 (2026-07-27)
 
 | Type | Change |

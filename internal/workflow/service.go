@@ -806,6 +806,71 @@ func (s *Service) GetWorkflowStepRuns(ctx context.Context, req *connect.Request[
 	return connect.NewResponse(resp), nil
 }
 
+// RetryStepRun resets a step run to pending so the reconciler re-dispatches
+// it. Clears result, worker execution reference, and timestamps.
+func (s *Service) RetryStepRun(ctx context.Context, req *connect.Request[apiv1.RetryStepRunRequest]) (*connect.Response[apiv1.RetryStepRunResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.StepRunId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("step_run_id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	sr, err := db.GetWorkflowStepRun(ctx, ttx.Tx, tenantID, req.Msg.StepRunId)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if sr.Status != domain.StepRunApprovalPending && sr.Status != domain.StepRunFailed && sr.Status != domain.StepRunRunning {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("step run is in status %s — can only retry approval_pending, failed, or running steps", sr.Status))
+	}
+
+	now := time.Now().UTC()
+	result := []byte("{}")
+	emptyResult := result
+	updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+		Status:            strPtr(domain.StepRunPending),
+		Result:            &emptyResult,
+		WorkerExecutionID: strPtr(""),
+		StartedAt:         &now,
+		EndedAt:           nil,
+	})
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	_ = updated
+
+	// Enqueue a workflow event so the reconciler picks it up.
+	eventPayload, _ := json.Marshal(map[string]any{
+		"type":    "workflow.step_pending",
+		"run_id":  sr.WorkflowRunID,
+		"step_id": sr.StepID,
+	})
+	outboxRow := db.OutboxRow{
+		TenantID:      tenantID,
+		EventType:     "workflow.step_pending",
+		AggregateType: "workflow",
+		AggregateID:   sr.WorkflowRunID,
+		AggregateVer:  updated.Version,
+		Payload:       eventPayload,
+		OccurredAt:    time.Now().UTC(),
+	}
+	if err := db.EnqueueOutbox(ctx, ttx.Tx, outboxRow); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("enqueue step_pending event: %w", err))
+	}
+
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&apiv1.RetryStepRunResponse{}), nil
+}
+
 // StreamWorkflowEvents is the server-stream RPC that fans out workflow
 // run events from NATS to connected clients (docs/07 §4, docs/10 §4.1).
 func (s *Service) StreamWorkflowEvents(ctx context.Context, req *connect.Request[apiv1.StreamWorkflowEventsRequest], stream *connect.ServerStream[apiv1.StreamWorkflowEventsResponse]) error {

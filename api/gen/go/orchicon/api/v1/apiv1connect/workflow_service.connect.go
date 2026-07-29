@@ -92,6 +92,9 @@ const (
 	// WorkflowServiceGetWorkflowStepRunsProcedure is the fully-qualified name of the WorkflowService's
 	// GetWorkflowStepRuns RPC.
 	WorkflowServiceGetWorkflowStepRunsProcedure = "/orchicon.api.v1.WorkflowService/GetWorkflowStepRuns"
+	// WorkflowServiceRetryStepRunProcedure is the fully-qualified name of the WorkflowService's
+	// RetryStepRun RPC.
+	WorkflowServiceRetryStepRunProcedure = "/orchicon.api.v1.WorkflowService/RetryStepRun"
 	// WorkflowServiceStreamWorkflowEventsProcedure is the fully-qualified name of the WorkflowService's
 	// StreamWorkflowEvents RPC.
 	WorkflowServiceStreamWorkflowEventsProcedure = "/orchicon.api.v1.WorkflowService/StreamWorkflowEvents"
@@ -155,6 +158,12 @@ type WorkflowServiceClient interface {
 	ListWorkflowRuns(context.Context, *connect.Request[v1.ListWorkflowRunsRequest]) (*connect.Response[v1.ListWorkflowRunsResponse], error)
 	// GetWorkflowStepRuns returns all step runs for a WorkflowRun.
 	GetWorkflowStepRuns(context.Context, *connect.Request[v1.GetWorkflowStepRunsRequest]) (*connect.Response[v1.GetWorkflowStepRunsResponse], error)
+	// RetryStepRun resets a step run back to pending so the WorkflowReconciler
+	// re-dispatches it. Useful when a worker-backed approval step got stuck in
+	// approval_pending or a task step failed and needs a manual retry.
+	// The step run's result and worker execution reference are cleared; the
+	// reconciler picks it up on the next cycle.
+	RetryStepRun(context.Context, *connect.Request[v1.RetryStepRunRequest]) (*connect.Response[v1.RetryStepRunResponse], error)
 	// StreamWorkflowEvents is the server-stream RPC that fans out workflow
 	// run events from NATS to connected clients (docs/07 §4, docs/10 §4.1).
 	// The editor run view overlays live step transitions on the canvas
@@ -271,6 +280,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("GetWorkflowStepRuns")),
 			connect.WithClientOptions(opts...),
 		),
+		retryStepRun: connect.NewClient[v1.RetryStepRunRequest, v1.RetryStepRunResponse](
+			httpClient,
+			baseURL+WorkflowServiceRetryStepRunProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("RetryStepRun")),
+			connect.WithClientOptions(opts...),
+		),
 		streamWorkflowEvents: connect.NewClient[v1.StreamWorkflowEventsRequest, v1.StreamWorkflowEventsResponse](
 			httpClient,
 			baseURL+WorkflowServiceStreamWorkflowEventsProcedure,
@@ -315,6 +330,7 @@ type workflowServiceClient struct {
 	getWorkflowRun        *connect.Client[v1.GetWorkflowRunRequest, v1.GetWorkflowRunResponse]
 	listWorkflowRuns      *connect.Client[v1.ListWorkflowRunsRequest, v1.ListWorkflowRunsResponse]
 	getWorkflowStepRuns   *connect.Client[v1.GetWorkflowStepRunsRequest, v1.GetWorkflowStepRunsResponse]
+	retryStepRun          *connect.Client[v1.RetryStepRunRequest, v1.RetryStepRunResponse]
 	streamWorkflowEvents  *connect.Client[v1.StreamWorkflowEventsRequest, v1.StreamWorkflowEventsResponse]
 	acquireEditLock       *connect.Client[v1.AcquireWorkflowEditLockRequest, v1.AcquireWorkflowEditLockResponse]
 	releaseEditLock       *connect.Client[v1.ReleaseWorkflowEditLockRequest, v1.ReleaseWorkflowEditLockResponse]
@@ -396,6 +412,11 @@ func (c *workflowServiceClient) GetWorkflowStepRuns(ctx context.Context, req *co
 	return c.getWorkflowStepRuns.CallUnary(ctx, req)
 }
 
+// RetryStepRun calls orchicon.api.v1.WorkflowService.RetryStepRun.
+func (c *workflowServiceClient) RetryStepRun(ctx context.Context, req *connect.Request[v1.RetryStepRunRequest]) (*connect.Response[v1.RetryStepRunResponse], error) {
+	return c.retryStepRun.CallUnary(ctx, req)
+}
+
 // StreamWorkflowEvents calls orchicon.api.v1.WorkflowService.StreamWorkflowEvents.
 func (c *workflowServiceClient) StreamWorkflowEvents(ctx context.Context, req *connect.Request[v1.StreamWorkflowEventsRequest]) (*connect.ServerStreamForClient[v1.StreamWorkflowEventsResponse], error) {
 	return c.streamWorkflowEvents.CallServerStream(ctx, req)
@@ -465,6 +486,12 @@ type WorkflowServiceHandler interface {
 	ListWorkflowRuns(context.Context, *connect.Request[v1.ListWorkflowRunsRequest]) (*connect.Response[v1.ListWorkflowRunsResponse], error)
 	// GetWorkflowStepRuns returns all step runs for a WorkflowRun.
 	GetWorkflowStepRuns(context.Context, *connect.Request[v1.GetWorkflowStepRunsRequest]) (*connect.Response[v1.GetWorkflowStepRunsResponse], error)
+	// RetryStepRun resets a step run back to pending so the WorkflowReconciler
+	// re-dispatches it. Useful when a worker-backed approval step got stuck in
+	// approval_pending or a task step failed and needs a manual retry.
+	// The step run's result and worker execution reference are cleared; the
+	// reconciler picks it up on the next cycle.
+	RetryStepRun(context.Context, *connect.Request[v1.RetryStepRunRequest]) (*connect.Response[v1.RetryStepRunResponse], error)
 	// StreamWorkflowEvents is the server-stream RPC that fans out workflow
 	// run events from NATS to connected clients (docs/07 §4, docs/10 §4.1).
 	// The editor run view overlays live step transitions on the canvas
@@ -577,6 +604,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("GetWorkflowStepRuns")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceRetryStepRunHandler := connect.NewUnaryHandler(
+		WorkflowServiceRetryStepRunProcedure,
+		svc.RetryStepRun,
+		connect.WithSchema(workflowServiceMethods.ByName("RetryStepRun")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workflowServiceStreamWorkflowEventsHandler := connect.NewServerStreamHandler(
 		WorkflowServiceStreamWorkflowEventsProcedure,
 		svc.StreamWorkflowEvents,
@@ -633,6 +666,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceListWorkflowRunsHandler.ServeHTTP(w, r)
 		case WorkflowServiceGetWorkflowStepRunsProcedure:
 			workflowServiceGetWorkflowStepRunsHandler.ServeHTTP(w, r)
+		case WorkflowServiceRetryStepRunProcedure:
+			workflowServiceRetryStepRunHandler.ServeHTTP(w, r)
 		case WorkflowServiceStreamWorkflowEventsProcedure:
 			workflowServiceStreamWorkflowEventsHandler.ServeHTTP(w, r)
 		case WorkflowServiceAcquireEditLockProcedure:
@@ -708,6 +743,10 @@ func (UnimplementedWorkflowServiceHandler) ListWorkflowRuns(context.Context, *co
 
 func (UnimplementedWorkflowServiceHandler) GetWorkflowStepRuns(context.Context, *connect.Request[v1.GetWorkflowStepRunsRequest]) (*connect.Response[v1.GetWorkflowStepRunsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.GetWorkflowStepRuns is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) RetryStepRun(context.Context, *connect.Request[v1.RetryStepRunRequest]) (*connect.Response[v1.RetryStepRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.RetryStepRun is not implemented"))
 }
 
 func (UnimplementedWorkflowServiceHandler) StreamWorkflowEvents(context.Context, *connect.Request[v1.StreamWorkflowEventsRequest], *connect.ServerStream[v1.StreamWorkflowEventsResponse]) error {

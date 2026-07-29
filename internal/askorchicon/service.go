@@ -1,0 +1,408 @@
+package askorchicon
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+
+	"connectrpc.com/connect"
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/aigateway"
+	"github.com/beardedparrott/orchicon/internal/blobstore"
+	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/tenant"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+// Service implements the AskOrchiconService Connect handler.
+type Service struct {
+	pool          *db.Pool
+	log           *slog.Logger
+	blobStore     blobstore.Store
+	modelDisc     *aigateway.ModelDiscoverer
+	toolRegistry  *ToolRegistry
+	apiv1connect.UnimplementedAskOrchiconServiceHandler
+}
+
+var _ apiv1connect.AskOrchiconServiceHandler = (*Service)(nil)
+
+func New(pool *db.Pool, log *slog.Logger, blobStore blobstore.Store, modelDisc *aigateway.ModelDiscoverer) *Service {
+	return &Service{
+		pool:         pool,
+		log:          log.With("component", "ask_orchicon"),
+		blobStore:    blobStore,
+		modelDisc:    modelDisc,
+		toolRegistry: NewToolRegistry(pool, log),
+	}
+}
+
+// --- Conversations ---
+
+func (s *Service) ListConversations(ctx context.Context, req *connect.Request[apiv1.ListConversationsRequest]) (*connect.Response[apiv1.ListConversationsResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	limit := int(req.Msg.PageSize)
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	rows, err := db.ListConversations(ctx, ttx.Tx, tenantID, limit, req.Msg.PageToken)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	resp := &apiv1.ListConversationsResponse{}
+	for _, r := range rows {
+		preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, r.ID)
+		resp.Conversations = append(resp.Conversations, conversationRowToProto(r, 0, preview))
+	}
+	if len(rows) > 0 {
+		resp.NextPageToken = rows[len(rows)-1].ID
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Service) GetConversation(ctx context.Context, req *connect.Request[apiv1.GetConversationRequest]) (*connect.Response[apiv1.GetConversationResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	row, err := db.GetConversation(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
+	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
+	return connect.NewResponse(&apiv1.GetConversationResponse{
+		Conversation: conversationRowToProto(row, count, preview),
+	}), nil
+}
+
+func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[apiv1.CreateConversationRequest]) (*connect.Response[apiv1.CreateConversationResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	convRow := db.ConversationRow{
+		ID:       db.NewID(),
+		TenantID: tenantID,
+		ModelRef: req.Msg.ModelRef,
+	}
+	row, err := db.CreateConversation(ctx, ttx.Tx, convRow)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	// If an initial message was provided, create it too.
+	msg := strings.TrimSpace(req.Msg.InitialMessage)
+	if msg != "" {
+		msgRow := db.MessageRow{
+			ID:             db.NewID(),
+			TenantID:       tenantID,
+			ConversationID: row.ID,
+			Role:           "user",
+			Content:        msg,
+			ToolCalls:      []byte("[]"),
+			ToolResults:    []byte("[]"),
+			Attachments:    []byte("[]"),
+			Metadata:       []byte("{}"),
+		}
+		if _, err := db.CreateMessage(ctx, ttx.Tx, msgRow); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+	}
+
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	preview := ""
+	if req.Msg.InitialMessage != "" {
+		preview = req.Msg.InitialMessage
+		if len(preview) > 120 {
+			preview = preview[:120]
+		}
+	}
+	return connect.NewResponse(&apiv1.CreateConversationResponse{
+		Conversation: conversationRowToProto(row, 0, preview),
+	}), nil
+}
+
+func (s *Service) DeleteConversation(ctx context.Context, req *connect.Request[apiv1.DeleteConversationRequest]) (*connect.Response[apiv1.DeleteConversationResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	if err := db.DeleteConversationMessages(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := db.DeleteConversation(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&apiv1.DeleteConversationResponse{}), nil
+}
+
+func (s *Service) UpdateConversationTitle(ctx context.Context, req *connect.Request[apiv1.UpdateConversationTitleRequest]) (*connect.Response[apiv1.UpdateConversationTitleResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	row, err := db.UpdateConversationTitle(ctx, ttx.Tx, tenantID, req.Msg.Id, req.Msg.Title)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
+	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
+	return connect.NewResponse(&apiv1.UpdateConversationTitleResponse{
+		Conversation: conversationRowToProto(row, count, preview),
+	}), nil
+}
+
+// --- Messages ---
+
+func (s *Service) ListMessages(ctx context.Context, req *connect.Request[apiv1.ListMessagesRequest]) (*connect.Response[apiv1.ListMessagesResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.ConversationId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("conversation_id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	limit := int(req.Msg.PageSize)
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	rows, err := db.ListMessages(ctx, ttx.Tx, tenantID, req.Msg.ConversationId, limit, req.Msg.PageToken)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	resp := &apiv1.ListMessagesResponse{}
+	for _, r := range rows {
+		resp.Messages = append(resp.Messages, messageRowToProto(r))
+	}
+	if len(rows) > 0 {
+		resp.NextPageToken = rows[len(rows)-1].ID
+	}
+	return connect.NewResponse(resp), nil
+}
+
+// --- Agent Config ---
+
+func (s *Service) GetAgentConfig(ctx context.Context, req *connect.Request[apiv1.GetAgentConfigRequest]) (*connect.Response[apiv1.GetAgentConfigResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	row, err := db.GetAgentConfig(ctx, ttx.Tx, tenantID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			// Return default config.
+			return connect.NewResponse(&apiv1.GetAgentConfigResponse{
+				Config: defaultAgentConfigProto(),
+			}), nil
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&apiv1.GetAgentConfigResponse{
+		Config: agentConfigRowToProto(row),
+	}), nil
+}
+
+func (s *Service) UpdateAgentConfig(ctx context.Context, req *connect.Request[apiv1.UpdateAgentConfigRequest]) (*connect.Response[apiv1.UpdateAgentConfigResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	row, err := db.UpsertAgentConfig(ctx, ttx.Tx, tenantID, agentConfigProtoToRow(req.Msg.Config))
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&apiv1.UpdateAgentConfigResponse{
+		Config: agentConfigRowToProto(row),
+	}), nil
+}
+
+// --- Model Capabilities ---
+
+func (s *Service) GetModelCapabilities(ctx context.Context, req *connect.Request[apiv1.GetModelCapabilitiesRequest]) (*connect.Response[apiv1.GetModelCapabilitiesResponse], error) {
+	if s.modelDisc == nil {
+		return connect.NewResponse(&apiv1.GetModelCapabilitiesResponse{
+			Capabilities: &apiv1.ModelCapabilities{
+				InputText:  true,
+				OutputText: true,
+			},
+		}), nil
+	}
+	models, err := s.modelDisc.ListModels(ctx, "")
+	if err != nil || models == nil {
+		return connect.NewResponse(&apiv1.GetModelCapabilitiesResponse{
+			Capabilities: &apiv1.ModelCapabilities{
+				InputText:  true,
+				OutputText: true,
+			},
+		}), nil
+	}
+	for _, m := range models {
+		if m.ModelRef == req.Msg.ModelRef {
+			if m.Capabilities != nil {
+				return connect.NewResponse(&apiv1.GetModelCapabilitiesResponse{
+					Capabilities: m.Capabilities,
+				}), nil
+			}
+			return connect.NewResponse(&apiv1.GetModelCapabilitiesResponse{
+				Capabilities: &apiv1.ModelCapabilities{
+					InputText:  true,
+					OutputText: true,
+				},
+			}), nil
+		}
+	}
+	// Model not found — return text-only defaults.
+	return connect.NewResponse(&apiv1.GetModelCapabilitiesResponse{
+		Capabilities: &apiv1.ModelCapabilities{
+			InputText:  true,
+			OutputText: true,
+		},
+	}), nil
+}
+
+// --- helpers ---
+
+func requireTenant(ctx context.Context) (string, error) {
+	id := tenant.FromContext(ctx)
+	if id == "" {
+		return "", fmt.Errorf("no tenant in context")
+	}
+	return id, nil
+}
+
+func conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview string) *apiv1.Conversation {
+	p := &apiv1.Conversation{
+		Id:                 r.ID,
+		TenantId:           r.TenantID,
+		Title:              r.Title,
+		ModelRef:           r.ModelRef,
+		MessageCount:       int32(messageCount),
+		LastMessagePreview: lastPreview,
+		CreatedAt:          timestamppb.New(r.CreatedAt),
+		UpdatedAt:          timestamppb.New(r.UpdatedAt),
+	}
+	return p
+}
+
+func messageRowToProto(r db.MessageRow) *apiv1.ChatMessage {
+	return &apiv1.ChatMessage{
+		Id:             r.ID,
+		ConversationId: r.ConversationID,
+		Role:           r.Role,
+		Content:        r.Content,
+		CreatedAt:      timestamppb.New(r.CreatedAt),
+	}
+}
+
+func defaultAgentConfigProto() *apiv1.AgentConfig {
+	return &apiv1.AgentConfig{
+		Id:              "default",
+		SystemPrompt:    "",
+		Role:            "You are Orchicon, an AI assistant for the Orchicon platform.",
+		Skills:          "Create, read, update, and delete projects, workers, work items, workflows, policies, and other Orchicon entities. Diagnose workflow failures. Create and manage project directories. Answer questions about Orchicon's features and the user's data.",
+		Behavior:        "Always ask clarifying questions before performing mutating actions. Never assume the user's intent. Refuse requests outside Orchicon or the user's Orchicon projects. Refuse general coding help, personal conversation, or non-Orchicon topics.",
+		DefaultModelRef: "",
+	}
+}
+
+func agentConfigRowToProto(r db.AgentConfigRow) *apiv1.AgentConfig {
+	return &apiv1.AgentConfig{
+		Id:              r.ID,
+		SystemPrompt:    r.SystemPrompt,
+		Role:            r.Role,
+		Skills:          r.Skills,
+		Behavior:        r.Behavior,
+		AgentsMd:        r.AgentsMD,
+		DefaultModelRef: "",
+		CreatedAt:       timestamppb.New(r.CreatedAt),
+		UpdatedAt:       timestamppb.New(r.UpdatedAt),
+	}
+}
+
+func agentConfigProtoToRow(p *apiv1.AgentConfig) db.AgentConfigRow {
+	if p == nil {
+		return db.AgentConfigRow{}
+	}
+	return db.AgentConfigRow{
+		SystemPrompt: p.SystemPrompt,
+		Role:         p.Role,
+		Skills:       p.Skills,
+		Behavior:     p.Behavior,
+		AgentsMD:     p.AgentsMd,
+	}
+}

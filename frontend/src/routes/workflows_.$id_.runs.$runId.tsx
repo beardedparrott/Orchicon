@@ -1,6 +1,6 @@
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, XCircle } from "lucide-react";
+import { CheckCircle2, RefreshCw, XCircle } from "lucide-react";
 import ReactFlow, {
   Background,
   Controls,
@@ -23,6 +23,7 @@ import {
   useGetWorkflow,
   useGetWorkflowRun,
   useGetWorkflowStepRuns,
+  useRetryStepRun,
 } from "@/api/workflows";
 import { useListExecutions } from "@/api/executions";
 import { useStreamWorkflowEvents } from "@/api/workflowEvents";
@@ -553,7 +554,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
               .map((sr) => {
                 if (sr.stepKind === StepKind.APPROVAL && (sr.status === StepRunStatus.APPROVAL_PENDING || sr.status === StepRunStatus.SUCCEEDED)) {
                   // APPROVAL step — show the approval panel inline.
-                  return <ApprovalStepCard key={sr.id} stepRun={sr} />;
+                  return <ApprovalStepCard key={sr.id} stepRun={sr} runId={runId} />;
                 }
                 return (
                   <div key={sr.id} className="flex items-center gap-3 rounded-md border p-2 text-sm text-muted-foreground">
@@ -599,10 +600,11 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
 
 // --- Approval step card (inline approve/reject panel for the run view) ---
 
-function ApprovalStepCard({ stepRun }: { stepRun: WorkflowStepRun }) {
+function ApprovalStepCard({ stepRun, runId }: { stepRun: WorkflowStepRun; runId: string }) {
   const [reason, setReason] = useState("");
   const [showContext, setShowContext] = useState(false);
   const approveMutation = useApproveStep();
+  const retryMutation = useRetryStepRun();
 
   // Parse the review context from the step run result.
   let context: {
@@ -696,6 +698,15 @@ function ApprovalStepCard({ stepRun }: { stepRun: WorkflowStepRun }) {
             >
               <XCircle className="mr-1 h-4 w-4" />
               Reject
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => retryMutation.mutate({ stepRunId: stepRun.id, workflowRunId: runId })}
+              disabled={retryMutation.isPending}
+            >
+              <RefreshCw className="mr-1 h-4 w-4" />
+              Retry step
             </Button>
           </div>
         </div>

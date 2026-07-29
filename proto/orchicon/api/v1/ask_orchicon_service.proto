@@ -1,0 +1,182 @@
+// Orchicon AskOrchiconService.
+//
+// Provides the conversational "Ask Orchicon" agent: streaming chat,
+// conversation management, attachment upload, and agent configuration.
+// The agent can create, read, update, and delete any Orchicon entity,
+// answer questions about the platform and user data, diagnose failures,
+// and create project directory scaffolding.
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "orchicon/api/v1/ask_orchicon.proto";
+import "orchicon/api/v1/ai_gateway.proto";
+
+service AskOrchiconService {
+  // Conversation CRUD.
+
+  // ListConversations returns conversations for the calling tenant,
+  // ordered by updated_at descending (most recent first).
+  rpc ListConversations(ListConversationsRequest) returns (ListConversationsResponse);
+
+  // GetConversation returns a single conversation by id.
+  rpc GetConversation(GetConversationRequest) returns (GetConversationResponse);
+
+  // CreateConversation creates a new conversation. Optionally accepts
+  // an initial message to start the conversation immediately.
+  rpc CreateConversation(CreateConversationRequest) returns (CreateConversationResponse);
+
+  // DeleteConversation deletes a conversation and all its messages.
+  rpc DeleteConversation(DeleteConversationRequest) returns (DeleteConversationResponse);
+
+  // UpdateConversationTitle updates the title of a conversation.
+  rpc UpdateConversationTitle(UpdateConversationTitleRequest) returns (UpdateConversationTitleResponse);
+
+  // Messages.
+
+  // ListMessages returns messages for a conversation, ordered by
+  // created_at ascending (oldest first).
+  rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
+
+  // ChatStream is the server-streaming RPC for the conversational
+  // interface. The client sends a message (with optional attachments)
+  // and receives a stream of TextChunk, ToolCallChunk, ToolCallResult,
+  // ErrorChunk, and finally DoneSignal events.
+  rpc ChatStream(ChatStreamRequest) returns (stream ChatStreamResponse);
+
+  // Attachments.
+
+  // UploadAttachment uploads a file attachment for use in a message.
+  // Returns a URL that can be referenced in subsequent ChatStream calls.
+  rpc UploadAttachment(UploadAttachmentRequest) returns (UploadAttachmentResponse);
+
+  // Agent configuration.
+
+  // GetAgentConfig returns the Ask Orchicon agent configuration for
+  // the calling tenant.
+  rpc GetAgentConfig(GetAgentConfigRequest) returns (GetAgentConfigResponse);
+
+  // UpdateAgentConfig updates the Ask Orchicon agent configuration.
+  rpc UpdateAgentConfig(UpdateAgentConfigRequest) returns (UpdateAgentConfigResponse);
+
+  // Model capabilities.
+
+  // GetModelCapabilities returns the capabilities of a specific model
+  // (text-only vs multi-modal), so the frontend can adapt the UI.
+  rpc GetModelCapabilities(GetModelCapabilitiesRequest) returns (GetModelCapabilitiesResponse);
+}
+
+// --- Conversations ---
+
+message ListConversationsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListConversationsResponse {
+  repeated Conversation conversations = 1;
+  string next_page_token = 2;
+}
+
+message GetConversationRequest {
+  string id = 1;
+}
+
+message GetConversationResponse {
+  Conversation conversation = 1;
+}
+
+message CreateConversationRequest {
+  string model_ref = 1;
+  string initial_message = 2;
+}
+
+message CreateConversationResponse {
+  Conversation conversation = 1;
+}
+
+message DeleteConversationRequest {
+  string id = 1;
+}
+
+message DeleteConversationResponse {}
+
+message UpdateConversationTitleRequest {
+  string id = 1;
+  string title = 2;
+}
+
+message UpdateConversationTitleResponse {
+  Conversation conversation = 1;
+}
+
+// --- Messages ---
+
+message ListMessagesRequest {
+  string conversation_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListMessagesResponse {
+  repeated ChatMessage messages = 1;
+  string next_page_token = 2;
+}
+
+// --- Chat Streaming ---
+
+message ChatStreamRequest {
+  string conversation_id = 1;
+  string message = 2;
+  repeated AttachmentInput attachments = 3;
+}
+
+message ChatStreamResponse {
+  oneof event {
+    TextChunk text_chunk = 1;
+    ToolCallChunk tool_call_start = 2;
+    ToolCallResult tool_call_result = 3;
+    ErrorChunk error = 4;
+    DoneSignal done = 5;
+  }
+}
+
+// --- Attachments ---
+
+message UploadAttachmentRequest {
+  string conversation_id = 1;
+  string name = 2;
+  string mime_type = 3;
+  bytes data = 4;
+}
+
+message UploadAttachmentResponse {
+  string attachment_id = 1;
+  string url = 2;
+}
+
+// --- Agent Config ---
+
+message GetAgentConfigRequest {}
+
+message GetAgentConfigResponse {
+  AgentConfig config = 1;
+}
+
+message UpdateAgentConfigRequest {
+  AgentConfig config = 1;
+}
+
+message UpdateAgentConfigResponse {
+  AgentConfig config = 1;
+}
+
+// --- Model Capabilities ---
+
+message GetModelCapabilitiesRequest {
+  string model_ref = 1;
+}
+
+message GetModelCapabilitiesResponse {
+  ModelCapabilities capabilities = 1;
+}
