@@ -1,6 +1,6 @@
 import { createRoute } from "@tanstack/react-router";
 import { useState, useCallback, useRef, useEffect } from "react";
-import { MessageSquare, Plus, Trash2, Paperclip, Mic } from "lucide-react";
+import { MessageSquare, Plus, Trash2, Paperclip, Mic, Square, Copy, Check } from "lucide-react";
 
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -65,57 +65,64 @@ function AskOrchiconPage() {
     }
   }, [deleteConv, activeConvId, toast]);
 
-  const handleSendMessage = useCallback(async (text: string, attachments?: AttachmentInput[]) => {
-    if (!text.trim() || !activeConvId || isStreaming) return;
+	const handleStopStreaming = useCallback(() => {
+		if (streamAbortRef.current) {
+			streamAbortRef.current.abort();
+			streamAbortRef.current = null;
+		}
+	}, []);
 
-    // Show the user's message immediately.
-    setOptimisticUserMsg(text);
-    setIsStreaming(true);
-    setStreamingContent("");
-    setIsThinking(true);
+	const handleSendMessage = useCallback(async (text: string, attachments?: AttachmentInput[]) => {
+		if (!text.trim() || !activeConvId || isStreaming) return;
 
-    const abortController = new AbortController();
-    streamAbortRef.current = abortController;
+		// Show the user's message immediately.
+		setOptimisticUserMsg(text);
+		setIsStreaming(true);
+		setStreamingContent("");
+		setIsThinking(true);
 
-    try {
-      const stream = askOrchiconClient.chatStream(
-        { conversationId: activeConvId, message: text, attachments: attachments ?? [] },
-        { signal: abortController.signal }
-      );
+		const abortController = new AbortController();
+		streamAbortRef.current = abortController;
 
-      let fullContent = "";
-      for await (const chunk of stream) {
-        switch (chunk.event.case) {
-          case "textChunk":
-            fullContent += chunk.event.value.content;
-            setStreamingContent(fullContent);
-            setIsThinking(false);
-            break;
-          case "error":
-            toast.error(chunk.event.value.message);
-            setIsThinking(false);
-            break;
-          case "done":
-            setStreamingContent("");
-            setIsThinking(false);
-            break;
-        }
-      }
-      // Refresh messages to show the persisted user + assistant messages.
-      qc.invalidateQueries({ queryKey: askKeys.messages(activeConvId) });
-      qc.invalidateQueries({ queryKey: askKeys.conversations });
-    } catch (err: any) {
-      if (err?.name !== "AbortError") {
-        toast.error(String(err?.message ?? err), { title: "Chat error" });
-      }
-    } finally {
-      setIsStreaming(false);
-      setStreamingContent("");
-      setIsThinking(false);
-      setOptimisticUserMsg(null);
-      streamAbortRef.current = null;
-    }
-  }, [activeConvId, isStreaming, toast, qc]);
+		try {
+			const stream = askOrchiconClient.chatStream(
+				{ conversationId: activeConvId, message: text, attachments: attachments ?? [] },
+				{ signal: abortController.signal }
+			);
+
+			let fullContent = "";
+			for await (const chunk of stream) {
+				switch (chunk.event.case) {
+					case "textChunk":
+						fullContent += chunk.event.value.content;
+						setStreamingContent(fullContent);
+						setIsThinking(false);
+						break;
+					case "error":
+						toast.error(chunk.event.value.message);
+						setIsThinking(false);
+						break;
+					case "done":
+						setStreamingContent("");
+						setIsThinking(false);
+						break;
+				}
+			}
+			// Refresh messages to show the persisted user + assistant messages.
+			qc.invalidateQueries({ queryKey: askKeys.messages(activeConvId) });
+			qc.invalidateQueries({ queryKey: askKeys.conversations });
+		} catch (err: any) {
+			if (err?.name !== "AbortError") {
+				toast.error(String(err?.message ?? err), { title: "Chat error" });
+			}
+		} finally {
+			setIsStreaming(false);
+			setStreamingContent("");
+			setIsThinking(false);
+			setOptimisticUserMsg(null);
+			streamAbortRef.current = null;
+		}
+	}, [activeConvId, isStreaming, toast, qc]);
 
   return (
     <div className="-m-6 lg:-m-8 flex h-[calc(100vh-3.5rem)] gap-0">
@@ -173,17 +180,24 @@ function AskOrchiconPage() {
                 </div>
               )}
 
-              {/* Thinking indicator */}
-              {isThinking && !streamingContent && (
-                <div className="flex justify-start">
-                  <div className="rounded-lg bg-card border px-4 py-2.5 min-w-[280px] max-w-[80%]">
-                    <p className="text-xs font-medium text-muted-foreground mb-1">Orchicon</p>
-                    <p className="text-sm italic text-muted-foreground animate-pulse">
-                      Orchicon is thinking about your request…
-                    </p>
-                  </div>
-                </div>
-              )}
+		{/* Thinking indicator */}
+				{isThinking && !streamingContent && (
+					<div className="flex justify-start">
+						<div className="rounded-lg bg-card border px-4 py-2.5 min-w-[280px] max-w-[80%]">
+							<p className="text-xs font-medium text-muted-foreground mb-1">Orchicon</p>
+							<div className="flex items-center gap-2">
+								<div className="flex gap-0.5">
+									<span className="h-1.5 w-1.5 rounded-full bg-muted-foreground animate-bounce [animation-delay:-0.3s]" />
+									<span className="h-1.5 w-1.5 rounded-full bg-muted-foreground animate-bounce [animation-delay:-0.15s]" />
+									<span className="h-1.5 w-1.5 rounded-full bg-muted-foreground animate-bounce" />
+								</div>
+								<p className="text-sm italic text-muted-foreground">
+									Orchicon is thinking about your request…
+								</p>
+							</div>
+						</div>
+					</div>
+				)}
 
               {/* Streaming response */}
               {streamingContent && (
@@ -200,10 +214,11 @@ function AskOrchiconPage() {
             </div>
 
             {/* Input */}
-            <ChatInputField
-              onSend={handleSendMessage}
-              disabled={isStreaming}
-            />
+			<ChatInputField
+				onSend={handleSendMessage}
+				onStop={handleStopStreaming}
+				isStreaming={isStreaming}
+			/>
           </div>
         )}
       </div>
@@ -258,36 +273,57 @@ function AskOrchiconPage() {
   );
 }
 
+function CopyButton({ text }: { text: string }) {
+	const [copied, setCopied] = useState(false);
+	return (
+		<button
+			onClick={() => {
+				navigator.clipboard.writeText(text);
+				setCopied(true);
+				setTimeout(() => setCopied(false), 2000);
+			}}
+			className="shrink-0 rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent opacity-0 group-hover:opacity-100 transition-opacity"
+			title="Copy"
+		>
+			{copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+		</button>
+	);
+}
+
 function ChatBubble({ message }: { message: ChatMessage }) {
-  const isUser = message.role === "user";
-  return (
-    <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
-      <div
-        className={cn(
-          "rounded-lg px-4 py-2.5 min-w-[280px] max-w-[80%]",
-          isUser
-            ? "bg-primary text-primary-foreground"
-            : "bg-card border",
-        )}
-      >
-        {!isUser && (
-          <p className="text-xs font-medium text-muted-foreground mb-1">Orchicon</p>
-        )}
-        <div className="text-sm">
-          <Markdown>{message.content}</Markdown>
-        </div>
-      </div>
-    </div>
-  );
+	const isUser = message.role === "user";
+	return (
+		<div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
+			<div
+				className={cn(
+					"rounded-lg px-4 py-2.5 min-w-[280px] max-w-[80%] group relative",
+					isUser
+						? "bg-primary text-primary-foreground"
+						: "bg-card border",
+				)}
+			>
+				{!isUser && (
+					<p className="text-xs font-medium text-muted-foreground mb-1">Orchicon</p>
+				)}
+				<CopyButton text={message.content} />
+				<div className="text-sm">
+					<Markdown>{message.content}</Markdown>
+				</div>
+			</div>
+		</div>
+	);
 }
 
 function ChatInputField({
-  onSend,
-  disabled,
+	onSend,
+	onStop,
+	isStreaming,
 }: {
-  onSend: (text: string, attachments?: AttachmentInput[]) => void;
-  disabled: boolean;
+	onSend: (text: string, attachments?: AttachmentInput[]) => void;
+	onStop: () => void;
+	isStreaming: boolean;
 }) {
+	const disabled = isStreaming;
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<AttachmentInput[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -464,13 +500,24 @@ function ChatInputField({
             <Mic className="h-4 w-4" />
           </button>
         </div>
-        <Button
-          onClick={handleSubmit}
-          disabled={(!text.trim() && attachments.length === 0) || disabled}
-          size="sm"
-        >
-          {disabled ? "..." : "Send"}
-        </Button>
+		{isStreaming ? (
+			<Button
+				onClick={onStop}
+				variant="destructive"
+				size="sm"
+			>
+				<Square className="h-4 w-4 mr-1" />
+				Stop
+			</Button>
+		) : (
+			<Button
+				onClick={handleSubmit}
+				disabled={(!text.trim() && attachments.length === 0) || disabled}
+				size="sm"
+			>
+				Send
+			</Button>
+		)}
       </div>
       <input
         ref={fileInputRef}

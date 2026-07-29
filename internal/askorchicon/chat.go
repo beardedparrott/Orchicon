@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -20,6 +21,20 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 )
+
+// defaultTimeout is the default maximum duration for a single ChatStream
+// response. When the provider or model stalls beyond this limit the stream
+// terminates with a timeout error. Override via ORCHICON_ASK_TIMEOUT.
+const defaultTimeout = 300 * time.Second
+
+func askTimeout() time.Duration {
+	if v := os.Getenv("ORCHICON_ASK_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultTimeout
+}
 
 // opencodeEvent is a single JSON event from opencode's stdout.
 type opencodeEvent struct {
@@ -188,6 +203,12 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 			state, _ := evt.Part["state"].(map[string]any)
 			if strings.HasPrefix(toolName, "orchicon_") {
 				goTool := strings.TrimPrefix(toolName, "orchicon_")
+				// Send a progress message so the user sees tool execution.
+				stream.Send(&apiv1.ChatStreamResponse{
+					Event: &apiv1.ChatStreamResponse_TextChunk{
+						TextChunk: &apiv1.TextChunk{Content: "> *Running tool: " + goTool + "...*\n\n"},
+					},
+				})
 				inRaw, _ := state["input"]
 				inputJSON, _ := json.Marshal(inRaw)
 				resultJSON, execErr := s.toolRegistry.Execute(ctx, s.pool, goTool, inputJSON)
@@ -676,10 +697,9 @@ func (s *Service) runOpenCodeStream(ctx context.Context, modelRef, prompt, userM
 		"--auto", goal,
 	}
 
-	// Use a 120-second timeout so a hanging model never blocks the
-	// conversation indefinitely. The derived context propagates from
-	// the request context (for client disconnect) capped at the timeout.
-	runCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	// Use a configurable timeout so a hanging model never blocks the
+	// conversation indefinitely. Default 300s, override via ORCHICON_ASK_TIMEOUT.
+	runCtx, cancel := context.WithTimeout(ctx, askTimeout())
 	defer cancel()
 
 	cmd := exec.CommandContext(runCtx, "opencode", args...)
@@ -717,7 +737,7 @@ func (s *Service) runOpenCodeStream(ctx context.Context, modelRef, prompt, userM
 
 	if waitErr != nil {
 		if errors.Is(waitErr, context.DeadlineExceeded) || errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-			return msgID, elapsed, fmt.Errorf("request timed out after 120 seconds — the model may be overloaded or unavailable")
+			return msgID, elapsed, fmt.Errorf("request timed out after %s — the model may be overloaded or unavailable", askTimeout())
 		}
 		stderrText := strings.TrimSpace(stderrBuf.String())
 		if stderrText != "" {

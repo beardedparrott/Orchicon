@@ -87,6 +87,8 @@ type ToolDef struct {
 	Name        string
 	Description string
 	Mutating    bool
+	Properties  map[string]propertySchema // input field definitions
+	Required    []string                  // required field names
 }
 
 // Ensure the askorchicon.ToolRegistry satisfies our interface via adapter.
@@ -160,11 +162,15 @@ func (s *Server) handleToolsList(req jsonRPCRequest) {
 	defs := s.tools.List()
 	tools := make([]mcpTool, 0, len(defs))
 	for _, td := range defs {
-		tools = append(tools, mcpTool{
+		t := mcpTool{
 			Name:        td.Name,
 			Description: td.Description + fmt.Sprintf(" (%s)", mutabilityLabel(td.Mutating)),
-			InputSchema: genericInputSchema(),
-		})
+		}
+		if len(td.Properties) > 0 {
+			t.InputSchema.Properties = td.Properties
+			t.InputSchema.Required = td.Required
+		}
+		tools = append(tools, t)
 	}
 	s.writeResult(req.ID, map[string]any{"tools": tools})
 }
