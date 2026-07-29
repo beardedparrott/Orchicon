@@ -647,17 +647,15 @@ func buildLLMPrompt(cfg db.AgentConfigRow, registry *ToolRegistry, history []db.
 		b.WriteString("\n")
 	}
 
-	// Tool note — MCP handles discovery and calling, but we list them
-	// briefly so the model knows what's available.
 	b.WriteString("## Available tools\n")
 	for _, td := range registry.List() {
 		mutability := "read-only"
 		if td.Mutating {
 			mutability = "mutates data — requires user confirmation"
 		}
-		b.WriteString(fmt.Sprintf("- %s: %s (%s)\n", td.Name, td.Description, mutability))
+		b.WriteString(fmt.Sprintf("- `%s`: %s (%s)\n", td.Name, td.Description, mutability))
 	}
-	b.WriteString("\nThe tools above are available through the Orchicon MCP server. Use them when the user asks you to perform an action.\n\n")
+	b.WriteString("\nTo call a tool, emit a tool_call in your output with the tool name and JSON arguments. The system will execute it and return the result.\n\n")
 
 	b.WriteString("## User's request\n")
 	b.WriteString(userMsg + "\n\n")
