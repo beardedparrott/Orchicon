@@ -20,7 +20,7 @@ export const Route = createRoute({
   component: AskOrchiconPage,
 });
 
-function AskOrchiconPage() {
+	function AskOrchiconPage() {
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
   const [streamingContent, setStreamingContent] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -37,10 +37,23 @@ function AskOrchiconPage() {
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
+  const doneContentRef = useRef(""); // holds streaming content after done signal, cleared when persisted messages arrive
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamingContent, isThinking, optimisticUserMsg]);
+
+  // When persisted messages arrive after streaming finishes, clear the
+  // streaming bubble to avoid duplicates. This eliminates the flicker
+  // where streamingContent is cleared before persisted data renders.
+  useEffect(() => {
+    if (!doneContentRef.current) return;
+    const lastAssistant = messages?.filter(m => m.role === "assistant").at(-1);
+    if (lastAssistant && lastAssistant.content === doneContentRef.current) {
+      doneContentRef.current = "";
+      setStreamingContent("");
+    }
+  }, [messages]);
 
   const handleNewChat = useCallback(async () => {
     try {
@@ -103,7 +116,9 @@ function AskOrchiconPage() {
 						setIsThinking(false);
 						break;
 					case "done":
-						setStreamingContent("");
+						// Keep streaming content visible until persisted messages arrive.
+						// doneContentRef holds the final text; it's cleared when refetch completes.
+						doneContentRef.current = fullContent;
 						setIsThinking(false);
 						break;
 				}
@@ -117,7 +132,11 @@ function AskOrchiconPage() {
 			}
 		} finally {
 			setIsStreaming(false);
-			setStreamingContent("");
+			// Only clear streaming content if done didn't save it (e.g. error/abort).
+			// On done, doneContentRef holds it until persisted messages arrive.
+			if (!doneContentRef.current) {
+				setStreamingContent("");
+			}
 			setIsThinking(false);
 			setOptimisticUserMsg(null);
 			streamAbortRef.current = null;
