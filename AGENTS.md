@@ -244,40 +244,50 @@ impact, you may skip the update, but err on the side of updating.
 
 ## E2E Testing & Cleanup
 
-Every E2E test creates real data (projects, workers, work items, workflow runs) in the database. This data leaks into the dev environment and causes:
+## E2E Testing & Data Preservation
 
-- **Log spam**: The TaskReconciler finds stale `ready` work items and retries dispatch every ~200ms, logging `WARN no suitable worker for task` indefinitely.
-- **FK violations**: Hard-deleting work items fails if bound `workflow_runs` reference them. All new FK constraints **must** use `ON DELETE SET NULL` or `ON DELETE CASCADE` — never the default `NO ACTION`.
-- **Silent failures**: The `HardDeleteWorkItem` RPC can fail silently when blocked by FK constraints. Always check the API response for errors.
+### Backup before any agent session that modifies data
 
-### Cleanup checklist — every agent must run this after any E2E session
+Before making any changes (migrations, edits, test data creation), back up the database:
 
-1. **Cancel stale work items**: The TaskReconciler scans for `ready` items. Any test work item left in `ready` status with a deleted worker will spam logs forever.
+```bash
+docker exec orchicon-postgres pg_dump -U orchicon -d orchicon > /tmp/orchicon-backup-$(date +%Y%m%d-%H%M%S).sql
+```
 
-   ```sql
-   UPDATE work_items SET status = 'cancelled', updated_at = now()
-   WHERE status = 'ready'
-     AND assigned_worker_ref IS NOT NULL
-     AND NOT EXISTS (
-       SELECT 1 FROM workers w WHERE w.id = assigned_worker_ref::jsonb->>'worker_id'
-     );
-   ```
+This ensures you can always restore if something goes wrong. To restore:
 
-2. **Verify FK constraints on new migrations**: Every `REFERENCES` column must carry `ON DELETE SET NULL` or `ON DELETE CASCADE`. The default (`NO ACTION`) blocks deletes and causes silent UI failures.
+```bash
+cat /tmp/orchicon-backup-*.sql | docker exec -i orchicon-postgres psql -U orchicon -d orchicon
+```
 
-3. **Reset the dev database**: Between unrelated E2E sessions, run `make nuke && make up` to destroy and recreate all volumes. This is the only reliable way to guarantee a clean slate.
+### Cleanup notes
 
-4. **Check for orphaned runs**: After deleting work items, verify no `workflow_runs` reference non-existent work items:
+- **Stale work items**: The TaskReconciler scans for `ready` items. If you need to cancel stray items after E2E, update them by ID via the API or UI — never issue bulk SQL deletes.
+- **FK constraints**: Every `REFERENCES` column must carry `ON DELETE SET NULL` or `ON DELETE CASCADE`. The default (`NO ACTION`) blocks deletes and causes silent UI failures.
+- **Migration idempotency**: Every `ALTER TABLE ADD COLUMN` must use `ADD COLUMN IF NOT EXISTS`. Without it, re-running migrations on an existing database errors with "column already exists". This is mandatory for all new migrations (see DOCUMENTATION.md §Database Migrations).
+- **Seed data is managed in Go code** (`internal/db/seed_workers.go`), not SQL migrations. Worker changes go in Go, not in new `.sql` files.
 
-   ```sql
-   SELECT wr.id FROM workflow_runs wr
-   WHERE wr.work_item_id IS NOT NULL
-     AND NOT EXISTS (SELECT 1 FROM work_items wi WHERE wi.id = wr.work_item_id);
-   ```
+## Ask Orchicon — keep it in sync
 
-5. **Verify migration idempotency**: Every `ALTER TABLE ADD COLUMN` must use `ADD COLUMN IF NOT EXISTS`. Without it, re-running migrations on an existing database errors with "column already exists". This is mandatory for all new migrations (see DOCUMENTATION.md §Database Migrations).
+> Every time you add, change, or remove a first-class entity, RPC, or user-facing capability, update the Ask Orchicon agent to match.
 
-6. **Delete test resources via the API**: After creating test workers, workflows, etc. during E2E, delete them through the UI or API. Do not leave published workers, workflows, or work items behind.
+The "Ask Orchicon" conversational agent (`internal/askorchicon/`) has a `ToolRegistry` in `tools.go` that defines every action the agent can perform. When you:
+
+- **Add a new entity** (table, proto, service) — add a tool for its CRUD in the appropriate `tool_*.go` file and register it in `allTools()` in `tools.go`
+- **Add a new RPC** — add a tool that calls the DB layer directly (same as existing tools)
+- **Change the data-access layer** — update any tools that call the affected `db.*` functions
+- **Change the agent's identity** — update `agent.go` (the hardcoded root system prompt) or the DB-stored config defaults in `service.go`'s `defaultAgentConfigProto()`
+- **Add a new interactive feature** — add a new `tool_*.go` file following the existing patterns and register it
+
+The three touchpoints to check:
+
+1. `internal/askorchicon/tools.go` — `allTools()` list (add/remove tool definitions)
+2. `internal/askorchicon/tool_*.go` — tool implementations (one file per domain)
+3. `internal/askorchicon/agent.go` — `BuildSystemPrompt()` (update if the agent needs to know about the new feature)
+4. `internal/askorchicon/service.go` — `defaultAgentConfigProto()` (update Skills/Behavior defaults if the new feature changes what Orchicon can do or how it should behave)
+5. `db/migrations/` — if the new feature adds a table, ensure it has RLS (the CI gate enforces this, but new Ask Orchicon conversation/message tables must too)
+
+The frontend route (`/ask-orchicon`) and its components generally don't need changes unless the chat UI itself is being modified — the agent adapts to new tools automatically through the system prompt.
 
 ## Things you need to know
 

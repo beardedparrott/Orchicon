@@ -202,37 +202,16 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	if runDir != "" {
 		cmd.Dir = runDir
 	}
+	// Build the OPENCODE_CONFIG_CONTENT with the agent config and
+	// any MCP servers from the user's opencode config. This merges
+	// the user's MCP tools into every worker execution automatically.
+	cfgJSON := BuildConfigContent(workerAgent, manifest.SystemPrompt, modelRef)
 	cmd.Env = append(os.Environ(),
 		"OPENCODE_EXECUTION_ID="+execRow.ID,
 		"OPENCODE_TASK_ID="+manifest.TaskID,
 		"OPENCODE_PROJECT_ID="+manifest.ProjectID,
+		"OPENCODE_CONFIG_CONTENT="+cfgJSON,
 	)
-	if manifest.SystemPrompt != "" {
-		// Pass the system prompt as a custom agent definition in
-		// OPENCODE_CONFIG_CONTENT. The agent's `prompt` field is
-		// what opencode sends as the system message on every
-		// turn. We pin model/provider defaults in the same config so
-		// the agent does not fall back to user-global settings that
-		// the worker author never authorized.
-		agentCfg := struct {
-			Schema string                    `json:"$schema"`
-			Agent  map[string]map[string]any `json:"agent"`
-		}{
-			Schema: "https://opencode.ai/config.json",
-			Agent: map[string]map[string]any{
-				workerAgent: {
-					"prompt": manifest.SystemPrompt,
-					"mode":   "primary",
-					"model":  modelRef,
-				},
-			},
-		}
-		if cfgJSON, err := json.Marshal(agentCfg); err == nil {
-			cmd.Env = append(cmd.Env, "OPENCODE_CONFIG_CONTENT="+string(cfgJSON))
-		} else {
-			a.log.Warn("opencode: marshal agent config", "execution", execRow.ID, "error", err)
-		}
-	}
 
 	// Capture stdout + stderr. Stderr is logged to the control plane's
 	// stderr, captured into a buffer for error reporting, AND emitted

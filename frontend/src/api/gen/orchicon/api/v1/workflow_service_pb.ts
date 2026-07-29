@@ -1381,6 +1381,74 @@ export class GetWorkflowStepRunsResponse extends Message<GetWorkflowStepRunsResp
 }
 
 /**
+ * @generated from message orchicon.api.v1.RetryStepRunRequest
+ */
+export class RetryStepRunRequest extends Message<RetryStepRunRequest> {
+  /**
+   * @generated from field: string step_run_id = 1;
+   */
+  stepRunId = "";
+
+  constructor(data?: PartialMessage<RetryStepRunRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RetryStepRunRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "step_run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RetryStepRunRequest {
+    return new RetryStepRunRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RetryStepRunRequest {
+    return new RetryStepRunRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RetryStepRunRequest {
+    return new RetryStepRunRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RetryStepRunRequest | PlainMessage<RetryStepRunRequest> | undefined, b: RetryStepRunRequest | PlainMessage<RetryStepRunRequest> | undefined): boolean {
+    return proto3.util.equals(RetryStepRunRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.RetryStepRunResponse
+ */
+export class RetryStepRunResponse extends Message<RetryStepRunResponse> {
+  constructor(data?: PartialMessage<RetryStepRunResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RetryStepRunResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RetryStepRunResponse {
+    return new RetryStepRunResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RetryStepRunResponse {
+    return new RetryStepRunResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RetryStepRunResponse {
+    return new RetryStepRunResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RetryStepRunResponse | PlainMessage<RetryStepRunResponse> | undefined, b: RetryStepRunResponse | PlainMessage<RetryStepRunResponse> | undefined): boolean {
+    return proto3.util.equals(RetryStepRunResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.StreamWorkflowEventsRequest
  */
 export class StreamWorkflowEventsRequest extends Message<StreamWorkflowEventsRequest> {

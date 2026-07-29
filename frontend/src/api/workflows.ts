@@ -250,6 +250,22 @@ export function useAbortWorkflow() {
   });
 }
 
+// useRetryStepRun resets a step run to pending so the reconciler
+// re-dispatches it. Clears the execution and result.
+export function useRetryStepRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { stepRunId: string; workflowRunId: string }) => {
+      await workflowClient.retryStepRun({ stepRunId: input.stepRunId });
+      return input.workflowRunId;
+    },
+    onSuccess: (runId) => {
+      qc.invalidateQueries({ queryKey: workflowKeys.stepRuns(runId) });
+      qc.invalidateQueries({ queryKey: workflowKeys.run(runId) });
+    },
+  });
+}
+
 // useGetWorkflowRun fetches a single workflow run by id.
 export function useGetWorkflowRun(id: string) {
   return useQuery({

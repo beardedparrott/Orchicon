@@ -20,7 +20,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/beardedparrott/orchicon/internal/askorchicon"
 	"github.com/beardedparrott/orchicon/internal/config"
+	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/mcp"
 	"github.com/beardedparrott/orchicon/internal/server"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
@@ -53,6 +56,8 @@ func main() {
 			os.Exit(runDev([]string{"restart"}))
 		case "logs":
 			os.Exit(runDev([]string{"logs"}))
+		case "mcp":
+			os.Exit(runMCP(context.Background(), os.Args[2:], log))
 		case "version", "--version", "-v":
 			fmt.Println(version.Current().String())
 			return
@@ -97,6 +102,7 @@ Usage:
   orchicon dev start    Start the full dev stack (compose → migrate → serve)
   orchicon dev stop     Stop the dev stack
   orchicon dev status   Show what's running
+  orchicon mcp          Start the MCP stdio server (for opencode tool integration)
 
 Short aliases:
   orchicon start        Same as "orchicon dev start"
@@ -108,4 +114,29 @@ Short aliases:
 The binary embeds the Docker Compose stack, migrations, and the frontend
 bundle, so `+"`orchicon start`"+` is the complete one-command experience.
 `, version.Current().Tag)
+}
+
+func runMCP(ctx context.Context, args []string, log *slog.Logger) int {
+	cfg := config.Default()
+	if err := cfg.Validate(); err != nil {
+		log.Error("invalid configuration", "error", err)
+		return 1
+	}
+
+	pool, err := db.Open(ctx, cfg.PostgresDSN)
+	if err != nil {
+		log.Error("db open", "error", err)
+		return 1
+	}
+	defer pool.Close()
+
+	toolReg := askorchicon.NewToolRegistry(pool, log)
+	mcpSrv := mcp.New(log, pool, mcp.NewAskOrchiconRegistry(toolReg))
+
+	log.Info("mcp server started (stdio transport)")
+	if err := mcpSrv.Run(ctx); err != nil {
+		log.Error("mcp server", "error", err)
+		return 1
+	}
+	return 0
 }

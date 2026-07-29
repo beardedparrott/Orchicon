@@ -81,6 +81,13 @@ service WorkflowService {
   // GetWorkflowStepRuns returns all step runs for a WorkflowRun.
   rpc GetWorkflowStepRuns(GetWorkflowStepRunsRequest) returns (GetWorkflowStepRunsResponse);
 
+  // RetryStepRun resets a step run back to pending so the WorkflowReconciler
+  // re-dispatches it. Useful when a worker-backed approval step got stuck in
+  // approval_pending or a task step failed and needs a manual retry.
+  // The step run's result and worker execution reference are cleared; the
+  // reconciler picks it up on the next cycle.
+  rpc RetryStepRun(RetryStepRunRequest) returns (RetryStepRunResponse);
+
   // StreamWorkflowEvents is the server-stream RPC that fans out workflow
   // run events from NATS to connected clients (docs/07 §4, docs/10 §4.1).
   // The editor run view overlays live step transitions on the canvas
@@ -253,6 +260,12 @@ message GetWorkflowStepRunsRequest {
 message GetWorkflowStepRunsResponse {
   repeated WorkflowStepRun step_runs = 1;
 }
+
+message RetryStepRunRequest {
+  string step_run_id = 1;
+}
+
+message RetryStepRunResponse {}
 
 message StreamWorkflowEventsRequest {
   string tenant_id = 1;

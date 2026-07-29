@@ -1,0 +1,128 @@
+// Orchicon Ask Orchicon entities.
+//
+// Conversations, messages, and agent configuration for the "Ask Orchicon"
+// conversational agent. The agent can answer questions about Orchicon and the
+// user's data, perform CRUD on all first-class entities, diagnose failures,
+// and create project directory scaffolding.
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Conversation is a top-level chat session with the Ask Orchicon agent.
+message Conversation {
+  string id = 1;
+  string tenant_id = 2;
+  string title = 3;
+  string model_ref = 4;
+  int32 message_count = 5;
+  string last_message_preview = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+// ChatMessage is a single message within a conversation.
+message ChatMessage {
+  string id = 1;
+  string conversation_id = 2;
+  string role = 3;       // "user" | "assistant" | "tool" | "system"
+  string content = 4;
+  repeated ToolCall tool_calls = 5;
+  repeated ToolResult tool_results = 6;
+  repeated Attachment attachments = 7;
+  MessageMetadata metadata = 8;
+  google.protobuf.Timestamp created_at = 9;
+}
+
+// ToolCall represents a function call made by the agent.
+message ToolCall {
+  string id = 1;
+  string type = 2;           // "function"
+  string function_name = 3;
+  string arguments = 4;      // JSON
+}
+
+// ToolResult represents the result of a tool call execution.
+message ToolResult {
+  string tool_call_id = 1;
+  string output = 2;         // JSON
+  bool is_error = 3;
+}
+
+// Attachment represents a file or media attachment in a message.
+message Attachment {
+  string name = 1;
+  string mime_type = 2;
+  int64 size = 3;
+  string url = 4;
+  string attachment_type = 5; // "file" | "image" | "audio" | "pdf"
+}
+
+// MessageMetadata captures token usage, cost, and latency for a message.
+message MessageMetadata {
+  string model_ref = 1;
+  int64 prompt_tokens = 2;
+  int64 completion_tokens = 3;
+  double cost_usd = 4;
+  int64 latency_ms = 5;
+}
+
+// AgentConfig defines Orchicon's agent identity, skills, tools, and
+// guardrails. Stored in the database so it can be versioned and edited
+// through the UI.
+message AgentConfig {
+  string id = 1;
+  string system_prompt = 2;
+  string role = 3;
+  string skills = 4;
+  string behavior = 5;
+  string agents_md = 6;
+  repeated string tool_names = 7;
+  repeated string gated_tools = 8;
+  string default_model_ref = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+}
+
+// --- ChatStream event types ---
+
+// TextChunk is a streaming text fragment from the agent.
+message TextChunk {
+  string content = 1;
+}
+
+// ToolCallChunk signals that the agent is invoking a tool.
+message ToolCallChunk {
+  string id = 1;
+  string function_name = 2;
+  string arguments = 3;
+}
+
+// ToolCallResult is the outcome of executing a tool.
+message ToolCallResult {
+  string tool_call_id = 1;
+  string output = 2;
+  bool is_error = 3;
+  int64 latency_ms = 4;
+}
+
+// ErrorChunk signals an error during processing.
+message ErrorChunk {
+  string message = 1;
+  string code = 2;
+}
+
+// DoneSignal is the final event in a ChatStream response, carrying the
+// persisted assistant message ID and token metadata.
+message DoneSignal {
+  string assistant_message_id = 1;
+  MessageMetadata metadata = 2;
+}
+
+// AttachmentInput is a file attachment sent with a chat message.
+message AttachmentInput {
+  string name = 1;
+  string mime_type = 2;
+  bytes data = 3;
+}

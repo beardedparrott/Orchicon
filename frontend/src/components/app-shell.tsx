@@ -21,6 +21,7 @@ type NavItem = {
 
 const NAV: NavItem[] = [
   { label: "Dashboard", to: "/" },
+  { label: "Ask Orchicon", to: "/ask-orchicon" },
   { label: "Projects", to: "/projects" },
   { label: "Work Items", to: "/work-items" },
   { label: "Workers", to: "/workers" },
