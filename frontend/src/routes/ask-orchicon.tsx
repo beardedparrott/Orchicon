@@ -282,10 +282,10 @@ function CopyButton({ text }: { text: string }) {
 				setCopied(true);
 				setTimeout(() => setCopied(false), 2000);
 			}}
-			className="shrink-0 rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent opacity-0 group-hover:opacity-100 transition-opacity"
+			className="shrink-0 rounded p-1 bg-muted/60 hover:bg-accent hover:text-foreground transition-colors float-right -mt-0.5 -mr-1"
 			title="Copy"
 		>
-			{copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+			{copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3 text-muted-foreground" />}
 		</button>
 	);
 }
