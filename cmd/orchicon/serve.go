@@ -29,6 +29,7 @@ func runServe() int {
 	log.Info("orchicon serve starting", "version", version.Current().String())
 
 	cfg := config.Default()
+	applyProdDefaults(&cfg)
 	if err := cfg.Validate(); err != nil {
 		log.Error("invalid configuration", "error", err)
 		return 1

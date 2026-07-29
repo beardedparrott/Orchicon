@@ -157,6 +157,7 @@ func devStartChild() int {
 	log.Info("orchicon control plane starting", "version", version.Current().String())
 
 	cfg := config.Default()
+	applyProdDefaults(&cfg)
 	srv, err := server.New(cfg, log)
 	if err != nil {
 		log.Error("failed to construct server", "error", err)
@@ -213,6 +214,7 @@ func devStartParent() int {
 	fmt.Println("▸ Applying migrations…")
 	ctx := context.Background()
 	cfg := config.Default()
+	applyProdDefaults(&cfg)
 	pool, err := db.Open(ctx, cfg.PostgresDSN)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "✗ Failed to connect to database: %v\n", err)
