@@ -46,11 +46,44 @@ import (
 	"github.com/beardedparrott/orchicon/internal/version"
 )
 
-const (
-	devPIDFile  = ".dev/pids/orchicon.pid"
-	devLogFile  = ".dev/logs/orchicon.log"
-	devEnvChild = "ORCHICON_DEV_CHILD"
+// Instance identity — computed at init from the binary name.
+// When the binary is named orchicon-prod, the compose project, PID files,
+// log files, and port strings shift to the prod values so that both
+// orchicon-dev and orchicon-prod can run simultaneously on the same host.
+var (
+	devPIDFile   string
+	devLogFile   string
+	devEnvChild  string
+	devProject   string // compose project name
+	devCompose   string // compose file name
+	devHTTPPort  string
+	devSigNozPort string
+	devNATSPort  string
 )
+
+func init() {
+	bin := filepath.Base(os.Args[0])
+	isProd := strings.Contains(bin, "orchicon-prod")
+	if isProd {
+		devPIDFile = ".dev/prod/orchicon.pid"
+		devLogFile = ".dev/prod/orchicon.log"
+		devEnvChild = "ORCHICON_PROD_CHILD"
+		devProject = "orchicon-prod"
+		devCompose = "docker-compose-prod.yml"
+		devHTTPPort = ":8090"
+		devSigNozPort = "3302"
+		devNATSPort = "8223"
+	} else {
+		devPIDFile = ".dev/pids/orchicon.pid"
+		devLogFile = ".dev/logs/orchicon.log"
+		devEnvChild = "ORCHICON_DEV_CHILD"
+		devProject = "orchicon"
+		devCompose = "docker-compose.yml"
+		devHTTPPort = ":8080"
+		devSigNozPort = "3301"
+		devNATSPort = "8222"
+	}
+}
 
 // runDev dispatches to the dev subcommand. Returns an exit code.
 func runDev(args []string) int {
@@ -82,18 +115,19 @@ func runDev(args []string) int {
 }
 
 func printDevUsage() {
-	fmt.Fprintf(os.Stderr, `orchicon dev — manage the local development stack
+	binName := filepath.Base(os.Args[0])
+	fmt.Fprintf(os.Stderr, `%s — manage the local development stack
 
 Usage:
-  orchicon dev start     Start the full stack (compose → migrate → serve in background)
-  orchicon dev stop      Stop the stack (signal server → compose down)
-  orchicon dev status    Show what's running
-  orchicon dev restart   Stop then start
-  orchicon dev logs      Tail control plane logs
+  %s start     Start the full stack (compose → migrate → serve in background)
+  %s stop      Stop the stack (signal server → compose down)
+  %s status    Show what's running
+  %s restart   Stop then start
+  %s logs      Tail control plane logs
 
 The binary embeds the Docker Compose stack, migrations, and the frontend
 bundle, so no Go, Node, or source checkout is required — only Docker.
-`)
+`, binName, binName, binName, binName, binName, binName)
 }
 
 // --- Start ------------------------------------------------------------------
@@ -144,13 +178,14 @@ func devStartChild() int {
 // server in the background, waits for it to be healthy, then tails the log
 // file. Ctrl-C stops the tail only — the server keeps running.
 func devStartParent() int {
-	fmt.Printf("orchicon dev start %s\n\n", version.Current().String())
+	binName := filepath.Base(os.Args[0])
+	fmt.Printf("%s start %s\n\n", binName, version.Current().String())
 
 	// 1. Check if already running.
 	if pid, running := procRunning(devPIDFile); running {
-		fmt.Fprintf(os.Stderr, "✗ orchicon is already running (PID %s)\n", pid)
-		fmt.Fprintf(os.Stderr, "  Run 'orchicon dev logs' to tail its logs.\n")
-		fmt.Fprintf(os.Stderr, "  Run 'orchicon dev stop' to stop it.\n")
+		fmt.Fprintf(os.Stderr, "✗ %s is already running (PID %s)\n", binName, pid)
+		fmt.Fprintf(os.Stderr, "  Run '%s logs' to tail its logs.\n", binName)
+		fmt.Fprintf(os.Stderr, "  Run '%s stop' to stop it.\n", binName)
 		return 1
 	}
 
@@ -255,12 +290,12 @@ func devStartParent() int {
 	fmt.Println()
 	fmt.Println("  ✓ Orchicon is running")
 	fmt.Printf("    Control plane:  http://localhost%s\n", cfg.HTTPAddr)
-	fmt.Println("    SigNoz UI:      http://localhost:3301")
-	fmt.Println("    NATS monitor:   http://localhost:8222")
+	fmt.Printf("    SigNoz UI:      http://localhost:%s\n", devSigNozPort)
+	fmt.Printf("    NATS monitor:   http://localhost:%s\n", devNATSPort)
 	fmt.Printf("    Logs:           %s\n", devLogFile)
 	fmt.Printf("    PID:            %d\n", pid)
 	fmt.Println()
-	fmt.Println("→ Tailing control plane logs (Ctrl+C to stop tailing; server continues in background)")
+	fmt.Printf("→ Tailing control plane logs (Ctrl+C to stop tailing; server continues in background)\n")
 	fmt.Println()
 
 	// 8. Tail log file until Ctrl-C.
@@ -268,8 +303,8 @@ func devStartParent() int {
 
 	fmt.Println()
 	fmt.Println("◆ Log tail ended. Server continues running in background.")
-	fmt.Println("  Run 'orchicon dev stop' to stop the server.")
-	fmt.Println("  Run 'orchicon dev logs' to tail logs again.")
+	fmt.Printf("  Run '%s stop' to stop the server.\n", binName)
+	fmt.Printf("  Run '%s logs' to tail logs again.\n", binName)
 	return 0
 }
 
@@ -291,7 +326,8 @@ func devStartParent() int {
 // would just bounce. SIGKILL is the only signal that guarantees the
 // mmap'd binary is released so a new binary can be installed.
 func devStop(log *slog.Logger) int {
-	fmt.Println("▸ orchicon dev stop")
+	binName := filepath.Base(os.Args[0])
+	fmt.Printf("▸ %s stop\n", binName)
 
 	// 1. Signal child to stop gracefully.
 	var stoppedPID int
@@ -337,7 +373,7 @@ func devStop(log *slog.Logger) int {
 	if err := composeDown(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "  ! Compose down: %v\n", err)
 	} else {
-		fmt.Println("  ✓ Dev stack stopped")
+		fmt.Println("  ✓ Stack stopped")
 	}
 
 	return 0
@@ -347,16 +383,17 @@ func devStop(log *slog.Logger) int {
 
 // devStatus checks what's running and probes key endpoints.
 func devStatus(log *slog.Logger) int {
-	fmt.Println("Orchicon dev status")
+	fmt.Printf("Orchicon status (%s)\n", devProject)
 	fmt.Println()
 
 	// Control plane via PID file.
 	fmt.Println("Control plane:")
 	if pid, running := procRunning(devPIDFile); running {
-		if probeHTTP(context.Background(), "http://localhost:8080/healthz") {
+		healthURL := "http://localhost" + devHTTPPort + "/healthz"
+		if probeHTTP(context.Background(), healthURL) {
 			fmt.Printf("  ✓ Running (PID %s) — healthy\n", pid)
 		} else {
-			fmt.Printf("  ! Running (PID %s) — not responding on :8080\n", pid)
+			fmt.Printf("  ! Running (PID %s) — not responding on %s\n", pid, devHTTPPort)
 		}
 	} else if _, exists := os.Stat(devPIDFile); exists == nil {
 		fmt.Println("  ! PID file exists but process is not running (stale)")
@@ -379,9 +416,9 @@ func devStatus(log *slog.Logger) int {
 	endpoints := []struct {
 		url, label string
 	}{
-		{"http://localhost:8080/healthz", "Control plane"},
-		{"http://localhost:8222/healthz", "NATS"},
-		{"http://localhost:3301/api/v1/health", "SigNoz"},
+		{"http://localhost" + devHTTPPort + "/healthz", "Control plane"},
+		{"http://localhost:" + devNATSPort + "/healthz", "NATS"},
+		{"http://localhost:" + devSigNozPort + "/api/v1/health", "SigNoz"},
 	}
 	for _, ep := range endpoints {
 		if probeHTTP(ctx, ep.url) {
@@ -399,7 +436,8 @@ func devStatus(log *slog.Logger) int {
 func devLogs(log *slog.Logger) int {
 	if _, err := os.Stat(devLogFile); os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "✗ Log file not found: %s\n", devLogFile)
-		fmt.Fprintf(os.Stderr, "  Is Orchicon running? Run 'orchicon dev start' first.\n")
+		binName := filepath.Base(os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Is it running? Run '%s start' first.\n", binName)
 		return 1
 	}
 	fmt.Println("◆ Tailing control plane logs (Ctrl+C to stop)")
@@ -535,8 +573,8 @@ func runComposeFromTemp(ctx context.Context, log *slog.Logger, args ...string) e
 
 	fullArgs := append([]string{
 		"compose",
-		"-p", "orchicon",
-		"-f", filepath.Join(dir, "docker-compose.yml"),
+		"-p", devProject,
+		"-f", filepath.Join(dir, devCompose),
 	}, args...)
 	cmd := exec.CommandContext(ctx, "docker", fullArgs...)
 	cmd.Dir = dir
@@ -579,16 +617,18 @@ func forceRemoveOrchiconContainers(ctx context.Context) {
 	// Prune by compose project label — catches all containers regardless
 	// of whether they were started by this binary or by a different tool.
 	prune := exec.CommandContext(ctx, "docker", "container", "prune",
-		"--force", "--filter", "label=com.docker.compose.project=orchicon")
+		"--force", "--filter", "label=com.docker.compose.project="+devProject)
 	prune.Stderr = os.Stderr
 	prune.Stdout = os.Stdout
 	_ = prune.Run()
 
 	// Nuclear fallback by known container name — catches containers that
 	// may lack the compose label (e.g. from very old compose versions).
+	// Compose auto-prefixes container names with the project name when
+	// container_name is not set in the YAML.
 	known := []string{
-		"orchicon-postgres", "orchicon-nats", "orchicon-clickhouse",
-		"orchicon-signoz-schema-migrator", "orchicon-otel-collector", "orchicon-signoz",
+		devProject + "-postgres", devProject + "-nats", devProject + "-clickhouse",
+		devProject + "-signoz-schema-migrator", devProject + "-otel-collector", devProject + "-signoz",
 	}
 	for _, name := range known {
 		rm := exec.CommandContext(ctx, "docker", "rm", "-f", name)
@@ -604,7 +644,7 @@ func waitForContainer(service string, maxRetries int) error {
 	for i := 0; i < maxRetries; i++ {
 		cmd := exec.Command("docker", "inspect",
 			"--format", "{{.State.Health.Status}}",
-			"orchicon-"+service)
+			devProject+"-"+service)
 		out, err := cmd.Output()
 		if err == nil {
 			status := strings.TrimSpace(string(out))

@@ -47,13 +47,19 @@ lint: ## Lint the Protobuf schema (buf lint)
 proto: lint gen ## Lint + generate
 
 # --- Go control plane ------------------------------------------------------
-.PHONY: build run test vet tidy
-build: ## Build the control-plane binary into bin/
-	@mkdir -p $(BIN_DIR)
-	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon ./cmd/orchicon
+.PHONY: build build-dev build-prod run test vet tidy
+build: build-dev build-prod ## Build both control-plane binaries into bin/
 
-run: ## Run the control plane from source
-	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon
+build-dev: ## Build the dev control-plane binary (bin/orchicon-dev)
+	@mkdir -p $(BIN_DIR)
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon-dev ./cmd/orchicon
+
+build-prod: ## Build the prod control-plane binary (bin/orchicon-prod)
+	@mkdir -p $(BIN_DIR)
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon-prod ./cmd/orchicon
+
+run: build-dev ## Run the dev control plane from source
+	./bin/orchicon-dev
 
 test: ## Run Go tests
 	$(GO) test ./...
@@ -155,10 +161,10 @@ install-dry-run: ## Dry-run the install script (no changes made)
 install-uninstall: ## Uninstall Orchicon via the install script
 	scripts/install.sh --uninstall
 
-install-dev: ## Build binary to bin/orchicon for dev instance
+install-dev: ## Build binary to bin/orchicon-dev for dev instance
 	scripts/install-dev.sh
 
-install-prod: ## Build + install to ~/.local/bin/orchicon for prod instance
+install-prod: ## Build + install to ~/.local/bin/orchicon-prod for prod instance
 	scripts/install-prod.sh
 
 # --- CI --------------------------------------------------------------------

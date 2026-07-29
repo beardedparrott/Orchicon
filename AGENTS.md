@@ -71,11 +71,14 @@ The project's model spend is rising. Be economical but **never at the expense of
 During active development, iterate locally without creating PRs or releases:
 
 ```bash
-scripts/install-dev.sh                # builds frontend + Go binary to bin/orchicon
-./bin/orchicon dev stop && ./bin/orchicon dev start   # restart with the new binary
+scripts/install-dev.sh                  # builds frontend + Go binary to bin/orchicon-dev
+./bin/orchicon-dev dev stop && ./bin/orchicon-dev dev start   # restart with the new binary
 ```
 
-**IMPORTANT:** Always use `./bin/orchicon` (not bare `orchicon`) for the dev instance. Bare `orchicon` resolves from your PATH to `~/.local/bin/orchicon` — the prod binary, which may be a different version. The dev binary lives at `./bin/orchicon`.
+**IMPORTANT:** The binary name determines which instance the binary manages:
+- `orchicon-dev` (at `./bin/orchicon-dev`) manages the dev compose project on default ports
+- `orchicon-prod` (at `~/.local/bin/orchicon-prod`) manages the prod compose project on offset ports
+Both are built from the same source. See DOCUMENTATION.md §Dual-Instance Dogfooding Setup.
 
 The binary embeds everything (docker-compose.yml, frontend dist, migrations) via `go:embed` in `assets.go`. Any change to source files, docker-compose, or frontend code is included in the next build. No branches, commits, or PRs needed during the day — just build and test.
 

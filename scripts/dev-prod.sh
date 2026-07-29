@@ -38,7 +38,7 @@ PID_DIR="$PROD_DIR/pids"
 LOG_DIR="$PROD_DIR/logs"
 mkdir -p "$PID_DIR" "$LOG_DIR"
 
-ORCHICON_BIN="${ORCHICON_BIN:-$HOME/.local/bin/orchicon}"
+ORCHICON_BIN="${ORCHICON_BIN:-$HOME/.local/bin/orchicon-prod}"
 
 # Prod instance environment: all ports offset +1 from dev defaults.
 export ORCHICON_HTTP_ADDR="${ORCHICON_HTTP_ADDR:-:8090}"
@@ -169,9 +169,9 @@ do_start() {
   fi
 
   # 4. Verify binary exists.
-  if [ ! -x "$ORCHICON_BIN" ]; then
-    log_err "binary not found or not executable: $ORCHICON_BIN"
-    log_err "Set ORCHICON_BIN or build & install first: make build && cp ./bin/orchicon $ORCHICON_BIN"
+	if [ ! -x "$ORCHICON_BIN" ]; then
+		log_err "binary not found or not executable: $ORCHICON_BIN"
+		log_err "Set ORCHICON_BIN or build & install first: make install-prod"
     return 1
   fi
 

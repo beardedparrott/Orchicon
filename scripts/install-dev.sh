@@ -15,10 +15,10 @@ echo "▸ Building frontend…"
 npm run --silent --prefix frontend build
 
 echo "▸ Building binary…"
-make build --silent
+make build-dev --silent
 
 echo ""
-echo "  ✓ orchicon v$(bin/orchicon version) built at bin/orchicon"
+echo "  ✓ orchicon v$(bin/orchicon-dev version) built at bin/orchicon-dev"
 echo ""
-echo "Run:  scripts/dev.sh start"
+echo "Run:  ./bin/orchicon-dev start"
 echo "  (migrations apply automatically on start)"

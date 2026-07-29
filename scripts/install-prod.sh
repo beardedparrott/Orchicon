@@ -27,14 +27,14 @@ echo "▸ Building frontend…"
 npm run --silent --prefix frontend build
 
 echo "▸ Building binary…"
-make build --silent
+make build-prod --silent
 
-echo "▸ Installing to $DEST/orchicon…"
-cp bin/orchicon "$DEST/orchicon"
-chmod +x "$DEST/orchicon"
+echo "▸ Installing to $DEST/orchicon-prod…"
+cp bin/orchicon-prod "$DEST/orchicon-prod"
+chmod +x "$DEST/orchicon-prod"
 
 echo ""
-echo "  ✓ orchicon v$(bin/orchicon version) installed at $DEST/orchicon"
+echo "  ✓ orchicon v$(bin/orchicon-prod version) installed at $DEST/orchicon-prod"
 echo ""
 echo "Run:  scripts/dev-prod.sh restart"
 echo "  (to restart the prod instance with the new binary)"
