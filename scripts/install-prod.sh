@@ -34,7 +34,7 @@ cp bin/orchicon-prod "$DEST/orchicon-prod"
 chmod +x "$DEST/orchicon-prod"
 
 echo ""
-echo "  ✓ orchicon v$(bin/orchicon-prod version) installed at $DEST/orchicon-prod"
+echo "  ✓ $(bin/orchicon-prod version) installed at $DEST/orchicon-prod"
 echo ""
 echo "Run:  scripts/dev-prod.sh restart"
 echo "  (to restart the prod instance with the new binary)"

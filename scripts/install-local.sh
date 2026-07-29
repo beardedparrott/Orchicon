@@ -34,7 +34,7 @@ cp bin/orchicon-prod "$DEST/orchicon-prod"
 chmod +x "$DEST/orchicon-prod"
 
 echo ""
-echo "  ✓ orchicon v$(bin/orchicon version) installed"
+echo "  ✓ $(bin/orchicon version) installed"
 echo "    std:  $DEST/orchicon"
 echo "    dev:  $DEST/orchicon-dev"
 echo "    prod: $DEST/orchicon-prod"
