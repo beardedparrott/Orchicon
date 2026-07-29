@@ -25,7 +25,7 @@ import (
 // defaultTimeout is the default maximum duration for a single ChatStream
 // response. When the provider or model stalls beyond this limit the stream
 // terminates with a timeout error. Override via ORCHICON_ASK_TIMEOUT.
-const defaultTimeout = 300 * time.Second
+const defaultTimeout = 600 * time.Second
 
 func askTimeout() time.Duration {
 	if v := os.Getenv("ORCHICON_ASK_TIMEOUT"); v != "" {
@@ -685,16 +685,13 @@ func (s *Service) runOpenCodeStream(ctx context.Context, modelRef, prompt, userM
 
 	cfgJSON := opencode.BuildConfigContent("orchicon-assistant", prompt, modelRef)
 
-	goal := userMessage
-	if len(goal) > 200 {
-		goal = goal[:200]
-	}
 	args := []string{
 		"run",
 		"--format", "json",
 		"--model", modelRef,
 		"--agent", "orchicon-assistant",
-		"--auto", goal,
+		"--auto",
+		userMessage,
 	}
 
 	// Use a configurable timeout so a hanging model never blocks the
