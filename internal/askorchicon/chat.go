@@ -620,6 +620,12 @@ func buildLLMPrompt(cfg db.AgentConfigRow, registry *ToolRegistry, history []db.
 	b.WriteString("\n\n")
 
 	b.WriteString("## Conversation history\n")
+	// history is in DESC (newest-first) order from the DB. Reverse it so
+	// we can take the LAST N items (which are the most recent in a
+	// chronologically-ordered slice).
+	for i, j := 0, len(history)-1; i < j; i, j = i+1, j-1 {
+		history[i], history[j] = history[j], history[i]
+	}
 	start := 0
 	if len(history) > 10 {
 		start = len(history) - 10
@@ -714,6 +720,8 @@ func (s *Service) runOpenCodeStream(ctx context.Context, modelRef, prompt, userM
 	}
 
 	scanner := bufio.NewScanner(stdout)
+	const maxScannerToken = 512 * 1024 // 512KB — opencode JSON events can be large
+	scanner.Buffer(make([]byte, maxScannerToken), maxScannerToken)
 	for scanner.Scan() {
 		line := scanner.Text()
 		var evt opencodeEvent
