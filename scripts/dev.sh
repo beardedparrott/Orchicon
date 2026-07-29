@@ -211,8 +211,12 @@ do_start() {
   echo -e "  SigNoz UI:      ${C_DIM}http://localhost:3301${C_RESET}"
   echo -e "  NATS monitor:   ${C_DIM}http://localhost:8222${C_RESET}"
   echo ""
-  echo -e "  Logs:           ${C_DIM}tail -f $LOG_DIR/orchicon.log $LOG_DIR/vite.log${C_RESET}"
+  echo -e "  Logs:           ${C_DIM}$LOG_DIR/orchicon.log + $LOG_DIR/vite.log${C_RESET}"
   echo -e "  Stop:           ${C_DIM}scripts/dev.sh stop${C_RESET}"
+  echo ""
+  echo "→ Tailing control plane + frontend logs (Ctrl+C to stop tailing; server continues in background)"
+  echo ""
+  tail -f "$LOG_DIR/orchicon.log" "$LOG_DIR/vite.log"
 }
 
 do_stop() {

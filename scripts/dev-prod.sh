@@ -189,8 +189,12 @@ do_start() {
   echo -e "  SigNoz UI:      ${C_DIM}http://localhost:3302${C_RESET}"
   echo -e "  NATS monitor:   ${C_DIM}http://localhost:8223${C_RESET}"
   echo ""
-  echo -e "  Logs:           ${C_DIM}tail -f $logfile${C_RESET}"
+  echo -e "  Logs:           ${C_DIM}$logfile${C_RESET}"
   echo -e "  Stop:           ${C_DIM}scripts/dev-prod.sh stop${C_RESET}"
+  echo ""
+  echo "→ Tailing control plane logs (Ctrl+C to stop tailing; server continues in background)"
+  echo ""
+  tail -f "$logfile"
 }
 
 do_stop() {
