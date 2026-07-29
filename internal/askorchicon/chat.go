@@ -117,10 +117,11 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 
 	// Pre-execute: detect tool-callable intent and run matching read-only
 	// tools. The results are injected into the prompt so the model has
-	// real data to reason about — it never needs to call tools itself.
-	toolResults := s.preExecuteTools(ctx, tenantID, msg)
+	// real data to reason about. We also track which tools were executed
+	// so the prompt can tell the model NOT to re-call them.
+	toolResults, preExecNames := s.preExecuteTools(ctx, tenantID, msg)
 
-	fullPrompt := buildLLMPrompt(cfg, s.toolRegistry, prevMessages, msg, req.Msg.Attachments, toolResults)
+	fullPrompt := buildLLMPrompt(cfg, s.toolRegistry, prevMessages, msg, req.Msg.Attachments, toolResults, preExecNames)
 
 	// --- 4. Stream from opencode, stripping tool call markers.
 	// The frontend shows a "thinking" indicator during the initial latency
@@ -203,12 +204,6 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 			state, _ := evt.Part["state"].(map[string]any)
 			if strings.HasPrefix(toolName, "orchicon_") {
 				goTool := strings.TrimPrefix(toolName, "orchicon_")
-				// Send a progress message so the user sees tool execution.
-				stream.Send(&apiv1.ChatStreamResponse{
-					Event: &apiv1.ChatStreamResponse_TextChunk{
-						TextChunk: &apiv1.TextChunk{Content: "> *Running tool: " + goTool + "...*\n\n"},
-					},
-				})
 				inRaw, _ := state["input"]
 				inputJSON, _ := json.Marshal(inRaw)
 				resultJSON, execErr := s.toolRegistry.Execute(ctx, s.pool, goTool, inputJSON)
@@ -315,17 +310,21 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 // preExecuteTools detects tool-callable intents in the user's message,
 // executes matching read-only tools, and returns formatted results for
 // injection into the prompt. Mutating tools are NOT auto-executed.
-func (s *Service) preExecuteTools(ctx context.Context, tenantID, msg string) string {
+// The second return value lists the tool names that were executed, so
+// the prompt can tell the model not to re-call them.
+func (s *Service) preExecuteTools(ctx context.Context, tenantID, msg string) (string, []string) {
 	intents := s.toolRegistry.DetectToolIntents(msg)
 	if len(intents) == 0 {
-		return ""
+		return "", nil
 	}
 
 	var b strings.Builder
+	executed := make([]string, 0, len(intents))
 	for _, intent := range intents {
 		// Scheduling: detect "set number 3 to scheduled" patterns.
 		if intent.ToolName == "list_work_items" && isScheduleIntent(msg) {
 			s.handleScheduleIntent(ctx, &b, msg)
+			executed = append(executed, intent.ToolName)
 			continue
 		}
 		result, err := s.toolRegistry.Execute(ctx, s.pool, intent.ToolName, intent.Args)
@@ -338,8 +337,9 @@ func (s *Service) preExecuteTools(ctx context.Context, tenantID, msg string) str
 			resultStr = resultStr[:32000] + "\n...(truncated)"
 		}
 		b.WriteString(fmt.Sprintf("[%s result]\n%s\n\n", intent.ToolName, resultStr))
+		executed = append(executed, intent.ToolName)
 	}
-	return b.String()
+	return b.String(), executed
 }
 
 func isScheduleIntent(msg string) bool {
@@ -613,7 +613,9 @@ func formatDiagnosisSummary(raw json.RawMessage) string {
 }
 
 // buildLLMPrompt assembles the full text prompt sent to the LLM.
-func buildLLMPrompt(cfg db.AgentConfigRow, registry *ToolRegistry, history []db.MessageRow, userMsg string, attachments []*apiv1.AttachmentInput, toolResults string) string {
+// preExecNames lists tools that were already executed by preExecuteTools —
+// the prompt tells the model not to call them again.
+func buildLLMPrompt(cfg db.AgentConfigRow, registry *ToolRegistry, history []db.MessageRow, userMsg string, attachments []*apiv1.AttachmentInput, toolResults string, preExecNames []string) string {
 	var b strings.Builder
 
 	b.WriteString(BuildSystemPrompt(cfg, registry))
@@ -675,6 +677,16 @@ func buildLLMPrompt(cfg db.AgentConfigRow, registry *ToolRegistry, history []db.
 		b.WriteString("Items are numbered starting from 1 in the order shown. If the user refers to an item by number (like \"number 3\" or \"#3\"), that refers to the Nth item in this list.\n\n")
 		b.WriteString(toolResults)
 		b.WriteString("\n")
+		// Tell the model which tools were already called so it doesn't
+		// re-invoke them through the tool_call mechanism.
+		if len(preExecNames) > 0 {
+			b.WriteString("These tools have already been called and their results are shown above. ")
+			b.WriteString("DO NOT call any of these tools again — use the data already provided:\n")
+			for _, name := range preExecNames {
+				b.WriteString(fmt.Sprintf("- %s\n", name))
+			}
+			b.WriteString("\n")
+		}
 	}
 
 	return b.String()
