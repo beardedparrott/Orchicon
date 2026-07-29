@@ -102,6 +102,9 @@ func toolGetUsage(ctx context.Context, pool *db.Pool, args json.RawMessage) (jso
 	if err != nil {
 		return nil, err
 	}
+	if rows == nil {
+		return json.RawMessage("[]"), nil
+	}
 	return json.Marshal(rows)
 }
 
