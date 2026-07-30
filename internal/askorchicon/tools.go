@@ -258,7 +258,7 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Description: "Create a new worker with a name and optional runtime/model configuration.",
 			Mutating:    true,
 			Fn:          toolCreateWorker,
-			Properties:  map[string]PropertySchema{"name": {Type: "string", Description: "Worker name"}, "runtime_ref": {Type: "string", Description: "Runtime reference (e.g. opencode)"}, "model_ref": {Type: "string", Description: "Model reference (e.g. opencode/deepseek-v4-flash-free)"}},
+			Properties:  map[string]PropertySchema{"name": {Type: "string", Description: "Worker name"}, "runtime_ref": {Type: "string", Description: "Runtime reference (e.g. opencode)"}, "model_ref": {Type: "string", Description: "Model reference (e.g. opencode-go/deepseek-v4-flash)"}},
 			Required:    []string{"name"},
 		},
 
