@@ -52,7 +52,7 @@ The project's model spend is rising. Be economical but **never at the expense of
 - Commit early and often on your branch. Write clear commit messages in present tense: `Add project CRUD service and data-access layer`. Stage only the files relevant to the commit.
 - **Never create a pull request without asking the user for approval first.** Ask, wait for a yes, then proceed.
 - Once work is complete and properly tested, ask the user to verify.
-- After the user confirms, create a PR and merge. PRs MUST carry the `release` label to kick off the release creation on GitHub.
+- After the user confirms, create a PR and merge. PRs MUST carry the `release` label to kick off the release creation on GitHub. After the merge, delete the branch.
 - **Before every PR merge**, ALWAYS ASK THE USER BEFORE MERGING, update the "Last Release Changes" section in `README.md` with a table listing each feature/bug fix in the release. Only the most recent release info should be present — remove older entries. Table format:
 
   ```

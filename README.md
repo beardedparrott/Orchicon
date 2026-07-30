@@ -29,19 +29,13 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
-### v0.1.153 (2026-07-29)
+### v0.1.155 (2026-07-29)
 
 | Type | Change |
 |---|---|
-| Feature | Principal Architect: writes per-work-item architecture summary to `architecture-notes/` directory, passes location downstream |
-| Feature | Senior Software Engineer: checks `architecture-notes/` before coding |
-| Feature | Dual-instance warning added to all canned workers |
-| Feature | PR Reviewer and QA Engineer: added bold "YOU DO NOT MODIFY CODE" guardrails |
-| Bug fix | Principal Architect: removed stale docs/ and adr-format references, added Git workflow section |
-| Bug fix | Seed worker sync: now updates agents_md, role, skills, behavior on existing workers every boot (was only set on initial creation) |
-| Bug fix | Workers defaulting to `opencode/deepseek-v4-flash-free` — changed to `opencode-go/deepseek-v4-flash` across seed, model definitions, and gateway |
-| Bug fix | Frontend: `kindFilter` TS errors (missing prop types, unused import, possibly-undefined `items`) |
-| Fix | `signoz-schema-migrator`: pinned to `v0.144.6` with `pull_policy: missing` on all SigNoz images to eliminate registry pull on every compose up |
+| Bug fix | Moved PR & merge instructions from PR Reviewer to DevOps Engineer (was placed on wrong worker) |
+| Feature | DevOps Engineer: now PRs and merges immediately on approval without asking, deletes branch after merge |
+| Chore | AGENTS.md: added "delete the branch after merge" to Git Workflow |
 
 
 ## Installation
