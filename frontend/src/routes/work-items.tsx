@@ -356,7 +356,7 @@ function TreeNode({
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
 }) {
-  const [expanded, setExpanded] = useState(depth < 2);
+  const [expanded, setExpanded] = useState(false);
   const children = childrenOf(item.id);
   const hasChildren = children.length > 0;
 
