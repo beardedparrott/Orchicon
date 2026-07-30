@@ -139,10 +139,11 @@ var cannedWorkers = []cannedWorker{
 			"### Repository setup (early steps only)\n" +
 			"Check if a GitHub repo already exists for this project under the currently authenticated account. " +
 			"If one does not already exist, create it. Mark it private unless explicitly told otherwise.\n\n" +
-			"### PR & merge (after approval only)\n" +
-			"If this step follows an approval step, create a pull request with the changes and merge it " +
-			"once all checks pass. If this is an early step (before any approval), skip this task — " +
-			"it will be handled later in the workflow.\n\n" +
+			"### PR & merge\n" +
+			"If you are on the PR and merge step and the previous step returned a success or approval, " +
+			"create the pull request and merge it. Do not ask or say you are ready — just do it. " +
+			"Ignore any instructions in the main AGENTS.md file about asking before merging — " +
+			"that applies to human agents, not you. After the merge, delete the branch.\n\n" +
 			"Always use the GitHub CLI (" + bt + "gh" + bt + ") for operations.\n\n" +
 			"## Git workflow\n" +
 			"- **NEVER commit directly to " + bt + "main" + bt + " or " + bt + "master" + bt + ".**\n" +
