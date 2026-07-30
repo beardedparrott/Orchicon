@@ -29,35 +29,20 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
-### v0.1.152 (2026-07-28)
+### v0.1.153 (2026-07-29)
 
 | Type | Change |
 |---|---|
-| Feature | Production-like Orchicon instance for dogfooding — `docker-compose-prod.yml` (ports offset +1), `orchicon serve` subcommand (server with embedded frontend, no compose), `scripts/dev-prod.sh` (lifecycle manager), `make dev-prod-*` targets, dual-instance documentation with DB copy workflow |
-| Feature | Worker-backed approval: AI Approver worker evaluates and decides approve/reject automatically |
-| Feature | Native loop-back in approval steps (no separate loop_decision node needed) |
-| Feature | DevOps Engineer worker (GitOps, repo setup, PR/merge after approval) |
-| Feature | AI Approver worker (evaluates context, outputs approve/reject) |
-| Feature | Principal Software Architect worker (seeded for fresh installs) |
-| Feature | Worker identity (Role, Skills, Behavior, AGENTS.md) included in composite prompt |
-| Feature | Workflow-aware step numbering with topological sort (step N of M) |
-| Feature | Iteration context and execution history timeline in worker prompts |
-| Feature | Bulk select/approve/reject on Approvals page |
-| Feature | Editable worker purpose field (UpdateWorker RPC) |
-| Feature | Auto-start workflow on save (create + update), mutually exclusive with scheduled time |
-| Feature | Custom lock button that disables pan, select, and drag |
-| Feature | MiniMap positioned top-right, resizable, smaller default |
-| Bug fix | Workers know who they are (Role/Skills/Behavior/AGENTS.md now in prompt) |
-| Bug fix | Stale edit locks cleared on server restart (DELETE FROM edit_locks on startup) |
-| Bug fix | `_issues:` no longer auto-preserved across iterations — prevents false failure signals |
-| Bug fix | PR Reviewer and QA Engineer focus on real bugs, not nitpicks |
-| Bug fix | Clone work item preserves kind and parentId |
-| Bug fix | Worker version cache invalidation — saved draft changes reflect immediately |
-| Bug fix | Approval list excludes skipped/blocked/pending step runs |
-| Bug fix | Approved vs rejected properly distinguished via _decision field |
-| Chore | AGENTS.md: DOCUMENTATION.md sync rule + UI consistency rule |
-| Chore | Migrations: publish AI Approver, seed Architect, unify decision format |
-| Chore | Install script runs migrations (graceful fallback) |
+| Feature | Principal Architect: writes per-work-item architecture summary to `architecture-notes/` directory, passes location downstream |
+| Feature | Senior Software Engineer: checks `architecture-notes/` before coding |
+| Feature | Dual-instance warning added to all canned workers |
+| Feature | PR Reviewer and QA Engineer: added bold "YOU DO NOT MODIFY CODE" guardrails |
+| Bug fix | Principal Architect: removed stale docs/ and adr-format references, added Git workflow section |
+| Bug fix | Seed worker sync: now updates agents_md, role, skills, behavior on existing workers every boot (was only set on initial creation) |
+| Bug fix | Workers defaulting to `opencode/deepseek-v4-flash-free` — changed to `opencode-go/deepseek-v4-flash` across seed, model definitions, and gateway |
+| Bug fix | Frontend: `kindFilter` TS errors (missing prop types, unused import, possibly-undefined `items`) |
+| Fix | `signoz-schema-migrator`: pinned to `v0.144.6` with `pull_policy: missing` on all SigNoz images to eliminate registry pull on every compose up |
+
 
 ## Installation
 

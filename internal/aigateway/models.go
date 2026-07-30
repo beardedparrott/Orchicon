@@ -360,6 +360,17 @@ func mockModels() []*apiv1.OpenCodeModel {
 			Variants: []string{"medium", "high", "xhigh"},
 		},
 		{
+			Id: "deepseek-v4-flash", ProviderId: "opencode-go", Name: "DeepSeek V4 Flash (Opencode Go)", Family: "deepseek",
+			Status: "active", ModelRef: "opencode-go/deepseek-v4-flash", ReleaseDate: "2025-08-01",
+			Cost: &apiv1.ModelCost{Input: 2, Output: 8, CacheRead: 0.25},
+			Limits: &apiv1.ModelLimits{Context: 128000, Output: 32000},
+			Capabilities: &apiv1.ModelCapabilities{
+				Temperature: true, Reasoning: true, Attachment: true, Toolcall: true,
+				InputText: true, InputImage: true, InputPdf: false, OutputText: true,
+			},
+			Variants: []string{"low", "medium", "high"},
+		},
+		{
 			Id: "deepseek-v4-flash-free", ProviderId: "opencode", Name: "DeepSeek V4 Flash (Free)", Family: "deepseek",
 			Status: "active", ModelRef: "opencode/deepseek-v4-flash-free", ReleaseDate: "2025-08-01",
 			Cost: &apiv1.ModelCost{Input: 0, Output: 0},

@@ -33,6 +33,7 @@ function WorkItemsPage() {
   const [view, setView] = useState<"tree" | "board">("tree");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("");
+  const [kindFilter, setKindFilter] = useState<string>("");
   const [sortBy, setSortBy] = useState("created_at");
   const [sortOrder, setSortOrder] = useState("desc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -133,6 +134,18 @@ function WorkItemsPage() {
 
         <select
           className="rounded-md border bg-background px-3 py-1.5 text-sm"
+          value={kindFilter}
+          onChange={(e) => setKindFilter(e.target.value)}
+        >
+          <option value="">All Types</option>
+          <option value="1">Epic</option>
+          <option value="2">Feature</option>
+          <option value="3">Task</option>
+          <option value="4">Subtask</option>
+        </select>
+
+        <select
+          className="rounded-md border bg-background px-3 py-1.5 text-sm"
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value)}
         >
@@ -215,6 +228,7 @@ function WorkItemsPage() {
           projectId={projectId}
           search={search}
           statusFilter={statusFilter}
+          kindFilter={kindFilter}
           sortBy={sortBy}
           sortOrder={sortOrder}
           selected={selected}
@@ -226,6 +240,7 @@ function WorkItemsPage() {
         <KanbanBoard
           projectId={projectId}
           search={search}
+          kindFilter={kindFilter}
           sortBy={sortBy}
           sortOrder={sortOrder}
           selected={selected}
@@ -240,6 +255,7 @@ function TreeView({
   projectId,
   search,
   statusFilter,
+  kindFilter,
   sortBy,
   sortOrder,
   selected,
@@ -249,6 +265,7 @@ function TreeView({
   projectId: string;
   search: string;
   statusFilter: string;
+  kindFilter: string;
   sortBy: string;
   sortOrder: string;
   selected: Set<string>;
@@ -262,6 +279,10 @@ function TreeView({
     sortOrder: sortOrder || undefined,
   });
 
+  const filteredItems = kindFilter
+    ? (items ?? []).filter((i) => i.kind === Number(kindFilter))
+    : (items ?? []);
+
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
   }
@@ -272,7 +293,7 @@ function TreeView({
       </p>
     );
   }
-  if (!items || items.length === 0) {
+  if (!filteredItems || filteredItems.length === 0) {
     return (
       <Card>
         <CardHeader>
@@ -289,23 +310,23 @@ function TreeView({
   }
 
   // Build the tree: epics (parent_id = nil) at the top.
-  const epics = items.filter((i) => !i.parentId);
+  const epics = filteredItems.filter((i) => !i.parentId);
   const childrenOf = (parentId: string) =>
-    items.filter((i) => i.parentId === parentId);
+    filteredItems.filter((i) => i.parentId === parentId);
 
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2 px-2 py-1">
         <input
           type="checkbox"
-          checked={items.length > 0 && selected.size === items.length}
-          onChange={() => onToggleSelectAll(items)}
+          checked={filteredItems.length > 0 && selected.size === filteredItems.length}
+          onChange={() => onToggleSelectAll(filteredItems)}
           className="h-4 w-4 rounded border-input"
         />
         <span className="text-xs text-muted-foreground">
           {selected.size > 0
-            ? `${selected.size} of ${items.length} selected`
-            : `${items.length} work item${items.length === 1 ? "" : "s"}`}
+            ? `${selected.size} of ${filteredItems.length} selected`
+            : `${filteredItems.length} work item${filteredItems.length === 1 ? "" : "s"}`}
         </span>
       </div>
       {epics.map((epic) => (
@@ -389,6 +410,7 @@ function TreeNode({
 function KanbanBoard({
   projectId,
   search,
+  kindFilter,
   sortBy,
   sortOrder,
   selected,
@@ -396,6 +418,7 @@ function KanbanBoard({
 }: {
   projectId: string;
   search: string;
+  kindFilter: string;
   sortBy: string;
   sortOrder: string;
   selected: Set<string>;
@@ -407,6 +430,10 @@ function KanbanBoard({
     sortOrder: sortOrder || undefined,
   });
 
+  const filteredItems = kindFilter
+    ? (items ?? []).filter((i) => i.kind === Number(kindFilter))
+    : (items ?? []);
+
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
   }
@@ -417,7 +444,7 @@ function KanbanBoard({
       </p>
     );
   }
-  if (!items || items.length === 0) {
+  if (!filteredItems || filteredItems.length === 0) {
     return <p className="text-sm text-muted-foreground">No work items.</p>;
   }
 
@@ -434,7 +461,7 @@ function KanbanBoard({
   return (
     <div className="grid gap-4 md:grid-cols-4 lg:grid-cols-7">
       {columns.map((col) => {
-        const colItems = items.filter((i) => i.status === col.status);
+        const colItems = filteredItems.filter((i) => i.status === col.status);
         return (
           <div key={col.status} className="space-y-2">
             <div className="flex items-center justify-between">

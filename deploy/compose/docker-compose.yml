@@ -71,7 +71,8 @@ services:
   # auto-constructs it from env vars (otherwise it just prints help and
   # exits without creating signoz_logs/signoz_traces).
   signoz-schema-migrator:
-    image: signoz/signoz-schema-migrator:latest
+    image: signoz/signoz-schema-migrator:v0.144.6
+    pull_policy: missing
     container_name: orchicon-signoz-schema-migrator
     command: ["sync", "--dsn", "tcp://signoz:signoz@clickhouse:9000/signoz"]
     depends_on:
@@ -82,6 +83,7 @@ services:
   # OTel collector — receives OTLP from control plane, exports to ClickHouse.
   otel-collector:
     image: signoz/signoz-otel-collector:latest
+    pull_policy: missing
     container_name: orchicon-otel-collector
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
@@ -106,6 +108,7 @@ services:
   # SigNoz query-service — reads telemetry from ClickHouse, serves UI on :3301
   signoz:
     image: signoz/signoz-community:latest
+    pull_policy: missing
     container_name: orchicon-signoz
     command: ["-DSTORAGE=clickhouse"]
     environment:

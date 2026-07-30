@@ -31,7 +31,7 @@ func defaultProviders() []*apiv1.AIProvider {
 			Id:      "local",
 			Name:    "Local / Free",
 			Enabled: true,
-			Models:  []string{"opencode/deepseek-v4-flash-free", "local/llama"},
+			Models:  []string{"opencode-go/deepseek-v4-flash", "opencode/deepseek-v4-flash-free", "local/llama"},
 		},
 	}
 }
