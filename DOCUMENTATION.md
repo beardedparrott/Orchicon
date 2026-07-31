@@ -212,6 +212,11 @@ sequenceDiagram
 
 7. **Adapter Bridge Pattern** — Runtimes are pluggable gRPC sidecars. The built-in adapter wraps the OpenCode CLI as a subprocess, parsing its JSON telemetry output. Future runtimes implement the `orchicon.adapter.v1` gRPC contract.
 
+8. **Worker Sandboxing (layered defense)** — Every worker execution is contained by three layers, all applied to **every** worker automatically and enforced even under `--auto`:
+    - **opencode permission deny rules** (`permissionRules()` in `internal/opencode/config.go`) injected via `OPENCODE_CONFIG_CONTENT`. `external_directory` is `deny` (any tool touching a path outside the project's `--dir` is blocked), and an extensive `bash` deny list blocks `rm`/`sudo`/`dd`/`mkfs*`/`fdisk`/`parted`/`shred`/`wipefs`/LVM tools, root-wide `chmod -R`/`chown -R`, `/dev/sd*` redirection, shell-construct smuggling variants (`(rm -rf /) &`, `{ rm -rf /; }`, chained `;`/`&&`/`&`/`|`), and download-and-execute. No catch-all `*` allow rule is emitted.
+    - **OS-level execution guard** (`internal/opencode/guard.go`) — shims dangerous binaries (`rm`, `sudo`, `dd`, `mkfs*`, `fdisk`, `parted`, `shred`, `wipefs`, LVM, `chmod`, `chown`, `mv`, `cp`, `ln`) ahead of the worker's PATH. Any process the worker spawns — including a python TUI, `os.system`, or `subprocess.run` issuing `rm -rf /` — resolves the command through the shim and is refused when it targets `/`, `~`, `$HOME`, `/home`, or any path outside the project directory. This closes the subprocess hole that opencode's rules cannot see (a destructive command issued inside a python TUI only ever looks like `python tui.py` to opencode). This is defense-in-depth, not a container: a worker that resolves the real binary by absolute path or writes its own tool still escapes — see the containerized-execution discussion below.
+    - **Worker prompt context** — every canned worker's AGENTS.md carries a "Safety rules" block (see `internal/db/seed_workers.go`) forbidding destructive commands, destructive "security testing", and scope creep. Review/QA workers additionally run the **safety lint** — a Semgrep wrapper (`.orchicon/lint-safety.sh`, `internal/opencode/lint_safety.sh`) with Orchicon's destructive-command ruleset (`internal/opencode/semgrep_orchicon.yml`) — before reporting.
+
 ### Domain Model
 
 ```mermaid
@@ -1064,6 +1069,8 @@ See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
 | System prompt not sent to worker | Wrong env var | Must use `OPENCODE_CONFIG_CONTENT` with custom agent, not `OPENCODE_SYSTEM_PROMPT` |
 | Loop decision stuck | Superseded step run conflict | Workflow reconciler must skip `SupersededBy != ""` runs |
 | Stale decisions leaking across runs | Previous `_decision` file | Clear `.orchicon/<run_id>/` files between steps |
+| Worker cannot delete or run destructive commands | Sandbox layers | Workers are intentionally sandboxed (see Architectural Pattern 8). Direct bash is blocked by opencode permission deny rules; subprocess/TUI-issued commands (e.g. `rm -rf /` inside a python TUI) are blocked by the OS-level execution guard (`internal/opencode/guard.go`); and all canned workers' prompts carry the "Safety rules" block. Review/QA workers run `.orchicon/lint-safety.sh` (Semgrep + Orchicon ruleset) to catch dangerous patterns before merge. |
+| Worker wiped files outside the project | Execution guard bypassed via absolute path | The guard is defense-in-depth, not containment. A worker that invokes `/bin/rm` by absolute path or writes its own binary escapes it. Use the containerized execution option for real isolation. |
 
 ---
 

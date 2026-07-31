@@ -29,13 +29,15 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
-### v0.1.155 (2026-07-29)
+### v0.1.157 (2026-07-31)
 
 | Type | Change |
 |---|---|
-| Bug fix | Moved PR & merge instructions from PR Reviewer to DevOps Engineer (was placed on wrong worker) |
-| Feature | DevOps Engineer: now PRs and merges immediately on approval without asking, deletes branch after merge |
-| Chore | AGENTS.md: added "delete the branch after merge" to Git Workflow |
+| Security | OS-level execution guard (`internal/opencode/guard.go`): dangerous binaries (`rm`, `sudo`, `dd`, `mkfs*`, `fdisk`, `parted`, `shred`, `wipefs`, LVM, `chmod`/`chown`/`mv`/`cp`/`ln`) are shimmed on every worker's PATH, so destructive commands are refused even when issued from inside a subprocess (python TUI, `os.system`, `subprocess.run`) — closes the vector behind the 2026-07-30 `/home` wipe |
+| Security | Hardened opencode `permissionRules()` deny list: root/home/`$HOME` deletes, absolute-path `rm`, `sudo` escalation, device redirection, root-wide `chmod`/`chown`, download-and-execute |
+| Security | All canned workers now carry a "Safety rules" block in AGENTS.md; seed rolls a new published worker version forward when the marker is missing (reaches edited workers too) |
+| Feature | Safety lint: Semgrep (industry-standard static analyzer) with an Orchicon destructive-command ruleset (`.orchicon/lint-safety.sh` + `semgrep_orchicon.yml`), written into every project; PR Reviewer and QA Engineer run it before reporting |
+| Chore | Lightened PR Reviewer and QA Engineer prompts: proportionate to the change, no destructive "security testing", blockers-only review, use the linter instead of manually hunting every issue |
 
 
 ## Installation

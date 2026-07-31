@@ -146,6 +146,81 @@ func normalizeMCPEntries(entries map[string]any) map[string]any {
 	return result
 }
 
+// permissionRules builds the opencode `permission` config injected into every
+// worker execution. Rules with an explicit "deny" are enforced even when the
+// adapter spawns opencode with --auto (auto-approval only affects "ask"), so a
+// compromised or misbehaving worker cannot run commands that damage the host.
+//
+// external_directory is the primary guard: it is triggered by any tool that
+// reads or writes a path outside the project working directory (read, edit,
+// glob, grep, and path-carrying bash commands). Denying it hard-scopes every
+// worker to its --dir project directory, which is the scoping Orchicon
+// documents for workers (workers must operate within their assigned project).
+//
+// The bash deny list is the second layer. opencode matches each rule against
+// the command string, so these only see the exact command the Bash tool runs:
+// a destructive command issued from inside a subprocess (a python TUI,
+// os.system, subprocess.run) is invisible here. That hole is closed by the
+// OS-level execution guard (guard.go), which shims dangerous binaries on the
+// worker's PATH and catches the command no matter where it is spawned. The
+// rules below are belt-and-suspenders for the direct-Bash-tool case, covering
+// recursive/forced deletes, sudo escalation, disk/partition/LVM tools, the
+// shell-construct smuggling variants (`(rm -rf /) &`, `{ rm -rf /; }`, chained
+// `;`/`&&`/`&`/`|`), device redirection, root-wide chmod/chown, and
+// download-and-execute.
+//
+// There is intentionally no catch-all "*" rule here: unmatched commands fall
+// back to opencode's default (ask, which --auto approves) instead of letting a
+// broad allow rule win by ordering.
+func permissionRules() map[string]any {
+	bashDeny := []string{
+		// rm family — direct and absolute-path invocations.
+		"rm", "rm *", "rm -rf *", "rm -fr *", "rm -R *", "rm -r *", "rm -f *",
+		"rm -Rf *", "rm -fR *", "rm -frr *",
+		"rm -rf /", "rm -r /", "rm -R /", "rm -f /", "rm -fr /", "rm -Rf /",
+		"rm -rf /*", "rm -fr /*", "rm -r /*", "rm -R /*", "rm -f /*",
+		"rm -rf /home/*", "rm -rf /root/*", "rm -rf /etc/*", "rm -rf /usr/*",
+		"rm -rf /var/*", "rm -rf /bin/*", "rm -rf /boot/*",
+		"rm -rf ~", "rm -rf ~/*", "rm -rf $HOME", "rm -rf $HOME/*",
+		"rm -rf ${HOME}/*", "rm -rf ${HOME}*",
+		"rm --no-preserve-root *", "rm -rf --no-preserve-root *",
+		"/bin/rm *", "/usr/bin/rm *", "/bin/rm -rf *", "/usr/bin/rm -rf *",
+		"rm -rf . /", "rm -rf . ..",
+		// sudo — escalate to a root shell is never needed in-project.
+		"sudo", "sudo *", "sudo su *", "sudo -i *", "sudo -s *", "sudo bash *",
+		"sudo sh *", "sudo rm *", "sudo * rm *", "sudo -u * rm *",
+		// shell-construct smuggling variants.
+		"(*rm*", "{*rm*", "(* sudo *", "{* sudo *",
+		"* & rm *", "* && rm *", "* ; rm *", "* || rm *", "* | rm *",
+		"* & sudo *", "* && sudo *", "* ; sudo *", "* | sudo *",
+		"* & dd *", "* && dd *", "* ; dd *",
+		// disk / partition / LVM / wipe tools.
+		"mkfs*", "mkfs.*", "fdisk*", "parted *", "shred *", "wipefs*",
+		"mkswap *", "swapoff *", "swapon *",
+		"pvcreate *", "pvremove *", "vgcreate *", "vgremove *", "vgextend *",
+		"lvcreate *", "lvremove *", "lvreduce *", "lvextend *",
+		"dd if=* of=/dev/*", "dd * of=/dev/*", "dd of=/dev/*",
+		"* > /dev/sd*", "* >> /dev/sd*", ": > /dev/sd*",
+		"echo * > /dev/sd*", "echo * >> /dev/sd*",
+		"cat * > /dev/sd*", "cat * >> /dev/sd*", "cp * /dev/sd*",
+		"mv * /dev/null", "cp -r * /dev/null", "cp -a * /dev/null",
+		// root-wide permission changes.
+		"chmod -R 777 /*", "chmod -R 777 /", "chmod -R 000 /*", "chmod -R 000 /",
+		"chown -R * /*", "chown -R * /", "chmod -R 777 * /",
+		// download-and-execute (arbitrary remote code).
+		"curl * | sh", "curl * | bash", "curl * | sh -", "curl * | bash -",
+		"curl * | zsh", "wget * | sh", "wget * | bash", "wget * | zsh",
+	}
+	rules := make(map[string]any, len(bashDeny))
+	for _, p := range bashDeny {
+		rules[p] = "deny"
+	}
+	return map[string]any{
+		"external_directory": "deny",
+		"bash":               rules,
+	}
+}
+
 // BuildConfigContent builds the JSON string for the OPENCODE_CONFIG_CONTENT
 // env var. It merges the agent configuration with MCP servers from the
 // user's opencode config file, so worker executions automatically inherit
@@ -176,6 +251,10 @@ func BuildConfigContent(agentName, agentPrompt, modelRef string) string {
 		cfg["mcp"] = mcpServers
 	}
 
+	// Inject the hard permission deny rules so every worker execution is
+	// sandboxed to its project directory regardless of --auto mode.
+	cfg["permission"] = permissionRules()
+
 	b, err := json.Marshal(cfg)
 	if err != nil {
 		slog.Default().Warn("opencode: marshal config content", "error", err)
@@ -192,6 +271,7 @@ func BuildConfigContent(agentName, agentPrompt, modelRef string) string {
 				},
 			}
 		}
+		fallback["permission"] = permissionRules()
 		b, _ = json.Marshal(fallback)
 	}
 	return string(b)

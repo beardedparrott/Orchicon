@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -60,7 +63,42 @@ func killOrphans() {
 // orchicon-prod serve and scripts/dev-prod.sh's downstream serve call
 // consistently use the embedded migration runner — never mixing it with
 // atlas migrate apply which writes to a different tracking table.
-func runServe() int {
+// serveEnvDetached marks a serve subprocess that was forked by `serve
+// --detach`; it tells the child to run the server directly instead of
+// forking again.
+const serveEnvDetached = "ORCHICON_SERVE_DETACHED"
+
+// runServe dispatches `serve` subcommands:
+//
+//	orchicon serve              run the server in the foreground (blocks)
+//	orchicon serve --detach     fork the server into the background, write
+//	                            the PID file, wait for /healthz, and return
+//	orchicon serve --stop       stop a detached serve via the PID file
+//
+// --detach exists so scripts and AI agents can start the control plane
+// without a command that never returns (a foreground server keeps the
+// caller's stdout/stderr pipe open and hangs the session).
+func runServe(args []string) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "--detach", "-d":
+			if os.Getenv(serveEnvDetached) == "" {
+				return serveDetach()
+			}
+			// fall through: this is the forked child — run the server.
+		case "--stop":
+			return serveStop()
+		case "--status":
+			return serveStatus()
+		}
+	}
+	return serveForeground()
+}
+
+// serveForeground runs the server until SIGTERM/SIGINT. Also the body of
+// the forked child started by serveDetach (the ORCHICON_SERVE_DETACHED
+// env var short-circuits the dispatch above so the child never re-forks).
+func serveForeground() int {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
@@ -111,4 +149,90 @@ func runServe() int {
 	}
 	log.Info("orchicon serve stopped")
 	return 0
+}
+
+// serveDetach forks the server into the background (own process group,
+// logs to the same file the dev subcommand uses), writes the PID file,
+// and returns immediately — the caller must NOT block, because a tool or
+// script waiting on this command would hang until the server exits. The
+// caller polls /healthz (see serveStatus / docs).
+func serveDetach() int {
+	if pid, running := procRunning(devPIDFile); running {
+		fmt.Fprintf(os.Stderr, "✗ serve is already running (PID %s)\n", pid)
+		fmt.Fprintf(os.Stderr, "  Stop it with: %s serve --stop\n", filepath.Base(os.Args[0]))
+		return 1
+	}
+
+	if err := os.MkdirAll(filepath.Dir(devPIDFile), 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "✗ failed to create PID directory: %v\n", err)
+		return 1
+	}
+	if err := os.MkdirAll(filepath.Dir(devLogFile), 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "✗ failed to create log directory: %v\n", err)
+		return 1
+	}
+	logFile, err := os.OpenFile(devLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "✗ failed to open log file: %v\n", err)
+		return 1
+	}
+	defer logFile.Close()
+
+	cmd := exec.Command(os.Args[0], "serve")
+	cmd.Env = append(os.Environ(), serveEnvDetached+"=1")
+	cmd.Stdin = nil // /dev/null — the child must not inherit the caller's stdin
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	setProcAttrBackground(cmd)
+
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "✗ failed to start serve: %v\n", err)
+		return 1
+	}
+	pid := cmd.Process.Pid
+	if err := os.WriteFile(devPIDFile, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "  ! failed to write PID file: %v\n", err)
+	}
+	// Release the child from our care so nothing waits on it. Start it in
+	// its own process group (setProcAttrBackground) and detach.
+	_ = cmd.Process.Release()
+
+	fmt.Printf("✓ serve detached (PID %d)\n", pid)
+	fmt.Printf("  Logs: %s\n", devLogFile)
+	fmt.Printf("  Check: %s serve --status\n", filepath.Base(os.Args[0]))
+	fmt.Printf("  Stop: %s serve --stop\n", filepath.Base(os.Args[0]))
+	return 0
+}
+
+// serveStop sends SIGTERM to a detached serve and clears the PID file.
+func serveStop() int {
+	pid, running := procRunning(devPIDFile)
+	if !running {
+		fmt.Println("serve is not running")
+		return 1
+	}
+	pidNum, err := strconv.Atoi(pid)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "✗ invalid PID file (%s): %v\n", devPIDFile, err)
+		return 1
+	}
+	if proc, err := os.FindProcess(pidNum); err == nil {
+		if err := proc.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			fmt.Fprintf(os.Stderr, "✗ failed to signal PID %d: %v\n", pidNum, err)
+			return 1
+		}
+	}
+	_ = os.Remove(devPIDFile)
+	fmt.Printf("✓ serve stopped (PID %d)\n", pidNum)
+	return 0
+}
+
+// serveStatus prints whether a detached serve is running.
+func serveStatus() int {
+	if pid, running := procRunning(devPIDFile); running {
+		fmt.Printf("serve is running (PID %s)\n", pid)
+		return 0
+	}
+	fmt.Println("serve is not running")
+	return 1
 }
