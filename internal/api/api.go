@@ -62,6 +62,8 @@ type Dependencies struct {
 	MCPDiscoverer     *aigateway.MCPDiscoverer
 	// BlobStore is the object storage abstraction (local filesystem + S3).
 	BlobStore blobstore.Store
+	// PostgresDSN is the Postgres connection string for backup/restore.
+	PostgresDSN string
 }
 
 // Mount returns an http.Handler serving the Orchicon API. Generated
@@ -148,7 +150,7 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	mux.Handle(apiv1connect.NewApprovalServiceHandler(approvalSvc, interceptorOpt))
 
 	// SettingsService — tenant-level configuration defaults.
-	settingsSvc := settings.New(deps.Pool, deps.Log)
+	settingsSvc := settings.New(deps.Pool, deps.Log, deps.PostgresDSN)
 	mux.Handle(apiv1connect.NewSettingsServiceHandler(settingsSvc, interceptorOpt))
 
 	// AskOrchiconService — conversational agent.

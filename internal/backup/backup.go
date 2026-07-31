@@ -185,6 +185,29 @@ func List(dir string) ([]Info, error) {
 	return backups, nil
 }
 
+// Delete removes a single backup file by name. Returns an error if the
+// file does not exist or cannot be removed.
+func Delete(dir, name string) error {
+	dir, err := expandDir(dir)
+	if err != nil {
+		return fmt.Errorf("expand backup dir: %w", err)
+	}
+	if strings.Contains(name, "/") || strings.Contains(name, "\\") || strings.HasPrefix(name, ".") {
+		return fmt.Errorf("invalid backup name %q", name)
+	}
+	if !strings.HasPrefix(name, "orchicon-backup-") || !strings.HasSuffix(name, ".sql") {
+		return fmt.Errorf("invalid backup name %q", name)
+	}
+	path := filepath.Join(dir, name)
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("backup %q not found", name)
+		}
+		return fmt.Errorf("remove backup %q: %w", name, err)
+	}
+	return nil
+}
+
 func Prune(dir string, keepDays int) (int, error) {
 	dir, err := expandDir(dir)
 	if err != nil {

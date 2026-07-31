@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { GetSettingsRequest, GetSettingsResponse, UpdateSettingsRequest, UpdateSettingsResponse } from "./settings_service_pb.js";
+import { CreateBackupRequest, CreateBackupResponse, DeleteBackupRequest, DeleteBackupResponse, GetSettingsRequest, GetSettingsResponse, ListBackupsRequest, ListBackupsResponse, RestoreBackupRequest, RestoreBackupResponse, UpdateSettingsRequest, UpdateSettingsResponse } from "./settings_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -39,6 +39,51 @@ export const SettingsService = {
       name: "UpdateSettings",
       I: UpdateSettingsRequest,
       O: UpdateSettingsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * CreateBackup takes a database snapshot and stores it in the backup directory.
+     *
+     * @generated from rpc orchicon.api.v1.SettingsService.CreateBackup
+     */
+    createBackup: {
+      name: "CreateBackup",
+      I: CreateBackupRequest,
+      O: CreateBackupResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ListBackups returns all available backup snapshots, newest first.
+     *
+     * @generated from rpc orchicon.api.v1.SettingsService.ListBackups
+     */
+    listBackups: {
+      name: "ListBackups",
+      I: ListBackupsRequest,
+      O: ListBackupsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * RestoreBackup replaces the current database with the named snapshot.
+     * The server will restart after restore completes.
+     *
+     * @generated from rpc orchicon.api.v1.SettingsService.RestoreBackup
+     */
+    restoreBackup: {
+      name: "RestoreBackup",
+      I: RestoreBackupRequest,
+      O: RestoreBackupResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * DeleteBackup removes the named snapshot from the backup directory.
+     *
+     * @generated from rpc orchicon.api.v1.SettingsService.DeleteBackup
+     */
+    deleteBackup: {
+      name: "DeleteBackup",
+      I: DeleteBackupRequest,
+      O: DeleteBackupResponse,
       kind: MethodKind.Unary,
     },
   }

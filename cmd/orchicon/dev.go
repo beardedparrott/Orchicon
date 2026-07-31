@@ -180,6 +180,7 @@ func devStartChild() int {
 // server in the background, waits for it to be healthy, then tails the log
 // file. Ctrl-C stops the tail only — the server keeps running.
 func devStartParent() int {
+	startAll := time.Now()
 	binName := filepath.Base(os.Args[0])
 	fmt.Printf("%s start %s\n\n", binName, version.Current().String())
 
@@ -192,26 +193,31 @@ func devStartParent() int {
 	}
 
 	// 2. Start Docker Compose stack.
+	t0 := time.Now()
 	fmt.Println("▸ Starting dev stack (Docker Compose)…")
 	if err := composeUp(context.Background()); err != nil {
 		fmt.Fprintf(os.Stderr, "✗ Compose up failed: %v\n", err)
 		return 1
 	}
+	fmt.Printf("  ✓ compose up (%dms)\n", sinceMs(t0))
 
+	t0 = time.Now()
 	fmt.Println("▸ Waiting for containers to be healthy…")
 	if err := waitForContainer("postgres", 60); err != nil {
 		fmt.Fprintf(os.Stderr, "✗ Postgres did not become healthy: %v\n", err)
 		return 1
 	}
-	fmt.Println("  ✓ postgres healthy")
+	fmt.Printf("  ✓ postgres healthy (%dms)\n", sinceMs(t0))
 
+	t0 = time.Now()
 	if err := waitForContainer("nats", 30); err != nil {
 		fmt.Fprintf(os.Stderr, "  ! nats not healthy: %v\n", err)
 	} else {
-		fmt.Println("  ✓ nats healthy")
+		fmt.Printf("  ✓ nats healthy (%dms)\n", sinceMs(t0))
 	}
 
 	// 3. Apply migrations.
+	t0 = time.Now()
 	fmt.Println("▸ Applying migrations…")
 	ctx := context.Background()
 	cfg := config.Default()
@@ -223,14 +229,15 @@ func devStartParent() int {
 	}
 	defer pool.Close()
 
-	if err := db.SeedDevTenant(ctx, pool); err != nil {
-		fmt.Fprintf(os.Stderr, "  ! Seed dev tenant: %v\n", err)
-	}
+	// Migrations and seeding run inside the server on startup
+	// (server.go:79). We only run them here for the parent process
+	// so the child starts clean. SeedDevTenant is intentionally
+	// skipped — the server handles it.
 	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
 		fmt.Fprintf(os.Stderr, "✗ Migrations failed: %v\n", err)
 		return 1
 	}
-	fmt.Println("  ✓ Migrations applied")
+	fmt.Printf("  ✓ Migrations applied (%dms)\n", sinceMs(t0))
 
 	// 4. Ensure .dev/ directories exist.
 	if err := os.MkdirAll(filepath.Dir(devPIDFile), 0755); err != nil {
@@ -243,6 +250,7 @@ func devStartParent() int {
 	}
 
 	// 5. Fork the server process in the background.
+	t0 = time.Now()
 	fmt.Println("▸ Starting control plane…")
 
 	logFile, err := os.OpenFile(devLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -267,9 +275,10 @@ func devStartParent() int {
 	if err := os.WriteFile(devPIDFile, []byte(strconv.Itoa(pid)+"\n"), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "  ! Failed to write PID file: %v\n", err)
 	}
-	fmt.Printf("  ✓ Server process started (PID %d)\n", pid)
+	fmt.Printf("  ✓ Server process forked (%dms)\n", sinceMs(t0))
 
 	// 6. Wait for healthz.
+	t0 = time.Now()
 	fmt.Print("▸ Waiting for control plane to be ready…")
 	healthURL := "http://localhost" + cfg.HTTPAddr + "/healthz"
 	healthy := false
@@ -287,7 +296,7 @@ func devStartParent() int {
 		_ = os.Remove(devLogFile)
 		return 1
 	}
-	fmt.Println(" ✓")
+	fmt.Printf(" ✓ (%dms)\n", sinceMs(t0))
 
 	// 7. Print endpoint info.
 	fmt.Println()
@@ -297,6 +306,7 @@ func devStartParent() int {
 	fmt.Printf("    NATS monitor:   http://localhost:%s\n", devNATSPort)
 	fmt.Printf("    Logs:           %s\n", devLogFile)
 	fmt.Printf("    PID:            %d\n", pid)
+	fmt.Printf("    Total:          %dms\n", sinceMs(startAll))
 	fmt.Println()
 	fmt.Printf("→ Tailing control plane logs (Ctrl+C to stop tailing; server continues in background)\n")
 	fmt.Println()
@@ -586,17 +596,13 @@ func runComposeFromTemp(ctx context.Context, log *slog.Logger, args ...string) e
 	return cmd.Run()
 }
 
-// composeUp extracts the embedded compose tree to a temp dir and runs
-// `docker compose up -d` from there. Before starting it preemptively
-// force-removes any leftover orchicon containers so that a prior
-// incomplete shutdown, a failed composeDown, or a stale container from
-// an earlier session never blocks "Conflict: container name already in use".
+// composeUp runs `docker compose up -d`. If containers already exist
+// with matching config, this is a no-op — they keep running. If the
+// config changed (e.g. new image tag), Compose recreates them. If
+// that fails due to container name conflicts, caller should stop
+// first (`orchicon stop` then `orchicon start`).
 func composeUp(ctx context.Context) error {
-	forceRemoveOrchiconContainers(ctx)
-	if err := runComposeFromTemp(ctx, nil, "up", "-d"); err != nil {
-		return fmt.Errorf("docker compose up: %w", err)
-	}
-	return nil
+	return runComposeFromTemp(ctx, nil, "up", "-d")
 }
 
 // composeDown tears down all orchicon Docker containers. It tries three
@@ -661,6 +667,8 @@ func waitForContainer(service string, maxRetries int) error {
 }
 
 // probeHTTP returns true if the URL returns a 2xx status code.
+func sinceMs(t time.Time) int64 { return time.Since(t).Milliseconds() }
+
 func probeHTTP(ctx context.Context, url string) bool {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {

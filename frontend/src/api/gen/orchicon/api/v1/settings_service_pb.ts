@@ -4,7 +4,7 @@
 // @ts-nocheck
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
-import { Message, proto3 } from "@bufbuild/protobuf";
+import { Message, proto3, protoInt64 } from "@bufbuild/protobuf";
 import { TenantSettings } from "./settings_pb.js";
 
 /**
@@ -146,6 +146,371 @@ export class UpdateSettingsResponse extends Message<UpdateSettingsResponse> {
 
   static equals(a: UpdateSettingsResponse | PlainMessage<UpdateSettingsResponse> | undefined, b: UpdateSettingsResponse | PlainMessage<UpdateSettingsResponse> | undefined): boolean {
     return proto3.util.equals(UpdateSettingsResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.CreateBackupRequest
+ */
+export class CreateBackupRequest extends Message<CreateBackupRequest> {
+  /**
+   * Optional: override the backup directory. Empty = use configured or default.
+   *
+   * @generated from field: string directory = 1;
+   */
+  directory = "";
+
+  constructor(data?: PartialMessage<CreateBackupRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.CreateBackupRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "directory", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateBackupRequest {
+    return new CreateBackupRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateBackupRequest {
+    return new CreateBackupRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateBackupRequest {
+    return new CreateBackupRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateBackupRequest | PlainMessage<CreateBackupRequest> | undefined, b: CreateBackupRequest | PlainMessage<CreateBackupRequest> | undefined): boolean {
+    return proto3.util.equals(CreateBackupRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.CreateBackupResponse
+ */
+export class CreateBackupResponse extends Message<CreateBackupResponse> {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name = "";
+
+  /**
+   * @generated from field: int64 size_bytes = 2;
+   */
+  sizeBytes = protoInt64.zero;
+
+  /**
+   * @generated from field: string created_at = 3;
+   */
+  createdAt = "";
+
+  constructor(data?: PartialMessage<CreateBackupResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.CreateBackupResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "size_bytes", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 3, name: "created_at", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateBackupResponse {
+    return new CreateBackupResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateBackupResponse {
+    return new CreateBackupResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateBackupResponse {
+    return new CreateBackupResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateBackupResponse | PlainMessage<CreateBackupResponse> | undefined, b: CreateBackupResponse | PlainMessage<CreateBackupResponse> | undefined): boolean {
+    return proto3.util.equals(CreateBackupResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ListBackupsRequest
+ */
+export class ListBackupsRequest extends Message<ListBackupsRequest> {
+  /**
+   * Optional: directory to list from. Empty = use configured or default.
+   *
+   * @generated from field: string directory = 1;
+   */
+  directory = "";
+
+  constructor(data?: PartialMessage<ListBackupsRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListBackupsRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "directory", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListBackupsRequest {
+    return new ListBackupsRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListBackupsRequest {
+    return new ListBackupsRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListBackupsRequest {
+    return new ListBackupsRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListBackupsRequest | PlainMessage<ListBackupsRequest> | undefined, b: ListBackupsRequest | PlainMessage<ListBackupsRequest> | undefined): boolean {
+    return proto3.util.equals(ListBackupsRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ListBackupsResponse
+ */
+export class ListBackupsResponse extends Message<ListBackupsResponse> {
+  /**
+   * @generated from field: repeated orchicon.api.v1.BackupEntry backups = 1;
+   */
+  backups: BackupEntry[] = [];
+
+  constructor(data?: PartialMessage<ListBackupsResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListBackupsResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "backups", kind: "message", T: BackupEntry, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListBackupsResponse {
+    return new ListBackupsResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListBackupsResponse {
+    return new ListBackupsResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListBackupsResponse {
+    return new ListBackupsResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListBackupsResponse | PlainMessage<ListBackupsResponse> | undefined, b: ListBackupsResponse | PlainMessage<ListBackupsResponse> | undefined): boolean {
+    return proto3.util.equals(ListBackupsResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.BackupEntry
+ */
+export class BackupEntry extends Message<BackupEntry> {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name = "";
+
+  /**
+   * @generated from field: int64 size_bytes = 2;
+   */
+  sizeBytes = protoInt64.zero;
+
+  /**
+   * @generated from field: string created_at = 3;
+   */
+  createdAt = "";
+
+  constructor(data?: PartialMessage<BackupEntry>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.BackupEntry";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "size_bytes", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 3, name: "created_at", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): BackupEntry {
+    return new BackupEntry().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): BackupEntry {
+    return new BackupEntry().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): BackupEntry {
+    return new BackupEntry().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: BackupEntry | PlainMessage<BackupEntry> | undefined, b: BackupEntry | PlainMessage<BackupEntry> | undefined): boolean {
+    return proto3.util.equals(BackupEntry, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.RestoreBackupRequest
+ */
+export class RestoreBackupRequest extends Message<RestoreBackupRequest> {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name = "";
+
+  /**
+   * Optional: directory to look in. Empty = use configured or default.
+   *
+   * @generated from field: string directory = 2;
+   */
+  directory = "";
+
+  constructor(data?: PartialMessage<RestoreBackupRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RestoreBackupRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "directory", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RestoreBackupRequest {
+    return new RestoreBackupRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RestoreBackupRequest {
+    return new RestoreBackupRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RestoreBackupRequest {
+    return new RestoreBackupRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RestoreBackupRequest | PlainMessage<RestoreBackupRequest> | undefined, b: RestoreBackupRequest | PlainMessage<RestoreBackupRequest> | undefined): boolean {
+    return proto3.util.equals(RestoreBackupRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.RestoreBackupResponse
+ */
+export class RestoreBackupResponse extends Message<RestoreBackupResponse> {
+  constructor(data?: PartialMessage<RestoreBackupResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RestoreBackupResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RestoreBackupResponse {
+    return new RestoreBackupResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RestoreBackupResponse {
+    return new RestoreBackupResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RestoreBackupResponse {
+    return new RestoreBackupResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RestoreBackupResponse | PlainMessage<RestoreBackupResponse> | undefined, b: RestoreBackupResponse | PlainMessage<RestoreBackupResponse> | undefined): boolean {
+    return proto3.util.equals(RestoreBackupResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.DeleteBackupRequest
+ */
+export class DeleteBackupRequest extends Message<DeleteBackupRequest> {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name = "";
+
+  /**
+   * Optional: directory to look in. Empty = use configured or default.
+   *
+   * @generated from field: string directory = 2;
+   */
+  directory = "";
+
+  constructor(data?: PartialMessage<DeleteBackupRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DeleteBackupRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "directory", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteBackupRequest {
+    return new DeleteBackupRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteBackupRequest {
+    return new DeleteBackupRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteBackupRequest {
+    return new DeleteBackupRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteBackupRequest | PlainMessage<DeleteBackupRequest> | undefined, b: DeleteBackupRequest | PlainMessage<DeleteBackupRequest> | undefined): boolean {
+    return proto3.util.equals(DeleteBackupRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.DeleteBackupResponse
+ */
+export class DeleteBackupResponse extends Message<DeleteBackupResponse> {
+  constructor(data?: PartialMessage<DeleteBackupResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DeleteBackupResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteBackupResponse {
+    return new DeleteBackupResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteBackupResponse {
+    return new DeleteBackupResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteBackupResponse {
+    return new DeleteBackupResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteBackupResponse | PlainMessage<DeleteBackupResponse> | undefined, b: DeleteBackupResponse | PlainMessage<DeleteBackupResponse> | undefined): boolean {
+    return proto3.util.equals(DeleteBackupResponse, a, b);
   }
 }
 

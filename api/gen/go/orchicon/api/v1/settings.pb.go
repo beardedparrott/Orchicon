@@ -53,11 +53,20 @@ type TenantSettings struct {
 	// Zero disables.
 	StallRepetitionCount int32 `protobuf:"varint,13,opt,name=stall_repetition_count,json=stallRepetitionCount,proto3" json:"stall_repetition_count,omitempty"`
 	// Window for repetition detection. Seconds. Default 300 (5 min).
-	StallRepetitionWindowSeconds int64                  `protobuf:"varint,14,opt,name=stall_repetition_window_seconds,json=stallRepetitionWindowSeconds,proto3" json:"stall_repetition_window_seconds,omitempty"`
-	CreatedAt                    *timestamppb.Timestamp `protobuf:"bytes,100,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt                    *timestamppb.Timestamp `protobuf:"bytes,101,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	unknownFields                protoimpl.UnknownFields
-	sizeCache                    protoimpl.SizeCache
+	StallRepetitionWindowSeconds int64 `protobuf:"varint,14,opt,name=stall_repetition_window_seconds,json=stallRepetitionWindowSeconds,proto3" json:"stall_repetition_window_seconds,omitempty"`
+	// Backup schedule in cron expression format (e.g. "0 3 * * *" for daily 3am).
+	// Empty means automatic backups are disabled.
+	BackupSchedule string `protobuf:"bytes,20,opt,name=backup_schedule,json=backupSchedule,proto3" json:"backup_schedule,omitempty"`
+	// Number of days to retain backup snapshots. Older backups are pruned.
+	// Zero means keep all backups indefinitely.
+	BackupRetentionDays int32 `protobuf:"varint,21,opt,name=backup_retention_days,json=backupRetentionDays,proto3" json:"backup_retention_days,omitempty"`
+	// Directory where backup snapshots are stored. Empty uses the default
+	// (~/.local/share/orchicon/backups/).
+	BackupDirectory string                 `protobuf:"bytes,22,opt,name=backup_directory,json=backupDirectory,proto3" json:"backup_directory,omitempty"`
+	CreatedAt       *timestamppb.Timestamp `protobuf:"bytes,100,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt       *timestamppb.Timestamp `protobuf:"bytes,101,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *TenantSettings) Reset() {
@@ -139,6 +148,27 @@ func (x *TenantSettings) GetStallRepetitionWindowSeconds() int64 {
 	return 0
 }
 
+func (x *TenantSettings) GetBackupSchedule() string {
+	if x != nil {
+		return x.BackupSchedule
+	}
+	return ""
+}
+
+func (x *TenantSettings) GetBackupRetentionDays() int32 {
+	if x != nil {
+		return x.BackupRetentionDays
+	}
+	return 0
+}
+
+func (x *TenantSettings) GetBackupDirectory() string {
+	if x != nil {
+		return x.BackupDirectory
+	}
+	return ""
+}
+
 func (x *TenantSettings) GetCreatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.CreatedAt
@@ -157,7 +187,7 @@ var File_orchicon_api_v1_settings_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"\n" +
-	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc7\x04\n" +
+	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcf\x05\n" +
 	"\x0eTenantSettings\x120\n" +
 	"\x14default_worker_model\x18\x01 \x01(\tR\x12defaultWorkerModel\x12;\n" +
 	"\x1adefault_ask_orchicon_model\x18\x02 \x01(\tR\x17defaultAskOrchiconModel\x12F\n" +
@@ -166,7 +196,10 @@ const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"!stall_no_file_diff_window_seconds\x18\v \x01(\x03R\x1cstallNoFileDiffWindowSeconds\x12B\n" +
 	"\x1estall_text_loop_window_seconds\x18\f \x01(\x03R\x1astallTextLoopWindowSeconds\x124\n" +
 	"\x16stall_repetition_count\x18\r \x01(\x05R\x14stallRepetitionCount\x12E\n" +
-	"\x1fstall_repetition_window_seconds\x18\x0e \x01(\x03R\x1cstallRepetitionWindowSeconds\x129\n" +
+	"\x1fstall_repetition_window_seconds\x18\x0e \x01(\x03R\x1cstallRepetitionWindowSeconds\x12'\n" +
+	"\x0fbackup_schedule\x18\x14 \x01(\tR\x0ebackupSchedule\x122\n" +
+	"\x15backup_retention_days\x18\x15 \x01(\x05R\x13backupRetentionDays\x12)\n" +
+	"\x10backup_directory\x18\x16 \x01(\tR\x0fbackupDirectory\x129\n" +
 	"\n" +
 	"created_at\x18d \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +

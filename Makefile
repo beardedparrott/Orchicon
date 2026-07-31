@@ -104,7 +104,10 @@ logs: ## Tail dev-stack logs
 ps: ## Show dev-stack status
 	$(COMPOSE) $(COMPOSE_ARGS) ps
 
-nuke: ## Stop and DELETE all dev-stack data volumes
+nuke: ## Stop dev stack and reset state (preserves volumes; use nuke-all to destroy volumes)
+	$(COMPOSE) $(COMPOSE_ARGS) down
+
+nuke-all: ## Stop and DELETE all dev-stack data volumes (postgres, nats, clickhouse, signoz)
 	$(COMPOSE) $(COMPOSE_ARGS) down -v
 
 # --- Frontend --------------------------------------------------------------
