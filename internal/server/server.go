@@ -23,6 +23,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/blobstore"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/backup"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/opencode"
@@ -218,6 +219,7 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		ModelDiscoverer:   modelDiscoverer,
 		MCPDiscoverer:     mcpDiscoverer,
 		BlobStore:         blobs,
+		PostgresDSN:       cfg.PostgresDSN,
 	}
 	handler := api.Mount(mux, deps)
 
@@ -321,6 +323,29 @@ func (s *Server) Run(ctx context.Context) error {
 	// TTL (docs/03 §5). Dev-only: the seed adapter is in-process
 	// (docs/04 §6.3); production adapters heartbeat themselves.
 	go s.heartbeatDevAdapter(ctx)
+
+	// Start the scheduled backup loop. Reads backup_schedule and
+	// backup_retention_days from tenant_settings every 60s and runs
+	// a pg_dump snapshot when the cron expression matches.
+	{
+		bDir, _ := backup.DefaultDir()
+		bSched := backup.NewScheduler(s.cfg.PostgresDSN, bDir, s.log)
+		bSched.Start(ctx, func() (string, int) {
+			qCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			stx, err := s.pool.BeginTenantTx(qCtx, "tnt_dev")
+			if err != nil {
+				return "", 0
+			}
+			defer stx.Rollback(qCtx)
+			row, err := db.GetTenantSettings(qCtx, stx.Tx, "tnt_dev")
+			if err != nil {
+				return "", 0
+			}
+			return row.BackupSchedule, int(row.BackupRetentionDays)
+		})
+		defer bSched.Stop()
+	}
 
 	select {
 	case <-ctx.Done():

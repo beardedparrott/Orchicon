@@ -1,0 +1,126 @@
+# Orchicon safety ruleset — destructive / unsafe command patterns.
+#
+# Runs with:  semgrep scan --config .orchicon/semgrep_orchicon.yml <dir>
+#
+# These are the Orchicon-specific patterns (the "rm -rf / through a
+# subprocess" class that generic rulesets miss). Semgrep's public
+# rulesets (--config p/security-audit, p/python, p/javascript) supply the
+# general bug + security coverage; this file adds the destructive-command
+# floor that workers must never cross.
+#
+# pattern-regex uses the Rust regex syntax. Rules that match raw command
+# text use the `regex` language (scans every text file); language-specific
+# rules are scoped to that language's files.
+rules:
+  - id: orchicon-rm-root
+    languages: [regex]
+    severity: ERROR
+    message: >-
+      Destructive recursive delete targeting a root/system path
+      (`rm -rf /`, `rm -fr /*`, ...). Forbidden — Orchicon's execution
+      guard blocks these at the OS level anyway.
+    pattern-regex: 'rm\s+-[a-zA-Z]*[rfRF][a-zA-Z]*\s+/'
+
+  - id: orchicon-rm-home
+    languages: [regex]
+    severity: ERROR
+    message: >-
+      Destructive delete targeting the home directory (`~`, `$HOME`).
+      Forbidden.
+    pattern-regex: 'rm\s+-[a-zA-Z]*[rfRF][a-zA-Z]*\s+(?:~|\$HOME|\$\{HOME\})'
+
+  - id: orchicon-rm-no-preserve-root
+    languages: [regex]
+    severity: ERROR
+    message: >-
+      `rm --no-preserve-root` explicitly disables the root-delete guard.
+      Forbidden.
+    pattern-regex: 'rm\s+--no-preserve-root'
+
+  - id: orchicon-subprocess-rm
+    languages: [python]
+    severity: ERROR
+    message: >-
+      A Python subprocess call passes a destructive `rm` command. This is
+      the vector that bypasses direct bash deny rules (e.g. a TUI shelling
+      out to rm). Orchicon's execution guard blocks the actual delete;
+      review and guard this code before merge.
+    pattern-regex: 'subprocess\.(?:run|call|Popen|check_call|check_output)\s*\([^)]*\brm\b'
+
+  - id: orchicon-os-system-rm
+    languages: [python]
+    severity: ERROR
+    message: >-
+      `os.system` / `os.popen` executes a shell command. If the command
+      contains destructive flags this is dangerous. Prefer parameterized
+      subprocess calls and never target root/home.
+    pattern-regex: 'os\.(?:system|popen)\s*\([^)]*rm\s+'
+
+  - id: orchicon-python-destructive-fs
+    languages: [python]
+    severity: WARNING
+    message: >-
+      Destructive Python filesystem API (os.remove/unlink/rmdir, shutil.
+      rmtree, os.system). Confirm the target is inside the project
+      directory and never a system path.
+    pattern-regex: '\b(?:os\.(?:remove|unlink|rmdir|system|popen)|shutil\.rmtree)\s*\('
+
+  - id: orchicon-js-destructive-fs
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      Destructive Node/JS filesystem or process API (fs.unlink/rmSync,
+      child_process exec/spawn, rimraf, shell.rm). Confirm the target is
+      inside the project directory.
+    pattern-regex: '\b(?:fs\.(?:unlink|unlinkSync|rmSync|rmdir|rmdirSync)|child_process\.(?:exec|execSync|spawn|spawnSync)\s*\(|rimraf|unlinkSync|shell\.rm)\b'
+
+  - id: orchicon-disk-tools
+    languages: [regex]
+    severity: ERROR
+    message: >-
+      Disk/partition/LVM tooling (mkfs, fdisk, parted, shred, wipefs,
+      LVM, mkswap). Forbidden in worker execution.
+    pattern-regex: '\b(?:mkfs(?:\.[a-z0-9]+)?|fdisk|parted|shred|wipefs|mkswap|pvcreate|pvremove|vgcreate|vgremove|lvcreate|lvremove)\b'
+
+  - id: orchicon-dd-device
+    languages: [regex]
+    severity: ERROR
+    message: >-
+      `dd` writing to a block device. Forbidden.
+    pattern-regex: 'dd\s+[^;|]*of=/dev/[a-z]'
+
+  - id: orchicon-device-redirect
+    languages: [regex]
+    severity: ERROR
+    message: >-
+      Redirection to a block device (`/dev/sd*`). Forbidden.
+    pattern-regex: '(?:>|>>)\s*/dev/(?:sd|vd|nvme|loop|mmcblk|sr)[a-z0-9]*'
+
+  - id: orchicon-chmod-root
+    languages: [regex]
+    severity: ERROR
+    message: >-
+      Root-wide recursive permission change. Forbidden.
+    pattern-regex: 'chmod\s+-[Rr]\s+[0-9]+\s+(?:/|\*)'
+
+  - id: orchicon-chown-root
+    languages: [regex]
+    severity: ERROR
+    message: >-
+      Root-wide recursive ownership change. Forbidden.
+    pattern-regex: 'chown\s+-[Rr]\s+\S+\s+(?:/|\*)'
+
+  - id: orchicon-fork-bomb
+    languages: [regex]
+    severity: ERROR
+    message: >-
+      Fork bomb construct. Forbidden.
+    pattern-regex: ':\(\)\s*\{'
+
+  - id: orchicon-curl-pipe-shell
+    languages: [regex]
+    severity: ERROR
+    message: >-
+      Download-and-execute (piping curl/wget output into a shell).
+      Forbidden.
+    pattern-regex: '(?:curl|wget)[^|;&]*\|\S*(?:sh|bash)(?:\s|$)'

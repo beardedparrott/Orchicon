@@ -156,7 +156,24 @@ Every piece of functionality built in this repo must follow these security stand
 - When you need library docs (Connect-ES, Atlas, TanStack Router, pgx, NATS, SigNoz), use `context7` tools before guessing.
 - If unsure how to use a library or pattern, use `gh_grep` to search real GitHub usage examples.
 - LSP servers (gopls, typescript, eslint, yaml-ls) are enabled — diagnostics surface in the edit loop. Treat them as fast feedback; `make ci` is the authoritative gate.
-- Playwright MCP is configured in `opencode.jsonc` for browser testing. Use Chrome and/or Playwright for frontend verification. NEVER use Firefox — the developer uses Firefox and testing needs a separate browser.
+- Playwright MCP is configured in `opencode.jsonc` for browser testing. **Playwright is installed** — `npx playwright install chrome` has been run, so Chrome is available for browser verification. Use Chrome and/or Playwright for frontend verification. NEVER use Firefox — the developer uses Firefox and testing needs a separate browser.
+- **NEVER run `orchicon-dev start` (or `dev.sh start`) from a shell tool** — the command tails the control plane log (`followFile`) and never returns, which hangs the agent session until the user kills it. **Preferred: use the built-in detach mode** — `orchicon-dev serve --detach` forks the server, writes the PID file, and returns immediately (stop with `orchicon-dev serve --stop`; check with `serve --status`; logs in `.dev/logs/orchicon.log`). The old workaround (below) only exists for binaries predating `serve --detach`:
+  ```bash
+  cat > /tmp/orchicon-serve-detached.sh <<'EOF'
+  #!/bin/bash
+  # Start the orchicon-dev control plane WITHOUT the log tail.
+  # ORCHICON_DEV_CHILD=1 -> devStartChild(): server only, returns control.
+  nohup env ORCHICON_DEV_CHILD=1 ~/.local/bin/orchicon-dev dev start </dev/null >>/tmp/orchicon-dev-child.log 2>&1 &
+  disown
+  exit 0
+  EOF
+  chmod +x /tmp/orchicon-serve-detached.sh && /tmp/orchicon-serve-detached.sh
+  ```
+  Then verify with a separate short-timeout call: `curl -s -m 2 http://localhost:8080/healthz` (must return `{"status":"ok"}`).
+  - This requires containers already up (check `docker compose -p orchicon ps`) and migrations applied (the server also runs migrations on boot).
+  - `devStartChild()` does NOT write the PID file — use `fuser -k 8080/tcp` to stop a test server, not `orchicon-dev stop` (which needs the PID file and also runs `compose down`). (`serve --detach` writes the PID file and stops cleanly with `serve --stop`.)
+  - **Never use `pkill -f` with a pattern that could match the shell command itself** (e.g. `pkill -f "orchicon-dev"` from within a bash `-c` that contains that string) — it kills your own shell. Kill by exact PID or by port (`fuser -k 8080/tcp`).
+  - For a clean restart that replaces the binary: `fuser -k ~/.local/bin/orchicon-dev` to release the running binary, copy the new one, then relaunch via the wrapper script.
 - The `site/` landing page and `README.md` document the `orchicon` commands and installed files. Keep both in sync when commands, flags, or install paths change. The CloudFlare Pages build copies `scripts/install.{sh,ps1}` to the deployed site.
 - **UI consistency**: Every list page must follow the same visual pattern: search input, filter/sort dropdowns, select-all checkbox, per-item checkboxes, a selection count label, and a bulk action button (delete / approve / reject etc.) that appears when ≥1 item is selected. Do not add a page with a different interaction model — new list pages must replicate this pattern exactly. The Approvals, Work Items, Executions, Workers, and Policies pages all follow this pattern; use them as reference.
 

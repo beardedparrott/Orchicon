@@ -779,7 +779,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                 Deprecate
               </Button>
             )}
-            {(isPublished || isDeprecated) && (
+            {(isPublished || isDeprecated) && wf.type !== "template" && (
               <Button onClick={handleStart} disabled={startWorkflow.isPending}>
                 {startWorkflow.isPending ? "Starting…" : "Start run"}
               </Button>

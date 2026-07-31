@@ -19,9 +19,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/askorchicon"
+	"github.com/beardedparrott/orchicon/internal/backup"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/mcp"
@@ -54,13 +57,15 @@ func main() {
 		case "status":
 			os.Exit(runDev([]string{"status"}))
 		case "serve":
-			os.Exit(runServe())
+			os.Exit(runServe(os.Args[2:]))
 		case "restart":
 			os.Exit(runDev([]string{"restart"}))
 		case "logs":
 			os.Exit(runDev([]string{"logs"}))
 		case "mcp":
 			os.Exit(runMCP(context.Background(), os.Args[2:], log))
+		case "db":
+			os.Exit(runDB(os.Args[2:], log))
 		case "version", "--version", "-v":
 			fmt.Println(version.Current().String())
 			return
@@ -97,6 +102,109 @@ func main() {
 	log.Info("orchicon stopped")
 }
 
+func runDB(args []string, log *slog.Logger) int {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "Usage: orchicon db <backup|restore|list|prune>\n")
+		return 1
+	}
+
+	cfg := config.Default()
+	if err := cfg.Validate(); err != nil {
+		log.Error("invalid config", "error", err)
+		return 1
+	}
+
+	dir, err := backup.DefaultDir()
+	if err != nil {
+		log.Error("backup directory", "error", err)
+		return 1
+	}
+
+	ctx := context.Background()
+
+	switch args[0] {
+	case "backup":
+		info, err := backup.Create(ctx, cfg.PostgresDSN, dir)
+		if err != nil {
+			log.Error("backup failed", "error", err)
+			return 1
+		}
+		fmt.Printf("Created: %s (%d bytes)\n", info.Name, info.SizeBytes)
+		return 0
+
+	case "restore":
+		if len(args) < 2 {
+			fmt.Fprintf(os.Stderr, "Usage: orchicon db restore <backup-name>\n")
+			fmt.Fprintf(os.Stderr, "Use \"orchicon db list\" to see available backups.\n")
+			return 1
+		}
+		path := args[1]
+		if !strings.Contains(path, string(filepath.Separator)) {
+			path = filepath.Join(dir, path)
+		}
+		if err := backup.Restore(ctx, cfg.PostgresDSN, path); err != nil {
+			log.Error("restore failed", "error", err)
+			return 1
+		}
+		fmt.Println("Restore complete.")
+		return 0
+
+	case "list":
+		backups, err := backup.List(dir)
+		if err != nil {
+			log.Error("list backups", "error", err)
+			return 1
+		}
+		if len(backups) == 0 {
+			fmt.Println("No backups found.")
+			return 0
+		}
+		for _, b := range backups {
+			age := time.Since(b.CreatedAt).Truncate(time.Second)
+			sz := b.SizeBytes
+			var unit string
+			switch {
+			case sz > 1<<30:
+				sz /= 1 << 30
+				unit = "GB"
+			case sz > 1<<20:
+				sz /= 1 << 20
+				unit = "MB"
+			case sz > 1<<10:
+				sz /= 1 << 10
+				unit = "KB"
+			default:
+				unit = "B"
+			}
+			fmt.Printf("%-40s %4d %-2s  %s ago\n", b.Name, sz, unit, age)
+		}
+		return 0
+
+	case "prune":
+		if len(args) < 2 {
+			fmt.Fprintf(os.Stderr, "Usage: orchicon db prune <days>\n")
+			return 1
+		}
+		var days int
+		if _, err := fmt.Sscanf(args[1], "%d", &days); err != nil || days < 1 {
+			fmt.Fprintf(os.Stderr, "days must be a positive integer\n")
+			return 1
+		}
+		removed, err := backup.Prune(dir, days)
+		if err != nil {
+			log.Error("prune failed", "error", err)
+			return 1
+		}
+		fmt.Printf("Pruned %d backup(s) older than %d day(s).\n", removed, days)
+		return 0
+
+	default:
+		fmt.Fprintf(os.Stderr, "unknown db subcommand: %s\n", args[0])
+		fmt.Fprintf(os.Stderr, "Usage: orchicon db <backup|restore|list|prune>\n")
+		return 1
+	}
+}
+
 func printHelp() {
 	bin := filepath.Base(os.Args[0])
 	fmt.Printf(`%s %s — Orchicon control plane
@@ -108,7 +216,11 @@ Usage:
   %s dev status     Show what's running
   %s serve          Run the control plane with embedded frontend (no compose)
   %s mcp            Start the MCP stdio server (for opencode tool integration)
-`, bin, version.Current().Tag, bin, bin, bin, bin, bin, bin)
+  %s db backup      Create a database snapshot
+  %s db list        List available backups
+  %s db restore     Restore from a backup
+  %s db prune       Remove backups older than N days
+`, bin, version.Current().Tag, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin)
 
 	fmt.Printf(`
 Short aliases:

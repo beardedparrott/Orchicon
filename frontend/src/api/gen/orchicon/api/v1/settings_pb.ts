@@ -77,6 +77,30 @@ export class TenantSettings extends Message<TenantSettings> {
   stallRepetitionWindowSeconds = protoInt64.zero;
 
   /**
+   * Backup schedule in cron expression format (e.g. "0 3 * * *" for daily 3am).
+   * Empty means automatic backups are disabled.
+   *
+   * @generated from field: string backup_schedule = 20;
+   */
+  backupSchedule = "";
+
+  /**
+   * Number of days to retain backup snapshots. Older backups are pruned.
+   * Zero means keep all backups indefinitely.
+   *
+   * @generated from field: int32 backup_retention_days = 21;
+   */
+  backupRetentionDays = 0;
+
+  /**
+   * Directory where backup snapshots are stored. Empty uses the default
+   * (~/.local/share/orchicon/backups/).
+   *
+   * @generated from field: string backup_directory = 22;
+   */
+  backupDirectory = "";
+
+  /**
    * @generated from field: google.protobuf.Timestamp created_at = 100;
    */
   createdAt?: Timestamp;
@@ -101,6 +125,9 @@ export class TenantSettings extends Message<TenantSettings> {
     { no: 12, name: "stall_text_loop_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 13, name: "stall_repetition_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 14, name: "stall_repetition_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 20, name: "backup_schedule", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 21, name: "backup_retention_days", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 22, name: "backup_directory", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 100, name: "created_at", kind: "message", T: Timestamp },
     { no: 101, name: "updated_at", kind: "message", T: Timestamp },
   ]);

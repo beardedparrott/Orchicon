@@ -189,6 +189,438 @@ func (x *UpdateSettingsResponse) GetSettings() *TenantSettings {
 	return nil
 }
 
+type CreateBackupRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Optional: override the backup directory. Empty = use configured or default.
+	Directory     string `protobuf:"bytes,1,opt,name=directory,proto3" json:"directory,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateBackupRequest) Reset() {
+	*x = CreateBackupRequest{}
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateBackupRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateBackupRequest) ProtoMessage() {}
+
+func (x *CreateBackupRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateBackupRequest.ProtoReflect.Descriptor instead.
+func (*CreateBackupRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *CreateBackupRequest) GetDirectory() string {
+	if x != nil {
+		return x.Directory
+	}
+	return ""
+}
+
+type CreateBackupResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	SizeBytes     int64                  `protobuf:"varint,2,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	CreatedAt     string                 `protobuf:"bytes,3,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateBackupResponse) Reset() {
+	*x = CreateBackupResponse{}
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateBackupResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateBackupResponse) ProtoMessage() {}
+
+func (x *CreateBackupResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateBackupResponse.ProtoReflect.Descriptor instead.
+func (*CreateBackupResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *CreateBackupResponse) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CreateBackupResponse) GetSizeBytes() int64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+func (x *CreateBackupResponse) GetCreatedAt() string {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return ""
+}
+
+type ListBackupsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Optional: directory to list from. Empty = use configured or default.
+	Directory     string `protobuf:"bytes,1,opt,name=directory,proto3" json:"directory,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListBackupsRequest) Reset() {
+	*x = ListBackupsRequest{}
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListBackupsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListBackupsRequest) ProtoMessage() {}
+
+func (x *ListBackupsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListBackupsRequest.ProtoReflect.Descriptor instead.
+func (*ListBackupsRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ListBackupsRequest) GetDirectory() string {
+	if x != nil {
+		return x.Directory
+	}
+	return ""
+}
+
+type ListBackupsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Backups       []*BackupEntry         `protobuf:"bytes,1,rep,name=backups,proto3" json:"backups,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListBackupsResponse) Reset() {
+	*x = ListBackupsResponse{}
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListBackupsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListBackupsResponse) ProtoMessage() {}
+
+func (x *ListBackupsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListBackupsResponse.ProtoReflect.Descriptor instead.
+func (*ListBackupsResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ListBackupsResponse) GetBackups() []*BackupEntry {
+	if x != nil {
+		return x.Backups
+	}
+	return nil
+}
+
+type BackupEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	SizeBytes     int64                  `protobuf:"varint,2,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	CreatedAt     string                 `protobuf:"bytes,3,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BackupEntry) Reset() {
+	*x = BackupEntry{}
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BackupEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BackupEntry) ProtoMessage() {}
+
+func (x *BackupEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BackupEntry.ProtoReflect.Descriptor instead.
+func (*BackupEntry) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *BackupEntry) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *BackupEntry) GetSizeBytes() int64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+func (x *BackupEntry) GetCreatedAt() string {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return ""
+}
+
+type RestoreBackupRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Optional: directory to look in. Empty = use configured or default.
+	Directory     string `protobuf:"bytes,2,opt,name=directory,proto3" json:"directory,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RestoreBackupRequest) Reset() {
+	*x = RestoreBackupRequest{}
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RestoreBackupRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RestoreBackupRequest) ProtoMessage() {}
+
+func (x *RestoreBackupRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RestoreBackupRequest.ProtoReflect.Descriptor instead.
+func (*RestoreBackupRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *RestoreBackupRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *RestoreBackupRequest) GetDirectory() string {
+	if x != nil {
+		return x.Directory
+	}
+	return ""
+}
+
+type RestoreBackupResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RestoreBackupResponse) Reset() {
+	*x = RestoreBackupResponse{}
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RestoreBackupResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RestoreBackupResponse) ProtoMessage() {}
+
+func (x *RestoreBackupResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RestoreBackupResponse.ProtoReflect.Descriptor instead.
+func (*RestoreBackupResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{10}
+}
+
+type DeleteBackupRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Optional: directory to look in. Empty = use configured or default.
+	Directory     string `protobuf:"bytes,2,opt,name=directory,proto3" json:"directory,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteBackupRequest) Reset() {
+	*x = DeleteBackupRequest{}
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteBackupRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteBackupRequest) ProtoMessage() {}
+
+func (x *DeleteBackupRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteBackupRequest.ProtoReflect.Descriptor instead.
+func (*DeleteBackupRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *DeleteBackupRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *DeleteBackupRequest) GetDirectory() string {
+	if x != nil {
+		return x.Directory
+	}
+	return ""
+}
+
+type DeleteBackupResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteBackupResponse) Reset() {
+	*x = DeleteBackupResponse{}
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteBackupResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteBackupResponse) ProtoMessage() {}
+
+func (x *DeleteBackupResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteBackupResponse.ProtoReflect.Descriptor instead.
+func (*DeleteBackupResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{12}
+}
+
 var File_orchicon_api_v1_settings_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_settings_service_proto_rawDesc = "" +
@@ -200,10 +632,40 @@ const file_orchicon_api_v1_settings_service_proto_rawDesc = "" +
 	"\x15UpdateSettingsRequest\x12;\n" +
 	"\bsettings\x18\x01 \x01(\v2\x1f.orchicon.api.v1.TenantSettingsR\bsettings\"U\n" +
 	"\x16UpdateSettingsResponse\x12;\n" +
-	"\bsettings\x18\x01 \x01(\v2\x1f.orchicon.api.v1.TenantSettingsR\bsettings2\xce\x01\n" +
+	"\bsettings\x18\x01 \x01(\v2\x1f.orchicon.api.v1.TenantSettingsR\bsettings\"3\n" +
+	"\x13CreateBackupRequest\x12\x1c\n" +
+	"\tdirectory\x18\x01 \x01(\tR\tdirectory\"h\n" +
+	"\x14CreateBackupResponse\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x02 \x01(\x03R\tsizeBytes\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x03 \x01(\tR\tcreatedAt\"2\n" +
+	"\x12ListBackupsRequest\x12\x1c\n" +
+	"\tdirectory\x18\x01 \x01(\tR\tdirectory\"M\n" +
+	"\x13ListBackupsResponse\x126\n" +
+	"\abackups\x18\x01 \x03(\v2\x1c.orchicon.api.v1.BackupEntryR\abackups\"_\n" +
+	"\vBackupEntry\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x02 \x01(\x03R\tsizeBytes\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x03 \x01(\tR\tcreatedAt\"H\n" +
+	"\x14RestoreBackupRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1c\n" +
+	"\tdirectory\x18\x02 \x01(\tR\tdirectory\"\x17\n" +
+	"\x15RestoreBackupResponse\"G\n" +
+	"\x13DeleteBackupRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1c\n" +
+	"\tdirectory\x18\x02 \x01(\tR\tdirectory\"\x16\n" +
+	"\x14DeleteBackupResponse2\xc2\x04\n" +
 	"\x0fSettingsService\x12X\n" +
 	"\vGetSettings\x12#.orchicon.api.v1.GetSettingsRequest\x1a$.orchicon.api.v1.GetSettingsResponse\x12a\n" +
-	"\x0eUpdateSettings\x12&.orchicon.api.v1.UpdateSettingsRequest\x1a'.orchicon.api.v1.UpdateSettingsResponseB\xce\x01\n" +
+	"\x0eUpdateSettings\x12&.orchicon.api.v1.UpdateSettingsRequest\x1a'.orchicon.api.v1.UpdateSettingsResponse\x12[\n" +
+	"\fCreateBackup\x12$.orchicon.api.v1.CreateBackupRequest\x1a%.orchicon.api.v1.CreateBackupResponse\x12X\n" +
+	"\vListBackups\x12#.orchicon.api.v1.ListBackupsRequest\x1a$.orchicon.api.v1.ListBackupsResponse\x12^\n" +
+	"\rRestoreBackup\x12%.orchicon.api.v1.RestoreBackupRequest\x1a&.orchicon.api.v1.RestoreBackupResponse\x12[\n" +
+	"\fDeleteBackup\x12$.orchicon.api.v1.DeleteBackupRequest\x1a%.orchicon.api.v1.DeleteBackupResponseB\xce\x01\n" +
 	"\x13com.orchicon.api.v1B\x14SettingsServiceProtoP\x01ZCgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1;apiv1\xa2\x02\x03OAX\xaa\x02\x0fOrchicon.Api.V1\xca\x02\x0fOrchicon\\Api\\V1\xe2\x02\x1bOrchicon\\Api\\V1\\GPBMetadata\xea\x02\x11Orchicon::Api::V1b\x06proto3"
 
 var (
@@ -218,27 +680,45 @@ func file_orchicon_api_v1_settings_service_proto_rawDescGZIP() []byte {
 	return file_orchicon_api_v1_settings_service_proto_rawDescData
 }
 
-var file_orchicon_api_v1_settings_service_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_orchicon_api_v1_settings_service_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_orchicon_api_v1_settings_service_proto_goTypes = []any{
 	(*GetSettingsRequest)(nil),     // 0: orchicon.api.v1.GetSettingsRequest
 	(*GetSettingsResponse)(nil),    // 1: orchicon.api.v1.GetSettingsResponse
 	(*UpdateSettingsRequest)(nil),  // 2: orchicon.api.v1.UpdateSettingsRequest
 	(*UpdateSettingsResponse)(nil), // 3: orchicon.api.v1.UpdateSettingsResponse
-	(*TenantSettings)(nil),         // 4: orchicon.api.v1.TenantSettings
+	(*CreateBackupRequest)(nil),    // 4: orchicon.api.v1.CreateBackupRequest
+	(*CreateBackupResponse)(nil),   // 5: orchicon.api.v1.CreateBackupResponse
+	(*ListBackupsRequest)(nil),     // 6: orchicon.api.v1.ListBackupsRequest
+	(*ListBackupsResponse)(nil),    // 7: orchicon.api.v1.ListBackupsResponse
+	(*BackupEntry)(nil),            // 8: orchicon.api.v1.BackupEntry
+	(*RestoreBackupRequest)(nil),   // 9: orchicon.api.v1.RestoreBackupRequest
+	(*RestoreBackupResponse)(nil),  // 10: orchicon.api.v1.RestoreBackupResponse
+	(*DeleteBackupRequest)(nil),    // 11: orchicon.api.v1.DeleteBackupRequest
+	(*DeleteBackupResponse)(nil),   // 12: orchicon.api.v1.DeleteBackupResponse
+	(*TenantSettings)(nil),         // 13: orchicon.api.v1.TenantSettings
 }
 var file_orchicon_api_v1_settings_service_proto_depIdxs = []int32{
-	4, // 0: orchicon.api.v1.GetSettingsResponse.settings:type_name -> orchicon.api.v1.TenantSettings
-	4, // 1: orchicon.api.v1.UpdateSettingsRequest.settings:type_name -> orchicon.api.v1.TenantSettings
-	4, // 2: orchicon.api.v1.UpdateSettingsResponse.settings:type_name -> orchicon.api.v1.TenantSettings
-	0, // 3: orchicon.api.v1.SettingsService.GetSettings:input_type -> orchicon.api.v1.GetSettingsRequest
-	2, // 4: orchicon.api.v1.SettingsService.UpdateSettings:input_type -> orchicon.api.v1.UpdateSettingsRequest
-	1, // 5: orchicon.api.v1.SettingsService.GetSettings:output_type -> orchicon.api.v1.GetSettingsResponse
-	3, // 6: orchicon.api.v1.SettingsService.UpdateSettings:output_type -> orchicon.api.v1.UpdateSettingsResponse
-	5, // [5:7] is the sub-list for method output_type
-	3, // [3:5] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	13, // 0: orchicon.api.v1.GetSettingsResponse.settings:type_name -> orchicon.api.v1.TenantSettings
+	13, // 1: orchicon.api.v1.UpdateSettingsRequest.settings:type_name -> orchicon.api.v1.TenantSettings
+	13, // 2: orchicon.api.v1.UpdateSettingsResponse.settings:type_name -> orchicon.api.v1.TenantSettings
+	8,  // 3: orchicon.api.v1.ListBackupsResponse.backups:type_name -> orchicon.api.v1.BackupEntry
+	0,  // 4: orchicon.api.v1.SettingsService.GetSettings:input_type -> orchicon.api.v1.GetSettingsRequest
+	2,  // 5: orchicon.api.v1.SettingsService.UpdateSettings:input_type -> orchicon.api.v1.UpdateSettingsRequest
+	4,  // 6: orchicon.api.v1.SettingsService.CreateBackup:input_type -> orchicon.api.v1.CreateBackupRequest
+	6,  // 7: orchicon.api.v1.SettingsService.ListBackups:input_type -> orchicon.api.v1.ListBackupsRequest
+	9,  // 8: orchicon.api.v1.SettingsService.RestoreBackup:input_type -> orchicon.api.v1.RestoreBackupRequest
+	11, // 9: orchicon.api.v1.SettingsService.DeleteBackup:input_type -> orchicon.api.v1.DeleteBackupRequest
+	1,  // 10: orchicon.api.v1.SettingsService.GetSettings:output_type -> orchicon.api.v1.GetSettingsResponse
+	3,  // 11: orchicon.api.v1.SettingsService.UpdateSettings:output_type -> orchicon.api.v1.UpdateSettingsResponse
+	5,  // 12: orchicon.api.v1.SettingsService.CreateBackup:output_type -> orchicon.api.v1.CreateBackupResponse
+	7,  // 13: orchicon.api.v1.SettingsService.ListBackups:output_type -> orchicon.api.v1.ListBackupsResponse
+	10, // 14: orchicon.api.v1.SettingsService.RestoreBackup:output_type -> orchicon.api.v1.RestoreBackupResponse
+	12, // 15: orchicon.api.v1.SettingsService.DeleteBackup:output_type -> orchicon.api.v1.DeleteBackupResponse
+	10, // [10:16] is the sub-list for method output_type
+	4,  // [4:10] is the sub-list for method input_type
+	4,  // [4:4] is the sub-list for extension type_name
+	4,  // [4:4] is the sub-list for extension extendee
+	0,  // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_settings_service_proto_init() }
@@ -253,7 +733,7 @@ func file_orchicon_api_v1_settings_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_settings_service_proto_rawDesc), len(file_orchicon_api_v1_settings_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

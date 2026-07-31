@@ -39,9 +39,9 @@ services:
       - nats-data:/data/jetstream
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8222/healthz >/dev/null 2>&1 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+      interval: 2s
+      timeout: 3s
+      retries: 15
     restart: unless-stopped
 
   clickhouse:
@@ -64,9 +64,9 @@ services:
         hard: 262144
     healthcheck:
       test: ["CMD", "clickhouse-client", "-u", "signoz", "--password", "signoz", "--query", "SELECT 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+      interval: 2s
+      timeout: 3s
+      retries: 30
     restart: unless-stopped
 
   signoz-schema-migrator:
@@ -77,7 +77,7 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
-    restart: "no"
+    restart: on-failure
     # Wait for the schema migrator to finish creating ClickHouse databases
     # before starting dependent services. Without this, the OTel collector
     # starts too early and crashes because signoz_logs/signoz_traces don't
@@ -85,7 +85,7 @@ services:
     # eventually completes, wasting startup time.
 
   otel-collector:
-    image: signoz/signoz-otel-collector:latest
+    image: signoz/signoz-otel-collector:v0.144.6
     pull_policy: missing
     container_name: orchicon-prod-otel-collector
     command: ["--config=/etc/otel-collector-config.yaml"]
@@ -99,17 +99,15 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
-      signoz-schema-migrator:
-        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/13133' || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      interval: 2s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
 
   signoz:
-    image: signoz/signoz-community:latest
+    image: signoz/signoz-community:v0.134.0
     pull_policy: missing
     container_name: orchicon-prod-signoz
     command: ["-DSTORAGE=clickhouse"]
@@ -130,13 +128,11 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
-      signoz-schema-migrator:
-        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/api/v1/health"]
-      interval: 10s
+      interval: 2s
       timeout: 3s
-      retries: 30
+      retries: 60
     restart: unless-stopped
     volumes:
       - signoz-data:/var/lib/signoz

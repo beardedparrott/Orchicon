@@ -16,6 +16,19 @@ service SettingsService {
   // UpdateSettings merges the provided fields into the tenant's settings.
   // Only non-zero/non-empty fields are applied (partial update).
   rpc UpdateSettings(UpdateSettingsRequest) returns (UpdateSettingsResponse);
+
+  // CreateBackup takes a database snapshot and stores it in the backup directory.
+  rpc CreateBackup(CreateBackupRequest) returns (CreateBackupResponse);
+
+  // ListBackups returns all available backup snapshots, newest first.
+  rpc ListBackups(ListBackupsRequest) returns (ListBackupsResponse);
+
+  // RestoreBackup replaces the current database with the named snapshot.
+  // The server will restart after restore completes.
+  rpc RestoreBackup(RestoreBackupRequest) returns (RestoreBackupResponse);
+
+  // DeleteBackup removes the named snapshot from the backup directory.
+  rpc DeleteBackup(DeleteBackupRequest) returns (DeleteBackupResponse);
 }
 
 message GetSettingsRequest {}
@@ -31,3 +44,40 @@ message UpdateSettingsRequest {
 message UpdateSettingsResponse {
   TenantSettings settings = 1;
 }
+
+message CreateBackupRequest {
+  // Optional: override the backup directory. Empty = use configured or default.
+  string directory = 1;
+}
+message CreateBackupResponse {
+  string name = 1;
+  int64 size_bytes = 2;
+  string created_at = 3;
+}
+
+message ListBackupsRequest {
+  // Optional: directory to list from. Empty = use configured or default.
+  string directory = 1;
+}
+message ListBackupsResponse {
+  repeated BackupEntry backups = 1;
+}
+message BackupEntry {
+  string name = 1;
+  int64 size_bytes = 2;
+  string created_at = 3;
+}
+
+message RestoreBackupRequest {
+  string name = 1;
+  // Optional: directory to look in. Empty = use configured or default.
+  string directory = 2;
+}
+message RestoreBackupResponse {}
+
+message DeleteBackupRequest {
+  string name = 1;
+  // Optional: directory to look in. Empty = use configured or default.
+  string directory = 2;
+}
+message DeleteBackupResponse {}

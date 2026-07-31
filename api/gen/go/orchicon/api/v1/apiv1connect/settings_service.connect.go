@@ -39,6 +39,18 @@ const (
 	// SettingsServiceUpdateSettingsProcedure is the fully-qualified name of the SettingsService's
 	// UpdateSettings RPC.
 	SettingsServiceUpdateSettingsProcedure = "/orchicon.api.v1.SettingsService/UpdateSettings"
+	// SettingsServiceCreateBackupProcedure is the fully-qualified name of the SettingsService's
+	// CreateBackup RPC.
+	SettingsServiceCreateBackupProcedure = "/orchicon.api.v1.SettingsService/CreateBackup"
+	// SettingsServiceListBackupsProcedure is the fully-qualified name of the SettingsService's
+	// ListBackups RPC.
+	SettingsServiceListBackupsProcedure = "/orchicon.api.v1.SettingsService/ListBackups"
+	// SettingsServiceRestoreBackupProcedure is the fully-qualified name of the SettingsService's
+	// RestoreBackup RPC.
+	SettingsServiceRestoreBackupProcedure = "/orchicon.api.v1.SettingsService/RestoreBackup"
+	// SettingsServiceDeleteBackupProcedure is the fully-qualified name of the SettingsService's
+	// DeleteBackup RPC.
+	SettingsServiceDeleteBackupProcedure = "/orchicon.api.v1.SettingsService/DeleteBackup"
 )
 
 // SettingsServiceClient is a client for the orchicon.api.v1.SettingsService service.
@@ -49,6 +61,15 @@ type SettingsServiceClient interface {
 	// UpdateSettings merges the provided fields into the tenant's settings.
 	// Only non-zero/non-empty fields are applied (partial update).
 	UpdateSettings(context.Context, *connect.Request[v1.UpdateSettingsRequest]) (*connect.Response[v1.UpdateSettingsResponse], error)
+	// CreateBackup takes a database snapshot and stores it in the backup directory.
+	CreateBackup(context.Context, *connect.Request[v1.CreateBackupRequest]) (*connect.Response[v1.CreateBackupResponse], error)
+	// ListBackups returns all available backup snapshots, newest first.
+	ListBackups(context.Context, *connect.Request[v1.ListBackupsRequest]) (*connect.Response[v1.ListBackupsResponse], error)
+	// RestoreBackup replaces the current database with the named snapshot.
+	// The server will restart after restore completes.
+	RestoreBackup(context.Context, *connect.Request[v1.RestoreBackupRequest]) (*connect.Response[v1.RestoreBackupResponse], error)
+	// DeleteBackup removes the named snapshot from the backup directory.
+	DeleteBackup(context.Context, *connect.Request[v1.DeleteBackupRequest]) (*connect.Response[v1.DeleteBackupResponse], error)
 }
 
 // NewSettingsServiceClient constructs a client for the orchicon.api.v1.SettingsService service. By
@@ -74,6 +95,30 @@ func NewSettingsServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(settingsServiceMethods.ByName("UpdateSettings")),
 			connect.WithClientOptions(opts...),
 		),
+		createBackup: connect.NewClient[v1.CreateBackupRequest, v1.CreateBackupResponse](
+			httpClient,
+			baseURL+SettingsServiceCreateBackupProcedure,
+			connect.WithSchema(settingsServiceMethods.ByName("CreateBackup")),
+			connect.WithClientOptions(opts...),
+		),
+		listBackups: connect.NewClient[v1.ListBackupsRequest, v1.ListBackupsResponse](
+			httpClient,
+			baseURL+SettingsServiceListBackupsProcedure,
+			connect.WithSchema(settingsServiceMethods.ByName("ListBackups")),
+			connect.WithClientOptions(opts...),
+		),
+		restoreBackup: connect.NewClient[v1.RestoreBackupRequest, v1.RestoreBackupResponse](
+			httpClient,
+			baseURL+SettingsServiceRestoreBackupProcedure,
+			connect.WithSchema(settingsServiceMethods.ByName("RestoreBackup")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteBackup: connect.NewClient[v1.DeleteBackupRequest, v1.DeleteBackupResponse](
+			httpClient,
+			baseURL+SettingsServiceDeleteBackupProcedure,
+			connect.WithSchema(settingsServiceMethods.ByName("DeleteBackup")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -81,6 +126,10 @@ func NewSettingsServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 type settingsServiceClient struct {
 	getSettings    *connect.Client[v1.GetSettingsRequest, v1.GetSettingsResponse]
 	updateSettings *connect.Client[v1.UpdateSettingsRequest, v1.UpdateSettingsResponse]
+	createBackup   *connect.Client[v1.CreateBackupRequest, v1.CreateBackupResponse]
+	listBackups    *connect.Client[v1.ListBackupsRequest, v1.ListBackupsResponse]
+	restoreBackup  *connect.Client[v1.RestoreBackupRequest, v1.RestoreBackupResponse]
+	deleteBackup   *connect.Client[v1.DeleteBackupRequest, v1.DeleteBackupResponse]
 }
 
 // GetSettings calls orchicon.api.v1.SettingsService.GetSettings.
@@ -93,6 +142,26 @@ func (c *settingsServiceClient) UpdateSettings(ctx context.Context, req *connect
 	return c.updateSettings.CallUnary(ctx, req)
 }
 
+// CreateBackup calls orchicon.api.v1.SettingsService.CreateBackup.
+func (c *settingsServiceClient) CreateBackup(ctx context.Context, req *connect.Request[v1.CreateBackupRequest]) (*connect.Response[v1.CreateBackupResponse], error) {
+	return c.createBackup.CallUnary(ctx, req)
+}
+
+// ListBackups calls orchicon.api.v1.SettingsService.ListBackups.
+func (c *settingsServiceClient) ListBackups(ctx context.Context, req *connect.Request[v1.ListBackupsRequest]) (*connect.Response[v1.ListBackupsResponse], error) {
+	return c.listBackups.CallUnary(ctx, req)
+}
+
+// RestoreBackup calls orchicon.api.v1.SettingsService.RestoreBackup.
+func (c *settingsServiceClient) RestoreBackup(ctx context.Context, req *connect.Request[v1.RestoreBackupRequest]) (*connect.Response[v1.RestoreBackupResponse], error) {
+	return c.restoreBackup.CallUnary(ctx, req)
+}
+
+// DeleteBackup calls orchicon.api.v1.SettingsService.DeleteBackup.
+func (c *settingsServiceClient) DeleteBackup(ctx context.Context, req *connect.Request[v1.DeleteBackupRequest]) (*connect.Response[v1.DeleteBackupResponse], error) {
+	return c.deleteBackup.CallUnary(ctx, req)
+}
+
 // SettingsServiceHandler is an implementation of the orchicon.api.v1.SettingsService service.
 type SettingsServiceHandler interface {
 	// GetSettings returns the current settings for the calling tenant.
@@ -101,6 +170,15 @@ type SettingsServiceHandler interface {
 	// UpdateSettings merges the provided fields into the tenant's settings.
 	// Only non-zero/non-empty fields are applied (partial update).
 	UpdateSettings(context.Context, *connect.Request[v1.UpdateSettingsRequest]) (*connect.Response[v1.UpdateSettingsResponse], error)
+	// CreateBackup takes a database snapshot and stores it in the backup directory.
+	CreateBackup(context.Context, *connect.Request[v1.CreateBackupRequest]) (*connect.Response[v1.CreateBackupResponse], error)
+	// ListBackups returns all available backup snapshots, newest first.
+	ListBackups(context.Context, *connect.Request[v1.ListBackupsRequest]) (*connect.Response[v1.ListBackupsResponse], error)
+	// RestoreBackup replaces the current database with the named snapshot.
+	// The server will restart after restore completes.
+	RestoreBackup(context.Context, *connect.Request[v1.RestoreBackupRequest]) (*connect.Response[v1.RestoreBackupResponse], error)
+	// DeleteBackup removes the named snapshot from the backup directory.
+	DeleteBackup(context.Context, *connect.Request[v1.DeleteBackupRequest]) (*connect.Response[v1.DeleteBackupResponse], error)
 }
 
 // NewSettingsServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -122,12 +200,44 @@ func NewSettingsServiceHandler(svc SettingsServiceHandler, opts ...connect.Handl
 		connect.WithSchema(settingsServiceMethods.ByName("UpdateSettings")),
 		connect.WithHandlerOptions(opts...),
 	)
+	settingsServiceCreateBackupHandler := connect.NewUnaryHandler(
+		SettingsServiceCreateBackupProcedure,
+		svc.CreateBackup,
+		connect.WithSchema(settingsServiceMethods.ByName("CreateBackup")),
+		connect.WithHandlerOptions(opts...),
+	)
+	settingsServiceListBackupsHandler := connect.NewUnaryHandler(
+		SettingsServiceListBackupsProcedure,
+		svc.ListBackups,
+		connect.WithSchema(settingsServiceMethods.ByName("ListBackups")),
+		connect.WithHandlerOptions(opts...),
+	)
+	settingsServiceRestoreBackupHandler := connect.NewUnaryHandler(
+		SettingsServiceRestoreBackupProcedure,
+		svc.RestoreBackup,
+		connect.WithSchema(settingsServiceMethods.ByName("RestoreBackup")),
+		connect.WithHandlerOptions(opts...),
+	)
+	settingsServiceDeleteBackupHandler := connect.NewUnaryHandler(
+		SettingsServiceDeleteBackupProcedure,
+		svc.DeleteBackup,
+		connect.WithSchema(settingsServiceMethods.ByName("DeleteBackup")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/orchicon.api.v1.SettingsService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case SettingsServiceGetSettingsProcedure:
 			settingsServiceGetSettingsHandler.ServeHTTP(w, r)
 		case SettingsServiceUpdateSettingsProcedure:
 			settingsServiceUpdateSettingsHandler.ServeHTTP(w, r)
+		case SettingsServiceCreateBackupProcedure:
+			settingsServiceCreateBackupHandler.ServeHTTP(w, r)
+		case SettingsServiceListBackupsProcedure:
+			settingsServiceListBackupsHandler.ServeHTTP(w, r)
+		case SettingsServiceRestoreBackupProcedure:
+			settingsServiceRestoreBackupHandler.ServeHTTP(w, r)
+		case SettingsServiceDeleteBackupProcedure:
+			settingsServiceDeleteBackupHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -143,4 +253,20 @@ func (UnimplementedSettingsServiceHandler) GetSettings(context.Context, *connect
 
 func (UnimplementedSettingsServiceHandler) UpdateSettings(context.Context, *connect.Request[v1.UpdateSettingsRequest]) (*connect.Response[v1.UpdateSettingsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.SettingsService.UpdateSettings is not implemented"))
+}
+
+func (UnimplementedSettingsServiceHandler) CreateBackup(context.Context, *connect.Request[v1.CreateBackupRequest]) (*connect.Response[v1.CreateBackupResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.SettingsService.CreateBackup is not implemented"))
+}
+
+func (UnimplementedSettingsServiceHandler) ListBackups(context.Context, *connect.Request[v1.ListBackupsRequest]) (*connect.Response[v1.ListBackupsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.SettingsService.ListBackups is not implemented"))
+}
+
+func (UnimplementedSettingsServiceHandler) RestoreBackup(context.Context, *connect.Request[v1.RestoreBackupRequest]) (*connect.Response[v1.RestoreBackupResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.SettingsService.RestoreBackup is not implemented"))
+}
+
+func (UnimplementedSettingsServiceHandler) DeleteBackup(context.Context, *connect.Request[v1.DeleteBackupRequest]) (*connect.Response[v1.DeleteBackupResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.SettingsService.DeleteBackup is not implemented"))
 }

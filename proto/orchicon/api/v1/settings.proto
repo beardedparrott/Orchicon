@@ -48,6 +48,20 @@ message TenantSettings {
   // Window for repetition detection. Seconds. Default 300 (5 min).
   int64 stall_repetition_window_seconds = 14;
 
+  // --- Backup configuration ---
+
+  // Backup schedule in cron expression format (e.g. "0 3 * * *" for daily 3am).
+  // Empty means automatic backups are disabled.
+  string backup_schedule = 20;
+
+  // Number of days to retain backup snapshots. Older backups are pruned.
+  // Zero means keep all backups indefinitely.
+  int32 backup_retention_days = 21;
+
+  // Directory where backup snapshots are stored. Empty uses the default
+  // (~/.local/share/orchicon/backups/).
+  string backup_directory = 22;
+
   google.protobuf.Timestamp created_at = 100;
   google.protobuf.Timestamp updated_at = 101;
 }

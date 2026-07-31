@@ -170,9 +170,13 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// (orchicon-worker) so the prompt reaches the model on every
 	// turn. Auto-approve permissions so the non-interactive run
 	// doesn't block on prompts (docs/04 §6.1: non-interactive mode).
-	// The --dir flag tells opencode the project root, preventing
-	// accidental writes outside the project (docs/05 §10: workers
-	// must operate within their assigned project directory).
+	// --dir alone does NOT prevent out-of-project access (agents can
+	// still run commands against paths outside the project root); the
+	// actual sandbox is enforced by the permission rules injected into
+	// OPENCODE_CONFIG_CONTENT in BuildConfigContent — external_directory
+	// is denied and destructive bash commands are hard-denied, both of
+	// which hold even under --auto (docs/05 §10: workers must operate
+	// within their assigned project directory).
 	const workerAgent = "orchicon-worker"
 	if manifest.SystemPrompt != "" {
 		args = append(args, "--agent", workerAgent)
@@ -198,6 +202,26 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		args = append(args, "--dir", runDir)
 	}
 
+	// Safety guard: shim dangerous binaries ahead of the worker's PATH so
+	// destructive commands (rm -rf /, sudo, dd of=/dev/*, mkfs, ...) are
+	// refused at the OS level — even when they are issued from inside a
+	// subprocess (a python TUI, os.system, subprocess.run) where opencode's
+	// permission rules never see the real command. Applied to EVERY worker
+	// execution; file operations are scoped to the project directory.
+	// See internal/opencode/guard.go.
+	g, gErr := newExecutionGuard(runDir)
+	if gErr != nil {
+		a.log.Warn("opencode: safety guard NOT applied", "execution", execRow.ID, "error", gErr)
+	}
+	if g != nil {
+		defer g.close()
+	}
+
+	// Best-effort: drop the safety lint script into .orchicon/ so review
+	// and QA workers can run it (their bash tool is scoped to the project
+	// directory). See internal/opencode/lint.go.
+	writeSafetyLint(runDir)
+
 	cmd := exec.CommandContext(ctx, binary, args...)
 	if runDir != "" {
 		cmd.Dir = runDir
@@ -206,12 +230,16 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// any MCP servers from the user's opencode config. This merges
 	// the user's MCP tools into every worker execution automatically.
 	cfgJSON := BuildConfigContent(workerAgent, manifest.SystemPrompt, modelRef)
-	cmd.Env = append(os.Environ(),
+	env := append(os.Environ(),
 		"OPENCODE_EXECUTION_ID="+execRow.ID,
 		"OPENCODE_TASK_ID="+manifest.TaskID,
 		"OPENCODE_PROJECT_ID="+manifest.ProjectID,
 		"OPENCODE_CONFIG_CONTENT="+cfgJSON,
 	)
+	if g != nil {
+		env = g.apply(env)
+	}
+	cmd.Env = env
 
 	// Capture stdout + stderr. Stderr is logged to the control plane's
 	// stderr, captured into a buffer for error reporting, AND emitted
