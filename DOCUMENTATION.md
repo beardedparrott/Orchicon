@@ -85,6 +85,8 @@ The frontend is a TypeScript/React SPA with a visual React Flow workflow editor,
 | Object Storage | Local filesystem or S3 | Blob store abstraction |
 | Policy Engine | OPA v1 (Rego) | Governance policy evaluation |
 | Runtime Adapter | OpenCode CLI | Default AI agent runtime (pluggable via gRPC) |
+| Deployment (dev) | Docker Compose (`deploy/compose/`) | 7 services: postgres, nats, otel-collector, tempo, loki, victoriametrics, grafana |
+| Deployment (prod) | Single container (`deploy/container/`) | `orchicon container` PID-1 supervisor runs the whole stack in one image (GHCR `ghcr.io/beardedparrott/orchicon`) |
 
 ---
 
@@ -209,7 +211,7 @@ sequenceDiagram
 
 2. **Transactional Outbox** — Every mutation writes an outbox row in the same database transaction as the state change. A background relay polls unpublished rows every 500ms and publishes to NATS JetStream for at-least-once delivery.
 
-3. **Single Binary** — The Go binary embeds Docker Compose files, SQL migrations, and the built frontend SPA via `go:embed`. No external dependencies at runtime beyond Docker for the infrastructure services.
+3. **Single Binary** — The Go binary embeds Docker Compose files, the single-container runtime configs (`deploy/container/`), SQL migrations, and the built frontend SPA via `go:embed`. No external dependencies at runtime beyond Docker. Two deployment modes: the **compose stack** (dev workflow, `orchicon dev start`) and the **single container** (`orchicon container` runs the whole stack as PID-1 — §Single-Container Deployment).
 
 4. **Non-blocking OTel** — The OpenTelemetry pipeline uses `grpc.NewClient` (non-blocking dial), so the control plane boots in <2 seconds even when the OTel collector is not yet healthy.
 
@@ -221,7 +223,7 @@ sequenceDiagram
 
 8. **Worker Sandboxing (layered defense)** — Every worker execution is contained by three layers, all applied to **every** worker automatically and enforced even under `--auto`:
     - **opencode permission deny rules** (`permissionRules()` in `internal/opencode/config.go`) injected via `OPENCODE_CONFIG_CONTENT`. `external_directory` is `deny` (any tool touching a path outside the project's `--dir` is blocked), and an extensive `bash` deny list blocks `rm`/`sudo`/`dd`/`mkfs*`/`fdisk`/`parted`/`shred`/`wipefs`/LVM tools, root-wide `chmod -R`/`chown -R`, `/dev/sd*` redirection, shell-construct smuggling variants (`(rm -rf /) &`, `{ rm -rf /; }`, chained `;`/`&&`/`&`/`|`), and download-and-execute. No catch-all `*` allow rule is emitted.
-    - **OS-level execution guard** (`internal/opencode/guard.go`) — shims dangerous binaries (`rm`, `sudo`, `dd`, `mkfs*`, `fdisk`, `parted`, `shred`, `wipefs`, LVM, `chmod`, `chown`, `mv`, `cp`, `ln`) ahead of the worker's PATH. Any process the worker spawns — including a python TUI, `os.system`, or `subprocess.run` issuing `rm -rf /` — resolves the command through the shim and is refused when it targets `/`, `~`, `$HOME`, `/home`, or any path outside the project directory. This closes the subprocess hole that opencode's rules cannot see (a destructive command issued inside a python TUI only ever looks like `python tui.py` to opencode). This is defense-in-depth, not a container: a worker that resolves the real binary by absolute path or writes its own tool still escapes — see the containerized-execution discussion below.
+    - **OS-level execution guard** (`internal/opencode/guard.go`) — shims dangerous binaries (`rm`, `sudo`, `dd`, `mkfs*`, `fdisk`, `parted`, `shred`, `wipefs`, LVM, `chmod`, `chown`, `mv`, `cp`, `ln`) ahead of the worker's PATH. Any process the worker spawns — including a python TUI, `os.system`, or `subprocess.run` issuing `rm -rf /` — resolves the command through the shim and is refused when it targets `/`, `~`, `$HOME`, `/home`, or any path outside the project directory. This closes the subprocess hole that opencode's rules cannot see (a destructive command issued inside a python TUI only ever looks like `python tui.py` to opencode). This is defense-in-depth, not a container: a worker that resolves the real binary by absolute path or writes its own tool still escapes — the single-container deployment (§Single-Container Deployment) is the containment layer for those cases.
     - **Worker prompt context** — every canned worker's AGENTS.md carries a "Safety rules" block (see `internal/db/seed_workers.go`) forbidding destructive commands, destructive "security testing", and scope creep. Review/QA workers additionally run the **safety lint** — Semgrep (a cross-platform Python CLI, works on Linux/macOS/Windows) with Orchicon's destructive-command ruleset — by running `semgrep scan --config .orchicon/semgrep_orchicon.yml --error .` from the project root. The ruleset and a `.semgrepignore` are written into every project by the control plane (`internal/opencode/lint.go`).
 
 ### Domain Model
@@ -385,13 +387,22 @@ Orchicon/
 │       └── ... (30 total)
 │
 ├── deploy/
-│   └── compose/
-│       ├── docker-compose.yml           # 7 services: PG, NATS, OTel, Tempo, Loki, VM, Grafana
-│       ├── tempo.yaml                     # Tempo trace backend config
-│       ├── loki.yaml                      # Loki log backend config
-│       ├── otel-collector-config.yaml    # OTel pipeline config (fan-out to Tempo/Loki/VM)
-│       ├── grafana-provisioning/         # Grafana datasources (Tempo/Loki/VM uids)
-│       ├── init-postgres.sql             # Postgres init script
+│   ├── compose/
+│   │   ├── docker-compose.yml           # 7 services: PG, NATS, OTel, Tempo, Loki, VM, Grafana
+│   │   ├── tempo.yaml                     # Tempo trace backend config
+│   │   ├── loki.yaml                      # Loki log backend config
+│   │   ├── otel-collector-config.yaml    # OTel pipeline config (fan-out to Tempo/Loki/VM)
+│   │   ├── grafana-provisioning/         # Grafana datasources (Tempo/Loki/VM uids)
+│   │   ├── init-postgres.sql             # Postgres init script
+│   └── container/
+│       ├── Dockerfile                    # Single-container image (PID-1 supervisor entrypoint)
+│       ├── .dockerignore                 # Build-context excludes
+│       └── configs/                      # Embedded runtime configs (@DATA_DIR@ placeholders):
+│           ├── tempo.yaml                #   Tempo (OTLP ingest on 14317/14318)
+│           ├── loki.yaml                 #   Loki (gRPC on 9096)
+│           ├── otel-collector.yaml       #   Collector fan-out to localhost backends
+│           ├── grafana.ini               #   Grafana (sub-path + anonymous)
+│           └── grafana-provisioning/     #   Grafana datasources + Orchicon dashboard
 │
 ├── frontend/
 │   ├── index.html                # Vite entry HTML
@@ -491,6 +502,7 @@ Orchicon/
 | **Telemetry setup** (OTel) | `internal/telemetry/telemetry.go` |
 | **Config** (env vars) | `internal/config/config.go` |
 | **Docker Compose** | `deploy/compose/docker-compose.yml` |
+| **Single container** (PID-1 supervisor) | `cmd/orchicon/container.go` + `deploy/container/` |
 | **Frontend entry point** | `frontend/index.html` + `frontend/src/main.tsx` |
 | **Frontend API clients** | `frontend/src/api/clients.ts` |
 | **Frontend routes** | `frontend/src/routes/` |
@@ -510,7 +522,7 @@ Orchicon/
 
 - **Go** 1.26+ (for building from source)
 - **Node.js** 22+ (for frontend development)
-- **Docker** + **Docker Compose** (for infrastructure services)
+- **Docker** + **Docker Compose** (for the compose dev stack; the single-container deployment needs only **Docker**)
 - **curl** + **tar** (for one-liner install)
 - **buf** and **atlas** (install via `make tools`)
 - **opencode** CLI (required for runtime dispatch — [install guide](https://opencode.ai))
@@ -570,6 +582,8 @@ orchicon version
 |---|---|
 | `orchicon dev start` | Start full dev stack: Docker Compose → migrations → control plane → frontend |
 | `orchicon dev stop` | Stop everything (SIGTERM + Docker Compose down) |
+| `orchicon container` | Run the whole stack as PID-1 (single-container image) |
+| `scripts/container.sh` | Build / up / down / status / logs for dev + prod container instances |
 | `orchicon dev status` | Show status of all components + endpoint health checks |
 | `orchicon dev restart` | Stop then start |
 | `orchicon dev logs` | Tail control-plane and frontend logs |
@@ -1133,7 +1147,7 @@ See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
 | Loop decision stuck | Superseded step run conflict | Workflow reconciler must skip `SupersededBy != ""` runs |
 | Stale decisions leaking across runs | Previous `_decision` file | Clear `.orchicon/<run_id>/` files between steps |
 | Worker cannot delete or run destructive commands | Sandbox layers | Workers are intentionally sandboxed (see Architectural Pattern 8). Direct bash is blocked by opencode permission deny rules; subprocess/TUI-issued commands (e.g. `rm -rf /` inside a python TUI) are blocked by the OS-level execution guard (`internal/opencode/guard.go`); and all canned workers' prompts carry the "Safety rules" block. Review/QA workers run `semgrep scan --config .orchicon/semgrep_orchicon.yml --error .` (Semgrep + Orchicon ruleset) to catch dangerous patterns before merge. |
-| Worker wiped files outside the project | Execution guard bypassed via absolute path | The guard is defense-in-depth, not containment. A worker that invokes `/bin/rm` by absolute path or writes its own binary escapes it. Use the containerized execution option for real isolation. |
+| Worker wiped files outside the project | Execution guard bypassed via absolute path | The guard is defense-in-depth, not containment. A worker that invokes `/bin/rm` by absolute path or writes its own binary escapes it. Run Orchicon as the single-container deployment (§Single-Container Deployment) for a real process-isolation boundary. |
 
 ---
 

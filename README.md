@@ -129,7 +129,8 @@ tasks are in the `Makefile` (`make help`).
 
 - Go 1.26+
 - Node 22+
-- Docker + Docker Compose
+- Docker (+ Docker Compose for the compose dev stack; the single-container
+  deployment needs only Docker)
 - [`buf`](https://buf.build) and [`atlas`](https://atlasgo.io) — install
   with `make tools`
 
@@ -177,6 +178,7 @@ Generated code is committed (see DOCUMENTATION.md §Code Generation).
 | `api/gen/` | Generated Go code |
 | `db/` | Atlas declarative schema + versioned migrations |
 | `deploy/compose/` | Local dev Docker Compose stack |
+| `deploy/container/` | Single-container image (Dockerfile + embedded runtime configs) |
 | `frontend/` | Vite + React + Connect-ES + TanStack Router + shadcn/ui |
 | `site/` | Static landing page (`orchicon.dev`) |
 | `scripts/` | Installers, CI gates, dev controller |

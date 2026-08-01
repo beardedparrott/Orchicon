@@ -80,7 +80,7 @@ scripts/install-dev.sh                  # builds frontend + Go binary to bin/orc
 - `orchicon-prod` (at `~/.local/bin/orchicon-prod`) manages the prod compose project on offset ports
 Both are built from the same source. See DOCUMENTATION.md §Dual-Instance Dogfooding Setup.
 
-The binary embeds everything (docker-compose.yml, frontend dist, migrations) via `go:embed` in `assets.go`. Any change to source files, docker-compose, or frontend code is included in the next build. No branches, commits, or PRs needed during the day — just build and test.
+The binary embeds everything (docker-compose.yml, the single-container runtime configs in `deploy/container/configs/`, frontend dist, migrations) via `go:embed` in `assets.go`. Any change to source files, docker-compose, container configs, or frontend code is included in the next build. No branches, commits, or PRs needed during the day — just build and test.
 
 ## Phases
 
@@ -103,6 +103,7 @@ If architecture or anything referenced in AGENTS.md has changed, update this fil
 - **Database**: PostgreSQL 16 with RLS + transactional outbox
 - **Event bus**: NATS JetStream
 - **Telemetry**: OpenTelemetry → Grafana stack (Tempo + Loki + VictoriaMetrics) — separated infra
+- **Deployment**: compose dev stack (`orchicon dev start`, `deploy/compose/`) OR single container (`orchicon container` PID-1 supervisor, `deploy/container/`, GHCR image; `scripts/container.sh` manages dev/prod instances preserving the compose postgres volumes)
 - **Policy**: Rego (Open Policy Agent)
 - **Runtime adapters**: gRPC sidecars (OpenCode first, CLI now / IPC later)
 - **Frontend**: TypeScript + React + Vite + Connect-ES + React Flow
@@ -203,6 +204,11 @@ When a change modifies `deploy/compose/docker-compose.yml`, configs in `deploy/c
 - **Control plane boot speed**: After `make build`, time how long it takes for `curl http://localhost:8080/healthz` to return `200`. With the non-blocking OTel gRPC dial (`grpc.NewClient`), this must be under 2 seconds even when the OTel collector is not yet healthy. Check the control plane logs for `"otel pipeline initialized"` — it should appear within milliseconds of process start, not after 10-20s.
 - **Profile isolation**: `make up` must start exactly 7 containers (postgres, nats, otel-collector, tempo, loki, victoriametrics, grafana).
 
+When a change modifies the single-container runtime (`deploy/container/Dockerfile`, `deploy/container/configs/`, or `cmd/orchicon/container.go`):
+
+- **Image build + run**: `make build && scripts/container.sh build`, then run a throwaway instance on offset ports (`docker run --rm -p 18080:8080 -e ORCHICON_GRAFANA_PUBLIC_URL=http://localhost:18080/grafana -v /tmp/cnt-test:/var/lib/orchicon orchicon:local`) and verify `curl localhost:18080/healthz` returns `{"status":"ok"}`, plus telemetry flows (traces in Tempo, logs in Loki, metrics in VictoriaMetrics).
+- **Data preservation**: if the instance reuses a compose-stack postgres volume, verify the container's postgres runs as the volume's owner uid (70 for the alpine volumes) — see `scripts/container.sh`.
+
 If the change adds a new API RPC, also verify the Connect endpoint responds (e.g. via `curl` or a frontend smoke test). If it adds a new table, verify the RLS gate still passes after migration.
 
 **Do not claim "done" without having run the thing.** State what was verified and what was not in the commit message or PR description.
@@ -242,7 +248,8 @@ When a phase changes what ships in the binary — a new subcommand, a new depend
 
 - **`scripts/install.sh`** — update if the download asset name changes, new files need to be downloaded alongside the binary, or new post-install steps are required (e.g. installing an adapter).
 - **`scripts/install.ps1`** — mirror any changes from `install.sh` for Windows. Both scripts must stay in sync.
-- **`.github/workflows/release.yml`** — update the build matrix if a new OS/arch is added, add build steps if the binary now needs the frontend embedded, and verify the asset naming matches what the install scripts download.
+- **`.github/workflows/release.yml`** — update the build matrix if a new OS/arch is added, add build steps if the binary now needs the frontend embedded, and verify the asset naming matches what the install scripts download. The workflow also builds + pushes the single-container image to `ghcr.io/beardedparrott/orchicon` — when `deploy/container/` changes (Dockerfile, embedded configs, new runtime binaries), verify the image build still succeeds.
+- **`deploy/container/Dockerfile` + `deploy/container/configs/`** — when the container runtime changes (new bundled process, changed ports, new config), update the Dockerfile / embedded configs and verify the image (see §Verification).
 - **README.md** — update the Installation section if the commands or prerequisites change.
 
 Verify by running the installer against a draft release at minimum (`bash scripts/install.sh --version vX.Y.Z --dry-run` on each target platform, or `--uninstall` to test cleanup).
@@ -315,7 +322,7 @@ The frontend route (`/ask-orchicon`) and its components generally don't need cha
 - **Landing page + install deploy**: `site/` holds the static landing page deployed to CloudFlare Pages (`orchicon-site`). The build step copies `scripts/install.{sh,ps1}` into the deployed bundle so the one-liner install commands work. `site/install` and `site/install.ps1` are git-ignored build artifacts. Full setup in `CLOUDFLARE_SETUP.md`.
 - **Connect-ES codegen** is pinned to local v1 npm plugins (`protoc-gen-es` / `protoc-gen-connect-es`) matching the v1 runtime. `make gen` prepends `frontend/node_modules/.bin` to PATH. See PR #1 notes before bumping to v2.
 - **Atlas RLS** policies are hand-appended SQL (the free tier does not diff `policy` blocks). After hand-editing a migration, run `make migrate-hash`. Future diffs won't drop RLS.
-- **`orchicon dev`** subcommand embeds compose + migrations + frontend via `go:embed`. One-binary dev experience: compose up → wait healthy → migrate → serve. The OTel pipeline uses non-blocking `grpc.NewClient` so boot is <2s even without a healthy collector. NATS subscriber fans out events to streaming RPCs. Reconciler framework uses `pg_try_advisory_lock` for per-kind leadership.
+- **`orchicon dev`** subcommand embeds compose + migrations + frontend via `go:embed`. One-binary dev experience: compose up → wait healthy → migrate → serve. **`orchicon container`** embeds the single-container runtime configs (`deploy/container/configs/`) and runs the whole stack as PID-1 (§Architecture Quick Reference → Deployment). The OTel pipeline uses non-blocking `grpc.NewClient` so boot is <2s even without a healthy collector. NATS subscriber fans out events to streaming RPCs. Reconciler framework uses `pg_try_advisory_lock` for per-kind leadership.
 - **Worker lifecycle**: draft → published → deprecated → retired. Published versions are immutable. WorkItem hierarchy: Epic → Feature → Task → Subtask (max 4 levels). Dependency edges form a DAG; cycle detection uses recursive CTE. Edit locks have automatic TTL expiry.
 - **TaskReconciler** is the only component that creates WorkerExecutions. It polls ready tasks, resolves dependencies, selects a worker+adapter, and dispatches. The OpenCode adapter bridge wraps the `opencode` CLI as a subprocess. Simulation mode is opt-in only (`ORCHICON_SIMULATE_ADAPTER=1`) — real runtime calls with a free model are required for verification.
 - **Workflows** are the top-level reconcilable object. The WorkflowReconciler progresses step DAGs, evaluating gates at transitions. Task steps create WorkItems and hand off to TaskReconciler. Frontend has a full drag-and-drop React Flow editor with undo/redo, cycle detection, palette with Workers, Work Items, Policies, and Step primitives.

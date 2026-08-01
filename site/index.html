@@ -31,8 +31,9 @@
         <h1>Coordinate autonomous AI work<br /><span class="muted">like a control plane should.</span></h1>
         <p class="lede">
           Orchicon orchestrates. Runtimes execute. One binary, one
-          command, and your local stack — Postgres, NATS, OpenTelemetry,
-          the SPA — is up.
+          command, and your local stack — Postgres, NATS, the Grafana
+          telemetry plane, the SPA — is up. Or run the whole thing in a
+          single container.
         </p>
 
         <div class="install" id="install">
@@ -118,6 +119,10 @@
             <h3>Telemetry &amp; cost</h3>
             <p>OTel → Grafana stack (Tempo + Loki + VictoriaMetrics). Per-tenant cost roll-up (Tenant → Project → Task → Execution) with streamed usage events.</p>
           </div>
+          <div class="card">
+            <h3>Single container</h3>
+            <p>The whole stack — Postgres, NATS, telemetry, control plane — runs in one container with <code>orchicon container</code> (PID-1 supervisor). Dev + prod as two containers, your data preserved.</p>
+          </div>
         </div>
       </div>
     </section>
@@ -139,6 +144,10 @@
     <section class="options" id="options">
       <div class="container">
         <h2>Installer options</h2>
+
+        <h3>Single container (Docker)</h3>
+        <pre class="cmd"><code><span class="prompt">$</span> docker run --rm -p 8080:8080 -p 3002:3000 \
+    -v orchicon-data:/var/lib/orchicon ghcr.io/beardedparrott/orchicon</code></pre>
 
         <h3>macOS / Linux</h3>
         <pre class="cmd"><code><span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --version v0.2.0
