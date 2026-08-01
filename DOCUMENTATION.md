@@ -847,6 +847,49 @@ scripts/install-prod.sh             # install (binary not in use)
 scripts/dev-prod.sh start           # restart prod
 ```
 
+### Single-Container Deployment (Phase B)
+
+The entire Orchicon stack — Postgres, NATS, the Grafana telemetry plane (Tempo, Loki, VictoriaMetrics, OTel collector, Grafana), and the control plane — can run in **one container**. The `orchicon` binary is the PID-1 supervisor (`orchicon container`, `cmd/orchicon/container.go`):
+
+- spawns children in dependency order (postgres → nats → telemetry → control plane), gating on readiness probes
+- prefixes each child's stdout/stderr with its component name
+- restarts crashed children with exponential backoff; forwards SIGTERM/SIGINT and waits for graceful exit
+- writes the embedded Tempo/Loki/collector/Grafana configs into the data dir (`@DATA_DIR@` substituted)
+
+**Build the image** (the binary must embed the built frontend — `make fe-build` first):
+
+```bash
+make build                                   # bin/orchicon (frontend embedded)
+cp bin/orchicon deploy/container/
+docker build -f deploy/container/Dockerfile -t orchicon:local deploy/container
+```
+
+**Run:**
+
+```bash
+docker run --rm -p 8080:8080 -p 3002:3000 \
+  -v orchicon-data:/var/lib/orchicon \
+  orchicon:local
+```
+
+- Control plane: `http://localhost:8080` (API + UI + `/grafana`)
+- Grafana: `http://localhost:3002` (embedded in the Telemetry page)
+- Worker executions: the container ships the `opencode` runtime; mount your opencode auth/config for real runs
+  (`-v ~/.config/opencode:/root/.config/opencode`, `-v ~/.local/share/opencode:/root/.local/share/opencode`) and bind-mount project dirs.
+
+**Environment variables** (all optional):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ORCHICON_TELEMETRY` | `embedded` | `none` skips the telemetry processes (≈96 MiB); `remote` skips them and exports OTLP to your own collector |
+| `ORCHICON_DATA_DIR` | `/var/lib/orchicon` | Persistent state root (postgres, nats, telemetry data, configs) |
+| `ORCHICON_GRAFANA_PUBLIC_URL` | `http://localhost:8080/grafana` | Grafana's public root_url (change when publishing on other ports) |
+| `ORCHICON_*` | — | Any control-plane env var (DSNs, ports) overrides the container defaults |
+
+**Measured footprint** (single container, this stack): full telemetry ≈ **384 MiB** resident; `ORCHICON_TELEMETRY=none` ≈ **96 MiB** — vs ~2.7 GB for the ClickHouse-era compose stack.
+
+Dual-instance (dev + prod dogfooding) is two containers with offset published ports (`-p 8080:8080 -p 3002:3000` and `-p 8091:8080 -p 3003:3000`), separate data volumes.
+
 ### Manual Development Setup
 
 ```bash

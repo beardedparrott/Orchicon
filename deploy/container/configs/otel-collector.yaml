@@ -1,0 +1,58 @@
+# OTel collector config for the Orchicon single-container image.
+# All backends are localhost (same network namespace). Tempo's OTLP HTTP
+# receiver is on :14318 (offset from the collector's own :4318).
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+  memory_limiter:
+    check_interval: 2s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+exporters:
+  # Traces → Tempo (OTLP HTTP).
+  otlphttp/tempo:
+    endpoint: http://localhost:14318
+    tls:
+      insecure: true
+  # Logs → Loki (OTLP HTTP endpoint).
+  otlphttp/loki:
+    endpoint: http://localhost:3100/otlp
+    tls:
+      insecure: true
+  # Metrics → VictoriaMetrics (Prometheus remote write).
+  # add_metric_suffixes=false keeps the canonical orchidicon_* names.
+  prometheusremotewrite:
+    endpoint: http://localhost:8428/api/v1/write
+    add_metric_suffixes: false
+    resource_to_telemetry_conversion:
+      enabled: true
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheusremotewrite]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/loki]

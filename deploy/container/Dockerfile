@@ -1,0 +1,55 @@
+# Orchicon single-container image.
+#
+# Build:   make build        # produce bin/orchicon (frontend embedded)
+#          cp bin/orchicon deploy/container/
+#          docker build -f deploy/container/Dockerfile -t orchicon:local deploy/container
+# Run:     docker run --rm -p 8080:8080 -p 3002:3000 \
+#            -v orchicon-data:/var/lib/orchicon orchicon:local
+#
+# Multi-stage: copy runtime binaries from the official images onto a
+# Postgres Debian base (glibc) so every process coexists in one network
+# namespace. The orchicon binary is the PID-1 supervisor
+# (`orchicon container`, cmd/orchicon/container.go): it writes the
+# embedded Tempo/Loki/collector/Grafana configs into /var/lib/orchicon,
+# spawns postgres → nats → telemetry → control plane with readiness
+# gates, and restarts crashed children.
+#
+# NOTE: Tempo's OTLP receivers use ports 14317/14318 (offset from the
+# collector's own 4317/4318) so the two can share one namespace.
+
+FROM nats:2.10-alpine AS nats
+FROM grafana/tempo:2.7.1 AS tempo
+FROM grafana/loki:3.4.2 AS loki
+FROM victoriametrics/victoria-metrics:v1.111.0 AS vm
+FROM otel/opentelemetry-collector-contrib:0.119.0 AS collector
+FROM grafana/grafana:11.5.2 AS grafana
+
+FROM postgres:16 AS runtime
+
+# util-linux provides setpriv (used by the supervisor to run postgres as
+# the postgres user, uid 999). curl installs the opencode runtime.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates util-linux \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=nats /usr/local/bin/nats-server /usr/local/bin/nats-server
+COPY --from=tempo /tempo /usr/local/bin/tempo
+COPY --from=loki /usr/bin/loki /usr/local/bin/loki
+COPY --from=vm /victoria-metrics-prod /usr/local/bin/victoria-metrics-prod
+COPY --from=collector /otelcol-contrib /usr/local/bin/otelcol-contrib
+COPY --from=grafana /usr/share/grafana /usr/share/grafana
+COPY --from=grafana /etc/grafana /etc/grafana
+
+# opencode runtime — the adapter bridge shells out to it for worker
+# executions. Installed at build time; auth/config are mounted at runtime
+# (~/.config/opencode, ~/.local/share/opencode) by the operator.
+RUN curl -fsSL https://opencode.ai/install | bash \
+ && cp /root/.opencode/bin/opencode /usr/local/bin/opencode
+
+# The orchicon binary with the embedded frontend (see build steps above).
+COPY orchicon /usr/local/bin/orchicon
+
+ENV ORCHICON_CONTAINER_MODE=1
+VOLUME ["/var/lib/orchicon"]
+EXPOSE 8080 3000
+ENTRYPOINT ["/usr/local/bin/orchicon", "container"]

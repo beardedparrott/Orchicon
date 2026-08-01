@@ -19,6 +19,7 @@ deployment, troubleshooting, and every subsystem.
 ## Technology Stack
 
 - **Control plane**: Go (single binary, k8s-style reconcilers)
+- **Single container**: `orchicon container` runs the whole stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics/Grafana, control plane) as PID 1 — see [DOCUMENTATION.md §Single-Container Deployment](DOCUMENTATION.md)
 - **API**: Protobuf + Connect (gRPC + REST + streaming from one schema)
 - **Database**: PostgreSQL 16 with RLS + transactional outbox
 - **Event bus**: NATS JetStream
@@ -29,13 +30,13 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
-### v0.1.160 (2026-08-01)
+### v0.1.162 (2026-08-01)
 
 | Type | Change |
 |---|---|
-| Feature | Telemetry moved from SigNoz/ClickHouse to the Grafana stack: **Tempo** (traces), **Loki** (logs), **VictoriaMetrics** (metrics), with the Grafana UI embedded same-origin under `/grafana`. The Go `TelemetryService` now queries the backends' native APIs (Tempo `/api/search`, Loki LogQL, VM PromQL) with tenant-scoped filters; `otel-collector-config.yaml` fan-outs OTLP to all three. Much lighter than ClickHouse (~500MB-1GB vs 2.5GB resident) and a far better exploration UI. |
-| Feature | Compose stack reduced from 6 → 7 smaller services (postgres, nats, otel-contrib, tempo, loki, victoriametrics, grafana). Grafana uses `serve_from_sub_path` + the `/grafana` reverse proxy, so the embedded Telemetry iframes work in all deployment modes (no HTML rewriting needed). Ports: Grafana :3002/:3003, Tempo :3200/:3201, Loki :3100/:3101, VM :8428/:8429. |
-| Chore | Metric instruments dropped their units so Prometheus naming keeps the canonical `orchicon_*` names (unit suffix would rename them `orchicon_tokens_consumed_tokens` etc.). Loki severity queries map to the `severity_number` label (the OTLP mapping stores numbers, not `level` text). |
+| Feature | **Single-container deployment (Phase B).** New `orchicon container` subcommand is a PID-1 process supervisor: spawns postgres → nats → Grafana telemetry plane → control plane with readiness gates, per-component log prefixing, crash restart with backoff, and graceful signal handling. New `deploy/container/Dockerfile` assembles the whole stack (Postgres 16, NATS, Tempo, Loki, VictoriaMetrics, OTel collector, Grafana, `opencode` runtime) onto one Debian base. Run: `docker run --rm -p 8080:8080 -p 3002:3000 -v orchicon-data:/var/lib/orchicon orchicon:local`. |
+| Feature | `ORCHICON_TELEMETRY=none\|embedded\|remote` — `none` skips the telemetry processes (~96 MiB resident); `embedded` (default) runs the full Grafana plane (~384 MiB). Both verified end-to-end (traces → Tempo, logs → Loki, metrics → VictoriaMetrics, embedded dashboard renders). |
+| Chore | `extractComposeDir` now creates parent dirs (the embedded compose tree gained a subdirectory); help text lists `container`. |
 
 
 ## Installation

@@ -47,3 +47,13 @@ const MigrationsDir = "db/migrations"
 
 // FrontendDir is the directory within FrontendFS containing the SPA.
 const FrontendDir = "frontend/dist"
+
+// ContainerFS embeds the single-container runtime configs
+// (deploy/container/) — Tempo/Loki/OTel-collector/Grafana configs with
+// @DATA_DIR@ placeholders, plus the Grafana provisioning. The `orchicon
+// container` supervisor (cmd/orchicon/container.go) writes these into the
+// container data dir, substituting the data dir path, and spawns each
+// process against them.
+//
+//go:embed all:deploy/container
+var ContainerFS embed.FS

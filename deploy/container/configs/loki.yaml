@@ -1,0 +1,44 @@
+# Loki — log backend for the Orchicon single-container image.
+# @DATA_DIR@ is replaced with the container data dir at startup.
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  # Offset the gRPC listener from the default 9095 (which collides with
+  # another process in the single-container network namespace).
+  grpc_listen_port: 9096
+
+common:
+  path_prefix: "@DATA_DIR@/loki"
+  storage:
+    filesystem:
+      chunks_directory: "@DATA_DIR@/loki/chunks"
+      rules_directory: "@DATA_DIR@/loki/rules"
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  allow_structured_metadata: true
+  otlp_config:
+    resource_attributes:
+      attributes_config:
+        - action: index_label
+          regex: .*
+    scope_attributes:
+      - action: structured_metadata
+        regex: .*
+    log_attributes:
+      - action: structured_metadata
+        regex: .*

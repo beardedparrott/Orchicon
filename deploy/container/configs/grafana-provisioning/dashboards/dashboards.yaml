@@ -1,0 +1,14 @@
+# Grafana provisioning — the Orchicon dashboard (embedded in the Telemetry
+# page, kiosk mode). JSON files live next to this provider config under the
+# container data dir.
+apiVersion: 1
+
+providers:
+  - name: orchicon
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: @DATA_DIR@/config/grafana-provisioning/dashboards

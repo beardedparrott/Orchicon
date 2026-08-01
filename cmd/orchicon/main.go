@@ -58,6 +58,8 @@ func main() {
 			os.Exit(runDev([]string{"status"}))
 		case "serve":
 			os.Exit(runServe(os.Args[2:]))
+		case "container":
+			os.Exit(runContainer(os.Args[2:]))
 		case "restart":
 			os.Exit(runDev([]string{"restart"}))
 		case "logs":
@@ -215,12 +217,13 @@ Usage:
   %s dev stop       Stop the dev stack
   %s dev status     Show what's running
   %s serve          Run the control plane with embedded frontend (no compose)
+  %s container      Run the whole stack as PID 1 inside the single-container image
   %s mcp            Start the MCP stdio server (for opencode tool integration)
   %s db backup      Create a database snapshot
   %s db list        List available backups
   %s db restore     Restore from a backup
   %s db prune       Remove backups older than N days
-`, bin, version.Current().Tag, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin)
+`, bin, version.Current().Tag, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin)
 
 	fmt.Printf(`
 Short aliases:

@@ -1,0 +1,29 @@
+# Grafana provisioning — datasources for the Orchicon single-container image.
+# All backends are localhost (same network namespace).
+apiVersion: 1
+
+datasources:
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://localhost:3200
+    jsonData:
+      httpMethod: GET
+      serviceMap:
+        datasourceUid: victoriametrics
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://localhost:3100
+    jsonData:
+      maxLines: 1000
+
+  - name: VictoriaMetrics
+    uid: victoriametrics
+    type: prometheus
+    access: proxy
+    url: http://localhost:8428
+    isDefault: true
