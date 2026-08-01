@@ -121,11 +121,11 @@ up_instance() {
     "${MOUNTS[@]}" \
     "$IMAGE" >/dev/null
   log_ok "$inst instance started:"
-  echo -e "  Control plane:  ${C_DIM}http://localhost:$(echo "$PORTS" | grep -oP '(?<=:)\d+(?=:8080)' || echo 8080)${C_RESET}"
+  echo -e "  Control plane:  ${C_DIM}http://localhost:$(echo "$PORTS" | grep -oP '\d+(?=:8080)')${C_RESET}"
   echo -e "  Grafana:        ${C_DIM}${GRAFANA_URL}${C_RESET}"
   echo -e "  Postgres data:  ${C_DIM}$PG_VOLUME${C_RESET}"
   echo ""
-  echo -e "  Wait for health: ${C_DIM}curl http://localhost:8080/healthz${C_RESET} (dev)"
+  echo -e "  Wait for health: ${C_DIM}curl http://localhost:$(echo "$PORTS" | grep -oP '\d+(?=:8080)')/healthz${C_RESET}"
   echo -e "  Logs:           ${C_DIM}scripts/container.sh logs $inst${C_RESET}"
   echo -e "  Stop:           ${C_DIM}scripts/container.sh down $inst${C_RESET}"
 }
