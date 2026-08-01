@@ -22,22 +22,20 @@ deployment, troubleshooting, and every subsystem.
 - **API**: Protobuf + Connect (gRPC + REST + streaming from one schema)
 - **Database**: PostgreSQL 16 with RLS + transactional outbox
 - **Event bus**: NATS JetStream
-- **Telemetry**: OpenTelemetry → SigNoz (ClickHouse) — fully separated infra
+- **Telemetry**: OpenTelemetry → Grafana stack (Tempo + Loki + VictoriaMetrics) — fully separated infra
 - **Policy**: Rego (Open Policy Agent)
 - **Runtime adapters**: gRPC sidecars (OpenCode first)
 - **Frontend**: TypeScript + React + Vite + Connect-ES
 
 ## Last Release Changes
 
-### v0.1.157 (2026-07-31)
+### v0.1.160 (2026-08-01)
 
 | Type | Change |
 |---|---|
-| Security | OS-level execution guard (`internal/opencode/guard.go`): dangerous binaries (`rm`, `sudo`, `dd`, `mkfs*`, `fdisk`, `parted`, `shred`, `wipefs`, LVM, `chmod`/`chown`/`mv`/`cp`/`ln`) are shimmed on every worker's PATH, so destructive commands are refused even when issued from inside a subprocess (python TUI, `os.system`, `subprocess.run`) — closes the vector behind the 2026-07-30 `/home` wipe |
-| Security | Hardened opencode `permissionRules()` deny list: root/home/`$HOME` deletes, absolute-path `rm`, `sudo` escalation, device redirection, root-wide `chmod`/`chown`, download-and-execute |
-| Security | All canned workers now carry a "Safety rules" block in AGENTS.md; seed rolls a new published worker version forward when the marker is missing (reaches edited workers too) |
-| Feature | Safety lint: Semgrep (industry-standard static analyzer) with an Orchicon destructive-command ruleset (`.orchicon/semgrep_orchicon.yml` + `.semgrepignore`, written into every project); PR Reviewer and QA Engineer run `semgrep scan --config .orchicon/semgrep_orchicon.yml --error .` before reporting |
-| Chore | Lightened PR Reviewer and QA Engineer prompts: proportionate to the change, no destructive "security testing", blockers-only review, use the linter instead of manually hunting every issue |
+| Feature | Telemetry moved from SigNoz/ClickHouse to the Grafana stack: **Tempo** (traces), **Loki** (logs), **VictoriaMetrics** (metrics), with the Grafana UI embedded same-origin under `/grafana`. The Go `TelemetryService` now queries the backends' native APIs (Tempo `/api/search`, Loki LogQL, VM PromQL) with tenant-scoped filters; `otel-collector-config.yaml` fan-outs OTLP to all three. Much lighter than ClickHouse (~500MB-1GB vs 2.5GB resident) and a far better exploration UI. |
+| Feature | Compose stack reduced from 6 → 7 smaller services (postgres, nats, otel-contrib, tempo, loki, victoriametrics, grafana). Grafana uses `serve_from_sub_path` + the `/grafana` reverse proxy, so the embedded Telemetry iframes work in all deployment modes (no HTML rewriting needed). Ports: Grafana :3002/:3003, Tempo :3200/:3201, Loki :3100/:3101, VM :8428/:8429. |
+| Chore | Metric instruments dropped their units so Prometheus naming keeps the canonical `orchicon_*` names (unit suffix would rename them `orchicon_tokens_consumed_tokens` etc.). Loki severity queries map to the `severity_number` label (the OTLP mapping stores numbers, not `level` text). |
 
 
 ## Installation
@@ -126,7 +124,7 @@ tasks are in the `Makefile` (`make help`).
 ### Quick start
 
 ```bash
-make up           # start Postgres, NATS, SigNoz, OTel collector
+make up           # start Postgres, NATS, OTel, Tempo, Loki, VictoriaMetrics, Grafana
 make migrate      # apply Atlas migrations (tenants, identities, projects + RLS)
 make run          # run the control plane on :8080
 make fe-install   # install frontend deps (first time only)

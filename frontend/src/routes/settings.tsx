@@ -657,8 +657,8 @@ function UserGuideTab() {
         <div>
           <h3 className="font-medium mb-1">Telemetry & Cost</h3>
           <p className="text-muted-foreground">
-            OpenTelemetry pipeline exporting to SigNoz/ClickHouse. Cost Explorer
-            shows spend by Project, Task, Execution, Model, or Workflow.
+            OpenTelemetry pipeline exporting to the Grafana stack (Tempo /
+            Loki / VictoriaMetrics). Cost Explorer shows spend by Project, Task, Execution, Model, or Workflow.
           </p>
         </div>
         <div>

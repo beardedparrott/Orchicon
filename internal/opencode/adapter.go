@@ -243,7 +243,7 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 
 	// Capture stdout + stderr. Stderr is logged to the control plane's
 	// stderr, captured into a buffer for error reporting, AND emitted
-	// as OTel log records into ClickHouse so execution stderr appears
+	// as OTel log records into Loki so execution stderr appears
 	// in the telemetry logs tab (docs/08 §5.3).
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -256,7 +256,7 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// Goroutine: read stderr lines and emit as OTel log records.
 	// Each line carries the execution context (execution_id, project_id,
 	// task_id, worker_id, trace_id) so it correlates with the execution
-	// span in the SigNoz UI. The severity is smart-parsed from the line:
+	// span in the Grafana UI. The severity is smart-parsed from the line:
 	// a leading "[ERROR]" / "[WARN]" / "[INFO]" / "[DEBUG]" tag is
 	// honoured; anything else defaults to INFO so the telemetry logs
 	// tab reflects the worker's actual progress (tool calls, step
@@ -551,7 +551,7 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, 
 	case evtStepFinish:
 		// Step completion carries token usage + cost (docs/04 §6.1).
 		// Record it via the AI Gateway dual-write: Postgres source of
-		// truth + OTel metrics → ClickHouse (docs/08 §5.2). Best-effort
+		// truth + OTel metrics → VictoriaMetrics (docs/08 §5.2). Best-effort
 		// — telemetry loss never blocks control flow (docs/08 §8).
 		tokens, _ := part["tokens"].(map[string]any)
 		cost, _ := part["cost"].(float64)

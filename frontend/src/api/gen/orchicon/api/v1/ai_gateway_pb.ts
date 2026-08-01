@@ -7,7 +7,7 @@
 // usage + cost based on adapter telemetry (docs/04 §6.1 step_finish carries
 // tokens + cost). Usage is dual-written: Postgres (usage_records — source of
 // truth) + OTel metrics (orchicon_tokens_consumed, orchicon_cost_usd) →
-// ClickHouse via the OTel collector (docs/08 §1, §5.2).
+// VictoriaMetrics via the OTel collector (docs/08 §1, §5.2).
 //
 // Cost attribution rolls up Tenant → Project → Task → Execution so the cost
 // explorer drills down from org-level spend to a single execution
@@ -254,7 +254,7 @@ export class AIProvider extends Message<AIProvider> {
 /**
  * UsageRecord is a single LLM usage sample recorded by the AI Gateway
  * (docs/08 §5.2). Source of truth in Postgres (usage_records table);
- * mirrored to ClickHouse as OTel metrics for fast telemetry queries.
+ * mirrored to VictoriaMetrics as OTel metrics for fast telemetry queries.
  *
  * @generated from message orchicon.api.v1.UsageRecord
  */

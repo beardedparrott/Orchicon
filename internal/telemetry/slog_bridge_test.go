@@ -84,7 +84,7 @@ func TestMultiHandler_WithAttrsPropagates(t *testing.T) {
 
 // TestOtelHandler_EnabledAtInfo ensures the OTel side respects the
 // slogMinLevel floor — Debug records are dropped at the handler
-// level so we don't flood ClickHouse with verbose control-plane
+// level so we do not flood Loki with verbose control-plane
 // chatter that belongs in the local log file.
 func TestOtelHandler_EnabledAtInfo(t *testing.T) {
 	h := NewOtelSlogHandler()

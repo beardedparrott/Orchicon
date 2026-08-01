@@ -1,9 +1,9 @@
 // Orchicon TelemetryService (docs/07_API_Specification.md §3.9,
 // docs/08_Event_Bus_and_Telemetry_Model.md §5, docs/10 §11).
 //
-// Proxies tenant-scoped queries to SigNoz/ClickHouse so users explore
+// Proxies tenant-scoped queries to Tempo/Loki/VictoriaMetrics so users explore
 // traces/metrics/logs without leaving the Orchicon shell (docs/10 §11:
-// seamless SigNoz embedding — same auth, same visual language, inside
+// seamless Grafana embedding — same origin, same visual language, inside
 // the Orchicon shell). The proxy enforces tenant isolation: the
 // tenant_id filter is injected from the request context, never trusted
 // from the client (AGENTS.md tenant isolation).
@@ -66,7 +66,7 @@ const (
 // TelemetryServiceClient is a client for the orchicon.api.v1.TelemetryService service.
 type TelemetryServiceClient interface {
 	// QueryTraces returns traces matching the tenant-scoped query. Proxies
-	// to SigNoz/ClickHouse with the tenant_id attribute injected from the
+	// to Tempo/Loki/VictoriaMetrics with the tenant_id attribute injected from the
 	// request context (docs/08 §5.1).
 	QueryTraces(context.Context, *connect.Request[v1.QueryTracesRequest]) (*connect.Response[v1.QueryTracesResponse], error)
 	// QueryMetrics returns metric series matching the tenant-scoped query
@@ -83,7 +83,7 @@ type TelemetryServiceClient interface {
 	// curated set of metrics + summaries built custom on the Orchicon
 	// domain model (docs/10 §11). Custom dashboards are domain-specific
 	// (cost, executions, recovery) — raw exploration uses the embedded
-	// SigNoz UI.
+	// Grafana UI.
 	GetDashboard(context.Context, *connect.Request[v1.GetDashboardRequest]) (*connect.Response[v1.GetDashboardResponse], error)
 }
 
@@ -168,7 +168,7 @@ func (c *telemetryServiceClient) GetDashboard(ctx context.Context, req *connect.
 // TelemetryServiceHandler is an implementation of the orchicon.api.v1.TelemetryService service.
 type TelemetryServiceHandler interface {
 	// QueryTraces returns traces matching the tenant-scoped query. Proxies
-	// to SigNoz/ClickHouse with the tenant_id attribute injected from the
+	// to Tempo/Loki/VictoriaMetrics with the tenant_id attribute injected from the
 	// request context (docs/08 §5.1).
 	QueryTraces(context.Context, *connect.Request[v1.QueryTracesRequest]) (*connect.Response[v1.QueryTracesResponse], error)
 	// QueryMetrics returns metric series matching the tenant-scoped query
@@ -185,7 +185,7 @@ type TelemetryServiceHandler interface {
 	// curated set of metrics + summaries built custom on the Orchicon
 	// domain model (docs/10 §11). Custom dashboards are domain-specific
 	// (cost, executions, recovery) — raw exploration uses the embedded
-	// SigNoz UI.
+	// Grafana UI.
 	GetDashboard(context.Context, *connect.Request[v1.GetDashboardRequest]) (*connect.Response[v1.GetDashboardResponse], error)
 }
 

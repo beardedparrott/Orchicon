@@ -2,7 +2,7 @@
 // docs/01 §2: AI Gateway embedded in the control plane binary). Cost
 // attribution rolls up Tenant → Project → Task → Execution (docs/10 §11
 // cost explorer). Usage records are dual-written to Postgres (source
-// of truth) + ClickHouse (OTel metrics) — this client reads Postgres.
+// of truth) + VictoriaMetrics (OTel metrics) — this client reads Postgres.
 
 import { useQuery } from "@tanstack/react-query";
 

@@ -25,7 +25,7 @@
 
 Orchicon is an open-core platform for orchestrating autonomous AI agents. It provides a **control plane** (single Go binary) that manages the full lifecycle of AI work: defining workers (agent personas with permissions and budgets), organizing work into projects and work-item DAGs, scheduling tasks to available runtime adapters, monitoring execution with OpenTelemetry, enforcing governance policies via OPA/Rego, and recovering from failures with a built-in workflow engine.
 
-The frontend is a TypeScript/React SPA with a visual React Flow workflow editor, real-time execution streaming, and an embedded SigNoz telemetry dashboard. The entire local development stack — PostgreSQL, NATS JetStream, OpenTelemetry, SigNoz, ClickHouse — starts with a single command.
+The frontend is a TypeScript/React SPA with a visual React Flow workflow editor, real-time execution streaming, and an embedded Grafana telemetry dashboard (Tempo + Loki + VictoriaMetrics). The entire local development stack — PostgreSQL, NATS JetStream, OpenTelemetry, Grafana — starts with a single command.
 
 > **Orchicon orchestrates. Runtimes execute.**
 
@@ -77,9 +77,11 @@ The frontend is a TypeScript/React SPA with a visual React Flow workflow editor,
 |---|---|---|
 | Database | PostgreSQL 16 (Alpine) | Primary data store |
 | Message Broker | NATS 2.10 (JetStream) | Event bus, at-least-once delivery |
-| Observability | SigNoz (community) | Traces, metrics, logs dashboard |
-| Time-Series DB | ClickHouse 25.8 | SigNoz backend (embedded Keeper, no ZooKeeper) |
-| OTel Collector | SigNoz OTel Collector | Pipeline for traces/metrics/logs |
+| Observability | Grafana (Tempo + Loki + VictoriaMetrics) | Traces, metrics, logs dashboard |
+| Trace Backend | Grafana Tempo 2.7 | Local-disk trace storage (OTLP ingest) |
+| Log Backend | Grafana Loki 3.4 | Log aggregation (OTLP ingest, filesystem storage) |
+| Metric Backend | VictoriaMetrics | PromQL-compatible metrics (remote-write ingest) |
+| OTel Collector | otel-contrib 0.119 | Pipeline fan-out: traces → Tempo, logs → Loki, metrics → VM |
 | Object Storage | Local filesystem or S3 | Blob store abstraction |
 | Policy Engine | OPA v1 (Rego) | Governance policy evaluation |
 | Runtime Adapter | OpenCode CLI | Default AI agent runtime (pluggable via gRPC) |
@@ -112,12 +114,14 @@ graph TB
     subgraph "Data Layer"
         PG[(PostgreSQL 16<br/>+ RLS)]
         NATS[(NATS JetStream)]
-        ClickHouse[(ClickHouse)]
+        Tempo[(Tempo<br/>traces)]
+        Loki[(Loki<br/>logs)]
+        VM[(VictoriaMetrics<br/>metrics)]
     end
 
     subgraph "Observability Stack"
         OTel[OTel Collector]
-        SigNoz[SigNoz UI]
+        Grafana[Grafana UI]
     end
 
     subgraph "Runtime"
@@ -128,7 +132,7 @@ graph TB
     subgraph "Frontend (Browser)"
         SPA[React SPA :5173<br/>Vite / TanStack Router]
         ReactFlow[React Flow<br/>Workflow Editor]
-        SigNozIFrame[Embedded SigNoz]
+        GrafanaIFrame[Embedded Grafana]
     end
 
     HTTP --> Connect
@@ -148,10 +152,13 @@ graph TB
     Connect --> Policy
     Connect --> RecoveryEngine
     Telemetry --> OTel
-    OTel --> ClickHouse
-    OTel --> SigNoz
-    SigNoz --> ClickHouse
-    SigNoz -.-> SigNozIFrame
+    OTel --> Tempo
+    OTel --> Loki
+    OTel --> VM
+    Grafana --> Tempo
+    Grafana --> Loki
+    Grafana --> VM
+    Grafana -.-> GrafanaIFrame
     SPA -.-> HTTP
     ReactFlow --> SPA
 ```
@@ -323,7 +330,7 @@ Orchicon/
 ├── internal/
 │   ├── adapter/                 # RuntimeAdapterService (list adapters, capabilities)
 │   ├── aigateway/               # AI Gateway: model/MCP discovery, usage recording
-│   ├── api/                     # Connect handler mounting, SigNoz reverse proxy
+│   ├── api/                     # Connect handler mounting, Grafana reverse proxy
 │   ├── auth/                    # OIDC, API keys, JWT tokens, identity resolution
 │   ├── blobstore/               # Blob abstraction: local filesystem + S3
 │   ├── config/                  # Environment-driven configuration
@@ -342,7 +349,7 @@ Orchicon/
 │   ├── recovery/                # Recovery engine + RecoveryService
 │   ├── scheduler/               # TaskReconciler, WorkflowReconciler, ScheduledRunReconciler
 │   ├── server/                  # Composition root (wires all dependencies)
-│   ├── telemetry/               # OTel setup, SigNoz client, telemetry service
+│   ├── telemetry/               # OTel setup, Grafana-stack query client, telemetry service
 │   ├── tenant/                  # Tenant context plumbing
 │   ├── version/                 # Build-time version metadata
 │   ├── webhook/                 # Webhook dispatcher + WebhookService
@@ -379,11 +386,12 @@ Orchicon/
 │
 ├── deploy/
 │   └── compose/
-│       ├── docker-compose.yml           # 6 services: PG, NATS, ClickHouse, SigNoz, OTel
-│       ├── clickhouse-cluster.xml        # ClickHouse Keeper config (no ZooKeeper)
+│       ├── docker-compose.yml           # 7 services: PG, NATS, OTel, Tempo, Loki, VM, Grafana
+│       ├── tempo.yaml                     # Tempo trace backend config
+│       ├── loki.yaml                      # Loki log backend config
+│       ├── otel-collector-config.yaml    # OTel pipeline config (fan-out to Tempo/Loki/VM)
+│       ├── grafana-provisioning/         # Grafana datasources (Tempo/Loki/VM uids)
 │       ├── init-postgres.sql             # Postgres init script
-│       ├── otel-collector-config.yaml    # OTel pipeline config
-│       └── signoz-config.yaml            # SigNoz query-service config
 │
 ├── frontend/
 │   ├── index.html                # Vite entry HTML
@@ -684,7 +692,7 @@ Workers now receive full execution context including:
 
 #### Telemetry & Cost
 1. Navigate to **Telemetry** for: traces, metrics, logs dashboard
-2. Embedded SigNoz UI available at `/signoz`
+2. Embedded Grafana UI available at `/grafana` (Tempo / Loki / VictoriaMetrics)
 3. Cost Explorer: per-provider/model spend with drill-down (Project → Task → Execution → Model)
 4. **By Workflow** tab: cost broken down per workflow run with per-step detail
 5. Credits tab showing tenant-level usage
@@ -762,11 +770,11 @@ The binary name is detected at startup via `init()` in `dev.go`. This configures
 | Postgres | `:5432` | `:5433` |
 | NATS client | `:4222` | `:4223` |
 | NATS monitor | `:8222` | `:8223` |
-| ClickHouse HTTP | `:8123` | `:8124` |
-| ClickHouse native | `:9000` | `:9001` |
+| Tempo query | `:3200` | `:3201` |
+| Loki query/ingest | `:3100` | `:3101` |
+| VictoriaMetrics | `:8428` | `:8429` |
 | OTel gRPC | `:4317` | `:4319` |
-| OTel HTTP | `:4318` | `:4320` |
-| SigNoz | `:3301` | `:3302` |
+| Grafana | `:3002` | `:3003` |
 
 #### Quick Start
 
@@ -843,7 +851,7 @@ scripts/dev-prod.sh start           # restart prod
 
 ```bash
 # Terminal 1: Infrastructure
-make up                           # Start Postgres, NATS, ClickHouse, SigNoz, OTel
+make up                           # Start Postgres, NATS, OTel, Tempo, Loki, VM, Grafana
 
 # Terminal 2: Migrations + Control Plane
 make migrate                      # Apply database migrations
@@ -875,7 +883,7 @@ make fe-install && make fe-dev    # Vite dev server on :5173
 | `migrate-hash` | Recompute Atlas migration directory hash |
 | `rls-check` | Verify every `tenant_id` table has RLS policy |
 | **Docker Compose** | |
-| `up` | Start dev stack (PG, NATS, ClickHouse, OTel, SigNoz) |
+| `up` | Start dev stack (PG, NATS, OTel, Tempo, Loki, VM, Grafana) |
 | `down` | Stop dev stack |
 | `logs` | Tail dev-stack logs |
 | `ps` | Show dev-stack status |
@@ -947,7 +955,7 @@ make rls-check
 Before marking any change complete:
 
 1. **`make ci` passes** — buf lint, codegen, go vet/test, RLS gate
-2. **Dev stack starts healthy** — `make up` then `make ps` shows all 6 containers healthy (postgres, nats, clickhouse, signoz-schema-migrator, otel-collector, signoz)
+2. **Dev stack starts healthy** — `make up` then `make ps` shows postgres, nats, tempo, loki, victoriametrics, grafana healthy (the distroless otel-collector has no healthcheck and reports running)
 3. **Migrations apply cleanly** — `make migrate` + `make rls-check`
 4. **Control plane boots** — `make build && make run`, then `curl http://localhost:8080/healthz` returns `{"status":"ok"}` in <2s
 5. **Frontend renders** — `curl http://localhost:5173/` returns HTTP 200
@@ -1014,8 +1022,10 @@ See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
 | `ORCHICON_POSTGRES_DSN` | `postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable` | PostgreSQL connection string |
 | `ORCHICON_NATS_URL` | `nats://localhost:4222` | NATS server URL |
 | `ORCHICON_OTEL_ENDPOINT` | `localhost:4317` | OTel collector gRPC endpoint |
-| `ORCHICON_SIGNOZ_URL` | `http://localhost:3301` | SigNoz query-service URL |
-| `ORCHICON_CLICKHOUSE_DSN` | `http://signoz:signoz@localhost:8123` | ClickHouse HTTP DSN |
+| `ORCHICON_GRAFANA_URL` | `http://localhost:3002` | Grafana UI URL (proxied same-origin under /grafana) |
+| `ORCHICON_TEMPO_URL` | `http://localhost:3200` | Tempo query API URL |
+| `ORCHICON_LOKI_URL` | `http://localhost:3100` | Loki query API URL |
+| `ORCHICON_VM_URL` | `http://localhost:8428` | VictoriaMetrics query API URL |
 | `ORCHICON_MODE` | `local` | Operating mode: `local` or `production` |
 | `ORCHICON_BLOB_STORE` | `local` | Blob store backend: `local` or `s3` |
 | `ORCHICON_OIDC_ISSUER` | `local` | OIDC issuer URL (or `local` for dev IdP) |
@@ -1027,8 +1037,6 @@ See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
 | `ORCHICON_STALL_NO_FILE_DIFF_WINDOW` | `15m` | Time without file modifications before stall (overrides DB setting) |
 | `ORCHICON_STALL_REPETITION_COUNT` | `5` | Repeated tool calls before stall within window (overrides DB setting) |
 | `ORCHICON_STALL_REPETITION_WINDOW` | `300s` | Window for repetition count detection (overrides DB setting) |
-| `SIGNOZ_IDENTN_IMPERSONATION_ENABLED` | `true` | SigNoz impersonation mode (disable for enterprise) |
-| `SIGNOZ_USER_ROOT_ENABLED` | `true` | SigNoz root user mode |
 
 ---
 
@@ -1039,7 +1047,7 @@ See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
 | Symptom | Likely Cause | Fix |
 |---|---|---|
 | Containers stay `unhealthy` | Missing Docker volume or config | Run `make nuke && make up` to reset volumes |
-| ZooKeeper in `make ps` | Outdated ClickHouse config | Should use embedded Keeper — check `clickhouse-cluster.xml` has `<keeper_server>`, not `<zookeeper>` |
+| Grafana datasources missing | Provisioning not mounted | `deploy/compose/grafana-provisioning/datasources.yaml` must be mounted read-only into `/etc/grafana/provisioning` |
 | Control plane won't connect to DB | Postgres not healthy yet | Wait for `make ps` to show all healthy; check `ORCHICON_POSTGRES_DSN` |
 | NATS healthcheck fails | Missing `-m 8222` flag | NATS HTTP monitor serves healthz on 8222 — ensure compose file has it |
 
@@ -1057,7 +1065,7 @@ See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
 | Symptom | Likely Cause | Fix |
 |---|---|---|
 | Blank page / no API responses | Vite proxy not configured | `vite.config.ts` must proxy `/orchicon.api.v1*` to `:8080` |
-| SigNoz iframe blank | Reverse proxy gzip issue | SigNoz proxy must decompress gzip before HTML rewrite (see `internal/api/signoz_proxy.go`) |
+| Grafana iframe blank | Sub-path config missing | Grafana must run with `GF_SERVER_SERVE_FROM_SUB_PATH=true` and `root_url=<plane>/grafana` — the control-plane `/grafana` proxy only strips the prefix (see `internal/api/api.go`) |
 | React Error #310 (hook mismatch) | Conditional hook call | Ensure hooks are called unconditionally — check for early returns before hooks |
 | Workflow canvas not loading | Missing `reactflow/dist/style.css` | Import React Flow CSS in the route component |
 

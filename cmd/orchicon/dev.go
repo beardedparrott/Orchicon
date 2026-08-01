@@ -56,9 +56,9 @@ var (
 	devEnvChild  string
 	devProject   string // compose project name
 	devCompose   string // compose file name
-	devHTTPPort  string
-	devSigNozPort string
-	devNATSPort  string
+	devHTTPPort    string
+	devGrafanaPort string
+	devNATSPort    string
 )
 
 func init() {
@@ -71,7 +71,7 @@ func init() {
 		devProject = "orchicon-prod"
 		devCompose = "docker-compose-prod.yml"
 		devHTTPPort = ":8091"
-		devSigNozPort = "3302"
+		devGrafanaPort = "3003"
 		devNATSPort = "8223"
 	} else {
 		devPIDFile = ".dev/pids/orchicon.pid"
@@ -80,7 +80,7 @@ func init() {
 		devProject = "orchicon"
 		devCompose = "docker-compose.yml"
 		devHTTPPort = ":8080"
-		devSigNozPort = "3301"
+		devGrafanaPort = "3002"
 		devNATSPort = "8222"
 	}
 }
@@ -149,7 +149,7 @@ func devStartChild() int {
 	// Wrap the JSON handler with the OTel slog bridge so every
 	// control-plane log record (workflow transitions, reconciler
 	// outcomes, dispatch events, recovery progress) also lands in
-	// the ClickHouse-backed Telemetry logs tab. The OTel handler
+	// the Loki-backed Telemetry logs tab. The OTel handler
 	// is a no-op until telemetry.Setup binds the global
 	// LoggerProvider below.
 	jsonHandler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})
@@ -302,7 +302,7 @@ func devStartParent() int {
 	fmt.Println()
 	fmt.Println("  ✓ Orchicon is running")
 	fmt.Printf("    Control plane:  http://localhost%s\n", cfg.HTTPAddr)
-	fmt.Printf("    SigNoz UI:      http://localhost:%s\n", devSigNozPort)
+	fmt.Printf("    Grafana UI:     http://localhost:%s\n", devGrafanaPort)
 	fmt.Printf("    NATS monitor:   http://localhost:%s\n", devNATSPort)
 	fmt.Printf("    Logs:           %s\n", devLogFile)
 	fmt.Printf("    PID:            %d\n", pid)
@@ -431,7 +431,7 @@ func devStatus(log *slog.Logger) int {
 	}{
 		{"http://localhost" + devHTTPPort + "/healthz", "Control plane"},
 		{"http://localhost:" + devNATSPort + "/healthz", "NATS"},
-		{"http://localhost:" + devSigNozPort + "/api/v1/health", "SigNoz"},
+		{"http://localhost:" + devGrafanaPort + "/api/health", "Grafana"},
 	}
 	for _, ep := range endpoints {
 		if probeHTTP(ctx, ep.url) {
@@ -525,7 +525,7 @@ func procRunning(pidFile string) (string, bool) {
 
 // extractComposeDir writes the embedded deploy/compose/ directory to a
 // fresh temp directory and returns its path. The docker-compose.yml uses
-// relative mounts (e.g. ./clickhouse-cluster.xml:/etc/...) so docker
+// relative mounts (e.g. ./tempo.yaml:/etc/...) so docker
 // compose must run from a directory that contains all the side files;
 // extracting the whole tree (not just the YAML) is what makes those
 // mounts land correctly. See assets.go for why.
@@ -553,6 +553,9 @@ func extractComposeDir() (string, error) {
 			return nil
 		}
 		target := filepath.Join(dir, rel)
+		if mkErr := os.MkdirAll(filepath.Dir(target), 0o755); mkErr != nil {
+			return fmt.Errorf("create temp compose dir %s: %w", filepath.Dir(target), mkErr)
+		}
 		data, err := assets.ComposeFS.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("read embedded %s: %w", path, err)
@@ -636,8 +639,9 @@ func forceRemoveOrchiconContainers(ctx context.Context) {
 	// Compose auto-prefixes container names with the project name when
 	// container_name is not set in the YAML.
 	known := []string{
-		devProject + "-postgres", devProject + "-nats", devProject + "-clickhouse",
-		devProject + "-signoz-schema-migrator", devProject + "-otel-collector", devProject + "-signoz",
+		devProject + "-postgres", devProject + "-nats",
+		devProject + "-otel-collector", devProject + "-tempo", devProject + "-loki",
+		devProject + "-victoriametrics", devProject + "-grafana",
 	}
 	for _, name := range known {
 		rm := exec.CommandContext(ctx, "docker", "rm", "-f", name)
@@ -700,7 +704,7 @@ func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 		path := r.URL.Path
 		if strings.HasPrefix(path, "/orchicon.api.v1") ||
 			strings.HasPrefix(path, "/auth/") ||
-			strings.HasPrefix(path, "/signoz") ||
+			strings.HasPrefix(path, "/grafana") ||
 			path == "/healthz" || path == "/versionz" {
 			apiHandler.ServeHTTP(w, r)
 			return

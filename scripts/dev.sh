@@ -2,7 +2,7 @@
 # Orchicon development control script.
 #
 # Manages the full local development stack: Docker Compose services
-# (Postgres, NATS, SigNoz, OTel), the Go control plane, and the Vite
+# (Postgres, NATS, OTel, Tempo, Loki, VictoriaMetrics, Grafana), the Go control plane, and the Vite
 # frontend dev server. One command to get everything running or stopped.
 #
 # Usage:
@@ -133,7 +133,7 @@ start_stack() {
   log "starting dev stack (Docker Compose)…"
   $COMPOSE up -d
   log "waiting for containers to be healthy…"
-  local services=("postgres" "nats" "clickhouse")
+  local services=("postgres" "nats")
   for svc in "${services[@]}"; do
     if wait_for_container "$svc" 120; then
       log_ok "$svc is healthy"
@@ -208,7 +208,7 @@ do_start() {
   echo -e "${C_GREEN}${C_BOLD}Orchicon is running.${C_RESET}"
   echo -e "  Control plane:  ${C_DIM}http://localhost:8080${C_RESET}"
   echo -e "  Frontend:       ${C_DIM}http://localhost:5173${C_RESET}"
-  echo -e "  SigNoz UI:      ${C_DIM}http://localhost:3301${C_RESET}"
+  echo -e "  Grafana UI:     ${C_DIM}http://localhost:3002${C_RESET}"
   echo -e "  NATS monitor:   ${C_DIM}http://localhost:8222${C_RESET}"
   echo ""
   echo -e "  Logs:           ${C_DIM}$LOG_DIR/orchicon.log + $LOG_DIR/vite.log${C_RESET}"

@@ -1,6 +1,6 @@
 // Telemetry query hooks (TanStack Query + Connect-ES, docs/07 §3.9,
 // docs/08 §5). The TelemetryService proxies tenant-scoped queries to
-// SigNoz/ClickHouse; raw exploration uses the embedded SigNoz UI
+// Tempo/Loki/VictoriaMetrics; raw exploration uses the embedded Grafana UI
 // (docs/10 §11), while the Orchicon dashboard is a custom roll-up.
 
 import { useQuery } from "@tanstack/react-query";
@@ -40,7 +40,7 @@ export function useQueryTraces(opts?: {
       });
       return { traces: (res.traces ?? []) as Trace[], degraded: res.degraded };
     },
-    // Poll while degraded so the view auto-recovers when SigNoz starts.
+    // Poll while degraded so the view auto-recovers when the backend starts.
     refetchInterval: (query) => {
       const d = query.state.data as { degraded?: boolean } | undefined;
       return d?.degraded ? 10_000 : false;
@@ -61,7 +61,7 @@ export function useQueryMetrics(opts: {
       });
       return { series: (res.series ?? []) as MetricSeries[], degraded: res.degraded };
     },
-    // Poll while degraded so the view auto-recovers when SigNoz starts.
+    // Poll while degraded so the view auto-recovers when the backend starts.
     refetchInterval: (query) => {
       const d = query.state.data as { degraded?: boolean } | undefined;
       return d?.degraded ? 10_000 : false;
@@ -79,7 +79,7 @@ export function useQueryLogs(opts?: { projectId?: string; severity?: string }) {
       });
       return { logs: (res.logs ?? []) as LogRecord[], degraded: res.degraded };
     },
-    // Poll while degraded so the view auto-recovers when SigNoz starts.
+    // Poll while degraded so the view auto-recovers when the backend starts.
     refetchInterval: (query) => {
       const d = query.state.data as { degraded?: boolean } | undefined;
       return d?.degraded ? 10_000 : false;

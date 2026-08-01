@@ -2,10 +2,10 @@
 // docs/07_API_Specification.md §3.9).
 //
 // Telemetry is OTel-native and flows from the producer to the OTel
-// collector to SigNoz (ClickHouse-backed) — it does NOT flow through
+// collector to the Grafana stack (Tempo/Loki/VictoriaMetrics) — it does NOT flow through
 // NATS (docs/08 §1). The TelemetryService proxies tenant-scoped queries
-// to SigNoz so users explore traces/metrics/logs without leaving the
-// Orchicon shell (docs/10 §11: seamless SigNoz embedding).
+// to the backends so users explore traces/metrics/logs without leaving the
+// Orchicon shell (docs/10 §11: seamless Grafana embedding).
 //
 // A single correlation_id propagates across all spans in a user action
 // (docs/08 §3, §5.1): api.<service>.<rpc> → reconcile.<kind>.<id> →
@@ -58,7 +58,7 @@ proto3.util.setEnumType(TelemetrySignal, "orchicon.api.v1.TelemetrySignal", [
 ]);
 
 /**
- * TraceSpan is a single OTel span projected from SigNoz/ClickHouse
+ * TraceSpan is a single OTel span projected from Tempo
  * (docs/08 §5.1). Spans carry the canonical attributes
  * (tenant_id, project_id, correlation_id) so tenant-scoped queries are
  * enforced at the proxy boundary (AGENTS.md tenant isolation).
@@ -306,7 +306,7 @@ export class Trace extends Message<Trace> {
 }
 
 /**
- * MetricPoint is a single metric sample projected from SigNoz.
+ * MetricPoint is a single metric sample projected from VictoriaMetrics.
  *
  * @generated from message orchicon.api.v1.MetricPoint
  */

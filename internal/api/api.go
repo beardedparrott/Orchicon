@@ -6,14 +6,11 @@
 package api
 
 import (
-	"compress/gzip"
 	"context"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strings"
 
 	"connectrpc.com/connect"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
@@ -48,11 +45,12 @@ type Dependencies struct {
 	Subscriber     eventbus.Subscriber
 	PolicyEngine   *policy.Engine
 	RecoveryEngine *recovery.Engine
-	SigNozClient   *telemetry.SigNozClient
-	// SigNozUIURL is the base URL for the SigNoz query-service UI + API
-	// (default http://localhost:3301). Used by the /signoz reverse proxy
-	// so the embedded iframe works same-origin (docs/10 §11).
-	SigNozURL string
+	TelemetryQuery *telemetry.QueryClient
+	// GrafanaURL is the base URL of the Grafana UI (default
+	// http://localhost:3000). Used by the /grafana reverse proxy so the
+	// embedded iframe works same-origin (docs/10 §11). Grafana runs with
+	// serve_from_sub_path, so it generates every URL under /grafana.
+	GrafanaURL string
 	// Phase 9: auth + webhooks + blobstore.
 	AuthHandler          *auth.Handler
 	WebhookDispatcher    *webhook.Dispatcher
@@ -129,7 +127,7 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	mux.Handle(apiv1connect.NewRecoveryServiceHandler(recoverySvc, interceptorOpt))
 
 	// TelemetryService (docs/07 §3.9, docs/08 §5).
-	telemetrySvc := telemetry.NewService(deps.Pool, deps.SigNozClient, deps.Subscriber)
+	telemetrySvc := telemetry.NewService(deps.Pool, deps.TelemetryQuery, deps.Subscriber)
 	mux.Handle(apiv1connect.NewTelemetryServiceHandler(telemetrySvc, interceptorOpt))
 
 	// AIGatewayService (docs/07 §3.10).
@@ -157,58 +155,21 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	askSvc := askorchicon.New(deps.Pool, deps.Log, deps.BlobStore, deps.ModelDiscoverer)
 	mux.Handle(apiv1connect.NewAskOrchiconServiceHandler(askSvc, interceptorOpt))
 
-	// SigNoz UI reverse proxy (docs/10 §11): serves the SigNoz frontend
-	// same-origin under /signoz so the embedded iframe in the Telemetry
-	// page works in all deployment modes (not just Vite dev proxy).
-	// Mirrors the Vite config: strips /signoz prefix, forwards to the
-	// SigNoz query-service (default localhost:3301). The ModifyResponse
-	// rewrites ONLY the document's <base href="/"> to <base href="/signoz/">.
-	// SigNoz v0.132 ships its asset <link>/<script> tags with relative
-	// paths (./assets/..., css/..., favicon.ico) so the base href is
-	// sufficient — every relative URL in the document resolves against
-	// /signoz/ and lands back inside the proxied path. The earlier
-	// /assets/ -> /signoz/assets/ rewrite was a footgun: it matched the
-	// substring inside the already-relative ./assets/ paths and produced
-	// ./signoz/assets/..., which the base href then double-prefixed into
-	// /signoz/signoz/assets/... — the SPA loaded its own HTML repeatedly
-	// instead of the JS bundle, leaving the iframe blank.
-	if deps.SigNozURL != "" {
-		signozTarget, err := url.Parse(deps.SigNozURL)
+	// Grafana UI reverse proxy (docs/10 §11): serves Grafana same-origin
+	// under /grafana so the embedded iframe in the Telemetry page works in
+	// all deployment modes (not just Vite dev proxy). Grafana runs with
+	// serve_from_sub_path=true and root_url=<control-plane>/grafana, so it
+	// expects to be reached AT the /grafana path and generates every asset
+	// and API URL with that prefix itself. The proxy therefore forwards the
+	// full /grafana/... path unchanged — no StripPrefix (stripping makes
+	// Grafana see "/" and 301-redirect back to the subpath, a loop).
+	if deps.GrafanaURL != "" {
+		grafanaTarget, err := url.Parse(deps.GrafanaURL)
 		if err == nil {
-			signozProxy := httputil.NewSingleHostReverseProxy(signozTarget)
-			signozProxy.ErrorLog = nil
-			signozProxy.ModifyResponse = func(r *http.Response) error {
-				ct := r.Header.Get("Content-Type")
-				if !strings.HasPrefix(ct, "text/html") {
-					return nil
-				}
-				// The upstream (SigNoz) may send gzip-compressed bodies.
-				// Decompress so the string-based rewrite functions work.
-				var reader io.ReadCloser
-				switch r.Header.Get("Content-Encoding") {
-				case "gzip":
-					gr, err := gzip.NewReader(r.Body)
-					if err != nil {
-						return err
-					}
-					defer gr.Close()
-					reader = gr
-				default:
-					reader = r.Body
-				}
-				body, readErr := io.ReadAll(reader)
-				if readErr != nil {
-					return readErr
-				}
-				r.Body.Close()
-				rewritten := rewriteSigNozHTML(string(body), "/signoz")
-				r.Body = io.NopCloser(strings.NewReader(rewritten))
-				r.Header.Del("Content-Encoding")
-				r.Header.Del("Content-Length")
-				return nil
-			}
-			mux.Handle("/signoz", http.StripPrefix("/signoz", signozProxy))
-			mux.Handle("/signoz/", http.StripPrefix("/signoz", signozProxy))
+			grafanaProxy := httputil.NewSingleHostReverseProxy(grafanaTarget)
+			grafanaProxy.ErrorLog = nil
+			mux.Handle("/grafana", grafanaProxy)
+			mux.Handle("/grafana/", grafanaProxy)
 		}
 	}
 

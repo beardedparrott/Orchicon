@@ -103,5 +103,5 @@ export const webhookClient = createClient(WebhookService, connectTransport);
 export const settingsClient = createClient(SettingsService, connectTransport);
 export const askOrchiconClient = createClient(AskOrchiconService, connectTransport);
 
-// SigNoz UI base URL for the embedded telemetry explorer (docs/10 §11).
-export const SIGNOZ_UI_URL = "/signoz";
+// Grafana UI base URL for the embedded telemetry explorer (docs/10 §11).
+export const GRAFANA_UI_URL = "/grafana";

@@ -92,7 +92,7 @@ rls-check: ## CI gate: every tenant_id table must have the RLS policy (docs/09 Â
 
 COMPOSE_ARGS    := -f $(COMPOSE_FILE)
 
-up: ## Start the local dev stack (Postgres, NATS, ClickHouse, OTel, SigNoz)
+up: ## Start the local dev stack (Postgres, NATS, OTel, Tempo, Loki, VictoriaMetrics, Grafana)
 	$(COMPOSE) $(COMPOSE_ARGS) up -d
 
 down: ## Stop the local dev stack
@@ -107,7 +107,7 @@ ps: ## Show dev-stack status
 nuke: ## Stop dev stack and reset state (preserves volumes; use nuke-all to destroy volumes)
 	$(COMPOSE) $(COMPOSE_ARGS) down
 
-nuke-all: ## Stop and DELETE all dev-stack data volumes (postgres, nats, clickhouse, signoz)
+nuke-all: ## Stop and DELETE all dev-stack data volumes (postgres, nats, tempo, loki, victoriametrics, grafana)
 	$(COMPOSE) $(COMPOSE_ARGS) down -v
 
 # --- Frontend --------------------------------------------------------------

@@ -55,10 +55,16 @@ type Config struct {
 	GRPCAddr      string
 	PostgresDSN  string
 	NATSURL       string
-	OTelEndpoint  string
-	SigNozURL       string // SigNoz query-service root (UI + API) — docs/08 §5
-	ClickHouseDSN   string // ClickHouse HTTP DSN (user:pass@host:port) for direct queries
-	BlobStoreDir    string
+	OTelEndpoint string
+	// Grafana stack backends (docs/08 §5). GrafanaURL is the Grafana UI
+	// root (proxied same-origin under /grafana); TempoURL/LokiURL/VMURL
+	// are the query endpoints the control plane reads tenant-scoped
+	// telemetry from.
+	GrafanaURL    string
+	TempoURL      string
+	LokiURL       string
+	VMURL         string
+	BlobStoreDir  string
 	MigrateOnBoot bool
 
 	Mode       DeploymentMode
@@ -78,8 +84,10 @@ func Default() Config {
 		PostgresDSN:       env("ORCHICON_POSTGRES_DSN", "postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable"),
 		NATSURL:           env("ORCHICON_NATS_URL", "nats://localhost:4222"),
 		OTelEndpoint:      env("ORCHICON_OTEL_ENDPOINT", "localhost:4317"),
-		SigNozURL:         env("ORCHICON_SIGNOZ_URL", "http://localhost:3301"),
-		ClickHouseDSN:     env("ORCHICON_CLICKHOUSE_DSN", "http://signoz:signoz@localhost:8123"),
+		GrafanaURL:        env("ORCHICON_GRAFANA_URL", "http://localhost:3002"),
+		TempoURL:          env("ORCHICON_TEMPO_URL", "http://localhost:3200"),
+		LokiURL:           env("ORCHICON_LOKI_URL", "http://localhost:3100"),
+		VMURL:             env("ORCHICON_VM_URL", "http://localhost:8428"),
 		BlobStoreDir:      env("ORCHICON_BLOB_DIR", "./data/blobs"),
 		MigrateOnBoot:     envBool("ORCHICON_MIGRATE_ON_BOOT", true),
 		Mode:              DeploymentMode(env("ORCHICON_MODE", "local")),

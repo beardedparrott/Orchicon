@@ -1,9 +1,9 @@
 // Orchicon TelemetryService (docs/07_API_Specification.md §3.9,
 // docs/08_Event_Bus_and_Telemetry_Model.md §5, docs/10 §11).
 //
-// Proxies tenant-scoped queries to SigNoz/ClickHouse so users explore
+// Proxies tenant-scoped queries to Tempo/Loki/VictoriaMetrics so users explore
 // traces/metrics/logs without leaving the Orchicon shell (docs/10 §11:
-// seamless SigNoz embedding — same auth, same visual language, inside
+// seamless Grafana embedding — same origin, same visual language, inside
 // the Orchicon shell). The proxy enforces tenant isolation: the
 // tenant_id filter is injected from the request context, never trusted
 // from the client (AGENTS.md tenant isolation).
@@ -27,7 +27,7 @@ export const TelemetryService = {
   methods: {
     /**
      * QueryTraces returns traces matching the tenant-scoped query. Proxies
-     * to SigNoz/ClickHouse with the tenant_id attribute injected from the
+     * to Tempo/Loki/VictoriaMetrics with the tenant_id attribute injected from the
      * request context (docs/08 §5.1).
      *
      * @generated from rpc orchicon.api.v1.TelemetryService.QueryTraces
@@ -80,7 +80,7 @@ export const TelemetryService = {
      * curated set of metrics + summaries built custom on the Orchicon
      * domain model (docs/10 §11). Custom dashboards are domain-specific
      * (cost, executions, recovery) — raw exploration uses the embedded
-     * SigNoz UI.
+     * Grafana UI.
      *
      * @generated from rpc orchicon.api.v1.TelemetryService.GetDashboard
      */

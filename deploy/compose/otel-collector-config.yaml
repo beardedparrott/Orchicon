@@ -1,9 +1,10 @@
 # OTel collector config for the Orchicon telemetry plane.
 #
 # Receives OTLP (gRPC + HTTP) from the control plane and frontend,
-# exports to ClickHouse (SigNoz). Telemetry is fully separated from
-# control state (docs/01 §3, docs/08 §5). The control plane never
-# owns this infrastructure.
+# fan-outs to the Grafana stack: traces → Tempo, logs → Loki, metrics
+# → VictoriaMetrics (Prometheus remote write). Telemetry is fully
+# separated from control state (docs/01 §3, docs/08 §5). The control
+# plane never owns this infrastructure.
 #
 # Per docs/08 §5.1, canonical spans include api.<service>.<rpc>,
 # reconcile.<kind>.<id>, dispatch.<task_id>, adapter.execute.*,
@@ -27,19 +28,24 @@ processors:
     spike_limit_percentage: 25
 
 exporters:
-  # SigNoz-specific ClickHouse exporters (not generic "clickhouse").
-  # DSN includes credentials matching the clickhouse service env.
-  clickhousetraces:
-    datasource: tcp://signoz:signoz@clickhouse:9000/signoz_traces
-    retry_on_failure:
+  # Traces → Tempo (OTLP HTTP).
+  otlphttp/tempo:
+    endpoint: http://tempo:4318
+    tls:
+      insecure: true
+  # Logs → Loki (OTLP HTTP endpoint).
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+    tls:
+      insecure: true
+  # Metrics → VictoriaMetrics (Prometheus remote write).
+  # resource_to_telemetry_conversion adds the resource attributes
+  # (service.name, orchicon.tenant_id) as series labels so tenant-scoped
+  # PromQL queries work.
+  prometheusremotewrite:
+    endpoint: http://victoriametrics:8428/api/v1/write
+    resource_to_telemetry_conversion:
       enabled: true
-      initial_interval: 5s
-      max_interval: 30s
-      max_elapsed_time: 300s
-  signozclickhousemetrics:
-    dsn: tcp://signoz:signoz@clickhouse:9000/signoz_metrics
-  clickhouselogsexporter:
-    dsn: tcp://signoz:signoz@clickhouse:9000/signoz_logs
 
 extensions:
   health_check:
@@ -51,12 +57,12 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [clickhousetraces]
+      exporters: [otlphttp/tempo]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [signozclickhousemetrics]
+      exporters: [prometheusremotewrite]
     logs:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [clickhouselogsexporter]
+      exporters: [otlphttp/loki]

@@ -18,14 +18,14 @@ import (
 
 // Service implements the TelemetryService Connect handler
 // (apiv1connect.TelemetryServiceHandler). It proxies tenant-scoped
-// queries to SigNoz/ClickHouse (docs/07 §3.9, docs/08 §5) so users
-// explore traces/metrics/logs without leaving the Orchicon shell.
-// The tenant_id filter is injected from the request context so a
-// client cannot read another tenant's telemetry (AGENTS.md tenant
-// isolation).
+// queries to the Grafana telemetry stack (Tempo/Loki/VictoriaMetrics,
+// docs/07 §3.9, docs/08 §5) so users explore traces/metrics/logs without
+// leaving the Orchicon shell. The tenant_id filter is injected from the
+// request context so a client cannot read another tenant's telemetry
+// (AGENTS.md tenant isolation).
 type Service struct {
 	pool       *db.Pool
-	signoz     *SigNozClient
+	query      *QueryClient
 	subscriber eventbus.Subscriber
 	apiv1connect.UnimplementedTelemetryServiceHandler
 }
@@ -33,18 +33,18 @@ type Service struct {
 var _ apiv1connect.TelemetryServiceHandler = (*Service)(nil)
 
 // NewService constructs a TelemetryService handler.
-func NewService(pool *db.Pool, signoz *SigNozClient, sub eventbus.Subscriber) *Service {
-	return &Service{pool: pool, signoz: signoz, subscriber: sub}
+func NewService(pool *db.Pool, query *QueryClient, sub eventbus.Subscriber) *Service {
+	return &Service{pool: pool, query: query, subscriber: sub}
 }
 
-// QueryTraces proxies a tenant-scoped trace search to SigNoz.
+// QueryTraces proxies a tenant-scoped trace search to Tempo.
 func (s *Service) QueryTraces(ctx context.Context, req *connect.Request[apiv1.QueryTracesRequest]) (*connect.Response[apiv1.QueryTracesResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	f := traceFilterFromQuery(req.Msg.GetQuery())
-	res, _ := s.signoz.QueryTraces(ctx, tenantID, f)
+	res, _ := s.query.QueryTraces(ctx, tenantID, f)
 	out := &apiv1.QueryTracesResponse{Degraded: res.Degraded}
 	for _, t := range res.Traces {
 		out.Traces = append(out.Traces, &apiv1.Trace{
@@ -63,7 +63,7 @@ func (s *Service) QueryTraces(ctx context.Context, req *connect.Request[apiv1.Qu
 	return connect.NewResponse(out), nil
 }
 
-// QueryMetrics proxies a tenant-scoped metric query to SigNoz.
+// QueryMetrics proxies a tenant-scoped metric query to VictoriaMetrics.
 func (s *Service) QueryMetrics(ctx context.Context, req *connect.Request[apiv1.QueryMetricsRequest]) (*connect.Response[apiv1.QueryMetricsResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -76,7 +76,7 @@ func (s *Service) QueryMetrics(ctx context.Context, req *connect.Request[apiv1.Q
 		End:       tsToTime(q.GetEnd()),
 		Names:     req.Msg.GetMetricNames(),
 	}
-	res, _ := s.signoz.QueryMetrics(ctx, tenantID, f)
+	res, _ := s.query.QueryMetrics(ctx, tenantID, f)
 	out := &apiv1.QueryMetricsResponse{Degraded: res.Degraded}
 	for _, ser := range res.Series {
 		series := &apiv1.MetricSeries{
@@ -98,7 +98,7 @@ func (s *Service) QueryMetrics(ctx context.Context, req *connect.Request[apiv1.Q
 	return connect.NewResponse(out), nil
 }
 
-// QueryLogs proxies a tenant-scoped log query to SigNoz.
+// QueryLogs proxies a tenant-scoped log query to Loki.
 func (s *Service) QueryLogs(ctx context.Context, req *connect.Request[apiv1.QueryLogsRequest]) (*connect.Response[apiv1.QueryLogsResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -112,7 +112,7 @@ func (s *Service) QueryLogs(ctx context.Context, req *connect.Request[apiv1.Quer
 		End:       tsToTime(q.GetEnd()),
 		Limit:     boundLimit(q.GetLimit()),
 	}
-	res, _ := s.signoz.QueryLogs(ctx, tenantID, f)
+	res, _ := s.query.QueryLogs(ctx, tenantID, f)
 	out := &apiv1.QueryLogsResponse{Degraded: res.Degraded}
 	for _, l := range res.Logs {
 		out.Logs = append(out.Logs, &apiv1.LogRecord{
@@ -176,7 +176,7 @@ func (s *Service) StreamTelemetry(ctx context.Context, req *connect.Request[apiv
 
 // GetDashboard returns an Orchicon-specific telemetry dashboard: a
 // curated roll-up built custom on the Orchicon domain model (cost,
-// executions) — raw exploration uses the embedded SigNoz UI
+// executions) — raw exploration uses the embedded Grafana UI
 // (docs/10 §11). Reads Postgres (usage_records — source of truth).
 func (s *Service) GetDashboard(ctx context.Context, req *connect.Request[apiv1.GetDashboardRequest]) (*connect.Response[apiv1.GetDashboardResponse], error) {
 	tenantID, err := requireTenant(ctx)

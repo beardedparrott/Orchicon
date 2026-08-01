@@ -5,7 +5,7 @@ package telemetry
 // step transitions, reconciliation outcomes, dispatch events,
 // recovery progress, adapter lifecycle — but they only land in the
 // local log file by default. To make them visible in the Telemetry
-// logs tab (which queries ClickHouse via the SigNozClient), we
+// logs tab (which queries Loki), we
 // install a slog.Handler that fans every record out to the OTel log
 // provider alongside the existing JSON handler.
 //
@@ -27,8 +27,8 @@ import (
 )
 
 // slogMinLevel is the floor for the OTel-side fan-out. We don't want
-// every debug-level record pushed to ClickHouse — the local JSON
-// log file is the right place for that, and ClickHouse is for
+// every debug-level record pushed to Loki — the local JSON
+// log file is the right place for that, and Loki is for
 // operator-visible signals.
 const slogMinLevel = slog.LevelInfo
 
@@ -90,7 +90,7 @@ func (h *multiHandler) WithGroup(name string) slog.Handler {
 
 // otelHandler converts each slog.Record into an OTel log record and
 // emits it through the global LoggerProvider. The OTel SDK is
-// already wired into the same ClickHouse tables the embedded SigNoz
+// already wired into the same Loki store the embedded Grafana
 // UI reads, so the records appear in the Telemetry logs tab without
 // any extra exporter wiring.
 type otelHandler struct {
@@ -115,7 +115,7 @@ func NewOtelSlogHandler() slog.Handler {
 
 // SetLoggerProvider rebinds the underlying OTel LoggerProvider.
 // Called by telemetry.Setup once the OTLP exporter is wired so the
-// handler begins forwarding records into ClickHouse. Safe to call
+// handler begins forwarding records into Loki. Safe to call
 // concurrently with Handle.
 func (h *otelHandler) SetLoggerProvider(p otel_log.LoggerProvider) {
 	h.providerMu.Lock()
@@ -188,7 +188,7 @@ func (h *otelHandler) WithGroup(_ string) slog.Handler {
 // loggerFor returns (and caches) an otel_log.Logger for the given
 // scope name. The scope becomes the OTel resource attribute
 // `otel.scope.name` on every emitted record, which lets the
-// SigNoz/ClickHouse side filter by component.
+// Loki-side filter by component.
 func (h *otelHandler) loggerFor(scope string, provider otel_log.LoggerProvider) otel_log.Logger {
 	h.scopeMu.Lock()
 	defer h.scopeMu.Unlock()
