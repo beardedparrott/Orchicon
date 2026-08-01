@@ -796,7 +796,11 @@ scripts/container.sh down dev         # stop + remove the dev instance
 - **Data preservation**: the dev/prod instances reuse the compose-era Postgres volumes (`orchicon_postgres-data` / `orchicon-prod_postgres-data`) from the old Docker Compose workflow, so your existing data survives the switch to the single container. The container's postgres runs as the data dir's owner (uid 70 for the alpine-era volumes). The script refuses to start while the matching compose-era postgres is running (two postgres processes on one data dir corrupt it); start with an empty DB via `ORCHICON_PG_VOLUME=fresh`.
 - Control plane: `http://localhost:8080` (API + UI + `/grafana`)
 - Grafana: `http://localhost:3002` (embedded in the Telemetry page)
-- Worker executions: the container ships the `opencode` runtime; the script mounts `~/.config/opencode` + `~/.local/share/opencode` automatically so your model providers work.
+- **Worker executions**: the container ships the `opencode` runtime. **Mounts are scoped** — not the whole `$HOME`:
+  - `~/.config/opencode` (read-only) + `~/.local/share/opencode` (rw) so workers use your real model providers.
+  - **project dirs/files from a manifest**: the control plane writes `/var/lib/orchicon/project-mounts` (every `project_dir` + `context_files` from the projects table, refreshed every 30s). `container.sh up`/`rebuild` mounts each listed path at its host location. **After you save a project dir or context files in the UI, run `scripts/container.sh sync-mounts [dev|prod]`** to apply — Docker can't add bind mounts to a running container, so `sync-mounts` compares the manifest to the live container's mounts and recreates it when any are missing.
+  - Extra paths: `ORCHICON_PROJECT_MOUNTS` (space-separated host paths).
+  - **Ownership**: the control plane and its worker subprocesses run as **your host user** (`id -u`/`id -g` passed via `ORCHICON_HOST_UID/GID/HOME`), so files workers create in mounted project dirs are owned by you, not root. Infra processes keep their own users (postgres uid 70, telemetry root).
 - Published image: `ghcr.io/beardedparrott/orchicon` (built + pushed by the release workflow on every version tag, tagged `vX.Y.Z` + `latest`).
 
 **Environment variables** (all optional):
