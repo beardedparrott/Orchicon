@@ -61,7 +61,7 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		return nil, err
 	}
 
-	// OTel telemetry pipeline (tracer + meter + OTLP exporter → SigNoz).
+	// OTel telemetry pipeline (tracer + meter + OTLP exporter → Grafana stack).
 	// If the collector is unreachable, telemetry is dropped with bounded
 	// in-process buffering; control flow is not blocked (docs/08 §8).
 	otelShutdown, err := telemetry.Setup(context.Background(), cfg, log)
@@ -119,12 +119,12 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	// through the default 6-step workflow (docs/06).
 	policyEngine := policy.New(pool, log)
 	recoveryEngine := recovery.New(pool, log)
-	// Phase 8: Telemetry query client (docs/08 §5). Queries ClickHouse
-	// directly for tenant-scoped traces/metrics/logs — bypasses the SigNoz
-	// query-service REST API (which changed incompatibly in SigNoz v0.132).
-	// Empty ClickHouse DSN disables queries (degrade gracefully — docs/08 §8).
-	signozClient := telemetry.NewSigNozClient(cfg.ClickHouseDSN)
-	log.Info("telemetry client configured", "clickhouse", cfg.ClickHouseDSN)
+	// Phase 8: Telemetry query client (docs/08 §5). Queries Tempo/Loki/
+	// VictoriaMetrics directly for tenant-scoped traces/metrics/logs.
+	// Empty backend URLs disable the queries (degrade gracefully — docs/08 §8).
+	telemetryQuery := telemetry.NewQueryClient(cfg.TempoURL, cfg.LokiURL, cfg.VMURL)
+	log.Info("telemetry query client configured",
+		"tempo", cfg.TempoURL, "loki", cfg.LokiURL, "vm", cfg.VMURL)
 
 	// Phase 9: BlobStore abstraction (docs/01 §2). The local filesystem
 	// store is production-viable; S3 is the cloud backend.
@@ -178,7 +178,7 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	adapterBridge := opencode.New(log)
 	// Phase 8: wire the AI Gateway usage recorder into the adapter so
 	// step_finish token/cost telemetry is dual-written to Postgres
-	// (source of truth) + OTel metrics (ClickHouse) — docs/08 §5.2.
+	// (source of truth) + OTel metrics (VictoriaMetrics) — docs/08 §5.2.
 	// The adapter calls the recorder via a closure to stay decoupled
 	// from the aigateway package (docs/04 §6.0: thin bridge).
 	usageRecorder := aigateway.NewUsageRecorder(pool, log)
@@ -211,8 +211,8 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		Subscriber:        sub,
 		PolicyEngine:      policyEngine,
 		RecoveryEngine:    recoveryEngine,
-		SigNozClient:      signozClient,
-		SigNozURL:         cfg.SigNozURL,
+		TelemetryQuery:    telemetryQuery,
+		GrafanaURL:        cfg.GrafanaURL,
 		AuthHandler:       authHandler,
 		WebhookDispatcher: webhookDisp,
 		Mode:              cfg.Mode,

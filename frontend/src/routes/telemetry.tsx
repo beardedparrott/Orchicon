@@ -8,7 +8,7 @@ import { useGetDashboard, useQueryLogs, useQueryMetrics, useQueryTraces } from "
 import { useListProjects } from "@/api/projects";
 import { workItemClient } from "@/api/clients";
 import { workItemKeys } from "@/api/workItems";
-import { SIGNOZ_UI_URL } from "@/api/clients";
+import { GRAFANA_UI_URL } from "@/api/clients";
 import type { UsageRollup } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import { UsageRollup as UsageRollupEnum } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import {
@@ -21,11 +21,11 @@ import {
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 
-// Telemetry hub (docs/10 §11): seamlessly embedded SigNoz for raw
-// traces/metrics/logs exploration (same auth, same visual language,
-// inside the Orchicon shell — not a separate tool) plus custom
-// Orchicon-specific views: cost explorer with Tenant→Project→Task→
-// Execution drill-down, and the Orchicon dashboard.
+// Telemetry hub (docs/10 §11): seamlessly embedded Grafana for raw
+// traces/metrics/logs exploration (same visual language, inside the
+// Orchicon shell — not a separate tool) plus custom Orchicon-specific
+// views: cost explorer with Tenant→Project→Task→Execution drill-down,
+// and the Orchicon dashboard.
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/telemetry",
@@ -38,9 +38,9 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "cost", label: "Cost Explorer" },
   { id: "credits", label: "Credits" },
-  { id: "traces", label: "Traces (SigNoz)" },
-  { id: "metrics", label: "Metrics (SigNoz)" },
-  { id: "logs", label: "Logs (SigNoz)" },
+  { id: "traces", label: "Traces (Grafana)" },
+  { id: "metrics", label: "Metrics (Grafana)" },
+  { id: "logs", label: "Logs (Grafana)" },
 ];
 
 function TelemetryPage() {
@@ -51,8 +51,9 @@ function TelemetryPage() {
         <h1 className="text-2xl font-semibold tracking-tight">Telemetry</h1>
         <p className="text-sm text-muted-foreground">
           Traces, metrics, logs, and cost — explore without leaving the
-          Orchicon shell. Raw exploration uses embedded SigNoz; cost + the
-          Orchicon dashboard are custom views (docs/10 §11).
+          Orchicon shell. Raw exploration uses embedded Grafana (Tempo /
+          Loki / VictoriaMetrics); cost + the Orchicon dashboard are
+          custom views (docs/10 §11).
         </p>
       </div>
       <div className="flex flex-wrap gap-2 border-b pb-px">
@@ -84,7 +85,7 @@ function TelemetryPage() {
 // OverviewPanel is the custom Orchicon dashboard: high-level cost +
 // usage roll-up + per-model cost breakdown (docs/10 §11). Built custom
 // because it's domain-specific; raw exploration uses the embedded
-// SigNoz UI.
+// Grafana UI.
 function OverviewPanel() {
   const { data, isLoading } = useGetDashboard();
   const { data: providers } = useListProviders();
@@ -498,7 +499,7 @@ function UsageRecordsTable({
         <CardTitle>Recent usage records</CardTitle>
         <CardDescription>
           Postgres source-of-truth rows (docs/08 §5.2). Mirrored to
-          ClickHouse as OTel metrics for the embedded SigNoz views.
+          VictoriaMetrics as OTel metrics for the embedded Grafana views.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -555,20 +556,20 @@ function UsageRecordsTable({
   );
 }
 
-// TracesPanel shows recent traces (projected from SigNoz) + the embedded
-// SigNoz trace explorer for raw drill-down (docs/10 §11).
+// TracesPanel shows recent traces (projected from Tempo) + the embedded
+// Grafana trace explorer for raw drill-down (docs/10 §11).
 function TracesPanel() {
   const { data, isLoading } = useQueryTraces();
   const degraded = data?.degraded ?? false;
   return (
     <div className="space-y-6">
-      <SigNozEmbed title="Trace Explorer" path="/traces-explorer" degraded={degraded} />
+      <GrafanaEmbed title="Trace Explorer" degraded={degraded} />
       <Card>
         <CardHeader>
           <CardTitle>Recent traces</CardTitle>
           <CardDescription>
-            Projected from SigNoz/ClickHouse, scoped to the current tenant
-            (docs/08 §5.1). Open the embedded SigNoz UI for full drill-down.
+            Projected from Tempo, scoped to the current tenant (docs/08
+            §5.1). Open the embedded Grafana UI for full drill-down.
           </CardDescription>
         </CardHeader>
         <CardContent className="max-h-[200px] overflow-y-auto">
@@ -612,7 +613,7 @@ function LogsPanel() {
   const degraded = data?.degraded ?? false;
   return (
     <div className="space-y-6">
-      <SigNozEmbed title="Log Explorer" path="/logs/logs-explorer" degraded={degraded} />
+      <GrafanaEmbed title="Log Explorer" degraded={degraded} />
       <Card>
         <CardHeader>
           <CardTitle>Recent logs</CardTitle>
@@ -649,8 +650,8 @@ function LogsPanel() {
   );
 }
 
-// MetricsPanel shows live metric values from ClickHouse plus the
-// embedded SigNoz metrics explorer for raw drill-down.
+// MetricsPanel shows live metric values from VictoriaMetrics plus the
+// embedded Grafana metrics explorer for raw drill-down.
 function MetricsPanel() {
   const { data, isLoading } = useQueryMetrics({
     metricNames: ["orchicon_tokens_consumed", "orchicon_cost_usd", "orchicon_outbox_lag"],
@@ -660,12 +661,12 @@ function MetricsPanel() {
 
   return (
     <div className="space-y-6">
-      <SigNozEmbed title="Metrics Explorer" path="/metrics-explorer/explorer" degraded={degraded} />
+      <GrafanaEmbed title="Metrics Explorer" degraded={degraded} />
       <Card>
         <CardHeader>
           <CardTitle>Metric values</CardTitle>
           <CardDescription>
-            Latest samples from ClickHouse (signoz_metrics.samples_v4).
+            Latest samples from VictoriaMetrics.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -822,36 +823,43 @@ function CreditsPanel() {
   );
 }
 
-// SigNozEmbed renders the SigNoz UI inside the Orchicon shell via a
-// same-origin iframe (proxied under /signoz in dev — docs/10 §11:
-// seamless embedding, not a separate tool launch). The iframe shares
-// the Orchicon shell's chrome so it feels like one platform.
-// When degraded, a placeholder is shown instead of a broken iframe
-// loading the SPA fallback (AGENTS.md verification §2).
-function SigNozEmbed({
+// GrafanaEmbed renders the Grafana UI inside the Orchicon shell via a
+// same-origin iframe (proxied under /grafana — docs/10 §11: seamless
+// embedding, not a separate tool launch). Grafana runs with
+// serve_from_sub_path so every URL is generated under /grafana; the
+// iframe shares the Orchicon shell's chrome so it feels like one
+// platform. When degraded, a placeholder is shown instead of a broken
+// iframe loading the SPA fallback (AGENTS.md verification §2).
+//
+// The embed is a provisioned "Orchicon" dashboard in kiosk mode
+// (uid orchicon-dashboard, provisioned in
+// deploy/compose/grafana-provisioning/dashboards/orchicon.json) rather
+// than a Grafana Explore deep-link: Explore redirects anonymous users to
+// the sign-in/home page, whereas dashboards render for the anonymous
+// Viewer role out of the box.
+function GrafanaEmbed({
   title,
-  path = "",
   degraded,
 }: {
   title: string;
-  path?: string;
   degraded?: boolean;
 }) {
-  const src = `${SIGNOZ_UI_URL}${path}`;
+  const src = `${GRAFANA_UI_URL}${grafanaDashboardPath()}`;
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{title} — embedded SigNoz</CardTitle>
+        <CardTitle>{title} — embedded Grafana</CardTitle>
         <CardDescription>
-          Same auth, same visual language, inside the Orchicon shell
-          (docs/10 §11). The SigNoz UI is proxied same-origin.
+          Same visual language, inside the Orchicon shell (docs/10 §11).
+          The Grafana UI is proxied same-origin.
         </CardDescription>
       </CardHeader>
       <CardContent>
         {degraded ? (
           <div className="flex h-[160px] items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground">
-            SigNoz is starting up — check back in a moment. The dev stack
-            starts automatically with `orchicon start` / `orchicon dev start`.
+            Telemetry backend is starting up — check back in a moment.
+            The dev stack starts automatically with `orchicon start` /
+            `orchicon dev start`.
           </div>
         ) : (
           <iframe
@@ -864,6 +872,12 @@ function SigNozEmbed({
       </CardContent>
     </Card>
   );
+}
+
+// grafanaDashboardPath returns the embedded Orchicon dashboard URL
+// (kiosk mode hides the Grafana side nav inside the shell).
+function grafanaDashboardPath(): string {
+  return `/d/orchicon-dashboard/orchicon?kiosk&from=now-1h&to=now`;
 }
 
 function StatCard({

@@ -12,7 +12,7 @@ import (
 
 // UsageRecordRow is the in-memory representation of a usage_records row
 // (docs/08 §5.2, docs/09 §3.7). The AI Gateway writes these as the
-// source of truth; OTel metrics mirror them to ClickHouse for fast
+// source of truth; OTel metrics mirror them to VictoriaMetrics for fast
 // telemetry queries.
 type UsageRecordRow struct {
 	ID               string

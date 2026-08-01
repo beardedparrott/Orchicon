@@ -13,16 +13,15 @@ package assets
 import "embed"
 
 // ComposeFS embeds the entire Docker Compose stack directory
-// (deploy/compose/) — the YAML, the Postgres init SQL, the ClickHouse
-// cluster config, the OTel collector config, and the SigNoz config.
+// (deploy/compose/) — the YAML, the Postgres init SQL, the OTel
+// collector config, and the Grafana stack configs (Tempo, Loki,
+// VictoriaMetrics, Grafana provisioning).
 //
 // The compose file uses relative mounts (e.g.
-// ./clickhouse-cluster.xml:/etc/clickhouse-server/config.d/cluster.xml),
-// so the binary extracts this FS into a temp directory and runs
-// `docker compose` from there. If only the YAML were embedded, the
-// side-file mounts would silently fail (Docker creates an empty
-// directory at the destination, ClickHouse never sees the cluster
-// definition, the schema migrator 404s). See cmd/orchicon/dev.go.
+// ./tempo.yaml:/etc/tempo.yaml), so the binary extracts this FS into a
+// temp directory and runs `docker compose` from there. If only the YAML
+// were embedded, the side-file mounts would silently fail (Docker creates
+// an empty directory at the destination). See cmd/orchicon/dev.go.
 //
 //go:embed all:deploy/compose
 var ComposeFS embed.FS

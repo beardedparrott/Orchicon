@@ -1,5 +1,5 @@
 # Docker Compose for Orchicon local development stack.
-# Services: postgres, nats, clickhouse, signoz-schema-migrator, otel-collector, signoz
+# Services: postgres, nats, otel-collector, tempo, loki, victoriametrics, grafana
 # Usage: docker compose -f deploy/compose/docker-compose.yml up -d
 
 services:
@@ -40,49 +40,13 @@ services:
       retries: 15
     restart: unless-stopped
 
-  # ClickHouse — telemetry storage (traces, metrics, logs) for SigNoz.
-  clickhouse:
-    image: clickhouse/clickhouse-server:25.8
-    container_name: orchicon-clickhouse
-    environment:
-      CLICKHOUSE_DB: signoz
-      CLICKHOUSE_USER: signoz
-      CLICKHOUSE_PASSWORD: signoz
-      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
-    ports:
-      - "8123:8123"
-      - "9000:9000"
-    volumes:
-      - clickhouse-data:/var/lib/clickhouse
-      - ./clickhouse-cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
-    ulimits:
-      nofile:
-        soft: 262144
-        hard: 262144
-    healthcheck:
-      test: ["CMD", "clickhouse-client", "-u", "signoz", "--password", "signoz", "--query", "SELECT 1"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-    restart: unless-stopped
-
-  # SigNoz schema migrator — runs once per ClickHouse version upgrade.
-  # Must pass the --dsn flag explicitly; the image entrypoint no longer
-  # auto-constructs it from env vars (otherwise it just prints help and
-  # exits without creating signoz_logs/signoz_traces).
-  signoz-schema-migrator:
-    image: signoz/signoz-schema-migrator:v0.144.6
-    pull_policy: missing
-    container_name: orchicon-signoz-schema-migrator
-    command: ["sync", "--dsn", "tcp://signoz:signoz@clickhouse:9000/signoz"]
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-    restart: on-failure
-
-  # OTel collector — receives OTLP from control plane, exports to ClickHouse.
+  # OTel collector — receives OTLP from the control plane, fan-outs to
+  # Tempo (traces), Loki (logs), VictoriaMetrics (metrics).
+  # NOTE: the official otel-contrib image is distroless (no shell), so
+  # this service has no healthcheck — the control plane's OTel SDK uses a
+  # non-blocking dial and degrades gracefully if the collector is down.
   otel-collector:
-    image: signoz/signoz-otel-collector:v0.144.6
+    image: otel/opentelemetry-collector-contrib:0.119.0
     pull_policy: missing
     container_name: orchicon-otel-collector
     command: ["--config=/etc/otel-collector-config.yaml"]
@@ -93,51 +57,108 @@ services:
     ports:
       - "4317:4317"   # OTLP gRPC
       - "4318:4318"   # OTLP HTTP
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/13133' || exit 1"]
-      interval: 2s
-      timeout: 3s
-      retries: 10
     restart: unless-stopped
 
-  # SigNoz query-service — reads telemetry from ClickHouse, serves UI on :3301
-  signoz:
-    image: signoz/signoz-community:v0.134.0
+  # Tempo — trace backend. OTLP ingest (internal), query API on :3200.
+  tempo:
+    image: grafana/tempo:2.7.1
     pull_policy: missing
-    container_name: orchicon-signoz
-    command: ["-DSTORAGE=clickhouse"]
-    environment:
-      CLICKHOUSE_USER: signoz
-      CLICKHOUSE_PASSWORD: signoz
-      SIGNOZ_TOKENIZER_JWT_SECRET: "dev-secret-not-for-production"
-      SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN: "tcp://signoz:signoz@clickhouse:9000/signoz"
-      # Impersonation mode: no login page (docs/08 §5). Root user config below.
-      SIGNOZ_IDENTN_IMPERSONATION_ENABLED: "true"
-      SIGNOZ_IDENTN_TOKENIZER_ENABLED: "false"
-      SIGNOZ_IDENTN_APIKEY_ENABLED: "false"
-      SIGNOZ_USER_ROOT_ENABLED: "true"
-      SIGNOZ_USER_ROOT_EMAIL: "admin@orchicon.local"
-      SIGNOZ_USER_ROOT_PASSWORD: "Orchicon-Dev-42!"
-      SIGNOZ_USER_ROOT_ORG_NAME: "default"
+    container_name: orchicon-tempo
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
     ports:
-      - "3301:8080"
-    depends_on:
-      clickhouse:
-        condition: service_healthy
+      - "3200:3200"   # query API (control plane + Grafana)
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/api/v1/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3200/ready"]
       interval: 2s
       timeout: 3s
-      retries: 60
+      retries: 30
     restart: unless-stopped
+
+  # Loki — log backend. OTLP ingest on :3100/otlp, query API on :3100.
+  loki:
+    image: grafana/loki:3.4.2
+    pull_policy: missing
+    container_name: orchicon-loki
+    # The loki image runs as uid 10001 by default, but the named volume is
+    # root-owned; run as root so the ruler/chunks directories are writable.
+    user: "0"
+    command: ["-config.file=/etc/loki.yaml"]
     volumes:
-      - signoz-data:/var/lib/signoz
+      - ./loki.yaml:/etc/loki.yaml:ro
+      - loki-data:/var/loki
+    ports:
+      - "3100:3100"   # query + OTLP ingest (control plane + Grafana)
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:3100/ready >/dev/null 2>&1 || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  # VictoriaMetrics — metric backend (PromQL). Remote-write ingest + query.
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.111.0
+    pull_policy: missing
+    container_name: orchicon-victoriametrics
+    command: ["-retentionPeriod=720h"]
+    volumes:
+      - victoriametrics-data:/victoria-metrics-data
+    ports:
+      - "8428:8428"   # query + remote-write (control plane + Grafana)
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8428/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  # Grafana — observability UI. Served same-origin by the control plane
+  # under /grafana (serve_from_sub_path), so the embedded iframe in the
+  # Telemetry page works in all deployment modes.
+  grafana:
+    image: grafana/grafana:11.5.2
+    pull_policy: missing
+    container_name: orchicon-grafana
+    environment:
+      # Sub-path serving: Grafana generates every URL with the /grafana
+      # prefix, which the control plane /grafana reverse proxy strips.
+      # root_url must be the public origin of the control plane (dev:
+      # http://localhost:8080). Anonymous Viewer so the embedded iframe
+      # needs no auth (docs/08 §5).
+      GF_SERVER_ROOT_URL: "http://localhost:8080/grafana"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./grafana-provisioning/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./grafana-provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3002:3000"
+    depends_on:
+      tempo:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+      victoriametrics:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:3000/api/health >/dev/null 2>&1 || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
 
 volumes:
   postgres-data:
   nats-data:
-  clickhouse-data:
-  signoz-data:
+  tempo-data:
+  loki-data:
+  victoriametrics-data:
+  grafana-data:

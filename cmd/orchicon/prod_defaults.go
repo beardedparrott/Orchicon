@@ -38,11 +38,17 @@ func applyProdDefaults(cfg *config.Config) {
 	if v, ok := os.LookupEnv("ORCHICON_OTEL_ENDPOINT"); !ok || v == "" {
 		cfg.OTelEndpoint = "localhost:4319"
 	}
-	if v, ok := os.LookupEnv("ORCHICON_SIGNOZ_URL"); !ok || v == "" {
-		cfg.SigNozURL = "http://localhost:3302"
+	if v, ok := os.LookupEnv("ORCHICON_GRAFANA_URL"); !ok || v == "" {
+		cfg.GrafanaURL = "http://localhost:3003"
 	}
-	if v, ok := os.LookupEnv("ORCHICON_CLICKHOUSE_DSN"); !ok || v == "" {
-		cfg.ClickHouseDSN = "http://signoz:signoz@localhost:8124"
+	if v, ok := os.LookupEnv("ORCHICON_TEMPO_URL"); !ok || v == "" {
+		cfg.TempoURL = "http://localhost:3201"
+	}
+	if v, ok := os.LookupEnv("ORCHICON_LOKI_URL"); !ok || v == "" {
+		cfg.LokiURL = "http://localhost:3101"
+	}
+	if v, ok := os.LookupEnv("ORCHICON_VM_URL"); !ok || v == "" {
+		cfg.VMURL = "http://localhost:8429"
 	}
 	if v, ok := os.LookupEnv("ORCHICON_BLOB_DIR"); !ok || v == "" {
 		cfg.BlobStoreDir = "./data/prod-blobs"

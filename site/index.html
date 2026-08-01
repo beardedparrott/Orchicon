@@ -69,7 +69,7 @@
             <div>
               <h3>Start the dev stack</h3>
               <pre class="cmd"><code><span class="prompt">$</span> orchicon dev start</code></pre>
-              <p>Boots Postgres, NATS, SigNoz, the OTel collector, runs migrations, and serves the control plane + embedded UI on <a href="http://localhost:8080" rel="noopener">localhost:8080</a>. Requires Docker.</p>
+              <p>Boots Postgres, NATS, Grafana (Tempo + Loki + VictoriaMetrics), the OTel collector, runs migrations, and serves the control plane + embedded UI on <a href="http://localhost:8080" rel="noopener">localhost:8080</a>. Requires Docker.</p>
             </div>
           </li>
           <li>
@@ -116,7 +116,7 @@
           </div>
           <div class="card">
             <h3>Telemetry &amp; cost</h3>
-            <p>OTel → SigNoz. Per-tenant cost roll-up (Tenant → Project → Task → Execution) with streamed usage events.</p>
+            <p>OTel → Grafana stack (Tempo + Loki + VictoriaMetrics). Per-tenant cost roll-up (Tenant → Project → Task → Execution) with streamed usage events.</p>
           </div>
         </div>
       </div>

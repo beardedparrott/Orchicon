@@ -1,0 +1,25 @@
+# Tempo — distributed tracing backend (Grafana stack).
+# Single-binary monolithic mode: local-disk blocks backend, OTLP ingest.
+# Grafana queries it on :3200; the OTel collector ingests on :4317/:4318.
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: "0.0.0.0:4317"
+        http:
+          endpoint: "0.0.0.0:4318"
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+
+usage_report:
+  reporting_enabled: false

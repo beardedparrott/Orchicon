@@ -1,7 +1,7 @@
 // Package telemetry sets up the OpenTelemetry pipeline: tracer,
-// meter, log exporter, and OTLP gRPC exporter (→ SigNoz/ClickHouse
+// meter, log exporter, and OTLP gRPC exporter (→ Grafana stack
 // via the OTel collector in deploy/compose). Per docs/08 §5,
-// telemetry flows from the producer to the OTel collector to SigNoz
+// telemetry flows from the producer to the OTel collector to Grafana
 // — it does not flow through NATS.
 //
 // The pipeline is best-effort: if the collector is unreachable,
@@ -89,7 +89,7 @@ func Setup(ctx context.Context, cfg config.Config, log *slog.Logger) (*Shutdowne
 	// id from the request context into both the log resource and
 	// the per-record attribute set. For now, mark every
 	// control-plane log with orchicon.tenant_id=tnt_dev so the
-	// SigNozClient QueryLogs tenant filter (docs/08 §5.1) doesn't
+	// Grafana-stack tenant filter (docs/08 §5.1) does not
 	// drop our own bootstrap / reconciliation / recovery records
 	// when the operator opens the Telemetry logs tab.
 	res, err := resource.Merge(resource.Default(), resource.NewWithAttributes(

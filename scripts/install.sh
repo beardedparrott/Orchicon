@@ -68,7 +68,7 @@ Options:
                         runtime state).
    --force-clean, --nuke
                         Wipe everything and start fresh: stop the dev stack,
-                        destroy Docker volumes (database, NATS, ClickHouse),
+                        destroy Docker volumes (database, NATS, Tempo, Loki,
                         remove blob store data and runtime state, then install
                         the latest version. WARNING: all data is lost.
    --dry-run            Print what would happen without making changes.
@@ -131,7 +131,7 @@ do_uninstall() {
 # --- Force-clean then install -----------------------------------------------
 #
 # Wipe everything and start fresh: stop the dev stack, destroy Docker
-# volumes (database, NATS, ClickHouse), remove blob store data and
+# volumes (database, NATS, Tempo, Loki, VictoriaMetrics, Grafana),
 # runtime state, then install the latest version.
 #
 do_force_clean() {
@@ -172,7 +172,7 @@ do_force_clean() {
     fi
   fi
 
-  # 2. Nuke Docker volumes (postgres, nats, clickhouse, signoz).
+  # 2. Nuke Docker volumes (postgres, nats, tempo, loki, victoriametrics, grafana).
   if command -v docker >/dev/null 2>&1; then
     info "destroying all orchicon Docker volumes…"
     if [ "$DRY_RUN" = false ]; then
@@ -276,7 +276,7 @@ do_clean() {
   echo -e "${B}Data preserved:${X}"
   echo -e "  ${D}• Postgres database (Docker volume)${X}"
   echo -e "  ${D}• NATS JetStream messages (Docker volume)${X}"
-  echo -e "  ${D}• ClickHouse / SigNoz (Docker volumes)${X}"
+  echo -e "  ${D}• Telemetry stack (Docker volumes)${X}"
   echo -e "  ${D}• BlobStore files (./data/blobs)${X}"
   echo -e "  ${D}• Runtime state (.dev/)${X}"
   echo ""
@@ -371,7 +371,7 @@ main() {
   echo -e "  ${D}orchicon dev start        Start the full dev environment${X}"
   echo -e "  ${D}orchicon dev status       Check what's running${X}"
   echo ""
-  echo -e "${B}Note:${X} ${D}orchicon dev start requires Docker (for Postgres, NATS, SigNoz).${X}"
+  echo -e "${B}Note:${X} ${D}orchicon dev start requires Docker (for Postgres, NATS, Tempo, Loki, VictoriaMetrics, Grafana).${X}"
   echo -e "  The binary embeds the compose stack, migrations, and frontend.${X}"
   echo ""
   echo -e "${B}Documentation:${X} ${D}https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}#readme${X}"

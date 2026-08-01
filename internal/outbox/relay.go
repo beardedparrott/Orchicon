@@ -60,10 +60,11 @@ func NewRelay(pool *db.Pool, pub eventbus.Publisher, log *slog.Logger, opts ...R
 	}
 
 	// Register lag gauge (orchicon_outbox_lag — docs/08 §5.2).
+	// No unit: the Prometheus exporter appends "_<unit>" to metric names,
+	// which would break the canonical name the frontend queries.
 	gauge, err := telemetry.Meter().Int64ObservableGauge(
 		"orchicon_outbox_lag",
 		otelmetric.WithDescription("Number of unpublished outbox rows (relay health)"),
-		otelmetric.WithUnit("rows"),
 	)
 	if err == nil {
 		r.lagGauge = gauge

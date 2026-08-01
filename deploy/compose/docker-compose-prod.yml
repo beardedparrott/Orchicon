@@ -1,5 +1,5 @@
 # Docker Compose for Orchicon production-like instance (dogfooding).
-# Services: postgres, nats, clickhouse, signoz-schema-migrator, otel-collector, signoz
+# Services: postgres, nats, otel-collector, tempo, loki, victoriametrics, grafana
 #
 # Ports are offset +1 from the dev compose to allow both stacks to run
 # simultaneously on the same host. No container_name directives are set
@@ -44,48 +44,8 @@ services:
       retries: 15
     restart: unless-stopped
 
-  clickhouse:
-    image: clickhouse/clickhouse-server:25.8
-    container_name: orchicon-prod-clickhouse
-    environment:
-      CLICKHOUSE_DB: signoz
-      CLICKHOUSE_USER: signoz
-      CLICKHOUSE_PASSWORD: signoz
-      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
-    ports:
-      - "8124:8123"
-      - "9001:9000"
-    volumes:
-      - clickhouse-data:/var/lib/clickhouse
-      - ./clickhouse-cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
-    ulimits:
-      nofile:
-        soft: 262144
-        hard: 262144
-    healthcheck:
-      test: ["CMD", "clickhouse-client", "-u", "signoz", "--password", "signoz", "--query", "SELECT 1"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-    restart: unless-stopped
-
-  signoz-schema-migrator:
-    image: signoz/signoz-schema-migrator:v0.144.6
-    pull_policy: missing
-    container_name: orchicon-prod-signoz-schema-migrator
-    command: ["sync", "--dsn", "tcp://signoz:signoz@clickhouse:9000/signoz"]
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-    restart: on-failure
-    # Wait for the schema migrator to finish creating ClickHouse databases
-    # before starting dependent services. Without this, the OTel collector
-    # starts too early and crashes because signoz_logs/signoz_traces don't
-    # exist yet — then Docker restarts it in a loop until the migrator
-    # eventually completes, wasting startup time.
-
   otel-collector:
-    image: signoz/signoz-otel-collector:v0.144.6
+    image: otel/opentelemetry-collector-contrib:0.119.0
     pull_policy: missing
     container_name: orchicon-prod-otel-collector
     command: ["--config=/etc/otel-collector-config.yaml"]
@@ -96,49 +56,95 @@ services:
     ports:
       - "4319:4317"
       - "4320:4318"
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/13133' || exit 1"]
-      interval: 2s
-      timeout: 3s
-      retries: 10
     restart: unless-stopped
 
-  signoz:
-    image: signoz/signoz-community:v0.134.0
+  tempo:
+    image: grafana/tempo:2.7.1
     pull_policy: missing
-    container_name: orchicon-prod-signoz
-    command: ["-DSTORAGE=clickhouse"]
-    environment:
-      CLICKHOUSE_USER: signoz
-      CLICKHOUSE_PASSWORD: signoz
-      SIGNOZ_TOKENIZER_JWT_SECRET: "dev-secret-not-for-production"
-      SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN: "tcp://signoz:signoz@clickhouse:9000/signoz"
-      SIGNOZ_IDENTN_IMPERSONATION_ENABLED: "true"
-      SIGNOZ_IDENTN_TOKENIZER_ENABLED: "false"
-      SIGNOZ_IDENTN_APIKEY_ENABLED: "false"
-      SIGNOZ_USER_ROOT_ENABLED: "true"
-      SIGNOZ_USER_ROOT_EMAIL: "admin@orchicon.local"
-      SIGNOZ_USER_ROOT_PASSWORD: "Orchicon-Dev-42!"
-      SIGNOZ_USER_ROOT_ORG_NAME: "default"
+    container_name: orchicon-prod-tempo
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
     ports:
-      - "3302:8080"
-    depends_on:
-      clickhouse:
-        condition: service_healthy
+      - "3201:3200"
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/api/v1/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3200/ready"]
       interval: 2s
       timeout: 3s
-      retries: 60
+      retries: 30
     restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.4.2
+    pull_policy: missing
+    container_name: orchicon-prod-loki
+    user: "0"
+    command: ["-config.file=/etc/loki.yaml"]
     volumes:
-      - signoz-data:/var/lib/signoz
+      - ./loki.yaml:/etc/loki.yaml:ro
+      - loki-data:/var/loki
+    ports:
+      - "3101:3100"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:3100/ready >/dev/null 2>&1 || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.111.0
+    pull_policy: missing
+    container_name: orchicon-prod-victoriametrics
+    command: ["-retentionPeriod=720h"]
+    volumes:
+      - victoriametrics-data:/victoria-metrics-data
+    ports:
+      - "8429:8428"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8428/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    pull_policy: missing
+    container_name: orchicon-prod-grafana
+    environment:
+      GF_SERVER_ROOT_URL: "http://localhost:8091/grafana"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./grafana-provisioning/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./grafana-provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3003:3000"
+    depends_on:
+      tempo:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+      victoriametrics:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:3000/api/health >/dev/null 2>&1 || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
 
 volumes:
   postgres-data:
   nats-data:
-  clickhouse-data:
-  signoz-data:
+  tempo-data:
+  loki-data:
+  victoriametrics-data:
+  grafana-data:

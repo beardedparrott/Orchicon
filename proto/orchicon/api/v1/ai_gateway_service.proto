@@ -3,9 +3,9 @@
 //
 // Lists configured providers and queries usage + cost with drill-down
 // roll-ups (Tenant → Project → Task → Execution). Usage records are
-// dual-written to Postgres (source of truth) and ClickHouse (OTel
+// dual-written to Postgres (source of truth) and VictoriaMetrics (OTel
 // metrics) — this service reads Postgres for authoritative cost; the
-// TelemetryService reads SigNoz for raw metric exploration.
+// TelemetryService reads the Grafana stack for raw metric exploration.
 syntax = "proto3";
 
 package orchicon.api.v1;

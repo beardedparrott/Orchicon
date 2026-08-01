@@ -102,7 +102,7 @@ If architecture or anything referenced in AGENTS.md has changed, update this fil
 - **API**: Protobuf + Connect (gRPC + REST + streaming from one schema)
 - **Database**: PostgreSQL 16 with RLS + transactional outbox
 - **Event bus**: NATS JetStream
-- **Telemetry**: OpenTelemetry → SigNoz (ClickHouse) — separated infra
+- **Telemetry**: OpenTelemetry → Grafana stack (Tempo + Loki + VictoriaMetrics) — separated infra
 - **Policy**: Rego (Open Policy Agent)
 - **Runtime adapters**: gRPC sidecars (OpenCode first, CLI now / IPC later)
 - **Frontend**: TypeScript + React + Vite + Connect-ES + React Flow
@@ -153,7 +153,7 @@ Every piece of functionality built in this repo must follow these security stand
 
 ## Tooling hints
 
-- When you need library docs (Connect-ES, Atlas, TanStack Router, pgx, NATS, SigNoz), use `context7` tools before guessing.
+- When you need library docs (Connect-ES, Atlas, TanStack Router, pgx, NATS, Grafana/Tempo/Loki), use `context7` tools before guessing.
 - If unsure how to use a library or pattern, use `gh_grep` to search real GitHub usage examples.
 - LSP servers (gopls, typescript, eslint, yaml-ls) are enabled — diagnostics surface in the edit loop. Treat them as fast feedback; `make ci` is the authoritative gate.
 - Playwright MCP is configured in `opencode.jsonc` for browser testing. **Playwright is installed** — `npx playwright install chrome` has been run, so Chrome is available for browser verification. Use Chrome and/or Playwright for frontend verification. NEVER use Firefox — the developer uses Firefox and testing needs a separate browser.
@@ -186,8 +186,7 @@ Before marking a phase or task as complete, verify the following at minimum (ada
 
 1. **`make ci` passes end-to-end** — buf lint, codegen, go vet/test, RLS gate. This is the authoritative CI gate.
 2. **Dev stack starts healthy** — `make up` then `make ps` shows all containers `healthy` (not just `running`). When the change touches Docker or infrastructure:
-   - Check that ZooKeeper is NOT listed in `make ps` output.
-   - Verify all 6 containers (postgres, nats, clickhouse, signoz-schema-migrator, otel-collector, signoz) show up.
+   - Verify all 7 containers (postgres, nats, otel-collector, tempo, loki, victoriametrics, grafana) show up (the distroless otel-collector has no healthcheck and reports running).
    - Run `make nuke` then `make up` from a clean slate to verify the full startup sequence works end-to-end.
 3. **Migrations apply cleanly** — `make migrate` against the compose Postgres; `make rls-check` passes.
 4. **Control plane boots and serves** — `make build && make run`, then `curl http://localhost:8080/healthz` returns `{"status":"ok"}`. Time this command — if the telemetry stack is starting, the boot should still be <2s (not 20s+). Check the control plane logs for `"otel pipeline initialized"` — if it appears before the 2s mark, the non-blocking OTel dial is working.
@@ -200,9 +199,9 @@ Before marking a phase or task as complete, verify the following at minimum (ada
 When a change modifies `deploy/compose/docker-compose.yml`, configs in `deploy/compose/`, or the telemetry setup in `internal/telemetry/`:
 
 - **Full reset test**: Run `make nuke` then `make up` and wait for all containers to show `healthy`. This is the only reliable way to catch dependency ordering bugs, config regressions, and incorrect `depends_on` chains.
-- **No-ZooKeeper check**: The stack must not contain a `zookeeper` service or container. Verify with `docker ps --filter name=orchicon-zookeeper` — the output should be empty. The ClickHouse config in `clickhouse-cluster.xml` must use `<keeper_server>` (embedded Keeper), never `<zookeeper>` pointing at an external host.
+
 - **Control plane boot speed**: After `make build`, time how long it takes for `curl http://localhost:8080/healthz` to return `200`. With the non-blocking OTel gRPC dial (`grpc.NewClient`), this must be under 2 seconds even when the OTel collector is not yet healthy. Check the control plane logs for `"otel pipeline initialized"` — it should appear within milliseconds of process start, not after 10-20s.
-- **Profile isolation**: `make up` must start exactly 6 containers (postgres, nats, clickhouse, signoz-schema-migrator, otel-collector, signoz). The stack must not contain a `zookeeper` service.
+- **Profile isolation**: `make up` must start exactly 7 containers (postgres, nats, otel-collector, tempo, loki, victoriametrics, grafana).
 
 If the change adds a new API RPC, also verify the Connect endpoint responds (e.g. via `curl` or a frontend smoke test). If it adds a new table, verify the RLS gate still passes after migration.
 
@@ -212,7 +211,7 @@ If the change adds a new API RPC, also verify the Connect endpoint responds (e.g
 
 ## Dev Control Script
 
-`scripts/dev.sh` is the one-command dev environment controller. It manages the full local stack — Docker Compose services (Postgres, NATS, SigNoz, OTel), the Go control plane, and the Vite frontend — so a new contributor can get everything running with a single command:
+`scripts/dev.sh` is the one-command dev environment controller. It manages the full local stack — Docker Compose services (Postgres, NATS, OTel, Tempo, Loki, VictoriaMetrics, Grafana), the Go control plane, and the Vite frontend — so a new contributor can get everything running with a single command:
 
 ```
 scripts/dev.sh start     # dev stack → migrations → control plane → frontend

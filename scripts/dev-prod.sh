@@ -21,7 +21,7 @@
 #   gRPC:      :9091     (dev :9090)
 #   Postgres:  :5433     (dev :5432)
 #   NATS:      :4223     (dev :4222)
-#   SigNoz:    :3302     (dev :3301)
+#   Grafana:  :3003     (dev :3002)
 #   OTel:      :4319     (dev :4317)
 set -euo pipefail
 
@@ -46,8 +46,10 @@ export ORCHICON_GRPC_ADDR="${ORCHICON_GRPC_ADDR:-:9091}"
 export ORCHICON_POSTGRES_DSN="${ORCHICON_POSTGRES_DSN:-postgres://orchicon:orchicon@localhost:5433/orchicon?sslmode=disable}"
 export ORCHICON_NATS_URL="${ORCHICON_NATS_URL:-nats://localhost:4223}"
 export ORCHICON_OTEL_ENDPOINT="${ORCHICON_OTEL_ENDPOINT:-localhost:4319}"
-export ORCHICON_SIGNOZ_URL="${ORCHICON_SIGNOZ_URL:-http://localhost:3302}"
-export ORCHICON_CLICKHOUSE_DSN="${ORCHICON_CLICKHOUSE_DSN:-http://signoz:signoz@localhost:8124}"
+export ORCHICON_GRAFANA_URL="${ORCHICON_GRAFANA_URL:-http://localhost:3003}"
+export ORCHICON_TEMPO_URL="${ORCHICON_TEMPO_URL:-http://localhost:3201}"
+export ORCHICON_LOKI_URL="${ORCHICON_LOKI_URL:-http://localhost:3101}"
+export ORCHICON_VM_URL="${ORCHICON_VM_URL:-http://localhost:8429}"
 export ORCHICON_BLOB_DIR="${ORCHICON_BLOB_DIR:-./data/prod-blobs}"
 
 # --- Colors ---------------------------------------------------------------
@@ -149,7 +151,7 @@ do_start() {
   fi
 
   log "waiting for containers to be healthy…"
-  local services=("postgres" "nats" "clickhouse")
+  local services=("postgres" "nats")
   for svc in "${services[@]}"; do
     if wait_for_container "$svc" 120; then
       log_ok "$svc is healthy"
@@ -186,7 +188,7 @@ do_start() {
   echo ""
   echo -e "${C_GREEN}${C_BOLD}Orchicon prod instance is running.${C_RESET}"
   echo -e "  Control plane:  ${C_DIM}http://localhost${ORCHICON_HTTP_ADDR}${C_RESET}"
-  echo -e "  SigNoz UI:      ${C_DIM}http://localhost:3302${C_RESET}"
+  echo -e "  Grafana UI:     ${C_DIM}http://localhost:3003${C_RESET}"
   echo -e "  NATS monitor:   ${C_DIM}http://localhost:8223${C_RESET}"
   echo ""
   echo -e "  Logs:           ${C_DIM}$logfile${C_RESET}"
@@ -237,7 +239,7 @@ do_status() {
     fi
   done <<ENDPOINTS
 http://localhost${ORCHICON_HTTP_ADDR}/healthz|Control plane
-http://localhost:3302/|SigNoz
+http://localhost:3003/|Grafana
 http://localhost:8223/healthz|NATS
 ENDPOINTS
 }

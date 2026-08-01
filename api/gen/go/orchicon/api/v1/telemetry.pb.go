@@ -2,10 +2,10 @@
 // docs/07_API_Specification.md §3.9).
 //
 // Telemetry is OTel-native and flows from the producer to the OTel
-// collector to SigNoz (ClickHouse-backed) — it does NOT flow through
+// collector to the Grafana stack (Tempo/Loki/VictoriaMetrics) — it does NOT flow through
 // NATS (docs/08 §1). The TelemetryService proxies tenant-scoped queries
-// to SigNoz so users explore traces/metrics/logs without leaving the
-// Orchicon shell (docs/10 §11: seamless SigNoz embedding).
+// to the backends so users explore traces/metrics/logs without leaving the
+// Orchicon shell (docs/10 §11: seamless Grafana embedding).
 //
 // A single correlation_id propagates across all spans in a user action
 // (docs/08 §3, §5.1): api.<service>.<rpc> → reconcile.<kind>.<id> →
@@ -92,7 +92,7 @@ func (TelemetrySignal) EnumDescriptor() ([]byte, []int) {
 	return file_orchicon_api_v1_telemetry_proto_rawDescGZIP(), []int{0}
 }
 
-// TraceSpan is a single OTel span projected from SigNoz/ClickHouse
+// TraceSpan is a single OTel span projected from Tempo
 // (docs/08 §5.1). Spans carry the canonical attributes
 // (tenant_id, project_id, correlation_id) so tenant-scoped queries are
 // enforced at the proxy boundary (AGENTS.md tenant isolation).
@@ -384,7 +384,7 @@ func (x *Trace) GetRootAttributes() map[string]string {
 	return nil
 }
 
-// MetricPoint is a single metric sample projected from SigNoz.
+// MetricPoint is a single metric sample projected from VictoriaMetrics.
 type MetricPoint struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	MetricName    string                 `protobuf:"bytes,1,opt,name=metric_name,json=metricName,proto3" json:"metric_name,omitempty"` // e.g. orchicon_tokens_consumed (docs/08 §5.2)

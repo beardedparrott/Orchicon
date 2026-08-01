@@ -1,9 +1,9 @@
 // Orchicon TelemetryService (docs/07_API_Specification.md §3.9,
 // docs/08_Event_Bus_and_Telemetry_Model.md §5, docs/10 §11).
 //
-// Proxies tenant-scoped queries to SigNoz/ClickHouse so users explore
+// Proxies tenant-scoped queries to Tempo/Loki/VictoriaMetrics so users explore
 // traces/metrics/logs without leaving the Orchicon shell (docs/10 §11:
-// seamless SigNoz embedding — same auth, same visual language, inside
+// seamless Grafana embedding — same origin, same visual language, inside
 // the Orchicon shell). The proxy enforces tenant isolation: the
 // tenant_id filter is injected from the request context, never trusted
 // from the client (AGENTS.md tenant isolation).
@@ -83,7 +83,7 @@ type QueryTracesResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Traces        []*Trace               `protobuf:"bytes,1,rep,name=traces,proto3" json:"traces,omitempty"`
 	NextPageToken string                 `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
-	Degraded      bool                   `protobuf:"varint,3,opt,name=degraded,proto3" json:"degraded,omitempty"` // true when the SigNoz backend is unreachable
+	Degraded      bool                   `protobuf:"varint,3,opt,name=degraded,proto3" json:"degraded,omitempty"` // true when the telemetry backend is unreachable
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

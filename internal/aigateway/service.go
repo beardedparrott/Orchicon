@@ -5,7 +5,7 @@
 // Usage is dual-written (docs/08 §1, §5.2):
 //   - Postgres usage_records table is the source of truth.
 //   - OTel metrics (orchicon_tokens_consumed, orchicon_cost_usd) flow
-//     from the producer to the OTel collector to SigNoz/ClickHouse for
+//     from the producer to the OTel collector to the Grafana stack for
 //     fast telemetry queries.
 //
 // Cost attribution rolls up Tenant → Project → Task → Execution
@@ -335,7 +335,7 @@ func rollupToLevel(r apiv1.UsageRollup) db.CostRollupLevel {
 
 // usageMetrics holds the OTel instruments for the dual-write: token and
 // cost counters that mirror each usage_records Postgres row to
-// ClickHouse via the OTel collector (docs/08 §5.2).
+// VictoriaMetrics via the OTel collector (docs/08 §5.2).
 type usageMetrics struct {
 	log       *slog.Logger
 	tokens    otelmetric.Int64Counter
@@ -350,24 +350,25 @@ func newUsageMetrics(log *slog.Logger) *usageMetrics {
 
 func (m *usageMetrics) ensure() {
 	m.initOnce.Do(func() {
+		// NOTE: no units on these instruments — the Prometheus exporter
+		// appends "_<unit>" to metric names (orchicon_tokens_consumed →
+		// orchicon_tokens_consumed_tokens), which would break the
+		// canonical names the frontend and TelemetryService query.
 		if t, err := telemetry.Meter().Int64Counter(
 			"orchicon_tokens_consumed",
 			otelmetric.WithDescription("Total tokens consumed per LLM call (docs/08 §5.2)"),
-			otelmetric.WithUnit("tokens"),
 		); err == nil {
 			m.tokens = t
 		}
 		if c, err := telemetry.Meter().Float64Counter(
 			"orchicon_cost_usd",
 			otelmetric.WithDescription("USD cost per LLM call (docs/08 §5.2)"),
-			otelmetric.WithUnit("USD"),
 		); err == nil {
 			m.cost = c
 		}
 		if e, err := telemetry.Meter().Int64Counter(
 			"orchicon_executions_total",
 			otelmetric.WithDescription("Total worker executions by outcome"),
-			otelmetric.WithUnit("executions"),
 		); err == nil {
 			m.executions = e
 		}
@@ -375,7 +376,7 @@ func (m *usageMetrics) ensure() {
 }
 
 // emit records a usage sample to the OTel metrics pipeline (the
-// ClickHouse half of the dual-write). Best-effort: a metric error is
+// VictoriaMetrics half of the dual-write). Best-effort: a metric error is
 // logged and never blocks the control flow (docs/08 §8 invariant #5).
 func (m *usageMetrics) emit(ctx context.Context, r *db.UsageRecordRow) {
 	if m == nil {
