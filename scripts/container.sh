@@ -149,6 +149,11 @@ up_instance() {
   local MOUNTS=()
   [ -d "$HOME/.config/opencode" ] && MOUNTS+=("-v" "$HOME/.config/opencode:$HOME/.config/opencode:ro")
   [ -d "$HOME/.local/share/opencode" ] && MOUNTS+=("-v" "$HOME/.local/share/opencode:$HOME/.local/share/opencode")
+  # Git identity + credentials (credential helper "store" reads
+  # ~/.git-credentials) so coding workers can commit, push, and open PRs
+  # as the user. Read-only mounts.
+  [ -f "$HOME/.gitconfig" ] && MOUNTS+=("-v" "$HOME/.gitconfig:$HOME/.gitconfig:ro")
+  [ -f "$HOME/.git-credentials" ] && MOUNTS+=("-v" "$HOME/.git-credentials:$HOME/.git-credentials:ro")
 
   # Desired project paths (manifest + explicit). Skip paths absent on host.
   local project_paths=""

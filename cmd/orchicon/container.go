@@ -129,6 +129,9 @@ type supervisor struct {
 	hostUID  int
 	hostGID  int
 	hostHome string
+	// ghToken is the GitHub token derived from the mounted ~/.git-credentials
+	// (used to authenticate the gh CLI for PR/merge workers).
+	ghToken string
 
 	mu       sync.Mutex
 	children map[string]*procState
@@ -194,6 +197,9 @@ func (s *supervisor) prepare(ctx context.Context) error {
 				return fmt.Errorf("chown %s: %w", dir, err)
 			}
 		}
+		// Derive the GitHub token from the mounted git credential store so
+		// the gh CLI is authenticated for PR/merge workers.
+		s.ghToken = gitCredentialsToken(filepath.Join(s.hostHome, ".git-credentials"))
 		// The data-dir root + the dirs the control plane (running as the
 		// host user) writes to: backups, blob store, and the project-mounts
 		// manifest. Infra subdirs (postgres→70, nats/tempo/loki/vm/grafana
@@ -463,6 +469,35 @@ func envInt(key string, fallback int) int {
 	return fallback
 }
 
+// gitCredentialsToken extracts the GitHub token from a git credential-store
+// file (~/.git-credentials), which stores one "https://user:token@host" per
+// line. Returns "" when no github.com line is found.
+func gitCredentialsToken(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		rest := strings.TrimPrefix(line, "https://")
+		rest = strings.TrimPrefix(rest, "http://")
+		at := strings.LastIndex(rest, "@")
+		if at < 0 {
+			continue
+		}
+		if !strings.Contains(rest[at+1:], "github.com") {
+			continue
+		}
+		creds := rest[:at]
+		colon := strings.LastIndex(creds, ":")
+		if colon < 0 {
+			continue
+		}
+		return creds[colon+1:]
+	}
+	return ""
+}
+
 // logPipe returns a writer that prefixes each line with the component name.
 func (s *supervisor) logPipe(name string) io.Writer {
 	pr, pw := io.Pipe()
@@ -632,6 +667,11 @@ func (s *supervisor) planeProc() *managedProc {
 		// HOME must point at the host user's home so opencode finds its
 		// config/auth and git picks up the user's identity.
 		childEnv = append(childEnv, "HOME="+s.hostHome)
+		// gh CLI auth from the mounted git credential store (PR/merge
+		// workers), unless the operator set GH_TOKEN explicitly.
+		if s.ghToken != "" && os.Getenv("GH_TOKEN") == "" {
+			childEnv = append(childEnv, "GH_TOKEN="+s.ghToken)
+		}
 	}
 	return &managedProc{
 		name:    "control-plane",

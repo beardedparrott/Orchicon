@@ -27,9 +27,18 @@ FROM grafana/grafana:11.5.2 AS grafana
 FROM postgres:16 AS runtime
 
 # util-linux provides setpriv (used by the supervisor to run postgres as
-# the postgres user, uid 999). curl installs the opencode runtime.
+# the postgres user, uid 999). curl installs the opencode runtime. git +
+# gh are required for coding workers (the DevOps Engineer creates PRs and
+# merges); without them the agent cannot run git/GitHub commands and may
+# fabricate success.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates util-linux \
+ && apt-get install -y --no-install-recommends curl ca-certificates util-linux git gpg \
+ && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=nats /usr/local/bin/nats-server /usr/local/bin/nats-server
