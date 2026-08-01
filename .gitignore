@@ -48,3 +48,4 @@ data/
 # at deploy time — source of truth is scripts/install.{sh,ps1}).
 site/install
 site/install.ps1
+deploy/container/orchicon

@@ -48,7 +48,7 @@ The project's model spend is rising. Be economical but **never at the expense of
   fi
   ```
 - Branch naming: `<type>/<short-description>` (e.g. `feat/project-crud`, `fix/outbox-relay-dedup`, `chore/docker-compose-setup`). Types: `feat`, `fix`, `chore`, `refactor`, `docs`, `test`.
-- **Before starting work on a new branch**, bump the version tag: `git tag -a v0.1.<next> -m "v0.1.<next>"`. This ensures the binary reports the correct version during local development and `scripts/install-prod.sh` (or `install-dev.sh`) embeds the new tag.
+- **Before starting work on a new branch**, bump the version tag: `git tag -a v0.1.<next> -m "v0.1.<next>"`. This ensures the binary reports the correct version during local development and `make container-build` (or `scripts/install-local.sh`) embeds the new tag.
 - Commit early and often on your branch. Write clear commit messages in present tense: `Add project CRUD service and data-access layer`. Stage only the files relevant to the commit.
 - **Never create a pull request without asking the user for approval first.** Ask, wait for a yes, then proceed.
 - Once work is complete and properly tested, ask the user to verify.
@@ -71,16 +71,15 @@ The project's model spend is rising. Be economical but **never at the expense of
 During active development, iterate locally without creating PRs or releases:
 
 ```bash
-scripts/install-dev.sh                  # builds frontend + Go binary to bin/orchicon-dev
-./bin/orchicon-dev dev stop && ./bin/orchicon-dev dev start   # restart with the new binary
+make container-rebuild instance=dev   # stop dev container -> build binary+image -> start dev container
+# or the individual steps:
+make container-build                  # build bin/orchicon + the container image
+scripts/container.sh down dev && scripts/container.sh up dev   # restart with the new image
 ```
 
-**IMPORTANT:** The binary name determines which instance the binary manages:
-- `orchicon-dev` (at `./bin/orchicon-dev`) manages the dev compose project on default ports
-- `orchicon-prod` (at `~/.local/bin/orchicon-prod`) manages the prod compose project on offset ports
-Both are built from the same source. See DOCUMENTATION.md §Dual-Instance Dogfooding Setup.
+**IMPORTANT:** The single container is the only full-stack deployment. Dev and prod are two container instances (`orchicon-cnt-dev` on :8080/:3002, `orchicon-cnt-prod` on :8091/:3003) sharing the compose-era Postgres volumes (`orchicon_postgres-data` / `orchicon-prod_postgres-data`) so data carries over. See DOCUMENTATION.md §Single-Container Deployment.
 
-The binary embeds everything (docker-compose.yml, the single-container runtime configs in `deploy/container/configs/`, frontend dist, migrations) via `go:embed` in `assets.go`. Any change to source files, docker-compose, container configs, or frontend code is included in the next build. No branches, commits, or PRs needed during the day — just build and test.
+The binary embeds everything (the single-container runtime configs in `deploy/container/configs/`, frontend dist, migrations) via `go:embed` in `assets.go`. Any change to source files, container configs, or frontend code is included in the next build. No branches, commits, or PRs needed during the day — just build and test.
 
 ## Phases
 
@@ -103,7 +102,7 @@ If architecture or anything referenced in AGENTS.md has changed, update this fil
 - **Database**: PostgreSQL 16 with RLS + transactional outbox
 - **Event bus**: NATS JetStream
 - **Telemetry**: OpenTelemetry → Grafana stack (Tempo + Loki + VictoriaMetrics) — separated infra
-- **Deployment**: compose dev stack (`orchicon dev start`, `deploy/compose/`) OR single container (`orchicon container` PID-1 supervisor, `deploy/container/`, GHCR image; `scripts/container.sh` manages dev/prod instances preserving the compose postgres volumes)
+- **Deployment**: single container (`orchicon container` PID-1 supervisor, `deploy/container/`, GHCR image `ghcr.io/beardedparrott/orchicon`; `scripts/container.sh` manages dev/prod instances preserving the compose-era postgres volumes)
 - **Policy**: Rego (Open Policy Agent)
 - **Runtime adapters**: gRPC sidecars (OpenCode first, CLI now / IPC later)
 - **Frontend**: TypeScript + React + Vite + Connect-ES + React Flow
@@ -131,7 +130,7 @@ Every piece of functionality built in this repo must follow these security stand
 - **No secrets in code or commits.** DSNs, API keys, tokens, and passwords come from the environment (`internal/config`) or a secret store — never hardcoded, never committed. The `.env.example` file documents the variables without containing real values.
 - **No secrets in logs.** Never log DSNs, tokens, passwords, or full request payloads that may carry credentials. The slog setup in `cmd/orchicon/main.go` logs structured fields; only log non-sensitive identifiers (tenant id, project id, trace id).
 - **Hashed at rest.** API keys are hashed before storage (never plaintext). Passwords are never stored by the control plane (OIDC handles authentication). See DOCUMENTATION.md §Authentication.
-- **The dev stack credentials** in `deploy/compose/docker-compose.yml` (e.g. `orchicon:orchicon`) are local-dev-only placeholders. They must never appear in a production deployment config.
+- **Dev-only credentials are placeholders.** The container's internal Postgres runs with trust auth on localhost (`orchicon:orchicon` in the default DSN); the `.env.example` documents real variables without values. None of these may appear in a production deployment config.
 
 ### Input validation & sanitization
 
@@ -158,23 +157,10 @@ Every piece of functionality built in this repo must follow these security stand
 - If unsure how to use a library or pattern, use `gh_grep` to search real GitHub usage examples.
 - LSP servers (gopls, typescript, eslint, yaml-ls) are enabled — diagnostics surface in the edit loop. Treat them as fast feedback; `make ci` is the authoritative gate.
 - Playwright MCP is configured in `opencode.jsonc` for browser testing. **Playwright is installed** — `npx playwright install chrome` has been run, so Chrome is available for browser verification. Use Chrome and/or Playwright for frontend verification. NEVER use Firefox — the developer uses Firefox and testing needs a separate browser.
-- **NEVER run `orchicon-dev start` (or `dev.sh start`) from a shell tool** — the command tails the control plane log (`followFile`) and never returns, which hangs the agent session until the user kills it. **Preferred: use the built-in detach mode** — `orchicon-dev serve --detach` forks the server, writes the PID file, and returns immediately (stop with `orchicon-dev serve --stop`; check with `serve --status`; logs in `.dev/logs/orchicon.log`). The old workaround (below) only exists for binaries predating `serve --detach`:
-  ```bash
-  cat > /tmp/orchicon-serve-detached.sh <<'EOF'
-  #!/bin/bash
-  # Start the orchicon-dev control plane WITHOUT the log tail.
-  # ORCHICON_DEV_CHILD=1 -> devStartChild(): server only, returns control.
-  nohup env ORCHICON_DEV_CHILD=1 ~/.local/bin/orchicon-dev dev start </dev/null >>/tmp/orchicon-dev-child.log 2>&1 &
-  disown
-  exit 0
-  EOF
-  chmod +x /tmp/orchicon-serve-detached.sh && /tmp/orchicon-serve-detached.sh
-  ```
-  Then verify with a separate short-timeout call: `curl -s -m 2 http://localhost:8080/healthz` (must return `{"status":"ok"}`).
-  - This requires containers already up (check `docker compose -p orchicon ps`) and migrations applied (the server also runs migrations on boot).
-  - `devStartChild()` does NOT write the PID file — use `fuser -k 8080/tcp` to stop a test server, not `orchicon-dev stop` (which needs the PID file and also runs `compose down`). (`serve --detach` writes the PID file and stops cleanly with `serve --stop`.)
-  - **Never use `pkill -f` with a pattern that could match the shell command itself** (e.g. `pkill -f "orchicon-dev"` from within a bash `-c` that contains that string) — it kills your own shell. Kill by exact PID or by port (`fuser -k 8080/tcp`).
-  - For a clean restart that replaces the binary: `fuser -k ~/.local/bin/orchicon-dev` to release the running binary, copy the new one, then relaunch via the wrapper script.
+- **NEVER run a foreground server (`orchicon serve`, `orchicon container`, or `container.sh up`) from a shell tool** — a foreground process keeps the caller's stdout/stderr pipe open and never returns, which hangs the agent session until the user kills it. **Use the built-in detach mode for the headless plane** — `orchicon serve --detach` forks the server, writes the PID file, and returns immediately (stop with `orchicon serve --stop`; check with `serve --status`; logs in `.dev/logs/orchicon.log`). The `scripts/container.sh` commands are for the user to run; if you need to test the container, launch it with `docker run -d` and poll `/healthz`.
+  - This requires the stack already up (the container / `docker run` manages it) and migrations applied (the server also runs migrations on boot).
+  - `serve --detach` writes the PID file and stops cleanly with `serve --stop`; use `fuser -k 8080/tcp` to stop a test server that lacks a PID file.
+  - **Never use `pkill -f` with a pattern that could match the shell command itself** (e.g. `pkill -f "orchicon"` from within a bash `-c` that contains that string) — it kills your own shell. Kill by exact PID or by port (`fuser -k 8080/tcp`).
 - The `site/` landing page and `README.md` document the `orchicon` commands and installed files. Keep both in sync when commands, flags, or install paths change. The CloudFlare Pages build copies `scripts/install.{sh,ps1}` to the deployed site.
 - **UI consistency**: Every list page must follow the same visual pattern: search input, filter/sort dropdowns, select-all checkbox, per-item checkboxes, a selection count label, and a bulk action button (delete / approve / reject etc.) that appears when ≥1 item is selected. Do not add a page with a different interaction model — new list pages must replicate this pattern exactly. The Approvals, Work Items, Executions, Workers, and Policies pages all follow this pattern; use them as reference.
 
@@ -186,10 +172,10 @@ Every piece of functionality built in this repo must follow these security stand
 Before marking a phase or task as complete, verify the following at minimum (adapt to what the change touches):
 
 1. **`make ci` passes end-to-end** — buf lint, codegen, go vet/test, RLS gate. This is the authoritative CI gate.
-2. **Dev stack starts healthy** — `make up` then `make ps` shows all containers `healthy` (not just `running`). When the change touches Docker or infrastructure:
-   - Verify all 7 containers (postgres, nats, otel-collector, tempo, loki, victoriametrics, grafana) show up (the distroless otel-collector has no healthcheck and reports running).
-   - Run `make nuke` then `make up` from a clean slate to verify the full startup sequence works end-to-end.
-3. **Migrations apply cleanly** — `make migrate` against the compose Postgres; `make rls-check` passes.
+2. **Container instance starts healthy** — `make container-build && scripts/container.sh up dev`, then `scripts/container.sh status` shows the dev instance `running (healthy)`. When the change touches Docker or infrastructure:
+   - Verify the full stack boots: `curl http://localhost:8080/healthz` returns `{"status":"ok"}`, Grafana answers on `:3002/api/health`, and telemetry flows (traces in Tempo, logs in Loki, metrics in VictoriaMetrics — query the backends from inside the container).
+   - Run `scripts/container.sh down dev && scripts/container.sh up dev` from a clean slate to verify the full startup sequence works end-to-end.
+3. **Migrations apply cleanly** — on a fresh container data volume (`ORCHICON_PG_VOLUME=fresh`); `make rls-check` passes.
 4. **Control plane boots and serves** — `make build && make run`, then `curl http://localhost:8080/healthz` returns `{"status":"ok"}`. Time this command — if the telemetry stack is starting, the boot should still be <2s (not 20s+). Check the control plane logs for `"otel pipeline initialized"` — if it appears before the 2s mark, the non-blocking OTel dial is working.
 5. **Frontend renders** — `make fe-dev` (or `npx vite`), then `curl http://localhost:5173/` returns HTTP 200 with the app shell.
 6. **Runtime calls are real, not simulated** — end-to-end verification that exercises adapter dispatch MUST call the real `opencode` runtime with a **free model** (e.g. `opencode/deepseek-v4-flash-free`), never the simulation-mode fallback. Simulation mode is a development aid for the offline case only; it must not be used to "verify" dispatch, recovery, or any flow that depends on adapter telemetry. If `opencode` is absent from PATH, fix the environment (install it) — do not fall back to simulation and claim the slice works. Seed workers / executions used for verification must pin a free model in `model_ref` so verification is reproducible at no cost.
@@ -197,41 +183,38 @@ Before marking a phase or task as complete, verify the following at minimum (ada
 
 ### Docker / infrastructure changes
 
-When a change modifies `deploy/compose/docker-compose.yml`, configs in `deploy/compose/`, or the telemetry setup in `internal/telemetry/`:
+When a change modifies the single-container runtime (`deploy/container/Dockerfile`, `deploy/container/configs/`), the telemetry setup in `internal/telemetry/`, or `cmd/orchicon/container.go`:
 
-- **Full reset test**: Run `make nuke` then `make up` and wait for all containers to show `healthy`. This is the only reliable way to catch dependency ordering bugs, config regressions, and incorrect `depends_on` chains.
-
-- **Control plane boot speed**: After `make build`, time how long it takes for `curl http://localhost:8080/healthz` to return `200`. With the non-blocking OTel gRPC dial (`grpc.NewClient`), this must be under 2 seconds even when the OTel collector is not yet healthy. Check the control plane logs for `"otel pipeline initialized"` — it should appear within milliseconds of process start, not after 10-20s.
-- **Profile isolation**: `make up` must start exactly 7 containers (postgres, nats, otel-collector, tempo, loki, victoriametrics, grafana).
-
-When a change modifies the single-container runtime (`deploy/container/Dockerfile`, `deploy/container/configs/`, or `cmd/orchicon/container.go`):
-
-- **Image build + run**: `make build && scripts/container.sh build`, then run a throwaway instance on offset ports (`docker run --rm -p 18080:8080 -e ORCHICON_GRAFANA_PUBLIC_URL=http://localhost:18080/grafana -v /tmp/cnt-test:/var/lib/orchicon orchicon:local`) and verify `curl localhost:18080/healthz` returns `{"status":"ok"}`, plus telemetry flows (traces in Tempo, logs in Loki, metrics in VictoriaMetrics).
-- **Data preservation**: if the instance reuses a compose-stack postgres volume, verify the container's postgres runs as the volume's owner uid (70 for the alpine volumes) — see `scripts/container.sh`.
+- **Image build + run**: `make container-build`, then run a throwaway instance on offset ports (`docker run --rm -p 18080:8080 -e ORCHICON_GRAFANA_PUBLIC_URL=http://localhost:18080/grafana -v /tmp/cnt-test:/var/lib/orchicon orchicon:local`) and verify `curl localhost:18080/healthz` returns `{"status":"ok"}`, plus telemetry flows (traces in Tempo, logs in Loki, metrics in VictoriaMetrics — query from inside the container).
+- **Control plane boot speed**: after `make build`, time how long the container's `/healthz` takes to answer. With the non-blocking OTel gRPC dial (`grpc.NewClient`), boot is <2s even while the collector is still warming. Check the control-plane log for `"otel pipeline initialized"` at process start.
+- **Data preservation**: if the instance reuses a compose-era postgres volume, verify the container's postgres runs as the volume's owner uid (70 for the alpine volumes) — see `scripts/container.sh`.
+- **Fresh-boot path**: `scripts/container.sh down dev && scripts/container.sh up dev` with `ORCHICON_PG_VOLUME=fresh` to verify initdb + migrations from an empty data dir.
 
 If the change adds a new API RPC, also verify the Connect endpoint responds (e.g. via `curl` or a frontend smoke test). If it adds a new table, verify the RLS gate still passes after migration.
 
 **Do not claim "done" without having run the thing.** State what was verified and what was not in the commit message or PR description.
 
-**Testing preference**: The canonical test is to build a release binary (`make build`) and install it like a user would. Do not rely on `go run` / `npx vite` for final verification unless the change is frontend-only and cannot be tested from a release bundle. If the change touches both layers, cut a release artifact and verify end-to-end from there.
+**Testing preference**: The canonical test is to build a release binary (`make build`) and the container image, then run it like a user would. Do not rely on `go run` / `npx vite` for final verification unless the change is frontend-only and cannot be tested from a release bundle. If the change touches both layers, cut a release artifact and verify end-to-end from there.
 
 ## Dev Control Script
 
-`scripts/dev.sh` is the one-command dev environment controller. It manages the full local stack — Docker Compose services (Postgres, NATS, OTel, Tempo, Loki, VictoriaMetrics, Grafana), the Go control plane, and the Vite frontend — so a new contributor can get everything running with a single command:
+`scripts/container.sh` is the one-command deployment controller for the single-container instances. It manages the full stack — Postgres, NATS, the Grafana telemetry plane (Tempo, Loki, VictoriaMetrics, collector, Grafana), and the control plane — as `orchicon-cnt-dev` (:8080/:3002) and `orchicon-cnt-prod` (:8091/:3003):
 
 ```
-scripts/dev.sh start     # dev stack → migrations → control plane → frontend
-scripts/dev.sh stop      # stop everything
-scripts/dev.sh status    # show status of all components + endpoint checks
-scripts/dev.sh restart   # stop then start
-scripts/dev.sh logs      # tail control-plane + frontend logs
+scripts/container.sh build              # build bin/orchicon + the container image
+scripts/container.sh up dev|prod        # start an instance (dev data preserved via the compose-era volume)
+scripts/container.sh rebuild dev|prod   # down -> build -> up
+scripts/container.sh down dev|prod      # stop + remove the instance container (data volume kept)
+scripts/container.sh status [dev|prod]  # show instance state + health
+scripts/container.sh logs dev|prod      # tail the supervisor log
+scripts/container.sh ps                 # list both instances
 ```
 
-Or via Make: `make dev-start`, `make dev-stop`, `make dev-status`, `make dev-restart`, `make dev-logs`.
+Or via Make: `make container-build`, `make container-up`, `make container-down`, `make container-status`, `make container-logs`, `make container-rebuild instance=dev|prod`.
 
-PID files and logs live in `.dev/` (gitignored).
+Data volumes live in Docker named volumes (`orchicon-cnt-dev-data` / `orchicon-cnt-prod-data` for the telemetry/state, plus the compose-era Postgres volumes for the databases).
 
-When a phase adds a new runtime component — a reconciler, an adapter process, the recovery engine, the policy engine, a webhook dispatcher, etc. — update `scripts/dev.sh` so that `dev.sh start` brings it up and `dev.sh stop` tears it down.
+When a phase adds a new runtime component — a reconciler, an adapter process, the recovery engine, the policy engine, a webhook dispatcher, etc. — make sure it is included in the container image and the supervisor (`cmd/orchicon/container.go`) brings it up in the right order.
 
 ## Install Scripts
 
@@ -322,7 +305,7 @@ The frontend route (`/ask-orchicon`) and its components generally don't need cha
 - **Landing page + install deploy**: `site/` holds the static landing page deployed to CloudFlare Pages (`orchicon-site`). The build step copies `scripts/install.{sh,ps1}` into the deployed bundle so the one-liner install commands work. `site/install` and `site/install.ps1` are git-ignored build artifacts. Full setup in `CLOUDFLARE_SETUP.md`.
 - **Connect-ES codegen** is pinned to local v1 npm plugins (`protoc-gen-es` / `protoc-gen-connect-es`) matching the v1 runtime. `make gen` prepends `frontend/node_modules/.bin` to PATH. See PR #1 notes before bumping to v2.
 - **Atlas RLS** policies are hand-appended SQL (the free tier does not diff `policy` blocks). After hand-editing a migration, run `make migrate-hash`. Future diffs won't drop RLS.
-- **`orchicon dev`** subcommand embeds compose + migrations + frontend via `go:embed`. One-binary dev experience: compose up → wait healthy → migrate → serve. **`orchicon container`** embeds the single-container runtime configs (`deploy/container/configs/`) and runs the whole stack as PID-1 (§Architecture Quick Reference → Deployment). The OTel pipeline uses non-blocking `grpc.NewClient` so boot is <2s even without a healthy collector. NATS subscriber fans out events to streaming RPCs. Reconciler framework uses `pg_try_advisory_lock` for per-kind leadership.
+- **`orchicon container`** subcommand embeds the single-container runtime configs (`deploy/container/configs/`) and runs the whole stack as PID-1 (§Architecture Quick Reference → Deployment). `orchicon serve` runs the plane headless (migrations + embedded frontend); `serve --detach`/`--stop` manage a background instance. The OTel pipeline uses non-blocking `grpc.NewClient` so boot is <2s even without a healthy collector. NATS subscriber fans out events to streaming RPCs. Reconciler framework uses `pg_try_advisory_lock` for per-kind leadership.
 - **Worker lifecycle**: draft → published → deprecated → retired. Published versions are immutable. WorkItem hierarchy: Epic → Feature → Task → Subtask (max 4 levels). Dependency edges form a DAG; cycle detection uses recursive CTE. Edit locks have automatic TTL expiry.
 - **TaskReconciler** is the only component that creates WorkerExecutions. It polls ready tasks, resolves dependencies, selects a worker+adapter, and dispatches. The OpenCode adapter bridge wraps the `opencode` CLI as a subprocess. Simulation mode is opt-in only (`ORCHICON_SIMULATE_ADAPTER=1`) — real runtime calls with a free model are required for verification.
 - **Workflows** are the top-level reconcilable object. The WorkflowReconciler progresses step DAGs, evaluating gates at transitions. Task steps create WorkItems and hand off to TaskReconciler. Frontend has a full drag-and-drop React Flow editor with undo/redo, cycle detection, palette with Workers, Work Items, Policies, and Step primitives.

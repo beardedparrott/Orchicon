@@ -38,6 +38,7 @@ deployment, troubleshooting, and every subsystem.
 | Feature | `ORCHICON_TELEMETRY=none\|embedded\|remote` — `none` skips telemetry (~96 MiB resident); `embedded` (default) runs the full Grafana plane (~384 MiB). Both verified end-to-end (traces → Tempo, logs → Loki, metrics → VictoriaMetrics, embedded dashboard renders). |
 | Feature | `scripts/container.sh` manages dev + prod single-container instances (offset ports, separate volumes) with `make container-*` targets. **Data preservation**: instances reuse the existing compose-stack Postgres volumes, so dev/prod DBs survive the switch; the container refuses to start while the compose postgres owns the volume (`ORCHICON_PG_VOLUME=fresh` starts empty). Verified against a copy of the live dev DB. |
 | Chore | Release workflow builds + pushes the container image to `ghcr.io/beardedparrott/orchicon` (vX.Y.Z + latest) on every version tag. |
+| Chore | **Compose workflow removed.** Deleted the `orchicon dev` subcommand, `deploy/compose/`, `scripts/dev.sh`/`dev-prod.sh`/`install-dev.sh`/`install-prod.sh`, and the `orchicon-dev`/`orchicon-prod` binary names. The single container (`scripts/container.sh`, `make container-*`) is now the only full-stack deployment; `orchicon serve --detach` covers headless use. Both dev + prod instances converted and verified running on the container with data preserved. |
 
 
 ## Installation
@@ -89,8 +90,9 @@ curl -fsSL https://orchicon.dev/install | bash -s -- --clean
 curl -fsSL https://orchicon.dev/install | bash -s -- --force-clean
 ```
 
-After installation, verify with `orchicon version` and start the dev
-environment with `orchicon dev start`.
+After installation, verify with `orchicon version`. The full stack runs
+as a single container — see [Single container](#single-container-docker)
+and [DOCUMENTATION.md §Single-Container Deployment](DOCUMENTATION.md).
 
 > **Note:** Pre-built binaries are published to [GitHub
 > Releases](https://github.com/beardedparrott/Orchicon/releases). If no
@@ -107,10 +109,10 @@ environment with `orchicon dev start`.
 
 | Command | Description |
 |---|---|
-| `orchicon dev start` | Start full dev stack: Docker Compose services, migrations, control plane, frontend |
-| `orchicon dev stop` | Stop everything (SIGTERM + Docker Compose down) |
-| `orchicon dev status` | Show status of all components + endpoint checks |
-| `orchicon dev logs` | Tail control-plane and frontend logs |
+| `orchicon serve` | Run the control plane with embedded frontend (headless) |
+| `orchicon serve --detach` / `--stop` | Fork/stop a background server |
+| `orchicon container` | Run the whole stack as PID 1 (container image) |
+| `scripts/container.sh up dev\|prod` | Start a single-container instance |
 | `orchicon version` | Print the installed version |
 
 ```bash
@@ -129,20 +131,22 @@ tasks are in the `Makefile` (`make help`).
 
 - Go 1.26+
 - Node 22+
-- Docker (+ Docker Compose for the compose dev stack; the single-container
-  deployment needs only Docker)
+- Docker (the single-container deployment needs only Docker)
 - [`buf`](https://buf.build) and [`atlas`](https://atlasgo.io) — install
   with `make tools`
 
 ### Quick start
 
 ```bash
-make up           # start Postgres, NATS, OTel, Tempo, Loki, VictoriaMetrics, Grafana
-make migrate      # apply Atlas migrations (tenants, identities, projects + RLS)
-make run          # run the control plane on :8080
-make fe-install   # install frontend deps (first time only)
-make fe-dev       # Vite dev server on :5173 (proxies API to :8080)
+make container-build          # build bin/orchicon + the container image
+make container-up             # start the dev instance on :8080 (:3002 Grafana)
+# or: scripts/container.sh up dev
+curl http://localhost:8080/healthz   # {"status":"ok"}
 ```
+
+Frontend development against a running instance: `make fe-install` (first
+time) then `make fe-dev` — the Vite dev server on :5173 proxies the API to
+:8080. Migrations run automatically on container boot (embedded runner).
 
 ### Authentication
 
@@ -173,11 +177,10 @@ Generated code is committed (see DOCUMENTATION.md §Code Generation).
 | `DOCUMENTATION.md` | Comprehensive project documentation |
 | `cmd/orchicon/` | Control-plane binary entry point + `dev` subcommand |
 | `internal/` | api, auth, config, db, domain, eventbus, outbox, reconciler, server, telemetry, migrate, middleware, rbac, tenant, blobstore, webhook, version |
-| `assets.go` | go:embed directives for compose, migrations, frontend |
+| `assets.go` | go:embed directives for container configs, migrations, frontend |
 | `proto/` | Protobuf schema (`orchicon.api.v1`, `orchicon.adapter.v1`) |
 | `api/gen/` | Generated Go code |
 | `db/` | Atlas declarative schema + versioned migrations |
-| `deploy/compose/` | Local dev Docker Compose stack |
 | `deploy/container/` | Single-container image (Dockerfile + embedded runtime configs) |
 | `frontend/` | Vite + React + Connect-ES + TanStack Router + shadcn/ui |
 | `site/` | Static landing page (`orchicon.dev`) |

@@ -141,17 +141,15 @@ do_force_clean() {
 
   local bin="$INSTALL_DIR/orchicon"
 
-  # 1. Stop dev stack via the binary (if available). The binary's
-  # `orchicon dev stop` already SIGKILLs any orphan orchicon processes
-  # by name, but if the binary itself was started without going through
-  # `dev start` (so its PID file was never written) the cleaner below
-  # is what actually frees the binary file lock.
+  # 1. Stop the detached server via the binary (if available). `serve
+  # --stop` signals the PID-file process; if the binary was started
+  # outside the PID file (no state) the pkill below frees the file lock.
   if [ -f "$bin" ]; then
-    info "stopping dev stack via '${bin} dev stop'…"
+    info "stopping detached server via '${bin} serve --stop'…"
     if [ "$DRY_RUN" = false ]; then
-      "$bin" dev stop 2>/dev/null || warn "dev stop failed (ignoring)"
+      "$bin" serve --stop 2>/dev/null || warn "serve --stop failed (ignoring)"
     else
-      echo -e "  ${D}(would run: ${bin} dev stop)${X}"
+      echo -e "  ${D}(would run: ${bin} serve --stop)${X}"
     fi
   fi
 
@@ -172,20 +170,20 @@ do_force_clean() {
     fi
   fi
 
-  # 2. Nuke Docker volumes (postgres, nats, tempo, loki, victoriametrics, grafana).
+  # 2. Remove the single-container instances and their data volumes
+  # (postgres, nats, tempo, loki, victoriametrics, grafana live under
+  # /var/lib/orchicon in the instance volumes).
   if command -v docker >/dev/null 2>&1; then
-    info "destroying all orchicon Docker volumes…"
+    info "removing orchicon container instances + volumes…"
     if [ "$DRY_RUN" = false ]; then
-      if docker compose -p orchicon down -v --remove-orphans 2>/dev/null; then
-        ok "Docker volumes destroyed"
-      else
-        warn "docker compose down -v failed (containers may not exist yet)"
-      fi
+      docker rm -f orchicon-cnt-dev orchicon-cnt-prod 2>/dev/null || true
+      docker volume rm orchicon-cnt-dev-data orchicon-cnt-prod-data 2>/dev/null || true
+      ok "container instances + volumes removed"
     else
-      echo -e "  ${D}(would run: docker compose -p orchicon down -v)${X}"
+      echo -e "  ${D}(would run: docker rm -f orchicon-cnt-dev orchicon-cnt-prod; docker volume rm …)${X}"
     fi
   else
-    warn "docker not found — skipping volume cleanup"
+    warn "docker not found — skipping container cleanup"
   fi
 
   # 3. Clean up local state.
@@ -230,27 +228,27 @@ do_clean() {
 
   local bin="$INSTALL_DIR/orchicon"
 
-  # 1. Stop dev stack via the binary (if available).
+  # 1. Stop the detached server via the binary (if available).
   if [ -f "$bin" ]; then
-    info "stopping dev stack via '${bin} dev stop'…"
+    info "stopping detached server via '${bin} serve --stop'…"
     if [ "$DRY_RUN" = false ]; then
-      "$bin" dev stop 2>/dev/null || warn "dev stop failed (ignoring)"
+      "$bin" serve --stop 2>/dev/null || warn "serve --stop failed (ignoring)"
     else
-      echo -e "  ${D}(would run: ${bin} dev stop)${X}"
+      echo -e "  ${D}(would run: ${bin} serve --stop)${X}"
     fi
   else
-    # Fall back to docker compose if the binary is gone.
+    # Fall back to docker if the binary is gone.
     if command -v docker >/dev/null 2>&1; then
-      info "stopping orchicon containers via docker compose…"
-      $DRY_RUN || docker compose -p orchicon down 2>/dev/null || true
+      info "stopping orchicon container instances…"
+      $DRY_RUN || docker rm -f orchicon-cnt-dev orchicon-cnt-prod 2>/dev/null || true
     fi
   fi
 
   # 1b. Belt-and-suspenders orphan cleanup (same rationale as
-  # do_force_clean step 1b). The `dev stop` above SIGKILLs orphans by
-  # name internally, but this defensive pass catches the case where
-  # the binary itself was running from a different path (so its PID
-  # file was elsewhere) or was launched manually.
+  # do_force_clean step 1b). The `serve --stop` above signals the
+  # PID-file process; this defensive pass catches the case where the
+  # binary itself was running from a different path (so its PID file
+  # was elsewhere) or was launched manually.
   if command -v pkill >/dev/null 2>&1; then
     info "killing any leftover orchicon processes…"
     if [ "$DRY_RUN" = false ]; then
@@ -368,11 +366,11 @@ main() {
   echo ""
   echo -e "${B}Quick start:${X}"
   echo -e "  ${D}orchicon --help           Show available commands${X}"
-  echo -e "  ${D}orchicon dev start        Start the full dev environment${X}"
-  echo -e "  ${D}orchicon dev status       Check what's running${X}"
+  echo -e "  ${D}scripts/container.sh up dev     Start the dev single-container instance${X}"
+  echo -e "  ${D}scripts/container.sh status     Show what's running${X}"
   echo ""
-  echo -e "${B}Note:${X} ${D}orchicon dev start requires Docker (for Postgres, NATS, Tempo, Loki, VictoriaMetrics, Grafana).${X}"
-  echo -e "  The binary embeds the compose stack, migrations, and frontend.${X}"
+  echo -e "${B}Note:${X} ${D}the full stack runs as a single Docker container (orchicon container).${X}"
+  echo -e "  The binary embeds the container runtime configs, migrations, and frontend.${X}"
   echo ""
   echo -e "${B}Documentation:${X} ${D}https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}#readme${X}"
 }

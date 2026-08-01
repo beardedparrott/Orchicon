@@ -78,6 +78,15 @@ build_image() {
   log_ok "Image $IMAGE built (run 'scripts/container.sh up' to start an instance)"
 }
 
+# rebuild_image = down -> build -> up for one instance: the one-command
+# "stop, build, start" loop for a dev/prod container.
+rebuild_image() {
+  local inst="${1:-dev}"
+  down_instance "$inst"
+  build_image
+  up_instance "$inst"
+}
+
 up_instance() {
   local inst="${1:-dev}"
   instance_info "$inst"
@@ -172,6 +181,7 @@ logs_instance() {
 
 case "${1:-}" in
   build) build_image ;;
+  rebuild) rebuild_image "${2:-dev}" ;;
   up) up_instance "${2:-dev}" ;;
   down) down_instance "${2:-dev}" ;;
   status) status_instances "${2:-}" ;;
@@ -180,7 +190,7 @@ case "${1:-}" in
     docker ps -a --filter label=orchicon-instance --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
     ;;
   *)
-    echo "Usage: $0 {build|up [dev|prod]|down [dev|prod]|status [dev|prod]|logs [dev|prod]|ps}"
+    echo "Usage: $0 {build|rebuild [dev|prod]|up [dev|prod]|down [dev|prod]|status [dev|prod]|logs [dev|prod]|ps}"
     exit 1
     ;;
 esac
