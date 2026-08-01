@@ -163,7 +163,7 @@ status_instances() {
     instance_info "$i"
     if docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
       local state
-      state=$(docker inspect --format '{{.State.Health.Status}}' "$NAME" 2>/dev/null || echo "running")
+      state=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' "$NAME" 2>/dev/null || echo "running")
       echo -e "  $i: ${C_GREEN}running ($state)${C_RESET} ${C_DIM}$NAME${C_RESET}"
     elif docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
       echo -e "  $i: ${C_YELLOW}stopped${C_RESET} ${C_DIM}$NAME${C_RESET}"
