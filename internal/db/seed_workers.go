@@ -299,7 +299,7 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 					     execution_policy_ref, concurrency_limit, recovery_workflow_ref,
 					     labels, published_at, created_at)
 					 SELECT $1, 'tnt_dev', worker_id, $2, 'Safety context roll-forward',
-					        'published', runtime_ref, model_ref, $3, $4, $5, $6,
+					        'published', runtime_ref, 'opencode-go/deepseek-v4-flash', $3, $4, $5, $6,
 					        context_sources, permissions, gated_tools, budget_overrides,
 					        execution_policy_ref, concurrency_limit, recovery_workflow_ref,
 					        labels, now(), now()
@@ -319,6 +319,20 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 			`UPDATE worker_versions SET status = 'published',
 				model_ref = COALESCE(NULLIF(model_ref, ''), 'opencode-go/deepseek-v4-flash')
 			 WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND status = 'draft'`,
+			w.ID,
+		)
+
+		// Canned-worker model_ref is seed-managed. Older seeds defaulted to
+		// 'opencode/deepseek-v4-flash', which is not a valid model for this
+		// runtime (the paid model is 'opencode-go/deepseek-v4-flash' — the
+		// one the configured API key covers); the stale value propagated to
+		// every roll-forward version. Keep all versions aligned so dispatch
+		// never targets a dead model. (model_ref is not a user-edited field
+		// on canned workers — role/skills/behavior/agents_md are.)
+		_, _ = ttx.Exec(ctx,
+			`UPDATE worker_versions SET model_ref = 'opencode-go/deepseek-v4-flash'
+			 WHERE worker_id = $1 AND tenant_id = 'tnt_dev'
+			   AND model_ref != 'opencode-go/deepseek-v4-flash'`,
 			w.ID,
 		)
 		return nil

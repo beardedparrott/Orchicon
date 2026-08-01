@@ -72,11 +72,96 @@ func readOpenCodeConfig(log *slog.Logger) map[string]any {
 		return nil
 	}
 	var cfg map[string]any
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err := json.Unmarshal(stripJSONC(data), &cfg); err != nil {
 		log.Warn("opencode: cannot parse config file", "path", path, "error", err)
 		return nil
 	}
 	return cfg
+}
+
+// stripJSONC removes // and /* */ comments and trailing commas from a
+// JSONC document while preserving string contents. opencode config files
+// (.jsonc) routinely contain comments and trailing commas that strict
+// json.Unmarshal rejects. Two passes: comments first, then trailing commas
+// (a comment may sit between a comma and the closing brace).
+func stripJSONC(data []byte) []byte {
+	return stripTrailingCommas(stripJSONCComments(data))
+}
+
+// stripJSONCComments removes // and /* */ comments (string-aware).
+func stripJSONCComments(data []byte) []byte {
+	var out []byte
+	inString, escaped := false, false
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		if inString {
+			out = append(out, c)
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+			out = append(out, c)
+		case '/':
+			if i+1 < len(data) && data[i+1] == '/' {
+				for i < len(data) && data[i] != '\n' {
+					i++
+				}
+				if i < len(data) {
+					out = append(out, '\n')
+				}
+			} else if i+1 < len(data) && data[i+1] == '*' {
+				i += 2
+				for i+1 < len(data) && !(data[i] == '*' && data[i+1] == '/') {
+					i++
+				}
+				i++
+			} else {
+				out = append(out, c)
+			}
+		default:
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// stripTrailingCommas removes ",}" and ",]" (string-aware).
+func stripTrailingCommas(data []byte) []byte {
+	var out []byte
+	inString, escaped := false, false
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		if inString {
+			out = append(out, c)
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		if c == ',' {
+			j := i + 1
+			for j < len(data) && (data[j] == ' ' || data[j] == '\t' || data[j] == '\n' || data[j] == '\r') {
+				j++
+			}
+			if j < len(data) && (data[j] == '}' || data[j] == ']') {
+				continue
+			}
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // readMCPServers extracts the MCP server definitions from the user's

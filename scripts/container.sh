@@ -123,6 +123,26 @@ up_instance() {
   # their real model providers. Optional — skipped if absent.
   [ -d "$HOME/.config/opencode" ] && MOUNTS+=("-v" "$HOME/.config/opencode:/root/.config/opencode:ro")
   [ -d "$HOME/.local/share/opencode" ] && MOUNTS+=("-v" "$HOME/.local/share/opencode:/root/.local/share/opencode")
+  # Mount project directories at their HOST absolute path so the
+  # project_dir stored on work items resolves inside the container.
+  # Default: $HOME/projects (or $HOME itself when it holds the projects).
+  # Override with ORCHICON_PROJECT_MOUNTS (space-separated host paths).
+  local project_mounts="${ORCHICON_PROJECT_MOUNTS:-}"
+  if [ -z "$project_mounts" ]; then
+    if [ -d "$HOME/projects" ]; then
+      project_mounts="$HOME/projects"
+    elif [ -d "$HOME" ]; then
+      project_mounts="$HOME"
+    fi
+  fi
+  for pm in $project_mounts; do
+    if [ -d "$pm" ]; then
+      MOUNTS+=("-v" "$pm:$pm")
+      log_dim "  mounting project dir: $pm"
+    else
+      log_warn "  project mount $pm does not exist — skipping"
+    fi
+  done
   docker run -d --name "$NAME" \
     --label orchicon-instance="$inst" \
     ${PORTS} \
