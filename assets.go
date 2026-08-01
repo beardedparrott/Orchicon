@@ -35,11 +35,16 @@ const MigrationsDir = "db/migrations"
 const FrontendDir = "frontend/dist"
 
 // ContainerFS embeds the single-container runtime configs
-// (deploy/container/) — Tempo/Loki/OTel-collector/Grafana configs with
-// @DATA_DIR@ placeholders, plus the Grafana provisioning. The `orchicon
+// (deploy/container/configs/) — Tempo/Loki/OTel-collector/Grafana configs
+// with @DATA_DIR@ placeholders, plus the Grafana provisioning. The `orchicon
 // container` supervisor (cmd/orchicon/container.go) writes these into the
 // container data dir, substituting the data dir path, and spawns each
 // process against them.
 //
-//go:embed all:deploy/container
+// NOTE: this embeds ONLY deploy/container/configs. Do NOT embed
+// deploy/container/ as a whole — container.sh copies bin/orchicon there
+// for the docker build, and go:embed would recursively embed the previous
+// binary, doubling the binary on every rebuild (75MB -> ... -> 1.9GB).
+//
+//go:embed all:deploy/container/configs
 var ContainerFS embed.FS
