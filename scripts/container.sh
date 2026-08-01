@@ -119,22 +119,15 @@ up_instance() {
     MOUNTS+=("-v" "$VOLUME:/var/lib/orchicon")
     MOUNTS+=("-v" "$PG_VOLUME:/var/lib/orchicon/postgres")
   fi
-  # Mount the user's opencode auth + config so worker executions can use
-  # their real model providers. Optional — skipped if absent.
-  [ -d "$HOME/.config/opencode" ] && MOUNTS+=("-v" "$HOME/.config/opencode:/root/.config/opencode:ro")
-  [ -d "$HOME/.local/share/opencode" ] && MOUNTS+=("-v" "$HOME/.local/share/opencode:/root/.local/share/opencode")
-  # Mount project directories at their HOST absolute path so the
-  # project_dir stored on work items resolves inside the container.
-  # Default: $HOME/projects (or $HOME itself when it holds the projects).
-  # Override with ORCHICON_PROJECT_MOUNTS (space-separated host paths).
+  # Run the control plane (and its worker subprocesses) as the HOST user so
+  # files created in mounted project dirs are owned by you, not root. Mount
+  # $HOME at the same path so the worker's opencode has a real home (config,
+  # auth, git identity) and every project under $HOME resolves. The
+  # supervisor stays root (it drops postgres to uid 70); only the plane +
+  # worker processes run as the host user.
+  MOUNTS+=("-v" "$HOME:$HOME")
+  # Extra project directories outside $HOME (space-separated host paths).
   local project_mounts="${ORCHICON_PROJECT_MOUNTS:-}"
-  if [ -z "$project_mounts" ]; then
-    if [ -d "$HOME/projects" ]; then
-      project_mounts="$HOME/projects"
-    elif [ -d "$HOME" ]; then
-      project_mounts="$HOME"
-    fi
-  fi
   for pm in $project_mounts; do
     if [ -d "$pm" ]; then
       MOUNTS+=("-v" "$pm:$pm")
@@ -147,6 +140,9 @@ up_instance() {
     --label orchicon-instance="$inst" \
     ${PORTS} \
     -e ORCHICON_GRAFANA_PUBLIC_URL="$GRAFANA_URL" \
+    -e "ORCHICON_HOST_UID=$(id -u)" \
+    -e "ORCHICON_HOST_GID=$(id -g)" \
+    -e "ORCHICON_HOST_HOME=$HOME" \
     "${MOUNTS[@]}" \
     "$IMAGE" >/dev/null
   log_ok "$inst instance started:"

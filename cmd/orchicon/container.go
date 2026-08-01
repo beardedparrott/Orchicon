@@ -31,6 +31,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
@@ -63,7 +64,14 @@ func runContainer(args []string) int {
 	dataDir := env(dataDirEnv, "/var/lib/orchicon")
 	telemetryMode := env(telemetryEnv, "embedded")
 
-	sup := &supervisor{log: log, dataDir: dataDir, children: make(map[string]*procState)}
+	sup := &supervisor{
+		log:       log,
+		dataDir:   dataDir,
+		hostUID:   envInt("ORCHICON_HOST_UID", 0),
+		hostGID:   envInt("ORCHICON_HOST_GID", 0),
+		hostHome:  env("ORCHICON_HOST_HOME", "/root"),
+		children:  make(map[string]*procState),
+	}
 	if err := sup.prepare(ctx); err != nil {
 		log.Error("container prepare failed", "error", err)
 		return 1
@@ -109,9 +117,18 @@ func runContainer(args []string) int {
 // ----- supervisor -----
 
 type supervisor struct {
-	log      *slog.Logger
-	dataDir  string
+	log       *slog.Logger
+	dataDir   string
 	configDir string
+
+	// hostUID/hostGID/hostHome identify the HOST user (set by
+	// scripts/container.sh via ORCHICON_HOST_*). The control plane and its
+	// worker subprocesses run as this user so files they create in mounted
+	// project dirs are owned by the operator, not root. 0 = run as root
+	// (manual `docker run` without the script).
+	hostUID  int
+	hostGID  int
+	hostHome string
 
 	mu       sync.Mutex
 	children map[string]*procState
@@ -138,12 +155,26 @@ type managedProc struct {
 }
 
 // prepare creates the data/config dirs and writes the embedded config
-// files, then initializes the Postgres data directory.
+// files, then initializes the Postgres data directory. When running the
+// control plane as the host user, the plane-writable dirs (backups, blob
+// store) are created with that user's ownership.
 func (s *supervisor) prepare(ctx context.Context) error {
 	s.configDir = filepath.Join(s.dataDir, configDirName)
 	for _, d := range []string{s.dataDir, s.configDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("create %s: %w", d, err)
+		}
+	}
+	if s.hostUID != 0 {
+		// Dirs the control plane (running as the host user) writes to.
+		for _, sub := range []string{"backups", "blobs"} {
+			dir := filepath.Join(s.dataDir, sub)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return fmt.Errorf("create %s: %w", dir, err)
+			}
+			if err := os.Chown(dir, s.hostUID, s.hostGID); err != nil {
+				return fmt.Errorf("chown %s: %w", dir, err)
+			}
 		}
 	}
 	if err := s.writeConfigs(); err != nil {
@@ -386,6 +417,17 @@ func env(key, fallback string) string {
 	return fallback
 }
 
+// envInt returns the integer value of an environment variable or a
+// fallback (0 when the var is unset/invalid).
+func envInt(key string, fallback int) int {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
 // logPipe returns a writer that prefixes each line with the component name.
 func (s *supervisor) logPipe(name string) io.Writer {
 	pr, pw := io.Pipe()
@@ -526,6 +568,9 @@ func (s *supervisor) grafanaProc() *managedProc {
 
 // planeProc re-executes this binary as `orchicon serve`, with the
 // container-local defaults applied for any env var the user did not set.
+// When ORCHICON_HOST_* is set the plane runs via setpriv as the HOST user
+// (uid/gid), so every file the plane and its worker subprocesses create in
+// mounted project dirs is owned by the operator, not root.
 func (s *supervisor) planeProc() *managedProc {
 	self, err := os.Executable()
 	if err != nil {
@@ -536,10 +581,27 @@ func (s *supervisor) planeProc() *managedProc {
 	if _, ok := os.LookupEnv(dataDirEnv); !ok {
 		childEnv = append(childEnv, dataDirEnv+"="+s.dataDir)
 	}
+	if _, ok := os.LookupEnv("ORCHICON_BLOB_DIR"); !ok {
+		childEnv = append(childEnv, "ORCHICON_BLOB_DIR="+filepath.Join(s.dataDir, "blobs"))
+	}
+
+	command, args := self, []string{"serve"}
+	if s.hostUID != 0 {
+		command = "setpriv"
+		args = []string{
+			fmt.Sprintf("--reuid=%d", s.hostUID),
+			fmt.Sprintf("--regid=%d", s.hostGID),
+			"--clear-groups",
+			self, "serve",
+		}
+		// HOME must point at the host user's home so opencode finds its
+		// config/auth and git picks up the user's identity.
+		childEnv = append(childEnv, "HOME="+s.hostHome)
+	}
 	return &managedProc{
 		name:    "control-plane",
-		command: self,
-		args:    []string{"serve"},
+		command: command,
+		args:    args,
 		env:     childEnv,
 		ready:   httpReady("http://localhost:8080/healthz"),
 		restart: true,
