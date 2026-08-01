@@ -87,6 +87,38 @@ rebuild_image() {
   up_instance "$inst"
 }
 
+# sync_mounts compares the desired project mounts (plane-written manifest +
+# ORCHICON_PROJECT_MOUNTS) against the running container's mounts and
+# rebuilds if any are missing. Docker can't add bind mounts to a running
+# container, so this is how "I saved a new project dir in the UI" takes
+# effect.
+sync_mounts() {
+  local inst="${1:-dev}"
+  instance_info "$inst"
+  if ! docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
+    log_dim "$NAME not running — starting"
+    up_instance "$inst"
+    return 0
+  fi
+  local desired=""
+  desired=$(docker run --rm -v "$VOLUME:/data" alpine cat /data/project-mounts 2>/dev/null || true)
+  desired="$desired ${ORCHICON_PROJECT_MOUNTS:-}"
+  local missing=""
+  for pm in $desired; do
+    [ -z "$pm" ] && continue
+    if ! docker inspect --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' "$NAME" 2>/dev/null | grep -qx "$pm"; then
+      missing="$missing $pm"
+    fi
+  done
+  if [ -n "$missing" ]; then
+    log_warn "missing mounts:$missing — rebuilding $NAME"
+    down_instance "$inst"
+    up_instance "$inst"
+  else
+    log_ok "$inst mounts up to date"
+  fi
+}
+
 up_instance() {
   local inst="${1:-dev}"
   instance_info "$inst"
@@ -120,29 +152,40 @@ up_instance() {
     MOUNTS+=("-v" "$PG_VOLUME:/var/lib/orchicon/postgres")
   fi
   # Run the control plane (and its worker subprocesses) as the HOST user so
-  # files created in mounted project dirs are owned by you, not root. Mount
-  # $HOME at the same path so the worker's opencode has a real home (config,
-  # auth, git identity) and every project under $HOME resolves. The
+  # files created in mounted project dirs are owned by you, not root. The
   # supervisor stays root (it drops postgres to uid 70); only the plane +
   # worker processes run as the host user.
-  MOUNTS+=("-v" "$HOME:$HOME")
-  # Extra project directories outside $HOME (space-separated host paths).
-  local project_mounts="${ORCHICON_PROJECT_MOUNTS:-}"
-  for pm in $project_mounts; do
-    if [ -d "$pm" ]; then
+  docker_run_args=(-e "ORCHICON_HOST_UID=$(id -u)" -e "ORCHICON_HOST_GID=$(id -g)" -e "ORCHICON_HOST_HOME=$HOME")
+  # Scoped mounts — NOT the whole $HOME:
+  #   1. opencode config (read-only) + data/auth (rw) so workers can use
+  #      the user's real model providers.
+  #   2. project dirs/files from the plane-written manifest on the data
+  #      volume (project_dir + context_files — see DOCUMENTATION.md
+  #      §Single-Container Deployment). Save a project dir in the UI, then
+  #      run `scripts/container.sh sync-mounts` to apply.
+  #   3. any extra paths in ORCHICON_PROJECT_MOUNTS (space-separated).
+  [ -d "$HOME/.config/opencode" ] && MOUNTS+=("-v" "$HOME/.config/opencode:$HOME/.config/opencode:ro")
+  [ -d "$HOME/.local/share/opencode" ] && MOUNTS+=("-v" "$HOME/.local/share/opencode:$HOME/.local/share/opencode")
+  while IFS= read -r pm; do
+    [ -z "$pm" ] && continue
+    if [ -d "$pm" ] || [ -f "$pm" ]; then
       MOUNTS+=("-v" "$pm:$pm")
-      log_dim "  mounting project dir: $pm"
     else
-      log_warn "  project mount $pm does not exist — skipping"
+      log_warn "  project path from manifest not on host (skipping): $pm"
+    fi
+  done < <(docker run --rm -v "$VOLUME:/data" alpine cat /data/project-mounts 2>/dev/null || true)
+  for pm in ${ORCHICON_PROJECT_MOUNTS:-}; do
+    if [ -d "$pm" ] || [ -f "$pm" ]; then
+      MOUNTS+=("-v" "$pm:$pm")
+    else
+      log_warn "  ORCHICON_PROJECT_MOUNTS path not on host (skipping): $pm"
     fi
   done
   docker run -d --name "$NAME" \
     --label orchicon-instance="$inst" \
     ${PORTS} \
     -e ORCHICON_GRAFANA_PUBLIC_URL="$GRAFANA_URL" \
-    -e "ORCHICON_HOST_UID=$(id -u)" \
-    -e "ORCHICON_HOST_GID=$(id -g)" \
-    -e "ORCHICON_HOST_HOME=$HOME" \
+    "${docker_run_args[@]}" \
     "${MOUNTS[@]}" \
     "$IMAGE" >/dev/null
   log_ok "$inst instance started:"
@@ -198,6 +241,7 @@ logs_instance() {
 case "${1:-}" in
   build) build_image ;;
   rebuild) rebuild_image "${2:-dev}" ;;
+  sync-mounts) sync_mounts "${2:-dev}" ;;
   up) up_instance "${2:-dev}" ;;
   down) down_instance "${2:-dev}" ;;
   status) status_instances "${2:-}" ;;
@@ -206,7 +250,7 @@ case "${1:-}" in
     docker ps -a --filter label=orchicon-instance --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
     ;;
   *)
-    echo "Usage: $0 {build|rebuild [dev|prod]|up [dev|prod]|down [dev|prod]|status [dev|prod]|logs [dev|prod]|ps}"
+    echo "Usage: $0 {build|rebuild [dev|prod]|sync-mounts [dev|prod]|up [dev|prod]|down [dev|prod]|status [dev|prod]|logs [dev|prod]|ps}"
     exit 1
     ;;
 esac
