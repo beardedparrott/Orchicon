@@ -50,6 +50,10 @@ RUN curl -fsSL https://opencode.ai/install | bash \
 COPY orchicon /usr/local/bin/orchicon
 
 ENV ORCHICON_CONTAINER_MODE=1
+# Container-wide default so ANY process (supervisor, control plane, or a
+# `docker exec orchicon db backup`) writes state/backups to the persistent
+# volume, not the ephemeral root home. Overridable via docker run -e.
+ENV ORCHICON_DATA_DIR=/var/lib/orchicon
 VOLUME ["/var/lib/orchicon"]
 EXPOSE 8080 3000
 # Aggregate readiness: /healthz is served by the control plane, which only

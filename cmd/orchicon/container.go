@@ -531,11 +531,16 @@ func (s *supervisor) planeProc() *managedProc {
 	if err != nil {
 		self = "orchicon"
 	}
+	childEnv := containerChildEnv()
+	// Backups (and the blob store) default to the persistent data volume.
+	if _, ok := os.LookupEnv(dataDirEnv); !ok {
+		childEnv = append(childEnv, dataDirEnv+"="+s.dataDir)
+	}
 	return &managedProc{
 		name:    "control-plane",
 		command: self,
 		args:    []string{"serve"},
-		env:     containerChildEnv(),
+		env:     childEnv,
 		ready:   httpReady("http://localhost:8080/healthz"),
 		restart: true,
 	}
