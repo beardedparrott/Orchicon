@@ -872,10 +872,22 @@ docker run --rm -p 8080:8080 -p 3002:3000 \
   orchicon:local
 ```
 
+Or use the lifecycle script (dev + prod dual-instance, data preserved):
+
+```bash
+scripts/container.sh build            # build the image (requires bin/orchicon)
+scripts/container.sh up dev           # start the dev instance container
+scripts/container.sh up prod          # start the prod instance container
+scripts/container.sh status           # show both instances
+scripts/container.sh logs dev         # tail the dev supervisor log
+scripts/container.sh down dev         # stop + remove the dev instance
+```
+
+- **Data preservation**: the dev/prod instances reuse the existing compose-stack Postgres volumes (`orchicon_postgres-data` / `orchicon-prod_postgres-data`), so your data survives the switch. The container's postgres runs as the data dir's owner (uid 70 for the alpine-compose volumes). The script refuses to start while the matching compose postgres is running (two postgres processes on one data dir corrupt it); start with an empty DB via `ORCHICON_PG_VOLUME=fresh`.
 - Control plane: `http://localhost:8080` (API + UI + `/grafana`)
 - Grafana: `http://localhost:3002` (embedded in the Telemetry page)
-- Worker executions: the container ships the `opencode` runtime; mount your opencode auth/config for real runs
-  (`-v ~/.config/opencode:/root/.config/opencode`, `-v ~/.local/share/opencode:/root/.local/share/opencode`) and bind-mount project dirs.
+- Worker executions: the container ships the `opencode` runtime; the script mounts `~/.config/opencode` + `~/.local/share/opencode` automatically so your model providers work.
+- Published image: `ghcr.io/beardedparrott/orchicon` (built + pushed by the release workflow on every version tag, tagged `vX.Y.Z` + `latest`).
 
 **Environment variables** (all optional):
 

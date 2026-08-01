@@ -182,26 +182,42 @@ func (s *supervisor) writeConfigs() error {
 }
 
 // initPostgres runs initdb on the data dir if it is not yet initialized.
-// Postgres refuses to run as root, so it runs as the postgres user (uid 999
-// in the official postgres image) via setpriv.
+// Postgres refuses to run as root, so it runs as the owner of the data dir
+// (default uid 70 — the uid the compose-stack alpine postgres volumes are
+// created with — via setpriv).
 func (s *supervisor) initPostgres() error {
 	dataDir := filepath.Join(s.dataDir, "postgres")
 	if _, err := os.Stat(filepath.Join(dataDir, "PG_VERSION")); err == nil {
 		return nil // already initialized
 	}
+	uid, gid := s.postgresUIDGID()
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return err
 	}
-	if err := os.Chown(dataDir, 999, 999); err != nil {
+	if err := os.Chown(dataDir, uid, gid); err != nil {
 		return fmt.Errorf("chown postgres data dir: %w", err)
 	}
-	cmd := exec.Command("setpriv", "--reuid=postgres", "--regid=postgres", "--clear-groups",
+	cmd := exec.Command("setpriv", "--reuid=70", "--regid=70", "--clear-groups",
 		"initdb", "-D", dataDir, "-U", "orchicon", "--auth=trust", "-E", "UTF8")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("initdb: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// postgresUIDGID returns the uid/gid the postgres child should run as.
+// If the data dir already exists (a preserved compose-stack volume), it
+// matches the existing owner so the data is readable; otherwise it uses
+// uid 70, matching the postgres:16-alpine compose volumes.
+func (s *supervisor) postgresUIDGID() (int, int) {
+	dataDir := filepath.Join(s.dataDir, "postgres")
+	if fi, err := os.Stat(dataDir); err == nil {
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+			return int(st.Uid), int(st.Gid)
+		}
+	}
+	return 70, 70
 }
 
 // start spawns a child and begins supervising it (log pipe + exit monitor).
@@ -415,10 +431,11 @@ func httpReady(url string) func(context.Context) bool {
 
 func (s *supervisor) postgresProc() *managedProc {
 	dataDir := filepath.Join(s.dataDir, "postgres")
+	uid, gid := s.postgresUIDGID()
 	return &managedProc{
 		name:    "postgres",
 		command: "setpriv",
-		args: []string{"--reuid=postgres", "--regid=postgres", "--clear-groups",
+		args: []string{fmt.Sprintf("--reuid=%d", uid), fmt.Sprintf("--regid=%d", gid), "--clear-groups",
 			"postgres", "-D", dataDir, "-p", "5432", "-c", "listen_addresses=localhost"},
 		ready: func(ctx context.Context) bool { return tcpReady(ctx, "localhost:5432") },
 		postReady: func(ctx context.Context) error {

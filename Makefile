@@ -158,6 +158,21 @@ dev-prod-restart: ## Restart the production-like instance
 dev-prod-logs: ## Tail prod control-plane logs
 	scripts/dev-prod.sh logs
 
+# --- Single container (Phase B/C) -----------------------------------------
+.PHONY: container-build container-up container-down container-status container-logs container-ps
+container-build: ## Build the single-container image (requires bin/orchicon)
+	scripts/container.sh build
+container-up: ## Start the dev single-container instance
+	scripts/container.sh up dev
+container-down: ## Stop the dev single-container instance
+	scripts/container.sh down dev
+container-status: ## Show single-container instance status
+	scripts/container.sh status
+container-logs: ## Tail the dev container instance logs
+	scripts/container.sh logs dev
+container-ps: ## List orchicon container instances
+	scripts/container.sh ps
+
 # --- Install ---------------------------------------------------------------
 .PHONY: install-dry-run install-uninstall install-dev install-prod
 install-dry-run: ## Dry-run the install script (no changes made)

@@ -30,13 +30,14 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
-### v0.1.162 (2026-08-01)
+### v0.1.163 (2026-08-01)
 
 | Type | Change |
 |---|---|
-| Feature | **Single-container deployment (Phase B).** New `orchicon container` subcommand is a PID-1 process supervisor: spawns postgres → nats → Grafana telemetry plane → control plane with readiness gates, per-component log prefixing, crash restart with backoff, and graceful signal handling. New `deploy/container/Dockerfile` assembles the whole stack (Postgres 16, NATS, Tempo, Loki, VictoriaMetrics, OTel collector, Grafana, `opencode` runtime) onto one Debian base. Run: `docker run --rm -p 8080:8080 -p 3002:3000 -v orchicon-data:/var/lib/orchicon orchicon:local`. |
-| Feature | `ORCHICON_TELEMETRY=none\|embedded\|remote` — `none` skips the telemetry processes (~96 MiB resident); `embedded` (default) runs the full Grafana plane (~384 MiB). Both verified end-to-end (traces → Tempo, logs → Loki, metrics → VictoriaMetrics, embedded dashboard renders). |
-| Chore | `extractComposeDir` now creates parent dirs (the embedded compose tree gained a subdirectory); help text lists `container`. |
+| Feature | **Single-container deployment (Phase B + C).** New `orchicon container` subcommand is a PID-1 process supervisor: spawns postgres → nats → Grafana telemetry plane → control plane with readiness gates, per-component log prefixing, crash restart with backoff, and graceful signal handling. New `deploy/container/Dockerfile` assembles the whole stack (Postgres 16, NATS, Tempo, Loki, VictoriaMetrics, OTel collector, Grafana, `opencode` runtime) onto one Debian base. |
+| Feature | `ORCHICON_TELEMETRY=none\|embedded\|remote` — `none` skips telemetry (~96 MiB resident); `embedded` (default) runs the full Grafana plane (~384 MiB). Both verified end-to-end (traces → Tempo, logs → Loki, metrics → VictoriaMetrics, embedded dashboard renders). |
+| Feature | `scripts/container.sh` manages dev + prod single-container instances (offset ports, separate volumes) with `make container-*` targets. **Data preservation**: instances reuse the existing compose-stack Postgres volumes, so dev/prod DBs survive the switch; the container refuses to start while the compose postgres owns the volume (`ORCHICON_PG_VOLUME=fresh` starts empty). Verified against a copy of the live dev DB. |
+| Chore | Release workflow builds + pushes the container image to `ghcr.io/beardedparrott/orchicon` (vX.Y.Z + latest) on every version tag. |
 
 
 ## Installation
@@ -46,6 +47,16 @@ deployment, troubleshooting, and every subsystem.
 ```bash
 curl -fsSL https://orchicon.dev/install | bash
 ```
+
+### Single container (Docker)
+
+The whole Orchicon stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics/Grafana, control plane) runs in one container:
+
+```bash
+docker run --rm -p 8080:8080 -p 3002:3000 -v orchicon-data:/var/lib/orchicon ghcr.io/beardedparrott/orchicon
+```
+
+The `orchicon` binary is the PID-1 supervisor (`orchicon container`). See [DOCUMENTATION.md §Single-Container Deployment](DOCUMENTATION.md) for the lifecycle script, env vars, and data-preservation notes.
 
 ### Windows (PowerShell)
 
