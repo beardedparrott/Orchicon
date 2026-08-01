@@ -52,4 +52,8 @@ COPY orchicon /usr/local/bin/orchicon
 ENV ORCHICON_CONTAINER_MODE=1
 VOLUME ["/var/lib/orchicon"]
 EXPOSE 8080 3000
+# Aggregate readiness: /healthz is served by the control plane, which only
+# becomes ready after postgres + nats (and is the container's real signal).
+HEALTHCHECK --interval=5s --timeout=3s --start-period=30s --retries=20 \
+  CMD curl -fs http://localhost:8080/healthz >/dev/null || exit 1
 ENTRYPOINT ["/usr/local/bin/orchicon", "container"]

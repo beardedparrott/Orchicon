@@ -61,7 +61,7 @@ instance_info() {
   esac
 }
 
-C_RESET='\033[0m'; C_GREEN='\033[32m'; C_DIM='\033[2m'; C_YELLOW='\033[33m'; C_RED='\033[31m'
+C_RESET='\033[0m'; C_BOLD='\033[1m'; C_GREEN='\033[32m'; C_DIM='\033[2m'; C_YELLOW='\033[33m'; C_RED='\033[31m'
 log_ok()   { echo -e "${C_GREEN}✓${C_RESET} $*"; }
 log_dim()  { echo -e "${C_DIM}$*${C_RESET}"; }
 log_warn() { echo -e "${C_YELLOW}!${C_RESET} $*"; }
