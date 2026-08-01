@@ -39,11 +39,14 @@ exporters:
     tls:
       insecure: true
   # Metrics → VictoriaMetrics (Prometheus remote write).
-  # resource_to_telemetry_conversion adds the resource attributes
-  # (service.name, orchicon.tenant_id) as series labels so tenant-scoped
-  # PromQL queries work.
+  # add_metric_suffixes=false keeps the canonical orchidicon_* metric names
+  # (the exporter would otherwise append _total to counters and _<unit> for
+  # unit-bearing instruments). resource_to_telemetry_conversion adds the
+  # resource attributes (service.name, orchicon.tenant_id) as series labels
+  # so tenant-scoped PromQL queries work.
   prometheusremotewrite:
     endpoint: http://victoriametrics:8428/api/v1/write
+    add_metric_suffixes: false
     resource_to_telemetry_conversion:
       enabled: true
 

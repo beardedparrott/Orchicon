@@ -563,7 +563,7 @@ function TracesPanel() {
   const degraded = data?.degraded ?? false;
   return (
     <div className="space-y-6">
-      <GrafanaEmbed title="Trace Explorer" kind="traces" degraded={degraded} />
+      <GrafanaEmbed title="Trace Explorer" degraded={degraded} />
       <Card>
         <CardHeader>
           <CardTitle>Recent traces</CardTitle>
@@ -613,7 +613,7 @@ function LogsPanel() {
   const degraded = data?.degraded ?? false;
   return (
     <div className="space-y-6">
-      <GrafanaEmbed title="Log Explorer" kind="logs" degraded={degraded} />
+      <GrafanaEmbed title="Log Explorer" degraded={degraded} />
       <Card>
         <CardHeader>
           <CardTitle>Recent logs</CardTitle>
@@ -661,7 +661,7 @@ function MetricsPanel() {
 
   return (
     <div className="space-y-6">
-      <GrafanaEmbed title="Metrics Explorer" kind="metrics" degraded={degraded} />
+      <GrafanaEmbed title="Metrics Explorer" degraded={degraded} />
       <Card>
         <CardHeader>
           <CardTitle>Metric values</CardTitle>
@@ -831,20 +831,20 @@ function CreditsPanel() {
 // platform. When degraded, a placeholder is shown instead of a broken
 // iframe loading the SPA fallback (AGENTS.md verification §2).
 //
-// Each kind deep-links into Grafana Explore for the matching datasource
-// (uid: tempo / loki / victoriametrics — provisioned in
-// deploy/compose/grafana-provisioning/datasources.yaml), in kiosk mode
-// so the side nav is hidden inside the shell.
+// The embed is a provisioned "Orchicon" dashboard in kiosk mode
+// (uid orchicon-dashboard, provisioned in
+// deploy/compose/grafana-provisioning/dashboards/orchicon.json) rather
+// than a Grafana Explore deep-link: Explore redirects anonymous users to
+// the sign-in/home page, whereas dashboards render for the anonymous
+// Viewer role out of the box.
 function GrafanaEmbed({
   title,
-  kind,
   degraded,
 }: {
   title: string;
-  kind: "traces" | "metrics" | "logs";
   degraded?: boolean;
 }) {
-  const src = `${GRAFANA_UI_URL}${grafanaExplorePath(kind)}`;
+  const src = `${GRAFANA_UI_URL}${grafanaDashboardPath()}`;
   return (
     <Card>
       <CardHeader>
@@ -874,29 +874,10 @@ function GrafanaEmbed({
   );
 }
 
-// grafanaExplorePath builds a Grafana Explore deep-link (schemaVersion=1
-// pane JSON) for the given datasource, kiosk mode enabled.
-function grafanaExplorePath(kind: "traces" | "metrics" | "logs"): string {
-  const range = { from: "now-1h", to: "now" };
-  let datasource: { uid: string; type: string };
-  let queries: unknown[];
-  switch (kind) {
-    case "traces":
-      datasource = { uid: "tempo", type: "tempo" };
-      queries = [{ refId: "A", queryType: "traceqlSearch", limit: 20, tableType: "traces", spanName: "" }];
-      break;
-    case "logs":
-      datasource = { uid: "loki", type: "loki" };
-      queries = [{ refId: "A", expr: '{service_name="orchicon-control-plane"}', queryType: "range" }];
-      break;
-    case "metrics":
-      datasource = { uid: "victoriametrics", type: "prometheus" };
-      queries = [{ refId: "A", expr: "orchicon_tokens_consumed", range: true }];
-      break;
-  }
-  const pane = { pane1: { datasource, queries, range } };
-  const encoded = encodeURIComponent(JSON.stringify(pane));
-  return `/explore?schemaVersion=1&panes=${encoded}&kiosk`;
+// grafanaDashboardPath returns the embedded Orchicon dashboard URL
+// (kiosk mode hides the Grafana side nav inside the shell).
+function grafanaDashboardPath(): string {
+  return `/d/orchicon-dashboard/orchicon?kiosk&from=now-1h&to=now`;
 }
 
 function StatCard({
