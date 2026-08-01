@@ -7,17 +7,23 @@ import (
 	"path/filepath"
 )
 
-//go:embed lint_safety.sh
-var lintScript string
-
 //go:embed semgrep_orchicon.yml
 var lintRuleset string
 
-// writeSafetyLint drops the safety lint wrapper + ruleset into the
-// project's .orchicon/ directory so review and QA workers can run them
-// from their project-scoped bash tool (their tool scope is confined to
-// the project directory by the external_directory deny rule, so the
-// files must live there).
+//go:embed semgrepignore
+var lintIgnore string
+
+// writeSafetyLint drops the Semgrep ruleset + ignore file into the
+// project so review and QA workers can run the safety lint from their
+// project-scoped bash/PowerShell tool. The ruleset lives in .orchicon/
+// (alongside run artifacts); the .semgrepignore goes in the project root
+// where semgrep expects it. Both files are plain text — fully portable
+// across Linux, macOS, and Windows.
+//
+// Workers invoke semgrep directly (no shell script — semgrep is a
+// cross-platform Python CLI):
+//
+//	semgrep scan --config .orchicon/semgrep_orchicon.yml --error .
 //
 // Best-effort by design: a failure only means the lint is unavailable to
 // that execution — it never blocks dispatch, and the permission deny
@@ -34,10 +40,10 @@ func writeSafetyLint(projectDir string) {
 		slog.Default().Warn("opencode: write safety lint: mkdir", "dir", orchDir, "error", err)
 		return
 	}
-	if err := os.WriteFile(filepath.Join(orchDir, "lint-safety.sh"), []byte(lintScript), 0o755); err != nil {
-		slog.Default().Warn("opencode: write safety lint", "path", orchDir, "error", err)
-	}
 	if err := os.WriteFile(filepath.Join(orchDir, "semgrep_orchicon.yml"), []byte(lintRuleset), 0o755); err != nil {
-		slog.Default().Warn("opencode: write safety lint ruleset", "path", orchDir, "error", err)
+		slog.Default().Warn("opencode: write safety lint ruleset", "dir", orchDir, "error", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".semgrepignore"), []byte(lintIgnore), 0o644); err != nil {
+		slog.Default().Warn("opencode: write safety lint ignore", "dir", projectDir, "error", err)
 	}
 }

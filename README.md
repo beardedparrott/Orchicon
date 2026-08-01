@@ -36,7 +36,7 @@ deployment, troubleshooting, and every subsystem.
 | Security | OS-level execution guard (`internal/opencode/guard.go`): dangerous binaries (`rm`, `sudo`, `dd`, `mkfs*`, `fdisk`, `parted`, `shred`, `wipefs`, LVM, `chmod`/`chown`/`mv`/`cp`/`ln`) are shimmed on every worker's PATH, so destructive commands are refused even when issued from inside a subprocess (python TUI, `os.system`, `subprocess.run`) — closes the vector behind the 2026-07-30 `/home` wipe |
 | Security | Hardened opencode `permissionRules()` deny list: root/home/`$HOME` deletes, absolute-path `rm`, `sudo` escalation, device redirection, root-wide `chmod`/`chown`, download-and-execute |
 | Security | All canned workers now carry a "Safety rules" block in AGENTS.md; seed rolls a new published worker version forward when the marker is missing (reaches edited workers too) |
-| Feature | Safety lint: Semgrep (industry-standard static analyzer) with an Orchicon destructive-command ruleset (`.orchicon/lint-safety.sh` + `semgrep_orchicon.yml`), written into every project; PR Reviewer and QA Engineer run it before reporting |
+| Feature | Safety lint: Semgrep (industry-standard static analyzer) with an Orchicon destructive-command ruleset (`.orchicon/semgrep_orchicon.yml` + `.semgrepignore`, written into every project); PR Reviewer and QA Engineer run `semgrep scan --config .orchicon/semgrep_orchicon.yml --error .` before reporting |
 | Chore | Lightened PR Reviewer and QA Engineer prompts: proportionate to the change, no destructive "security testing", blockers-only review, use the linter instead of manually hunting every issue |
 
 
