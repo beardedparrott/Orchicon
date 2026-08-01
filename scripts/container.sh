@@ -122,12 +122,6 @@ sync_mounts() {
 up_instance() {
   local inst="${1:-dev}"
   instance_info "$inst"
-  if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
-    log_warn "$NAME already exists (restarting)"
-    docker start "$NAME" >/dev/null
-    log_ok "$inst instance started"
-    return 0
-  fi
 
   # Data-safety guard: the default Postgres volume is shared with the
   # compose stack. Two postgres processes on one data dir corrupt it, so
@@ -143,8 +137,55 @@ up_instance() {
   fi
 
   log_dim "Starting $inst instance ($NAME)…"
+
+  # Scoped mounts — NOT the whole $HOME:
+  #   1. opencode config (read-only) + data/auth (rw) so workers can use
+  #      the user's real model providers.
+  #   2. project dirs/files from the plane-written manifest on the data
+  #      volume (project_dir + context_files). `up` auto-syncs: if the
+  #      manifest gained a path the running container lacks, the container
+  #      is recreated with the new mount set.
+  #   3. any extra paths in ORCHICON_PROJECT_MOUNTS (space-separated).
   local MOUNTS=()
-  # Postgres data volume (preserves dev/prod data from the compose stack).
+  [ -d "$HOME/.config/opencode" ] && MOUNTS+=("-v" "$HOME/.config/opencode:$HOME/.config/opencode:ro")
+  [ -d "$HOME/.local/share/opencode" ] && MOUNTS+=("-v" "$HOME/.local/share/opencode:$HOME/.local/share/opencode")
+
+  # Desired project paths (manifest + explicit). Skip paths absent on host.
+  local project_paths=""
+  local manifest
+  manifest=$(docker run --rm -v "$VOLUME:/data" alpine cat /data/project-mounts 2>/dev/null || true)
+  for pm in $manifest ${ORCHICON_PROJECT_MOUNTS:-}; do
+    [ -z "$pm" ] && continue
+    if [ -d "$pm" ] || [ -f "$pm" ]; then
+      MOUNTS+=("-v" "$pm:$pm")
+      project_paths="$project_paths $pm"
+    else
+      log_warn "  project path not on host (skipping): $pm"
+    fi
+  done
+
+  # If the container already exists, `up` auto-syncs: start it only when
+  # its mounts already cover the desired project paths; otherwise recreate
+  # it with the new mount set.
+  if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
+    local missing=""
+    for pm in $project_paths; do
+      if ! docker inspect --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' "$NAME" 2>/dev/null | grep -qx "$pm"; then
+        missing="$missing $pm"
+      fi
+    done
+    if [ -n "$missing" ]; then
+      log_warn "mounts changed ($missing) — recreating $NAME"
+      docker rm -f "$NAME" >/dev/null
+    else
+      docker start "$NAME" >/dev/null
+      log_ok "$inst instance started"
+      return 0
+    fi
+  fi
+
+  # Create the container. Postgres data volume (preserves dev/prod data
+  # from the compose stack).
   if [ "$PG_VOLUME" = "fresh" ]; then
     MOUNTS+=("-v" "$VOLUME:/var/lib/orchicon")
   else
@@ -155,37 +196,13 @@ up_instance() {
   # files created in mounted project dirs are owned by you, not root. The
   # supervisor stays root (it drops postgres to uid 70); only the plane +
   # worker processes run as the host user.
-  docker_run_args=(-e "ORCHICON_HOST_UID=$(id -u)" -e "ORCHICON_HOST_GID=$(id -g)" -e "ORCHICON_HOST_HOME=$HOME")
-  # Scoped mounts — NOT the whole $HOME:
-  #   1. opencode config (read-only) + data/auth (rw) so workers can use
-  #      the user's real model providers.
-  #   2. project dirs/files from the plane-written manifest on the data
-  #      volume (project_dir + context_files — see DOCUMENTATION.md
-  #      §Single-Container Deployment). Save a project dir in the UI, then
-  #      run `scripts/container.sh sync-mounts` to apply.
-  #   3. any extra paths in ORCHICON_PROJECT_MOUNTS (space-separated).
-  [ -d "$HOME/.config/opencode" ] && MOUNTS+=("-v" "$HOME/.config/opencode:$HOME/.config/opencode:ro")
-  [ -d "$HOME/.local/share/opencode" ] && MOUNTS+=("-v" "$HOME/.local/share/opencode:$HOME/.local/share/opencode")
-  while IFS= read -r pm; do
-    [ -z "$pm" ] && continue
-    if [ -d "$pm" ] || [ -f "$pm" ]; then
-      MOUNTS+=("-v" "$pm:$pm")
-    else
-      log_warn "  project path from manifest not on host (skipping): $pm"
-    fi
-  done < <(docker run --rm -v "$VOLUME:/data" alpine cat /data/project-mounts 2>/dev/null || true)
-  for pm in ${ORCHICON_PROJECT_MOUNTS:-}; do
-    if [ -d "$pm" ] || [ -f "$pm" ]; then
-      MOUNTS+=("-v" "$pm:$pm")
-    else
-      log_warn "  ORCHICON_PROJECT_MOUNTS path not on host (skipping): $pm"
-    fi
-  done
   docker run -d --name "$NAME" \
     --label orchicon-instance="$inst" \
     ${PORTS} \
     -e ORCHICON_GRAFANA_PUBLIC_URL="$GRAFANA_URL" \
-    "${docker_run_args[@]}" \
+    -e "ORCHICON_HOST_UID=$(id -u)" \
+    -e "ORCHICON_HOST_GID=$(id -g)" \
+    -e "ORCHICON_HOST_HOME=$HOME" \
     "${MOUNTS[@]}" \
     "$IMAGE" >/dev/null
   log_ok "$inst instance started:"
