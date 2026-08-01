@@ -166,7 +166,42 @@ func (s *supervisor) prepare(ctx context.Context) error {
 		}
 	}
 	if s.hostUID != 0 {
-		// Dirs the control plane (running as the host user) writes to.
+		// Worker processes run as the HOST user (uid/gid from
+		// ORCHICON_HOST_*). The container's home is a root-created,
+		// ephemeral directory (Docker creates the bind-mount parents as
+		// root), so the specific directories workers need must be created
+		// here by the root supervisor and chowned to the host user —
+		// NOT the home dir itself. Mounted subpaths (~/.config/opencode ro,
+		// ~/.local/share/opencode rw) sit on top and are unaffected.
+		// opencode/Bun/git/npm lazily create these under $HOME:
+		//   .cache          bun + opencode caches
+		//   .bun            bun install/cache
+		//   .local          XDG base (parent of the share mount)
+		//   .local/share    XDG (parent of .local/share/opencode mount)
+		//   .local/state    opencode logs/state
+		//   .config         XDG base (parent of the config mount)
+		//   .npm            npm cache (coding agents run npm)
+		for _, sub := range []string{
+			".cache", ".bun",
+			".local", ".local/share", ".local/state",
+			".config", ".npm",
+		} {
+			dir := filepath.Join(s.hostHome, sub)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return fmt.Errorf("create %s: %w", dir, err)
+			}
+			if err := os.Chown(dir, s.hostUID, s.hostGID); err != nil {
+				return fmt.Errorf("chown %s: %w", dir, err)
+			}
+		}
+		// The data-dir root + the dirs the control plane (running as the
+		// host user) writes to: backups, blob store, and the project-mounts
+		// manifest. Infra subdirs (postgres→70, nats/tempo/loki/vm/grafana
+		// →root) keep their own ownership — the supervisor (root) creates
+		// them, and 0755 on the parent lets each child reach its own dir.
+		if err := os.Chown(s.dataDir, s.hostUID, s.hostGID); err != nil {
+			return fmt.Errorf("chown data dir: %w", err)
+		}
 		for _, sub := range []string{"backups", "blobs"} {
 			dir := filepath.Join(s.dataDir, sub)
 			if err := os.MkdirAll(dir, 0o755); err != nil {
