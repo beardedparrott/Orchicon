@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"sync"
 	"crypto/rand"
 	"fmt"
 	"time"
@@ -34,7 +35,7 @@ type OutboxRow struct {
 // app.tenant_id session variable and enforced again by RLS.
 func EnqueueOutbox(ctx context.Context, tx pgx.Tx, row OutboxRow) error {
 	if row.ID == "" {
-		row.ID = ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
+		row.ID = newULID()
 	}
 	if row.OccurredAt.IsZero() {
 		row.OccurredAt = time.Now().UTC()
@@ -131,11 +132,26 @@ func nullableStr(s string) any {
 
 // entropy is a process-local ULID entropy source. crypto/rand provides
 // the 124-bit uniqueness required for ULID's monotonicity guarantees.
-var entropy = ulid.Monotonic(rand.Reader, 0)
+var (
+	// ulidMu serializes ULID generation. ulid.Monotonic's MonotonicRead is
+	// NOT safe for concurrent use: without the lock, two goroutines (e.g.
+	// the outbox relay and a service handler) race on the shared
+	// crypto/rand bufio buffer and panic with "slice bounds out of range
+	// [:8192] with capacity 4096".
+	ulidMu  sync.Mutex
+	entropy = ulid.Monotonic(rand.Reader, 0)
+)
+
+// newULID generates a monotonic ULID under a mutex.
+func newULID() string {
+	ulidMu.Lock()
+	defer ulidMu.Unlock()
+	return ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
+}
 
 // NewID generates a ULID suitable for use as a primary key. IDs are
 // generated server-side, never accepted from the client on create
 // (AGENTS.md security standards).
 func NewID() string {
-	return ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
+	return newULID()
 }

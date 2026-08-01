@@ -7,7 +7,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/oklog/ulid/v2"
 )
 
 // UsageRecordRow is the in-memory representation of a usage_records row
@@ -41,7 +40,7 @@ type UsageRecordRow struct {
 // if a streaming projection is needed; this function only writes the row.
 func CreateUsageRecord(ctx context.Context, tx pgx.Tx, row UsageRecordRow) (UsageRecordRow, error) {
 	if row.ID == "" {
-		row.ID = ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
+		row.ID = newULID()
 	}
 	if row.OccurredAt.IsZero() {
 		row.OccurredAt = time.Now().UTC()

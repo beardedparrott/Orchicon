@@ -8,8 +8,9 @@
 # Usage: check-rls.sh <postgres-url>
 #   e.g. scripts/check-rls.sh "postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable"
 #
-# If psql is not on PATH (common on dev hosts), falls back to
-# `docker exec orchicon-postgres psql` against the local dev container.
+# If psql is not on PATH (common on dev hosts) or the URL is unreachable
+# (postgres runs inside the single-container instance, not on the host),
+# falls back to `docker exec` into the dev container instance.
 set -euo pipefail
 
 if [ "$#" -lt 1 ]; then
@@ -18,14 +19,15 @@ if [ "$#" -lt 1 ]; then
 fi
 
 URL="$1"
-CONTAINER="orchicon-postgres"
+CONTAINER="orchicon-cnt-dev"
 
-# Run SQL via psql on the host, or via the dev container if psql is absent.
+# Run SQL via psql on the host, or via the dev container instance if psql
+# is absent or the host port is unreachable.
 run_sql() {
-  if command -v psql >/dev/null 2>&1; then
+  if command -v psql >/dev/null 2>&1 && psql "$URL" -c "SELECT 1" >/dev/null 2>&1; then
     psql "$URL" -t -A -F '|'
   else
-    docker exec -i "$CONTAINER" psql -U orchicon -d orchicon -t -A -F '|'
+    docker exec -i "$CONTAINER" psql "$URL" -t -A -F '|'
   fi
 }
 
