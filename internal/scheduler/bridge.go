@@ -25,6 +25,11 @@ type ExecutionManifest struct {
 	Budgets            []byte // jsonb
 	Permissions        []byte // jsonb
 	ProjectDir         string // working directory for the adapter subprocess
+	// RuntimeWorkflowID is the workflow run whose runtime container this
+	// execution should dispatch into. When non-empty AND a runtime
+	// daemon is configured, the adapter runs `opencode` inside the
+	// workflow's runtime container instead of as a local subprocess.
+	RuntimeWorkflowID string
 	// Stall detection thresholds from tenant settings. Zero means "use
 	// env-var or built-in default".
 	StallNoProgressWindowSeconds  int64

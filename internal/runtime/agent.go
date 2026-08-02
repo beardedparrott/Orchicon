@@ -15,7 +15,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/beardedparrott/orchicon/internal/opencode"
+	"github.com/beardedparrott/orchicon/internal/guard"
 )
 
 // AgentRequest is a single dispatch from the daemon to the in-container
@@ -111,7 +111,7 @@ func (h *childRegistry) serve(conn net.Conn) {
 	case "ping":
 		_ = enc.Encode(AgentEvent{Pong: true})
 	case "exec":
-		h.runExec(enc, req)
+		h.runExec(conn, enc, req)
 	case "signal":
 		h.signal(enc, req)
 	default:
@@ -119,7 +119,7 @@ func (h *childRegistry) serve(conn net.Conn) {
 	}
 }
 
-func (h *childRegistry) runExec(enc *json.Encoder, req AgentRequest) {
+func (h *childRegistry) runExec(conn net.Conn, enc *json.Encoder, req AgentRequest) {
 	if len(req.Argv) == 0 || req.Argv[0] == "" {
 		_ = enc.Encode(AgentEvent{Event: "error", Error: "empty argv"})
 		return
@@ -142,7 +142,7 @@ func (h *childRegistry) runExec(enc *json.Encoder, req AgentRequest) {
 
 	// Build the execution guard shim inside the container so every child
 	// the worker spawns resolves rm/sudo/dd/etc. through the shim.
-	guardDir, guardErr := opencode.MakeGuard("/tmp", req.ProjectDir)
+	guardDir, guardErr := guard.MakeGuard("/tmp", req.ProjectDir)
 	if guardErr != nil {
 		h.log.Warn("supervisor: guard not applied", "error", guardErr, "exec", req.ExecID)
 	} else {
@@ -175,6 +175,20 @@ func (h *childRegistry) runExec(enc *json.Encoder, req AgentRequest) {
 		_ = enc.Encode(AgentEvent{Event: "error", Error: err.Error()})
 		return
 	}
+
+	// Watchdog: if the client disconnects (daemon killed the docker exec,
+	// plane timed out, network drop), kill the child so opencode does not
+	// keep burning tokens orphaned inside the container. The connection
+	// is full-duplex: the encoder writes events while this goroutine
+	// reads until EOF.
+	go func() {
+		_, _ = io.Copy(io.Discard, conn)
+		h.mu.Lock()
+		if c, ok := h.cmd[req.ExecID]; ok && c.Process != nil {
+			_ = c.Process.Kill()
+		}
+		h.mu.Unlock()
+	}()
 
 	var wg sync.WaitGroup
 	wg.Add(2)

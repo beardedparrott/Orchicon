@@ -260,6 +260,9 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	if cfg.RuntimeSocket != "" {
 		if rtClient := runtime.NewClient(cfg.RuntimeSocket); rtClient.Ready(context.Background()) {
 			runtimeLifecycle = runtime.NewLifecycle(rtClient, pool, log)
+			// Route executions that belong to a workflow run into that
+			// workflow's runtime container instead of a local subprocess.
+			adapterBridge.SetRuntimeClient(rtClient)
 			log.Info("workflow runtime daemon connected", "socket", cfg.RuntimeSocket)
 		} else {
 			log.Warn("workflow runtime daemon not reachable — in-process execution", "socket", cfg.RuntimeSocket)

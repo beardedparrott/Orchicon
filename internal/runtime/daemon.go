@@ -372,6 +372,20 @@ func (d *Daemon) handleExec(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	defer cmd.Wait()
 
+	// When the control plane cancels the request (wall-clock timeout,
+	// workflow failure, plane shutdown), signal the in-container child
+	// directly. Killing the docker exec CLI does NOT terminate the
+	// daemon-side exec session, so the agent must kill the opencode child
+	// via an explicit signal request.
+	go func() {
+		<-r.Context().Done()
+		d.Log.Info("runtime exec request cancelled — signalling child", "runtime", name, "exec", req.ExecID)
+		_ = d.signalRuntimeExec(name, req.ExecID, "SIGKILL")
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	}()
+
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	enc := json.NewEncoder(w)
 	dec := json.NewDecoder(stdout)
@@ -469,6 +483,24 @@ func (d *Daemon) docker(args ...string) (string, error) {
 	cmd.Stderr = &buf
 	err := cmd.Run()
 	return buf.String(), err
+}
+
+// signalRuntimeExec sends a signal to a running exec inside a runtime
+// container via `orchicon runtime-client` (bounded; best-effort).
+func (d *Daemon) signalRuntimeExec(name, execID, sig string) error {
+	reqJSON, err := json.Marshal(AgentRequest{Cmd: "signal", ExecID: execID, Signal: sig})
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
+	cmd.Stdin = bytes.NewReader(reqJSON)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("signal %s exec %s: %v (%s)", name, execID, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

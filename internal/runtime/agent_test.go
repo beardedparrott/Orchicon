@@ -5,11 +5,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/beardedparrott/orchicon/internal/opencode"
+	"github.com/beardedparrott/orchicon/internal/guard"
 )
 
 func TestPrependGuardSmoke(t *testing.T) {
-	dir, err := opencode.MakeGuard("/tmp", "/tmp")
+	dir, err := guard.MakeGuard("/tmp", "/tmp")
 	if err != nil {
 		t.Fatalf("MakeGuard: %v", err)
 	}

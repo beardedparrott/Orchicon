@@ -34,6 +34,7 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
+	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
@@ -45,6 +46,12 @@ type Adapter struct {
 	mu     sync.Mutex
 	active map[string]*exec.Cmd // execution_id → running subprocess
 
+	// rt is the workflow runtime daemon client. When non-nil AND an
+	// execution carries a RuntimeWorkflowID, the adapter dispatches into
+	// that workflow's runtime container instead of spawning a local
+	// subprocess. Nil keeps everything in-process (headless serve).
+	rt *runtime.Client
+
 	// usageRecorder records LLM usage (Postgres dual-write + OTel
 	// metrics) on each step_finish event carrying tokens + cost
 	// (docs/04 §6.1, docs/08 §5.2). Injected by the server; nil =
@@ -52,6 +59,11 @@ type Adapter struct {
 	// — docs/08 §8 invariant #5).
 	usageRecorder UsageRecorderFunc
 }
+
+// SetRuntimeClient injects the workflow runtime daemon client. When set,
+// executions with a RuntimeWorkflowID dispatch into that workflow's
+// runtime container; without it the adapter runs in-process.
+func (a *Adapter) SetRuntimeClient(rt *runtime.Client) { a.rt = rt }
 
 // UsageRecord is the usage sample the adapter emits on step_finish
 // (docs/04 §6.1 step_finish carries tokens + cost).
@@ -79,6 +91,10 @@ type UsageRecorderFunc func(ctx context.Context, in UsageRecord) error
 // SetUsageRecorder injects the usage recording callback. The server
 // constructs it from the aigateway.UsageRecorder.
 func (a *Adapter) SetUsageRecorder(fn UsageRecorderFunc) { a.usageRecorder = fn }
+
+// workerAgent is the opencode agent name the adapter injects the worker's
+// composed system prompt under (selected with --agent).
+const workerAgent = "orchicon-worker"
 
 // New creates an OpenCode adapter bridge.
 func New(log *slog.Logger) *Adapter {
@@ -177,7 +193,6 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// is denied and destructive bash commands are hard-denied, both of
 	// which hold even under --auto (docs/05 §10: workers must operate
 	// within their assigned project directory).
-	const workerAgent = "orchicon-worker"
 	if manifest.SystemPrompt != "" {
 		args = append(args, "--agent", workerAgent)
 	}
@@ -202,6 +217,18 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		args = append(args, "--dir", runDir)
 	}
 
+	// Runtime-container dispatch (pure per-workflow execution): when the
+	// execution belongs to a workflow run AND a runtime daemon is
+	// configured, run opencode inside that workflow's runtime container
+	// (created + mounted by the daemon at run start). The in-container
+	// supervisor builds the same safety guard, applies the same
+	// OPENCODE_CONFIG_CONTENT env, and streams stdout/stderr back; the
+	// guard dir lives in the container's /tmp, not the plane's.
+	if a.rt != nil && manifest.RuntimeWorkflowID != "" {
+		env := a.opencodeEnv(execRow, manifest, modelRef)
+		return a.startInRuntime(ctx, execRow, manifest, callbacks, args, env, runDir)
+	}
+
 	// Safety guard: shim dangerous binaries ahead of the worker's PATH so
 	// destructive commands (rm -rf /, sudo, dd of=/dev/*, mkfs, ...) are
 	// refused at the OS level — even when they are issued from inside a
@@ -214,7 +241,7 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		a.log.Warn("opencode: safety guard NOT applied", "execution", execRow.ID, "error", gErr)
 	}
 	if g != nil {
-		defer g.close()
+		defer g.Close()
 	}
 
 	// Best-effort: drop the safety lint script into .orchicon/ so review
@@ -237,7 +264,7 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		"OPENCODE_CONFIG_CONTENT="+cfgJSON,
 	)
 	if g != nil {
-		env = g.apply(env)
+		env = g.Apply(env)
 	}
 	cmd.Env = env
 
@@ -876,3 +903,97 @@ const (
 	evtToolResult   = "tool_result"
 	evtFileDiff     = "file_diff"
 )
+
+// opencodeEnv builds the execution environment shared by the in-process
+// and runtime dispatch paths: the plane's environment plus the opencode
+// overrides (execution/task/project ids + the merged agent/MCP config).
+func (a *Adapter) opencodeEnv(execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, modelRef string) []string {
+	cfgJSON := BuildConfigContent(workerAgent, manifest.SystemPrompt, modelRef)
+	return append(os.Environ(),
+		"OPENCODE_EXECUTION_ID="+execRow.ID,
+		"OPENCODE_TASK_ID="+manifest.TaskID,
+		"OPENCODE_PROJECT_ID="+manifest.ProjectID,
+		"OPENCODE_CONFIG_CONTENT="+cfgJSON,
+	)
+}
+
+// startInRuntime dispatches opencode into the workflow's runtime
+// container via the daemon. The in-container supervisor applies the
+// safety guard, sets the working directory, and streams stdout/stderr
+// back as AgentEvents; this method decodes them through the same
+// parseStdoutLine/handleStderrLine pipeline as the in-process path.
+func (a *Adapter) startInRuntime(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, callbacks scheduler.ExecutionCallbacks, args, env []string, runDir string) error {
+	callbacks.OnStarted(ctx, execRow.ID)
+
+	var stderrBuf bytes.Buffer
+	textSeq := 0
+	var lastStreamErr string
+	var output strings.Builder
+	monitor := newProgressMonitor(execRow.ID, stallWindowsFromManifest(manifest))
+	go monitor.run(ctx, func(execID, reason string) {
+		callbacks.OnStall(ctx, execID, reason)
+	})
+	defer monitor.close()
+
+	req := runtime.ExecRequest{
+		ExecID:     execRow.ID,
+		Argv:       append([]string{"opencode"}, args...),
+		Env:        env,
+		Cwd:        runDir,
+		ProjectDir: manifest.ProjectDir,
+	}
+	exitCode, err := a.rt.Exec(ctx, manifest.RuntimeWorkflowID, req, func(ev runtime.AgentEvent) error {
+		if ev.Stream == "stderr" {
+			a.handleStderrLine(ctx, execRow, manifest, ev.Data)
+			stderrBuf.WriteString(ev.Data + "\n")
+			return nil
+		}
+		line := strings.TrimSpace(ev.Data)
+		if line == "" {
+			return nil
+		}
+		a.parseStdoutLine(ctx, execRow, manifest, line, callbacks, monitor, &output, &lastStreamErr, &textSeq)
+		return nil
+	})
+
+	succeeded := err == nil && exitCode == 0
+	var parts []string
+	if lastStreamErr != "" {
+		parts = append(parts, lastStreamErr)
+	}
+	if stderrBuf.Len() > 0 {
+		parts = append(parts, strings.TrimSpace(stderrBuf.String()))
+	}
+	if err != nil {
+		parts = append(parts, err.Error())
+	}
+	if exitCode != 0 && err == nil {
+		parts = append(parts, fmt.Sprintf("exit status %d", exitCode))
+	}
+	callbacks.OnResult(ctx, execRow.ID, succeeded, output.String(), strings.Join(parts, "; "))
+	return err
+}
+
+// handleStderrLine emits one worker stderr line as an OTel log record so
+// execution stderr appears in the telemetry logs tab (docs/08 §5.3).
+func (a *Adapter) handleStderrLine(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, line string) {
+	line = strings.TrimRight(line, "\n\r")
+	if line == "" {
+		return
+	}
+	severity := "INFO"
+	upper := strings.ToUpper(line)
+	switch {
+	case strings.HasPrefix(upper, "[ERROR]"), strings.HasPrefix(upper, "ERROR:"), strings.HasPrefix(upper, "ERROR "):
+		severity = "ERROR"
+	case strings.HasPrefix(upper, "[WARN]"), strings.HasPrefix(upper, "WARN:"), strings.HasPrefix(upper, "WARN "):
+		severity = "WARN"
+	case strings.HasPrefix(upper, "[DEBUG]"), strings.HasPrefix(upper, "DEBUG:"), strings.HasPrefix(upper, "DEBUG "):
+		severity = "DEBUG"
+	}
+	telemetry.EmitLog(ctx, severity, line,
+		attribute.String("execution_id", execRow.ID),
+		attribute.String("project_id", manifest.ProjectID),
+		attribute.String("task_id", manifest.TaskID),
+	)
+}

@@ -1,4 +1,4 @@
-package opencode
+package guard
 
 import (
 	"os"
@@ -11,7 +11,7 @@ import (
 // runGuard runs the guard shim for a given binary with the given args and
 // returns (exitCode, combinedOutput). The shim is a symlink named after the
 // binary pointing at the generated guard script, so argv[0] basename = name.
-func runGuard(t *testing.T, g *executionGuard, name string, args ...string) (int, string) {
+func runGuard(t *testing.T, g *Guard, name string, args ...string) (int, string) {
 	t.Helper()
 	cmd := exec.Command(filepath.Join(g.dir, name), args...)
 	out, err := cmd.CombinedOutput()
@@ -26,11 +26,11 @@ func runGuard(t *testing.T, g *executionGuard, name string, args ...string) (int
 
 func TestExecutionGuardBlocksDestructive(t *testing.T) {
 	proj := t.TempDir()
-	g, err := newExecutionGuard(proj)
+	g, err := NewExecutionGuard(proj)
 	if err != nil {
 		t.Fatalf("newExecutionGuard: %v", err)
 	}
-	defer g.close()
+	defer g.Close()
 
 	cases := []struct {
 		name string
@@ -67,11 +67,11 @@ func TestExecutionGuardBlocksDestructive(t *testing.T) {
 
 func TestExecutionGuardAllowsInProject(t *testing.T) {
 	proj := t.TempDir()
-	g, err := newExecutionGuard(proj)
+	g, err := NewExecutionGuard(proj)
 	if err != nil {
 		t.Fatalf("newExecutionGuard: %v", err)
 	}
-	defer g.close()
+	defer g.Close()
 
 	// rm inside the project works.
 	target := filepath.Join(proj, "file.txt")
@@ -116,13 +116,13 @@ func TestExecutionGuardAllowsInProject(t *testing.T) {
 
 func TestExecutionGuardAppliesToPATH(t *testing.T) {
 	proj := t.TempDir()
-	g, err := newExecutionGuard(proj)
+	g, err := NewExecutionGuard(proj)
 	if err != nil {
 		t.Fatalf("newExecutionGuard: %v", err)
 	}
-	defer g.close()
+	defer g.Close()
 
-	env := g.apply(os.Environ())
+	env := g.Apply(os.Environ())
 	cmd := exec.Command("bash", "-lc", "rm -rf /")
 	cmd.Env = env
 	out, _ := cmd.CombinedOutput()

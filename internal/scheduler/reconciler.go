@@ -364,6 +364,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		Budgets:                     version.BudgetOverrides,
 		Permissions:                 version.Permissions,
 		ProjectDir:                  projectDir,
+		RuntimeWorkflowID:           task.WorkflowRunID,
 		StallNoProgressWindowSeconds:  stallNoProgress,
 		StallNoFileDiffWindowSeconds:  stallNoFileDiff,
 		StallTextLoopWindowSeconds:    stallTextLoop,
