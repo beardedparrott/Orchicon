@@ -56,11 +56,12 @@ COPY --from=collector /otelcol-contrib /usr/local/bin/otelcol-contrib
 COPY --from=grafana /usr/share/grafana /usr/share/grafana
 COPY --from=grafana /etc/grafana /etc/grafana
 
-# opencode runtime — the adapter bridge shells out to it for worker
-# executions. Installed at build time; auth/config are mounted at runtime
-# (~/.config/opencode, ~/.local/share/opencode) by the operator.
-RUN curl -fsSL https://opencode.ai/install | bash \
- && cp /root/.opencode/bin/opencode /usr/local/bin/opencode
+# Runtime CLI adapters (opencode today; Claude Code / Codex later) are
+# deliberately NOT baked into this image. The operator installs them on the
+# HOST and container.sh bind-mounts the install in at runtime (~/.opencode).
+# Orchicon never ships, downloads, or redistributes the adapter CLI — that
+# keeps the product redistributable regardless of an adapter's license
+# (Claude Code's terms, for example, prohibit bundling it with a product).
 
 # The orchicon binary with the embedded frontend (see build steps above).
 COPY orchicon /usr/local/bin/orchicon

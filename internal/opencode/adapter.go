@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -150,12 +151,24 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		return a.runSimulation(ctx, execRow, manifest, callbacks)
 	}
 
+	// Resolve the adapter CLI. Orchicon never ships opencode — in
+	// containerized deployments the operator's host install is mounted at
+	// $HOME/.opencode (see scripts/container.sh and the runtime daemon's
+	// standard mounts), so besides PATH we also probe that location
+	// directly. The error is loud either way: the caller (TaskReconciler)
+	// marks the execution failed_to_start and the operator sees it
+	// (AGENTS.md).
 	binary, err := exec.LookPath("opencode")
 	if err != nil {
-		// Loud failure: do not silently fall back to simulation. The
-		// caller (TaskReconciler) marks the execution failed_to_start
-		// and the operator sees the error (AGENTS.md).
-		return fmt.Errorf("opencode binary not found on PATH (set ORCHICON_SIMULATE_ADAPTER=1 for offline dev only): %w", err)
+		if home, herr := os.UserHomeDir(); herr == nil {
+			cand := filepath.Join(home, ".opencode", "bin", "opencode")
+			if st, serr := os.Stat(cand); serr == nil && !st.IsDir() {
+				binary = cand
+			}
+		}
+	}
+	if binary == "" {
+		return fmt.Errorf("opencode binary not found on PATH or ~/.opencode/bin (install it on the host: curl -fsSL https://opencode.ai/install | bash; set ORCHICON_SIMULATE_ADAPTER=1 only for offline dev): %w", err)
 	}
 
 	// Wall-clock timeout backstop (docs/06 §2 budget overrun trigger).

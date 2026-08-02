@@ -372,6 +372,15 @@ main() {
   # connect / manage it. Skip with --no-setup (headless / CI installs
   # that only want the binary).
   if [ "$SETUP" = true ] && [ "$DRY_RUN" = false ]; then
+    # Orchicon never ships the runtime adapter CLI (opencode) in its
+    # images — the operator installs it on the host and it is mounted
+    # into the containers at runtime. Warn early if it's missing.
+    if ! command -v opencode >/dev/null 2>&1 && [ ! -x "$HOME/.opencode/bin/opencode" ]; then
+      warn "opencode (the AI runtime adapter) is not installed on this host."
+      echo -e "  Orchicon never ships adapter CLIs in its images — install opencode first:"
+      echo -e "  ${D}curl -fsSL https://opencode.ai/install | bash${X}"
+      echo ""
+    fi
     echo ""
     echo -e "${B}Setting up the full stack (one-command install)…${X}"
     if "$bin" install; then

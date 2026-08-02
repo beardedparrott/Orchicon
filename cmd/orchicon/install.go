@@ -41,6 +41,15 @@ func runInstall(args []string, log *slog.Logger) error {
 		return fmt.Errorf("docker is required (start Docker first): %v: %s", err, strings.TrimSpace(string(out)))
 	}
 
+	// 1.5. The runtime adapter CLI (opencode) must be installed on the
+	// HOST — Orchicon never ships adapter CLIs in its images (licensing;
+	// Claude Code, for example, prohibits bundling). It is bind-mounted
+	// into the containers at runtime, so fail loudly here rather than
+	// letting every worker execution fail later with "binary not found".
+	if err := requireAdapterCLI("opencode"); err != nil {
+		return err
+	}
+
 	// 2. Ensure the published images are present (skip the pull when the
 	// tag is already local — idempotent re-runs and local dev images).
 	for _, img := range []string{containerImage, runtimeImage} {
@@ -87,6 +96,23 @@ func runInstall(args []string, log *slog.Logger) error {
 
 	printInstallInfo(instance, name, dataVolume, socketDir, healthURL, runtimeImage)
 	return nil
+}
+
+// requireAdapterCLI verifies an adapter CLI is installed on the host
+// (on PATH or at ~/.<name>/bin/<name>). Orchicon never ships adapter CLIs
+// in its images — the operator installs them and they are bind-mounted
+// into the containers at runtime.
+func requireAdapterCLI(name string) error {
+	if _, err := exec.LookPath(name); err == nil {
+		return nil
+	}
+	if home, herr := os.UserHomeDir(); herr == nil {
+		cand := filepath.Join(home, "."+name, "bin", name)
+		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s is required but not installed on this host — Orchicon does not ship adapter CLIs in its images (install it first, e.g. for opencode: curl -fsSL https://opencode.ai/install | bash)", name)
 }
 
 // ensureInstallDaemon starts the runtime daemon if its socket is not
@@ -186,6 +212,9 @@ func ensureInstallContainer(instance, name, dataVolume, socketDir, image string)
 	}
 	if st, err := os.Stat(filepath.Join(home, ".local/share/opencode")); err == nil && st.IsDir() {
 		args = append(args, "-v", filepath.Join(home, ".local/share/opencode")+":"+filepath.Join(home, ".local/share/opencode")+":ro")
+	}
+	if st, err := os.Stat(filepath.Join(home, ".opencode", "bin", "opencode")); err == nil && !st.IsDir() {
+		args = append(args, "-v", filepath.Join(home, ".opencode")+":"+filepath.Join(home, ".opencode")+":ro")
 	}
 	for _, f := range []string{".gitconfig", ".git-credentials"} {
 		if st, err := os.Stat(filepath.Join(home, f)); err == nil && !st.IsDir() {

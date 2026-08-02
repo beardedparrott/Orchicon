@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -44,6 +45,10 @@ type Daemon struct {
 	// SweepInterval is how often the age-based orphan sweep runs.
 	SweepInterval time.Duration
 	Log           *slog.Logger
+	// createMu serializes createRuntime so concurrent Create calls for the
+	// same workflow (WorkflowReconciler.EnsureForRun + adapter self-heal)
+	// cannot race `docker run` on the same container name.
+	createMu sync.Mutex
 }
 
 // MountSpec is a validated bind mount request from the control plane.
@@ -327,8 +332,18 @@ func (d *Daemon) withinAllowedRoots(path string) bool {
 
 // createRuntime ensures a runtime container exists for the workflow and
 // returns its state. Idempotent: if it is already running, returns it.
+//
+// Container creation is serialized with createMu: the control plane calls
+// Create from BOTH the WorkflowReconciler (EnsureForRun when a run leaves
+// pending) and the adapter (self-heal before every exec), so two requests
+// for the same workflow can race `docker run` on the same name — one wins
+// and the other hits "name already in use", removes the winner's container
+// mid-setup, and the exec lands on a container that is being recreated.
+// The mutex makes createRuntime atomic per workflow.
 func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 	name := d.containerName(req.WorkflowID)
+	d.createMu.Lock()
+	defer d.createMu.Unlock()
 	if running, _ := d.containerRunning(name); running {
 		return &CreateResponse{Name: name, Running: true}, nil
 	}
@@ -364,10 +379,13 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 	// Standard host-home mounts shared by every runtime container:
 	// opencode config (read-only) + data/auth (read-only — the worker
 	// reads model auth, but its sessions/keys are redirected to the
-	// ephemeral FS by the supervisor's isolateOpenCodeData), and git
-	// identity + credential store (read-only — PR/merge workers). These
-	// are appended by the daemon, not the plane, so the control plane
-	// can never request them.
+	// ephemeral FS by the supervisor's isolateOpenCodeData), the runtime
+	// CLI adapter install (read-only — opencode today; Orchicon never
+	// ships the adapter binary in the image, the operator's host install
+	// is mounted here so the supervisor can exec it), and git identity +
+	// credential store (read-only — PR/merge workers). These are appended
+	// by the daemon, not the plane, so the control plane can never request
+	// them.
 	if d.HostHome != "" {
 		if st, err := os.Stat(filepath.Join(d.HostHome, ".config/opencode")); err == nil && st.IsDir() {
 			args = append(args, "-v", filepath.Join(d.HostHome, ".config/opencode")+":"+filepath.Join(d.HostHome, ".config/opencode")+":ro")
@@ -375,12 +393,18 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 		if st, err := os.Stat(filepath.Join(d.HostHome, ".local/share/opencode")); err == nil && st.IsDir() {
 			args = append(args, "-v", filepath.Join(d.HostHome, ".local/share/opencode")+":"+filepath.Join(d.HostHome, ".local/share/opencode")+":ro")
 		}
+		if st, err := os.Stat(filepath.Join(d.HostHome, ".opencode", "bin", "opencode")); err == nil && !st.IsDir() {
+			args = append(args, "-v", filepath.Join(d.HostHome, ".opencode")+":"+filepath.Join(d.HostHome, ".opencode")+":ro")
+		}
 		for _, f := range []string{".gitconfig", ".git-credentials"} {
 			if st, err := os.Stat(filepath.Join(d.HostHome, f)); err == nil && !st.IsDir() {
 				args = append(args, "-v", filepath.Join(d.HostHome, f)+":"+filepath.Join(d.HostHome, f)+":ro")
 			}
 		}
 		args = append(args, "-e", "HOME="+d.HostHome)
+		// Put the mounted adapter CLI on PATH so the supervisor's
+		// `exec.Command("opencode", ...)` resolves it.
+		args = append(args, "-e", "PATH="+filepath.Join(d.HostHome, ".opencode", "bin")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	}
 	args = append(args, image, "orchicon", "runtime-supervisor")
 
@@ -484,6 +508,7 @@ func (d *Daemon) handleExec(w http.ResponseWriter, r *http.Request, id string) {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
 	reqJSON, err := json.Marshal(AgentRequest{
 		Cmd:        "exec",
 		ExecID:     req.ExecID,

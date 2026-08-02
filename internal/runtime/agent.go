@@ -49,6 +49,19 @@ type AgentEvent struct {
 // else in the runtime container.
 const DefaultAgentSocket = "/tmp/orchicon-agent.sock"
 
+// runtimeBinAllowlist is the set of binaries the runtime supervisor may
+// exec (argv[0] basenames). It mirrors the adapter CLIs Orchicon drives:
+// opencode today, with Claude Code (`claude`) and Codex (`codex`) to be
+// added here when those adapters land. Orchicon never ships any of these
+// in the image — the daemon mounts the operator's host installs into the
+// container at runtime (see daemon.go standard mounts).
+var runtimeBinAllowlist = map[string]bool{
+	"opencode": true,
+	"orchicon": true,
+	"bash":     true,
+	"sh":       true,
+}
+
 // RunSupervisor runs the in-container dispatch loop as PID 1. It accepts
 // exec/signal/ping requests on socketPath and runs each exec as a child
 // process, streaming stdout/stderr and tracking children by exec_id so a
@@ -128,10 +141,12 @@ func (h *childRegistry) runExec(conn net.Conn, enc *json.Encoder, req AgentReque
 		return
 	}
 	// Safety: the supervisor only ever runs a closed set of entry points
-	// (opencode runs and in-container tooling). The daemon already
-	// enforces this, but belt-and-suspenders here too.
+	// (adapter CLI runs and in-container tooling). The daemon already
+	// enforces this, but belt-and-suspenders here too. The adapter CLIs
+	// (opencode; claude/codex when their adapters land) are mounted in at
+	// runtime by the daemon, never baked into the image.
 	base := filepath.Base(req.Argv[0])
-	if base != "opencode" && base != "orchicon" && base != "bash" && base != "sh" {
+	if !runtimeBinAllowlist[base] {
 		_ = enc.Encode(AgentEvent{Event: "error", Error: "argv[0] not allowlisted: " + base})
 		return
 	}
@@ -307,6 +322,15 @@ func agentEnv(req AgentRequest) []string {
 			}
 		}
 		out = append(kept, kv)
+	}
+	// Ensure the mounted adapter CLI bin (~/.opencode/bin) is on the
+	// child's PATH — belt-and-suspenders to the daemon's container-level
+	// PATH so workers and their subprocesses can also resolve opencode.
+	if home := os.Getenv("HOME"); home != "" {
+		bin := filepath.Join(home, ".opencode", "bin")
+		if st, err := os.Stat(bin); err == nil && st.IsDir() {
+			out = setEnv(out, "PATH", bin+string(os.PathListSeparator)+envPath(out))
+		}
 	}
 	return out
 }
