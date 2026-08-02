@@ -39,7 +39,7 @@
         <div class="install" id="install">
           <div class="install-tabs" role="tablist">
             <button class="tab active" data-tab="mac" role="tab" aria-selected="true">macOS / Linux</button>
-            <button class="tab" data-tab="win" role="tab" aria-selected="false">Windows</button>
+            <button class="tab" data-tab="win" role="tab" aria-selected="false">Windows (WSL2)</button>
           </div>
           <div class="install-body">
             <pre class="install-cmd active" data-tab="mac"><code><span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash</code></pre>
@@ -49,7 +49,9 @@
             One command, full setup: downloads the <code>orchicon</code> binary,
             pulls the published images, starts the runtime daemon, launches the
             single-container instance, and prints how to connect / start / stop.
-            Re-running updates to the latest release. See
+            Re-running updates to the latest release. On Windows the whole stack
+            runs inside <strong>WSL2</strong> — the installer provisions it and
+            installs the Linux binary into the distro. See
             <a href="#options">options</a> below.
           </p>
         </div>
@@ -64,7 +66,7 @@
             <span class="step-num">1</span>
             <div>
               <h3>Install</h3>
-              <p>Run the one-liner above. Requires <code>curl</code> and <code>tar</code> (or PowerShell on Windows).</p>
+              <p>Run the one-liner above. Requires <code>curl</code> and <code>tar</code> (or PowerShell on Windows — the Windows path runs the stack inside <strong>WSL2</strong>).</p>
             </div>
           </li>
           <li>
@@ -160,19 +162,22 @@
 <span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --clean
 <span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --force-clean</code></pre>
 
-        <h3>Windows</h3>
+        <h3>Windows (WSL2)</h3>
         <pre class="cmd"><code><span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Version v0.2.0
-<span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -InstallDir "C:\bin"
+<span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -InstallDir "/usr/local/bin"
+<span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -NoSetup
 <span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Uninstall
 <span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Clean
 <span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -ForceClean</code></pre>
+        <p>On Windows the whole stack runs inside <strong>WSL2</strong>: the installer provisions/detects WSL2, installs the <strong>Linux</strong> binary inside the distro, and runs the one-command setup there. Requires Windows 10 21H2+ / Windows 11 and Docker Desktop with WSL integration.</p>
 
         <table class="flags">
           <thead><tr><th>Flag</th><th>Description</th></tr></thead>
           <tbody>
             <tr><td><code>--version &lt;tag&gt;</code></td><td>Install a specific version (e.g. <code>v0.2.0</code>). Default: latest.</td></tr>
-            <tr><td><code>--install-dir &lt;dir&gt;</code></td><td>Where to drop the binary. Default: <code>~/.local/bin</code>.</td></tr>
-            <tr><td><code>--uninstall</code></td><td>Remove Orchicon from the install directory.</td></tr>
+            <tr><td><code>--install-dir &lt;dir&gt;</code></td><td>WSL directory to install the binary into (default: <code>~/.local/bin</code>).</td></tr>
+            <tr><td><code>--no-setup</code></td><td>Install the binary only — skip pulling images / starting the daemon / launching the container.</td></tr>
+            <tr><td><code>--uninstall</code></td><td>Stop the container instances, remove the WSL-installed binary. The WSL distro is left intact.</td></tr>
             <tr><td><code>--dry-run</code></td><td>Print what would happen without making changes.</td></tr>
             <tr><td><code>--clean</code> / <code>-Clean</code></td><td>Stop dev containers, remove old binary, then install latest. All user data preserved.</td></tr>
             <tr><td><code>--force-clean</code> / <code>-ForceClean</code></td><td>Nuke Docker volumes, remove local data, then install latest. All data lost.</td></tr>

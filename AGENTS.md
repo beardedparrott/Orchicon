@@ -52,8 +52,8 @@ The project's model spend is rising. Be economical but **never at the expense of
 - Commit early and often on your branch. Write clear commit messages in present tense: `Add project CRUD service and data-access layer`. Stage only the files relevant to the commit.
 - **Never create a pull request without asking the user for approval first.** Ask, wait for a yes, then proceed.
 - Once work is complete and properly tested, ask the user to verify.
-- After the user confirms, create a PR and merge. PRs MUST carry the `release` label to kick off the release creation on GitHub. After the merge, delete the branch.
-- **Before every PR merge**, ALWAYS ASK THE USER BEFORE MERGING, update the "Last Release Changes" section in `README.md` with a table listing each feature/bug fix in the release. Only the most recent release info should be present — remove older entries. Table format:
+- After the user verifies, ask again for approval to open the PR, then open it. PRs MUST carry the `release` label to kick off the release creation on GitHub.
+- **Before merging**, ALWAYS ASK THE USER AGAIN (PR-creation approval ≠ merge approval) and update the "Last Release Changes" section in `README.md` with a table listing each feature/bug fix in the release. Keep the release info for the most recent **TWO** versions — remove older entries. Table format:
 
   ```
   ### v0.1.NNN (date)
@@ -64,6 +64,7 @@ The project's model spend is rising. Be economical but **never at the expense of
   | Bug fix | Short description |
   | Chore | Short description |
   ```
+  After the merge, delete the branch.
 - Before starting work, always `git pull origin main` to get the latest. Before pushing, `git fetch origin && git rebase origin/main` if the branch has been open for a while.
 
 ## Local development loop
@@ -86,10 +87,10 @@ The binary embeds everything (the single-container runtime configs in `deploy/co
 Every task follows this sequence:
 
 1. Read AGENTS.md first.
-2. Read any docs or code necessary to perform the work.
+2. Read UPDATES.md to understand the current state, and read any docs or code necessary — DOCUMENTATION.md covers every subsystem, so read its relevant sections before touching something unfamiliar.
 3. Create a branch and do the work, committing changes often.
 4. Fully test and verify.
-5. Before the final commit on your branch, update **both** `README.md` (Last Release Changes section — table format, most recent only) and `UPDATES.md` (new table row) with a one-paragraph summary describing the changes in this PR. This is the commit that will be PR'd and merged.
+5. Before the final commit on your branch, update **both** `README.md` (Last Release Changes section — table format, most recent two versions only) and `UPDATES.md` (new table row) with a one-paragraph summary describing the changes in this PR. This is the commit that will be PR'd and merged.
 6. Follow the Git Workflow above.
 7. Inform the user every time UPDATES have been made. Show them in a tabled format what was changed and updated.
 
@@ -120,6 +121,7 @@ If architecture or anything referenced in AGENTS.md has changed, update this fil
 7. No automatic model failover — the human defines the exact model.
 8. Recovery is opt-out, not opt-in.
 9. Migrations are forward-only.
+10. Windows is always considered. Windows support is delivered by running the whole Linux stack inside **WSL2** — there is no native Windows port. Every change to the installers (`install.sh`/`install.ps1`), deployment, runtime layer, container, docs, or frontend must be evaluated against the Windows/WSL2 path, not just Linux/macOS.
 
 ## Security Standards (applies to every slice)
 
@@ -157,7 +159,7 @@ Every piece of functionality built in this repo must follow these security stand
 - If unsure how to use a library or pattern, use `gh_grep` to search real GitHub usage examples.
 - LSP servers (gopls, typescript, eslint, yaml-ls) are enabled — diagnostics surface in the edit loop. Treat them as fast feedback; `make ci` is the authoritative gate.
 - Playwright MCP is configured in `opencode.jsonc` for browser testing. **Playwright is installed** — `npx playwright install chrome` has been run, so Chrome is available for browser verification. Use Chrome and/or Playwright for frontend verification. NEVER use Firefox — the developer uses Firefox and testing needs a separate browser.
-- **NEVER run a foreground server (`orchicon serve`, `orchicon container`, or `container.sh up`) from a shell tool** — a foreground process keeps the caller's stdout/stderr pipe open and never returns, which hangs the agent session until the user kills it. **Use the built-in detach mode for the headless plane** — `orchicon serve --detach` forks the server, writes the PID file, and returns immediately (stop with `orchicon serve --stop`; check with `serve --status`; logs in `.dev/logs/orchicon.log`). The `scripts/container.sh` commands are for the user to run; if you need to test the container, launch it with `docker run -d` and poll `/healthz`.
+- **NEVER run a foreground server (`orchicon serve` without `--detach`, or `orchicon container`) from a shell tool** — a foreground process keeps the caller's stdout/stderr pipe open and never returns, which hangs the agent session until the user kills it. **Use the built-in detach mode for the headless plane** — `orchicon serve --detach` forks the server, writes the PID file, and returns immediately (stop with `orchicon serve --stop`; check with `serve --status`; logs in `.dev/logs/orchicon.log`). `scripts/container.sh up/down/rebuild` launch/stop the instance **detached** (`docker run -d`) and return, so they are safe to run from a shell tool — the same applies to testing a container directly with `docker run -d` (then poll `/healthz`).
   - This requires the stack already up (the container / `docker run` manages it) and migrations applied (the server also runs migrations on boot).
   - `serve --detach` writes the PID file and stops cleanly with `serve --stop`; use `fuser -k 8080/tcp` to stop a test server that lacks a PID file.
   - **Never use `pkill -f` with a pattern that could match the shell command itself** (e.g. `pkill -f "orchicon"` from within a bash `-c` that contains that string) — it kills your own shell. Kill by exact PID or by port (`fuser -k 8080/tcp`).
@@ -225,12 +227,12 @@ curl -fsSL https://orchicon.dev/install | bash          # Linux/macOS
 irm https://orchicon.dev/install.ps1 | iex               # Windows
 ```
 
-They download the latest release binary from GitHub Releases, install it to `~/.local/bin` (or a chosen dir), verify the install, then run **`orchicon install`** (the one-command setup) by default — which pulls the published images, starts the runtime daemon, launches the single-container instance, and prints connection info. Pass `--no-setup` to install only the binary. The release workflow (`.github/workflows/release.yml`) builds binaries for linux/darwin/windows × amd64/arm64 on tag push, attaches them to the GitHub Release, and pushes the container image (`ghcr.io/beardedparrott/orchicon`) **and** the per-workflow runtime image (`ghcr.io/beardedparrott/orchicon-runtime`).
+They download the latest release binary from GitHub Releases, install it, then run **`orchicon install`** (the one-command setup) by default — which pulls the published images, starts the runtime daemon, launches the single-container instance, and prints connection info. Pass `--no-setup` to install only the binary. **Windows runs the whole stack inside WSL2**: the runtime layer (runtime daemon, unix socket, container mounts) is POSIX-only and is **not** ported to native Windows — `scripts/install.ps1` provisions/detects WSL2, verifies Docker inside the distro, installs the **Linux** binary into the distro, and runs `orchicon install` there. `cmd/orchicon/install.go` and `runtime.go` need no Windows-specific changes. The release workflow (`.github/workflows/release.yml`) builds binaries for linux/darwin/windows × amd64/arm64 on tag push, attaches them to the GitHub Release, and pushes the container image (`ghcr.io/beardedparrott/orchicon`) **and** the per-workflow runtime image (`ghcr.io/beardedparrott/orchicon-runtime`).
 
 When a phase changes what ships in the binary — a new subcommand, a new dependency the binary needs at runtime, a new asset (e.g. the frontend bundle, adapter binaries, Rego policy files), or a new platform/architecture target — update the install scripts and the release workflow so the installer stays correct. Specifically:
 
 - **`scripts/install.sh`** — update if the download asset name changes, new files need to be downloaded alongside the binary, or new post-install steps are required (e.g. a new `orchicon install` flow).
-- **`scripts/install.ps1`** — mirror any changes from `install.sh` for Windows. Both scripts must stay in sync.
+- **`scripts/install.ps1`** — update if the WSL2 flow changes: distro provisioning (`wsl --install`, `--set-default-version 2`, `--list --verbose`), the Docker-in-WSL check (Docker Desktop WSL2 integration), the Linux asset it downloads (`orchicon_<ver>_linux_<arch>.tar.gz` — never the Windows binary), the in-distro install dir, or the `-NoSetup`/`-Uninstall`/`-Clean`/`-ForceClean` semantics. Keep it in sync with `install.sh` (the WSL bash snippets mirror the Linux script's logic).
 - **`.github/workflows/release.yml`** — update the build matrix if a new OS/arch is added, add build steps if the binary now needs the frontend embedded, verify the asset naming matches what the install scripts download, and when `deploy/runtime/Dockerfile` changes verify the runtime image (`ghcr.io/beardedparrott/orchicon-runtime`) still builds + pushes. The workflow also builds + pushes the single-container image to `ghcr.io/beardedparrott/orchicon` — when `deploy/container/` changes (Dockerfile, embedded configs, new runtime binaries), verify the image build still succeeds.
 - **`deploy/container/Dockerfile` + `deploy/container/configs/`** — when the container runtime changes (new bundled process, changed ports, new config), update the Dockerfile / embedded configs and verify the image (see §Verification).
 - **README.md** — update the Installation section if the commands or prerequisites change.
@@ -252,8 +254,6 @@ reconciler, frontend route, database table, adapter, or significant
 policy — update DOCUMENTATION.md to reflect it. If the change is
 entirely internal refactoring with no user-visible or architectural
 impact, you may skip the update, but err on the side of updating.
-
-## E2E Testing & Cleanup
 
 ## E2E Testing & Data Preservation
 
