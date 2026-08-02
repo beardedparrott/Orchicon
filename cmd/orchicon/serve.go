@@ -53,16 +53,16 @@ func killOrphans() {
 }
 
 // runServe loads configuration from the environment, applies pending
-// migrations (same as devStartParent), constructs the control plane server,
-// wraps it with the embedded frontend SPA, and runs until SIGTERM or SIGINT.
-// It is the production-like server mode — no Compose management, no dev-child
-// process forking. Used by the prod instance (scripts/dev-prod.sh) for the
-// dogfooding dual-instance setup.
+// migrations, constructs the control plane server, wraps it with the
+// embedded frontend SPA, and runs until SIGTERM or SIGINT.
+// It is the production-like server mode — no Compose management, no
+// process forking. Used headless (`orchicon serve --detach`) and as the
+// control-plane child of the single-container supervisor (`orchicon
+// container`, which spawns `orchicon serve`).
 //
-// Migrations are run here (not just in devStartParent) so that both
-// orchicon-prod serve and scripts/dev-prod.sh's downstream serve call
-// consistently use the embedded migration runner — never mixing it with
-// atlas migrate apply which writes to a different tracking table.
+// Migrations are run here (the embedded runner writes the
+// _orchicon_migrations tracking table) so every boot path — headless,
+// detached, or container — stays consistent.
 // serveEnvDetached marks a serve subprocess that was forked by `serve
 // --detach`; it tells the child to run the server directly instead of
 // forking again.
@@ -110,7 +110,6 @@ func serveForeground() int {
 	log.Info("orchicon serve starting", "version", version.Current().String())
 
 	cfg := config.Default()
-	applyProdDefaults(&cfg)
 	if err := cfg.Validate(); err != nil {
 		log.Error("invalid configuration", "error", err)
 		return 1
@@ -157,21 +156,21 @@ func serveForeground() int {
 // script waiting on this command would hang until the server exits. The
 // caller polls /healthz (see serveStatus / docs).
 func serveDetach() int {
-	if pid, running := procRunning(devPIDFile); running {
+	if pid, running := procRunning(servePIDFile); running {
 		fmt.Fprintf(os.Stderr, "✗ serve is already running (PID %s)\n", pid)
 		fmt.Fprintf(os.Stderr, "  Stop it with: %s serve --stop\n", filepath.Base(os.Args[0]))
 		return 1
 	}
 
-	if err := os.MkdirAll(filepath.Dir(devPIDFile), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(servePIDFile), 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "✗ failed to create PID directory: %v\n", err)
 		return 1
 	}
-	if err := os.MkdirAll(filepath.Dir(devLogFile), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(serveLogFile), 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "✗ failed to create log directory: %v\n", err)
 		return 1
 	}
-	logFile, err := os.OpenFile(devLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logFile, err := os.OpenFile(serveLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "✗ failed to open log file: %v\n", err)
 		return 1
@@ -190,7 +189,7 @@ func serveDetach() int {
 		return 1
 	}
 	pid := cmd.Process.Pid
-	if err := os.WriteFile(devPIDFile, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(servePIDFile, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "  ! failed to write PID file: %v\n", err)
 	}
 	// Release the child from our care so nothing waits on it. Start it in
@@ -198,7 +197,7 @@ func serveDetach() int {
 	_ = cmd.Process.Release()
 
 	fmt.Printf("✓ serve detached (PID %d)\n", pid)
-	fmt.Printf("  Logs: %s\n", devLogFile)
+	fmt.Printf("  Logs: %s\n", serveLogFile)
 	fmt.Printf("  Check: %s serve --status\n", filepath.Base(os.Args[0]))
 	fmt.Printf("  Stop: %s serve --stop\n", filepath.Base(os.Args[0]))
 	return 0
@@ -206,14 +205,14 @@ func serveDetach() int {
 
 // serveStop sends SIGTERM to a detached serve and clears the PID file.
 func serveStop() int {
-	pid, running := procRunning(devPIDFile)
+	pid, running := procRunning(servePIDFile)
 	if !running {
 		fmt.Println("serve is not running")
 		return 1
 	}
 	pidNum, err := strconv.Atoi(pid)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "✗ invalid PID file (%s): %v\n", devPIDFile, err)
+		fmt.Fprintf(os.Stderr, "✗ invalid PID file (%s): %v\n", servePIDFile, err)
 		return 1
 	}
 	if proc, err := os.FindProcess(pidNum); err == nil {
@@ -222,14 +221,14 @@ func serveStop() int {
 			return 1
 		}
 	}
-	_ = os.Remove(devPIDFile)
+	_ = os.Remove(servePIDFile)
 	fmt.Printf("✓ serve stopped (PID %d)\n", pidNum)
 	return 0
 }
 
 // serveStatus prints whether a detached serve is running.
 func serveStatus() int {
-	if pid, running := procRunning(devPIDFile); running {
+	if pid, running := procRunning(servePIDFile); running {
 		fmt.Printf("serve is running (PID %s)\n", pid)
 		return 0
 	}

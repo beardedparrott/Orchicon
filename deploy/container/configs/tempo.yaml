@@ -1,0 +1,27 @@
+# Tempo — trace backend for the Orchicon single-container image.
+# @DATA_DIR@ is replaced with the container data dir at startup.
+# Query API on :3200; OTLP ingest on :14317/:14318 (offset from the
+# collector's own :4317/:4318 so the two processes can coexist on one
+# network namespace).
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: "0.0.0.0:14317"
+        http:
+          endpoint: "0.0.0.0:14318"
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: "@DATA_DIR@/tempo/wal"
+    local:
+      path: "@DATA_DIR@/tempo/blocks"
+
+usage_report:
+  reporting_enabled: false

@@ -1,6 +1,5 @@
-# Grafana provisioning — datasources for the Orchicon telemetry stack.
-# Referenced by uid from the frontend embed deep-links (see
-# frontend/src/routes/telemetry.tsx GrafanaEmbed): tempo, loki, victoriametrics.
+# Grafana provisioning — datasources for the Orchicon single-container image.
+# All backends are localhost (same network namespace).
 apiVersion: 1
 
 datasources:
@@ -8,7 +7,7 @@ datasources:
     uid: tempo
     type: tempo
     access: proxy
-    url: http://tempo:3200
+    url: http://localhost:3200
     jsonData:
       httpMethod: GET
       serviceMap:
@@ -18,7 +17,7 @@ datasources:
     uid: loki
     type: loki
     access: proxy
-    url: http://loki:3100
+    url: http://localhost:3100
     jsonData:
       maxLines: 1000
 
@@ -26,5 +25,5 @@ datasources:
     uid: victoriametrics
     type: prometheus
     access: proxy
-    url: http://victoriametrics:8428
+    url: http://localhost:8428
     isDefault: true

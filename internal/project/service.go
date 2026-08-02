@@ -226,6 +226,11 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
 	s.log.Info("project updated", "id", updated.ID, "version", updated.Version)
+	// Project dir / context files changed → refresh the container mount
+	// manifest immediately (the periodic writer is a safety net).
+	if fields.ProjectDir != nil || fields.ContextFiles != nil {
+		notifyProjectChanged()
+	}
 	return connect.NewResponse(&apiv1.UpdateProjectResponse{Project: rowToProto(updated)}), nil
 }
 

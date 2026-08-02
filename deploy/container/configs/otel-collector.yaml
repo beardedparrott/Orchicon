@@ -1,15 +1,6 @@
-# OTel collector config for the Orchicon telemetry plane.
-#
-# Receives OTLP (gRPC + HTTP) from the control plane and frontend,
-# fan-outs to the Grafana stack: traces → Tempo, logs → Loki, metrics
-# → VictoriaMetrics (Prometheus remote write). Telemetry is fully
-# separated from control state (docs/01 §3, docs/08 §5). The control
-# plane never owns this infrastructure.
-#
-# Per docs/08 §5.1, canonical spans include api.<service>.<rpc>,
-# reconcile.<kind>.<id>, dispatch.<task_id>, adapter.execute.*,
-# recovery.*, and gateway.* — all flow through this collector.
-
+# OTel collector config for the Orchicon single-container image.
+# All backends are localhost (same network namespace). Tempo's OTLP HTTP
+# receiver is on :14318 (offset from the collector's own :4318).
 receivers:
   otlp:
     protocols:
@@ -30,22 +21,18 @@ processors:
 exporters:
   # Traces → Tempo (OTLP HTTP).
   otlphttp/tempo:
-    endpoint: http://tempo:4318
+    endpoint: http://localhost:14318
     tls:
       insecure: true
   # Logs → Loki (OTLP HTTP endpoint).
   otlphttp/loki:
-    endpoint: http://loki:3100/otlp
+    endpoint: http://localhost:3100/otlp
     tls:
       insecure: true
   # Metrics → VictoriaMetrics (Prometheus remote write).
-  # add_metric_suffixes=false keeps the canonical orchidicon_* metric names
-  # (the exporter would otherwise append _total to counters and _<unit> for
-  # unit-bearing instruments). resource_to_telemetry_conversion adds the
-  # resource attributes (service.name, orchicon.tenant_id) as series labels
-  # so tenant-scoped PromQL queries work.
+  # add_metric_suffixes=false keeps the canonical orchidicon_* names.
   prometheusremotewrite:
-    endpoint: http://victoriametrics:8428/api/v1/write
+    endpoint: http://localhost:8428/api/v1/write
     add_metric_suffixes: false
     resource_to_telemetry_conversion:
       enabled: true

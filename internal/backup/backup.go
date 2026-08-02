@@ -18,7 +18,19 @@ type Info struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// DefaultDir returns the backups directory. In the single-container
+// deployment ORCHICON_DATA_DIR is exported to the control plane, so
+// backups land on the persistent data volume (/var/lib/orchicon/backups);
+// otherwise they go to the user's home. The root home inside the
+// container is ephemeral, so the container must NOT fall back to it.
 func DefaultDir() (string, error) {
+	if dataDir := os.Getenv("ORCHICON_DATA_DIR"); dataDir != "" {
+		dir := filepath.Join(dataDir, "backups")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return "", err
+		}
+		return dir, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -55,16 +67,10 @@ func expandDir(dir string) (string, error) {
 	return filepath.Clean(dir), nil
 }
 
-// pgContainer returns the Docker container name for Postgres based on the
-// DSN port. Dev uses 5432 (orchicon-postgres), prod uses 5433
-// (orchicon-prod-postgres). Falls back to orchicon-postgres.
-func pgContainer(dsn string) string {
-	if strings.Contains(dsn, ":5433") {
-		return "orchicon-prod-postgres"
-	}
-	return "orchicon-postgres"
-}
-
+// Create dumps the database named by dsn to a timestamped .sql file using
+// the local pg_dump (Postgres runs as a sibling process — in the
+// single-container deployment that is localhost:<port> inside the same
+// container; there is no docker-exec indirection).
 func Create(ctx context.Context, dsn, dir string) (*Info, error) {
 	dir, err := expandDir(dir)
 	if err != nil {
@@ -82,13 +88,10 @@ func Create(ctx context.Context, dsn, dir string) (*Info, error) {
 	}
 	defer f.Close()
 
-	container := pgContainer(dsn)
-	// Pipe pg_dump stdout directly to the host file. Avoids docker cp
-	// which can have path parsing issues with bind-mounted volumes.
 	// --clean --if-exists emit DROP TABLE IF EXISTS before each CREATE,
 	// so the dump can be restored on top of a live (non-empty) database.
-	cmd := exec.CommandContext(ctx, "docker", "exec", "-i", container,
-		"pg_dump", "-U", "orchicon", "-d", "orchicon",
+	cmd := exec.CommandContext(ctx, "pg_dump",
+		"-d", dsn,
 		"--clean", "--if-exists",
 		"--no-owner", "--no-acl")
 	cmd.Stdout = f
@@ -126,15 +129,13 @@ func Restore(ctx context.Context, dsn, path string) error {
 	}
 	defer f.Close()
 
-	container := pgContainer(dsn)
-	// Pipe the backup file into psql inside the container.
-	// -v ON_ERROR_STOP=1 makes psql exit non-zero on the first SQL error
-	//   (by default it prints the error but still exits 0, silently
-	//   "succeeding" a restore that did nothing). --single-transaction
-	//   rolls back the whole restore if anything fails, so a bad backup
-	//   cannot leave the database half-restored.
-	cmd := exec.CommandContext(ctx, "docker", "exec", "-i", container,
-		"psql", "-U", "orchicon", "-d", "orchicon",
+	// Pipe the backup file into psql against the DSN directly (no
+	// docker-exec). -v ON_ERROR_STOP=1 makes psql exit non-zero on the
+	// first SQL error; --single-transaction rolls back the whole restore
+	// if anything fails, so a bad backup cannot leave the database
+	// half-restored.
+	cmd := exec.CommandContext(ctx, "psql",
+		"-d", dsn,
 		"-v", "ON_ERROR_STOP=1",
 		"--single-transaction")
 	cmd.Stdin = f

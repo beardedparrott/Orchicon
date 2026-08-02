@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/oklog/ulid/v2"
 )
 
 // --- identities (extended in Phase 9) -------------------------------------
@@ -173,7 +172,7 @@ func CreateTenant(ctx context.Context, p *Pool, slug, name, budgetEnvelopeJSON s
 	const q = `INSERT INTO tenants (id, slug, name, status, budget_envelope, version)
 		VALUES ($1, $2, $3, 'active', $4::jsonb, 1)
 		RETURNING id, slug, name, status, version, created_at, updated_at`
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
+	id := newULID()
 	row := p.QueryRow(ctx, q, id, slug, name, budgetEnvelopeJSON)
 	var r TenantRow
 	if err := row.Scan(&r.ID, &r.Slug, &r.Name, &r.Status, &r.Version, &r.CreatedAt, &r.UpdatedAt); err != nil {

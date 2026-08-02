@@ -12,8 +12,6 @@ GO          := go
 BUF         := buf
 ATLAS       := atlas
 NPX         := npx
-COMPOSE     := docker compose
-COMPOSE_FILE:= deploy/compose/docker-compose.yml
 DB_URL      ?= postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable
 BIN_DIR     := bin
 
@@ -47,18 +45,10 @@ lint: ## Lint the Protobuf schema (buf lint)
 proto: lint gen ## Lint + generate
 
 # --- Go control plane ------------------------------------------------------
-.PHONY: build build-dev build-prod run test vet tidy
+.PHONY: build run test vet tidy
 build: ## Build the control-plane binary into bin/
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon ./cmd/orchicon
-
-build-dev: ## Build the dev control-plane binary (bin/orchicon-dev)
-	@mkdir -p $(BIN_DIR)
-	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon-dev ./cmd/orchicon
-
-build-prod: ## Build the prod control-plane binary (bin/orchicon-prod)
-	@mkdir -p $(BIN_DIR)
-	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon-prod ./cmd/orchicon
 
 run: ## Run the control plane from source
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon
@@ -87,29 +77,6 @@ migrate-hash: ## Recompute the Atlas migration directory hash (after hand-edits)
 rls-check: ## CI gate: every tenant_id table must have the RLS policy (docs/09 §8.5)
 	scripts/check-rls.sh "$(DB_URL)"
 
-# --- Docker Compose dev stack ----------------------------------------------
-.PHONY: up down logs ps nuke
-
-COMPOSE_ARGS    := -f $(COMPOSE_FILE)
-
-up: ## Start the local dev stack (Postgres, NATS, OTel, Tempo, Loki, VictoriaMetrics, Grafana)
-	$(COMPOSE) $(COMPOSE_ARGS) up -d
-
-down: ## Stop the local dev stack
-	$(COMPOSE) $(COMPOSE_ARGS) down
-
-logs: ## Tail dev-stack logs
-	$(COMPOSE) $(COMPOSE_ARGS) logs -f --tail=100
-
-ps: ## Show dev-stack status
-	$(COMPOSE) $(COMPOSE_ARGS) ps
-
-nuke: ## Stop dev stack and reset state (preserves volumes; use nuke-all to destroy volumes)
-	$(COMPOSE) $(COMPOSE_ARGS) down
-
-nuke-all: ## Stop and DELETE all dev-stack data volumes (postgres, nats, tempo, loki, victoriametrics, grafana)
-	$(COMPOSE) $(COMPOSE_ARGS) down -v
-
 # --- Frontend --------------------------------------------------------------
 .PHONY: fe-install fe-dev fe-build fe-lint
 fe-install: ## Install frontend dependencies
@@ -124,53 +91,36 @@ fe-build: ## Build the frontend for production
 fe-lint: ## Lint the frontend
 	cd frontend && npm run lint
 
-# --- Dev control script ----------------------------------------------------
-.PHONY: dev-start dev-stop dev-status dev-restart dev-logs
-dev-start: ## Start the full dev environment (stack + control plane + frontend)
-	scripts/dev.sh start
-
-dev-stop: ## Stop the full dev environment
-	scripts/dev.sh stop
-
-dev-status: ## Show status of all dev components
-	scripts/dev.sh status
-
-dev-restart: ## Restart the full dev environment
-	scripts/dev.sh restart
-
-dev-logs: ## Tail control-plane + frontend logs
-	scripts/dev.sh logs
-
-# --- Prod control script ---------------------------------------------------
-.PHONY: dev-prod-start dev-prod-stop dev-prod-status dev-prod-restart dev-prod-logs
-dev-prod-start: ## Start the production-like Orchicon instance (separate ports/infra)
-	scripts/dev-prod.sh start
-
-dev-prod-stop: ## Stop the production-like Orchicon instance
-	scripts/dev-prod.sh stop
-
-dev-prod-status: ## Show status of the production-like instance
-	scripts/dev-prod.sh status
-
-dev-prod-restart: ## Restart the production-like instance
-	scripts/dev-prod.sh restart
-
-dev-prod-logs: ## Tail prod control-plane logs
-	scripts/dev-prod.sh logs
+# --- Single container (deployment) -----------------------------------------
+# The single container is the only full-stack deployment (dev + prod as two
+# instances on offset ports). See scripts/container.sh.
+.PHONY: container-build container-rebuild container-up container-down container-status container-logs container-ps
+container-build: ## Build bin/orchicon + the container image
+	$(MAKE) build
+	scripts/container.sh build
+container-rebuild: ## Stop an instance, rebuild the image, start it (usage: make container-rebuild dev|prod)
+	@test -n "$(instance)" || { echo "usage: make container-rebuild instance=dev|prod"; exit 1; }
+	scripts/container.sh down $(instance)
+	$(MAKE) container-build
+	scripts/container.sh up $(instance)
+container-up: ## Start the dev single-container instance
+	scripts/container.sh up dev
+container-down: ## Stop the dev single-container instance
+	scripts/container.sh down dev
+container-status: ## Show single-container instance status
+	scripts/container.sh status
+container-logs: ## Tail the dev container instance logs
+	scripts/container.sh logs dev
+container-ps: ## List orchicon container instances
+	scripts/container.sh ps
 
 # --- Install ---------------------------------------------------------------
-.PHONY: install-dry-run install-uninstall install-dev install-prod
+.PHONY: install-dry-run install-uninstall
 install-dry-run: ## Dry-run the install script (no changes made)
 	scripts/install.sh --dry-run
 
 install-uninstall: ## Uninstall Orchicon via the install script
 	scripts/install.sh --uninstall
-
-install-dev: ## Build binary to bin/orchicon-dev for dev instance
-	scripts/install-dev.sh
-
-install-prod: ## Build + install to ~/.local/bin/orchicon-prod for prod instance
-	scripts/install-prod.sh
 
 # --- CI --------------------------------------------------------------------
 .PHONY: ci

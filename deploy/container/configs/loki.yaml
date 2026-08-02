@@ -1,18 +1,19 @@
-# Loki — log aggregation backend (Grafana stack).
-# Single-binary monolithic mode: filesystem storage (TSDB index + chunks),
-# OTLP HTTP ingest on :3100/otlp (maps resource attributes to labels, so
-# orchicon.tenant_id / service.name become stream labels).
+# Loki — log backend for the Orchicon single-container image.
+# @DATA_DIR@ is replaced with the container data dir at startup.
 auth_enabled: false
 
 server:
   http_listen_port: 3100
+  # Offset the gRPC listener from the default 9095 (which collides with
+  # another process in the single-container network namespace).
+  grpc_listen_port: 9096
 
 common:
-  path_prefix: /var/loki
+  path_prefix: "@DATA_DIR@/loki"
   storage:
     filesystem:
-      chunks_directory: /var/loki/chunks
-      rules_directory: /var/loki/rules
+      chunks_directory: "@DATA_DIR@/loki/chunks"
+      rules_directory: "@DATA_DIR@/loki/rules"
   replication_factor: 1
   ring:
     kvstore:

@@ -25,6 +25,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   build:
@@ -103,6 +104,52 @@ jobs:
         with:
           name: orchicon-${{ matrix.os }}-${{ matrix.arch }}
           path: orchicon_*
+
+  # Build + push the single-container image to GHCR. The image embeds the
+  # frontend and ships every runtime (postgres, nats, tempo, loki, vm,
+  # collector, grafana, opencode) with the orchicon binary as PID-1
+  # supervisor (`orchicon container`). Tagged with the version + latest.
+  container:
+    name: Container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build frontend
+        run: cd frontend && npm ci && npm run build
+
+      - name: Build binary
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          LDFLAGS="-X github.com/beardedparrott/orchicon/internal/version.gitCommit=$(git rev-parse --short HEAD) \
+                   -X github.com/beardedparrott/orchicon/internal/version.gitTag=${ORCHICON_VERSION} \
+                   -X github.com/beardedparrott/orchicon/internal/version.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          go build -ldflags "$LDFLAGS" -o ./orchicon ./cmd/orchicon
+
+      - name: Build container image
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          cp ./orchicon deploy/container/orchicon
+          docker build -f deploy/container/Dockerfile -t "ghcr.io/beardedparrott/orchicon:${ORCHICON_VERSION}" deploy/container
+          docker tag "ghcr.io/beardedparrott/orchicon:${ORCHICON_VERSION}" ghcr.io/beardedparrott/orchicon:latest
+
+      - name: Push container image
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "ghcr.io/beardedparrott/orchicon:${ORCHICON_VERSION}"
+          docker push ghcr.io/beardedparrott/orchicon:latest
 
   release:
     name: Create Release

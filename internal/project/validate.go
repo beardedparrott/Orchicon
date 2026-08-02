@@ -269,6 +269,14 @@ func validateProjectDir(dir string) (string, error) {
 		return "", fmt.Errorf("resolve absolute path: %w", err)
 	}
 	abs = filepath.Clean(abs)
+	// In the single-container deployment the project_dir is a HOST path that
+	// is only mounted after `scripts/container.sh up` re-creates the
+	// container. It may not exist inside the container yet, so don't require
+	// it here — existence is enforced at dispatch (the adapter fails the
+	// execution if the dir is never mounted).
+	if os.Getenv("ORCHICON_CONTAINER_MODE") == "1" {
+		return abs, nil
+	}
 	info, err := os.Stat(abs)
 	if err != nil {
 		if os.IsNotExist(err) {

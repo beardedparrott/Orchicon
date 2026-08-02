@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"os/exec"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/outbox"
 	"github.com/beardedparrott/orchicon/internal/policy"
+	"github.com/beardedparrott/orchicon/internal/project"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
 	"github.com/beardedparrott/orchicon/internal/recovery"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
@@ -323,6 +325,22 @@ func (s *Server) Run(ctx context.Context) error {
 	// TTL (docs/03 §5). Dev-only: the seed adapter is in-process
 	// (docs/04 §6.3); production adapters heartbeat themselves.
 	go s.heartbeatDevAdapter(ctx)
+
+	// Container mode: keep the project-mounts manifest (on the data volume)
+	// in sync with the projects table so scripts/container.sh can mount the
+	// project dirs/files the user selected. ORCHICON_DATA_DIR is only set by
+	// the single-container supervisor. Saving a project dir refreshes the
+	// manifest immediately (hook); the periodic writer is the safety net.
+	if dataDir := os.Getenv("ORCHICON_DATA_DIR"); dataDir != "" {
+		go runProjectMountsWriter(ctx, s.pool, s.log, dataDir)
+		project.SetOnProjectChanged(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := writeProjectMountsManifest(ctx, s.pool, dataDir); err != nil {
+				s.log.Warn("project mounts manifest refresh failed", "error", err)
+			}
+		})
+	}
 
 	// Start the scheduled backup loop. Reads backup_schedule and
 	// backup_retention_days from tenant_settings every 60s and runs

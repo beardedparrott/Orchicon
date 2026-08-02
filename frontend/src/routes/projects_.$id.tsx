@@ -52,6 +52,9 @@ function ProjectDetailPage() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [viewMode, setViewMode] = useState<"detail" | "code">("detail");
+  // True after the user saves a project directory, to remind them the
+  // container must be restarted before the mount takes effect.
+  const [dirChanged, setDirChanged] = useState(false);
 
   const { register, handleSubmit, reset } = useForm({
     defaultValues: { name: "", slug: "" },
@@ -312,10 +315,26 @@ function ProjectDetailPage() {
             ) : (
               <p className="text-sm text-muted-foreground">No directory set.</p>
             )}
+            {dirChanged && project.projectDir && (
+              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+                Project directory saved. This directory is mounted into the
+                Orchicon container from the host — <strong>restart the instance
+                for the change to take effect</strong>:
+                <code className="ml-1 rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                  scripts/container.sh up dev
+                </code>
+                {" "}(prod: <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">up prod</code>).
+              </div>
+            )}
             {editing && (
               <ProjectDirBrowser
                 currentDir={project.projectDir || ""}
-                onSelect={(path) => updateProjectDir.mutate({ id: project.id, projectDir: path })}
+                onSelect={(path) =>
+                  updateProjectDir.mutate(
+                    { id: project.id, projectDir: path },
+                    { onSuccess: () => setDirChanged(true) },
+                  )
+                }
                 isSaving={updateProjectDir.isPending}
               />
             )}

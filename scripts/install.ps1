@@ -68,12 +68,12 @@ if (-not $InstallDir) {
 if ($Uninstall) {
     $bin = Join-Path $InstallDir "orchicon.exe"
 
-    # Stop the binary cleanly before removing it. `dev stop` SIGKILLs
-    # orphans internally too; the taskkill fallback covers a binary
-    # that was launched manually (so it has no PID file).
+    # Stop the binary cleanly before removing it. `serve --stop` signals
+    # the PID-file process; the taskkill fallback covers a binary that
+    # was launched manually (so it has no PID file).
     if (Test-Path $bin) {
-        Write-Info "stopping dev stack via '$bin dev stop'…"
-        if (-not $DryRun) { & $bin dev stop 2>$null | Out-Null }
+        Write-Info "stopping server via '$bin serve --stop'…"
+        if (-not $DryRun) { & $bin serve --stop 2>$null | Out-Null }
     }
     $taskkill = Get-Command "taskkill" -ErrorAction SilentlyContinue
     if ($null -ne $taskkill) {
@@ -104,24 +104,24 @@ if ($Clean) {
 
     $bin = Join-Path $InstallDir "orchicon.exe"
 
-    # 1. Stop dev stack via the binary (if available).
+    # 1. Stop the server via the binary (if available).
     if (Test-Path $bin) {
-        Write-Info "stopping dev stack via '$bin dev stop'…"
+        Write-Info "stopping server via '$bin serve --stop'…"
         if (-not $DryRun) {
-            & $bin dev stop 2>$null | Out-Null
+            & $bin serve --stop 2>$null | Out-Null
         }
     } else {
-        # Fall back to docker compose if the binary is gone.
+        # Fall back to docker if the binary is gone.
         $docker = Get-Command "docker" -ErrorAction SilentlyContinue
         if ($null -ne $docker) {
-            Write-Info "stopping orchicon containers via docker compose…"
+            Write-Info "removing orchicon container instances…"
             if (-not $DryRun) {
-                docker compose -p orchicon down 2>$null | Out-Null
+                docker rm -f orchicon-cnt-dev orchicon-cnt-prod 2>$null | Out-Null
             }
         }
     }
 
-    # 1b. Belt-and-suspenders orphan cleanup. `dev stop` SIGKILLs
+    # 1b. Belt-and-suspenders orphan cleanup. `serve --stop` signals the PID file;
     # orphans by name internally; the taskkill fallback covers the
     # case where the binary itself was launched manually (no PID
     # file). On Windows, `taskkill /F /IM orchicon.exe` matches the
@@ -168,11 +168,11 @@ if ($ForceClean) {
 
     $bin = Join-Path $InstallDir "orchicon.exe"
 
-    # 1. Stop dev stack via the binary (if available).
+    # 1. Stop the server via the binary (if available).
     if (Test-Path $bin) {
-        Write-Info "stopping dev stack via '$bin dev stop'..."
+        Write-Info "stopping server via '$bin serve --stop'..."
         if (-not $DryRun) {
-            & $bin dev stop 2>$null | Out-Null
+            & $bin serve --stop 2>$null | Out-Null
         }
     }
 
@@ -192,7 +192,8 @@ if ($ForceClean) {
     if ($null -ne $docker) {
         Write-Info "destroying all orchicon Docker volumes..."
         if (-not $DryRun) {
-            docker compose -p orchicon down -v --remove-orphans 2>$null | Out-Null
+            docker rm -f orchicon-cnt-dev orchicon-cnt-prod 2>$null | Out-Null
+            docker volume rm orchicon-cnt-dev-data orchicon-cnt-prod-data 2>$null | Out-Null
             Write-Ok "Docker volumes destroyed"
         }
     } else {
@@ -301,10 +302,10 @@ if (-not $pathDirs -and -not $DryRun) {
 Write-Host ""
 Write-Host "Quick start:" -ForegroundColor White
 Write-Host "  orchicon --help           Show available commands" -ForegroundColor DarkGray
-Write-Host "  orchicon dev start        Start the full dev environment" -ForegroundColor DarkGray
+Write-Host "  scripts/container.sh up dev     Start the dev single-container instance" -ForegroundColor DarkGray
 Write-Host "  orchicon dev status       Check what's running" -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "Note: orchicon dev start requires Docker (for Postgres, NATS, SigNoz)." -ForegroundColor DarkGray
-Write-Host "The binary embeds the compose stack, migrations, and frontend." -ForegroundColor DarkGray
+Write-Host "Note: the full stack runs as a single Docker container (orchicon container)." -ForegroundColor DarkGray
+Write-Host "The binary embeds the container runtime configs, migrations, and frontend." -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "Documentation: https://github.com/$GitHubOwner/$GitHubRepo#readme" -ForegroundColor DarkGray

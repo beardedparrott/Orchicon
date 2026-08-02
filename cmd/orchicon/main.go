@@ -48,20 +48,10 @@ func main() {
 	// dispatch to it; otherwise run the control plane (default).
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
-		case "dev":
-			os.Exit(runDev(os.Args[2:]))
-		case "start":
-			os.Exit(runDev([]string{"start"}))
-		case "stop":
-			os.Exit(runDev([]string{"stop"}))
-		case "status":
-			os.Exit(runDev([]string{"status"}))
 		case "serve":
 			os.Exit(runServe(os.Args[2:]))
-		case "restart":
-			os.Exit(runDev([]string{"restart"}))
-		case "logs":
-			os.Exit(runDev([]string{"logs"}))
+		case "container":
+			os.Exit(runContainer(os.Args[2:]))
 		case "mcp":
 			os.Exit(runMCP(context.Background(), os.Args[2:], log))
 		case "db":
@@ -211,10 +201,10 @@ func printHelp() {
 
 Usage:
   %s                Run the control plane (API + relay + reconcilers)
-  %s dev start      Start the dev stack (compose → migrate → serve)
-  %s dev stop       Stop the dev stack
-  %s dev status     Show what's running
-  %s serve          Run the control plane with embedded frontend (no compose)
+  %s serve          Run the control plane with embedded frontend (headless)
+  %s serve --detach Fork the server into the background (PID file + /healthz)
+  %s serve --stop   Stop a detached server
+  %s container      Run the whole stack as PID 1 inside the single-container image
   %s mcp            Start the MCP stdio server (for opencode tool integration)
   %s db backup      Create a database snapshot
   %s db list        List available backups
@@ -223,17 +213,12 @@ Usage:
 `, bin, version.Current().Tag, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin)
 
 	fmt.Printf(`
-Short aliases:
-  %s start         Same as "%s dev start"
-  %s stop          Same as "%s dev stop"
-  %s logs          Same as "%s dev logs"
-`, bin, bin, bin, bin, bin, bin)
-
-	fmt.Printf(`
   %s version       Print version info
 
-The binary embeds the Docker Compose stack, migrations, and the frontend
-bundle, so `+"`%s start`"+` is the complete one-command experience.
+The binary embeds the single-container runtime configs, migrations, and
+the frontend bundle. Run the full stack with `+"`docker run`"+` (see
+DOCUMENTATION.md §Single-Container Deployment) or `+"`%s container`"+` as
+the container's PID-1 supervisor.
 `, bin, bin)
 }
 
