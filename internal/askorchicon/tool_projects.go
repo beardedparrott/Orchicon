@@ -80,14 +80,20 @@ func toolGetProject(ctx context.Context, pool *db.Pool, args json.RawMessage) (j
 
 func toolCreateProject(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		Name  string `json:"name"`
-		Goals string `json:"goals"`
+		Title      string `json:"title"`
+		Name       string `json:"name"`
+		Goals      string `json:"goals"`
+		ProjectDir string `json:"project_dir"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
 	}
-	if params.Name == "" {
-		return nil, fmt.Errorf("name is required")
+	name := params.Title
+	if name == "" {
+		name = params.Name
+	}
+	if name == "" {
+		return nil, fmt.Errorf("title is required")
 	}
 	tenantID := tenant.FromContext(ctx)
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)
@@ -100,12 +106,13 @@ func toolCreateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		goalsJSON = []byte(fmt.Sprintf(`"%s"`, params.Goals))
 	}
 	project, err := db.CreateProject(ctx, ttx.Tx, db.ProjectRow{
-		ID:       db.NewID(),
-		TenantID: tenantID,
-		Name:     params.Name,
-		Slug:     makeSlug(params.Name),
-		Status:   "active",
-		Goals:    goalsJSON,
+		ID:         db.NewID(),
+		TenantID:   tenantID,
+		Name:       name,
+		Slug:       makeSlug(name),
+		Status:     "active",
+		Goals:      goalsJSON,
+		ProjectDir: params.ProjectDir,
 	})
 	if err != nil {
 		return nil, err
@@ -119,6 +126,7 @@ func toolCreateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 func toolUpdateProject(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ID         string `json:"id"`
+		Title      string `json:"title"`
 		Name       string `json:"name"`
 		Goals      string `json:"goals"`
 		ProjectDir string `json:"project_dir"`
@@ -140,8 +148,12 @@ func toolUpdateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		return nil, err
 	}
 	update := db.UpdateProjectFields{}
-	if params.Name != "" {
-		update.Name = &params.Name
+	title := params.Title
+	if title == "" {
+		title = params.Name
+	}
+	if title != "" {
+		update.Name = &title
 	}
 	if params.Goals != "" {
 		g := []byte(fmt.Sprintf(`"%s"`, params.Goals))
@@ -151,6 +163,36 @@ func toolUpdateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		update.ProjectDir = &params.ProjectDir
 	}
 	project, err := db.UpdateProject(ctx, ttx.Tx, tenantID, params.ID, current.Version, update)
+	if err != nil {
+		return nil, err
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return json.Marshal(project)
+}
+
+func toolArchiveProject(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if params.ID == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	tenantID := tenant.FromContext(ctx)
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetProject(ctx, ttx.Tx, tenantID, params.ID)
+	if err != nil {
+		return nil, err
+	}
+	project, err := db.ArchiveProject(ctx, ttx.Tx, tenantID, params.ID, current.Version)
 	if err != nil {
 		return nil, err
 	}

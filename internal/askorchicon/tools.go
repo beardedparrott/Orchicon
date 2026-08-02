@@ -4,62 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
 // ToolIntent represents a detected tool call from the user's message.
-type ToolIntent struct {
-	ToolName string
-	Args     json.RawMessage
-}
-
-// DetectToolIntents analyzes the user's message and detects tool-callable
-// intents. Read-only tools are returned for automatic execution.
-// Mutating tools are detected but NOT returned (model must ask first).
-func (r *ToolRegistry) DetectToolIntents(msg string) []ToolIntent {
-	lower := strings.ToLower(msg)
-	var intents []ToolIntent
-
-	// Mapping: keywords → tool name → args (nil for list tools).
-	patterns := []struct {
-		keywords []string
-		tool     string
-		args     json.RawMessage
-	}{
-		// --- Read-only list tools ---
-		{[]string{"list projects", "show projects", "what projects", "my projects", "all projects"}, "list_projects", nil},
-		{[]string{"list work items", "show work items", "what work items", "all work items", "my work items", "what do i need to do", "what's on my plate"}, "list_work_items", nil},
-		{[]string{"list workers", "show workers", "what workers", "all workers"}, "list_workers", nil},
-		{[]string{"list workflows", "show workflows", "what workflows", "all workflows"}, "list_workflows", nil},
-		{[]string{"list executions", "show executions", "all executions"}, "list_executions", nil},
-		{[]string{"show settings", "get settings", "what are my settings", "current settings", "default model"}, "get_settings", nil},
-		{[]string{"usage", "cost", "spend", "how much", "token usage", "billing"}, "get_usage", nil},
-
-		// --- Read-only diagnostic tools ---
-		{[]string{"diagnose", "why did it fail", "what went wrong", "failure", "error in", "troubleshoot"}, "diagnose_failure", nil},
-
-		// --- Scheduling / update patterns ---
-		// "schedule", "set time", "set [item] to scheduled" — refresh work items
-		// so the model has current data to reference by number or title.
-		{[]string{"schedule", "set time", "set to scheduled", "scheduled for", "schedule for", "scheduled_start"}, "list_work_items", nil},
-	}
-
-	for _, p := range patterns {
-		for _, kw := range p.keywords {
-			if strings.Contains(lower, kw) {
-				// Only return non-mutating tools for automatic execution.
-				td, ok := r.Get(p.tool)
-				if ok && !td.Mutating {
-					intents = append(intents, ToolIntent{ToolName: p.tool, Args: p.args})
-				}
-				break
-			}
-		}
-	}
-	return intents
-}
 
 // ToolFn is the signature for every tool function.
 // It receives the tenant-scoped context, the DB pool, and JSON arguments,
@@ -152,7 +101,7 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 		},
 		{
 			Name:        "create_project",
-			Description: "Create a new project. Requires title. Optionally accepts goals, project_dir, context_files.",
+			Description: "Create a new project. Requires title. Optionally accepts goals, project_dir.",
 			Mutating:    true,
 			Fn:          toolCreateProject,
 			Properties:  map[string]PropertySchema{"title": {Type: "string", Description: "Project title"}, "goals": {Type: "string", Description: "Project goals (markdown)"}, "project_dir": {Type: "string", Description: "Project directory path"}},
@@ -160,10 +109,10 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 		},
 		{
 			Name:        "update_project",
-			Description: "Update an existing project's fields (title, goals, project_dir, context_files, status).",
+			Description: "Update an existing project's fields (title, goals, project_dir).",
 			Mutating:    true,
 			Fn:          toolUpdateProject,
-			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Project ID"}, "title": {Type: "string", Description: "New title"}, "goals": {Type: "string", Description: "New goals"}, "project_dir": {Type: "string", Description: "New project directory"}, "status": {Type: "string", Description: "New status"}},
+			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Project ID"}, "title": {Type: "string", Description: "New title"}, "goals": {Type: "string", Description: "New goals"}, "project_dir": {Type: "string", Description: "New project directory"}},
 			Required:    []string{"id"},
 		},
 		{
@@ -181,6 +130,14 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Fn:          toolCreateProjectDir,
 			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Project ID"}, "scaffold": {Type: "boolean", Description: "Whether to create scaffold subdirectories"}},
 			Required:    []string{"project_id"},
+		},
+		{
+			Name:        "archive_project",
+			Description: "Archive a project by ID. The project is marked archived and excluded from active work.",
+			Mutating:    true,
+			Fn:          toolArchiveProject,
+			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Project ID"}},
+			Required:    []string{"id"},
 		},
 
 		// --- Work Items ---
@@ -231,10 +188,18 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 		},
 		{
 			Name:        "schedule_work_item",
-			Description: "Schedule a work item: set its status to scheduled and optionally set a start time. Provide work_item_id and optionally scheduled_time (ISO 8601 or 'N minutes from now').",
+			Description: "Schedule a work item: set its status to scheduled and optionally set a start time. Provide id and optionally scheduled_time (ISO 8601 or 'N minutes from now').",
 			Mutating:    true,
 			Fn:          toolScheduleWorkItem,
 			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Work item ID"}, "scheduled_time": {Type: "string", Description: "Optional scheduled time (ISO 8601 or 'N minutes from now')"}},
+			Required:    []string{"id"},
+		},
+		{
+			Name:        "delete_work_item",
+			Description: "Soft-delete a work item by ID (status → cancelled). This is reversible via update_work_item.",
+			Mutating:    true,
+			Fn:          toolDeleteWorkItem,
+			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Work item ID"}},
 			Required:    []string{"id"},
 		},
 
@@ -258,8 +223,56 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Description: "Create a new worker with a name and optional runtime/model configuration.",
 			Mutating:    true,
 			Fn:          toolCreateWorker,
-			Properties:  map[string]PropertySchema{"name": {Type: "string", Description: "Worker name"}, "runtime_ref": {Type: "string", Description: "Runtime reference (e.g. opencode)"}, "model_ref": {Type: "string", Description: "Model reference (e.g. opencode-go/deepseek-v4-flash)"}},
+			Properties:  map[string]PropertySchema{"name": {Type: "string", Description: "Worker name"}, "purpose": {Type: "string", Description: "Worker purpose"}, "runtime_ref": {Type: "string", Description: "Runtime reference (e.g. opencode)"}, "model_ref": {Type: "string", Description: "Model reference (e.g. opencode-go/deepseek-v4-flash)"}},
 			Required:    []string{"name"},
+		},
+		{
+			Name:        "update_worker",
+			Description: "Update a worker's header fields (name, purpose).",
+			Mutating:    true,
+			Fn:          toolUpdateWorker,
+			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Worker ID"}, "name": {Type: "string", Description: "New name"}, "purpose": {Type: "string", Description: "New purpose"}},
+			Required:    []string{"id"},
+		},
+		{
+			Name:        "delete_worker",
+			Description: "Delete a worker by ID and all of its versions. This is irreversible.",
+			Mutating:    true,
+			Fn:          toolDeleteWorker,
+			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Worker ID"}},
+			Required:    []string{"id"},
+		},
+		{
+			Name:        "list_worker_versions",
+			Description: "List all versions of a worker by worker_id, with their status (draft/published/deprecated).",
+			Mutating:    false,
+			Fn:          toolListWorkerVersions,
+			Properties:  map[string]PropertySchema{"worker_id": {Type: "string", Description: "Worker ID"}},
+			Required:    []string{"worker_id"},
+		},
+		{
+			Name:        "publish_worker_version",
+			Description: "Publish a draft worker version, making it immutable and dispatchable. Provide worker_id and the version number.",
+			Mutating:    true,
+			Fn:          toolPublishWorkerVersion,
+			Properties:  map[string]PropertySchema{"worker_id": {Type: "string", Description: "Worker ID"}, "version": {Type: "number", Description: "Version number to publish"}},
+			Required:    []string{"worker_id", "version"},
+		},
+		{
+			Name:        "deprecate_worker_version",
+			Description: "Deprecate a published worker version. Provide worker_id and the version number.",
+			Mutating:    true,
+			Fn:          toolDeprecateWorkerVersion,
+			Properties:  map[string]PropertySchema{"worker_id": {Type: "string", Description: "Worker ID"}, "version": {Type: "number", Description: "Version number to deprecate"}},
+			Required:    []string{"worker_id", "version"},
+		},
+		{
+			Name:        "set_active_worker_version",
+			Description: "Set the active (default) version of a worker. Provide worker_id and a published version number.",
+			Mutating:    true,
+			Fn:          toolSetActiveWorkerVersion,
+			Properties:  map[string]PropertySchema{"worker_id": {Type: "string", Description: "Worker ID"}, "version": {Type: "number", Description: "Published version number to make active"}},
+			Required:    []string{"worker_id", "version"},
 		},
 
 		// --- Workflows ---
@@ -284,6 +297,23 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Fn:          toolCreateWorkflow,
 			Properties:  map[string]PropertySchema{"name": {Type: "string", Description: "Workflow name"}},
 			Required:    []string{"name"},
+		},
+
+		// --- Workflow Runs ---
+		{
+			Name:        "list_workflow_runs",
+			Description: "List workflow runs, optionally filtered by workflow_id or status.",
+			Mutating:    false,
+			Fn:          toolListWorkflowRuns,
+			Properties:  map[string]PropertySchema{"workflow_id": {Type: "string", Description: "Optional workflow ID filter"}, "status": {Type: "string", Description: "Optional status filter"}},
+		},
+		{
+			Name:        "get_workflow_run",
+			Description: "Get a single workflow run by ID, including its current step and status.",
+			Mutating:    false,
+			Fn:          toolGetWorkflowRun,
+			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Workflow run ID"}},
+			Required:    []string{"id"},
 		},
 
 		// --- Executions ---
@@ -321,10 +351,36 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 		},
 		{
 			Name:        "get_usage",
-			Description: "Get token usage and cost data. Optionally filter by project, time range.",
+			Description: "Get token usage and cost data. Optionally filter by project.",
 			Mutating:    false,
 			Fn:          toolGetUsage,
 			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}},
+		},
+
+		// --- Policies ---
+		{
+			Name:        "list_policies",
+			Description: "List all policies for the current tenant, optionally filtered by status.",
+			Mutating:    false,
+			Fn:          toolListPolicies,
+			Properties:  map[string]PropertySchema{"status": {Type: "string", Description: "Optional status filter (draft/published)"}},
+		},
+		{
+			Name:        "get_policy",
+			Description: "Get a single policy by ID.",
+			Mutating:    false,
+			Fn:          toolGetPolicy,
+			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Policy ID"}},
+			Required:    []string{"id"},
+		},
+
+		// --- Recoveries ---
+		{
+			Name:        "list_recoveries",
+			Description: "List recovery executions, optionally filtered by project or status.",
+			Mutating:    false,
+			Fn:          toolListRecoveries,
+			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "status": {Type: "string", Description: "Optional status filter"}},
 		},
 
 		// --- Settings ---

@@ -6,7 +6,11 @@ import (
 )
 
 func TestBuildConfigContentInjectPermissionDeny(t *testing.T) {
-	out := BuildConfigContent("orchicon-worker", "you are a worker", "opencode/deepseek-v4-flash-free")
+	out := BuildConfigContent(ConfigOptions{
+		AgentName:   "orchicon-worker",
+		AgentPrompt: "you are a worker",
+		ModelRef:    "opencode/deepseek-v4-flash-free",
+	})
 
 	var cfg map[string]any
 	if err := json.Unmarshal([]byte(out), &cfg); err != nil {

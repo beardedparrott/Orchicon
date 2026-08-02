@@ -69,11 +69,33 @@ Your purpose is to help users accomplish tasks inside Orchicon and to answer que
 		b.WriteString("\n")
 	}
 
-	// 3. Available tools — auto-generated from the tool registry.
+	// 2b. How Orchicon works — context the agent needs to reason about the
+	// platform, its entities, and the execution model.
+	b.WriteString(`
+## About Orchicon
+Orchicon is an AI orchestration platform. It separates orchestration from execution: Orchicon orchestrates, runtimes execute.
+
+- **Control plane**: a single Go binary running k8s-style reconcilers that converge the world state on the desired state. The API is Protobuf + Connect (gRPC + REST + streaming); data lives in PostgreSQL with row-level security.
+- **First-class entities**: Projects (each with a project_dir and context_files), Workers (draft → published → deprecated → retired; published versions are immutable), Work Items (Epic → Feature → Task → Subtask, max 4 levels, forming a DAG), Workflows (step DAGs with gates) and their Runs, Worker Executions, Policies (Rego/OPA), Approvals, Webhooks, Recoveries, and tenant Settings.
+- **Execution**: the TaskReconciler creates WorkerExecutions for ready work items and dispatches them to a runtime adapter (opencode) — in-process or inside a per-workflow runtime container. A worker's model_ref is pinned by a human; there is no automatic model failover.
+- **Recovery**: execution failures are recoverable by default (opt-out). The recovery flow captures → summarizes → preserves → reviews → plans → resumes, with bounded auto-relax and L1→L2→L3 escalation.
+- **Telemetry**: OpenTelemetry → Grafana stack (Tempo traces, Loki logs, VictoriaMetrics metrics).
+- **Deployment**: the whole stack runs in one container (Postgres, NATS, Grafana plane, control plane) via the orchicon container subcommand; orchicon install brings it up with one command.
+- **Projects**: a project's project_dir is where workers operate; context_files are injected into prompts. Workers must operate within their assigned project directory.
+`)
+
+	// 3. Available tools — auto-generated from the tool registry. These are
+	// exposed to the model natively through the Orchicon MCP server (named
+	// `orchicon_<tool>`), so this section only orients the model — it does
+	// not emulate a text tool-call protocol.
 	b.WriteString("\n## Available Tools\n")
-	b.WriteString("You call these tools by emitting a tool_call with the tool's function name and arguments in JSON. The system will execute the tool and return the result.\n\n")
+	b.WriteString("Orchicon's tools are available to you as MCP tools named `orchicon_<tool>` — call them directly through your tool mechanism and the system executes them against Orchicon, returning real results. Mutating tools run only after user confirmation.\n\n")
 	for _, td := range toolRegistry.List() {
-		b.WriteString(fmt.Sprintf("- `%s`: %s\n", td.Name, td.Description))
+		mutability := "read-only"
+		if td.Mutating {
+			mutability = "mutates data — requires user confirmation"
+		}
+		b.WriteString(fmt.Sprintf("- `orchicon_%s`: %s (%s)\n", td.Name, td.Description, mutability))
 	}
 	b.WriteString("\nAlways use these tools to perform actions. Do not simulate actions — call the appropriate tool.")
 

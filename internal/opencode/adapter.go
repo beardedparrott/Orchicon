@@ -268,10 +268,18 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	if runDir != "" {
 		cmd.Dir = runDir
 	}
-	// Build the OPENCODE_CONFIG_CONTENT with the agent config and
-	// any MCP servers from the user's opencode config. This merges
-	// the user's MCP tools into every worker execution automatically.
-	cfgJSON := BuildConfigContent(workerAgent, manifest.SystemPrompt, modelRef)
+	// Build the OPENCODE_CONFIG_CONTENT with the agent config, the user's
+	// MCP servers, AND the built-in Orchicon MCP (tenant-scoped) so every
+	// worker execution gets Orchicon's tools natively via MCP. The MCP
+	// sidecar runs in the same namespace as the plane and reaches the
+	// plane's Postgres through the inherited DSN.
+	cfgJSON := BuildConfigContent(ConfigOptions{
+		AgentName:   workerAgent,
+		AgentPrompt: manifest.SystemPrompt,
+		ModelRef:    modelRef,
+		TenantID:    execRow.TenantID,
+		OrchiconMCP: true,
+	})
 	env := append(os.Environ(),
 		"OPENCODE_EXECUTION_ID="+execRow.ID,
 		"OPENCODE_TASK_ID="+manifest.TaskID,
@@ -923,7 +931,18 @@ const (
 // and runtime dispatch paths: the plane's environment plus the opencode
 // overrides (execution/task/project ids + the merged agent/MCP config).
 func (a *Adapter) opencodeEnv(execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, modelRef string) []string {
-	cfgJSON := BuildConfigContent(workerAgent, manifest.SystemPrompt, modelRef)
+	// Runtime-container executions deliberately do NOT register the
+	// built-in Orchicon MCP: the runtime container is an isolated, root-free
+	// execution sandbox with no network route to the plane's Postgres, and
+	// handing it the plane's DB DSN would break the security model. The
+	// user's own opencode-config MCP servers (which need no Orchicon DB)
+	// are still merged in.
+	cfgJSON := BuildConfigContent(ConfigOptions{
+		AgentName:   workerAgent,
+		AgentPrompt: manifest.SystemPrompt,
+		ModelRef:    modelRef,
+		OrchiconMCP: false,
+	})
 	return append(os.Environ(),
 		"OPENCODE_EXECUTION_ID="+execRow.ID,
 		"OPENCODE_TASK_ID="+manifest.TaskID,
