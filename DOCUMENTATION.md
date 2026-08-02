@@ -126,7 +126,9 @@ graph TB
     end
 
     subgraph "Runtime"
-        OpenCode[OpenCode CLI]
+        RuntimeDaemon[orchicon runtime-daemon<br/>host · owns Docker socket]
+        RuntimeContainer[orchicon-runtime-&lt;runID&gt;<br/>per active workflow run]
+        OpenCode[OpenCode CLI<br/>inside runtime container]
         FutureRuntime[Future Runtimes<br/>gRPC Sidecar]
     end
 
@@ -148,6 +150,9 @@ graph TB
     NATS --> WebhookDispatch
     WebhookDispatch --> HTTP
     AdapterBridge --> OpenCode
+    AdapterBridge --> RuntimeDaemon
+    RuntimeDaemon --> RuntimeContainer
+    RuntimeContainer --> OpenCode
     AdapterBridge -.-> FutureRuntime
     AIGateway --> OpenCode
     Connect --> Policy
@@ -194,7 +199,8 @@ sequenceDiagram
     R->>R: Dependency resolution
     R->>R: Worker selection (health, LRU)
     R->>A: Dispatch execution
-    A->>RT: Start subprocess (opencode CLI)
+    A->>RT: Dispatch into workflow runtime container (orchicon runtime-daemon)
+    RT->>RT: orchicon runtime-supervisor runs opencode CLI
     RT-->>A: JSON telemetry events (stdout)
     A->>DB: INSERT execution records
     A->>N: Publish execution events
@@ -218,11 +224,11 @@ sequenceDiagram
 
 6. **RLS-backed Tenant Isolation** — Every tenant-scoped table has a PostgreSQL Row-Level Security policy as a backstop. The data-access layer also injects `app.tenant_id` via session variables.
 
-7. **Adapter Bridge Pattern** — Runtimes are pluggable gRPC sidecars. The built-in adapter wraps the OpenCode CLI as a subprocess, parsing its JSON telemetry output. Future runtimes implement the `orchicon.adapter.v1` gRPC contract.
+7. **Adapter Bridge Pattern** — Runtimes are pluggable gRPC sidecars. The built-in adapter drives the OpenCode CLI — locally as a subprocess (headless `orchicon serve`) or, for workflow-run executions, inside the per-workflow runtime container via `orchicon runtime-daemon` — parsing its JSON telemetry output. Future runtimes implement the `orchicon.adapter.v1` gRPC contract.
 
 8. **Worker Sandboxing (layered defense)** — Every worker execution is contained by three layers, all applied to **every** worker automatically and enforced even under `--auto`:
     - **opencode permission deny rules** (`permissionRules()` in `internal/opencode/config.go`) injected via `OPENCODE_CONFIG_CONTENT`. `external_directory` is `deny` (any tool touching a path outside the project's `--dir` is blocked), and an extensive `bash` deny list blocks `rm`/`sudo`/`dd`/`mkfs*`/`fdisk`/`parted`/`shred`/`wipefs`/LVM tools, root-wide `chmod -R`/`chown -R`, `/dev/sd*` redirection, shell-construct smuggling variants (`(rm -rf /) &`, `{ rm -rf /; }`, chained `;`/`&&`/`&`/`|`), and download-and-execute. No catch-all `*` allow rule is emitted.
-    - **OS-level execution guard** (`internal/opencode/guard.go`) — shims dangerous binaries (`rm`, `sudo`, `dd`, `mkfs*`, `fdisk`, `parted`, `shred`, `wipefs`, LVM, `chmod`, `chown`, `mv`, `cp`, `ln`) ahead of the worker's PATH. Any process the worker spawns — including a python TUI, `os.system`, or `subprocess.run` issuing `rm -rf /` — resolves the command through the shim and is refused when it targets `/`, `~`, `$HOME`, `/home`, or any path outside the project directory. This closes the subprocess hole that opencode's rules cannot see (a destructive command issued inside a python TUI only ever looks like `python tui.py` to opencode). This is defense-in-depth, not a container: a worker that resolves the real binary by absolute path or writes its own tool still escapes — the single-container deployment (§Single-Container Deployment) is the containment layer for those cases.
+    - **OS-level execution guard** (`internal/guard/guard.go`) — shims dangerous binaries (`rm`, `sudo`, `dd`, `mkfs*`, `fdisk`, `parted`, `shred`, `wipefs`, LVM, `chmod`, `chown`, `mv`, `cp`, `ln`) ahead of the worker's PATH. Any process the worker spawns — including a python TUI, `os.system`, or `subprocess.run` issuing `rm -rf /` — resolves the command through the shim and is refused when it targets `/`, `~`, `$HOME`, `/home`, or any path outside the project directory. This closes the subprocess hole that opencode's rules cannot see (a destructive command issued inside a python TUI only ever looks like `python tui.py` to opencode). This is defense-in-depth, not a container: a worker that resolves the real binary by absolute path or writes its own tool still escapes. The containment layer for those cases is the workflow runtime container (§Workflow Runtime Containers) — every execution runs inside a short-lived, root-free container, so even a fully compromised worker cannot touch the host.
     - **Worker prompt context** — every canned worker's AGENTS.md carries a "Safety rules" block (see `internal/db/seed_workers.go`) forbidding destructive commands, destructive "security testing", and scope creep. Review/QA workers additionally run the **safety lint** — Semgrep (a cross-platform Python CLI, works on Linux/macOS/Windows) with Orchicon's destructive-command ruleset — by running `semgrep scan --config .orchicon/semgrep_orchicon.yml --error .` from the project root. The ruleset and a `.semgrepignore` are written into every project by the control plane (`internal/opencode/lint.go`).
 
 ### Domain Model
@@ -321,12 +327,17 @@ Orchicon/
 │
 ├── cmd/
 │   └── orchicon/                # Go binary entry point
-│       ├── main.go              # Subcommand dispatch (serve, container, db, version, etc.)
+│       ├── main.go              # Subcommand dispatch (serve, container, runtime-*, db, version, etc.)
 │       ├── container.go         # `orchicon container` PID-1 supervisor
 │       ├── serve.go             # `orchicon serve` headless control plane
 │       ├── serve_state.go       # Detached serve state (PID file, logs)
+│       ├── runtime.go           # `runtime-daemon` / `runtime-supervisor` / `runtime-client`
 │       ├── procattr_unix.go     # Unix process attributes for background fork
 │       └── procattr_windows.go  # Windows process attributes
+│
+├── deploy/
+│   ├── container/               # Single-container image (Dockerfile + embedded configs)
+│   └── runtime/                 # Workflow runtime container image (toolchain base)
 │
 ├── internal/
 │   ├── adapter/                 # RuntimeAdapterService (list adapters, capabilities)
@@ -342,6 +353,8 @@ Orchicon/
 │   ├── middleware/              # Auth + tenant resolution middleware
 │   ├── migrate/                 # In-binary SQL migration runner
 │   ├── opencode/                # OpenCode CLI adapter bridge + stall detection
+│   ├── guard/                   # OS-level execution guard shim (leaf package)
+│   ├── runtime/                 # Workflow runtime containers: daemon client, in-container agent, lifecycle
 │   ├── outbox/                  # Outbox event types + background relay
 │   ├── policy/                  # OPA/Rego policy engine + PolicyService
 │   ├── project/                 # ProjectService + validation
@@ -577,7 +590,10 @@ orchicon version
 | Command | Description |
 |---|---|
 | `orchicon container` | Run the whole stack as PID-1 (single-container image) |
-| `scripts/container.sh` | Build / up / down / status / logs / ps for dev + prod container instances |
+| `orchicon runtime-daemon` | Host process owning the Docker socket; spawns per-workflow runtime containers |
+| `orchicon runtime-supervisor` | Runtime container PID 1 (streams `opencode run`) |
+| `orchicon runtime-client` | Forwards dispatches into the runtime container |
+| `scripts/container.sh` | Build / up / down / status / logs / ps / runtime-daemon / runtime-stop for dev + prod container instances |
 | `orchicon serve` | Run the control plane with embedded frontend (headless, migrations on boot) |
 | `orchicon serve --detach` / `--stop` | Manage a background `serve` instance (PID file; logs in `.dev/logs/`) |
 | `orchicon db` | Database maintenance: `backup`, `restore`, `list`, `prune` |
@@ -816,6 +832,27 @@ scripts/container.sh down dev         # stop + remove the dev instance
 
 Dual-instance (dev + prod dogfooding) is two containers with offset published ports (`-p 8080:8080 -p 3002:3000` and `-p 8091:8080 -p 3003:3000`), separate data volumes.
 
+### Workflow Runtime Containers
+
+Worker executions run inside **one short-lived container per active workflow run** (Azure Pipelines self-hosted agent model). It is created when a run leaves `pending`, every execution for that workflow is dispatched into it, and it is killed when the run reaches a terminal state (`completed` / `failed` / `aborted`). Everything inside is ephemeral — installed tools, caches, and sessions are wiped on teardown, so each workflow starts from a pristine, fully-armed environment.
+
+**Components:**
+
+- **`orchicon runtime-daemon`** (host process): the only process with access to the Docker socket. Serves a narrow HTTP API over a unix socket (default `/tmp/orchicon-runtime.sock`, mounted into the supervisor container at `/var/run/orchicon-runtime.sock`): create/kill/list runtime containers, exec into them, signal a running exec. Every request is validated — image allowlist (`orchicon-runtime:*`), mount sources restricted to the projects root, and an argv[0] allowlist (`opencode`, `orchicon`, `bash`, `sh`) — so the control plane can never create an arbitrary container. Started by `scripts/container.sh up`; manage with `scripts/container.sh runtime-daemon` / `runtime-stop`.
+- **`orchicon runtime-supervisor`** (PID 1 inside each runtime container): listens on a unix socket (`/tmp/orchicon-agent.sock`), runs `opencode run` as a child, streams stdout/stderr back, and signals children by exec_id. Builds the execution-guard shim in-container so workers run under the same `rm`/`sudo`/`dd`/`mkfs` path-scoped safety guard as the in-process path.
+- **`orchicon runtime-client`** (in-container): forwards a dispatch request from the daemon (via `docker exec`) to the supervisor socket and relays the streamed events back, so the daemon never needs shell-level access to the container.
+
+**Lifecycle:** the `WorkflowReconciler` ensures a runtime container when a run leaves `pending` (mounting the project's `project_dir`) and reaps it when the run reaches terminal. A 30s adopt sweep in the control plane kills orphan containers (runs no longer active) and ensures containers for active runs — covering aborts, plane crashes, and externally-terminalized runs. Headless `orchicon serve` (no daemon socket) disables runtime containers and stays in-process.
+
+**Security model — no root process in the runtime container:**
+
+- The runtime container runs as the **host user's uid** (`ORCHICON_HOST_UID`, default 1000) with the image rootfs **chowned to that uid**, so workers have full write control over the ephemeral filesystem (they can install tools) while any bind-mounted project directory is written as the host user — never as root. A worker cannot `chown` a project file to root or escalate to the host.
+- `dpkg` refuses to run as non-root, so system packages (python, node, build-essential, gh, …) are **baked at build time** (`deploy/runtime/Dockerfile`); runtime installs use user-space package managers (`pip` with `PIP_BREAK_SYSTEM_PACKAGES`, `npm`, `mise`, `uv`, `curl`) into the chowned rootfs / ephemeral `$HOME`.
+- The daemon mounts `~/.config/opencode` and `~/.local/share/opencode` **read-only**; the supervisor redirects each worker's opencode state to an ephemeral `XDG_DATA_HOME` under `/tmp` (seeded with `auth.json`), so sessions/keys never touch the host's real opencode data. Git identity + credential store are mounted read-only (PR/merge workers need them).
+- Per-runtime resource limits: 4 CPU / 4 GB memory / 2 GB tmpfs `/tmp` (configurable via `ORCHICON_RUNTIME_CPUS` / `_MEMORY` / `_TMPFS` on the daemon).
+
+**Build:** `make container-build` also builds `orchicon-runtime:local`. **Model note:** executions dispatch with the worker's pinned `model_ref`; verification workers should pin a free model (e.g. `opencode/deepseek-v4-flash-free`).
+
 ### Manual Development Setup
 
 ```bash
@@ -1037,7 +1074,7 @@ See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
 | System prompt not sent to worker | Wrong env var | Must use `OPENCODE_CONFIG_CONTENT` with custom agent, not `OPENCODE_SYSTEM_PROMPT` |
 | Loop decision stuck | Superseded step run conflict | Workflow reconciler must skip `SupersededBy != ""` runs |
 | Stale decisions leaking across runs | Previous `_decision` file | Clear `.orchicon/<run_id>/` files between steps |
-| Worker cannot delete or run destructive commands | Sandbox layers | Workers are intentionally sandboxed (see Architectural Pattern 8). Direct bash is blocked by opencode permission deny rules; subprocess/TUI-issued commands (e.g. `rm -rf /` inside a python TUI) are blocked by the OS-level execution guard (`internal/opencode/guard.go`); and all canned workers' prompts carry the "Safety rules" block. Review/QA workers run `semgrep scan --config .orchicon/semgrep_orchicon.yml --error .` (Semgrep + Orchicon ruleset) to catch dangerous patterns before merge. |
+| Worker cannot delete or run destructive commands | Sandbox layers | Workers are intentionally sandboxed (see Architectural Pattern 8). Direct bash is blocked by opencode permission deny rules; subprocess/TUI-issued commands (e.g. `rm -rf /` inside a python TUI) are blocked by the OS-level execution guard (`internal/guard/guard.go`, built inside the workflow runtime container); and all canned workers' prompts carry the "Safety rules" block. Review/QA workers run `semgrep scan --config .orchicon/semgrep_orchicon.yml --error .` (Semgrep + Orchicon ruleset) to catch dangerous patterns before merge. |
 | Worker wiped files outside the project | Execution guard bypassed via absolute path | The guard is defense-in-depth, not containment. A worker that invokes `/bin/rm` by absolute path or writes its own binary escapes it. Run Orchicon as the single-container deployment (§Single-Container Deployment) for a real process-isolation boundary. |
 
 ---

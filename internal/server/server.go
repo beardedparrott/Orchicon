@@ -33,6 +33,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/project"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
 	"github.com/beardedparrott/orchicon/internal/recovery"
+	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/workflow"
@@ -53,6 +54,9 @@ type Server struct {
 	blobs    blobstore.Store
 	authH    *auth.Handler
 	webhookD *webhook.Dispatcher
+	// Per-workflow runtime container lifecycle (nil when the daemon
+	// socket is absent — headless serve).
+	runtime *runtime.Lifecycle
 }
 
 // New constructs a Server from configuration. It opens the DB pool,
@@ -248,7 +252,24 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	if pub != nil {
 		taskRec.SetEventPublisher(pub)
 	}
-	workflowRec := scheduler.NewWorkflowReconciler(pool, log, policyEngine, taskRec, recoveryEngine)
+	// Per-workflow runtime containers (Slice 2): the control plane talks
+	// to the host-side runtime daemon over a unix socket. When the socket
+	// is absent (headless `orchicon serve`), the lifecycle is disabled and
+	// execution stays in-process.
+	var runtimeLifecycle *runtime.Lifecycle
+	if cfg.RuntimeSocket != "" {
+		if rtClient := runtime.NewClient(cfg.RuntimeSocket); rtClient.Ready(context.Background()) {
+			runtimeLifecycle = runtime.NewLifecycle(rtClient, pool, log)
+			// Route executions that belong to a workflow run into that
+			// workflow's runtime container instead of a local subprocess.
+			adapterBridge.SetRuntimeClient(rtClient)
+			log.Info("workflow runtime daemon connected", "socket", cfg.RuntimeSocket)
+		} else {
+			log.Warn("workflow runtime daemon not reachable — in-process execution", "socket", cfg.RuntimeSocket)
+		}
+	}
+	workflowRec := scheduler.NewWorkflowReconciler(pool, log, policyEngine, taskRec, recoveryEngine, runtimeLifecycle)
+	s.runtime = runtimeLifecycle
 	// Wire the workflow notifier: when a work item completes, enqueue
 	// the workflow run ID so the WorkflowReconciler progresses the DAG
 	// immediately instead of waiting for its next scan pass (200ms).
@@ -311,6 +332,42 @@ func (s *Server) Run(ctx context.Context) error {
 
 	if s.rcmgr != nil {
 		go func() { errCh <- s.rcmgr.Run(ctx) }()
+	}
+
+	// Adopt workflow runtime containers at boot and on a 30s sweep:
+	// reap orphans (containers whose run is no longer active — covers
+	// runs terminalized while the plane was down, aborted runs, and any
+	// terminal state the reconciler transition path missed) and ensure
+	// containers for active runs.
+	if s.runtime != nil {
+		go func() {
+			sweep := time.NewTicker(30 * time.Second)
+			defer sweep.Stop()
+			var once bool
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				if !once {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(1 * time.Second):
+					}
+					once = true
+				}
+				if err := s.runtime.Adopt(ctx); err != nil {
+					s.log.Warn("workflow runtime adopt failed", "error", err)
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-sweep.C:
+				}
+			}
+		}()
 	}
 
 	// Phase 9: webhook dispatcher (NATS consumer → HTTP POST + retries +

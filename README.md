@@ -30,15 +30,15 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
-### v0.1.163 (2026-08-01)
+### v0.1.164 (2026-08-02)
 
 | Type | Change |
 |---|---|
-| Feature | **Single-container deployment (Phase B + C).** New `orchicon container` subcommand is a PID-1 process supervisor: spawns postgres → nats → Grafana telemetry plane → control plane with readiness gates, per-component log prefixing, crash restart with backoff, and graceful signal handling. New `deploy/container/Dockerfile` assembles the whole stack (Postgres 16, NATS, Tempo, Loki, VictoriaMetrics, OTel collector, Grafana, `opencode` runtime) onto one Debian base. |
-| Feature | `ORCHICON_TELEMETRY=none\|embedded\|remote` — `none` skips telemetry (~96 MiB resident); `embedded` (default) runs the full Grafana plane (~384 MiB). Both verified end-to-end (traces → Tempo, logs → Loki, metrics → VictoriaMetrics, embedded dashboard renders). |
-| Feature | `scripts/container.sh` manages dev + prod single-container instances (offset ports, separate volumes) with `make container-*` targets. **Data preservation**: instances reuse the existing compose-stack Postgres volumes, so dev/prod DBs survive the switch; the container refuses to start while the compose postgres owns the volume (`ORCHICON_PG_VOLUME=fresh` starts empty). Verified against a copy of the live dev DB. |
-| Chore | Release workflow builds + pushes the container image to `ghcr.io/beardedparrott/orchicon` (vX.Y.Z + latest) on every version tag. |
-| Chore | **Compose workflow removed.** Deleted the `orchicon dev` subcommand, `deploy/compose/`, `scripts/dev.sh`/`dev-prod.sh`/`install-dev.sh`/`install-prod.sh`, and the `orchicon-dev`/`orchicon-prod` binary names. The single container (`scripts/container.sh`, `make container-*`) is now the only full-stack deployment; `orchicon serve --detach` covers headless use. Both dev + prod instances converted and verified running on the container with data preserved. |
+| Feature | **Workflow runtime containers — pure per-workflow execution.** One short-lived container per active workflow run (Azure Pipelines self-hosted agent model): created when a run leaves `pending`, every execution dispatches into it, killed at `completed`/`failed`/`aborted`. New `orchicon runtime-daemon` (host process owning the Docker socket, narrow validated unix-socket API), `orchicon runtime-supervisor` (container PID 1 running `opencode run`), and `orchicon runtime-client`. Lifecycle wired into the WorkflowReconciler with a 30s orphan-reap sweep. |
+| Feature | **Security: no root process in the runtime container.** The runtime runs as your uid with the rootfs chowned to it — workers get full control of the ephemeral FS (install tools via pip/npm/mise/uv) while project dirs are written as you, never root. Host opencode data is mounted read-only; worker sessions/keys are redirected to an ephemeral XDG dir. The execution guard (now `internal/guard`) is built in-container. |
+| Feature | **Armed toolchain.** `deploy/runtime/Dockerfile` bakes python3/pip, node/npm, bun, mise, uv, build-essential, gh, opencode; apt packages are build-time only (dpkg refuses non-root), runtime installs use user-space package managers into the ephemeral FS. |
+| Feature | Runtime containers get resource limits (4 CPU / 4 GB / 2 GB tmpfs, env-configurable). The adapter dispatches `opencode run` into the container when the task belongs to a workflow run; wall-clock timeout signals the in-container child (SIGKILL). |
+| Chore | Headless `orchicon serve` (no daemon socket) degrades to in-process execution. `scripts/container.sh runtime-daemon` / `runtime-stop` manage the daemon; `ps` also lists runtime containers. |
 
 
 ## Installation
@@ -112,7 +112,11 @@ and [DOCUMENTATION.md §Single-Container Deployment](DOCUMENTATION.md).
 | `orchicon serve` | Run the control plane with embedded frontend (headless) |
 | `orchicon serve --detach` / `--stop` | Fork/stop a background server |
 | `orchicon container` | Run the whole stack as PID 1 (container image) |
+| `orchicon runtime-daemon` | Host process owning the Docker socket; spawns per-workflow runtime containers |
+| `orchicon runtime-supervisor` | Runtime container PID 1 (streams `opencode run`) |
+| `orchicon runtime-client` | Forwards dispatches into the runtime container |
 | `scripts/container.sh up dev\|prod` | Start a single-container instance |
+| `scripts/container.sh runtime-daemon` / `runtime-stop` | Start / stop the runtime daemon |
 | `orchicon version` | Print the installed version |
 
 ```bash

@@ -94,10 +94,17 @@ fe-lint: ## Lint the frontend
 # --- Single container (deployment) -----------------------------------------
 # The single container is the only full-stack deployment (dev + prod as two
 # instances on offset ports). See scripts/container.sh.
-.PHONY: container-build container-rebuild container-up container-down container-status container-logs container-ps
+.PHONY: container-build container-rebuild container-up container-down container-status container-logs container-ps runtime-build runtime-daemon runtime-stop
 container-build: ## Build bin/orchicon + the container image
 	$(MAKE) build
 	scripts/container.sh build
+runtime-build: ## Build the workflow runtime base image
+	$(MAKE) build
+	scripts/container.sh build
+runtime-daemon: ## Start the host-side workflow runtime daemon
+	scripts/container.sh runtime-daemon
+runtime-stop: ## Stop the host-side workflow runtime daemon
+	scripts/container.sh runtime-stop
 container-rebuild: ## Stop an instance, rebuild the image, start it (usage: make container-rebuild dev|prod)
 	@test -n "$(instance)" || { echo "usage: make container-rebuild instance=dev|prod"; exit 1; }
 	scripts/container.sh down $(instance)

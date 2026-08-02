@@ -285,8 +285,8 @@ func (s *supervisor) initPostgres() error {
 func (s *supervisor) postgresUIDGID() (int, int) {
 	dataDir := filepath.Join(s.dataDir, "postgres")
 	if fi, err := os.Stat(dataDir); err == nil {
-		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-			return int(st.Uid), int(st.Gid)
+		if uid, gid, ok := fileOwner(fi); ok {
+			return uid, gid
 		}
 	}
 	return 70, 70
