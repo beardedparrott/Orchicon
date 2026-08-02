@@ -68,9 +68,11 @@ type Config struct {
 	MigrateOnBoot bool
 
 	// RuntimeSocket is the unix socket of the host-side workflow runtime
-	// daemon (mounted into the supervisor container at
-	// /var/run/orchicon-runtime.sock). Empty/unreachable degrades the
-	// control plane to in-process execution (no per-workflow runtime
+	// daemon. The daemon's socket lives inside a bind-mounted DIRECTORY
+	// (/var/run/orchicon-runtime, mounted from the daemon's socket dir on
+	// the host) so a daemon restart — which recreates the socket file —
+	// never staleness the container's mount. Empty/unreachable degrades
+	// the control plane to in-process execution (no per-workflow runtime
 	// containers).
 	RuntimeSocket string
 
@@ -97,7 +99,7 @@ func Default() Config {
 		VMURL:             env("ORCHICON_VM_URL", "http://localhost:8428"),
 		BlobStoreDir:      env("ORCHICON_BLOB_DIR", "./data/blobs"),
 		MigrateOnBoot:     envBool("ORCHICON_MIGRATE_ON_BOOT", true),
-		RuntimeSocket:     env("ORCHICON_RUNTIME_SOCKET", "/var/run/orchicon-runtime.sock"),
+		RuntimeSocket:     env("ORCHICON_RUNTIME_SOCKET", "/var/run/orchicon-runtime/runtime.sock"),
 		Mode:              DeploymentMode(env("ORCHICON_MODE", "local")),
 		Auth: AuthConfig{
 			Issuer:          env("ORCHICON_OIDC_ISSUER", "local"),

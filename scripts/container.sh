@@ -93,7 +93,12 @@ build_image() {
 # running. It owns the Docker socket and serves the narrow workflow-
 # runtime API over a unix socket (mounted into the supervisor container
 # below). Idempotent — no-op when already up.
-RUNTIME_SOCKET="${ORCHICON_RUNTIME_SOCKET:-/tmp/orchicon-runtime.sock}"
+# The runtime daemon's socket lives inside a bind-mounted DIRECTORY (not a
+# single file) so a daemon restart — which recreates the socket file —
+# never staleness the supervisor container's mount. The container mounts
+# the whole dir at /var/run/orchicon-runtime.
+RUNTIME_SOCKET_DIR="${ORCHICON_RUNTIME_SOCKET_DIR:-/tmp/orchicon-runtime}"
+RUNTIME_SOCKET="${ORCHICON_RUNTIME_SOCKET:-$RUNTIME_SOCKET_DIR/runtime.sock}"
 start_runtime_daemon() {
   if [ -S "$RUNTIME_SOCKET" ] && curl -s --unix-socket "$RUNTIME_SOCKET" http://runtime/v1/health >/dev/null 2>&1; then
     log_dim "runtime daemon already up ($RUNTIME_SOCKET)"
@@ -198,10 +203,11 @@ up_instance() {
   [ -f "$HOME/.gitconfig" ] && MOUNTS+=("-v" "$HOME/.gitconfig:$HOME/.gitconfig:ro")
   [ -f "$HOME/.git-credentials" ] && MOUNTS+=("-v" "$HOME/.git-credentials:$HOME/.git-credentials:ro")
 
-  # Workflow runtime daemon socket (host-side process that owns the
-  # Docker socket and spawns per-workflow runtime containers).
+  # Workflow runtime daemon socket directory (host-side process that owns
+  # the Docker socket and spawns per-workflow runtime containers). Mounted
+  # as a DIRECTORY so the mount survives daemon restarts.
   start_runtime_daemon || return 1
-  MOUNTS+=("-v" "$RUNTIME_SOCKET:/var/run/orchicon-runtime.sock")
+  MOUNTS+=("-v" "$RUNTIME_SOCKET_DIR:/var/run/orchicon-runtime")
 
   # Desired project paths (manifest + explicit). Skip paths absent on host.
   local project_paths=""
