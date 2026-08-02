@@ -272,16 +272,18 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 		args = append(args, "-v", m.Source+":"+m.Dest+mo)
 	}
 	// Standard host-home mounts shared by every runtime container:
-	// opencode config (read-only) + data/auth (rw — workers call the
-	// user's real model providers), and git identity + credential store
-	// (read-only — PR/merge workers). These are appended by the daemon,
-	// not the plane, so the control plane can never request them.
+	// opencode config (read-only) + data/auth (read-only — the worker
+	// reads model auth, but its sessions/keys are redirected to the
+	// ephemeral FS by the supervisor's isolateOpenCodeData), and git
+	// identity + credential store (read-only — PR/merge workers). These
+	// are appended by the daemon, not the plane, so the control plane
+	// can never request them.
 	if d.HostHome != "" {
 		if st, err := os.Stat(filepath.Join(d.HostHome, ".config/opencode")); err == nil && st.IsDir() {
 			args = append(args, "-v", filepath.Join(d.HostHome, ".config/opencode")+":"+filepath.Join(d.HostHome, ".config/opencode")+":ro")
 		}
 		if st, err := os.Stat(filepath.Join(d.HostHome, ".local/share/opencode")); err == nil && st.IsDir() {
-			args = append(args, "-v", filepath.Join(d.HostHome, ".local/share/opencode")+":"+filepath.Join(d.HostHome, ".local/share/opencode"))
+			args = append(args, "-v", filepath.Join(d.HostHome, ".local/share/opencode")+":"+filepath.Join(d.HostHome, ".local/share/opencode")+":ro")
 		}
 		for _, f := range []string{".gitconfig", ".git-credentials"} {
 			if st, err := os.Stat(filepath.Join(d.HostHome, f)); err == nil && !st.IsDir() {

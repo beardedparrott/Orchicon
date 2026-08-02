@@ -140,6 +140,13 @@ func (h *childRegistry) runExec(conn net.Conn, enc *json.Encoder, req AgentReque
 	cmd.Env = agentEnv(req)
 	cmd.Stdin = nil // non-interactive; opencode runs with --auto
 
+	// OpenCode data isolation: give the worker an ephemeral XDG data dir
+	// seeded with the model auth read from the READ-ONLY host mount. The
+	// worker's opencode sessions/keys/telemetry then land in the
+	// ephemeral filesystem (wiped at container teardown) instead of the
+	// host's real ~/.local/share/opencode.
+	cmd.Env = isolateOpenCodeData(cmd.Env)
+
 	// Build the execution guard shim inside the container so every child
 	// the worker spawns resolves rm/sudo/dd/etc. through the shim.
 	guardDir, guardErr := guard.MakeGuard("/tmp", req.ProjectDir)
@@ -292,6 +299,48 @@ func envPath(env []string) string {
 		}
 	}
 	return ""
+}
+
+// isolateOpenCodeData redirects the worker's opencode state (sessions,
+// keys, telemetry) into an ephemeral directory under /tmp, seeded with
+// the model auth from the read-only host mount (~/.local/share/opencode
+// is mounted ro by the daemon). The worker can authenticate to the
+// model providers but can never write to the host's opencode data.
+func isolateOpenCodeData(env []string) []string {
+	xdg, err := os.MkdirTemp("/tmp", "opencode-data-*")
+	if err != nil {
+		return env
+	}
+	home := os.Getenv("HOME")
+	src := filepath.Join(home, ".local", "share", "opencode", "auth.json")
+	if b, err := os.ReadFile(src); err == nil {
+		dir := filepath.Join(xdg, "opencode")
+		_ = os.MkdirAll(dir, 0o755)
+		if werr := os.WriteFile(filepath.Join(dir, "auth.json"), b, 0o600); werr != nil {
+			os.RemoveAll(xdg)
+			return env
+		}
+	}
+	return setEnv(env, "XDG_DATA_HOME", xdg)
+}
+
+// setEnv replaces an existing key=value in env (or appends it).
+func setEnv(env []string, key, value string) []string {
+	out := make([]string, 0, len(env)+1)
+	replaced := false
+	for _, kv := range env {
+		ck, _, _ := strings.Cut(kv, "=")
+		if ck == key {
+			out = append(out, key+"="+value)
+			replaced = true
+			continue
+		}
+		out = append(out, kv)
+	}
+	if !replaced {
+		out = append(out, key+"="+value)
+	}
+	return out
 }
 
 func prependGuard(env []string, guardDir string) []string {	out := make([]string, 0, len(env)+1)
