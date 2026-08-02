@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"connectrpc.com/connect"
@@ -686,8 +685,9 @@ func (s *Service) runOpenCodeStream(ctx context.Context, modelRef, prompt, userM
 	// replacement), the orphaned opencode and its MCP sidecar can be
 	// found and cleaned up by the startup routine. The group leader PID
 	// is the subprocess PID; we can kill the whole group with
-	// syscall.Kill(-pgid, sig).
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// syscall.Kill(-pgid, sig). Unix-only (Setpgid does not exist on
+	// Windows) — see procattr_{unix,windows}.go.
+	setChildProcessGroup(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
