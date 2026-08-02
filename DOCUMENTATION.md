@@ -672,11 +672,15 @@ The worker identity (Role, Skills, Behavior, AGENTS.md) is included in every dis
 
 Worker output is parsed for the standard `ORCHICON WORKER SUMMARY: success|failure — <summary>` marker, which routes the workflow to the next step or triggers a loop-back.
 
+An execution is only reported `succeeded` when the run completes with the final model step fully delivered (`step_finish` received). opencode's `--format json` emits the entire model response as ONE stdout line, and a scanner cap smaller than the response used to drop that line **and** every event after it (a `bufio.Scanner` is permanently broken after `ErrTooLong`) — so a large final answer made an otherwise-successful execution come back `succeeded` with **empty output**, and the loop_decision step saw no `_decision` signal and re-asked until it failed. Two fixes close this: the runtime path now uses the same 1MB line cap as the local path (was 64KB), and the adapter tracks `step_start` vs `step_finish` counts so a clean exit with an unpaired `step_start` is downgraded to a failure (`execution ended before the final model step completed (model response stream truncated or event dropped)`) instead of a silent success.
+
 #### Creating Work Items
 1. Navigate to **Work Items** → **New Work Item**
 2. Select a Project and Work Item kind (Epic → Feature → Task → Subtask)
 3. Add description, acceptance criteria, and assign a worker
 4. Work items form a DAG with dependency edges (cycle detection enforced)
+
+**Status while bound to a workflow run:** a work item that kicks off (or is bound to) a workflow run reflects the **run's** state, not any single step's. `StartWorkflow` moves it to `running`, and it stays in a working state (`running`/`assigned`) while the run is in flight — each step's execution finishes without flipping the item to `succeeded` early (steps are polled on their own execution, not the shared item's status). The item reaches `succeeded`/`failed` only when the whole run completes/fails.
 
 #### Building Workflows (Visual Editor)
 1. Navigate to **Workflows** → **New Workflow**

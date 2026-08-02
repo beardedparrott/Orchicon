@@ -647,9 +647,21 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 		}
 	}
 	resultsJSON, _ := json.Marshal(results)
+	// A work item bound to an ACTIVE workflow run must track the RUN, not
+	// any single step execution: the workflow works the item across many
+	// steps (each with its own execution), so an individual step finishing
+	// must not mark the whole item succeeded while the run is still in
+	// flight. The workflow reconciler sets the item's terminal status when
+	// the run completes/fails. Standalone (unbound) items keep the old
+	// per-execution terminal transition.
+	runActive := r.boundToActiveRun(ctx, ttx.Tx, wi)
 	if succeeded {
+		status := domain.WorkItemSucceeded
+		if runActive {
+			status = domain.WorkItemRunning
+		}
 		fields := db.UpdateWorkItemFields{
-			Status: strPtr(domain.WorkItemSucceeded),
+			Status: strPtr(status),
 		}
 		if resultsJSON != nil {
 			fields.Results = &resultsJSON
@@ -665,9 +677,16 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	} else {
 		// Failure: transition to failed so the step run transitions to
 		// terminal-failed, allowing a downstream `recover` step to
-		// activate and trigger recovery (docs/06 §1).
+		// activate and trigger recovery (docs/06 §1). A workflow-bound
+		// item stays running while its run is active — the workflow may
+		// still recover/retry — and the run's terminal state is applied
+		// by the reconciler when the run ends.
+		status := domain.WorkItemFailed
+		if runActive {
+			status = domain.WorkItemRunning
+		}
 		fields := db.UpdateWorkItemFields{
-			Status: strPtr(domain.WorkItemFailed),
+			Status: strPtr(status),
 		}
 		if resultsJSON != nil {
 			fields.Results = &resultsJSON
@@ -703,6 +722,26 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 
 	// Recovery is NOT triggered automatically — explicit `recover`
 	// steps on the workflow canvas handle this (docs/06 §1).
+}
+
+// boundToActiveRun reports whether the work item is linked to a workflow
+// run that is still in flight (not yet terminal). A bound item's status
+// tracks the run as a whole — individual step executions succeed/fail
+// while the run continues, so they must not flip the item to a terminal
+// state until the run itself ends.
+func (r *TaskReconciler) boundToActiveRun(ctx context.Context, tx pgx.Tx, wi db.WorkItemRow) bool {
+	if wi.WorkflowRunID == "" {
+		return false
+	}
+	run, err := db.GetWorkflowRun(ctx, tx, wi.TenantID, wi.WorkflowRunID)
+	if err != nil {
+		return false
+	}
+	switch run.Status {
+	case domain.WorkflowRunPending, domain.WorkflowRunRunning, domain.WorkflowRunPaused:
+		return true
+	}
+	return false
 }
 
 // writeOrchiconFiles writes the execution results to .orchicon/ files

@@ -111,7 +111,11 @@ func (c *Client) Exec(ctx context.Context, workflowID string, req ExecRequest, f
 		return 1, fmt.Errorf("runtime exec: %s", e["error"])
 	}
 	sc := bufio.NewScanner(resp.Body)
-	sc.Buffer(make([]byte, 0, 64*1024), 64*1024)
+	// 1MB line cap (not 64KB): opencode emits an entire model response as
+	// one JSON line, and large responses are dropped silently (and kill
+	// the rest of the stream) if the cap is too small. Matches the
+	// local-path scanner in internal/opencode/adapter.go.
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	exit := 1
 	for sc.Scan() {
 		var ev AgentEvent
