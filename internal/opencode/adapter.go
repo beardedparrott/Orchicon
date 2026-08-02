@@ -377,6 +377,11 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// OnResult error so the execution detail page shows the real reason.
 	var lastStreamErr string
 
+	// Stream-structure counters (step_start vs step_finish) so a clean
+	// exit that never delivered the final model step can be flagged as
+	// failed instead of reported as a successful empty run.
+	stats := &execStreamState{}
+
 	// PR B (context propagation): accumulate the worker's text output
 	// across `text` events. The accumulator is closed over by
 	// parseStdoutLine; the value is passed to OnResult so the
@@ -406,7 +411,7 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		if line == "" {
 			continue
 		}
-		a.parseStdoutLine(ctx, execRow, manifest, line, callbacks, monitor, &output, &lastStreamErr, &textSeq)
+		a.parseStdoutLine(ctx, execRow, manifest, line, callbacks, monitor, &output, &lastStreamErr, &textSeq, stats)
 	}
 
 	// Check for scanner error (e.g. truncated output).
@@ -419,11 +424,25 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	err = cmd.Wait()
 	succeeded := err == nil
 
+	// A clean exit with a step still in flight means the final model
+	// response never reached us (line-cap drop, stream truncation,
+	// runtime disconnect). That is NOT a success — the worker's output
+	// and ORCHICON WORKER SUMMARY / decision signal are missing. Downgrade
+	// the result to a failure so the run surfaces the real problem
+	// instead of routing an empty execution downstream as if it worked.
+	unfinishedStep := stats.stepStarts > stats.stepFinishes
+	if succeeded && unfinishedStep {
+		succeeded = false
+	}
+
 	// Build the error message from most specific to least. The
 	// JSON-stream error (extracted from opencode's structured error
 	// event) is the real cause — e.g. a provider 401 or rate-limit.
 	// Stderr has surrounding context. Exit status is the fallback.
 	var parts []string
+	if unfinishedStep {
+		parts = append(parts, "execution ended before the final model step completed (model response stream truncated or event dropped)")
+	}
 	if lastStreamErr != "" {
 		parts = append(parts, lastStreamErr)
 	}
@@ -441,6 +460,19 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	return nil
 }
 
+// execStreamState tracks per-execution opencode stream structure so a
+// run that ends before its final model step completes can be flagged as
+// failed instead of reported as a clean, empty success. opencode emits a
+// step_start before every model turn and a step_finish when the turn
+// ends; a clean exit (exit 0) with an unpaired step_start means the
+// final response was lost in transit (line-cap drop, stream truncation,
+// runtime disconnect) — the worker's output and decision signal are
+// missing, so the run must NOT count as succeeded.
+type execStreamState struct {
+	stepStarts   int
+	stepFinishes int
+}
+
 // parseStdoutLine decodes a JSON line from OpenCode's stdout into a
 // telemetry event and routes it to the callbacks. The JSON shape follows
 // opencode v1.x's `--format json` event stream (docs/04 §6.1):
@@ -455,7 +487,10 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 // `textSeq` is a per-execution monotonic counter for streamed text
 // chunks. The frontend uses it to order chunks if NATS delivers them
 // out of order; it is incremented once per emitTextChunk call.
-func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, line string, callbacks scheduler.ExecutionCallbacks, monitor *progressMonitor, output *strings.Builder, lastStreamErr *string, textSeq *int) {
+//
+// `stats` (may be nil in tests) counts step_start/step_finish events so
+// the caller can detect an execution that ended mid-step.
+func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, line string, callbacks scheduler.ExecutionCallbacks, monitor *progressMonitor, output *strings.Builder, lastStreamErr *string, textSeq *int, stats *execStreamState) {
 	var evt map[string]any
 	if err := json.Unmarshal([]byte(line), &evt); err != nil {
 		// Non-JSON line: treat as a log/progress marker.
@@ -470,6 +505,9 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, 
 	execID := execRow.ID
 	switch eventType {
 	case evtStepStart:
+		if stats != nil {
+			stats.stepStarts++
+		}
 		a.log.Info("opencode step started", "execution", execID)
 	case evtText:
 		// Text part: the model's response text. PR B: append to the
@@ -605,6 +643,9 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, 
 		// — telemetry loss never blocks control flow (docs/08 §8).
 		tokens, _ := part["tokens"].(map[string]any)
 		cost, _ := part["cost"].(float64)
+		if stats != nil {
+			stats.stepFinishes++
+		}
 		a.log.Info("opencode step finished", "execution", execID, "cost", cost, "tokens", tokens)
 		a.recordUsage(ctx, execRow, manifest, tokens, cost)
 	case evtHealth:
@@ -963,6 +1004,7 @@ func (a *Adapter) startInRuntime(ctx context.Context, execRow db.ExecutionRow, m
 	textSeq := 0
 	var lastStreamErr string
 	var output strings.Builder
+	stats := &execStreamState{}
 	monitor := newProgressMonitor(execRow.ID, stallWindowsFromManifest(manifest))
 	go monitor.run(ctx, func(execID, reason string) {
 		callbacks.OnStall(ctx, execID, reason)
@@ -998,12 +1040,19 @@ func (a *Adapter) startInRuntime(ctx context.Context, execRow db.ExecutionRow, m
 		if line == "" {
 			return nil
 		}
-		a.parseStdoutLine(ctx, execRow, manifest, line, callbacks, monitor, &output, &lastStreamErr, &textSeq)
+		a.parseStdoutLine(ctx, execRow, manifest, line, callbacks, monitor, &output, &lastStreamErr, &textSeq, stats)
 		return nil
 	})
 
 	succeeded := err == nil && exitCode == 0
+	unfinishedStep := stats.stepStarts > stats.stepFinishes
+	if succeeded && unfinishedStep {
+		succeeded = false
+	}
 	var parts []string
+	if unfinishedStep {
+		parts = append(parts, "execution ended before the final model step completed (model response stream truncated or event dropped)")
+	}
 	if lastStreamErr != "" {
 		parts = append(parts, lastStreamErr)
 	}

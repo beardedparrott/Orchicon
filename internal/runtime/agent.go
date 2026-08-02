@@ -272,11 +272,17 @@ func signalByName(name string) syscall.Signal {
 }
 
 // streamLines reads a pipe line by line and encodes each as a
-// {stream,data} event. Buffer size is capped at 64k per line.
+// {stream,data} event. The line cap is 1MB — matching the control-plane
+// adapter's local-path scanner (internal/opencode/adapter.go) — because
+// opencode `--format json` delivers an entire model response as ONE
+// stdout line and a review/analysis can legitimately exceed 64KB. A
+// smaller cap silently drops the line AND every subsequent event (the
+// scanner is permanently broken after ErrTooLong), which made otherwise
+// successful executions come back with empty output.
 func streamLines(enc *json.Encoder, stream string, r io.Reader, wg *sync.WaitGroup) {
 	defer wg.Done()
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 64*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for sc.Scan() {
 		_ = enc.Encode(AgentEvent{Stream: stream, Data: sc.Text()})
 	}

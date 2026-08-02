@@ -580,6 +580,20 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	}
 	if hasSteps && allSucceeded {
 		now := time.Now().UTC()
+		// The bound work item is now complete: it stayed "running" for
+		// the whole run (each step's execution transitions it to running,
+		// not succeeded — see TaskReconciler.boundToActiveRun) and only
+		// reaches "succeeded" when every step of the run has succeeded.
+		if run.WorkItemID != "" {
+			if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID); err == nil {
+				status := domain.WorkItemSucceeded
+				if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, db.UpdateWorkItemFields{
+					Status: &status,
+				}); err != nil {
+					return fmt.Errorf("mark bound work item succeeded: %w", err)
+				}
+			}
+		}
 		updated, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
 			Status:  strPtr(domain.WorkflowRunCompleted),
 			EndedAt: &now,
@@ -2107,11 +2121,48 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 		}
 		return false, false, fmt.Errorf("get work item: %w", err)
 	}
-	switch wi.Status {
-	case domain.WorkItemSucceeded:
-		return true, false, nil
 
-	case domain.WorkItemFailed, domain.WorkItemCancelled:
+	// Approval steps have no worker execution — they poll the linked
+	// (approval) work item's status exactly as before. Task steps instead
+	// complete on their OWN execution's terminal state: the work item may
+	// be shared across every task step of the run and stays "running"
+	// until the run finishes (see TaskReconciler.boundToActiveRun), so
+	// polling the shared item's status would wrongly complete every step
+	// as soon as the first one succeeds.
+	if sr.StepKind == domain.StepKindApproval {
+		switch wi.Status {
+		case domain.WorkItemSucceeded:
+			return true, false, nil
+		case domain.WorkItemFailed, domain.WorkItemCancelled:
+			// fall through to the recovery block below.
+		default:
+			return false, false, nil
+		}
+	} else {
+		var execStatus string
+		if sr.WorkerExecutionID != "" {
+			if exec, err := db.GetExecution(ctx, tx, tenantID, sr.WorkerExecutionID); err == nil {
+				execStatus = exec.Status
+			}
+		}
+		if execStatus == "" {
+			// Fallback: latest execution for the work item (e.g. a step
+			// whose run predates the execution-link or a re-ask path).
+			if exec, err := db.GetLatestExecutionForTask(ctx, tx, tenantID, parsed.WorkItemID); err == nil {
+				execStatus = exec.Status
+			}
+		}
+		switch execStatus {
+		case domain.ExecutionSucceeded:
+			return true, false, nil
+		case domain.ExecutionFailed, domain.ExecutionFailedToStart, domain.ExecutionTerminated:
+			// fall through to the recovery block below.
+		default:
+			return false, false, nil
+		}
+	}
+
+	{
 		rc := readStepRecoveryConfig(stepConfig)
 
 		if sr.Attempt >= rc.MaxAttempts-1 {
@@ -2202,9 +2253,6 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 		default:
 			return true, true, nil
 		}
-
-	default:
-		return false, false, nil
 	}
 }
 
