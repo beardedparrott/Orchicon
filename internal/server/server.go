@@ -57,6 +57,9 @@ type Server struct {
 	// Per-workflow runtime container lifecycle (nil when the daemon
 	// socket is absent — headless serve).
 	runtime *runtime.Lifecycle
+	// Execution liveness reaper (fails executions orphaned by a plane
+	// restart / lost runtime container).
+	reaper *scheduler.ExecutionReaper
 }
 
 // New constructs a Server from configuration. It opens the DB pool,
@@ -263,10 +266,17 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 			// Route executions that belong to a workflow run into that
 			// workflow's runtime container instead of a local subprocess.
 			adapterBridge.SetRuntimeClient(rtClient)
+			// Execution liveness: fail executions orphaned by a plane
+			// restart or a lost runtime container so recovery re-dispatches.
+			s.reaper = scheduler.NewExecutionReaper(pool, rtClient, adapterBridge.IsExecutionActive, taskRec.FailLostExecution, log)
 			log.Info("workflow runtime daemon connected", "socket", cfg.RuntimeSocket)
 		} else {
 			log.Warn("workflow runtime daemon not reachable — in-process execution", "socket", cfg.RuntimeSocket)
 		}
+	}
+	// Headless: still reap in-process executions orphaned by a restart.
+	if s.reaper == nil {
+		s.reaper = scheduler.NewExecutionReaper(pool, nil, adapterBridge.IsExecutionActive, taskRec.FailLostExecution, log)
 	}
 	workflowRec := scheduler.NewWorkflowReconciler(pool, log, policyEngine, taskRec, recoveryEngine, runtimeLifecycle)
 	s.runtime = runtimeLifecycle
@@ -338,7 +348,9 @@ func (s *Server) Run(ctx context.Context) error {
 	// reap orphans (containers whose run is no longer active — covers
 	// runs terminalized while the plane was down, aborted runs, and any
 	// terminal state the reconciler transition path missed) and ensure
-	// containers for active runs.
+	// containers for active runs. The same sweep fails executions whose
+	// process is gone (plane restart / lost runtime container) so
+	// recovery re-dispatches instead of leaving the workflow stuck.
 	if s.runtime != nil {
 		go func() {
 			sweep := time.NewTicker(30 * time.Second)
@@ -361,10 +373,34 @@ func (s *Server) Run(ctx context.Context) error {
 				if err := s.runtime.Adopt(ctx); err != nil {
 					s.log.Warn("workflow runtime adopt failed", "error", err)
 				}
+				if s.reaper != nil {
+					if err := s.reaper.Reap(ctx); err != nil {
+						s.log.Warn("execution liveness reap failed", "error", err)
+					}
+				}
 				select {
 				case <-ctx.Done():
 					return
 				case <-sweep.C:
+				}
+			}
+		}()
+	} else if s.reaper != nil {
+		go func() {
+			sweep := time.NewTicker(30 * time.Second)
+			defer sweep.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(1 * time.Second):
+					if err := s.reaper.Reap(ctx); err != nil {
+						s.log.Warn("execution liveness reap failed", "error", err)
+					}
+				case <-sweep.C:
+					if err := s.reaper.Reap(ctx); err != nil {
+						s.log.Warn("execution liveness reap failed", "error", err)
+					}
 				}
 			}
 		}()

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -34,7 +35,15 @@ type Daemon struct {
 	CPUs         string
 	Memory       string
 	TmpfsSize    string
-	Log          *slog.Logger
+	// MaxAge is the hard backstop for leaked runtime containers: any
+	// orchicon-runtime-* container older than this is removed. The
+	// control plane's state-aware sweep is the primary cleanup (it knows
+	// which runs are active); this catches the plane-down / crashed case
+	// where a container would otherwise linger forever.
+	MaxAge time.Duration
+	// SweepInterval is how often the age-based orphan sweep runs.
+	SweepInterval time.Duration
+	Log           *slog.Logger
 }
 
 // MountSpec is a validated bind mount request from the control plane.
@@ -118,7 +127,64 @@ func (d *Daemon) ListenAndServe(ctx context.Context) error {
 		srv.Close()
 	}()
 	d.Log.Info("runtime daemon listening", "socket", d.SocketPath)
+	// Age-based orphan sweep: removes leaked runtime containers whose
+	// run is long gone (plane down / crashed) but which no one reaped.
+	go d.sweepOrphans(ctx)
 	return srv.Serve(l)
+}
+
+// sweepOrphans periodically removes runtime containers older than MaxAge.
+// It is the hard backstop for leftover containers; the control plane's
+// state-aware adopt sweep is the primary (and faster) cleanup.
+func (d *Daemon) sweepOrphans(ctx context.Context) {
+	if d.MaxAge <= 0 {
+		return
+	}
+	interval := d.SweepInterval
+	if interval <= 0 {
+		interval = 5 * time.Minute
+	}
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		names, err := d.listRuntimes()
+		if err != nil {
+			d.Log.Warn("orphan sweep: list", "error", err)
+			continue
+		}
+		for _, name := range names {
+			created, err := d.containerCreated(name)
+			if err != nil {
+				continue
+			}
+			if time.Since(created) <= d.MaxAge {
+				continue
+			}
+			d.Log.Warn("orphan sweep: removing aged runtime container", "name", name, "age", time.Since(created).Round(time.Minute).String())
+			if out, err := d.docker("rm", "-f", name); err != nil {
+				d.Log.Warn("orphan sweep: remove failed", "name", name, "error", err, "out", strings.TrimSpace(out))
+			}
+		}
+	}
+}
+
+// containerCreated returns the container's creation time (RFC3339 from
+// `docker inspect --format {{.Created}}`).
+func (d *Daemon) containerCreated(name string) (time.Time, error) {
+	out, err := d.docker("inspect", "--format", "{{.Created}}", name)
+	if err != nil {
+		return time.Time{}, err
+	}
+	t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(out))
+	if err != nil {
+		return time.Time{}, err
+	}
+	return t, nil
 }
 
 func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -180,6 +246,13 @@ func (d *Daemon) handleRuntime(w http.ResponseWriter, r *http.Request) {
 		d.handleExec(w, r, id)
 	case action == "signal" && r.Method == http.MethodPost:
 		d.handleSignal(w, r, id)
+	case strings.HasPrefix(action, "execs/") && r.Method == http.MethodGet:
+		execID := strings.TrimPrefix(action, "execs/")
+		if execID == "" || strings.Contains(execID, "/") {
+			httpError(w, http.StatusBadRequest, "bad exec id")
+			return
+		}
+		d.handleExecStatus(w, id, execID)
 	case action == "" && r.Method == http.MethodDelete:
 		d.handleKill(w, id)
 	default:
@@ -252,6 +325,15 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 	if running, _ := d.containerRunning(name); running {
 		return &CreateResponse{Name: name, Running: true}, nil
 	}
+	// A stopped/crashed container with this name blocks recreation
+	// ("name already in use"). Remove it first so an active run always
+	// gets a fresh runtime (leftover-container hygiene).
+	if exists, _ := d.containerExists(name); exists {
+		d.Log.Warn("removing stale runtime container", "name", name)
+		if out, err := d.docker("rm", "-f", name); err != nil {
+			return nil, fmt.Errorf("remove stale runtime %s: %s: %w", name, out, err)
+		}
+	}
 
 	image := req.Image
 	if image == "" {
@@ -294,8 +376,28 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 	}
 	args = append(args, image, "orchicon", "runtime-supervisor")
 
-	out, err := d.docker(args...)
-	if err != nil {
+	// Create the container, retrying past name conflicts. A container
+	// that was just removed (`docker rm -f` during a rebuild / orphan
+	// sweep) is still settling for a moment: inspect reports it gone,
+	// but `docker run` then fails with "name already in use" / "removal
+	// in progress". Remove any leftover and retry.
+	var out string
+	var err error
+	created := false
+	for attempt := 0; attempt < 3 && !created; attempt++ {
+		out, err = d.docker(args...)
+		if err == nil {
+			created = true
+			break
+		}
+		if !strings.Contains(out, "Conflict") && !strings.Contains(out, "in progress") && !strings.Contains(out, "is already") {
+			return nil, fmt.Errorf("create runtime %s: %s: %w", name, out, err)
+		}
+		d.Log.Warn("runtime create conflict — removing stale container and retrying", "name", name, "attempt", attempt+1)
+		_, _ = d.docker("rm", "-f", name)
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !created {
 		return nil, fmt.Errorf("create runtime %s: %s: %w", name, out, err)
 	}
 
@@ -318,6 +420,16 @@ func (d *Daemon) containerRunning(name string) (bool, error) {
 		return false, err
 	}
 	return strings.TrimSpace(out) == "true", nil
+}
+
+// containerExists reports whether a container with this name exists
+// (running or stopped).
+func (d *Daemon) containerExists(name string) (bool, error) {
+	out, err := d.docker("inspect", "--format", "{{.Id}}", name)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) != "", nil
 }
 
 func (d *Daemon) listRuntimes() ([]string, error) {
@@ -428,12 +540,41 @@ func (d *Daemon) handleSignal(w http.ResponseWriter, r *http.Request, id string)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// handleExecStatus reports whether an exec is still running inside a
+// runtime container (the execution-liveness reaper's query). A missing
+// container or a client error returns alive:false (200) so the caller
+// treats it as dead; only a daemon outage (request failure) is an error.
+func (d *Daemon) handleExecStatus(w http.ResponseWriter, id, execID string) {
+	name := d.containerName(id)
+	if running, err := d.containerRunning(name); err != nil || !running {
+		writeJSON(w, http.StatusOK, map[string]bool{"alive": false, "container": false})
+		return
+	}
+	reqJSON, err := json.Marshal(AgentRequest{Cmd: "status", ExecID: execID})
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]bool{"alive": false, "container": true})
+		return
+	}
+	cmd := exec.Command(d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
+	cmd.Stdin = bytes.NewReader(reqJSON)
+	out, _ := cmd.Output()
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	for sc.Scan() {
+		var ev AgentEvent
+		if json.Unmarshal(sc.Bytes(), &ev) == nil && ev.Event == "status" {
+			writeJSON(w, http.StatusOK, map[string]bool{"alive": ev.Alive, "container": true})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"alive": false, "container": true})
+}
+
 func (d *Daemon) handleKill(w http.ResponseWriter, id string) {
 	name := d.containerName(id)
 	out, err := d.docker("rm", "-f", name)
 	if err != nil {
-		// Not running / already removed is fine.
-		if strings.Contains(out, "No such container") {
+		// Not running / already removed / still settling is fine.
+		if strings.Contains(out, "No such container") || strings.Contains(out, "in progress") {
 			writeJSON(w, http.StatusOK, map[string]string{"status": "gone"})
 			return
 		}

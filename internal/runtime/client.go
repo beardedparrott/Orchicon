@@ -134,6 +134,34 @@ func (c *Client) Signal(ctx context.Context, workflowID string, req SignalReques
 	return c.postJSON(ctx, "/v1/runtimes/"+workflowID+"/signal", req, &out)
 }
 
+// ExecAlive reports whether an exec is still running inside a workflow's
+// runtime container. Returns (false, nil) when the container is gone or
+// the exec is not alive; an error only when the daemon itself is
+// unreachable (the caller should skip, not reap).
+func (c *Client) ExecAlive(ctx context.Context, workflowID, execID string) (bool, error) {
+	var out struct {
+		Alive     bool `json:"alive"`
+		Container bool `json:"container"`
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"http://runtime"+"/v1/runtimes/"+workflowID+"/execs/"+execID, nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, readError(resp.Body)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return false, err
+	}
+	return out.Alive, nil
+}
+
 // Ready returns true if the daemon socket answers /v1/health.
 func (c *Client) Ready(ctx context.Context) bool {
 	var out map[string]string

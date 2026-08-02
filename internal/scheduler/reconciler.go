@@ -526,6 +526,17 @@ func (r *TaskReconciler) OnResult(ctx context.Context, execID string, succeeded 
 	r.transitionWorkItemOnResult(ctx, execID, succeeded, output)
 }
 
+// FailLostExecution marks an execution failed with a clear reason and
+// transitions its work item to failed, so the WorkflowReconciler's
+// task-step poll observes the terminal state and the workflow's recover
+// step re-dispatches in a fresh runtime. Used by the execution-liveness
+// reaper (docs/03 §6) after a control-plane restart or a lost runtime
+// container; it mirrors the failure path of a normal OnResult(false).
+func (r *TaskReconciler) FailLostExecution(ctx context.Context, execID, errorMessage string) {
+	r.updateExecStatus(ctx, execID, domain.ExecutionFailed, domain.HealthUnhealthy, "", errorMessage)
+	r.transitionWorkItemOnResult(ctx, execID, false, "")
+}
+
 // transitionWorkItemOnResult moves the WorkItem linked to the execution
 // to succeeded/failed when the execution terminates. This closes the
 // loop so the WorkflowReconciler's task-step polling observes the

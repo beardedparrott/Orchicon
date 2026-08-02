@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/runtime"
 )
@@ -31,23 +32,25 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 		allowedRoots[i] = strings.TrimSpace(allowedRoots[i])
 	}
 
-	socketPath := env("ORCHICON_RUNTIME_SOCKET", filepath.Join(os.TempDir(), "orchicon-runtime.sock"))
+	socketPath := env("ORCHICON_RUNTIME_SOCKET", filepath.Join(os.TempDir(), "orchicon-runtime", "runtime.sock"))
 	if len(args) > 0 {
 		socketPath = args[0]
 	}
 
 	d := &runtime.Daemon{
-		SocketPath:   socketPath,
-		DockerBin:    "docker",
-		Image:        env("ORCHICON_RUNTIME_IMAGE", "orchicon-runtime:local"),
-		UserID:       hostUID,
-		GroupID:      hostGID,
-		HostHome:     hostHome,
-		AllowedRoots: allowedRoots,
-		CPUs:         env("ORCHICON_RUNTIME_CPUS", "4"),
-		Memory:       env("ORCHICON_RUNTIME_MEMORY", "4g"),
-		TmpfsSize:    env("ORCHICON_RUNTIME_TMPFS", "2g"),
-		Log:          log,
+		SocketPath:    socketPath,
+		DockerBin:     "docker",
+		Image:         env("ORCHICON_RUNTIME_IMAGE", "orchicon-runtime:local"),
+		UserID:        hostUID,
+		GroupID:       hostGID,
+		HostHome:      hostHome,
+		AllowedRoots:  allowedRoots,
+		CPUs:          env("ORCHICON_RUNTIME_CPUS", "4"),
+		Memory:        env("ORCHICON_RUNTIME_MEMORY", "4g"),
+		TmpfsSize:     env("ORCHICON_RUNTIME_TMPFS", "2g"),
+		MaxAge:        envDur("ORCHICON_RUNTIME_MAX_AGE", 24*time.Hour),
+		SweepInterval: envDur("ORCHICON_RUNTIME_SWEEP_INTERVAL", 5*time.Minute),
+		Log:           log,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -80,4 +83,14 @@ func runRuntimeClient(args []string, log *slog.Logger) error {
 	}
 	os.Exit(code)
 	return nil
+}
+
+// envDur parses a duration env var with a fallback (0 on invalid).
+func envDur(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return fallback
 }

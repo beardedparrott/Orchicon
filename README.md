@@ -30,15 +30,13 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
-### v0.1.164 (2026-08-02)
+### v0.1.166 (2026-08-02)
 
 | Type | Change |
 |---|---|
-| Feature | **Workflow runtime containers — pure per-workflow execution.** One short-lived container per active workflow run (Azure Pipelines self-hosted agent model): created when a run leaves `pending`, every execution dispatches into it, killed at `completed`/`failed`/`aborted`. New `orchicon runtime-daemon` (host process owning the Docker socket, narrow validated unix-socket API), `orchicon runtime-supervisor` (container PID 1 running `opencode run`), and `orchicon runtime-client`. Lifecycle wired into the WorkflowReconciler with a 30s orphan-reap sweep. |
-| Feature | **Security: no root process in the runtime container.** The runtime runs as your uid with the rootfs chowned to it — workers get full control of the ephemeral FS (install tools via pip/npm/mise/uv) while project dirs are written as you, never root. Host opencode data is mounted read-only; worker sessions/keys are redirected to an ephemeral XDG dir. The execution guard (now `internal/guard`) is built in-container. |
-| Feature | **Armed toolchain.** `deploy/runtime/Dockerfile` bakes python3/pip, node/npm, bun, mise, uv, build-essential, gh, opencode; apt packages are build-time only (dpkg refuses non-root), runtime installs use user-space package managers into the ephemeral FS. |
-| Feature | Runtime containers get resource limits (4 CPU / 4 GB / 2 GB tmpfs, env-configurable). The adapter dispatches `opencode run` into the container when the task belongs to a workflow run; wall-clock timeout signals the in-container child (SIGKILL). |
-| Chore | Headless `orchicon serve` (no daemon socket) degrades to in-process execution. `scripts/container.sh runtime-daemon` / `runtime-stop` manage the daemon; `ps` also lists runtime containers. |
+| Bug fix | **Runtime daemon socket robustness.** The daemon socket is now bind-mounted as a **directory** (`/tmp/orchicon-runtime` → `/var/run/orchicon-runtime`), so restarting the daemon (which recreates the socket file) no longer breaks the control plane's connection — the previous file-bind stale-mount bug stranded the plane with no daemon and stopped the runtime-container sweep. |
+| Bug fix | **Leftover-container hygiene.** The daemon now removes a stopped/crashed runtime container before recreating it for an active run (previously "name already in use" blocked recovery), and runs an **age-based orphan sweep** (default 24h, `ORCHICON_RUNTIME_MAX_AGE` / `ORCHICON_RUNTIME_SWEEP_INTERVAL`) as a hard backstop for containers leaked while the plane is down — complementing the control plane's state-aware 30s adopt sweep. |
+| Bug fix | **Mid-workflow rebuilds fail-and-recover instead of getting stuck.** An **execution-liveness reaper** (boot + 30s) fails executions orphaned by a plane restart or a lost runtime container (`execution lost: control plane restarted or runtime container gone`) and transitions their work item to failed, so the workflow's recovery step re-dispatches in a fresh runtime. The adapter also **self-heals**: it ensures the runtime container exists before every dispatch (with a name-conflict retry) so a recovery re-dispatch can't race ahead of the adopt sweep and exec into a missing container. Previously a rebuild mid-workflow left the run, step, and execution `running` forever. |
 
 
 ## Installation
