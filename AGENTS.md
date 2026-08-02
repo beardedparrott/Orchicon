@@ -282,7 +282,7 @@ cat /tmp/orchicon-backup-*.sql | docker exec -i orchicon-postgres psql -U orchic
 
 > Every time you add, change, or remove a first-class entity, RPC, or user-facing capability, update the Ask Orchicon agent to match.
 
-The "Ask Orchicon" conversational agent (`internal/askorchicon/`) has a `ToolRegistry` in `tools.go` that defines every action the agent can perform. When you:
+The "Ask Orchicon" conversational agent (`internal/askorchicon/`) has a `ToolRegistry` in `tools.go` that defines every action the agent can perform. **The registry is the tool surface for the Orchicon MCP server** (`orchicon mcp`, `internal/mcp/`) — `BuildConfigContent` registers that server by default in every opencode run (Ask Orchicon chat + in-process worker executions; runtime-container executions skip it — no Postgres route). Tools are consumed natively by the model as `orchicon_<tool>` MCP tools, so the `Properties`/`Required` on each `ToolDefinition` must match what the tool's `Fn` actually parses. When you:
 
 - **Add a new entity** (table, proto, service) — add a tool for its CRUD in the appropriate `tool_*.go` file and register it in `allTools()` in `tools.go`
 - **Add a new RPC** — add a tool that calls the DB layer directly (same as existing tools)

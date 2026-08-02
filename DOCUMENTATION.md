@@ -615,6 +615,7 @@ orchicon version
 | `orchicon runtime-daemon` | Host process owning the Docker socket; spawns per-workflow runtime containers |
 | `orchicon runtime-supervisor` | Runtime container PID 1 (streams `opencode run`) |
 | `orchicon runtime-client` | Forwards dispatches into the runtime container |
+| `orchicon mcp` | Start the MCP stdio server (exposes the Ask Orchicon tool registry; registered in opencode runs by default) |
 | `scripts/container.sh` | Build / up / down / status / logs / ps / runtime-daemon / runtime-stop for dev + prod container instances |
 | `orchicon serve` | Run the control plane with embedded frontend (headless, migrations on boot) |
 | `orchicon serve --detach` / `--stop` | Manage a background `serve` instance (PID file; logs in `.dev/logs/`) |
@@ -764,6 +765,16 @@ Workers now receive full execution context including:
 4. Chat history appears in the right sidebar — switch between or resume past conversations
 5. The agent always asks clarifying questions before mutating data and refuses non-Orchicon requests
 
+**How it works (proper MCP, not text emulation):** the chat's `opencode run` subprocess is launched with the built-in **Orchicon MCP server registered by default** in its config. `orchicon mcp` exposes the full Ask Orchicon tool registry over the Model Context Protocol (stdio JSON-RPC), tenant-scoped via `ORCHICON_MCP_TENANT_ID`. The model calls Orchicon tools natively as `orchicon_<tool>` (e.g. `orchicon_list_projects`, `orchicon_create_work_item`) through opencode's MCP integration — no string-protocol tool-call emulation. Each chat also receives an **enabled projects** context block (fresh per message) and an **About Orchicon** primer describing how the platform works. See §MCP & the Orchicon MCP Server.
+
+#### MCP & the Orchicon MCP Server
+
+The binary ships an **MCP server** subcommand (`orchicon mcp`) that exposes Orchicon's tool registry over the Model Context Protocol (JSON-RPC 2.0, newline-delimited stdio). It is consumed by opencode and any other MCP client (Claude Desktop, Cursor, …).
+
+- **Discovery/execution**: `tools/list` returns every registered tool with a JSON-schema input; `tools/call` executes it (failures come back as `isError` results, per the MCP spec). The server echoes the client's MCP protocol version so the handshake succeeds with any client (opencode 1.18 sends `2025-11-25`).
+- **Tenancy**: the server is scoped to one tenant per process via the `ORCHICON_MCP_TENANT_ID` env var, set by the control plane through the opencode config `environment` map of the injected MCP entry. Unset (e.g. a human wires `orchicon mcp` into Claude Desktop manually) → dev tenant with a warning.
+- **Default registration**: `BuildConfigContent` (the `OPENCODE_CONFIG_CONTENT` injected into every opencode run) now registers the built-in Orchicon MCP by default — for **in-process worker executions** and **Ask Orchicon chat** (both co-located with the plane's Postgres). It is deliberately **not** registered for **runtime-container executions**: the per-workflow runtime container is an isolated, root-free sandbox with no network route to the plane's Postgres, and handing it the DB DSN would break the security model. The user's own opencode-config MCP servers are still merged in everywhere.
+
 ### Authentication
 
 - **Local dev**: Built-in OIDC provider (HS256) — no external IdP needed
@@ -859,6 +870,8 @@ Dual-instance (dev + prod dogfooding) is two containers with offset published po
 Worker executions run inside **one short-lived container per active workflow run** (Azure Pipelines self-hosted agent model). It is created when a run leaves `pending`, every execution for that workflow is dispatched into it, and it is killed when the run reaches a terminal state (`completed` / `failed` / `aborted`). Everything inside is ephemeral — installed tools, caches, and sessions are wiped on teardown, so each workflow starts from a pristine, fully-armed environment.
 
 > **Platform note (Windows):** the entire runtime layer — the daemon, its POSIX unix socket, and the container mounts — is Linux/POSIX-only and is **not ported to native Windows**. On Windows the stack runs inside **WSL2** (see [§Installation Guide — Windows via WSL2](#installation-guide)): the WSL2 kernel is real Linux, so the runtime containers, the daemon, and the single-container stack work exactly as on Linux. The Windows installer (`scripts/install.ps1`) only provisions WSL2 and installs the Linux binary into the distro.
+>
+> **Orchicon MCP availability:** the built-in Orchicon MCP server is registered by default for **in-process** executions and Ask Orchicon chat, but **not** inside these runtime containers — the sandbox has no route to the plane's Postgres and is deliberately kept DB-credential-free (§MCP & the Orchicon MCP Server).
 
 **Components:**
 
