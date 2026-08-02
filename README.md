@@ -30,6 +30,14 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.176 (2026-08-02)
+
+| Type | Change |
+|---|---|
+| Feature | **Runtime adapter CLIs are mounted, never baked.** Orchicon no longer ships opencode in its container images — the operator installs it on the host and it's bind-mounted into the main + runtime containers at runtime (`~/.opencode`, read-only, bin on PATH). This keeps the product redistributable regardless of an adapter's license (Claude Code's terms, for example, prohibit bundling). The installer now verifies opencode is present and fails with a clear message otherwise; the supervisor's allowlist (`runtimeBinAllowlist`) is structured so adding `claude`/`codex` later is a one-line change. |
+| Bug fix | **Runtime container creation no longer races.** The reconciler's `EnsureForRun` and the adapter's self-heal `Create` could call `docker run` for the same workflow name simultaneously — one won, the other hit "name already in use", removed the winner's container mid-setup, and the exec landed on a container being recreated (failures surfaced as `exit status 1`). Container creation is now serialized in the daemon. |
+| Chore | Docs updated (README, DOCUMENTATION.md, AGENTS.md, landing page) to make the mount-never-bake licensing policy explicit. Verified E2E on dev: images contain no opencode; a single-step workflow ran through the mounted opencode in the runtime container (execution succeeded with real output, run completed, container reaped). |
+
 ### v0.1.175 (2026-08-02)
 
 | Type | Change |
@@ -37,12 +45,6 @@ deployment, troubleshooting, and every subsystem.
 | Bug fix | **No more "succeeded" executions with empty output.** opencode's `--format json` emits an entire model response as one stdout line, and the workflow-runtime path read that stream through `bufio.Scanner` buffers capped at **64KB** (vs the local path's 1MB). A response larger than the cap silently dropped the line AND every event after it — so a big final answer (e.g. a PR review) made the execution come back `succeeded` with no output, the loop_decision saw no `_decision`, and it re-asked until the run failed. The runtime path now uses the same 1MB cap as the local path, and the adapter tracks `step_start`/`step_finish` so a clean exit with an unfinished final step is downgraded to a failure (`execution ended before the final model step completed`) instead of a silent success. |
 | Bug fix | **Work item bound to a workflow run reflects the run, not each step.** Every step of a workflow operates on the shared bound work item, and each step's successful execution used to flip the whole item to `succeeded` — so the item looked done while the run was still mid-flight. Bound items now stay `running`/`assigned` while the run is active (task steps are polled on their own execution, not the shared item's status) and reach `succeeded`/`failed` only when the run completes/fails. |
 | Chore | Reaped two stale pre-reap-logic workflow-runtime containers and terminalized their July-30 orphaned runs (step runs referenced executions that no longer exist), so the adopt sweep no longer recreates them at every boot. |
-
-### v0.1.174 (2026-08-02)
-
-| Type | Change |
-|---|---|
-| Feature | **Ask Orchicon runs on the Orchicon MCP — proper MCP, by default.** The built-in `orchicon mcp` server (tenancy via `ORCHICON_MCP_TENANT_ID`, protocol-version negotiation, spec-correct `isError` results) is now registered by default in the `OPENCODE_CONFIG_CONTENT` the adapter injects into every opencode run, so **Ask Orchicon and in-process worker executions get Orchicon's tools natively as `orchicon_*` MCP tools** — no more string-protocol tool emulation. The chat's system prompt adds an **About Orchicon** primer and a fresh **enabled projects** context block. Tool registry expanded (workflow runs, worker lifecycle/publish/deprecate, project archive, work-item delete, policies, recoveries) with aligned input schemas. Runtime-container executions deliberately skip the Orchicon MCP (isolated sandbox, no Postgres route). Verified E2E: a free-model opencode run called `orchicon_list_projects` via MCP and returned real project data. |
 
 
 ## Installation
@@ -54,6 +56,14 @@ curl -fsSL https://orchicon.dev/install | bash
 ```
 
 The installer downloads the binary, then runs `orchicon install` to set up everything: pull the published images, start the runtime daemon, launch the single-container instance, and print how to connect / start / stop. (Pass `--no-setup` to install only the binary.)
+
+> **Runtime adapter CLI required on the host (installed by you, never shipped).** Orchicon does **not** bundle opencode (or any future adapter CLI like Claude Code / Codex) in its images — the operator installs it on the host and it is bind-mounted into the containers at runtime. This keeps the product redistributable regardless of an adapter's license (Claude Code's terms prohibit bundling). Install opencode first:
+>
+> ```bash
+> curl -fsSL https://opencode.ai/install | bash
+> ```
+>
+> `orchicon install` verifies it's present and fails with a clear message otherwise.
 
 ```powershell
 # Windows (PowerShell) — runs the stack inside WSL2

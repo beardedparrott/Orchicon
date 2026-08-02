@@ -105,7 +105,7 @@ If architecture or anything referenced in AGENTS.md has changed, update this fil
 - **Telemetry**: OpenTelemetry → Grafana stack (Tempo + Loki + VictoriaMetrics) — separated infra
 - **Deployment**: single container (`orchicon container` PID-1 supervisor, `deploy/container/`, GHCR image `ghcr.io/beardedparrott/orchicon`; `scripts/container.sh` manages dev/prod instances preserving the compose-era postgres volumes)
 - **Policy**: Rego (Open Policy Agent)
-- **Runtime adapters**: gRPC sidecars (OpenCode first, CLI now / IPC later)
+- **Runtime adapters**: gRPC sidecars (OpenCode first, CLI now / IPC later). **Adapters are mounted, never baked**: Orchicon ships NO adapter CLI in its container images — the operator installs opencode on the host and `container.sh`/`orchicon install`/the runtime daemon bind-mount `~/.opencode` (ro) into the main and runtime containers, with the bin dir put on PATH. The supervisor's `runtimeBinAllowlist` (`internal/runtime/agent.go`) lists exec-able adapter binaries (`opencode` today; add `claude`/`codex` when those adapters land). Licensing-safe pattern for all future adapters: the product mounts the operator's own install, never redistributes the CLI.
 - **Frontend**: TypeScript + React + Vite + Connect-ES + React Flow
 - **Object storage**: BlobStore abstraction (S3 + local filesystem)
 - **Deployment**: Fully local (no cloud) is a supported mode
