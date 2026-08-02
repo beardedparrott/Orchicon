@@ -30,6 +30,13 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.167 (2026-08-02)
+
+| Type | Change |
+|---|---|
+| Bug fix | **Instance-scoped runtime containers (multi-instance).** Dev and prod share one runtime daemon, but each plane's adopt sweep only knew its own DB's active runs — so prod's sweep reaped dev's runtime containers as "orphans" every 30s (and vice versa), a perpetual fight that left active runs without a runtime. Runtime containers are now labeled with their owning instance (`orchicon.instance=dev\|prod`, set via `ORCHICON_INSTANCE`), and each plane's adopt list/reap is scoped to its own instance. The daemon's age-based orphan sweep stays global as the backstop. |
+| Chore | `scripts/container.sh` passes `ORCHICON_INSTANCE` to each instance container; `config.Instance` defaults to `dev`. |
+
 ### v0.1.166 (2026-08-02)
 
 | Type | Change |

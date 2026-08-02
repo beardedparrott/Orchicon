@@ -262,6 +262,7 @@ up_instance() {
     -e "ORCHICON_HOST_UID=$(id -u)" \
     -e "ORCHICON_HOST_GID=$(id -g)" \
     -e "ORCHICON_HOST_HOME=$HOME" \
+    -e "ORCHICON_INSTANCE=$inst" \
     "${MOUNTS[@]}" \
     "$IMAGE" >/dev/null
   log_ok "$inst instance started:"

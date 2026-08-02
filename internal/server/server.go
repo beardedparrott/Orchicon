@@ -261,7 +261,7 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	// execution stays in-process.
 	var runtimeLifecycle *runtime.Lifecycle
 	if cfg.RuntimeSocket != "" {
-		if rtClient := runtime.NewClient(cfg.RuntimeSocket); rtClient.Ready(context.Background()) {
+		if rtClient := runtime.NewClient(cfg.RuntimeSocket, cfg.Instance); rtClient.Ready(context.Background()) {
 			runtimeLifecycle = runtime.NewLifecycle(rtClient, pool, log)
 			// Route executions that belong to a workflow run into that
 			// workflow's runtime container instead of a local subprocess.

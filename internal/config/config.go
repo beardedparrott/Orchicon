@@ -76,6 +76,12 @@ type Config struct {
 	// containers).
 	RuntimeSocket string
 
+	// Instance identifies this control plane ("dev"/"prod"). It labels
+	// the runtime containers this plane creates and scopes its orphan
+	// reaping, so two instances sharing one runtime daemon do not reap
+	// each other's containers.
+	Instance string
+
 	Mode       DeploymentMode
 	Auth       AuthConfig
 	BlobStore  BlobStoreConfig
@@ -100,6 +106,7 @@ func Default() Config {
 		BlobStoreDir:      env("ORCHICON_BLOB_DIR", "./data/blobs"),
 		MigrateOnBoot:     envBool("ORCHICON_MIGRATE_ON_BOOT", true),
 		RuntimeSocket:     env("ORCHICON_RUNTIME_SOCKET", "/var/run/orchicon-runtime/runtime.sock"),
+		Instance:          env("ORCHICON_INSTANCE", "dev"),
 		Mode:              DeploymentMode(env("ORCHICON_MODE", "local")),
 		Auth: AuthConfig{
 			Issuer:          env("ORCHICON_OIDC_ISSUER", "local"),
