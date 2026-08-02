@@ -52,8 +52,8 @@ The project's model spend is rising. Be economical but **never at the expense of
 - Commit early and often on your branch. Write clear commit messages in present tense: `Add project CRUD service and data-access layer`. Stage only the files relevant to the commit.
 - **Never create a pull request without asking the user for approval first.** Ask, wait for a yes, then proceed.
 - Once work is complete and properly tested, ask the user to verify.
-- After the user confirms, create a PR and merge. PRs MUST carry the `release` label to kick off the release creation on GitHub. After the merge, delete the branch.
-- **Before every PR merge**, ALWAYS ASK THE USER BEFORE MERGING, update the "Last Release Changes" section in `README.md` with a table listing each feature/bug fix in the release. Keep the release info for the most recent **TWO** versions — remove older entries. Table format:
+- After the user verifies, ask again for approval to open the PR, then open it. PRs MUST carry the `release` label to kick off the release creation on GitHub.
+- **Before merging**, ALWAYS ASK THE USER AGAIN (PR-creation approval ≠ merge approval) and update the "Last Release Changes" section in `README.md` with a table listing each feature/bug fix in the release. Keep the release info for the most recent **TWO** versions — remove older entries. Table format:
 
   ```
   ### v0.1.NNN (date)
@@ -64,6 +64,7 @@ The project's model spend is rising. Be economical but **never at the expense of
   | Bug fix | Short description |
   | Chore | Short description |
   ```
+  After the merge, delete the branch.
 - Before starting work, always `git pull origin main` to get the latest. Before pushing, `git fetch origin && git rebase origin/main` if the branch has been open for a while.
 
 ## Local development loop
@@ -86,7 +87,7 @@ The binary embeds everything (the single-container runtime configs in `deploy/co
 Every task follows this sequence:
 
 1. Read AGENTS.md first.
-2. Read any docs or code necessary to perform the work.
+2. Read UPDATES.md to understand the current state, and read any docs or code necessary — DOCUMENTATION.md covers every subsystem, so read its relevant sections before touching something unfamiliar.
 3. Create a branch and do the work, committing changes often.
 4. Fully test and verify.
 5. Before the final commit on your branch, update **both** `README.md` (Last Release Changes section — table format, most recent two versions only) and `UPDATES.md` (new table row) with a one-paragraph summary describing the changes in this PR. This is the commit that will be PR'd and merged.
@@ -158,7 +159,7 @@ Every piece of functionality built in this repo must follow these security stand
 - If unsure how to use a library or pattern, use `gh_grep` to search real GitHub usage examples.
 - LSP servers (gopls, typescript, eslint, yaml-ls) are enabled — diagnostics surface in the edit loop. Treat them as fast feedback; `make ci` is the authoritative gate.
 - Playwright MCP is configured in `opencode.jsonc` for browser testing. **Playwright is installed** — `npx playwright install chrome` has been run, so Chrome is available for browser verification. Use Chrome and/or Playwright for frontend verification. NEVER use Firefox — the developer uses Firefox and testing needs a separate browser.
-- **NEVER run a foreground server (`orchicon serve`, `orchicon container`, or `container.sh up`) from a shell tool** — a foreground process keeps the caller's stdout/stderr pipe open and never returns, which hangs the agent session until the user kills it. **Use the built-in detach mode for the headless plane** — `orchicon serve --detach` forks the server, writes the PID file, and returns immediately (stop with `orchicon serve --stop`; check with `serve --status`; logs in `.dev/logs/orchicon.log`). The `scripts/container.sh` commands are for the user to run; if you need to test the container, launch it with `docker run -d` and poll `/healthz`.
+- **NEVER run a foreground server (`orchicon serve` without `--detach`, or `orchicon container`) from a shell tool** — a foreground process keeps the caller's stdout/stderr pipe open and never returns, which hangs the agent session until the user kills it. **Use the built-in detach mode for the headless plane** — `orchicon serve --detach` forks the server, writes the PID file, and returns immediately (stop with `orchicon serve --stop`; check with `serve --status`; logs in `.dev/logs/orchicon.log`). `scripts/container.sh up/down/rebuild` launch/stop the instance **detached** (`docker run -d`) and return, so they are safe to run from a shell tool — the same applies to testing a container directly with `docker run -d` (then poll `/healthz`).
   - This requires the stack already up (the container / `docker run` manages it) and migrations applied (the server also runs migrations on boot).
   - `serve --detach` writes the PID file and stops cleanly with `serve --stop`; use `fuser -k 8080/tcp` to stop a test server that lacks a PID file.
   - **Never use `pkill -f` with a pattern that could match the shell command itself** (e.g. `pkill -f "orchicon"` from within a bash `-c` that contains that string) — it kills your own shell. Kill by exact PID or by port (`fuser -k 8080/tcp`).
@@ -253,8 +254,6 @@ reconciler, frontend route, database table, adapter, or significant
 policy — update DOCUMENTATION.md to reflect it. If the change is
 entirely internal refactoring with no user-visible or architectural
 impact, you may skip the update, but err on the side of updating.
-
-## E2E Testing & Cleanup
 
 ## E2E Testing & Data Preservation
 
