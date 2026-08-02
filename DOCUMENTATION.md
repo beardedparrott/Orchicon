@@ -462,7 +462,7 @@ Orchicon/
 │
 ├── scripts/
 │   ├── install.sh               # Linux/macOS one-liner installer
-│   ├── install.ps1              # Windows PowerShell installer
+│   ├── install.ps1              # Windows PowerShell installer (provisions WSL2, runs the stack inside it)
 │   ├── install-local.sh         # Build & install from local source to ~/.local/bin
 │   ├── container.sh             # Dev/prod single-container instances (build/up/down/status/logs)
 │   ├── build-site.sh            # Cloudflare Pages build step
@@ -510,7 +510,7 @@ Orchicon/
 | **Frontend routes** | `frontend/src/routes/` |
 | **Workflow canvas editor** | `frontend/src/components/workflow-editor/` |
 | **Landing page** | `site/index.html` |
-| **Install scripts** | `scripts/install.sh` (Linux/macOS), `scripts/install.ps1` (Windows) |
+| **Install scripts** | `scripts/install.sh` (Linux/macOS), `scripts/install.ps1` (Windows → provisions WSL2, installs the Linux binary inside the distro) |
 | **Container instance controller** | `scripts/container.sh` |
 | **CI/CD workflows** | `.github/workflows/` |
 | **AI agent guidelines** | `AGENTS.md` |
@@ -537,11 +537,30 @@ curl -fsSL https://orchicon.dev/install | bash
 
 The installer downloads the binary, then runs `orchicon install` to set up **everything**: pull the published images (`ghcr.io/beardedparrott/orchicon` + `orchicon-runtime`), start the host-side runtime daemon, launch the single-container instance, and print how to connect / start / stop. Pass `--no-setup` to install only the binary (headless / CI).
 
-### One-Line Install (Windows PowerShell)
+### One-Line Install (Windows PowerShell — via WSL2)
 
 ```powershell
 irm https://orchicon.dev/install.ps1 | iex
 ```
+
+Orchicon's runtime layer (the runtime daemon, its unix socket, and the container mounts) is **POSIX-only** — there is no native Windows port. On Windows the whole stack therefore runs inside **WSL2**, and the installer orchestrates it:
+
+1. **WSL2 provisioning** — the script detects WSL and a Linux distro, ensures WSL2 is the default version, and prints exact next steps if WSL or a distro is missing (Windows 10 21H2+ / Windows 11: run `wsl --install` in an admin shell and reboot).
+2. **Docker check inside WSL** — confirms `docker version` works inside the distro (Docker Desktop with WSL2 integration, or Docker Engine installed in the distro) and prints setup steps if not.
+3. **Linux binary** — it downloads the **Linux** release asset (`orchicon_<ver>_linux_<arch>.tar.gz`, arch mapped from the Windows processor) and installs it inside the distro (default `~/.local/bin`); it never downloads the Windows binary.
+4. **One-command setup** — it runs `orchicon install` inside WSL: pull the published images (`ghcr.io/beardedparrott/orchicon` + `orchicon-runtime`), start the runtime daemon, launch the single-container instance, wait for health.
+5. **Connection info** — WSL2 forwards `localhost`, so it prints the Windows-visible URLs: `http://localhost:8080` (control plane) and `http://localhost:3002` (Grafana). If the URLs do not answer, check Windows Defender Firewall or add a `netsh interface portproxy` port forward.
+
+**Prerequisites:**
+
+- **Windows 10 21H2+ / Windows 11**. First-time WSL users run `wsl --install` from an elevated PowerShell and reboot; the installer guides through this if it is not yet set up.
+- **Docker Desktop** with the **WSL integration** enabled for your distro (Settings → Resources → WSL Integration), or Docker Engine running inside the distro.
+
+**Project directories are WSL paths.** The UI's `project_dir` is a host path. Inside WSL2 a Windows project `C:\Users\you\projects\Foo` is mounted by Docker Desktop at `/mnt/c/Users/you/projects/Foo` — enter that **WSL path** in the project form. There is no Windows↔WSL path translation layer; the UI accepts whatever path the plane's filesystem (WSL) can resolve.
+
+**Options** (PowerShell form of the Linux flags): `-Version`, `-InstallDir` (a **WSL** path, default `~/.local/bin`), `-NoSetup`, `-Uninstall` (stops the container instances and removes the binary; the WSL distro is left intact), `-Clean`, `-ForceClean`, `-DryRun`.
+
+> **Not verified on real Windows** — the WSL2 installer ships as-is for testing. The underlying flow (`orchicon install`) is the identical Linux code path exercised on Linux hosts; see the PR description for what a Windows tester should run.
 
 ### Install Options
 
@@ -558,8 +577,8 @@ irm https://orchicon.dev/install.ps1 | iex
 
 | Path | Contents |
 |---|---|
-| `<install-dir>/orchicon` | The `orchicon` binary (control plane + embedded frontend + migrations + container configs) |
-| `~/.local/share/orchicon/` | Runtime state, PID files, logs (`.dev/`), blob store (`data/`) |
+| `<install-dir>/orchicon` | The `orchicon` binary (control plane + embedded frontend + migrations + container configs). On Windows this lives **inside the WSL2 distro** (`~/.local/bin/orchicon`). |
+| `~/.local/share/orchicon/` | Runtime state, PID files, logs (`.dev/`), blob store (`data/`). On Windows, under the WSL distro's home. |
 
 ### Build from Source
 
@@ -838,6 +857,8 @@ Dual-instance (dev + prod dogfooding) is two containers with offset published po
 ### Workflow Runtime Containers
 
 Worker executions run inside **one short-lived container per active workflow run** (Azure Pipelines self-hosted agent model). It is created when a run leaves `pending`, every execution for that workflow is dispatched into it, and it is killed when the run reaches a terminal state (`completed` / `failed` / `aborted`). Everything inside is ephemeral — installed tools, caches, and sessions are wiped on teardown, so each workflow starts from a pristine, fully-armed environment.
+
+> **Platform note (Windows):** the entire runtime layer — the daemon, its POSIX unix socket, and the container mounts — is Linux/POSIX-only and is **not ported to native Windows**. On Windows the stack runs inside **WSL2** (see [§Installation Guide — Windows via WSL2](#installation-guide)): the WSL2 kernel is real Linux, so the runtime containers, the daemon, and the single-container stack work exactly as on Linux. The Windows installer (`scripts/install.ps1`) only provisions WSL2 and installs the Linux binary into the distro.
 
 **Components:**
 

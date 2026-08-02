@@ -30,27 +30,11 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
-### v0.1.170 (2026-08-02)
+### v0.1.173 (2026-08-02)
 
 | Type | Change |
 |---|---|
-| Feature | **One-command install.** `curl https://orchicon.dev/install \| bash` now downloads the binary **and** runs `orchicon install` to set up everything: pull the published images (`ghcr.io/beardedparrott/orchicon` **and** `orchicon-runtime` — the runtime image is now shipped to GHCR by the release workflow), start the host-side runtime daemon, launch the single-container instance, and print connection / start / stop info. `--no-setup` installs only the binary. |
-| Bug fix | **Fresh postgres init as uid 70.** The container image's postgres user is now uid 70 (matching compose-era volumes), and the supervisor's `postgresUIDGID()` never returns root — so a fresh database (empty data dir, e.g. a one-command install) initializes correctly instead of failing `initdb` with "could not look up effective user ID 70" / "cannot be run as root". |
-
-### v0.1.168 (2026-08-02)
-
-| Type | Change |
-|---|---|
-| Bug fix | **Instance-scoped runtime containers (multi-instance).** Dev and prod share one runtime daemon, but each plane's adopt sweep only knew its own DB's active runs — so prod's sweep reaped dev's runtime containers as "orphans" every 30s (and vice versa), a perpetual fight that left active runs without a runtime. Runtime containers are now labeled with their owning instance (`orchicon.instance=dev\|prod`, set via `ORCHICON_INSTANCE`), and each plane's adopt list/reap is scoped to its own instance. The daemon's age-based orphan sweep stays global as the backstop. |
-| Chore | `scripts/container.sh` passes `ORCHICON_INSTANCE` to each instance container; `config.Instance` defaults to `dev`. |
-
-### v0.1.166 (2026-08-02)
-
-| Type | Change |
-|---|---|
-| Bug fix | **Runtime daemon socket robustness.** The daemon socket is now bind-mounted as a **directory** (`/tmp/orchicon-runtime` → `/var/run/orchicon-runtime`), so restarting the daemon (which recreates the socket file) no longer breaks the control plane's connection — the previous file-bind stale-mount bug stranded the plane with no daemon and stopped the runtime-container sweep. |
-| Bug fix | **Leftover-container hygiene.** The daemon now removes a stopped/crashed runtime container before recreating it for an active run (previously "name already in use" blocked recovery), and runs an **age-based orphan sweep** (default 24h, `ORCHICON_RUNTIME_MAX_AGE` / `ORCHICON_RUNTIME_SWEEP_INTERVAL`) as a hard backstop for containers leaked while the plane is down — complementing the control plane's state-aware 30s adopt sweep. |
-| Bug fix | **Mid-workflow rebuilds fail-and-recover instead of getting stuck.** An **execution-liveness reaper** (boot + 30s) fails executions orphaned by a plane restart or a lost runtime container (`execution lost: control plane restarted or runtime container gone`) and transitions their work item to failed, so the workflow's recovery step re-dispatches in a fresh runtime. The adapter also **self-heals**: it ensures the runtime container exists before every dispatch (with a name-conflict retry) so a recovery re-dispatch can't race ahead of the adopt sweep and exec into a missing container. Previously a rebuild mid-workflow left the run, step, and execution `running` forever. |
+| Feature | **Windows install now runs the stack inside WSL2.** `irm https://orchicon.dev/install.ps1 \| iex` provisions/detects WSL2, verifies Docker inside the distro, downloads the **Linux** release binary and installs it inside WSL, then runs `orchicon install` there (pull images, start the runtime daemon, launch the single-container instance). It prints the Windows-visible URLs (`http://localhost:8080` control plane, `http://localhost:3002` Grafana) and supports `-NoSetup`, `-DryRun`, `-Uninstall`, `-Clean`, `-ForceClean`. The runtime layer (daemon, unix socket, container mounts) is POSIX-only and runs under WSL2 on Windows — there is no native Windows port. Linux/macOS install is unchanged. |
 
 
 ## Installation
@@ -64,7 +48,7 @@ curl -fsSL https://orchicon.dev/install | bash
 The installer downloads the binary, then runs `orchicon install` to set up everything: pull the published images, start the runtime daemon, launch the single-container instance, and print how to connect / start / stop. (Pass `--no-setup` to install only the binary.)
 
 ```powershell
-# Windows (PowerShell)
+# Windows (PowerShell) — runs the stack inside WSL2
 irm https://orchicon.dev/install.ps1 | iex
 ```
 
@@ -78,18 +62,27 @@ docker run --rm -p 8080:8080 -p 3002:3000 -v orchicon-data:/var/lib/orchicon ghc
 
 The `orchicon` binary is the PID-1 supervisor (`orchicon container`). See [DOCUMENTATION.md §Single-Container Deployment](DOCUMENTATION.md) for the lifecycle script, env vars, and data-preservation notes.
 
-### Windows (PowerShell)
+### Windows (WSL2)
 
 ```powershell
 irm https://orchicon.dev/install.ps1 | iex
 ```
+
+Orchicon's runtime layer (runtime daemon, unix socket, container mounts) is POSIX-only, so on Windows the **whole stack runs inside WSL2**. The installer provisions/detects WSL2, installs the **Linux** binary inside the distro, and runs the one-command setup there. WSL2 forwards `localhost`, so the UIs open from Windows at the same URLs as on Linux: `http://localhost:8080` (control plane) and `http://localhost:3002` (Grafana).
+
+Prerequisites:
+- **Windows 10 21H2+ / Windows 11**, with WSL2 and a Linux distro (first-time users: run `wsl --install` in an admin shell, then reboot — the installer will guide you).
+- **Docker Desktop** with WSL2 integration enabled for your distro (or Docker Engine installed inside it).
+
+Project directories are entered in the UI as their **WSL path** — a Windows project `C:\Users\you\projects\Foo` is `/mnt/c/Users/you/projects/Foo` inside WSL. See [DOCUMENTATION.md §Installation Guide](DOCUMENTATION.md) for details.
 
 ### Options
 
 | Flag | Description |
 |---|---|
 | `--version <tag>` | Install a specific version (e.g. `v0.2.0`). Default: latest. |
-| `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). |
+| `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). On Windows this is a **WSL path** (the binary installs inside the distro). |
+| `--no-setup` | Install the binary only — do not pull images / start the runtime daemon / launch the container. |
 | `--uninstall` | Remove Orchicon from the install directory. |
 | `--dry-run` | Print what would happen without making changes. |
 | `--clean` | Stop dev containers, remove old binary, then install latest. All user data preserved. |
