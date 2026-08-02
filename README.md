@@ -30,17 +30,19 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.175 (2026-08-02)
+
+| Type | Change |
+|---|---|
+| Bug fix | **No more "succeeded" executions with empty output.** opencode's `--format json` emits an entire model response as one stdout line, and the workflow-runtime path read that stream through `bufio.Scanner` buffers capped at **64KB** (vs the local path's 1MB). A response larger than the cap silently dropped the line AND every event after it — so a big final answer (e.g. a PR review) made the execution come back `succeeded` with no output, the loop_decision saw no `_decision`, and it re-asked until the run failed. The runtime path now uses the same 1MB cap as the local path, and the adapter tracks `step_start`/`step_finish` so a clean exit with an unfinished final step is downgraded to a failure (`execution ended before the final model step completed`) instead of a silent success. |
+| Bug fix | **Work item bound to a workflow run reflects the run, not each step.** Every step of a workflow operates on the shared bound work item, and each step's successful execution used to flip the whole item to `succeeded` — so the item looked done while the run was still mid-flight. Bound items now stay `running`/`assigned` while the run is active (task steps are polled on their own execution, not the shared item's status) and reach `succeeded`/`failed` only when the run completes/fails. |
+| Chore | Reaped two stale pre-reap-logic workflow-runtime containers and terminalized their July-30 orphaned runs (step runs referenced executions that no longer exist), so the adopt sweep no longer recreates them at every boot. |
+
 ### v0.1.174 (2026-08-02)
 
 | Type | Change |
 |---|---|
 | Feature | **Ask Orchicon runs on the Orchicon MCP — proper MCP, by default.** The built-in `orchicon mcp` server (tenancy via `ORCHICON_MCP_TENANT_ID`, protocol-version negotiation, spec-correct `isError` results) is now registered by default in the `OPENCODE_CONFIG_CONTENT` the adapter injects into every opencode run, so **Ask Orchicon and in-process worker executions get Orchicon's tools natively as `orchicon_*` MCP tools** — no more string-protocol tool emulation. The chat's system prompt adds an **About Orchicon** primer and a fresh **enabled projects** context block. Tool registry expanded (workflow runs, worker lifecycle/publish/deprecate, project archive, work-item delete, policies, recoveries) with aligned input schemas. Runtime-container executions deliberately skip the Orchicon MCP (isolated sandbox, no Postgres route). Verified E2E: a free-model opencode run called `orchicon_list_projects` via MCP and returned real project data. |
-
-### v0.1.173 (2026-08-02)
-
-| Type | Change |
-|---|---|
-| Feature | **Windows install now runs the stack inside WSL2.** `irm https://orchicon.dev/install.ps1 \| iex` provisions/detects WSL2, verifies Docker inside the distro, downloads the **Linux** release binary and installs it inside WSL, then runs `orchicon install` there (pull images, start the runtime daemon, launch the single-container instance). It prints the Windows-visible URLs (`http://localhost:8080` control plane, `http://localhost:3002` Grafana) and supports `-NoSetup`, `-DryRun`, `-Uninstall`, `-Clean`, `-ForceClean`. The runtime layer (daemon, unix socket, container mounts) is POSIX-only and runs under WSL2 on Windows — there is no native Windows port. Linux/macOS install is unchanged. |
 
 
 ## Installation

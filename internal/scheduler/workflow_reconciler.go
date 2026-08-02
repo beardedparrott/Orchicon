@@ -2141,13 +2141,16 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 	} else {
 		var execStatus string
 		if sr.WorkerExecutionID != "" {
+			// The step run records the execution it dispatched. A lookup
+			// error must NOT fall back to another execution (e.g. a later
+			// step's on a shared work item) — that could wrongly complete
+			// this step; wait for the next pass instead.
 			if exec, err := db.GetExecution(ctx, tx, tenantID, sr.WorkerExecutionID); err == nil {
 				execStatus = exec.Status
 			}
-		}
-		if execStatus == "" {
-			// Fallback: latest execution for the work item (e.g. a step
-			// whose run predates the execution-link or a re-ask path).
+		} else {
+			// No execution link on the step run (approval-style re-ask
+			// paths): fall back to the latest execution for the work item.
 			if exec, err := db.GetLatestExecutionForTask(ctx, tx, tenantID, parsed.WorkItemID); err == nil {
 				execStatus = exec.Status
 			}
