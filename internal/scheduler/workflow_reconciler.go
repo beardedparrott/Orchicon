@@ -61,6 +61,16 @@ type WorkflowReconciler struct {
 	policy         PolicyEvaluator // Phase 7: Rego gate evaluation (docs/02 §2.5)
 	taskDispatcher TaskDispatcher  // inline dispatch so executions appear immediately
 	recovery       RecoveryTrigger // triggers recovery on explicit `recover` steps
+	runtime        RuntimeLifecycle // per-workflow runtime container lifecycle (may be nil)
+}
+
+// RuntimeLifecycle creates/reaps the per-workflow runtime container.
+// Implemented by runtime.Lifecycle; declared here to keep the reconciler
+// decoupled. A nil implementation disables runtime containers (headless
+// `orchicon serve`).
+type RuntimeLifecycle interface {
+	EnsureForRun(ctx context.Context, run db.WorkflowRunRow) error
+	ReapForRun(ctx context.Context, runID string) error
 }
 
 // NewWorkflowReconciler creates a WorkflowReconciler. The policy
@@ -70,8 +80,10 @@ type WorkflowReconciler struct {
 // to dispatch ready work items immediately (not waiting for the next
 // TaskReconciler heartbeat). May be nil (fall back to heartbeat).
 // recovery is the RecoveryEngine used by explicit `recover` steps.
-func NewWorkflowReconciler(pool *db.Pool, log *slog.Logger, pe PolicyEvaluator, td TaskDispatcher, rt RecoveryTrigger) *WorkflowReconciler {
-	return &WorkflowReconciler{pool: pool, log: log, policy: pe, taskDispatcher: td, recovery: rt}
+// runtime is the per-workflow runtime container lifecycle; nil disables
+// runtime containers.
+func NewWorkflowReconciler(pool *db.Pool, log *slog.Logger, pe PolicyEvaluator, td TaskDispatcher, rt RecoveryTrigger, rl RuntimeLifecycle) *WorkflowReconciler {
+	return &WorkflowReconciler{pool: pool, log: log, policy: pe, taskDispatcher: td, recovery: rt, runtime: rl}
 }
 
 // Kind returns the reconciler kind (docs/03 §2.1).
@@ -134,10 +146,40 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	}
 	r.log.Debug("DEBUG: run loaded", "runID", run.ID, "status", run.Status, "version", run.Version)
 	r.log.Debug("DEBUG: run workflow", "workflowID", run.WorkflowID, "workflowVersion", run.WorkflowVersion)
-	// Only progress non-terminal runs.
+	// Only progress non-terminal runs. Terminal runs (including aborted)
+	// have their runtime container reaped here so a run terminalized
+	// elsewhere (e.g. AbortRun) never leaks its container.
 	if run.Status == domain.WorkflowRunCompleted || run.Status == domain.WorkflowRunFailed || run.Status == domain.WorkflowRunAborted {
+		if r.runtime != nil {
+			if err := r.runtime.ReapForRun(context.Background(), run.ID); err != nil {
+				r.log.Warn("reap terminal run runtime failed", "run", run.ID, "error", err)
+			}
+		}
 		return nil
 	}
+
+	// Runtime-container side effects are deferred until after the DB
+	// transaction commits: creating/reaping a container is not part of
+	// run state, and a failed container operation must not roll back run
+	// progress.
+	ensureRuntime := false
+	reapRuntime := false
+	defer func() {
+		if r.runtime == nil {
+			return
+		}
+		bg := context.Background()
+		if ensureRuntime && !reapRuntime {
+			if err := r.runtime.EnsureForRun(bg, run); err != nil {
+				r.log.Warn("ensure workflow runtime failed", "run", run.ID, "error", err)
+			}
+		}
+		if reapRuntime {
+			if err := r.runtime.ReapForRun(bg, run.ID); err != nil {
+				r.log.Warn("reap workflow runtime failed", "run", run.ID, "error", err)
+			}
+		}
+	}()
 
 	// Transition pending → running (docs/02 §2.4).
 	if run.Status == domain.WorkflowRunPending {
@@ -148,6 +190,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			return fmt.Errorf("transition run to running: %w", err)
 		}
 		run = updated
+		ensureRuntime = true
 		if err := r.enqueueRunEvent(ctx, ttx.Tx, domain.WorkflowEventRunStarted, run, ""); err != nil {
 			return fmt.Errorf("enqueue run_started: %w", err)
 		}
@@ -546,6 +589,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		}
 		run = updated
 		progressed = true
+		reapRuntime = true
 		if err := r.enqueueRunEvent(ctx, ttx.Tx, domain.WorkflowEventRunCompleted, run, ""); err != nil {
 			return fmt.Errorf("enqueue run_completed: %w", err)
 		}
@@ -588,6 +632,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		}
 		run = updated
 		progressed = true
+		reapRuntime = true
 		if err := r.enqueueRunEvent(ctx, ttx.Tx, domain.WorkflowEventRunFailed, run, ""); err != nil {
 			return fmt.Errorf("enqueue run_failed: %w", err)
 		}
