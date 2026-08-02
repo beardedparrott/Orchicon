@@ -65,6 +65,21 @@ type Adapter struct {
 // runtime container; without it the adapter runs in-process.
 func (a *Adapter) SetRuntimeClient(rt *runtime.Client) { a.rt = rt }
 
+// IsExecutionActive reports whether an in-process execution subprocess is
+// still tracked as running. Used by the execution-liveness reaper to
+// detect executions orphaned by a control-plane restart (a fresh boot has
+// an empty active map, so every previously-running in-process execution
+// is correctly reported dead).
+func (a *Adapter) IsExecutionActive(execID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	cmd, ok := a.active[execID]
+	if !ok || cmd == nil || cmd.Process == nil {
+		return false
+	}
+	return cmd.ProcessState == nil
+}
+
 // UsageRecord is the usage sample the adapter emits on step_finish
 // (docs/04 §6.1 step_finish carries tokens + cost).
 type UsageRecord struct {
@@ -942,6 +957,18 @@ func (a *Adapter) startInRuntime(ctx context.Context, execRow db.ExecutionRow, m
 		Cwd:        runDir,
 		ProjectDir: manifest.ProjectDir,
 	}
+	// Self-healing: ensure the runtime container exists before dispatching.
+	// A recovery re-dispatch can otherwise race ahead of the adopt sweep
+	// after a rebuild/container loss and fail by exec-ing into a missing
+	// container. Create is idempotent (returns the running container if
+	// present); the daemon appends the standard home mounts and validates
+	// the project mount against the allowed roots.
+	if _, cerr := a.rt.Create(ctx, runtime.CreateRequest{
+		WorkflowID: manifest.RuntimeWorkflowID,
+		Mounts:     projectMount(manifest.ProjectDir),
+	}); cerr != nil {
+		a.log.Warn("ensure runtime container on dispatch failed", "run", manifest.RuntimeWorkflowID, "execution", execRow.ID, "error", cerr)
+	}
 	exitCode, err := a.rt.Exec(ctx, manifest.RuntimeWorkflowID, req, func(ev runtime.AgentEvent) error {
 		if ev.Stream == "stderr" {
 			a.handleStderrLine(ctx, execRow, manifest, ev.Data)
@@ -972,6 +999,16 @@ func (a *Adapter) startInRuntime(ctx context.Context, execRow db.ExecutionRow, m
 	}
 	callbacks.OnResult(ctx, execRow.ID, succeeded, output.String(), strings.Join(parts, "; "))
 	return err
+}
+
+// projectMount returns the project-dir mount spec for a runtime container
+// (empty when no project dir — the daemon still adds the standard home
+// mounts).
+func projectMount(projectDir string) []runtime.MountSpec {
+	if projectDir == "" {
+		return nil
+	}
+	return []runtime.MountSpec{{Source: projectDir, Dest: projectDir}}
 }
 
 // handleStderrLine emits one worker stderr line as an OTel log record so

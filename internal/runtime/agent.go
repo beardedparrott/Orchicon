@@ -37,9 +37,10 @@ type AgentRequest struct {
 type AgentEvent struct {
 	Stream   string `json:"stream,omitempty"` // "stdout" | "stderr"
 	Data     string `json:"data,omitempty"`
-	Event    string `json:"event,omitempty"` // "exit" | "error"
+	Event    string `json:"event,omitempty"` // "exit" | "error" | "status"
 	ExitCode int    `json:"exit_code,omitempty"`
 	Error    string `json:"error,omitempty"`
+	Alive    bool   `json:"alive,omitempty"`
 	Pong     bool   `json:"pong,omitempty"`
 }
 
@@ -114,6 +115,8 @@ func (h *childRegistry) serve(conn net.Conn) {
 		h.runExec(conn, enc, req)
 	case "signal":
 		h.signal(enc, req)
+	case "status":
+		h.status(enc, req)
 	default:
 		_ = enc.Encode(AgentEvent{Event: "error", Error: "unknown cmd: " + req.Cmd})
 	}
@@ -215,8 +218,18 @@ func (h *childRegistry) runExec(conn net.Conn, enc *json.Encoder, req AgentReque
 	_ = enc.Encode(ev)
 }
 
-func (h *childRegistry) signal(enc *json.Encoder, req AgentRequest) {
+// status reports whether the exec is still running. Used by the control
+// plane's execution-liveness reaper to detect executions orphaned by a
+// plane restart or a lost runtime container.
+func (h *childRegistry) status(enc *json.Encoder, req AgentRequest) {
 	h.mu.Lock()
+	cmd, ok := h.cmd[req.ExecID]
+	h.mu.Unlock()
+	alive := ok && cmd != nil && cmd.Process != nil && cmd.ProcessState == nil
+	_ = enc.Encode(AgentEvent{Event: "status", Alive: alive})
+}
+
+func (h *childRegistry) signal(enc *json.Encoder, req AgentRequest) {	h.mu.Lock()
 	cmd, ok := h.cmd[req.ExecID]
 	h.mu.Unlock()
 	if !ok {
@@ -392,6 +405,12 @@ func RunClient(socketPath string, in io.Reader, out io.Writer) (int, error) {
 		_ = outEnc.Encode(ev)
 		if ev.Pong {
 			return 0, nil
+		}
+		if ev.Event == "status" {
+			if ev.Alive {
+				return 0, nil
+			}
+			return 1, nil
 		}
 		if ev.Event == "exit" {
 			if ev.Error != "" && ev.ExitCode == 0 {

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -245,6 +246,13 @@ func (d *Daemon) handleRuntime(w http.ResponseWriter, r *http.Request) {
 		d.handleExec(w, r, id)
 	case action == "signal" && r.Method == http.MethodPost:
 		d.handleSignal(w, r, id)
+	case strings.HasPrefix(action, "execs/") && r.Method == http.MethodGet:
+		execID := strings.TrimPrefix(action, "execs/")
+		if execID == "" || strings.Contains(execID, "/") {
+			httpError(w, http.StatusBadRequest, "bad exec id")
+			return
+		}
+		d.handleExecStatus(w, id, execID)
 	case action == "" && r.Method == http.MethodDelete:
 		d.handleKill(w, id)
 	default:
@@ -368,8 +376,28 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 	}
 	args = append(args, image, "orchicon", "runtime-supervisor")
 
-	out, err := d.docker(args...)
-	if err != nil {
+	// Create the container, retrying past name conflicts. A container
+	// that was just removed (`docker rm -f` during a rebuild / orphan
+	// sweep) is still settling for a moment: inspect reports it gone,
+	// but `docker run` then fails with "name already in use" / "removal
+	// in progress". Remove any leftover and retry.
+	var out string
+	var err error
+	created := false
+	for attempt := 0; attempt < 3 && !created; attempt++ {
+		out, err = d.docker(args...)
+		if err == nil {
+			created = true
+			break
+		}
+		if !strings.Contains(out, "Conflict") && !strings.Contains(out, "in progress") && !strings.Contains(out, "is already") {
+			return nil, fmt.Errorf("create runtime %s: %s: %w", name, out, err)
+		}
+		d.Log.Warn("runtime create conflict — removing stale container and retrying", "name", name, "attempt", attempt+1)
+		_, _ = d.docker("rm", "-f", name)
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !created {
 		return nil, fmt.Errorf("create runtime %s: %s: %w", name, out, err)
 	}
 
@@ -512,12 +540,41 @@ func (d *Daemon) handleSignal(w http.ResponseWriter, r *http.Request, id string)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// handleExecStatus reports whether an exec is still running inside a
+// runtime container (the execution-liveness reaper's query). A missing
+// container or a client error returns alive:false (200) so the caller
+// treats it as dead; only a daemon outage (request failure) is an error.
+func (d *Daemon) handleExecStatus(w http.ResponseWriter, id, execID string) {
+	name := d.containerName(id)
+	if running, err := d.containerRunning(name); err != nil || !running {
+		writeJSON(w, http.StatusOK, map[string]bool{"alive": false, "container": false})
+		return
+	}
+	reqJSON, err := json.Marshal(AgentRequest{Cmd: "status", ExecID: execID})
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]bool{"alive": false, "container": true})
+		return
+	}
+	cmd := exec.Command(d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
+	cmd.Stdin = bytes.NewReader(reqJSON)
+	out, _ := cmd.Output()
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	for sc.Scan() {
+		var ev AgentEvent
+		if json.Unmarshal(sc.Bytes(), &ev) == nil && ev.Event == "status" {
+			writeJSON(w, http.StatusOK, map[string]bool{"alive": ev.Alive, "container": true})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"alive": false, "container": true})
+}
+
 func (d *Daemon) handleKill(w http.ResponseWriter, id string) {
 	name := d.containerName(id)
 	out, err := d.docker("rm", "-f", name)
 	if err != nil {
-		// Not running / already removed is fine.
-		if strings.Contains(out, "No such container") {
+		// Not running / already removed / still settling is fine.
+		if strings.Contains(out, "No such container") || strings.Contains(out, "in progress") {
 			writeJSON(w, http.StatusOK, map[string]string{"status": "gone"})
 			return
 		}
