@@ -5,6 +5,13 @@
 //
 // Protocol: JSON-RPC 2.0, newline-delimited, stdio transport.
 //   Client sends requests to stdin, server writes responses to stdout.
+//
+// Tenancy: the server operates on a single tenant per process, taken from
+// the ORCHICON_MCP_TENANT_ID env var. The control plane injects that var via
+// the opencode config's MCP server `environment` map, so an `orchicon mcp`
+// sidecar spawned for a worker execution or an Ask Orchicon chat is scoped to
+// the right tenant. When unset (e.g. a human wires `orchicon mcp` into Claude
+// Desktop manually) it falls back to the dev tenant with a warning.
 package mcp
 
 import (
@@ -52,11 +59,19 @@ const (
 
 // MCP method names.
 const (
-	methodInitialize       = "initialize"
-	methodInitialized      = "notifications/initialized"
-	methodToolsList        = "tools/list"
-	methodToolsCall        = "tools/call"
+	methodInitialize  = "initialize"
+	methodInitialized = "notifications/initialized"
+	methodPing        = "ping"
+	methodToolsList   = "tools/list"
+	methodToolsCall   = "tools/call"
 )
+
+// Protocol version fallback when the client sends none. We echo the
+// client's requested version in practice (see handleInitialize) because the
+// tools/list + tools/call surface is identical across MCP protocol versions
+// and some SDK clients reject a downgrade to an older version they no longer
+// advertise.
+const fallbackProtocolVersion = "2025-11-25"
 
 // MCP tool definition matching the MCP spec schema.
 type mcpTool struct {
@@ -96,14 +111,25 @@ type ToolDef struct {
 
 // Server is a stdio-based MCP JSON-RPC server.
 type Server struct {
-	log    *slog.Logger
-	pool   *db.Pool
-	tools  ToolRegistry
+	log      *slog.Logger
+	pool     *db.Pool
+	tools    ToolRegistry
+	tenantID string
 }
 
-// New creates an MCP server.
+// New creates an MCP server. The tenant is resolved from the
+// ORCHICON_MCP_TENANT_ID env var (set by the control plane when it spawns
+// opencode with the Orchicon MCP registered); falls back to the dev tenant
+// with a warning so a manually-wired `orchicon mcp` still works.
 func New(log *slog.Logger, pool *db.Pool, tools ToolRegistry) *Server {
-	return &Server{log: log, pool: pool, tools: tools}
+	tenantID := os.Getenv("ORCHICON_MCP_TENANT_ID")
+	if tenantID == "" {
+		tenantID = "tnt_dev"
+		if log != nil {
+			log.Warn("ORCHICON_MCP_TENANT_ID unset — MCP server scoped to the dev tenant", "tenant_id", tenantID)
+		}
+	}
+	return &Server{log: log, pool: pool, tools: tools, tenantID: tenantID}
 }
 
 // Run reads JSON-RPC requests from stdin and writes responses to stdout until
@@ -134,6 +160,10 @@ func (s *Server) handle(ctx context.Context, req jsonRPCRequest) {
 		s.handleInitialize(req)
 	case methodInitialized:
 		// Notification — no response expected.
+	case methodPing:
+		if req.ID != nil {
+			s.writeResult(req.ID, map[string]any{})
+		}
 	case methodToolsList:
 		s.handleToolsList(req)
 	case methodToolsCall:
@@ -145,9 +175,25 @@ func (s *Server) handle(ctx context.Context, req jsonRPCRequest) {
 	}
 }
 
+// handleInitialize negotiates the MCP protocol version. We echo the
+// client's requested protocol version back verbatim: our tools/list and
+// tools/call handling is identical across MCP protocol versions, and some
+// SDK clients (opencode 1.18 sends 2025-11-25) reject a handshake that
+// downgrades to an older version they no longer advertise. Empty requests
+// fall back to the newest known version.
 func (s *Server) handleInitialize(req jsonRPCRequest) {
+	var params struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	_ = json.Unmarshal(req.Params, &params)
+
+	version := params.ProtocolVersion
+	if version == "" {
+		version = fallbackProtocolVersion
+	}
+
 	result := map[string]any{
-		"protocolVersion": "2024-11-05",
+		"protocolVersion": version,
 		"capabilities": map[string]any{
 			"tools": map[string]any{},
 		},
@@ -166,6 +212,9 @@ func (s *Server) handleToolsList(req jsonRPCRequest) {
 		t := mcpTool{
 			Name:        td.Name,
 			Description: td.Description + fmt.Sprintf(" (%s)", mutabilityLabel(td.Mutating)),
+			// Always emit a non-nil properties map: the MCP SDK's
+			// tools/list schema validation rejects `properties: null`.
+			InputSchema: inputSchema{Type: "object", Properties: map[string]propertySchema{}},
 		}
 		if len(td.Properties) > 0 {
 			t.InputSchema.Properties = td.Properties
@@ -176,6 +225,9 @@ func (s *Server) handleToolsList(req jsonRPCRequest) {
 	s.writeResult(req.ID, map[string]any{"tools": tools})
 }
 
+// handleToolsCall executes a tool. Per the MCP spec, a tool that runs but
+// fails returns a result with isError=true (not a JSON-RPC error); JSON-RPC
+// errors are reserved for protocol-level problems (bad params, unknown tool).
 func (s *Server) handleToolsCall(ctx context.Context, req jsonRPCRequest) {
 	var params struct {
 		Name      string          `json:"name"`
@@ -194,22 +246,37 @@ func (s *Server) handleToolsCall(ctx context.Context, req jsonRPCRequest) {
 	}
 
 	// MCP runs over stdio with no HTTP middleware to inject the tenant,
-	// so we default to the dev tenant. Every tool function reads the
-	// tenant from context via tenant.FromContext() and scopes its DB
-	// operations accordingly.
-	ctx = tenant.WithID(ctx, "tnt_dev")
+	// so the tenant comes from the server's ORCHICON_MCP_TENANT_ID env
+	// (set by the control plane when it spawns opencode). Every tool
+	// function reads the tenant from context via tenant.FromContext() and
+	// scopes its DB operations accordingly.
+	ctx = tenant.WithID(ctx, s.tenantID)
 
 	result, err := s.tools.Execute(ctx, s.pool, params.Name, params.Arguments)
 	if err != nil {
-		s.writeError(req.ID, codeInternal, fmt.Sprintf("Tool execution failed: %s", err), nil)
+		s.writeResult(req.ID, map[string]any{
+			"content": []map[string]any{
+				{
+					"type": "text",
+					"text": err.Error(),
+				},
+			},
+			"isError": true,
+		})
 		return
 	}
 
-	// Return tool result as MCP content items.
+	// Return tool result as MCP content items. An empty/absent result is
+	// still a successful call — surface it as a readable message so the
+	// model never sees an empty content array.
+	text := string(result)
+	if text == "" || text == "null" {
+		text = "ok"
+	}
 	content := []map[string]any{
 		{
 			"type": "text",
-			"text": string(result),
+			"text": text,
 		},
 	}
 	s.writeResult(req.ID, map[string]any{"content": content})
@@ -244,13 +311,6 @@ func mutabilityLabel(mutating bool) string {
 		return "mutates data — requires user confirmation"
 	}
 	return "read-only"
-}
-
-func genericInputSchema() inputSchema {
-	return inputSchema{
-		Type:       "object",
-		Properties: map[string]propertySchema{},
-	}
 }
 
 // Compile-time check: ensure connect is used (keeps the import alive).

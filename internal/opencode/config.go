@@ -306,34 +306,69 @@ func permissionRules() map[string]any {
 	}
 }
 
+// ConfigOptions configures the opencode config document injected via
+// OPENCODE_CONFIG_CONTENT.
+type ConfigOptions struct {
+	// AgentName is the agent id in the config (e.g. "orchicon-worker").
+	AgentName string
+	// AgentPrompt is the system prompt text for that agent (empty = no
+	// custom agent; opencode uses its default agent).
+	AgentPrompt string
+	// ModelRef is the model reference the agent runs with.
+	ModelRef string
+	// TenantID scopes the built-in Orchicon MCP server to a tenant. It
+	// is combined with OrchiconMCP: both must be set to register it.
+	TenantID string
+	// OrchiconMCP registers the built-in Orchicon MCP server (spawns this
+	// binary's `mcp` subcommand with ORCHICON_MCP_TENANT_ID set) so every
+	// opencode run has Orchicon's tools natively. Disable ONLY for
+	// executions that cannot reach the plane's Postgres — workflow runtime
+	// containers are isolated sandboxes with no DB route.
+	OrchiconMCP bool
+}
+
 // BuildConfigContent builds the JSON string for the OPENCODE_CONFIG_CONTENT
 // env var. It merges the agent configuration with MCP servers from the
-// user's opencode config file, so worker executions automatically inherit
-// the user's MCP tools.
+// user's opencode config file AND the built-in Orchicon MCP server (when
+// enabled), so worker executions and the Ask Orchicon chat automatically
+// get both the user's MCP tools and Orchicon's own tools.
 //
-// agentName is the name of the agent in the config (e.g. "orchicon-worker").
-// agentPrompt is the system prompt text for the agent.
-// modelRef is the model reference string.
-// If agentPrompt is empty, no custom agent is added (opencode uses its default).
-func BuildConfigContent(agentName, agentPrompt, modelRef string) string {
+// The built-in Orchicon MCP entry spawns this binary's `mcp` subcommand
+// over stdio (opencode names its tools `orchicon_<tool>`) with the tenant
+// injected through the server's `environment` map — proper MCP, no
+// text-protocol tool emulation.
+func BuildConfigContent(o ConfigOptions) string {
 	cfg := map[string]any{
 		"$schema": "https://opencode.ai/config.json",
 	}
 
-	if agentPrompt != "" {
+	if o.AgentPrompt != "" {
 		cfg["agent"] = map[string]any{
-			agentName: map[string]any{
-				"prompt": agentPrompt,
+			o.AgentName: map[string]any{
+				"prompt": o.AgentPrompt,
 				"mode":   "primary",
-				"model":  modelRef,
+				"model":  o.ModelRef,
 			},
 		}
 	}
 
-	// Merge MCP servers from the user's opencode config.
+	// Merge MCP servers: the user's own opencode-config servers first,
+	// then the built-in Orchicon MCP (unless the user already defines one
+	// named `orchicon` — respect their explicit choice).
 	// We use a package-level logger since config is read at startup time.
+	mcp := map[string]any{}
 	if mcpServers := readMCPServers(slog.Default()); len(mcpServers) > 0 {
-		cfg["mcp"] = mcpServers
+		for k, v := range mcpServers {
+			mcp[k] = v
+		}
+	}
+	if o.OrchiconMCP && o.TenantID != "" {
+		if _, exists := mcp["orchicon"]; !exists {
+			mcp["orchicon"] = orchiconMCPServer(o.TenantID)
+		}
+	}
+	if len(mcp) > 0 {
+		cfg["mcp"] = mcp
 	}
 
 	// Inject the hard permission deny rules so every worker execution is
@@ -347,19 +382,49 @@ func BuildConfigContent(agentName, agentPrompt, modelRef string) string {
 		fallback := map[string]any{
 			"$schema": "https://opencode.ai/config.json",
 		}
-		if agentPrompt != "" {
+		if o.AgentPrompt != "" {
 			fallback["agent"] = map[string]any{
-				agentName: map[string]any{
-					"prompt": agentPrompt,
+				o.AgentName: map[string]any{
+					"prompt": o.AgentPrompt,
 					"mode":   "primary",
-					"model":  modelRef,
+					"model":  o.ModelRef,
 				},
 			}
+		}
+		if len(mcp) > 0 {
+			fallback["mcp"] = mcp
 		}
 		fallback["permission"] = permissionRules()
 		b, _ = json.Marshal(fallback)
 	}
 	return string(b)
+}
+
+// orchiconBinaryPath returns the path to the orchicon executable used to
+// spawn the Orchicon MCP sidecar. Prefers the current executable (the
+// control plane IS the orchicon binary, in-container included) and falls
+// back to "orchicon" on PATH.
+func orchiconBinaryPath() string {
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		return exe
+	}
+	return "orchicon"
+}
+
+// orchiconMCPServer builds the opencode MCP config entry for the built-in
+// Orchicon MCP server (opencode v1 schema: type "local", command array,
+// environment map, enabled). The tenant flows to the sidecar through the
+// environment map; the Postgres DSN is inherited from the plane's env.
+func orchiconMCPServer(tenantID string) map[string]any {
+	return map[string]any{
+		"type":    "local",
+		"command": []string{orchiconBinaryPath(), "mcp"},
+		"environment": map[string]string{
+			"ORCHICON_MCP_TENANT_ID": tenantID,
+		},
+		"enabled": true,
+		"timeout": 15000,
+	}
 }
 
 // ReadMCPServersFromConfig reads the user's opencode config and returns

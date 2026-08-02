@@ -95,3 +95,178 @@ func toolCreateWorker(ctx context.Context, pool *db.Pool, args json.RawMessage) 
 	}
 	return json.Marshal(worker)
 }
+
+func toolUpdateWorker(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+		Purpose string `json:"purpose"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if params.ID == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	tenantID := tenant.FromContext(ctx)
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetWorker(ctx, ttx.Tx, tenantID, params.ID)
+	if err != nil {
+		return nil, err
+	}
+	update := db.UpdateWorkerFields{}
+	if params.Name != "" {
+		update.Name = &params.Name
+	}
+	if params.Purpose != "" {
+		update.Purpose = &params.Purpose
+	}
+	worker, err := db.UpdateWorker(ctx, ttx.Tx, tenantID, params.ID, current.Version, update)
+	if err != nil {
+		return nil, err
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return json.Marshal(worker)
+}
+
+func toolDeleteWorker(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if params.ID == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	tenantID := tenant.FromContext(ctx)
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer ttx.Rollback(ctx)
+	if err := db.DeleteWorker(ctx, ttx.Tx, tenantID, params.ID); err != nil {
+		return nil, err
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]string{"status": "deleted"})
+}
+
+func toolListWorkerVersions(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		WorkerID string `json:"worker_id"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if params.WorkerID == "" {
+		return nil, fmt.Errorf("worker_id is required")
+	}
+	tenantID := tenant.FromContext(ctx)
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer ttx.Rollback(ctx)
+	versions, err := db.ListWorkerVersions(ctx, ttx.Tx, tenantID, params.WorkerID)
+	if err != nil {
+		return nil, err
+	}
+	if versions == nil {
+		return json.RawMessage("[]"), nil
+	}
+	return json.Marshal(versions)
+}
+
+func toolPublishWorkerVersion(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		WorkerID string `json:"worker_id"`
+		Version  int    `json:"version"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if params.WorkerID == "" || params.Version <= 0 {
+		return nil, fmt.Errorf("worker_id and a positive version are required")
+	}
+	tenantID := tenant.FromContext(ctx)
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer ttx.Rollback(ctx)
+	version, err := db.PublishWorkerVersion(ctx, ttx.Tx, tenantID, params.WorkerID, params.Version)
+	if err != nil {
+		return nil, err
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return json.Marshal(version)
+}
+
+func toolDeprecateWorkerVersion(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		WorkerID string `json:"worker_id"`
+		Version  int    `json:"version"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if params.WorkerID == "" || params.Version <= 0 {
+		return nil, fmt.Errorf("worker_id and a positive version are required")
+	}
+	tenantID := tenant.FromContext(ctx)
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer ttx.Rollback(ctx)
+	version, err := db.DeprecateWorkerVersion(ctx, ttx.Tx, tenantID, params.WorkerID, params.Version)
+	if err != nil {
+		return nil, err
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return json.Marshal(version)
+}
+
+func toolSetActiveWorkerVersion(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		WorkerID string `json:"worker_id"`
+		Version  int    `json:"version"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if params.WorkerID == "" || params.Version <= 0 {
+		return nil, fmt.Errorf("worker_id and a positive version are required")
+	}
+	tenantID := tenant.FromContext(ctx)
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetWorker(ctx, ttx.Tx, tenantID, params.WorkerID)
+	if err != nil {
+		return nil, err
+	}
+	worker, err := db.SetActiveWorkerVersion(ctx, ttx.Tx, tenantID, params.WorkerID, current.Version, params.Version)
+	if err != nil {
+		return nil, err
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return json.Marshal(worker)
+}
