@@ -30,7 +30,7 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
-### v0.1.167 (2026-08-02)
+### v0.1.168 (2026-08-02)
 
 | Type | Change |
 |---|---|
