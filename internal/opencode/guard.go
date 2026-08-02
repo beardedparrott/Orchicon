@@ -86,22 +86,51 @@ type executionGuard struct {
 	real map[string]string
 }
 
+// MakeGuard creates a guard shim inside targetDir (which must already
+// exist and be writable) for the given projectDir, and returns the
+// absolute path of the generated shim subdir. It exists so the
+// in-container runtime agent can run workers under the same safety shim
+// inside workflow runtime containers, where the control plane's own /tmp
+// is not reachable.
+func MakeGuard(targetDir, projectDir string) (string, error) {
+	dir, err := os.MkdirTemp(targetDir, "orchicon-guard-*")
+	if err != nil {
+		return "", err
+	}
+	g, err := buildGuardIn(dir, projectDir)
+	if err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	return g.dir, nil
+}
+
 // newExecutionGuard creates a guard for one execution. projectDir is the
 // worker's working directory (may be empty — absolute targets are still
 // blocked). The returned guard must be closed (removes the shim dir).
 func newExecutionGuard(projectDir string) (*executionGuard, error) {
+	dir, err := os.MkdirTemp("", "orchicon-guard-*")
+	if err != nil {
+		return nil, err
+	}
+	g, err := buildGuardIn(dir, projectDir)
+	if err != nil {
+		os.RemoveAll(dir)
+		return nil, err
+	}
+	return g, nil
+}
+
+// buildGuardIn renders the guard script + symlinks into dir (created by
+// the caller). projectDir is the worker's working directory.
+func buildGuardIn(dir, projectDir string) (*executionGuard, error) {
 	if projectDir != "" {
 		if abs, err := filepath.Abs(projectDir); err == nil {
 			projectDir = abs
 		}
 	}
 
-	g := &executionGuard{real: make(map[string]string)}
-	dir, err := os.MkdirTemp("", "orchicon-guard-*")
-	if err != nil {
-		return nil, fmt.Errorf("guard: mkdir temp: %w", err)
-	}
-	g.dir = dir
+	g := &executionGuard{dir: dir, real: make(map[string]string)}
 
 	// Resolve the real binary paths for scoped binaries. They are always
 	// present on a working Linux/macOS host; a missing one means the

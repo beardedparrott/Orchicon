@@ -27,6 +27,8 @@ cd "$PROJECT_ROOT"
 IMAGE="${ORCHICON_IMAGE:-orchicon:local}"
 DOCKERFILE="deploy/container/Dockerfile"
 CONTEXT="deploy/container"
+# Workflow runtime base image (see build_image).
+RUNTIME_IMAGE="${ORCHICON_RUNTIME_IMAGE:-orchicon-runtime:local}"
 # ORCHICON_PG_VOLUME overrides the Postgres data volume. The default
 # reuses the existing compose-stack volumes (orchicon_postgres-data /
 # orchicon-prod_postgres-data) so your dev/prod data is preserved when
@@ -76,6 +78,47 @@ build_image() {
   cp "$PROJECT_ROOT/bin/orchicon" "$CONTEXT/orchicon"
   docker build -f "$DOCKERFILE" -t "$IMAGE" "$CONTEXT"
   log_ok "Image $IMAGE built (run 'scripts/container.sh up' to start an instance)"
+
+  # Workflow runtime base image (one short-lived container per active
+  # workflow run — see DOCUMENTATION.md §Workflow Runtime Containers).
+  local RT_DOCKERFILE="$PROJECT_ROOT/deploy/runtime/Dockerfile"
+  local RT_CONTEXT="$PROJECT_ROOT/deploy/runtime"
+  log_dim "Building $RUNTIME_IMAGE from $RT_DOCKERFILE…"
+  cp "$PROJECT_ROOT/bin/orchicon" "$RT_CONTEXT/orchicon"
+  docker build -f "$RT_DOCKERFILE" -t "$RUNTIME_IMAGE" "$RT_CONTEXT"
+  log_ok "Runtime image $RUNTIME_IMAGE built"
+}
+
+# start_runtime_daemon ensures the host-side runtime orchestrator is
+# running. It owns the Docker socket and serves the narrow workflow-
+# runtime API over a unix socket (mounted into the supervisor container
+# below). Idempotent — no-op when already up.
+RUNTIME_SOCKET="${ORCHICON_RUNTIME_SOCKET:-/tmp/orchicon-runtime.sock}"
+start_runtime_daemon() {
+  if [ -S "$RUNTIME_SOCKET" ] && curl -s --unix-socket "$RUNTIME_SOCKET" http://runtime/v1/health >/dev/null 2>&1; then
+    log_dim "runtime daemon already up ($RUNTIME_SOCKET)"
+    return 0
+  fi
+  log_dim "starting runtime daemon…"
+  setsid nohup "$PROJECT_ROOT/bin/orchicon" runtime-daemon </dev/null \
+    >/tmp/orchicon-runtime-daemon.log 2>&1 &
+  for _ in $(seq 1 20); do
+    if [ -S "$RUNTIME_SOCKET" ] && curl -s --unix-socket "$RUNTIME_SOCKET" http://runtime/v1/health >/dev/null 2>&1; then
+      log_ok "runtime daemon up ($RUNTIME_SOCKET)"
+      return 0
+    fi
+    sleep 0.25
+  done
+  log_err "runtime daemon failed to start — see /tmp/orchicon-runtime-daemon.log"
+  return 1
+}
+
+# stop_runtime_daemon removes every runtime container for an instance.
+stop_runtime_daemon() {
+  local inst="${1:-dev}"
+  docker ps -a --filter label=orchicon.workflow --format '{{.Names}}' | while read -r name; do
+    docker rm -f "$name" >/dev/null 2>&1 && log_dim "removed runtime $name"
+  done
 }
 
 # rebuild_image = down -> build -> up for one instance: the one-command
@@ -155,6 +198,11 @@ up_instance() {
   [ -f "$HOME/.gitconfig" ] && MOUNTS+=("-v" "$HOME/.gitconfig:$HOME/.gitconfig:ro")
   [ -f "$HOME/.git-credentials" ] && MOUNTS+=("-v" "$HOME/.git-credentials:$HOME/.git-credentials:ro")
 
+  # Workflow runtime daemon socket (host-side process that owns the
+  # Docker socket and spawns per-workflow runtime containers).
+  start_runtime_daemon || return 1
+  MOUNTS+=("-v" "$RUNTIME_SOCKET:/var/run/orchicon-runtime.sock")
+
   # Desired project paths (manifest + explicit). Skip paths absent on host.
   local project_paths=""
   local manifest
@@ -229,6 +277,7 @@ down_instance() {
   else
     log_dim "$inst instance is not running"
   fi
+  stop_runtime_daemon "$inst"
 }
 
 status_instances() {
@@ -268,11 +317,20 @@ case "${1:-}" in
   down) down_instance "${2:-dev}" ;;
   status) status_instances "${2:-}" ;;
   logs) logs_instance "${2:-dev}" ;;
+  runtime-daemon) start_runtime_daemon ;;
+  runtime-stop)
+    # Stop the runtime daemon (and any runtime containers) for an instance.
+    stop_runtime_daemon "${2:-dev}"
+    pid=$(pgrep -x orchicon | head -1)
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null && log_ok "runtime daemon stopped"
+    [ -z "$pid" ] && log_dim "runtime daemon not running"
+    ;;
   ps)
     docker ps -a --filter label=orchicon-instance --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+    docker ps -a --filter label=orchicon.workflow --format 'table {{.Names}}\t{{.Status}}'
     ;;
   *)
-    echo "Usage: $0 {build|rebuild [dev|prod]|sync-mounts [dev|prod]|up [dev|prod]|down [dev|prod]|status [dev|prod]|logs [dev|prod]|ps}"
+    echo "Usage: $0 {build|rebuild [dev|prod]|sync-mounts [dev|prod]|up [dev|prod]|down [dev|prod]|status [dev|prod]|logs [dev|prod]|ps|runtime-daemon|runtime-stop}"
     exit 1
     ;;
 esac

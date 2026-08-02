@@ -56,6 +56,12 @@ func main() {
 			os.Exit(runMCP(context.Background(), os.Args[2:], log))
 		case "db":
 			os.Exit(runDB(os.Args[2:], log))
+		case "runtime-daemon":
+			os.Exit(exitOnErr(runRuntimeDaemon(os.Args[2:], log)))
+		case "runtime-supervisor":
+			os.Exit(exitOnErr(runRuntimeSupervisor(os.Args[2:], log)))
+		case "runtime-client":
+			os.Exit(exitOnErr(runRuntimeClient(os.Args[2:], log)))
 		case "version", "--version", "-v":
 			fmt.Println(version.Current().String())
 			return
@@ -193,6 +199,16 @@ func runDB(args []string, log *slog.Logger) int {
 		fmt.Fprintf(os.Stderr, "Usage: orchicon db <backup|restore|list|prune>\n")
 		return 1
 	}
+}
+
+// exitOnErr turns an error into a process exit code (1 on error, 0 nil).
+// Used by the runtime subcommands, which return error values.
+func exitOnErr(err error) int {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func printHelp() {
