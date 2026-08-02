@@ -27,11 +27,18 @@ FROM grafana/grafana:11.5.2 AS grafana
 FROM postgres:16 AS runtime
 
 # util-linux provides setpriv (used by the supervisor to run postgres as
-# the postgres user, uid 999). curl installs the opencode runtime. git +
-# gh are required for coding workers (the DevOps Engineer creates PRs and
-# merges); without them the agent cannot run git/GitHub commands and may
-# fabricate success.
-RUN apt-get update \
+# the postgres user). The postgres user is set to uid 70 — the uid the
+# compose-era alpine postgres volumes are owned by — so initdb and the
+# postgres child both run as an existing user whose uid matches preserved
+# volumes (initdb refuses to run without a passwd entry for the effective
+# uid). curl installs the opencode runtime. git + gh are required for
+# coding workers (the DevOps Engineer creates PRs and merges); without
+# them the agent cannot run git/GitHub commands and may fabricate success.
+RUN groupmod -g 70 postgres \
+ && usermod -u 70 -g 70 postgres \
+ && chown -R postgres:postgres /var/lib/postgresql \
+ && chown postgres:postgres /usr/lib/postgresql \
+ && apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates util-linux git gpg \
  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg \

@@ -29,6 +29,7 @@ UNINSTALL=false
 CLEAN=false
 FORCE_CLEAN=false
 DRY_RUN=false
+SETUP=true
 
 # --- Colors -----------------------------------------------------------------
 if [ -t 1 ]; then
@@ -52,6 +53,7 @@ while [ $# -gt 0 ]; do
     --clean)           CLEAN=true; shift ;;
     --force-clean|--nuke|-f) FORCE_CLEAN=true; shift ;;
     --dry-run)         DRY_RUN=true; shift ;;
+    --no-setup)        SETUP=false; shift ;;
     --help|-h)
       cat <<EOF
 Orchicon installer
@@ -72,6 +74,9 @@ Options:
                         remove blob store data and runtime state, then install
                         the latest version. WARNING: all data is lost.
    --dry-run            Print what would happen without making changes.
+   --no-setup           Install the binary only — do NOT pull images, start the
+                        runtime daemon, or launch the container (default: full
+                        one-command setup runs `orchicon install`).
   -h, --help           Show this help.
 EOF
       exit 0 ;;
@@ -362,15 +367,26 @@ main() {
       ;;
   esac
 
-  # Next steps
-  echo ""
-  echo -e "${B}Quick start:${X}"
-  echo -e "  ${D}orchicon --help           Show available commands${X}"
-  echo -e "  ${D}scripts/container.sh up dev     Start the dev single-container instance${X}"
-  echo -e "  ${D}scripts/container.sh status     Show what's running${X}"
-  echo ""
-  echo -e "${B}Note:${X} ${D}the full stack runs as a single Docker container (orchicon container).${X}"
-  echo -e "  The binary embeds the container runtime configs, migrations, and frontend.${X}"
+  # One-command setup: pull the published images, start the runtime
+  # daemon, and launch the single-container instance, then print how to
+  # connect / manage it. Skip with --no-setup (headless / CI installs
+  # that only want the binary).
+  if [ "$SETUP" = true ] && [ "$DRY_RUN" = false ]; then
+    echo ""
+    echo -e "${B}Setting up the full stack (one-command install)…${X}"
+    if "$bin" install; then
+      echo ""
+      ok "Install complete — Orchicon is running."
+    else
+      warn "Full-stack setup did not complete. The binary is installed — run '${bin} install' to finish, or see the docs."
+      echo -e "  ${D}https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}#readme${X}"
+    fi
+  else
+    echo ""
+    echo -e "${B}Installed. Next step:${X}"
+    echo -e "  ${D}orchicon install    Pull images, start the runtime daemon + container${X}"
+  fi
+
   echo ""
   echo -e "${B}Documentation:${X} ${D}https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}#readme${X}"
 }

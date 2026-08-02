@@ -38,10 +38,10 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 	}
 
 	d := &runtime.Daemon{
-		SocketPath:    socketPath,
-		DockerBin:     "docker",
-		Image:         env("ORCHICON_RUNTIME_IMAGE", "orchicon-runtime:local"),
-		UserID:        hostUID,
+		SocketPath:   socketPath,
+		DockerBin:    "docker",
+		Image:        env("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:latest"),
+		UserID:       hostUID,
 		GroupID:       hostGID,
 		HostHome:      hostHome,
 		AllowedRoots:  allowedRoots,

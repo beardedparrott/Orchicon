@@ -269,7 +269,7 @@ func (s *supervisor) initPostgres() error {
 	if err := os.Chown(dataDir, uid, gid); err != nil {
 		return fmt.Errorf("chown postgres data dir: %w", err)
 	}
-	cmd := exec.Command("setpriv", "--reuid=70", "--regid=70", "--clear-groups",
+	cmd := exec.Command("setpriv", fmt.Sprintf("--reuid=%d", uid), fmt.Sprintf("--regid=%d", gid), "--clear-groups",
 		"initdb", "-D", dataDir, "-U", "orchicon", "--auth=trust", "-E", "UTF8")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -285,7 +285,10 @@ func (s *supervisor) initPostgres() error {
 func (s *supervisor) postgresUIDGID() (int, int) {
 	dataDir := filepath.Join(s.dataDir, "postgres")
 	if fi, err := os.Stat(dataDir); err == nil {
-		if uid, gid, ok := fileOwner(fi); ok {
+		// Preserve a non-root owner (e.g. a compose-era volume owned by
+		// uid 70). A root-owned leftover (e.g. an empty dir created by a
+		// prior mount) is chowned to the canonical postgres uid below.
+		if uid, gid, ok := fileOwner(fi); ok && uid != 0 {
 			return uid, gid
 		}
 	}

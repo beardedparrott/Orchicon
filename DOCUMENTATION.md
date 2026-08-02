@@ -535,6 +535,8 @@ Orchicon/
 curl -fsSL https://orchicon.dev/install | bash
 ```
 
+The installer downloads the binary, then runs `orchicon install` to set up **everything**: pull the published images (`ghcr.io/beardedparrott/orchicon` + `orchicon-runtime`), start the host-side runtime daemon, launch the single-container instance, and print how to connect / start / stop. Pass `--no-setup` to install only the binary (headless / CI).
+
 ### One-Line Install (Windows PowerShell)
 
 ```powershell
@@ -590,6 +592,7 @@ orchicon version
 | Command | Description |
 |---|---|
 | `orchicon container` | Run the whole stack as PID-1 (single-container image) |
+| `orchicon install` | One-command setup: pull images, start the runtime daemon, launch the container, print connection info |
 | `orchicon runtime-daemon` | Host process owning the Docker socket; spawns per-workflow runtime containers |
 | `orchicon runtime-supervisor` | Runtime container PID 1 (streams `opencode run`) |
 | `orchicon runtime-client` | Forwards dispatches into the runtime container |

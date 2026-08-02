@@ -30,6 +30,13 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.170 (2026-08-02)
+
+| Type | Change |
+|---|---|
+| Feature | **One-command install.** `curl https://orchicon.dev/install \| bash` now downloads the binary **and** runs `orchicon install` to set up everything: pull the published images (`ghcr.io/beardedparrott/orchicon` **and** `orchicon-runtime` — the runtime image is now shipped to GHCR by the release workflow), start the host-side runtime daemon, launch the single-container instance, and print connection / start / stop info. `--no-setup` installs only the binary. |
+| Bug fix | **Fresh postgres init as uid 70.** The container image's postgres user is now uid 70 (matching compose-era volumes), and the supervisor's `postgresUIDGID()` never returns root — so a fresh database (empty data dir, e.g. a one-command install) initializes correctly instead of failing `initdb` with "could not look up effective user ID 70" / "cannot be run as root". |
+
 ### v0.1.168 (2026-08-02)
 
 | Type | Change |
@@ -52,6 +59,13 @@ deployment, troubleshooting, and every subsystem.
 
 ```bash
 curl -fsSL https://orchicon.dev/install | bash
+```
+
+The installer downloads the binary, then runs `orchicon install` to set up everything: pull the published images, start the runtime daemon, launch the single-container instance, and print how to connect / start / stop. (Pass `--no-setup` to install only the binary.)
+
+```powershell
+# Windows (PowerShell)
+irm https://orchicon.dev/install.ps1 | iex
 ```
 
 ### Single container (Docker)
@@ -117,6 +131,7 @@ and [DOCUMENTATION.md §Single-Container Deployment](DOCUMENTATION.md).
 | `orchicon serve` | Run the control plane with embedded frontend (headless) |
 | `orchicon serve --detach` / `--stop` | Fork/stop a background server |
 | `orchicon container` | Run the whole stack as PID 1 (container image) |
+| `orchicon install` | One-command setup: pull images, start the runtime daemon, launch the container, print connection info |
 | `orchicon runtime-daemon` | Host process owning the Docker socket; spawns per-workflow runtime containers |
 | `orchicon runtime-supervisor` | Runtime container PID 1 (streams `opencode run`) |
 | `orchicon runtime-client` | Forwards dispatches into the runtime container |
