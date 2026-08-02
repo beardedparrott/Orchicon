@@ -18,18 +18,23 @@ import (
 // the narrow, validated operations the daemon exposes.
 type Client struct {
 	socketPath string
+	instance   string // owning instance ("dev"/"prod") — scopes List/Create
 	hc         *http.Client
 }
 
 // NewClient returns a client for the daemon socket at socketPath (e.g.
-// /var/run/orchicon-runtime.sock inside the supervisor container).
-func NewClient(socketPath string) *Client {
+// /var/run/orchicon-runtime/runtime.sock inside the supervisor container).
+// instance labels every runtime container this client creates and scopes
+// List to that instance, so two control planes sharing one daemon never
+// reap each other's containers.
+func NewClient(socketPath, instance string) *Client {
 	dial := func(ctx context.Context, _ string, _ string) (net.Conn, error) {
 		var d net.Dialer
 		return d.DialContext(ctx, "unix", socketPath)
 	}
 	return &Client{
 		socketPath: socketPath,
+		instance:   instance,
 		hc: &http.Client{
 			Transport: &http.Transport{
 				DialContext:         dial,
@@ -44,6 +49,9 @@ func NewClient(socketPath string) *Client {
 
 // Create ensures a runtime container exists for the workflow.
 func (c *Client) Create(ctx context.Context, req CreateRequest) (*CreateResponse, error) {
+	if req.InstanceID == "" {
+		req.InstanceID = c.instance
+	}
 	var out CreateResponse
 	if err := c.postJSON(ctx, "/v1/runtimes", req, &out); err != nil {
 		return nil, err
@@ -51,10 +59,11 @@ func (c *Client) Create(ctx context.Context, req CreateRequest) (*CreateResponse
 	return &out, nil
 }
 
-// List returns the active runtime container names (for boot-time adopt).
+// List returns the active runtime container names for THIS instance (for
+// boot-time adopt).
 func (c *Client) List(ctx context.Context) ([]string, error) {
 	var out ListResponse
-	if err := c.getJSON(ctx, "/v1/runtimes", &out); err != nil {
+	if err := c.getJSON(ctx, "/v1/runtimes?instance="+c.instance, &out); err != nil {
 		return nil, err
 	}
 	return out.Runtimes, nil

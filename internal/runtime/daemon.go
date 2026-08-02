@@ -58,6 +58,11 @@ type CreateRequest struct {
 	WorkflowID string      `json:"workflow_id"`
 	Image      string      `json:"image"`
 	Mounts     []MountSpec `json:"mounts"`
+	// InstanceID labels the runtime container with the requesting
+	// instance (dev/prod) so each control plane only reaps its OWN
+	// containers — two instances sharing one daemon must not fight over
+	// each other's orphans.
+	InstanceID string `json:"instance_id,omitempty"`
 }
 
 // CreateResponse is returned by POST /v1/runtimes.
@@ -152,7 +157,7 @@ func (d *Daemon) sweepOrphans(ctx context.Context) {
 			return
 		case <-tick.C:
 		}
-		names, err := d.listRuntimes()
+		names, err := d.listRuntimes("")
 		if err != nil {
 			d.Log.Warn("orphan sweep: list", "error", err)
 			continue
@@ -198,7 +203,9 @@ func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (d *Daemon) handleRuntimes(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		names, err := d.listRuntimes()
+		// Instance-scoped list so a plane only sees (and can reap) its
+		// own containers (query ?instance=dev|prod).
+		names, err := d.listRuntimes(r.URL.Query().Get("instance"))
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -341,6 +348,7 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 	}
 	args := []string{"run", "-d", "--name", name,
 		"--label", "orchicon.workflow=" + req.WorkflowID,
+		"--label", "orchicon.instance=" + instanceID(req.InstanceID),
 		"--user", fmt.Sprintf("%d:%d", d.UserID, d.GroupID),
 		"--cpus", d.CPUs,
 		"--memory", d.Memory,
@@ -422,6 +430,14 @@ func (d *Daemon) containerRunning(name string) (bool, error) {
 	return strings.TrimSpace(out) == "true", nil
 }
 
+// instanceID returns a safe instance label value (default "dev").
+func instanceID(id string) string {
+	if id == "" {
+		return "dev"
+	}
+	return id
+}
+
 // containerExists reports whether a container with this name exists
 // (running or stopped).
 func (d *Daemon) containerExists(name string) (bool, error) {
@@ -432,8 +448,16 @@ func (d *Daemon) containerExists(name string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
-func (d *Daemon) listRuntimes() ([]string, error) {
-	out, err := d.docker("ps", "-a", "--filter", "label=orchicon.workflow", "--format", "{{.Names}}")
+// listRuntimes returns runtime container names, optionally scoped to one
+// instance (empty instance = all instances). Instance scoping keeps two
+// control planes sharing one daemon from reaping each other's containers.
+func (d *Daemon) listRuntimes(instance string) ([]string, error) {
+	args := []string{"ps", "-a", "--filter", "label=orchicon.workflow"}
+	if instance != "" {
+		args = append(args, "--filter", "label=orchicon.instance="+instance)
+	}
+	args = append(args, "--format", "{{.Names}}")
+	out, err := d.docker(args...)
 	if err != nil {
 		return nil, err
 	}
