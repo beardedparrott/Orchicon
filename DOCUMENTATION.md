@@ -816,6 +816,27 @@ scripts/container.sh down dev         # stop + remove the dev instance
 
 Dual-instance (dev + prod dogfooding) is two containers with offset published ports (`-p 8080:8080 -p 3002:3000` and `-p 8091:8080 -p 3003:3000`), separate data volumes.
 
+### Workflow Runtime Containers
+
+Worker executions run inside **one short-lived container per active workflow run** (Azure Pipelines self-hosted agent model). It is created when a run leaves `pending`, every execution for that workflow is dispatched into it, and it is killed when the run reaches a terminal state (`completed` / `failed` / `aborted`). Everything inside is ephemeral — installed tools, caches, and sessions are wiped on teardown, so each workflow starts from a pristine, fully-armed environment.
+
+**Components:**
+
+- **`orchicon runtime-daemon`** (host process): the only process with access to the Docker socket. Serves a narrow HTTP API over a unix socket (default `/tmp/orchicon-runtime.sock`, mounted into the supervisor container at `/var/run/orchicon-runtime.sock`): create/kill/list runtime containers, exec into them, signal a running exec. Every request is validated — image allowlist (`orchicon-runtime:*`), mount sources restricted to the projects root, and an argv[0] allowlist (`opencode`, `orchicon`, `bash`, `sh`) — so the control plane can never create an arbitrary container. Started by `scripts/container.sh up`; manage with `scripts/container.sh runtime-daemon` / `runtime-stop`.
+- **`orchicon runtime-supervisor`** (PID 1 inside each runtime container): listens on a unix socket (`/tmp/orchicon-agent.sock`), runs `opencode run` as a child, streams stdout/stderr back, and signals children by exec_id. Builds the execution-guard shim in-container so workers run under the same `rm`/`sudo`/`dd`/`mkfs` path-scoped safety guard as the in-process path.
+- **`orchicon runtime-client`** (in-container): forwards a dispatch request from the daemon (via `docker exec`) to the supervisor socket and relays the streamed events back, so the daemon never needs shell-level access to the container.
+
+**Lifecycle:** the `WorkflowReconciler` ensures a runtime container when a run leaves `pending` (mounting the project's `project_dir`) and reaps it when the run reaches terminal. A 30s adopt sweep in the control plane kills orphan containers (runs no longer active) and ensures containers for active runs — covering aborts, plane crashes, and externally-terminalized runs. Headless `orchicon serve` (no daemon socket) disables runtime containers and stays in-process.
+
+**Security model — no root process in the runtime container:**
+
+- The runtime container runs as the **host user's uid** (`ORCHICON_HOST_UID`, default 1000) with the image rootfs **chowned to that uid**, so workers have full write control over the ephemeral filesystem (they can install tools) while any bind-mounted project directory is written as the host user — never as root. A worker cannot `chown` a project file to root or escalate to the host.
+- `dpkg` refuses to run as non-root, so system packages (python, node, build-essential, gh, …) are **baked at build time** (`deploy/runtime/Dockerfile`); runtime installs use user-space package managers (`pip` with `PIP_BREAK_SYSTEM_PACKAGES`, `npm`, `mise`, `uv`, `curl`) into the chowned rootfs / ephemeral `$HOME`.
+- The daemon mounts `~/.config/opencode` and `~/.local/share/opencode` **read-only**; the supervisor redirects each worker's opencode state to an ephemeral `XDG_DATA_HOME` under `/tmp` (seeded with `auth.json`), so sessions/keys never touch the host's real opencode data. Git identity + credential store are mounted read-only (PR/merge workers need them).
+- Per-runtime resource limits: 4 CPU / 4 GB memory / 2 GB tmpfs `/tmp` (configurable via `ORCHICON_RUNTIME_CPUS` / `_MEMORY` / `_TMPFS` on the daemon).
+
+**Build:** `make container-build` also builds `orchicon-runtime:local`. **Model note:** executions dispatch with the worker's pinned `model_ref`; verification workers should pin a free model (e.g. `opencode/deepseek-v4-flash-free`).
+
 ### Manual Development Setup
 
 ```bash
