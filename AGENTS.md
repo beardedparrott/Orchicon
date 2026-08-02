@@ -53,7 +53,7 @@ The project's model spend is rising. Be economical but **never at the expense of
 - **Never create a pull request without asking the user for approval first.** Ask, wait for a yes, then proceed.
 - Once work is complete and properly tested, ask the user to verify.
 - After the user confirms, create a PR and merge. PRs MUST carry the `release` label to kick off the release creation on GitHub. After the merge, delete the branch.
-- **Before every PR merge**, ALWAYS ASK THE USER BEFORE MERGING, update the "Last Release Changes" section in `README.md` with a table listing each feature/bug fix in the release. Only the most recent release info should be present — remove older entries. Table format:
+- **Before every PR merge**, ALWAYS ASK THE USER BEFORE MERGING, update the "Last Release Changes" section in `README.md` with a table listing each feature/bug fix in the release. Keep the release info for the most recent **TWO** versions — remove older entries. Table format:
 
   ```
   ### v0.1.NNN (date)
@@ -89,7 +89,7 @@ Every task follows this sequence:
 2. Read any docs or code necessary to perform the work.
 3. Create a branch and do the work, committing changes often.
 4. Fully test and verify.
-5. Before the final commit on your branch, update **both** `README.md` (Last Release Changes section — table format, most recent only) and `UPDATES.md` (new table row) with a one-paragraph summary describing the changes in this PR. This is the commit that will be PR'd and merged.
+5. Before the final commit on your branch, update **both** `README.md` (Last Release Changes section — table format, most recent two versions only) and `UPDATES.md` (new table row) with a one-paragraph summary describing the changes in this PR. This is the commit that will be PR'd and merged.
 6. Follow the Git Workflow above.
 7. Inform the user every time UPDATES have been made. Show them in a tabled format what was changed and updated.
 
@@ -120,6 +120,7 @@ If architecture or anything referenced in AGENTS.md has changed, update this fil
 7. No automatic model failover — the human defines the exact model.
 8. Recovery is opt-out, not opt-in.
 9. Migrations are forward-only.
+10. Windows is always considered. Windows support is delivered by running the whole Linux stack inside **WSL2** — there is no native Windows port. Every change to the installers (`install.sh`/`install.ps1`), deployment, runtime layer, container, docs, or frontend must be evaluated against the Windows/WSL2 path, not just Linux/macOS.
 
 ## Security Standards (applies to every slice)
 

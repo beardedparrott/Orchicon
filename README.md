@@ -36,6 +36,13 @@ deployment, troubleshooting, and every subsystem.
 |---|---|
 | Feature | **Windows install now runs the stack inside WSL2.** `irm https://orchicon.dev/install.ps1 \| iex` provisions/detects WSL2, verifies Docker inside the distro, downloads the **Linux** release binary and installs it inside WSL, then runs `orchicon install` there (pull images, start the runtime daemon, launch the single-container instance). It prints the Windows-visible URLs (`http://localhost:8080` control plane, `http://localhost:3002` Grafana) and supports `-NoSetup`, `-DryRun`, `-Uninstall`, `-Clean`, `-ForceClean`. The runtime layer (daemon, unix socket, container mounts) is POSIX-only and runs under WSL2 on Windows — there is no native Windows port. Linux/macOS install is unchanged. |
 
+### v0.1.170 (2026-08-02)
+
+| Type | Change |
+|---|---|
+| Feature | **One-command install.** `curl https://orchicon.dev/install \| bash` now downloads the binary **and** runs `orchicon install` to set up everything: pull the published images (`ghcr.io/beardedparrott/orchicon` **and** `orchicon-runtime` — the runtime image is now shipped to GHCR by the release workflow), start the host-side runtime daemon, launch the single-container instance, and print connection / start / stop info. `--no-setup` installs only the binary. |
+| Bug fix | **Fresh postgres init as uid 70.** The container image's postgres user is now uid 70 (matching compose-era volumes), and the supervisor's `postgresUIDGID()` never returns root — so a fresh database (empty data dir, e.g. a one-command install) initializes correctly instead of failing `initdb` with "could not look up effective user ID 70" / "cannot be run as root". |
+
 
 ## Installation
 
