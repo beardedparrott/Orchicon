@@ -72,6 +72,21 @@ RUN useradd -m -u 1000 -s /bin/bash orchicon \
  && rm -rf /home/orchicon/.profile /home/orchicon/.bashrc \
  && mkdir -p /home/orchicon && chown 1000:1000 /home/orchicon
 
+# Host-home skeleton (same paths the supervisor container uses, so the
+# daemon's bind mounts overlay existing dirs). Docker creates missing
+# bind-mount parents as ROOT — pre-creating and chowning these to the
+# runtime uid means workers can still write into $HOME even though no
+# root process exists. `.local/share/opencode` and `.config/opencode`
+# are overlaid by the daemon's mounts; the rest stay ephemeral.
+RUN mkdir -p \
+      /home/beardedparrott/.local/share \
+      /home/beardedparrott/.local/state \
+      /home/beardedparrott/.config \
+      /home/beardedparrott/.cache \
+      /home/beardedparrott/.npm \
+      /home/beardedparrott/projects \
+ && chown -R 1000:1000 /home/beardedparrott
+
 # pip on Debian 12 enforces PEP 668 (externally managed env); the runtime
 # user must be able to pip-install freely into the chowned rootfs.
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
