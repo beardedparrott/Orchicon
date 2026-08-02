@@ -298,14 +298,20 @@ if (-not $pathDirs -and -not $DryRun) {
     Write-Host "  [Environment]::SetEnvironmentVariable('PATH', `$env:PATH + ';$InstallDir', 'User')"
 }
 
-# --- Next steps ---
-Write-Host ""
-Write-Host "Quick start:" -ForegroundColor White
-Write-Host "  orchicon --help           Show available commands" -ForegroundColor DarkGray
-Write-Host "  scripts/container.sh up dev     Start the dev single-container instance" -ForegroundColor DarkGray
-Write-Host "  orchicon dev status       Check what's running" -ForegroundColor DarkGray
-Write-Host ""
-Write-Host "Note: the full stack runs as a single Docker container (orchicon container)." -ForegroundColor DarkGray
-Write-Host "The binary embeds the container runtime configs, migrations, and frontend." -ForegroundColor DarkGray
+# --- Next steps / one-command setup ---
+if (-not $DryRun) {
+    Write-Host ""
+    Write-Host "Setting up the full stack (one-command install)…" -ForegroundColor White
+    & $bin install
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok "Install complete — Orchicon is running."
+    } else {
+        Write-Warn "Full-stack setup did not complete. The binary is installed — run 'orchicon install' to finish."
+    }
+} else {
+    Write-Host ""
+    Write-Host "Installed. Next step:" -ForegroundColor White
+    Write-Host "  orchicon install    Pull images, start the runtime daemon + container" -ForegroundColor DarkGray
+}
 Write-Host ""
 Write-Host "Documentation: https://github.com/$GitHubOwner/$GitHubRepo#readme" -ForegroundColor DarkGray

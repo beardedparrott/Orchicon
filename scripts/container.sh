@@ -105,6 +105,9 @@ start_runtime_daemon() {
     return 0
   fi
   log_dim "starting runtime daemon…"
+  # Local dev: pin the daemon to the locally-built runtime image (the
+  # daemon's default is the GHCR release image for one-command installs).
+  ORCHICON_RUNTIME_IMAGE="${ORCHICON_RUNTIME_IMAGE:-$RUNTIME_IMAGE}" \
   setsid nohup "$PROJECT_ROOT/bin/orchicon" runtime-daemon </dev/null \
     >/tmp/orchicon-runtime-daemon.log 2>&1 &
   for _ in $(seq 1 20); do

@@ -151,6 +151,25 @@ jobs:
           docker push "ghcr.io/beardedparrott/orchicon:${ORCHICON_VERSION}"
           docker push ghcr.io/beardedparrott/orchicon:latest
 
+      # Per-workflow runtime base image (one container per active workflow
+      # run). Shipped to GHCR so a one-command install can pull it — the
+      # runtime daemon uses it to spawn orchicon-runtime-<runID>.
+      - name: Build runtime image
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          cp ./orchicon deploy/runtime/orchicon
+          docker build -f deploy/runtime/Dockerfile -t "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" deploy/runtime
+          docker tag "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" ghcr.io/beardedparrott/orchicon-runtime:latest
+
+      - name: Push runtime image
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}"
+          docker push ghcr.io/beardedparrott/orchicon-runtime:latest
+
   release:
     name: Create Release
     needs: build

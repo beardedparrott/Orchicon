@@ -535,6 +535,8 @@ Orchicon/
 curl -fsSL https://orchicon.dev/install | bash
 ```
 
+The installer downloads the binary, then runs `orchicon install` to set up **everything**: pull the published images (`ghcr.io/beardedparrott/orchicon` + `orchicon-runtime`), start the host-side runtime daemon, launch the single-container instance, and print how to connect / start / stop. Pass `--no-setup` to install only the binary (headless / CI).
+
 ### One-Line Install (Windows PowerShell)
 
 ```powershell
@@ -590,6 +592,7 @@ orchicon version
 | Command | Description |
 |---|---|
 | `orchicon container` | Run the whole stack as PID-1 (single-container image) |
+| `orchicon install` | One-command setup: pull images, start the runtime daemon, launch the container, print connection info |
 | `orchicon runtime-daemon` | Host process owning the Docker socket; spawns per-workflow runtime containers |
 | `orchicon runtime-supervisor` | Runtime container PID 1 (streams `opencode run`) |
 | `orchicon runtime-client` | Forwards dispatches into the runtime container |
@@ -851,7 +854,7 @@ Worker executions run inside **one short-lived container per active workflow run
 - The daemon mounts `~/.config/opencode` and `~/.local/share/opencode` **read-only**; the supervisor redirects each worker's opencode state to an ephemeral `XDG_DATA_HOME` under `/tmp` (seeded with `auth.json`), so sessions/keys never touch the host's real opencode data. Git identity + credential store are mounted read-only (PR/merge workers need them).
 - Per-runtime resource limits: 4 CPU / 4 GB memory / 2 GB tmpfs `/tmp` (configurable via `ORCHICON_RUNTIME_CPUS` / `_MEMORY` / `_TMPFS` on the daemon).
 
-**Build:** `make container-build` also builds `orchicon-runtime:local`. **Model note:** executions dispatch with the worker's pinned `model_ref`; verification workers should pin a free model (e.g. `opencode/deepseek-v4-flash-free`).
+**Build:** `make container-build` also builds `orchicon-runtime:local`. The release workflow ships the runtime image to GHCR (`ghcr.io/beardedparrott/orchicon-runtime:<version>` + `:latest`) — the one-command install pulls it, and the runtime daemon defaults to that image (`ORCHICON_RUNTIME_IMAGE` overrides; local dev pins the locally-built tag). **Model note:** executions dispatch with the worker's pinned `model_ref`; verification workers should pin a free model (e.g. `opencode/deepseek-v4-flash-free`).
 
 ### Manual Development Setup
 

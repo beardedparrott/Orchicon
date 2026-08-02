@@ -62,6 +62,8 @@ func main() {
 			os.Exit(exitOnErr(runRuntimeSupervisor(os.Args[2:], log)))
 		case "runtime-client":
 			os.Exit(exitOnErr(runRuntimeClient(os.Args[2:], log)))
+		case "install":
+			os.Exit(exitOnErr(runInstall(os.Args[2:], log)))
 		case "version", "--version", "-v":
 			fmt.Println(version.Current().String())
 			return
