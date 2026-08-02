@@ -66,9 +66,12 @@ COPY orchicon /usr/local/bin/orchicon
 # Runtime user: the same uid/gid as the host user running Orchicon, so
 # bind-mounted project dirs are owned/written by that user. Everything
 # below is chowned to this user so the worker has full control of the
-# ephemeral filesystem without any root process.
+# ephemeral filesystem without any root process. BuildKit bind-mounts
+# /etc/resolv.conf + /etc/hosts read-only into the build container, so
+# the recursive chown of /etc is best-effort (those two stay root-owned,
+# which is fine — docker manages them).
 RUN useradd -m -u 1000 -s /bin/bash orchicon \
- && chown -R 1000:1000 /usr /etc /opt /var /home /root \
+ && (chown -R 1000:1000 /usr /etc /opt /var /home /root 2>/dev/null || true) \
  && rm -rf /home/orchicon/.profile /home/orchicon/.bashrc \
  && mkdir -p /home/orchicon && chown 1000:1000 /home/orchicon
 
