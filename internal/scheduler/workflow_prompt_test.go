@@ -99,3 +99,36 @@ func TestStepKindLabel(t *testing.T) {
 		}
 	}
 }
+
+// TestRuntimeEnvironmentBlock verifies the machine-generated "## Runtime
+// environment" section: it names the resolved image, states the rootless
+// no-apt ground truth, and documents the rootless system-library escape
+// hatch so workers stop empirically probing the container.
+func TestRuntimeEnvironmentBlock(t *testing.T) {
+	got := runtimeEnvironmentBlock("pyside6-gui:latest")
+	for _, want := range []string{
+		"## Runtime environment",
+		"pyside6-gui:latest",
+		"**not root**",
+		"apt-get download",
+		"dpkg-deb -x",
+		"LD_LIBRARY_PATH",
+		"QT_QPA_PLATFORM=offscreen",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("runtimeEnvironmentBlock missing %q; got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "<prefix>") {
+		t.Errorf("runtimeEnvironmentBlock leaked placeholder text")
+	}
+}
+
+// TestRuntimeEnvironmentBlockEmptyImage falls back to the default base
+// image label when the work item has no runtime_image stamped.
+func TestRuntimeEnvironmentBlockEmptyImage(t *testing.T) {
+	got := runtimeEnvironmentBlock("")
+	if !strings.Contains(got, "default Orchicon runtime base image") {
+		t.Errorf("expected base-image fallback, got:\n%s", got)
+	}
+}

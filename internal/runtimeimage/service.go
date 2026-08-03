@@ -377,9 +377,12 @@ func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[ap
 		Status:   &building,
 		Error:    &clearErr,
 	})
-	_ = ttx.Rollback(ctx)
 	if err != nil {
+		_ = ttx.Rollback(ctx)
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("optimistic concurrency conflict — reload and retry"))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return connect.NewError(connect.CodeInternal, err)
 	}
 
 	base := row.BaseImageRef
@@ -431,9 +434,15 @@ func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[ap
 		BuildLog: &buildLog,
 		Error:    &failMsg,
 	})
-	_ = ttx.Rollback(ctx)
 	if err != nil {
+		_ = ttx.Rollback(ctx)
 		s.log.Warn("persist runtime image build outcome failed", "id", row.ID, "error", err)
+		// The build itself succeeded on the daemon; report the persisted
+		// error so the caller can retry the status update.
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("persist build outcome: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return connect.NewError(connect.CodeInternal, err)
 	}
 	if err := stream.Send(&apiv1.BuildRuntimeImageResponse{
 		Status: imageStatusProto(final.Status),

@@ -1814,7 +1814,7 @@ func runtimeEnvironmentBlock(image string) string {
 	sb.WriteString("- You are **not root** and cannot become root: `sudo` is blocked and `apt-get` refuses to run without root. Do not attempt them.\n")
 	sb.WriteString("- You may install tools freely into the ephemeral filesystem with the user-space package managers that ship in the image: `pip install` (PIP_BREAK_SYSTEM_PACKAGES is set), `npm install`, `mise install <tool>`, `uv`, `bun`, `curl`. These need no root and are wiped at run end.\n")
 	sb.WriteString("- System packages are baked at build time; `apt-get install` will not work. If you need a system shared library that is missing (e.g. `libGL.so.1` for a GUI toolkit), fetch and extract it without root:\n\n")
-	sb.WriteString("    apt-get download <pkg> && dpkg-deb -x <pkg>*.deb <prefix> && export LD_LIBRARY_PATH=<prefix>/usr/lib/x86_64-linux-gnu\n\n")
+	sb.WriteString("    apt-get download <pkg> && dpkg-deb -x <pkg>*.deb /tmp/libs && export LD_LIBRARY_PATH=/tmp/libs/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH\n\n")
 	sb.WriteString("- There is no X server and usually no offscreen graphics libs. Prefer headless modes for GUI toolkits (e.g. `QT_QPA_PLATFORM=offscreen`), or install the missing libs with the pattern above.\n")
 	return sb.String()
 }
