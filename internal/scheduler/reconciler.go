@@ -188,6 +188,22 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 		if task.Status != domain.WorkItemReady {
 			return nil
 		}
+		// Skip items that belong to a WORKFLOW RUN: they are dispatched
+		// exclusively by the WorkflowReconciler's inline (step-run)
+		// dispatch, never by the standalone scan. This covers both the
+		// shared ticket and per-step artifacts like the worker-backed
+		// approval ticket (created "ready" with an assigned worker). Two
+		// failure modes without it:
+		//   (a) during the run — the scan dispatches the approval ticket
+		//       in parallel with the inline dispatch → TWO executions for
+		//       one step;
+		//   (b) after the run reaches terminal — the orphaned "ready"
+		//       approval ticket is no longer bound to an *active* run, so
+		//       a boundToActiveRun guard wouldn't catch it, and the scan
+		//       dispatches a ghost execution into the void.
+		if task.WorkflowRunID != "" {
+			return nil
+		}
 		// Check dependencies satisfied (docs/02 §4 #1, docs/03 §4).
 		satisfied, err := db.CheckDependenciesSatisfied(ctx, ttx.Tx, tenantID, task.ID)
 		if err != nil {
