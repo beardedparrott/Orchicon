@@ -1,0 +1,27 @@
+# Orchicon workflow-runtime GUI variant.
+#
+# Everything in the base image, plus the system libraries a headless GUI
+# toolchain needs (Qt offscreen rendering via PySide6/PyQt, tkinter, and
+# headless browser screenshots). It is built FROM the base image so it
+# inherits the toolchain, the chowned-rootfs security model, and the
+# org.orchicon.runtime-base label — the base is always part of this image.
+#
+# This file doubles as the reference template for building your own custom
+# runtime images in the UI: FROM the base, USER root, install, re-chown,
+# USER orchicon.
+FROM ghcr.io/beardedparrott/orchicon-runtime:latest
+
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      libgl1 libegl1 libfontconfig1 libxkbcommon0 libdbus-1-3 \
+      libx11-6 libxext6 libxrender1 libxcb1 libxcb-cursor0 \
+      xvfb xauth \
+      tk tcl \
+ && rm -rf /var/lib/apt/lists/*
+# Keep the writable-rootfs property: the runtime user must be able to
+# write anywhere in the ephemeral filesystem (rootless installs).
+RUN chown -R 1000:1000 /usr /opt /var 2>/dev/null || true
+
+USER orchicon
+WORKDIR /home/orchicon

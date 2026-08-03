@@ -153,7 +153,9 @@ jobs:
 
       # Per-workflow runtime base image (one container per active workflow
       # run). Shipped to GHCR so a one-command install can pull it — the
-      # runtime daemon uses it to spawn orchicon-runtime-<runID>.
+      # runtime daemon uses it to spawn orchicon-runtime-<runID>. The :gui
+      # variant (headless GUI libs) is built FROM the base so the label +
+      # chown model are inherited.
       - name: Build runtime image
         env:
           ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
@@ -161,6 +163,8 @@ jobs:
           cp ./orchicon deploy/runtime/orchicon
           docker build -f deploy/runtime/Dockerfile -t "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" deploy/runtime
           docker tag "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" ghcr.io/beardedparrott/orchicon-runtime:latest
+          docker build -f deploy/runtime/Dockerfile.gui -t "ghcr.io/beardedparrott/orchicon-runtime:gui-${ORCHICON_VERSION}" deploy/runtime
+          docker tag "ghcr.io/beardedparrott/orchicon-runtime:gui-${ORCHICON_VERSION}" ghcr.io/beardedparrott/orchicon-runtime:gui
 
       - name: Push runtime image
         env:
@@ -169,6 +173,8 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker push "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}"
           docker push ghcr.io/beardedparrott/orchicon-runtime:latest
+          docker push "ghcr.io/beardedparrott/orchicon-runtime:gui-${ORCHICON_VERSION}"
+          docker push ghcr.io/beardedparrott/orchicon-runtime:gui
 
   release:
     name: Create Release
