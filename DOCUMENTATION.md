@@ -756,7 +756,8 @@ Workers now receive full execution context including:
 3. **Defaults → Default models**:
    - **Default worker model**: fallback when a worker version has no `model_ref` set. If both are empty, dispatch fails (no hardcoded fallback).
    - **Default Ask Orchicon model**: model used by the Ask Orchicon conversational agent. If empty, dispatch will fail.
-4. **Defaults → Recovery stall parameters**: per-execution stall thresholds stored in the DB and read at dispatch time. Each field has an env-var override (`ORCHICON_STALL_*`) for dev debugging.
+ 4. **Defaults → Recovery stall parameters**: per-execution stall thresholds stored in the DB and read at dispatch time. Each field has an env-var override (`ORCHICON_STALL_*`) for dev debugging.
+ 5. **Defaults → Execution liveness reaper**: tuning for the execution-liveness reaper (the sweep that fails executions whose runtime process is gone). The liveness probe can false-negative on a transient docker/socket hiccup, so an execution is only reaped once it is **older than the grace window** (default 60s) **and** has been reported not-alive for **consecutive-failures** checks in a row (default 3). Env overrides: `ORCHICON_REAP_GRACE_SECONDS`, `ORCHICON_REAP_CONSECUTIVE_FAILURES`.
 
 #### Ask Orchicon
 1. Navigate to the **Ask Orchicon** tab in the sidebar
@@ -1079,6 +1080,8 @@ See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
 | `ORCHICON_STALL_NO_FILE_DIFF_WINDOW` | `15m` | Time without file modifications before stall (overrides DB setting) |
 | `ORCHICON_STALL_REPETITION_COUNT` | `5` | Repeated tool calls before stall within window (overrides DB setting) |
 | `ORCHICON_STALL_REPETITION_WINDOW` | `300s` | Window for repetition count detection (overrides DB setting) |
+| `ORCHICON_REAP_GRACE_SECONDS` | `60` | Liveness reaper: min execution age before reaping is considered (overrides DB setting) |
+| `ORCHICON_REAP_CONSECUTIVE_FAILURES` | `3` | Liveness reaper: consecutive not-alive probes before an execution is reaped (overrides DB setting) |
 
 ---
 

@@ -77,6 +77,24 @@ export class TenantSettings extends Message<TenantSettings> {
   stallRepetitionWindowSeconds = protoInt64.zero;
 
   /**
+   * How long an execution must have been running before it becomes
+   * eligible for reaping (skips the fresh-dispatch race). Seconds.
+   * Default 60.
+   *
+   * @generated from field: int64 execution_reap_grace_seconds = 15;
+   */
+  executionReapGraceSeconds = protoInt64.zero;
+
+  /**
+   * How many CONSECUTIVE not-alive liveness probes must come back dead
+   * before the execution is actually reaped. A single false negative must
+   * not kill a healthy execution. Default 3.
+   *
+   * @generated from field: int32 execution_reap_consecutive_failures = 16;
+   */
+  executionReapConsecutiveFailures = 0;
+
+  /**
    * Backup schedule in cron expression format (e.g. "0 3 * * *" for daily 3am).
    * Empty means automatic backups are disabled.
    *
@@ -125,6 +143,8 @@ export class TenantSettings extends Message<TenantSettings> {
     { no: 12, name: "stall_text_loop_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 13, name: "stall_repetition_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 14, name: "stall_repetition_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 15, name: "execution_reap_grace_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 16, name: "execution_reap_consecutive_failures", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 20, name: "backup_schedule", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 21, name: "backup_retention_days", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 22, name: "backup_directory", kind: "scalar", T: 9 /* ScalarType.STRING */ },
