@@ -468,6 +468,8 @@ function DefaultsTab() {
   const [draftRepetitionWindow, setDraftRepetitionWindow] = useState("");
   const [draftReapGrace, setDraftReapGrace] = useState("");
   const [draftReapFailures, setDraftReapFailures] = useState("");
+  const [draftReconnectAttempts, setDraftReconnectAttempts] = useState("");
+  const [draftReconnectGrace, setDraftReconnectGrace] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -481,6 +483,8 @@ function DefaultsTab() {
       setDraftRepetitionWindow(String(settings.stallRepetitionWindowSeconds ?? ""));
       setDraftReapGrace(String(settings.executionReapGraceSeconds ?? ""));
       setDraftReapFailures(String(settings.executionReapConsecutiveFailures ?? ""));
+      setDraftReconnectAttempts(String(settings.executionReconnectAttempts ?? ""));
+      setDraftReconnectGrace(String(settings.executionReconnectGraceSeconds ?? ""));
     }
   }, [settings]);
 
@@ -497,6 +501,8 @@ function DefaultsTab() {
         stallRepetitionWindowSeconds: parseInt(draftRepetitionWindow) || 0,
         executionReapGraceSeconds: parseInt(draftReapGrace) || 0,
         executionReapConsecutiveFailures: parseInt(draftReapFailures) || 0,
+        executionReconnectAttempts: parseInt(draftReconnectAttempts) || 0,
+        executionReconnectGraceSeconds: parseInt(draftReconnectGrace) || 0,
       } as any);
     } finally {
       setSaving(false);
@@ -618,6 +624,20 @@ function DefaultsTab() {
                 value={draftReapFailures}
                 onChange={setDraftReapFailures}
                 placeholder="3"
+              />
+              <StallField
+                label="Reconnect attempts"
+                description="Client retries of a broken exec stream before giving up"
+                value={draftReconnectAttempts}
+                onChange={setDraftReconnectAttempts}
+                placeholder="3"
+              />
+              <StallField
+                label="Reconnect grace (seconds)"
+                description="How long the supervisor keeps an orphaned child before killing it"
+                value={draftReconnectGrace}
+                onChange={setDraftReconnectGrace}
+                placeholder="60"
               />
             </div>
           </CardContent>

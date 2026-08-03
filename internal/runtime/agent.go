@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/guard"
 )
@@ -30,6 +31,9 @@ type AgentRequest struct {
 	Cwd        string   `json:"cwd,omitempty"`
 	ProjectDir string   `json:"project_dir,omitempty"`
 	Signal     string   `json:"signal,omitempty"` // e.g. "SIGTERM"
+	// ReconnectGraceSeconds is how long a disconnected exec session's child
+	// is kept running (waiting for a re-attach) before being killed.
+	ReconnectGraceSeconds int64 `json:"reconnect_grace_seconds,omitempty"`
 }
 
 // AgentEvent is one JSON-lines record streamed back for an exec: either a
@@ -61,6 +65,11 @@ var runtimeBinAllowlist = map[string]bool{
 	"bash":     true,
 	"sh":       true,
 }
+
+// defaultReconnectGrace is how long a disconnected exec session's child is
+// kept running (waiting for the client to re-attach) before being killed.
+// Overridable per-exec via AgentRequest.ReconnectGraceSeconds.
+const defaultReconnectGrace = 60 * time.Second
 
 // RunSupervisor runs the in-container dispatch loop as PID 1. It accepts
 // exec/signal/ping requests on socketPath and runs each exec as a child
@@ -99,17 +108,52 @@ func RunSupervisor(socketPath string, log *slog.Logger) error {
 	}
 }
 
+// execSession is one running child plus its attached clients. A session
+// survives a client disconnect: the child keeps running for a reconnect
+// grace, so a transient transport blip can re-attach instead of killing
+// the execution. On grace expiry (no client re-attached — the plane is
+// really gone) the child is killed.
+type execSession struct {
+	id       string
+	cmd      *exec.Cmd
+	stdout   io.ReadCloser
+	stderr   io.ReadCloser
+	guardDir string
+
+	mu       sync.Mutex
+	clients  map[net.Conn]*json.Encoder
+	exited   bool
+	exitCode int
+	exitErr  error
+	done     chan struct{}
+	grace    *time.Timer
+	graceDur time.Duration
+	// writeMu serializes writes to the attached clients (two broadcast
+	// goroutines + the exit broadcast) so a conn is never written
+	// concurrently.
+	writeMu sync.Mutex
+}
+
+func newExecSession(id string, graceDur time.Duration) *execSession {
+	return &execSession{
+		id:       id,
+		clients:  make(map[net.Conn]*json.Encoder),
+		done:     make(chan struct{}),
+		graceDur: graceDur,
+	}
+}
+
 // childRegistry tracks running children by exec_id so signals can target
 // a specific execution (the TaskReconciler's wall-clock timeout path
 // relies on this).
 type childRegistry struct {
 	mu  sync.Mutex
 	log *slog.Logger
-	cmd map[string]*exec.Cmd
+	cmd map[string]*execSession
 }
 
 func newChildRegistry(log *slog.Logger) *childRegistry {
-	return &childRegistry{log: log, cmd: make(map[string]*exec.Cmd)}
+	return &childRegistry{log: log, cmd: make(map[string]*execSession)}
 }
 
 func (h *childRegistry) serve(conn net.Conn) {
@@ -151,6 +195,23 @@ func (h *childRegistry) runExec(conn net.Conn, enc *json.Encoder, req AgentReque
 		return
 	}
 
+	// Re-attach: if the exec is already running (the client reconnected
+	// after a transport blip), do NOT start a second child — attach this
+	// connection to the existing session.
+	h.mu.Lock()
+	existing, ok := h.cmd[req.ExecID]
+	h.mu.Unlock()
+	if ok {
+		existing.attach(conn, enc)
+		return
+	}
+
+	graceDur := defaultReconnectGrace
+	if req.ReconnectGraceSeconds > 0 {
+		graceDur = time.Duration(req.ReconnectGraceSeconds) * time.Second
+	}
+	s := newExecSession(req.ExecID, graceDur)
+
 	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
 	if req.Cwd != "" {
 		cmd.Dir = req.Cwd
@@ -172,8 +233,8 @@ func (h *childRegistry) runExec(conn net.Conn, enc *json.Encoder, req AgentReque
 		h.log.Warn("supervisor: guard not applied", "error", guardErr, "exec", req.ExecID)
 	} else {
 		cmd.Env = prependGuard(cmd.Env, guardDir)
+		s.guardDir = guardDir
 		h.log.Debug("supervisor: guard applied", "dir", guardDir, "path", envPath(cmd.Env), "exec", req.ExecID)
-		defer os.RemoveAll(guardDir)
 	}
 
 	stdout, err := cmd.StdoutPipe()
@@ -186,51 +247,157 @@ func (h *childRegistry) runExec(conn net.Conn, enc *json.Encoder, req AgentReque
 		_ = enc.Encode(AgentEvent{Event: "error", Error: err.Error()})
 		return
 	}
-
-	h.mu.Lock()
-	h.cmd[req.ExecID] = cmd
-	h.mu.Unlock()
-	defer func() {
-		h.mu.Lock()
-		delete(h.cmd, req.ExecID)
-		h.mu.Unlock()
-	}()
+	s.cmd, s.stdout, s.stderr = cmd, stdout, stderr
 
 	if err := cmd.Start(); err != nil {
 		_ = enc.Encode(AgentEvent{Event: "error", Error: err.Error()})
 		return
 	}
 
-	// Watchdog: if the client disconnects (daemon killed the docker exec,
-	// plane timed out, network drop), kill the child so opencode does not
-	// keep burning tokens orphaned inside the container. The connection
-	// is full-duplex: the encoder writes events while this goroutine
-	// reads until EOF.
-	go func() {
-		_, _ = io.Copy(io.Discard, conn)
-		h.mu.Lock()
-		if c, ok := h.cmd[req.ExecID]; ok && c.Process != nil {
-			_ = c.Process.Kill()
-		}
+	h.mu.Lock()
+	// A concurrent re-attach may have registered the same exec_id first
+	// (client retried while this create was in flight). Kill the duplicate
+	// child and attach to the registered session.
+	if dup, registered := h.cmd[req.ExecID]; registered {
 		h.mu.Unlock()
-	}()
+		_ = cmd.Process.Kill()
+		h.cleanupSession(s)
+		dup.attach(conn, enc)
+		return
+	}
+	h.cmd[req.ExecID] = s
+	h.mu.Unlock()
 
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go streamLines(enc, "stdout", stdout, &wg)
-	go streamLines(enc, "stderr", stderr, &wg)
-	waitErr := cmd.Wait()
-	wg.Wait()
+	go h.watchExec(s)
+	go s.broadcastStream("stdout", s.stdout)
+	go s.broadcastStream("stderr", s.stderr)
+	s.attach(conn, enc)
+}
 
+// watchExec waits for the child to exit, records the terminal state, and
+// broadcasts the exit event to every attached client.
+func (h *childRegistry) watchExec(s *execSession) {
+	waitErr := s.cmd.Wait()
 	code := 1
-	if cmd.ProcessState != nil {
-		code = cmd.ProcessState.ExitCode()
+	if s.cmd.ProcessState != nil {
+		code = s.cmd.ProcessState.ExitCode()
 	}
 	ev := AgentEvent{Event: "exit", ExitCode: code}
 	if waitErr != nil && !errors.Is(waitErr, io.EOF) {
 		ev.Error = waitErr.Error()
 	}
-	_ = enc.Encode(ev)
+	s.mu.Lock()
+	s.exited = true
+	s.exitCode = code
+	if waitErr != nil && !errors.Is(waitErr, io.EOF) {
+		s.exitErr = waitErr
+	}
+	s.cancelGrace()
+	s.writeMu.Lock()
+	for _, enc := range s.clients {
+		_ = enc.Encode(ev)
+	}
+	s.clients = map[net.Conn]*json.Encoder{}
+	s.writeMu.Unlock()
+	s.mu.Unlock()
+	close(s.done)
+	h.mu.Lock()
+	delete(h.cmd, s.id)
+	h.mu.Unlock()
+	h.cleanupSession(s)
+}
+
+func (h *childRegistry) cleanupSession(s *execSession) {
+	if s.guardDir != "" {
+		os.RemoveAll(s.guardDir)
+	}
+}
+
+// attach registers a client with the session. The session's broadcast
+// goroutines fan output out to every attached client; this call just adds
+// the client, watches for its disconnect (starting the reconnect grace if
+// it was the last), and blocks until the exec completes.
+func (s *execSession) attach(conn net.Conn, enc *json.Encoder) {
+	s.mu.Lock()
+	if s.exited {
+		// The exec already finished — report its final state immediately.
+		ev := AgentEvent{Event: "exit", ExitCode: s.exitCode}
+		if s.exitErr != nil {
+			ev.Error = s.exitErr.Error()
+		}
+		s.mu.Unlock()
+		_ = enc.Encode(ev)
+		return
+	}
+	s.clients[conn] = enc
+	s.cancelGrace()
+	s.mu.Unlock()
+
+	go s.watchClient(conn)
+	<-s.done
+}
+
+// watchClient reads a client connection until it closes (disconnect). A
+// client is dropped the moment it goes away so the reconnect grace starts
+// immediately — independent of whether the child produces output.
+func (s *execSession) watchClient(conn net.Conn) {
+	_, _ = io.Copy(io.Discard, conn)
+	s.mu.Lock()
+	if _, ok := s.clients[conn]; ok {
+		delete(s.clients, conn)
+		if len(s.clients) == 0 && !s.exited {
+			s.startGrace()
+		}
+	}
+	s.mu.Unlock()
+}
+
+// broadcastStream reads a child pipe line by line and fans each event out
+// to every attached client. Clients whose write fails are dropped (they
+// disconnected). Line cap 1MB — matching the control-plane adapter.
+func (s *execSession) broadcastStream(stream string, r io.Reader) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for sc.Scan() {
+		line := sc.Text()
+		ev := AgentEvent{Stream: stream, Data: line}
+		s.writeMu.Lock()
+		s.mu.Lock()
+		for conn, enc := range s.clients {
+			if err := enc.Encode(ev); err != nil {
+				delete(s.clients, conn)
+				if len(s.clients) == 0 && !s.exited {
+					s.startGrace()
+				}
+			}
+		}
+		s.mu.Unlock()
+		s.writeMu.Unlock()
+	}
+}
+
+func (s *execSession) startGrace() {
+	if s.grace != nil {
+		return
+	}
+	s.grace = time.AfterFunc(s.graceDur, func() {
+		s.mu.Lock()
+		if s.exited {
+			s.mu.Unlock()
+			return
+		}
+		s.mu.Unlock()
+		if s.cmd != nil && s.cmd.Process != nil {
+			_ = s.cmd.Process.Kill()
+		}
+	})
+}
+
+func (s *execSession) cancelGrace() {
+	if s.grace != nil {
+		s.grace.Stop()
+		s.grace = nil
+	}
 }
 
 // status reports whether the exec is still running. Used by the control
@@ -238,14 +405,20 @@ func (h *childRegistry) runExec(conn net.Conn, enc *json.Encoder, req AgentReque
 // plane restart or a lost runtime container.
 func (h *childRegistry) status(enc *json.Encoder, req AgentRequest) {
 	h.mu.Lock()
-	cmd, ok := h.cmd[req.ExecID]
+	s, ok := h.cmd[req.ExecID]
 	h.mu.Unlock()
-	alive := ok && cmd != nil && cmd.Process != nil && cmd.ProcessState == nil
+	alive := false
+	if ok {
+		s.mu.Lock()
+		alive = !s.exited
+		s.mu.Unlock()
+	}
 	_ = enc.Encode(AgentEvent{Event: "status", Alive: alive})
 }
 
-func (h *childRegistry) signal(enc *json.Encoder, req AgentRequest) {	h.mu.Lock()
-	cmd, ok := h.cmd[req.ExecID]
+func (h *childRegistry) signal(enc *json.Encoder, req AgentRequest) {
+	h.mu.Lock()
+	s, ok := h.cmd[req.ExecID]
 	h.mu.Unlock()
 	if !ok {
 		_ = enc.Encode(AgentEvent{Event: "error", Error: "no such exec: " + req.ExecID})
@@ -256,16 +429,18 @@ func (h *childRegistry) signal(enc *json.Encoder, req AgentRequest) {	h.mu.Lock(
 		_ = enc.Encode(AgentEvent{Event: "error", Error: "unknown signal: " + req.Signal})
 		return
 	}
-	_ = cmd.Process.Signal(sig)
+	if s.cmd != nil && s.cmd.Process != nil {
+		_ = s.cmd.Process.Signal(sig)
+	}
 	_ = enc.Encode(AgentEvent{Event: "exit", ExitCode: 0})
 }
 
 func (h *childRegistry) killAll(sig syscall.Signal) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for _, cmd := range h.cmd {
-		if cmd.Process != nil {
-			_ = cmd.Process.Signal(sig)
+	for _, s := range h.cmd {
+		if s.cmd != nil && s.cmd.Process != nil {
+			_ = s.cmd.Process.Signal(sig)
 		}
 	}
 }
@@ -286,20 +461,24 @@ func signalByName(name string) syscall.Signal {
 	return syscall.Signal(0)
 }
 
-// streamLines reads a pipe line by line and encodes each as a
-// {stream,data} event. The line cap is 1MB — matching the control-plane
-// adapter's local-path scanner (internal/opencode/adapter.go) — because
-// opencode `--format json` delivers an entire model response as ONE
-// stdout line and a review/analysis can legitimately exceed 64KB. A
-// smaller cap silently drops the line AND every subsequent event (the
-// scanner is permanently broken after ErrTooLong), which made otherwise
-// successful executions come back with empty output.
-func streamLines(enc *json.Encoder, stream string, r io.Reader, wg *sync.WaitGroup) {
+// streamTo reads a pipe line by line and encodes each as a {stream,data}
+// event, stopping on the first encode error (the client disconnected). The
+// early stop matters: a re-attach must be able to resume from the same
+// pipe, so a client's stream goroutine must not keep consuming it after
+// the client is gone. Line cap 1MB — matching the control-plane adapter's
+// local-path scanner (internal/opencode/adapter.go) because opencode
+// `--format json` delivers an entire model response as ONE stdout line and
+// a review/analysis can legitimately exceed 64KB. A smaller cap silently
+// drops the line AND every subsequent event.
+func streamTo(enc *json.Encoder, stream string, r io.Reader, wg *sync.WaitGroup) {
 	defer wg.Done()
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for sc.Scan() {
-		_ = enc.Encode(AgentEvent{Stream: stream, Data: sc.Text()})
+		if err := enc.Encode(AgentEvent{Stream: stream, Data: sc.Text()}); err != nil {
+			// Client disconnected — stop reading so a re-attach can resume.
+			return
+		}
 	}
 }
 

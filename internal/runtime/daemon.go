@@ -84,6 +84,10 @@ type ExecRequest struct {
 	Env        []string `json:"env"`
 	Cwd        string   `json:"cwd"`
 	ProjectDir string   `json:"project_dir"`
+	// ReconnectGraceSeconds is how long the supervisor keeps an orphaned
+	// child (no attached client) running before killing it, so the client
+	// can re-attach to a transiently broken stream. Zero = default (60).
+	ReconnectGraceSeconds int64 `json:"reconnect_grace_seconds,omitempty"`
 }
 
 // SignalRequest is the body of POST /v1/runtimes/{id}/signal.
@@ -510,12 +514,13 @@ func (d *Daemon) handleExec(w http.ResponseWriter, r *http.Request, id string) {
 	}
 
 	reqJSON, err := json.Marshal(AgentRequest{
-		Cmd:        "exec",
-		ExecID:     req.ExecID,
-		Argv:       req.Argv,
-		Env:        req.Env,
-		Cwd:        req.Cwd,
-		ProjectDir: req.ProjectDir,
+		Cmd:                   "exec",
+		ExecID:                req.ExecID,
+		Argv:                  req.Argv,
+		Env:                   req.Env,
+		Cwd:                   req.Cwd,
+		ProjectDir:            req.ProjectDir,
+		ReconnectGraceSeconds: req.ReconnectGraceSeconds,
 	})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
@@ -535,15 +540,17 @@ func (d *Daemon) handleExec(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	defer cmd.Wait()
 
-	// When the control plane cancels the request (wall-clock timeout,
-	// workflow failure, plane shutdown), signal the in-container child
-	// directly. Killing the docker exec CLI does NOT terminate the
-	// daemon-side exec session, so the agent must kill the opencode child
-	// via an explicit signal request.
+	// When the control plane's request ends (client cancel, plane shutdown,
+	// or a transient transport break), close the docker-exec CLI. We do NOT
+	// SIGKILL the opencode child here: a transient break must not kill a
+	// healthy execution. Closing the docker-exec makes the supervisor see
+	// the disconnect; it keeps the child running for the reconnect grace
+	// (so the client can re-attach) and kills it only if nothing re-attaches
+	// within that window. Explicit termination (wall-clock deadline, abort,
+	// plane shutdown) signals the child directly via the signal endpoint.
 	go func() {
 		<-r.Context().Done()
-		d.Log.Info("runtime exec request cancelled — signalling child", "runtime", name, "exec", req.ExecID)
-		_ = d.signalRuntimeExec(name, req.ExecID, "SIGKILL")
+		d.Log.Info("runtime exec request ended — disconnecting stream", "runtime", name, "exec", req.ExecID)
 		if cmd.Process != nil {
 			_ = cmd.Process.Kill()
 		}

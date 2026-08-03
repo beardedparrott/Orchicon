@@ -112,6 +112,15 @@ func (a *Adapter) SetUsageRecorder(fn UsageRecorderFunc) { a.usageRecorder = fn 
 // composed system prompt under (selected with --agent).
 const workerAgent = "orchicon-worker"
 
+// Default reconnect tuning (overridable via tenant settings). Reconnect
+// attempts bounds how many times a broken exec stream is retried; the
+// reconnect grace is how long the runtime supervisor keeps an orphaned
+// child alive waiting for a re-attach.
+const (
+	defaultReconnectAttempts     = 3
+	defaultReconnectGraceSeconds = 60
+)
+
 // New creates an OpenCode adapter bridge.
 func New(log *slog.Logger) *Adapter {
 	return &Adapter{
@@ -1024,12 +1033,34 @@ func (a *Adapter) startInRuntime(ctx context.Context, execRow db.ExecutionRow, m
 	})
 	defer monitor.close()
 
+	// execCtx is the exec session's context. The parent ctx carries the
+	// wall-clock deadline; execCtx lets us distinguish "the exec finished
+	// normally" from "the parent ctx was cancelled" for the explicit-kill
+	// signal below.
+	execCtx, execCancel := context.WithCancel(ctx)
+	defer execCancel()
+
+	// Explicit termination: if the exec context is cancelled while the run
+	// is in flight (wall-clock deadline, abort, plane shutdown), tell the
+	// supervisor to kill the child PROMPTLY rather than leaving it to the
+	// reconnect grace. A pure transport blip does NOT cancel the context,
+	// so this does not fire on a broken stream (the retry loop below
+	// re-attaches instead).
+	go func() {
+		<-execCtx.Done()
+		if ctx.Err() == nil {
+			return // normal completion — execCtx was cancelled by the defer
+		}
+		_ = a.rt.Signal(ctx, manifest.RuntimeWorkflowID, runtime.SignalRequest{ExecID: execRow.ID, Signal: "SIGKILL"})
+	}()
+
 	req := runtime.ExecRequest{
-		ExecID:     execRow.ID,
-		Argv:       append([]string{"opencode"}, args...),
-		Env:        env,
-		Cwd:        runDir,
-		ProjectDir: manifest.ProjectDir,
+		ExecID:                execRow.ID,
+		Argv:                  append([]string{"opencode"}, args...),
+		Env:                   env,
+		Cwd:                   runDir,
+		ProjectDir:            manifest.ProjectDir,
+		ReconnectGraceSeconds: reconnectGraceSeconds(manifest.ReconnectGraceSeconds),
 	}
 	// Self-healing: ensure the runtime container exists before dispatching.
 	// A recovery re-dispatch can otherwise race ahead of the adopt sweep
@@ -1043,7 +1074,8 @@ func (a *Adapter) startInRuntime(ctx context.Context, execRow db.ExecutionRow, m
 	}); cerr != nil {
 		a.log.Warn("ensure runtime container on dispatch failed", "run", manifest.RuntimeWorkflowID, "execution", execRow.ID, "error", cerr)
 	}
-	exitCode, err := a.rt.Exec(ctx, manifest.RuntimeWorkflowID, req, func(ev runtime.AgentEvent) error {
+
+	handleEvent := func(ev runtime.AgentEvent) error {
 		if ev.Stream == "stderr" {
 			a.handleStderrLine(ctx, execRow, manifest, ev.Data)
 			stderrBuf.WriteString(ev.Data + "\n")
@@ -1055,7 +1087,34 @@ func (a *Adapter) startInRuntime(ctx context.Context, execRow db.ExecutionRow, m
 		}
 		a.parseStdoutLine(ctx, execRow, manifest, line, callbacks, monitor, &output, &lastStreamErr, &textSeq, stats)
 		return nil
-	})
+	}
+
+	// The exec stream can break on a transient transport blip (socket /
+	// docker hiccup). That must NOT fail the execution: retry with backoff
+	// for the same exec_id — the supervisor keeps the child running during
+	// the reconnect grace and re-attaches the stream. Only give up (and let
+	// recovery handle it) once the retries are exhausted or the context was
+	// cancelled (explicit termination).
+	attempts := int(manifest.ReconnectAttempts)
+	if attempts <= 0 {
+		attempts = defaultReconnectAttempts
+	}
+	exitCode := 1
+	var execErr error
+	for attempt := 0; ; attempt++ {
+		exitCode, execErr = a.rt.Exec(execCtx, manifest.RuntimeWorkflowID, req, handleEvent)
+		if execErr == nil || execCtx.Err() != nil || attempt+1 >= attempts {
+			break
+		}
+		backoff := time.Duration(1<<uint(attempt)) * time.Second
+		a.log.Info("runtime exec stream broke — re-attaching",
+			"execution", execRow.ID, "attempt", attempt+1, "max", attempts, "error", execErr, "backoff", backoff.String())
+		select {
+		case <-time.After(backoff):
+		case <-execCtx.Done():
+		}
+	}
+	err := execErr
 
 	succeeded := err == nil && exitCode == 0
 	unfinishedStep := stats.stepStarts > stats.stepFinishes
@@ -1080,6 +1139,15 @@ func (a *Adapter) startInRuntime(ctx context.Context, execRow db.ExecutionRow, m
 	}
 	callbacks.OnResult(ctx, execRow.ID, succeeded, output.String(), strings.Join(parts, "; "))
 	return err
+}
+
+// reconnectGraceSeconds resolves the supervisor reconnect-grace duration,
+// falling back to the built-in default when the manifest value is unset.
+func reconnectGraceSeconds(v int64) int64 {
+	if v <= 0 {
+		return defaultReconnectGraceSeconds
+	}
+	return v
 }
 
 // projectMount returns the project-dir mount spec for a runtime container
