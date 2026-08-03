@@ -2139,23 +2139,23 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 			return false, false, nil
 		}
 	} else {
-		var execStatus string
-		if sr.WorkerExecutionID != "" {
-			// The step run records the execution it dispatched. A lookup
-			// error must NOT fall back to another execution (e.g. a later
-			// step's on a shared work item) — that could wrongly complete
-			// this step; wait for the next pass instead.
-			if exec, err := db.GetExecution(ctx, tx, tenantID, sr.WorkerExecutionID); err == nil {
-				execStatus = exec.Status
-			}
-		} else {
-			// No execution link on the step run (approval-style re-ask
-			// paths): fall back to the latest execution for the work item.
-			if exec, err := db.GetLatestExecutionForTask(ctx, tx, tenantID, parsed.WorkItemID); err == nil {
-				execStatus = exec.Status
-			}
+		// Task steps complete on their OWN execution's terminal state. A
+		// step run with NO execution link means the dispatch never produced
+		// an execution (e.g. a shared-work-item dispatch race) — WAIT rather
+		// than fall back to another execution for the same work item. The
+		// work item may be shared across many steps and re-run across many
+		// workflow runs, so the "latest execution" could be a different
+		// step's or a previous run's — completing this step off it would
+		// mark work as done that never ran.
+		if sr.WorkerExecutionID == "" {
+			return false, false, nil
 		}
-		switch execStatus {
+		exec, err := db.GetExecution(ctx, tx, tenantID, sr.WorkerExecutionID)
+		if err != nil {
+			// Lookup failed — don't guess; wait for the next pass.
+			return false, false, nil
+		}
+		switch exec.Status {
 		case domain.ExecutionSucceeded:
 			return true, false, nil
 		case domain.ExecutionFailed, domain.ExecutionFailedToStart, domain.ExecutionTerminated:

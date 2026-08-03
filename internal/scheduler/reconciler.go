@@ -679,7 +679,7 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 		// Copy the execution results onto the linked workflow step run
 		// so the run view can display decision/summary/issues/files
 		// without opening each execution. Best-effort.
-		r.propagateStepRunResults(ctx, ttx.Tx, exec.TaskID, results)
+		r.propagateStepRunResults(ctx, ttx.Tx, exec.ID, results)
 	} else {
 		// Failure: transition to failed so the step run transitions to
 		// terminal-failed, allowing a downstream `recover` step to
@@ -1381,14 +1381,22 @@ func extractTouchedFiles(output string) []string {
 // Best-effort: a missing step run (e.g. dispatched without a
 // workflow) is logged at debug and skipped. An error is returned only
 // for genuine database errors.
-func (r *TaskReconciler) propagateStepRunResults(ctx context.Context, tx pgx.Tx, taskID string, results map[string]any) {
-	// Find the step run that references this task.
+// propagateStepRunResults copies execution fields onto the workflow step
+// run that dispatched THIS execution, so the run-view UI can show them
+// without opening each execution. The step run is located by its
+// worker_execution_id — NOT by searching for the work item id in the result
+// JSON: many steps share the same bound work item, and all step runs are
+// seeded with the same created_at, so a `_work_item_id` LIKE search can
+// return an arbitrary matching step run (e.g. a previous step's or a
+// different step sharing the item) and mislabel it with this execution's
+// results. worker_execution_id is set on the step run in the same
+// transaction that creates the execution, so it is always unambiguous.
+func (r *TaskReconciler) propagateStepRunResults(ctx context.Context, tx pgx.Tx, execID string, results map[string]any) {
 	const q = `SELECT id, result, version FROM workflow_step_runs
-		WHERE tenant_id = $1 AND result::text LIKE $2
-		ORDER BY created_at DESC LIMIT 1`
-	rows, err := tx.Query(ctx, q, "tnt_dev", `%_work_item_id":%`+taskID+`%`)
+		WHERE tenant_id = $1 AND worker_execution_id = $2 LIMIT 1`
+	rows, err := tx.Query(ctx, q, "tnt_dev", execID)
 	if err != nil {
-		r.log.Warn("propagate step run results: query", "task", taskID, "error", err)
+		r.log.Warn("propagate step run results: query", "execution", execID, "error", err)
 		return
 	}
 	defer rows.Close()
@@ -1398,7 +1406,7 @@ func (r *TaskReconciler) propagateStepRunResults(ctx context.Context, tx pgx.Tx,
 	var stepRunID, rawResult string
 	var version int
 	if err := rows.Scan(&stepRunID, &rawResult, &version); err != nil {
-		r.log.Warn("propagate step run results: scan", "task", taskID, "error", err)
+		r.log.Warn("propagate step run results: scan", "execution", execID, "error", err)
 		return
 	}
 	rows.Close()
@@ -1417,6 +1425,6 @@ func (r *TaskReconciler) propagateStepRunResults(ctx context.Context, tx pgx.Tx,
 	if _, err := db.UpdateWorkflowStepRun(ctx, tx, "tnt_dev", stepRunID, version, db.UpdateWorkflowStepRunFields{
 		Result: &updated,
 	}); err != nil {
-		r.log.Warn("propagate step run results: update", "task", taskID, "error", err)
+		r.log.Warn("propagate step run results: update", "execution", execID, "error", err)
 	}
 }
