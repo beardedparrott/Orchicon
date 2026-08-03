@@ -18,7 +18,8 @@ import (
 
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
-	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	apiv1connect 	"github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	assets "github.com/beardedparrott/orchicon"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/tenant"
@@ -498,6 +499,51 @@ func activeRunUsesImage(ctx context.Context, tx pgx.Tx, tenantID, tag string) (b
 		 WHERE tenant_id = $1 AND runtime_image = $2
 		   AND status IN ('pending','running','paused')`, tenantID, tag).Scan(&n)
 	return n > 0, err
+}
+
+// GetStockImageTemplate returns the shipped Dockerfile for a stock image
+// (base / :gui / :orchicon-dev) so users can see how a shipped image is
+// built and copy the pattern for a custom one. Lookup is by tag suffix:
+// a tag ending in "-gui"/":gui" maps to the GUI variant, "-dev"/
+// ":orchicon-dev" to the dev variant, anything else to the base.
+func (s *Service) GetStockImageTemplate(ctx context.Context, req *connect.Request[apiv1.GetStockImageTemplateRequest]) (*connect.Response[apiv1.GetStockImageTemplateResponse], error) {
+	tag := strings.TrimSpace(req.Msg.Tag)
+	if tag == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("tag required"))
+	}
+	// Resolve which shipped Dockerfile the tag maps to.
+	var file, name, desc string
+	lower := strings.ToLower(tag)
+	colon := strings.LastIndex(lower, ":")
+	suffix := lower
+	if colon >= 0 {
+		suffix = lower[colon+1:]
+	}
+	switch {
+	case strings.HasSuffix(suffix, "gui") || strings.Contains(suffix, "gui-") || strings.Contains(suffix, "gui_"):
+		file = "deploy/runtime/Dockerfile.gui"
+		name = "Runtime GUI image (:gui)"
+		desc = "Base image plus headless GUI libraries (Qt offscreen via PySide6/PyQt, tkinter, X11) for GUI toolchain work."
+	case strings.HasSuffix(suffix, "dev") || strings.HasSuffix(suffix, "orchicon-dev"):
+		file = "deploy/runtime/Dockerfile.dev"
+		name = "Orchicon development image (:orchicon-dev)"
+		desc = "Go, Node, buf, atlas, and a baked PostgreSQL 15 for building and DB-testing the Orchicon repo in-sandbox (dogfooding)."
+	default:
+		file = "deploy/runtime/Dockerfile"
+		name = "Runtime base image"
+		desc = "The lean runtime base: system toolchain, user-space package managers (pip/npm/mise/uv/bun), no-root chowned-rootfs model."
+	}
+	content, err := assets.RuntimeImageTemplatesFS.ReadFile(file)
+	if err != nil {
+		s.log.Warn("stock image template read failed", "file", file, "error", err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("stock image template unavailable"))
+	}
+	return connect.NewResponse(&apiv1.GetStockImageTemplateResponse{
+		Tag:         tag,
+		Name:        name,
+		Description: desc,
+		Dockerfile:  string(content),
+	}), nil
 }
 
 // generatedDockerfile builds the image Dockerfile from the structured

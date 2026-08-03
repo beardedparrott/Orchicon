@@ -63,6 +63,9 @@ const (
 	// RuntimeImageServiceListAvailableRuntimeImagesProcedure is the fully-qualified name of the
 	// RuntimeImageService's ListAvailableRuntimeImages RPC.
 	RuntimeImageServiceListAvailableRuntimeImagesProcedure = "/orchicon.api.v1.RuntimeImageService/ListAvailableRuntimeImages"
+	// RuntimeImageServiceGetStockImageTemplateProcedure is the fully-qualified name of the
+	// RuntimeImageService's GetStockImageTemplate RPC.
+	RuntimeImageServiceGetStockImageTemplateProcedure = "/orchicon.api.v1.RuntimeImageService/GetStockImageTemplate"
 )
 
 // RuntimeImageServiceClient is a client for the orchicon.api.v1.RuntimeImageService service.
@@ -87,6 +90,11 @@ type RuntimeImageServiceClient interface {
 	// ORCHICON_RUNTIME_IMAGES variants) plus this tenant's ready custom
 	// images. `default_image` is the base image to pre-select.
 	ListAvailableRuntimeImages(context.Context, *connect.Request[v1.ListAvailableRuntimeImagesRequest]) (*connect.Response[v1.ListAvailableRuntimeImagesResponse], error)
+	// GetStockImageTemplate returns the shipped Dockerfile for a stock
+	// runtime image (base / :gui / :orchicon-dev), read-only, so users can
+	// see how a shipped image is built and copy the pattern. Lookup is by
+	// image tag (e.g. "orchicon-runtime:local" or "orchicon-runtime:gui").
+	GetStockImageTemplate(context.Context, *connect.Request[v1.GetStockImageTemplateRequest]) (*connect.Response[v1.GetStockImageTemplateResponse], error)
 }
 
 // NewRuntimeImageServiceClient constructs a client for the orchicon.api.v1.RuntimeImageService
@@ -142,6 +150,12 @@ func NewRuntimeImageServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(runtimeImageServiceMethods.ByName("ListAvailableRuntimeImages")),
 			connect.WithClientOptions(opts...),
 		),
+		getStockImageTemplate: connect.NewClient[v1.GetStockImageTemplateRequest, v1.GetStockImageTemplateResponse](
+			httpClient,
+			baseURL+RuntimeImageServiceGetStockImageTemplateProcedure,
+			connect.WithSchema(runtimeImageServiceMethods.ByName("GetStockImageTemplate")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -154,6 +168,7 @@ type runtimeImageServiceClient struct {
 	deleteRuntimeImage         *connect.Client[v1.DeleteRuntimeImageRequest, v1.DeleteRuntimeImageResponse]
 	buildRuntimeImage          *connect.Client[v1.BuildRuntimeImageRequest, v1.BuildRuntimeImageResponse]
 	listAvailableRuntimeImages *connect.Client[v1.ListAvailableRuntimeImagesRequest, v1.ListAvailableRuntimeImagesResponse]
+	getStockImageTemplate      *connect.Client[v1.GetStockImageTemplateRequest, v1.GetStockImageTemplateResponse]
 }
 
 // CreateRuntimeImage calls orchicon.api.v1.RuntimeImageService.CreateRuntimeImage.
@@ -191,6 +206,11 @@ func (c *runtimeImageServiceClient) ListAvailableRuntimeImages(ctx context.Conte
 	return c.listAvailableRuntimeImages.CallUnary(ctx, req)
 }
 
+// GetStockImageTemplate calls orchicon.api.v1.RuntimeImageService.GetStockImageTemplate.
+func (c *runtimeImageServiceClient) GetStockImageTemplate(ctx context.Context, req *connect.Request[v1.GetStockImageTemplateRequest]) (*connect.Response[v1.GetStockImageTemplateResponse], error) {
+	return c.getStockImageTemplate.CallUnary(ctx, req)
+}
+
 // RuntimeImageServiceHandler is an implementation of the orchicon.api.v1.RuntimeImageService
 // service.
 type RuntimeImageServiceHandler interface {
@@ -214,6 +234,11 @@ type RuntimeImageServiceHandler interface {
 	// ORCHICON_RUNTIME_IMAGES variants) plus this tenant's ready custom
 	// images. `default_image` is the base image to pre-select.
 	ListAvailableRuntimeImages(context.Context, *connect.Request[v1.ListAvailableRuntimeImagesRequest]) (*connect.Response[v1.ListAvailableRuntimeImagesResponse], error)
+	// GetStockImageTemplate returns the shipped Dockerfile for a stock
+	// runtime image (base / :gui / :orchicon-dev), read-only, so users can
+	// see how a shipped image is built and copy the pattern. Lookup is by
+	// image tag (e.g. "orchicon-runtime:local" or "orchicon-runtime:gui").
+	GetStockImageTemplate(context.Context, *connect.Request[v1.GetStockImageTemplateRequest]) (*connect.Response[v1.GetStockImageTemplateResponse], error)
 }
 
 // NewRuntimeImageServiceHandler builds an HTTP handler from the service implementation. It returns
@@ -265,6 +290,12 @@ func NewRuntimeImageServiceHandler(svc RuntimeImageServiceHandler, opts ...conne
 		connect.WithSchema(runtimeImageServiceMethods.ByName("ListAvailableRuntimeImages")),
 		connect.WithHandlerOptions(opts...),
 	)
+	runtimeImageServiceGetStockImageTemplateHandler := connect.NewUnaryHandler(
+		RuntimeImageServiceGetStockImageTemplateProcedure,
+		svc.GetStockImageTemplate,
+		connect.WithSchema(runtimeImageServiceMethods.ByName("GetStockImageTemplate")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/orchicon.api.v1.RuntimeImageService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case RuntimeImageServiceCreateRuntimeImageProcedure:
@@ -281,6 +312,8 @@ func NewRuntimeImageServiceHandler(svc RuntimeImageServiceHandler, opts ...conne
 			runtimeImageServiceBuildRuntimeImageHandler.ServeHTTP(w, r)
 		case RuntimeImageServiceListAvailableRuntimeImagesProcedure:
 			runtimeImageServiceListAvailableRuntimeImagesHandler.ServeHTTP(w, r)
+		case RuntimeImageServiceGetStockImageTemplateProcedure:
+			runtimeImageServiceGetStockImageTemplateHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -316,4 +349,8 @@ func (UnimplementedRuntimeImageServiceHandler) BuildRuntimeImage(context.Context
 
 func (UnimplementedRuntimeImageServiceHandler) ListAvailableRuntimeImages(context.Context, *connect.Request[v1.ListAvailableRuntimeImagesRequest]) (*connect.Response[v1.ListAvailableRuntimeImagesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.RuntimeImageService.ListAvailableRuntimeImages is not implemented"))
+}
+
+func (UnimplementedRuntimeImageServiceHandler) GetStockImageTemplate(context.Context, *connect.Request[v1.GetStockImageTemplateRequest]) (*connect.Response[v1.GetStockImageTemplateResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.RuntimeImageService.GetStockImageTemplate is not implemented"))
 }

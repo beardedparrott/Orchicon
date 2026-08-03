@@ -1,11 +1,12 @@
 import { createRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
-import { Trash2, SearchX, Boxes, Loader2, CheckCircle2, XCircle } from "lucide-react";
+import { Trash2, SearchX, Boxes, Loader2, CheckCircle2, XCircle, ChevronDown, ChevronRight, Copy } from "lucide-react";
 
 import {
   useListRuntimeImages,
   useDeleteRuntimeImage,
   useAvailableRuntimeImages,
+  useStockImageTemplate,
 } from "@/api/runtimeImages";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,6 +18,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/components/ui/toast";
 import { Route as rootRoute } from "@/routes/__root";
 import type { RuntimeImage } from "@/api/gen/orchicon/api/v1/runtime_image_pb";
 
@@ -169,23 +171,15 @@ function RuntimeImagesPage() {
       {stockImages.length > 0 && (
         <div>
           <h2 className="mb-2 text-sm font-semibold text-muted-foreground">
-            Stock images (shipped with Orchicon)
+            Stock images (shipped with Orchicon) — click to view the template
           </h2>
           <div className="space-y-2">
             {stockImages.map((tag) => (
-              <Card key={tag} className="opacity-80">
-                <CardContent className="flex items-center gap-3 p-3">
-                  <Boxes className="h-4 w-4 shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 flex-1 truncate font-mono text-sm">
-                    {tag}
-                  </span>
-                  {tag === (available?.defaultImage ?? "") && (
-                    <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">
-                      default
-                    </span>
-                  )}
-                </CardContent>
-              </Card>
+              <StockImageCard
+                key={tag}
+                tag={tag}
+                isDefault={tag === (available?.defaultImage ?? "")}
+              />
             ))}
           </div>
         </div>
@@ -270,5 +264,69 @@ function RuntimeImagesPage() {
         </div>
       )}
     </div>
+  );
+}
+
+// StockImageCard shows a shipped runtime image and, on click, expands to
+// display its Dockerfile template read-only — so users can see exactly how
+// a stock image is built and copy the pattern for their own custom image.
+function StockImageCard({ tag, isDefault }: { tag: string; isDefault: boolean }) {
+  const [open, setOpen] = useState(false);
+  const { data: tpl, isLoading } = useStockImageTemplate(open ? tag : "");
+  const toast = useToast();
+
+  const copyTemplate = () => {
+    if (!tpl?.dockerfile) return;
+    navigator.clipboard
+      .writeText(tpl.dockerfile)
+      .then(() => toast.success("Dockerfile template copied"))
+      .catch(() => toast.error("Failed to copy"));
+  };
+
+  return (
+    <Card className={cn(open ? "" : "opacity-80", "transition-colors")}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-3 p-3 text-left"
+      >
+        {open ? (
+          <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+        ) : (
+          <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+        )}
+        <Boxes className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate font-mono text-sm">{tag}</span>
+        {isDefault && (
+          <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">
+            default
+          </span>
+        )}
+      </button>
+      {open && (
+        <CardContent className="border-t p-3">
+          {isLoading && (
+            <p className="text-sm text-muted-foreground">Loading template…</p>
+          )}
+          {tpl && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium">{tpl.name}</p>
+                  <p className="text-xs text-muted-foreground">{tpl.description}</p>
+                </div>
+                <Button variant="outline" size="sm" onClick={copyTemplate}>
+                  <Copy className="mr-1 h-3.5 w-3.5" />
+                  Copy template
+                </Button>
+              </div>
+              <pre className="max-h-96 overflow-auto rounded-md bg-muted p-3 text-xs">
+                {tpl.dockerfile}
+              </pre>
+            </div>
+          )}
+        </CardContent>
+      )}
+    </Card>
   );
 }

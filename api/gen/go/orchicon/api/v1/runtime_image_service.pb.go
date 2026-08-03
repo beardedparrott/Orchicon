@@ -867,6 +867,118 @@ func (x *ListAvailableRuntimeImagesResponse) GetDefaultImage() string {
 	return ""
 }
 
+type GetStockImageTemplateRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tag           string                 `protobuf:"bytes,1,opt,name=tag,proto3" json:"tag,omitempty"` // image tag, e.g. "orchicon-runtime:local" or "orchicon-runtime:gui"
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetStockImageTemplateRequest) Reset() {
+	*x = GetStockImageTemplateRequest{}
+	mi := &file_orchicon_api_v1_runtime_image_service_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetStockImageTemplateRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetStockImageTemplateRequest) ProtoMessage() {}
+
+func (x *GetStockImageTemplateRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_runtime_image_service_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetStockImageTemplateRequest.ProtoReflect.Descriptor instead.
+func (*GetStockImageTemplateRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_runtime_image_service_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *GetStockImageTemplateRequest) GetTag() string {
+	if x != nil {
+		return x.Tag
+	}
+	return ""
+}
+
+type GetStockImageTemplateResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tag           string                 `protobuf:"bytes,1,opt,name=tag,proto3" json:"tag,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`               // display name, e.g. "Runtime base image"
+	Description   string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"` // what the variant is for
+	Dockerfile    string                 `protobuf:"bytes,4,opt,name=dockerfile,proto3" json:"dockerfile,omitempty"`   // the shipped Dockerfile content (read-only)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetStockImageTemplateResponse) Reset() {
+	*x = GetStockImageTemplateResponse{}
+	mi := &file_orchicon_api_v1_runtime_image_service_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetStockImageTemplateResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetStockImageTemplateResponse) ProtoMessage() {}
+
+func (x *GetStockImageTemplateResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_runtime_image_service_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetStockImageTemplateResponse.ProtoReflect.Descriptor instead.
+func (*GetStockImageTemplateResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_runtime_image_service_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *GetStockImageTemplateResponse) GetTag() string {
+	if x != nil {
+		return x.Tag
+	}
+	return ""
+}
+
+func (x *GetStockImageTemplateResponse) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *GetStockImageTemplateResponse) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *GetStockImageTemplateResponse) GetDockerfile() string {
+	if x != nil {
+		return x.Dockerfile
+	}
+	return ""
+}
+
 var File_orchicon_api_v1_runtime_image_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_runtime_image_service_proto_rawDesc = "" +
@@ -941,7 +1053,16 @@ const file_orchicon_api_v1_runtime_image_service_proto_rawDesc = "" +
 	"\"ListAvailableRuntimeImagesResponse\x12!\n" +
 	"\fstock_images\x18\x01 \x03(\tR\vstockImages\x12#\n" +
 	"\rcustom_images\x18\x02 \x03(\tR\fcustomImages\x12#\n" +
-	"\rdefault_image\x18\x03 \x01(\tR\fdefaultImage2\xaa\x06\n" +
+	"\rdefault_image\x18\x03 \x01(\tR\fdefaultImage\"0\n" +
+	"\x1cGetStockImageTemplateRequest\x12\x10\n" +
+	"\x03tag\x18\x01 \x01(\tR\x03tag\"\x87\x01\n" +
+	"\x1dGetStockImageTemplateResponse\x12\x10\n" +
+	"\x03tag\x18\x01 \x01(\tR\x03tag\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\x1e\n" +
+	"\n" +
+	"dockerfile\x18\x04 \x01(\tR\n" +
+	"dockerfile2\xa2\a\n" +
 	"\x13RuntimeImageService\x12m\n" +
 	"\x12CreateRuntimeImage\x12*.orchicon.api.v1.CreateRuntimeImageRequest\x1a+.orchicon.api.v1.CreateRuntimeImageResponse\x12d\n" +
 	"\x0fGetRuntimeImage\x12'.orchicon.api.v1.GetRuntimeImageRequest\x1a(.orchicon.api.v1.GetRuntimeImageResponse\x12j\n" +
@@ -949,7 +1070,8 @@ const file_orchicon_api_v1_runtime_image_service_proto_rawDesc = "" +
 	"\x12UpdateRuntimeImage\x12*.orchicon.api.v1.UpdateRuntimeImageRequest\x1a+.orchicon.api.v1.UpdateRuntimeImageResponse\x12m\n" +
 	"\x12DeleteRuntimeImage\x12*.orchicon.api.v1.DeleteRuntimeImageRequest\x1a+.orchicon.api.v1.DeleteRuntimeImageResponse\x12l\n" +
 	"\x11BuildRuntimeImage\x12).orchicon.api.v1.BuildRuntimeImageRequest\x1a*.orchicon.api.v1.BuildRuntimeImageResponse0\x01\x12\x85\x01\n" +
-	"\x1aListAvailableRuntimeImages\x122.orchicon.api.v1.ListAvailableRuntimeImagesRequest\x1a3.orchicon.api.v1.ListAvailableRuntimeImagesResponseB\xd2\x01\n" +
+	"\x1aListAvailableRuntimeImages\x122.orchicon.api.v1.ListAvailableRuntimeImagesRequest\x1a3.orchicon.api.v1.ListAvailableRuntimeImagesResponse\x12v\n" +
+	"\x15GetStockImageTemplate\x12-.orchicon.api.v1.GetStockImageTemplateRequest\x1a..orchicon.api.v1.GetStockImageTemplateResponseB\xd2\x01\n" +
 	"\x13com.orchicon.api.v1B\x18RuntimeImageServiceProtoP\x01ZCgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1;apiv1\xa2\x02\x03OAX\xaa\x02\x0fOrchicon.Api.V1\xca\x02\x0fOrchicon\\Api\\V1\xe2\x02\x1bOrchicon\\Api\\V1\\GPBMetadata\xea\x02\x11Orchicon::Api::V1b\x06proto3"
 
 var (
@@ -964,7 +1086,7 @@ func file_orchicon_api_v1_runtime_image_service_proto_rawDescGZIP() []byte {
 	return file_orchicon_api_v1_runtime_image_service_proto_rawDescData
 }
 
-var file_orchicon_api_v1_runtime_image_service_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_orchicon_api_v1_runtime_image_service_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_orchicon_api_v1_runtime_image_service_proto_goTypes = []any{
 	(*CreateRuntimeImageRequest)(nil),          // 0: orchicon.api.v1.CreateRuntimeImageRequest
 	(*CreateRuntimeImageResponse)(nil),         // 1: orchicon.api.v1.CreateRuntimeImageResponse
@@ -980,16 +1102,18 @@ var file_orchicon_api_v1_runtime_image_service_proto_goTypes = []any{
 	(*BuildRuntimeImageResponse)(nil),          // 11: orchicon.api.v1.BuildRuntimeImageResponse
 	(*ListAvailableRuntimeImagesRequest)(nil),  // 12: orchicon.api.v1.ListAvailableRuntimeImagesRequest
 	(*ListAvailableRuntimeImagesResponse)(nil), // 13: orchicon.api.v1.ListAvailableRuntimeImagesResponse
-	(*RuntimeImage)(nil),                       // 14: orchicon.api.v1.RuntimeImage
-	(RuntimeImageStatus)(0),                    // 15: orchicon.api.v1.RuntimeImageStatus
+	(*GetStockImageTemplateRequest)(nil),       // 14: orchicon.api.v1.GetStockImageTemplateRequest
+	(*GetStockImageTemplateResponse)(nil),      // 15: orchicon.api.v1.GetStockImageTemplateResponse
+	(*RuntimeImage)(nil),                       // 16: orchicon.api.v1.RuntimeImage
+	(RuntimeImageStatus)(0),                    // 17: orchicon.api.v1.RuntimeImageStatus
 }
 var file_orchicon_api_v1_runtime_image_service_proto_depIdxs = []int32{
-	14, // 0: orchicon.api.v1.CreateRuntimeImageResponse.runtime_image:type_name -> orchicon.api.v1.RuntimeImage
-	14, // 1: orchicon.api.v1.GetRuntimeImageResponse.runtime_image:type_name -> orchicon.api.v1.RuntimeImage
-	15, // 2: orchicon.api.v1.ListRuntimeImagesRequest.status:type_name -> orchicon.api.v1.RuntimeImageStatus
-	14, // 3: orchicon.api.v1.ListRuntimeImagesResponse.runtime_images:type_name -> orchicon.api.v1.RuntimeImage
-	14, // 4: orchicon.api.v1.UpdateRuntimeImageResponse.runtime_image:type_name -> orchicon.api.v1.RuntimeImage
-	15, // 5: orchicon.api.v1.BuildRuntimeImageResponse.status:type_name -> orchicon.api.v1.RuntimeImageStatus
+	16, // 0: orchicon.api.v1.CreateRuntimeImageResponse.runtime_image:type_name -> orchicon.api.v1.RuntimeImage
+	16, // 1: orchicon.api.v1.GetRuntimeImageResponse.runtime_image:type_name -> orchicon.api.v1.RuntimeImage
+	17, // 2: orchicon.api.v1.ListRuntimeImagesRequest.status:type_name -> orchicon.api.v1.RuntimeImageStatus
+	16, // 3: orchicon.api.v1.ListRuntimeImagesResponse.runtime_images:type_name -> orchicon.api.v1.RuntimeImage
+	16, // 4: orchicon.api.v1.UpdateRuntimeImageResponse.runtime_image:type_name -> orchicon.api.v1.RuntimeImage
+	17, // 5: orchicon.api.v1.BuildRuntimeImageResponse.status:type_name -> orchicon.api.v1.RuntimeImageStatus
 	0,  // 6: orchicon.api.v1.RuntimeImageService.CreateRuntimeImage:input_type -> orchicon.api.v1.CreateRuntimeImageRequest
 	2,  // 7: orchicon.api.v1.RuntimeImageService.GetRuntimeImage:input_type -> orchicon.api.v1.GetRuntimeImageRequest
 	4,  // 8: orchicon.api.v1.RuntimeImageService.ListRuntimeImages:input_type -> orchicon.api.v1.ListRuntimeImagesRequest
@@ -997,15 +1121,17 @@ var file_orchicon_api_v1_runtime_image_service_proto_depIdxs = []int32{
 	8,  // 10: orchicon.api.v1.RuntimeImageService.DeleteRuntimeImage:input_type -> orchicon.api.v1.DeleteRuntimeImageRequest
 	10, // 11: orchicon.api.v1.RuntimeImageService.BuildRuntimeImage:input_type -> orchicon.api.v1.BuildRuntimeImageRequest
 	12, // 12: orchicon.api.v1.RuntimeImageService.ListAvailableRuntimeImages:input_type -> orchicon.api.v1.ListAvailableRuntimeImagesRequest
-	1,  // 13: orchicon.api.v1.RuntimeImageService.CreateRuntimeImage:output_type -> orchicon.api.v1.CreateRuntimeImageResponse
-	3,  // 14: orchicon.api.v1.RuntimeImageService.GetRuntimeImage:output_type -> orchicon.api.v1.GetRuntimeImageResponse
-	5,  // 15: orchicon.api.v1.RuntimeImageService.ListRuntimeImages:output_type -> orchicon.api.v1.ListRuntimeImagesResponse
-	7,  // 16: orchicon.api.v1.RuntimeImageService.UpdateRuntimeImage:output_type -> orchicon.api.v1.UpdateRuntimeImageResponse
-	9,  // 17: orchicon.api.v1.RuntimeImageService.DeleteRuntimeImage:output_type -> orchicon.api.v1.DeleteRuntimeImageResponse
-	11, // 18: orchicon.api.v1.RuntimeImageService.BuildRuntimeImage:output_type -> orchicon.api.v1.BuildRuntimeImageResponse
-	13, // 19: orchicon.api.v1.RuntimeImageService.ListAvailableRuntimeImages:output_type -> orchicon.api.v1.ListAvailableRuntimeImagesResponse
-	13, // [13:20] is the sub-list for method output_type
-	6,  // [6:13] is the sub-list for method input_type
+	14, // 13: orchicon.api.v1.RuntimeImageService.GetStockImageTemplate:input_type -> orchicon.api.v1.GetStockImageTemplateRequest
+	1,  // 14: orchicon.api.v1.RuntimeImageService.CreateRuntimeImage:output_type -> orchicon.api.v1.CreateRuntimeImageResponse
+	3,  // 15: orchicon.api.v1.RuntimeImageService.GetRuntimeImage:output_type -> orchicon.api.v1.GetRuntimeImageResponse
+	5,  // 16: orchicon.api.v1.RuntimeImageService.ListRuntimeImages:output_type -> orchicon.api.v1.ListRuntimeImagesResponse
+	7,  // 17: orchicon.api.v1.RuntimeImageService.UpdateRuntimeImage:output_type -> orchicon.api.v1.UpdateRuntimeImageResponse
+	9,  // 18: orchicon.api.v1.RuntimeImageService.DeleteRuntimeImage:output_type -> orchicon.api.v1.DeleteRuntimeImageResponse
+	11, // 19: orchicon.api.v1.RuntimeImageService.BuildRuntimeImage:output_type -> orchicon.api.v1.BuildRuntimeImageResponse
+	13, // 20: orchicon.api.v1.RuntimeImageService.ListAvailableRuntimeImages:output_type -> orchicon.api.v1.ListAvailableRuntimeImagesResponse
+	15, // 21: orchicon.api.v1.RuntimeImageService.GetStockImageTemplate:output_type -> orchicon.api.v1.GetStockImageTemplateResponse
+	14, // [14:22] is the sub-list for method output_type
+	6,  // [6:14] is the sub-list for method input_type
 	6,  // [6:6] is the sub-list for extension type_name
 	6,  // [6:6] is the sub-list for extension extendee
 	0,  // [0:6] is the sub-list for field type_name
@@ -1025,7 +1151,7 @@ func file_orchicon_api_v1_runtime_image_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_runtime_image_service_proto_rawDesc), len(file_orchicon_api_v1_runtime_image_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   14,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

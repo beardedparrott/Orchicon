@@ -722,3 +722,103 @@ export class ListAvailableRuntimeImagesResponse extends Message<ListAvailableRun
   }
 }
 
+/**
+ * @generated from message orchicon.api.v1.GetStockImageTemplateRequest
+ */
+export class GetStockImageTemplateRequest extends Message<GetStockImageTemplateRequest> {
+  /**
+   * image tag, e.g. "orchicon-runtime:local" or "orchicon-runtime:gui"
+   *
+   * @generated from field: string tag = 1;
+   */
+  tag = "";
+
+  constructor(data?: PartialMessage<GetStockImageTemplateRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GetStockImageTemplateRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "tag", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetStockImageTemplateRequest {
+    return new GetStockImageTemplateRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetStockImageTemplateRequest {
+    return new GetStockImageTemplateRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetStockImageTemplateRequest {
+    return new GetStockImageTemplateRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetStockImageTemplateRequest | PlainMessage<GetStockImageTemplateRequest> | undefined, b: GetStockImageTemplateRequest | PlainMessage<GetStockImageTemplateRequest> | undefined): boolean {
+    return proto3.util.equals(GetStockImageTemplateRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.GetStockImageTemplateResponse
+ */
+export class GetStockImageTemplateResponse extends Message<GetStockImageTemplateResponse> {
+  /**
+   * @generated from field: string tag = 1;
+   */
+  tag = "";
+
+  /**
+   * display name, e.g. "Runtime base image"
+   *
+   * @generated from field: string name = 2;
+   */
+  name = "";
+
+  /**
+   * what the variant is for
+   *
+   * @generated from field: string description = 3;
+   */
+  description = "";
+
+  /**
+   * the shipped Dockerfile content (read-only)
+   *
+   * @generated from field: string dockerfile = 4;
+   */
+  dockerfile = "";
+
+  constructor(data?: PartialMessage<GetStockImageTemplateResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GetStockImageTemplateResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "tag", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "description", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "dockerfile", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetStockImageTemplateResponse {
+    return new GetStockImageTemplateResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetStockImageTemplateResponse {
+    return new GetStockImageTemplateResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetStockImageTemplateResponse {
+    return new GetStockImageTemplateResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetStockImageTemplateResponse | PlainMessage<GetStockImageTemplateResponse> | undefined, b: GetStockImageTemplateResponse | PlainMessage<GetStockImageTemplateResponse> | undefined): boolean {
+    return proto3.util.equals(GetStockImageTemplateResponse, a, b);
+  }
+}
+

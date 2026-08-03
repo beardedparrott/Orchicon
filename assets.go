@@ -48,3 +48,14 @@ const FrontendDir = "frontend/dist"
 //
 //go:embed all:deploy/container/configs
 var ContainerFS embed.FS
+
+// RuntimeImageTemplatesFS embeds the stock runtime-image Dockerfiles
+// (deploy/runtime/Dockerfile + variants). The Runtime Images page serves
+// these read-only so users can see how a shipped image is built and copy
+// the pattern for a custom image. Only the specific Dockerfiles are
+// embedded (NOT the whole deploy/runtime dir — container.sh copies
+// bin/orchicon there for the docker build, and go:embed would recursively
+// embed the binary, doubling the size on every rebuild).
+//
+//go:embed deploy/runtime/Dockerfile deploy/runtime/Dockerfile.gui deploy/runtime/Dockerfile.dev
+var RuntimeImageTemplatesFS embed.FS

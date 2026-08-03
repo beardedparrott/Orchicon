@@ -39,6 +39,12 @@ service RuntimeImageService {
   // ORCHICON_RUNTIME_IMAGES variants) plus this tenant's ready custom
   // images. `default_image` is the base image to pre-select.
   rpc ListAvailableRuntimeImages(ListAvailableRuntimeImagesRequest) returns (ListAvailableRuntimeImagesResponse);
+
+  // GetStockImageTemplate returns the shipped Dockerfile for a stock
+  // runtime image (base / :gui / :orchicon-dev), read-only, so users can
+  // see how a shipped image is built and copy the pattern. Lookup is by
+  // image tag (e.g. "orchicon-runtime:local" or "orchicon-runtime:gui").
+  rpc GetStockImageTemplate(GetStockImageTemplateRequest) returns (GetStockImageTemplateResponse);
 }
 
 message CreateRuntimeImageRequest {
@@ -126,4 +132,15 @@ message ListAvailableRuntimeImagesResponse {
   repeated string custom_images = 2;
   // The image to pre-select in the dropdown (the base image).
   string default_image = 3;
+}
+
+message GetStockImageTemplateRequest {
+  string tag = 1; // image tag, e.g. "orchicon-runtime:local" or "orchicon-runtime:gui"
+}
+
+message GetStockImageTemplateResponse {
+  string tag = 1;
+  string name = 2; // display name, e.g. "Runtime base image"
+  string description = 3; // what the variant is for
+  string dockerfile = 4; // the shipped Dockerfile content (read-only)
 }

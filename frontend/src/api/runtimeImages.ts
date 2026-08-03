@@ -58,6 +58,19 @@ export function useAvailableRuntimeImages() {
   });
 }
 
+// useStockImageTemplate fetches the shipped Dockerfile for a stock image
+// (read-only view of how a shipped image is built).
+export function useStockImageTemplate(tag: string) {
+  return useQuery({
+    queryKey: [...runtimeImageKeys.all, "stock-template", tag] as const,
+    queryFn: async () => {
+      const res = await runtimeImageClient.getStockImageTemplate({ tag });
+      return res;
+    },
+    enabled: !!tag,
+  });
+}
+
 // useCreateRuntimeImage saves a new image spec (status=draft).
 export function useCreateRuntimeImage() {
   const qc = useQueryClient();

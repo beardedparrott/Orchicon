@@ -12,7 +12,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { BuildRuntimeImageRequest, BuildRuntimeImageResponse, CreateRuntimeImageRequest, CreateRuntimeImageResponse, DeleteRuntimeImageRequest, DeleteRuntimeImageResponse, GetRuntimeImageRequest, GetRuntimeImageResponse, ListAvailableRuntimeImagesRequest, ListAvailableRuntimeImagesResponse, ListRuntimeImagesRequest, ListRuntimeImagesResponse, UpdateRuntimeImageRequest, UpdateRuntimeImageResponse } from "./runtime_image_service_pb.js";
+import { BuildRuntimeImageRequest, BuildRuntimeImageResponse, CreateRuntimeImageRequest, CreateRuntimeImageResponse, DeleteRuntimeImageRequest, DeleteRuntimeImageResponse, GetRuntimeImageRequest, GetRuntimeImageResponse, GetStockImageTemplateRequest, GetStockImageTemplateResponse, ListAvailableRuntimeImagesRequest, ListAvailableRuntimeImagesResponse, ListRuntimeImagesRequest, ListRuntimeImagesResponse, UpdateRuntimeImageRequest, UpdateRuntimeImageResponse } from "./runtime_image_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -102,6 +102,20 @@ export const RuntimeImageService = {
       name: "ListAvailableRuntimeImages",
       I: ListAvailableRuntimeImagesRequest,
       O: ListAvailableRuntimeImagesResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * GetStockImageTemplate returns the shipped Dockerfile for a stock
+     * runtime image (base / :gui / :orchicon-dev), read-only, so users can
+     * see how a shipped image is built and copy the pattern. Lookup is by
+     * image tag (e.g. "orchicon-runtime:local" or "orchicon-runtime:gui").
+     *
+     * @generated from rpc orchicon.api.v1.RuntimeImageService.GetStockImageTemplate
+     */
+    getStockImageTemplate: {
+      name: "GetStockImageTemplate",
+      I: GetStockImageTemplateRequest,
+      O: GetStockImageTemplateResponse,
       kind: MethodKind.Unary,
     },
   }
