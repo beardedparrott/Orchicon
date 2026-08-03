@@ -466,6 +466,10 @@ function DefaultsTab() {
   const [draftTextLoop, setDraftTextLoop] = useState("");
   const [draftRepetitionCount, setDraftRepetitionCount] = useState("");
   const [draftRepetitionWindow, setDraftRepetitionWindow] = useState("");
+  const [draftReapGrace, setDraftReapGrace] = useState("");
+  const [draftReapFailures, setDraftReapFailures] = useState("");
+  const [draftReconnectAttempts, setDraftReconnectAttempts] = useState("");
+  const [draftReconnectGrace, setDraftReconnectGrace] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -477,6 +481,10 @@ function DefaultsTab() {
       setDraftTextLoop(String(settings.stallTextLoopWindowSeconds ?? ""));
       setDraftRepetitionCount(String(settings.stallRepetitionCount ?? ""));
       setDraftRepetitionWindow(String(settings.stallRepetitionWindowSeconds ?? ""));
+      setDraftReapGrace(String(settings.executionReapGraceSeconds ?? ""));
+      setDraftReapFailures(String(settings.executionReapConsecutiveFailures ?? ""));
+      setDraftReconnectAttempts(String(settings.executionReconnectAttempts ?? ""));
+      setDraftReconnectGrace(String(settings.executionReconnectGraceSeconds ?? ""));
     }
   }, [settings]);
 
@@ -491,6 +499,10 @@ function DefaultsTab() {
         stallTextLoopWindowSeconds: parseInt(draftTextLoop) || 0,
         stallRepetitionCount: parseInt(draftRepetitionCount) || 0,
         stallRepetitionWindowSeconds: parseInt(draftRepetitionWindow) || 0,
+        executionReapGraceSeconds: parseInt(draftReapGrace) || 0,
+        executionReapConsecutiveFailures: parseInt(draftReapFailures) || 0,
+        executionReconnectAttempts: parseInt(draftReconnectAttempts) || 0,
+        executionReconnectGraceSeconds: parseInt(draftReconnectGrace) || 0,
       } as any);
     } finally {
       setSaving(false);
@@ -579,6 +591,53 @@ function DefaultsTab() {
                 value={draftRepetitionWindow}
                 onChange={setDraftRepetitionWindow}
                 placeholder="300"
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {!isLoading && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Execution liveness reaper</CardTitle>
+            <CardDescription>
+              Fails executions whose runtime process is gone (plane restart, lost
+              runtime container). The liveness probe can false-negative on a transient
+              docker/socket hiccup, so the reaper only acts once an execution is old
+              enough AND has been reported not-alive several times in a row. Zero means
+              "use the env var or built-in default".
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <StallField
+                label="Grace window (seconds)"
+                description="Min age before an execution is eligible for reaping"
+                value={draftReapGrace}
+                onChange={setDraftReapGrace}
+                placeholder="60"
+              />
+              <StallField
+                label="Consecutive not-alive probes"
+                description="Not-alive checks in a row before the execution is reaped"
+                value={draftReapFailures}
+                onChange={setDraftReapFailures}
+                placeholder="3"
+              />
+              <StallField
+                label="Reconnect attempts"
+                description="Client retries of a broken exec stream before giving up"
+                value={draftReconnectAttempts}
+                onChange={setDraftReconnectAttempts}
+                placeholder="3"
+              />
+              <StallField
+                label="Reconnect grace (seconds)"
+                description="How long the supervisor keeps an orphaned child before killing it"
+                value={draftReconnectGrace}
+                onChange={setDraftReconnectGrace}
+                placeholder="60"
               />
             </div>
           </CardContent>

@@ -54,6 +54,21 @@ type TenantSettings struct {
 	StallRepetitionCount int32 `protobuf:"varint,13,opt,name=stall_repetition_count,json=stallRepetitionCount,proto3" json:"stall_repetition_count,omitempty"`
 	// Window for repetition detection. Seconds. Default 300 (5 min).
 	StallRepetitionWindowSeconds int64 `protobuf:"varint,14,opt,name=stall_repetition_window_seconds,json=stallRepetitionWindowSeconds,proto3" json:"stall_repetition_window_seconds,omitempty"`
+	// How long an execution must have been running before it becomes
+	// eligible for reaping (skips the fresh-dispatch race). Seconds.
+	// Default 60.
+	ExecutionReapGraceSeconds int64 `protobuf:"varint,15,opt,name=execution_reap_grace_seconds,json=executionReapGraceSeconds,proto3" json:"execution_reap_grace_seconds,omitempty"`
+	// How many CONSECUTIVE not-alive liveness probes must come back dead
+	// before the execution is actually reaped. A single false negative must
+	// not kill a healthy execution. Default 3.
+	ExecutionReapConsecutiveFailures int32 `protobuf:"varint,16,opt,name=execution_reap_consecutive_failures,json=executionReapConsecutiveFailures,proto3" json:"execution_reap_consecutive_failures,omitempty"`
+	// How many times the client retries the exec stream (with backoff) before
+	// giving up on a transport break. Default 3.
+	ExecutionReconnectAttempts int32 `protobuf:"varint,17,opt,name=execution_reconnect_attempts,json=executionReconnectAttempts,proto3" json:"execution_reconnect_attempts,omitempty"`
+	// How long the supervisor keeps an orphaned child (no attached client)
+	// running before killing it, giving the client time to re-attach.
+	// Seconds. Default 60.
+	ExecutionReconnectGraceSeconds int64 `protobuf:"varint,18,opt,name=execution_reconnect_grace_seconds,json=executionReconnectGraceSeconds,proto3" json:"execution_reconnect_grace_seconds,omitempty"`
 	// Backup schedule in cron expression format (e.g. "0 3 * * *" for daily 3am).
 	// Empty means automatic backups are disabled.
 	BackupSchedule string `protobuf:"bytes,20,opt,name=backup_schedule,json=backupSchedule,proto3" json:"backup_schedule,omitempty"`
@@ -148,6 +163,34 @@ func (x *TenantSettings) GetStallRepetitionWindowSeconds() int64 {
 	return 0
 }
 
+func (x *TenantSettings) GetExecutionReapGraceSeconds() int64 {
+	if x != nil {
+		return x.ExecutionReapGraceSeconds
+	}
+	return 0
+}
+
+func (x *TenantSettings) GetExecutionReapConsecutiveFailures() int32 {
+	if x != nil {
+		return x.ExecutionReapConsecutiveFailures
+	}
+	return 0
+}
+
+func (x *TenantSettings) GetExecutionReconnectAttempts() int32 {
+	if x != nil {
+		return x.ExecutionReconnectAttempts
+	}
+	return 0
+}
+
+func (x *TenantSettings) GetExecutionReconnectGraceSeconds() int64 {
+	if x != nil {
+		return x.ExecutionReconnectGraceSeconds
+	}
+	return 0
+}
+
 func (x *TenantSettings) GetBackupSchedule() string {
 	if x != nil {
 		return x.BackupSchedule
@@ -187,7 +230,7 @@ var File_orchicon_api_v1_settings_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"\n" +
-	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcf\x05\n" +
+	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xec\a\n" +
 	"\x0eTenantSettings\x120\n" +
 	"\x14default_worker_model\x18\x01 \x01(\tR\x12defaultWorkerModel\x12;\n" +
 	"\x1adefault_ask_orchicon_model\x18\x02 \x01(\tR\x17defaultAskOrchiconModel\x12F\n" +
@@ -196,7 +239,11 @@ const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"!stall_no_file_diff_window_seconds\x18\v \x01(\x03R\x1cstallNoFileDiffWindowSeconds\x12B\n" +
 	"\x1estall_text_loop_window_seconds\x18\f \x01(\x03R\x1astallTextLoopWindowSeconds\x124\n" +
 	"\x16stall_repetition_count\x18\r \x01(\x05R\x14stallRepetitionCount\x12E\n" +
-	"\x1fstall_repetition_window_seconds\x18\x0e \x01(\x03R\x1cstallRepetitionWindowSeconds\x12'\n" +
+	"\x1fstall_repetition_window_seconds\x18\x0e \x01(\x03R\x1cstallRepetitionWindowSeconds\x12?\n" +
+	"\x1cexecution_reap_grace_seconds\x18\x0f \x01(\x03R\x19executionReapGraceSeconds\x12M\n" +
+	"#execution_reap_consecutive_failures\x18\x10 \x01(\x05R executionReapConsecutiveFailures\x12@\n" +
+	"\x1cexecution_reconnect_attempts\x18\x11 \x01(\x05R\x1aexecutionReconnectAttempts\x12I\n" +
+	"!execution_reconnect_grace_seconds\x18\x12 \x01(\x03R\x1eexecutionReconnectGraceSeconds\x12'\n" +
 	"\x0fbackup_schedule\x18\x14 \x01(\tR\x0ebackupSchedule\x122\n" +
 	"\x15backup_retention_days\x18\x15 \x01(\x05R\x13backupRetentionDays\x12)\n" +
 	"\x10backup_directory\x18\x16 \x01(\tR\x0fbackupDirectory\x129\n" +

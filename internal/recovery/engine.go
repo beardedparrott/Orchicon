@@ -213,29 +213,85 @@ func (r *Reconciler) applyStrategy(ctx context.Context, tx pgx.Tx, tenantID stri
 // this file (line ~1064). The local helper used by applyStrategy
 // shares that definition.
 
-// TriggerOnFailure is called by the TaskReconciler when a WorkerExecution
-// fails (docs/06 §2). It creates a RecoveryExecution (idempotent — if an
-// active recovery already exists for the task, it is a no-op) and seeds
-// the default 6-step workflow. The affected Task transitions to
-// recovering. Recovery is opt-out, not opt-in (docs/06 §1).
-func (e *Engine) TriggerOnFailure(ctx context.Context, tenantID, taskID, failedExecID, triggerReason string) error {
-	return e.trigger(ctx, tenantID, taskID, failedExecID, triggerReason, domain.RecoveryLevelL1)
+// TriggerOnFailure is called when a WorkerExecution fails (docs/06 §2).
+// It creates a RecoveryExecution (idempotent — if an active recovery
+// already exists for the same failed execution, it is a no-op) and seeds
+// the default 6-step workflow. Recovery is scoped per failing execution:
+// stepRunID is the workflow step run the failure belongs to ("" for
+// standalone, non-workflow failures). A step-run recovery leaves the work
+// item (the shared ticket) untouched — it stays "running" for the whole
+// run and its terminal status is set when the run completes; the failed
+// step run itself is the unit that waits and re-dispatches. Standalone
+// recoveries keep the legacy task → recovering transition. Recovery is
+// opt-out, not opt-in (docs/06 §1).
+func (e *Engine) TriggerOnFailure(ctx context.Context, tenantID, taskID, failedExecID, stepRunID, triggerReason string) error {
+	return e.trigger(ctx, tenantID, taskID, failedExecID, stepRunID, triggerReason, domain.RecoveryLevelL1)
 }
 
-// trigger creates the RecoveryExecution + step runs (idempotent) and
-// transitions the task to recovering. Runs in its own transaction.
-func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, triggerReason string, level int32) error {
+// stepRunForFailedExecution resolves the workflow step run a failed
+// execution belongs to, keyed by the execution's own
+// (workflow_run_id, workflow_step_id) — NOT the step run's transient
+// worker_execution_id link (which is cleared when the step re-dispatches,
+// so it cannot be relied on by the time recovery resumes). Returns nil for
+// non-workflow (standalone) executions.
+func stepRunForFailedExecution(ctx context.Context, tx pgx.Tx, tenantID, failedExecID string) *db.WorkflowStepRunRow {
+	if failedExecID == "" {
+		return nil
+	}
+	exec, err := db.GetExecution(ctx, tx, tenantID, failedExecID)
+	if err != nil || exec.WorkflowRunID == "" || exec.WorkflowStepID == "" {
+		return nil
+	}
+	sr, err := db.GetWorkflowStepRunByStep(ctx, tx, tenantID, exec.WorkflowRunID, exec.WorkflowStepID)
+	if err != nil {
+		return nil
+	}
+	return &sr
+}
+
+// trigger creates the RecoveryExecution + step runs (idempotent) and, for
+// standalone failures, transitions the task to recovering. Runs in its
+// own transaction.
+func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, stepRunID, triggerReason string, level int32) error {
 	ttx, err := e.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return fmt.Errorf("recovery trigger: begin tx: %w", err)
 	}
 	defer ttx.Rollback(ctx)
 
-	// Idempotency: if an active recovery already exists for this task,
-	// do nothing (docs/06 §9).
-	if existing, err := db.GetActiveRecoveryForTask(ctx, ttx.Tx, tenantID, taskID); err == nil {
-		e.log.Info("recovery already active for task", "task", taskID, "recovery", existing.ID)
-		return nil
+	// Resolve whether this failure belongs to a workflow step run. The
+	// step run is derived from the failed execution's
+	// (workflow_run_id, workflow_step_id) — NOT the step run's
+	// worker_execution_id link, which is cleared the moment the step
+	// re-dispatches (so it is unreliable by the time recovery resumes).
+	// stepRunID is accepted as a fast path.
+	var stepRun *db.WorkflowStepRunRow
+	if stepRunID != "" {
+		if sr, err := db.GetWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRunID); err == nil {
+			stepRun = &sr
+			stepRunID = sr.ID
+		}
+	}
+	if stepRun == nil {
+		stepRun = stepRunForFailedExecution(ctx, ttx.Tx, tenantID, failedExecID)
+		if stepRun != nil {
+			stepRunID = stepRun.ID
+		}
+	}
+
+	// Idempotency (docs/06 §9): one active recovery per failing step run
+	// (per failed execution), not per ticket — two steps failing on the
+	// same shared ticket in the same window each get their own recovery.
+	if stepRun != nil {
+		if existing, err := db.GetActiveRecoveryForExecution(ctx, ttx.Tx, tenantID, taskID, failedExecID); err == nil {
+			e.log.Info("recovery already active for execution", "task", taskID, "execution", failedExecID, "recovery", existing.ID)
+			return nil
+		}
+	} else {
+		if existing, err := db.GetActiveRecoveryForTask(ctx, ttx.Tx, tenantID, taskID); err == nil {
+			e.log.Info("recovery already active for task", "task", taskID, "recovery", existing.ID)
+			return nil
+		}
 	}
 
 	// Resolve the task + failed execution to scope the recovery.
@@ -339,11 +395,17 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, tr
 		}
 	}
 
-	// Transition the task to recovering (docs/02 §2.2).
-	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, taskID, task.Version, db.UpdateWorkItemFields{
-		Status: strPtr(domain.WorkItemRecovering),
-	}); err != nil {
-		return fmt.Errorf("recovery trigger: transition task: %w", err)
+	// Standalone recovery: transition the task to recovering (docs/02
+	// §2.2). A workflow step-run recovery leaves the shared ticket
+	// untouched — it stays "running" for the whole run; the step run's
+	// own "recovering" status (set by the workflow reconciler) is the
+	// signal that its recovery is in flight.
+	if stepRun == nil {
+		if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, taskID, task.Version, db.UpdateWorkItemFields{
+			Status: strPtr(domain.WorkItemRecovering),
+		}); err != nil {
+			return fmt.Errorf("recovery trigger: transition task: %w", err)
+		}
 	}
 
 	// Enqueue the recovery.triggered event (docs/08 §4.3).
@@ -356,7 +418,7 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, tr
 	}
 	e.log.Info("recovery triggered",
 		"recovery", recoveryID, "task", taskID, "execution", failedExecID,
-		"trigger", triggerReason, "level", level, "resumption", resumptionPath)
+		"step_run", stepRunID, "trigger", triggerReason, "level", level, "resumption", resumptionPath)
 	return nil
 }
 
@@ -667,28 +729,46 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 			return fmt.Errorf("mark resumed: %w", err)
 		}
 		rec = updated
-		// Transition the task recovering → ready (scheduler dispatches).
-		// Also append the recovery summary to the work item's results so:
-		// (a) the replacement execution's prompt includes recovery context
-		//     (the WorkflowReconciler reads _recovery_summary into
-		//     the composite prompt — fixes the "same failure twice" loop);
-		// (b) downstream steps that read upstream summaries see the
-		//     recovery narrative alongside the worker's output
+		// Resume targets the failing unit:
+		//   - step-run recovery: append the recovery summary to the STEP
+		//     RUN's result (so the re-dispatched step's composite prompt
+		//     and downstream context see it) and leave the shared ticket
+		//     untouched — it stays "running"; the workflow reconciler
+		//     re-dispatches the recovering step run once no active
+		//     recovery remains.
+		//   - standalone recovery: transition the task recovering → ready
+		//     and append the summary to the work item's results
 		//     (docs/02 §2.2 context propagation).
-		task, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, rec.TaskID)
-		if err == nil {
-			wiResults := map[string]any{}
-			if len(task.Results) > 0 {
-				_ = json.Unmarshal(task.Results, &wiResults)
+		if stepRun := stepRunForFailedExecution(ctx, ttx.Tx, tenantID, rec.FailedExecutionID); stepRun != nil {
+			merged := map[string]any{}
+			if len(stepRun.Result) > 0 {
+				_ = json.Unmarshal(stepRun.Result, &merged)
 			}
 			if rec.Summary != "" {
-				wiResults["_recovery_summary"] = rec.Summary
+				merged["_recovery_summary"] = rec.Summary
 			}
-			wiResultsJSON, _ := json.Marshal(wiResults)
-			_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, rec.TaskID, task.Version, db.UpdateWorkItemFields{
-				Status:  strPtr(domain.WorkItemReady),
-				Results: &wiResultsJSON,
-			})
+			mergedJSON, _ := json.Marshal(merged)
+			if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRun.ID, stepRun.Version, db.UpdateWorkflowStepRunFields{
+				Result: &mergedJSON,
+			}); err != nil {
+				return fmt.Errorf("resume: write recovery summary to step run: %w", err)
+			}
+		} else {
+			task, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, rec.TaskID)
+			if err == nil {
+				wiResults := map[string]any{}
+				if len(task.Results) > 0 {
+					_ = json.Unmarshal(task.Results, &wiResults)
+				}
+				if rec.Summary != "" {
+					wiResults["_recovery_summary"] = rec.Summary
+				}
+				wiResultsJSON, _ := json.Marshal(wiResults)
+				_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, rec.TaskID, task.Version, db.UpdateWorkItemFields{
+					Status:  strPtr(domain.WorkItemReady),
+					Results: &wiResultsJSON,
+				})
+			}
 		}
 		_ = enqueueRecoveryEvent(ctx, ttx.Tx, domain.RecoveryEventResumed, rec, "", "", rec.TriggerReason, "recovery completed; task resumed to ready", "")
 		progressed = true

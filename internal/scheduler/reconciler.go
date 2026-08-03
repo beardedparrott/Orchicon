@@ -80,11 +80,17 @@ func (r *TaskReconciler) Kind() string { return "task" }
 
 // DispatchTask implements scheduler.TaskDispatcher. It dispatches a
 // single ready task synchronously. The WorkflowReconciler calls this
-// after its own transaction commits so the work item is visible to the
-// TaskReconciler's internal dispatch transaction (docs/03 §8 invariant
-// #1: only the TaskReconciler creates WorkerExecutions).
-func (r *TaskReconciler) DispatchTask(ctx context.Context, taskID string) error {
-	return r.reconcileOne(ctx, taskID)
+// after its own transaction commits so the step run + prompt are visible
+// to the TaskReconciler's internal dispatch transaction (docs/03 §8
+// invariant #1: only the TaskReconciler creates WorkerExecutions).
+//
+// stepRunID scopes the dispatch to a workflow step run ("" for
+// standalone dispatch). For a workflow step the work item is a shared
+// input reference — the step's execution is keyed by its step run, the
+// composite prompt is read from the step run, and the ticket is never
+// mutated (no status gate, no assigned/ready flip).
+func (r *TaskReconciler) DispatchTask(ctx context.Context, taskID, stepRunID string) error {
+	return r.reconcileOne(ctx, taskID, stepRunID)
 }
 
 // Reconcile processes a single task key. The key is the task (work item)
@@ -115,20 +121,25 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, key string) reconciler.R
 			if i >= 16 {
 				break
 			}
-			if err := r.reconcileOne(ctx, task.ID); err != nil {
+			if err := r.reconcileOne(ctx, task.ID, ""); err != nil {
 				r.log.Warn("scan: dispatch ready task failed", "task", task.ID, "error", err)
 			}
 		}
 		return reconciler.Result{}
 	}
-	if err := r.reconcileOne(ctx, key); err != nil {
+	if err := r.reconcileOne(ctx, key, ""); err != nil {
 		return reconciler.Result{Error: err}
 	}
 	return reconciler.Result{}
 }
 
-// reconcileOne dispatches a single ready task (docs/03 §4).
-func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID string) error {
+// reconcileOne dispatches a single task. When stepRunID is set it is a
+// workflow-step dispatch, scoped to that step run: the ticket is a shared
+// input reference, so there is no "ready" gate and no status mutation on
+// the ticket, and the worker comes from the step (stored on the step run)
+// rather than the ticket's assigned_worker_ref. With an empty stepRunID it
+// is a standalone dispatch (docs/03 §4).
+func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID string) error {
 	// We need the tenant to scope the transaction. The task carries it.
 	// First, read the task without a tenant tx (RLS will block us), so
 	// we resolve the tenant from the work item row via a query that
@@ -151,28 +162,60 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID string) error 
 		return fmt.Errorf("get task: %w", err)
 	}
 
-	// Only reconcile tasks in "ready" state (docs/03 §4: if status !=
-	// ready, return).
-	if task.Status != domain.WorkItemReady {
-		return nil
+	// Workflow-step dispatch: keyed by the step run, not the ticket.
+	// The step run carries the worker + composite prompt written by the
+	// WorkflowReconciler; the ticket is never gated on "ready" or
+	// mutated here (parallel steps bound to the same ticket each get
+	// their own execution).
+	var stepRun *db.WorkflowStepRunRow
+	if stepRunID != "" {
+		sr, err := db.GetWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRunID)
+		if err != nil {
+			if err == db.ErrNotFound {
+				return nil // step run gone; nothing to dispatch
+			}
+			return fmt.Errorf("get step run: %w", err)
+		}
+		// Idempotency: already linked to an execution (a prior inline
+		// dispatch won) — don't double-dispatch this step.
+		if sr.WorkerExecutionID != "" {
+			return nil
+		}
+		stepRun = &sr
+	} else {
+		// Only reconcile tasks in "ready" state (docs/03 §4: if status !=
+		// ready, return).
+		if task.Status != domain.WorkItemReady {
+			return nil
+		}
+		// Check dependencies satisfied (docs/02 §4 #1, docs/03 §4).
+		satisfied, err := db.CheckDependenciesSatisfied(ctx, ttx.Tx, tenantID, task.ID)
+		if err != nil {
+			return fmt.Errorf("check deps: %w", err)
+		}
+		if !satisfied {
+			// Requeue: dependencies not yet terminal-success.
+			return nil
+		}
 	}
 
-	// Check dependencies satisfied (docs/02 §4 #1, docs/03 §4).
-	satisfied, err := db.CheckDependenciesSatisfied(ctx, ttx.Tx, tenantID, task.ID)
-	if err != nil {
-		return fmt.Errorf("check deps: %w", err)
-	}
-	if !satisfied {
-		// Requeue: dependencies not yet terminal-success.
-		return nil
-	}
-
-	// Select a Worker (docs/03 §4.1: rule-based).
-	_, version, err := r.selectWorker(ctx, ttx.Tx, tenantID, task)
-	if err != nil {
-		// No suitable worker — requeue with backoff.
-		r.log.Warn("no suitable worker for task", "task", task.ID, "error", err)
-		return nil
+	// Select a Worker (docs/03 §4.1: rule-based). For a workflow step the
+	// worker is pinned by the STEP (stored on the step run by the
+	// WorkflowReconciler), not the ticket.
+	var version db.WorkerVersionRow
+	if stepRun != nil {
+		version, err = r.workerVersionForStepRun(ctx, ttx.Tx, tenantID, *stepRun)
+		if err != nil {
+			r.log.Warn("no suitable worker for step run", "task", task.ID, "step_run", stepRun.ID, "error", err)
+			return nil
+		}
+	} else {
+		_, version, err = r.selectWorker(ctx, ttx.Tx, tenantID, task)
+		if err != nil {
+			// No suitable worker — requeue with backoff.
+			r.log.Warn("no suitable worker for task", "task", task.ID, "error", err)
+			return nil
+		}
 	}
 
 	// Select an Adapter (docs/03 §4.2).
@@ -199,9 +242,14 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID string) error 
 	// execution can display "Work Item Name - Worker Name - Loop #" in
 	// the frontend. Defaults to 0 for direct-dispatch (no workflow).
 	var iteration int
-	if task.WorkflowRunID != "" && task.WorkflowStepID != "" {
-		sr, err := db.GetWorkflowStepRunByStep(ctx, ttx.Tx, tenantID, task.WorkflowRunID, task.WorkflowStepID)
-		if err == nil {
+	workflowRunID := task.WorkflowRunID
+	workflowStepID := task.WorkflowStepID
+	if stepRun != nil {
+		workflowRunID = stepRun.WorkflowRunID
+		workflowStepID = stepRun.StepID
+		iteration = stepRun.Iteration
+	} else if workflowRunID != "" && workflowStepID != "" {
+		if sr, err := db.GetWorkflowStepRunByStep(ctx, ttx.Tx, tenantID, workflowRunID, workflowStepID); err == nil {
 			iteration = sr.Iteration
 		}
 	}
@@ -216,8 +264,8 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID string) error 
 		Status:         domain.ExecutionDispatching,
 		HealthState:    domain.HealthHealthy,
 		StartedAt:      &now,
-		WorkflowRunID:  task.WorkflowRunID,
-		WorkflowStepID: task.WorkflowStepID,
+		WorkflowRunID:  workflowRunID,
+		WorkflowStepID: workflowStepID,
 		IsFollowUp:     isFollowUp,
 		Iteration:      iteration,
 	}
@@ -226,12 +274,16 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID string) error 
 		return fmt.Errorf("create execution: %w", err)
 	}
 
-	// Transition task to "assigned" (docs/03 §6: ready → assigned).
-	_, err = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, task.ID, task.Version, db.UpdateWorkItemFields{
-		Status: strPtr(domain.WorkItemAssigned),
-	})
-	if err != nil {
-		return fmt.Errorf("update task status: %w", err)
+	// Transition task to "assigned" (docs/03 §6: ready → assigned) —
+	// standalone dispatch only. A workflow-bound ticket stays "running"
+	// for the whole run (the workflow reconciler sets its terminal status
+	// at run end).
+	if stepRun == nil {
+		if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, task.ID, task.Version, db.UpdateWorkItemFields{
+			Status: strPtr(domain.WorkItemAssigned),
+		}); err != nil {
+			return fmt.Errorf("update task status: %w", err)
+		}
 	}
 
 	// Link the workflow step run to the new execution so the run-view
@@ -242,12 +294,20 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID string) error 
 	//
 	// Done inside the same transaction so a worker-step run never
 	// points at an execution that doesn't exist.
-	if task.WorkflowStepID != "" {
-		if stepRun, err := db.GetWorkflowStepRunByStep(ctx, ttx.Tx, tenantID, task.WorkflowRunID, task.WorkflowStepID); err == nil {
-			if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRun.ID, stepRun.Version, db.UpdateWorkflowStepRunFields{
+	if stepRun != nil {
+		if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRun.ID, stepRun.Version, db.UpdateWorkflowStepRunFields{
+			WorkerExecutionID: &created.ID,
+			Status:            strPtr(domain.StepRunRunning),
+			StartedAt:         &now,
+		}); err != nil {
+			return fmt.Errorf("link step run to execution: %w", err)
+		}
+	} else if workflowStepID != "" {
+		if stepRunRow, err := db.GetWorkflowStepRunByStep(ctx, ttx.Tx, tenantID, workflowRunID, workflowStepID); err == nil {
+			if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRunRow.ID, stepRunRow.Version, db.UpdateWorkflowStepRunFields{
 				WorkerExecutionID: &created.ID,
-				Status:           strPtr(domain.StepRunRunning),
-				StartedAt:        &now,
+				Status:            strPtr(domain.StepRunRunning),
+				StartedAt:         &now,
 			}); err != nil {
 				return fmt.Errorf("link step run to execution: %w", err)
 			}
@@ -275,10 +335,56 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID string) error 
 	go r.startExecution(ctx, created, task, version, adapter)
 
 	r.log.Info("task dispatched",
-		"task", task.ID, "execution", created.ID,
+		"task", task.ID, "step_run", stepRunID, "execution", created.ID,
 		"worker", version.WorkerID, "worker_version", version.Version,
 		"adapter", adapter.ID)
 	return nil
+}
+
+// workerVersionForStepRun resolves the worker version pinned by a
+// workflow step. The WorkflowReconciler stores _worker_id +
+// _worker_version on the step run's result when it dispatches the step;
+// it falls back to the worker assigned on the ticket (worker-backed
+// approval steps) when the step run carries none.
+func (r *TaskReconciler) workerVersionForStepRun(ctx context.Context, tx pgx.Tx, tenantID string, sr db.WorkflowStepRunRow) (db.WorkerVersionRow, error) {
+	var meta struct {
+		WorkerID     string `json:"_worker_id"`
+		WorkerVer    int    `json:"_worker_version"`
+	}
+	_ = json.Unmarshal(sr.Result, &meta)
+	if meta.WorkerID != "" {
+		if meta.WorkerVer > 0 {
+			if v, err := db.GetWorkerVersionByID(ctx, tx, tenantID, meta.WorkerID, fmt.Sprintf("v%d", meta.WorkerVer)); err == nil {
+				return v, nil
+			}
+		}
+		if v, err := db.GetLatestWorkerVersion(ctx, tx, tenantID, meta.WorkerID, true); err == nil {
+			return v, nil
+		}
+		return db.WorkerVersionRow{}, fmt.Errorf("no dispatchable version for step worker %s", meta.WorkerID)
+	}
+	// No worker pinned on the step run (e.g. worker-backed approval):
+	// fall back to the ticket's assigned worker.
+	task, err := db.GetWorkItem(ctx, tx, tenantID, mustStepWorkItemID(sr))
+	if err != nil {
+		return db.WorkerVersionRow{}, fmt.Errorf("get task for worker resolution: %w", err)
+	}
+	_, version, err := r.selectWorker(ctx, tx, tenantID, task)
+	if err != nil {
+		return db.WorkerVersionRow{}, err
+	}
+	return version, nil
+}
+
+// mustStepWorkItemID reads _work_item_id from a step run's result. It
+// must exist for any dispatched step; empty means the step run is not in
+// a dispatchable state.
+func mustStepWorkItemID(sr db.WorkflowStepRunRow) string {
+	var meta struct {
+		WorkItemID string `json:"_work_item_id"`
+	}
+	_ = json.Unmarshal(sr.Result, &meta)
+	return meta.WorkItemID
 }
 
 // startExecution calls the adapter bridge to start the execution. It
@@ -302,15 +408,32 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		}
 	}
 	// The system prompt is the full context the model sees on every
-	// turn. The WorkflowReconciler (when this work item was bound to
-	// a workflow step) wrote a comprehensive composite into
-	// task.PromptContext that already contains the worker identity,
-	// the project directory + context files, the task, the ancestor
-	// chain, the recovery narrative, and the worker's contract
-	// (ORCHICON WORKER SUMMARY marker). The opencode adapter delivers
-	// this as the agent's `prompt` via OPENCODE_CONFIG_CONTENT so
-	// every conversation turn carries the same context.
+	// turn. The WorkflowReconciler builds the composite per step and
+	// stores it on the STEP RUN's result (_prompt) — the ticket is a
+	// shared input reference and is no longer mutated with per-step
+	// context. For worker-backed approval steps (and legacy direct
+	// dispatch) the composite still lives on the work item's
+	// prompt_context. The composite carries the worker identity, the
+	// project directory + context files, the task, the ancestor chain,
+	// the recovery narrative, and the worker's contract (ORCHICON
+	// WORKER SUMMARY marker). The opencode adapter delivers this as the
+	// agent's `prompt` via OPENCODE_CONFIG_CONTENT so every
+	// conversation turn carries the same context.
 	composite, _ := extractComposite(task.PromptContext)
+	if exec.WorkflowRunID != "" && exec.WorkflowStepID != "" {
+		if stx, err := r.pool.BeginTenantTx(context.Background(), exec.TenantID); err == nil {
+			if sr, err := db.GetWorkflowStepRunByStep(context.Background(), stx.Tx, exec.TenantID, exec.WorkflowRunID, exec.WorkflowStepID); err == nil {
+				var srMeta struct {
+					Prompt string `json:"_prompt"`
+				}
+				_ = json.Unmarshal(sr.Result, &srMeta)
+				if srMeta.Prompt != "" {
+					composite = srMeta.Prompt
+				}
+			}
+			_ = stx.Rollback(context.Background())
+		}
+	}
 	systemPrompt := composite
 	// Fall back to a minimal worker-prompt if no composite was set
 	// (legacy direct-dispatch path: work item dispatched outside a
@@ -332,6 +455,8 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	var stallNoProgress, stallNoFileDiff, stallTextLoop int64
 	var stallRepCount int32
 	var stallRepWindow int64
+	var reconnectAttempts int32
+	var reconnectGrace int64
 	{
 		settingsCtx := context.Background()
 		stx, err := r.pool.BeginTenantTx(settingsCtx, exec.TenantID)
@@ -344,6 +469,8 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				stallTextLoop = s.StallTextLoopWindowSeconds
 				stallRepCount = s.StallRepetitionCount
 				stallRepWindow = s.StallRepetitionWindowSeconds
+				reconnectAttempts = s.ExecutionReconnectAttempts
+				reconnectGrace = s.ExecutionReconnectGraceSeconds
 			}
 			stx.Rollback(settingsCtx)
 		}
@@ -370,6 +497,8 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		StallTextLoopWindowSeconds:    stallTextLoop,
 		StallRepetitionCount:          stallRepCount,
 		StallRepetitionWindowSeconds:  stallRepWindow,
+		ReconnectAttempts:             reconnectAttempts,
+		ReconnectGraceSeconds:         reconnectGrace,
 	}
 	if err := r.bridge.Start(ctx, exec, manifest, r); err != nil {
 		r.log.Error("adapter start failed", "execution", exec.ID, "error", err)
@@ -398,13 +527,18 @@ func (r *TaskReconciler) markFailedToStart(ctx context.Context, exec db.Executio
 		r.log.Error("mark failed_to_start", "execution", exec.ID, "error", err)
 		return
 	}
-	// Requeue the task: status back to ready.
-	_, err = db.UpdateWorkItem(ctx, ttx.Tx, exec.TenantID, exec.TaskID, 0, db.UpdateWorkItemFields{
-		Status: strPtr(domain.WorkItemReady),
-	})
-	if err != nil {
-		r.log.Error("requeue task after failed_to_start", "task", exec.TaskID, "error", err)
-		return
+	// Requeue the task: status back to ready (standalone only). A
+	// workflow-bound ticket stays "running" for the whole run — its
+	// status is set by the workflow reconciler at run end; the step run
+	// is left to the workflow's poll/recovery path (dispatchLinkGrace →
+	// recovery) instead of being requeued here.
+	if exec.WorkflowRunID == "" {
+		if _, err := db.UpdateWorkItem(ctx, ttx.Tx, exec.TenantID, exec.TaskID, 0, db.UpdateWorkItemFields{
+			Status: strPtr(domain.WorkItemReady),
+		}); err != nil {
+			r.log.Error("requeue task after failed_to_start", "task", exec.TaskID, "error", err)
+			return
+		}
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		r.log.Error("commit failed_to_start", "execution", exec.ID, "error", err)
@@ -647,19 +781,20 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 		}
 	}
 	resultsJSON, _ := json.Marshal(results)
-	// A work item bound to an ACTIVE workflow run must track the RUN, not
-	// any single step execution: the workflow works the item across many
-	// steps (each with its own execution), so an individual step finishing
-	// must not mark the whole item succeeded while the run is still in
-	// flight. The workflow reconciler sets the item's terminal status when
-	// the run completes/fails. Standalone (unbound) items keep the old
-	// per-execution terminal transition.
+	// A work item bound to an ACTIVE workflow run tracks the RUN, not any
+	// single step execution: the ticket is a shared input reference and
+	// stays "running" for the whole run — its per-step results/status are
+	// NOT written here. The workflow reconciler aggregates the run-level
+	// narrative (step outputs + recovery episodes) and sets the terminal
+	// status when the run completes/fails. Standalone (unbound) items keep
+	// the old per-execution terminal transition + results write.
 	runActive := r.boundToActiveRun(ctx, ttx.Tx, wi)
-	if succeeded {
+	if runActive {
+		// Step outputs go on the step run (propagateStepRunResults) so
+		// the run view, loop decisions, and composite prompts see them.
+		r.propagateStepRunResults(ctx, ttx.Tx, exec.ID, results)
+	} else if succeeded {
 		status := domain.WorkItemSucceeded
-		if runActive {
-			status = domain.WorkItemRunning
-		}
 		fields := db.UpdateWorkItemFields{
 			Status: strPtr(status),
 		}
@@ -673,18 +808,12 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 		// Copy the execution results onto the linked workflow step run
 		// so the run view can display decision/summary/issues/files
 		// without opening each execution. Best-effort.
-		r.propagateStepRunResults(ctx, ttx.Tx, exec.TaskID, results)
+		r.propagateStepRunResults(ctx, ttx.Tx, exec.ID, results)
 	} else {
 		// Failure: transition to failed so the step run transitions to
 		// terminal-failed, allowing a downstream `recover` step to
-		// activate and trigger recovery (docs/06 §1). A workflow-bound
-		// item stays running while its run is active — the workflow may
-		// still recover/retry — and the run's terminal state is applied
-		// by the reconciler when the run ends.
+		// activate and trigger recovery (docs/06 §1).
 		status := domain.WorkItemFailed
-		if runActive {
-			status = domain.WorkItemRunning
-		}
 		fields := db.UpdateWorkItemFields{
 			Status: strPtr(status),
 		}
@@ -1375,14 +1504,22 @@ func extractTouchedFiles(output string) []string {
 // Best-effort: a missing step run (e.g. dispatched without a
 // workflow) is logged at debug and skipped. An error is returned only
 // for genuine database errors.
-func (r *TaskReconciler) propagateStepRunResults(ctx context.Context, tx pgx.Tx, taskID string, results map[string]any) {
-	// Find the step run that references this task.
+// propagateStepRunResults copies execution fields onto the workflow step
+// run that dispatched THIS execution, so the run-view UI can show them
+// without opening each execution. The step run is located by its
+// worker_execution_id — NOT by searching for the work item id in the result
+// JSON: many steps share the same bound work item, and all step runs are
+// seeded with the same created_at, so a `_work_item_id` LIKE search can
+// return an arbitrary matching step run (e.g. a previous step's or a
+// different step sharing the item) and mislabel it with this execution's
+// results. worker_execution_id is set on the step run in the same
+// transaction that creates the execution, so it is always unambiguous.
+func (r *TaskReconciler) propagateStepRunResults(ctx context.Context, tx pgx.Tx, execID string, results map[string]any) {
 	const q = `SELECT id, result, version FROM workflow_step_runs
-		WHERE tenant_id = $1 AND result::text LIKE $2
-		ORDER BY created_at DESC LIMIT 1`
-	rows, err := tx.Query(ctx, q, "tnt_dev", `%_work_item_id":%`+taskID+`%`)
+		WHERE tenant_id = $1 AND worker_execution_id = $2 LIMIT 1`
+	rows, err := tx.Query(ctx, q, "tnt_dev", execID)
 	if err != nil {
-		r.log.Warn("propagate step run results: query", "task", taskID, "error", err)
+		r.log.Warn("propagate step run results: query", "execution", execID, "error", err)
 		return
 	}
 	defer rows.Close()
@@ -1392,7 +1529,7 @@ func (r *TaskReconciler) propagateStepRunResults(ctx context.Context, tx pgx.Tx,
 	var stepRunID, rawResult string
 	var version int
 	if err := rows.Scan(&stepRunID, &rawResult, &version); err != nil {
-		r.log.Warn("propagate step run results: scan", "task", taskID, "error", err)
+		r.log.Warn("propagate step run results: scan", "execution", execID, "error", err)
 		return
 	}
 	rows.Close()
@@ -1411,6 +1548,6 @@ func (r *TaskReconciler) propagateStepRunResults(ctx context.Context, tx pgx.Tx,
 	if _, err := db.UpdateWorkflowStepRun(ctx, tx, "tnt_dev", stepRunID, version, db.UpdateWorkflowStepRunFields{
 		Result: &updated,
 	}); err != nil {
-		r.log.Warn("propagate step run results: update", "task", taskID, "error", err)
+		r.log.Warn("propagate step run results: update", "execution", execID, "error", err)
 	}
 }

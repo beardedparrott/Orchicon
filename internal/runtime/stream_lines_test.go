@@ -19,7 +19,7 @@ func TestStreamLinesHandlesLargeLines(t *testing.T) {
 	var buf bytes.Buffer
 	var wg sync.WaitGroup
 	wg.Add(1)
-	streamLines(json.NewEncoder(&buf), "stdout", strings.NewReader(big+"\n"), &wg)
+	streamTo(json.NewEncoder(&buf), "stdout", strings.NewReader(big+"\n"), &wg)
 	wg.Wait()
 
 	var ev AgentEvent

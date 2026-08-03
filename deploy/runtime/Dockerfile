@@ -54,10 +54,12 @@ RUN curl -fsSL https://mise.run | sh \
  && install /root/.bun/bin/bun /usr/local/bin/bun \
  && rm -rf /root/.cache /root/.bun/_bun* /root/.local/share/mise
 
-# opencode runtime — the adapter bridge drives it as a subprocess inside
-# the runtime container (`opencode run --format json`).
-RUN curl -fsSL https://opencode.ai/install | bash \
- && install /root/.opencode/bin/opencode /usr/local/bin/opencode
+# Runtime CLI adapters (opencode today; Claude Code / Codex later) are
+# deliberately NOT baked into this image. The daemon bind-mounts the host's
+# adapter installs in at runtime (see internal/runtime/daemon.go standard
+# mounts: ~/.opencode). Orchicon never ships, downloads, or redistributes
+# the adapter CLI — that keeps the product redistributable regardless of an
+# adapter's license (Claude Code's terms prohibit bundling it).
 
 # The orchicon binary provides `runtime-supervisor` (PID 1) and
 # `runtime-client`. Copied by the build step alongside bin/orchicon.

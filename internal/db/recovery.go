@@ -266,6 +266,26 @@ func GetActiveRecoveryForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID s
 	return r, nil
 }
 
+// GetActiveRecoveryForExecution returns a non-terminal recovery for a
+// specific failed execution, if one exists. Recovery is scoped per
+// failing execution (each workflow step run that fails gets its OWN
+// recovery cycle — the work item is a shared input reference and is not
+// the recovery unit), so two steps failing on the same ticket in the
+// same window each get a recovery instead of one swallowing the other.
+func GetActiveRecoveryForExecution(ctx context.Context, tx pgx.Tx, tenantID, taskID, failedExecID string) (RecoveryExecutionRow, error) {
+	q := `SELECT ` + recoveryExecutionCols + ` FROM recovery_executions
+		WHERE tenant_id = $1 AND task_id = $2 AND failed_execution_id = $3 AND status IN ('pending', 'running', 'blocked')
+		ORDER BY triggered_at DESC LIMIT 1`
+	var r RecoveryExecutionRow
+	if err := scanRecoveryExecution(&r, tx.QueryRow(ctx, q, tenantID, taskID, failedExecID)); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return RecoveryExecutionRow{}, ErrNotFound
+		}
+		return RecoveryExecutionRow{}, fmt.Errorf("db: get active recovery for execution: %w", err)
+	}
+	return r, nil
+}
+
 // GetLatestRecoveryForTask returns the most recent recovery execution for
 // a task, regardless of status. Used by the workflow RECOVER step to
 // determine whether a recovery has completed (terminal) or is still

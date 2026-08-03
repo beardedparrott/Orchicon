@@ -529,6 +529,8 @@ Orchicon/
 - **buf** and **atlas** (install via `make tools`)
 - **opencode** CLI (required for runtime dispatch — [install guide](https://opencode.ai))
 
+> **Orchicon never ships runtime adapter CLIs in its images.** opencode (and, in the future, Claude Code / Codex) is installed by the operator **on the host** and bind-mounted into the containers at runtime — the images contain no adapter binary. This keeps the product redistributable regardless of an adapter's license (Claude Code's terms, for example, prohibit bundling it with a product). The installer verifies opencode is present on the host and fails with a clear message if it is not; the adapter resolves it from `PATH` or `~/.opencode/bin`.
+
 ### One-Line Install (Linux / macOS)
 
 ```bash
@@ -680,7 +682,7 @@ An execution is only reported `succeeded` when the run completes with the final 
 3. Add description, acceptance criteria, and assign a worker
 4. Work items form a DAG with dependency edges (cycle detection enforced)
 
-**Status while bound to a workflow run:** a work item that kicks off (or is bound to) a workflow run reflects the **run's** state, not any single step's. `StartWorkflow` moves it to `running`, and it stays in a working state (`running`/`assigned`) while the run is in flight — each step's execution finishes without flipping the item to `succeeded` early (steps are polled on their own execution, not the shared item's status). The item reaches `succeeded`/`failed` only when the whole run completes/fails.
+**Status while bound to a workflow run:** a work item that kicks off (or is bound to) a workflow run is a **shared input reference** — every step reads the same ticket (title, description, acceptance criteria, upstream context) and produces its own execution and output. `StartWorkflow` moves it to `running`, and it stays `running` for the whole run; it is never mutated per-step (no `assigned_worker_ref`, `workflow_step_id`, or prompt writes, no `ready`/`assigned`/`recovering` flips). The item reaches `succeeded`/`failed` only when the whole run completes/fails. Because the ticket is never written per-step, **two steps bound to the same ticket can run in parallel** — each step run owns its own execution (`worker_execution_id`) and its own results. When the run ends, the ticket's `results` carry a run-level narrative (`_run_narrative`) aggregating each step's summary/decision/issues plus every recovery episode.
 
 #### Building Workflows (Visual Editor)
 1. Navigate to **Workflows** → **New Workflow**
@@ -730,10 +732,11 @@ Workers now receive full execution context including:
 4. Filter, search, sort, and bulk-delete executions
 
 #### Recovery from Failures
-1. When an execution fails, recovery can be triggered
-2. Default recovery: capture → summarize → preserve → review → plan → resume
-3. L1 → L2 → L3 escalation with bounded auto-relax
-4. View recovery timeline in the **Recovery** section
+1. When a step's execution fails, recovery is triggered automatically (opt-out, not opt-in)
+2. **Recovery is scoped per failing step run** — the work item is a shared input reference and is never flipped to `recovering`. Each failing step run goes `recovering`, gets its own recovery cycle (capture → summarize → preserve → review → plan → resume), and re-dispatches with a fresh execution once recovery completes. Two steps failing on the same ticket each get their own recovery.
+3. The recovery summary is written to the step run (`_recovery_summary`) so the replacement execution's prompt includes the failure context (prevents repeating the same failure)
+4. L1 → L2 → L3 escalation with bounded auto-relax
+5. View recovery timeline in the **Recovery** section; the ticket's run-level narrative (`_run_narrative.recoveries`) lists every episode
 
 #### Policy Management
 1. Navigate to **Policies** → **New Policy**
@@ -754,7 +757,9 @@ Workers now receive full execution context including:
 3. **Defaults → Default models**:
    - **Default worker model**: fallback when a worker version has no `model_ref` set. If both are empty, dispatch fails (no hardcoded fallback).
    - **Default Ask Orchicon model**: model used by the Ask Orchicon conversational agent. If empty, dispatch will fail.
-4. **Defaults → Recovery stall parameters**: per-execution stall thresholds stored in the DB and read at dispatch time. Each field has an env-var override (`ORCHICON_STALL_*`) for dev debugging.
+ 4. **Defaults → Recovery stall parameters**: per-execution stall thresholds stored in the DB and read at dispatch time. Each field has an env-var override (`ORCHICON_STALL_*`) for dev debugging.
+ 5. **Defaults → Execution liveness reaper**: tuning for the execution-liveness reaper (the sweep that fails executions whose runtime process is gone). The liveness probe can false-negative on a transient docker/socket hiccup, so an execution is only reaped once it is **older than the grace window** (default 60s) **and** has been reported not-alive for **consecutive-failures** checks in a row (default 3). Env overrides: `ORCHICON_REAP_GRACE_SECONDS`, `ORCHICON_REAP_CONSECUTIVE_FAILURES`.
+ 6. **Defaults → Execution transport resilience**: the exec stream between the control plane and the runtime supervisor can break on a transient socket/docker hiccup. The execution is **not** failed on a broken stream: the client retries (**reconnect attempts**, default 3) and the supervisor keeps the child running for the **reconnect grace** (default 60s) so a re-attach can resume. Only when the retries are exhausted (or the context was explicitly cancelled) does the execution fail and fall through to recovery. Env overrides: `ORCHICON_RECONNECT_ATTEMPTS`, `ORCHICON_RECONNECT_GRACE_SECONDS`.
 
 #### Ask Orchicon
 1. Navigate to the **Ask Orchicon** tab in the sidebar
@@ -883,7 +888,9 @@ Worker executions run inside **one short-lived container per active workflow run
 - **`orchicon runtime-supervisor`** (PID 1 inside each runtime container): listens on a unix socket (`/tmp/orchicon-agent.sock`), runs `opencode run` as a child, streams stdout/stderr back, and signals children by exec_id. Builds the execution-guard shim in-container so workers run under the same `rm`/`sudo`/`dd`/`mkfs` path-scoped safety guard as the in-process path.
 - **`orchicon runtime-client`** (in-container): forwards a dispatch request from the daemon (via `docker exec`) to the supervisor socket and relays the streamed events back, so the daemon never needs shell-level access to the container.
 
-**Lifecycle:** the `WorkflowReconciler` ensures a runtime container when a run leaves `pending` (mounting the project's `project_dir`) and reaps it when the run reaches terminal. A 30s adopt sweep in the control plane kills orphan containers (runs no longer active) and ensures containers for active runs — covering aborts, plane crashes, and externally-terminalized runs. **Instance-scoped**: every runtime container is labeled with its owning instance (`orchicon.instance=dev\|prod`), and each plane's adopt list/reap only sees its own containers — dev and prod share one runtime daemon but never reap each other's runtimes (the daemon's age-based orphan sweep is the global backstop). The same sweep runs an **execution-liveness reaper**: executions still `running` whose process is gone (plane restart, lost runtime container) are failed with `execution lost: control plane restarted or runtime container gone` and their work item transitions to failed, so the workflow's recovery step re-dispatches in a fresh runtime instead of the run getting stuck. The adapter **self-heals** on dispatch too: it ensures the runtime container exists before every execution (with a name-conflict retry in the daemon) so a recovery re-dispatch can't race ahead of the adopt sweep. Headless `orchicon serve` (no daemon socket) disables runtime containers, stays in-process, and still reaps in-process executions orphaned by a restart.
+**Lifecycle:** the `WorkflowReconciler` ensures a runtime container when a run leaves `pending` (mounting the project's `project_dir`) and reaps it when the run reaches terminal. A 30s adopt sweep in the control plane kills orphan containers (runs no longer active) and ensures containers for active runs — covering aborts, plane crashes, and externally-terminalized runs. **Instance-scoped**: every runtime container is labeled with its owning instance (`orchicon.instance=dev\|prod`), and each plane's adopt list/reap only sees its own containers — dev and prod share one runtime daemon but never reap each other's runtimes (the daemon's age-based orphan sweep is the global backstop). The same sweep runs an **execution-liveness reaper**: executions still `running` whose process is gone (plane restart, lost runtime container) are failed with `execution lost: control plane restarted or runtime container gone` and their work item transitions to failed, so the workflow's recovery step re-dispatches in a fresh runtime instead of the run getting stuck. The adapter **self-heals** on dispatch too: it ensures the runtime container exists before every execution so a recovery re-dispatch can't race ahead of the adopt sweep (container creation is serialized in the daemon so the reconciler's `EnsureForRun` and the adapter's self-heal `Create` never race `docker run` on the same name). Headless `orchicon serve` (no daemon socket) disables runtime containers, stays in-process, and still reaps in-process executions orphaned by a restart.
+
+**Runtime adapter CLIs are mounted, never baked:** the images contain **no adapter binary**. The daemon mounts the operator's host `~/.opencode` install (read-only) into every runtime container and puts its `bin/` on PATH, so the supervisor can exec `opencode` — the same mount `container.sh`/`orchicon install` add to the main container for in-process dispatch. The supervisor's `argv[0]` allowlist (`runtimeBinAllowlist` in `internal/runtime/agent.go`) lists the adapter binaries Orchicon may exec — `opencode` today; `claude`/`codex` get one added entry when those adapters land. This is the licensing-safe pattern for all future adapters: **the product mounts the operator's own install; it never ships, downloads, or redistributes the CLI.**
 
 **Security model — no root process in the runtime container:**
 
@@ -1075,6 +1082,10 @@ See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
 | `ORCHICON_STALL_NO_FILE_DIFF_WINDOW` | `15m` | Time without file modifications before stall (overrides DB setting) |
 | `ORCHICON_STALL_REPETITION_COUNT` | `5` | Repeated tool calls before stall within window (overrides DB setting) |
 | `ORCHICON_STALL_REPETITION_WINDOW` | `300s` | Window for repetition count detection (overrides DB setting) |
+| `ORCHICON_REAP_GRACE_SECONDS` | `60` | Liveness reaper: min execution age before reaping is considered (overrides DB setting) |
+| `ORCHICON_REAP_CONSECUTIVE_FAILURES` | `3` | Liveness reaper: consecutive not-alive probes before an execution is reaped (overrides DB setting) |
+| `ORCHICON_RECONNECT_ATTEMPTS` | `3` | Transport resilience: client retries of a broken exec stream (overrides DB setting) |
+| `ORCHICON_RECONNECT_GRACE_SECONDS` | `60` | Transport resilience: supervisor keep-alive for an orphaned child before killing it (overrides DB setting) |
 
 ---
 

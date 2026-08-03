@@ -54,6 +54,13 @@
             installs the Linux binary into the distro. See
             <a href="#options">options</a> below.
           </p>
+          <p class="install-note">
+            <strong>You install the runtime CLI; we never ship it.</strong>
+            Orchicon does not bundle opencode (or future adapters like Claude
+            Code / Codex) in its images — it mounts the operator's own install.
+            Install opencode first:
+            <code>curl -fsSL https://opencode.ai/install | bash</code>.
+          </p>
         </div>
       </div>
     </section>
@@ -126,7 +133,7 @@
           <div class="card">
             <h3>Single container + per-workflow runtime containers</h3>
             <p>The whole stack — Postgres, NATS, telemetry, control plane — runs in one container with <code>orchicon container</code> (PID-1 supervisor). Dev + prod as two containers, your data preserved.</p>
-            <p>Worker executions run in their own short-lived container per workflow run (<code>orchicon runtime-daemon</code> on the host), armed with a baked toolchain and running as your user — no root, fully ephemeral, torn down at completion.</p>
+            <p>Worker executions run in their own short-lived container per workflow run (<code>orchicon runtime-daemon</code> on the host), armed with a baked system toolchain and running as your user — no root, fully ephemeral, torn down at completion. The runtime adapter CLI (opencode) is never baked in: it's mounted from your own host install.</p>
           </div>
         </div>
       </div>

@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -44,6 +45,10 @@ type Daemon struct {
 	// SweepInterval is how often the age-based orphan sweep runs.
 	SweepInterval time.Duration
 	Log           *slog.Logger
+	// createMu serializes createRuntime so concurrent Create calls for the
+	// same workflow (WorkflowReconciler.EnsureForRun + adapter self-heal)
+	// cannot race `docker run` on the same container name.
+	createMu sync.Mutex
 }
 
 // MountSpec is a validated bind mount request from the control plane.
@@ -79,6 +84,10 @@ type ExecRequest struct {
 	Env        []string `json:"env"`
 	Cwd        string   `json:"cwd"`
 	ProjectDir string   `json:"project_dir"`
+	// ReconnectGraceSeconds is how long the supervisor keeps an orphaned
+	// child (no attached client) running before killing it, so the client
+	// can re-attach to a transiently broken stream. Zero = default (60).
+	ReconnectGraceSeconds int64 `json:"reconnect_grace_seconds,omitempty"`
 }
 
 // SignalRequest is the body of POST /v1/runtimes/{id}/signal.
@@ -327,8 +336,18 @@ func (d *Daemon) withinAllowedRoots(path string) bool {
 
 // createRuntime ensures a runtime container exists for the workflow and
 // returns its state. Idempotent: if it is already running, returns it.
+//
+// Container creation is serialized with createMu: the control plane calls
+// Create from BOTH the WorkflowReconciler (EnsureForRun when a run leaves
+// pending) and the adapter (self-heal before every exec), so two requests
+// for the same workflow can race `docker run` on the same name — one wins
+// and the other hits "name already in use", removes the winner's container
+// mid-setup, and the exec lands on a container that is being recreated.
+// The mutex makes createRuntime atomic per workflow.
 func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 	name := d.containerName(req.WorkflowID)
+	d.createMu.Lock()
+	defer d.createMu.Unlock()
 	if running, _ := d.containerRunning(name); running {
 		return &CreateResponse{Name: name, Running: true}, nil
 	}
@@ -364,10 +383,13 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 	// Standard host-home mounts shared by every runtime container:
 	// opencode config (read-only) + data/auth (read-only — the worker
 	// reads model auth, but its sessions/keys are redirected to the
-	// ephemeral FS by the supervisor's isolateOpenCodeData), and git
-	// identity + credential store (read-only — PR/merge workers). These
-	// are appended by the daemon, not the plane, so the control plane
-	// can never request them.
+	// ephemeral FS by the supervisor's isolateOpenCodeData), the runtime
+	// CLI adapter install (read-only — opencode today; Orchicon never
+	// ships the adapter binary in the image, the operator's host install
+	// is mounted here so the supervisor can exec it), and git identity +
+	// credential store (read-only — PR/merge workers). These are appended
+	// by the daemon, not the plane, so the control plane can never request
+	// them.
 	if d.HostHome != "" {
 		if st, err := os.Stat(filepath.Join(d.HostHome, ".config/opencode")); err == nil && st.IsDir() {
 			args = append(args, "-v", filepath.Join(d.HostHome, ".config/opencode")+":"+filepath.Join(d.HostHome, ".config/opencode")+":ro")
@@ -375,12 +397,18 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 		if st, err := os.Stat(filepath.Join(d.HostHome, ".local/share/opencode")); err == nil && st.IsDir() {
 			args = append(args, "-v", filepath.Join(d.HostHome, ".local/share/opencode")+":"+filepath.Join(d.HostHome, ".local/share/opencode")+":ro")
 		}
+		if st, err := os.Stat(filepath.Join(d.HostHome, ".opencode", "bin", "opencode")); err == nil && !st.IsDir() {
+			args = append(args, "-v", filepath.Join(d.HostHome, ".opencode")+":"+filepath.Join(d.HostHome, ".opencode")+":ro")
+		}
 		for _, f := range []string{".gitconfig", ".git-credentials"} {
 			if st, err := os.Stat(filepath.Join(d.HostHome, f)); err == nil && !st.IsDir() {
 				args = append(args, "-v", filepath.Join(d.HostHome, f)+":"+filepath.Join(d.HostHome, f)+":ro")
 			}
 		}
 		args = append(args, "-e", "HOME="+d.HostHome)
+		// Put the mounted adapter CLI on PATH so the supervisor's
+		// `exec.Command("opencode", ...)` resolves it.
+		args = append(args, "-e", "PATH="+filepath.Join(d.HostHome, ".opencode", "bin")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	}
 	args = append(args, image, "orchicon", "runtime-supervisor")
 
@@ -484,13 +512,15 @@ func (d *Daemon) handleExec(w http.ResponseWriter, r *http.Request, id string) {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
 	reqJSON, err := json.Marshal(AgentRequest{
-		Cmd:        "exec",
-		ExecID:     req.ExecID,
-		Argv:       req.Argv,
-		Env:        req.Env,
-		Cwd:        req.Cwd,
-		ProjectDir: req.ProjectDir,
+		Cmd:                   "exec",
+		ExecID:                req.ExecID,
+		Argv:                  req.Argv,
+		Env:                   req.Env,
+		Cwd:                   req.Cwd,
+		ProjectDir:            req.ProjectDir,
+		ReconnectGraceSeconds: req.ReconnectGraceSeconds,
 	})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
@@ -510,15 +540,17 @@ func (d *Daemon) handleExec(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	defer cmd.Wait()
 
-	// When the control plane cancels the request (wall-clock timeout,
-	// workflow failure, plane shutdown), signal the in-container child
-	// directly. Killing the docker exec CLI does NOT terminate the
-	// daemon-side exec session, so the agent must kill the opencode child
-	// via an explicit signal request.
+	// When the control plane's request ends (client cancel, plane shutdown,
+	// or a transient transport break), close the docker-exec CLI. We do NOT
+	// SIGKILL the opencode child here: a transient break must not kill a
+	// healthy execution. Closing the docker-exec makes the supervisor see
+	// the disconnect; it keeps the child running for the reconnect grace
+	// (so the client can re-attach) and kills it only if nothing re-attaches
+	// within that window. Explicit termination (wall-clock deadline, abort,
+	// plane shutdown) signals the child directly via the signal endpoint.
 	go func() {
 		<-r.Context().Done()
-		d.Log.Info("runtime exec request cancelled — signalling child", "runtime", name, "exec", req.ExecID)
-		_ = d.signalRuntimeExec(name, req.ExecID, "SIGKILL")
+		d.Log.Info("runtime exec request ended — disconnecting stream", "runtime", name, "exec", req.ExecID)
 		if cmd.Process != nil {
 			_ = cmd.Process.Kill()
 		}
@@ -565,9 +597,17 @@ func (d *Daemon) handleSignal(w http.ResponseWriter, r *http.Request, id string)
 }
 
 // handleExecStatus reports whether an exec is still running inside a
-// runtime container (the execution-liveness reaper's query). A missing
-// container or a client error returns alive:false (200) so the caller
-// treats it as dead; only a daemon outage (request failure) is an error.
+// runtime container (the execution-liveness reaper's query).
+//
+// The answer must distinguish three cases so the reaper never kills a
+// healthy execution on a transient blip:
+//   - container missing       -> alive:false, container:false (definitive dead)
+//   - supervisor answers      -> alive:<its verdict>          (definitive)
+//   - the probe itself failed -> unknown:true                 (UNDETERMINABLE)
+//
+// The old code swallowed the docker-exec error and defaulted to
+// alive:false, so a transient docker/socket hiccup made a running exec
+// look dead and the single-probe reaper reaped it.
 func (d *Daemon) handleExecStatus(w http.ResponseWriter, id, execID string) {
 	name := d.containerName(id)
 	if running, err := d.containerRunning(name); err != nil || !running {
@@ -581,7 +621,14 @@ func (d *Daemon) handleExecStatus(w http.ResponseWriter, id, execID string) {
 	}
 	cmd := exec.Command(d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
 	cmd.Stdin = bytes.NewReader(reqJSON)
-	out, _ := cmd.Output()
+	out, perr := cmd.Output()
+	if perr != nil {
+		// Probe failed (docker exec hiccup, supervisor socket momentarily
+		// unavailable) — not a definitive "dead". Report undeterminable so
+		// the reaper skips instead of reaping a healthy execution.
+		writeJSON(w, http.StatusOK, map[string]any{"alive": false, "container": true, "unknown": true})
+		return
+	}
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	for sc.Scan() {
 		var ev AgentEvent
@@ -590,7 +637,8 @@ func (d *Daemon) handleExecStatus(w http.ResponseWriter, id, execID string) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"alive": false, "container": true})
+	// The supervisor didn't answer the status query — undeterminable.
+	writeJSON(w, http.StatusOK, map[string]any{"alive": false, "container": true, "unknown": true})
 }
 
 func (d *Daemon) handleKill(w http.ResponseWriter, id string) {

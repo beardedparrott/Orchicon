@@ -48,6 +48,40 @@ message TenantSettings {
   // Window for repetition detection. Seconds. Default 300 (5 min).
   int64 stall_repetition_window_seconds = 14;
 
+  // --- Execution liveness reaper ---
+  // The liveness reaper fails executions whose runtime process is gone
+  // (control-plane restart, lost runtime container). The liveness probe
+  // can false-negative on a transient docker/socket hiccup, so these two
+  // settings govern how cautious the reaper is before it kills an
+  // execution. An empty/zero value means "use the env var or built-in
+  // default".
+
+  // How long an execution must have been running before it becomes
+  // eligible for reaping (skips the fresh-dispatch race). Seconds.
+  // Default 60.
+  int64 execution_reap_grace_seconds = 15;
+
+  // How many CONSECUTIVE not-alive liveness probes must come back dead
+  // before the execution is actually reaped. A single false negative must
+  // not kill a healthy execution. Default 3.
+  int32 execution_reap_consecutive_failures = 16;
+
+  // --- Execution transport resilience (reconnect) ---
+  // The exec stream between the control plane and the runtime supervisor
+  // can break on a transient socket/docker hiccup. The execution is NOT
+  // failed on a broken stream: the client re-attaches for the same exec
+  // and the supervisor keeps the child running during the reconnect grace.
+  // An empty/zero value means "use the env var or built-in default".
+
+  // How many times the client retries the exec stream (with backoff) before
+  // giving up on a transport break. Default 3.
+  int32 execution_reconnect_attempts = 17;
+
+  // How long the supervisor keeps an orphaned child (no attached client)
+  // running before killing it, giving the client time to re-attach.
+  // Seconds. Default 60.
+  int64 execution_reconnect_grace_seconds = 18;
+
   // --- Backup configuration ---
 
   // Backup schedule in cron expression format (e.g. "0 3 * * *" for daily 3am).

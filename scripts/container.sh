@@ -200,6 +200,12 @@ up_instance() {
   local MOUNTS=()
   [ -d "$HOME/.config/opencode" ] && MOUNTS+=("-v" "$HOME/.config/opencode:$HOME/.config/opencode:ro")
   [ -d "$HOME/.local/share/opencode" ] && MOUNTS+=("-v" "$HOME/.local/share/opencode:$HOME/.local/share/opencode")
+  # Runtime CLI adapter install (read-only) — opencode today. Orchicon never
+  # ships the adapter binary in the image; the operator installs it on the
+  # host and this mount exposes it to the control plane (and, via the
+  # daemon, the runtime containers). This keeps the product redistributable
+  # regardless of an adapter's license (Claude Code prohibits bundling).
+  [ -d "$HOME/.opencode/bin" ] && MOUNTS+=("-v" "$HOME/.opencode:$HOME/.opencode:ro")
   # Git identity + credentials (credential helper "store" reads
   # ~/.git-credentials) so coding workers can commit, push, and open PRs
   # as the user. Read-only mounts.

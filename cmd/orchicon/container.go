@@ -670,6 +670,13 @@ func (s *supervisor) planeProc() *managedProc {
 		// HOME must point at the host user's home so opencode finds its
 		// config/auth and git picks up the user's identity.
 		childEnv = append(childEnv, "HOME="+s.hostHome)
+		// The mounted adapter CLI (opencode) lives at $HOME/.opencode/bin
+		// (the image never ships it) — prepend it to the plane's PATH so
+		// the adapter's LookPath resolves it without disturbing the rest
+		// of the container's PATH (e.g. postgres's own bin dir).
+		if st, err := os.Stat(filepath.Join(s.hostHome, ".opencode", "bin", "opencode")); err == nil && !st.IsDir() {
+			childEnv = append(childEnv, "PATH="+filepath.Join(s.hostHome, ".opencode", "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+		}
 		// gh CLI auth from the mounted git credential store (PR/merge
 		// workers), unless the operator set GH_TOKEN explicitly.
 		if s.ghToken != "" && os.Getenv("GH_TOKEN") == "" {
