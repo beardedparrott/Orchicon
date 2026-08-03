@@ -181,21 +181,6 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		}
 	}()
 
-	// Transition pending → running (docs/02 §2.4).
-	if run.Status == domain.WorkflowRunPending {
-		updated, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
-			Status: strPtr(domain.WorkflowRunRunning),
-		})
-		if err != nil {
-			return fmt.Errorf("transition run to running: %w", err)
-		}
-		run = updated
-		ensureRuntime = true
-		if err := r.enqueueRunEvent(ctx, ttx.Tx, domain.WorkflowEventRunStarted, run, ""); err != nil {
-			return fmt.Errorf("enqueue run_started: %w", err)
-		}
-	}
-
 	// Load the published version's steps to drive DAG progression.
 	version, err := db.GetWorkflowVersion(ctx, ttx.Tx, tenantID, run.WorkflowID, run.WorkflowVersion)
 	if err != nil {
@@ -208,6 +193,57 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	stepByID := make(map[string]workflow.StepWire, len(steps))
 	for _, s := range steps {
 		stepByID[s.ID] = s
+	}
+
+	// Transition pending → running (docs/02 §2.4). Resolve the runtime
+	// container image from the work item(s) the run will use:
+	//   - template runs: the bound work item's runtime_image;
+	//   - one-shot runs: the WORK_ITEM canvas markers' work items —
+	//     all must agree (or be empty → base), conflicting images fail
+	//     the run at start since one container can't serve two images.
+	if run.Status == domain.WorkflowRunPending {
+		resolved, rerr := r.resolveRuntimeImage(ctx, ttx.Tx, tenantID, run, steps)
+		if rerr != nil {
+			// Fail the run at start: an unresolvable image is a config
+			// error, not a recoverable execution failure.
+			now := time.Now().UTC()
+			reason := fmt.Sprintf("runtime image: %v", rerr)
+			if _, uerr := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
+				Status:  strPtr(domain.WorkflowRunFailed),
+				EndedAt: &now,
+			}); uerr != nil {
+				return fmt.Errorf("fail run on image resolution: %w", uerr)
+			}
+			// Mark the bound work item failed too.
+			if run.WorkItemID != "" {
+				if wi, gerr := db.GetWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID); gerr == nil {
+					status := domain.WorkItemFailed
+					narrative, _ := json.Marshal(map[string]any{"_run_narrative": map[string]any{
+						"run_id": run.ID, "status": domain.WorkflowRunFailed, "error": reason,
+					}})
+					_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, db.UpdateWorkItemFields{
+						Status:  &status,
+						Results: &narrative,
+					})
+				}
+			}
+			_ = r.enqueueRunEvent(ctx, ttx.Tx, domain.WorkflowEventRunFailed, run, reason)
+			run, _ = db.GetWorkflowRun(ctx, ttx.Tx, tenantID, runID)
+			reapRuntime = true
+			return nil
+		}
+		updated, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
+			Status:       strPtr(domain.WorkflowRunRunning),
+			RuntimeImage: &resolved,
+		})
+		if err != nil {
+			return fmt.Errorf("transition run to running: %w", err)
+		}
+		run = updated
+		ensureRuntime = true
+		if err := r.enqueueRunEvent(ctx, ttx.Tx, domain.WorkflowEventRunStarted, run, ""); err != nil {
+			return fmt.Errorf("enqueue run_started: %w", err)
+		}
 	}
 
 	// stepRuns + runByID are built inside the outer-progress loop so
@@ -1752,7 +1788,35 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		sb.WriteString("No steps have completed yet. You are the first.\n\n")
 	}
 	sb.WriteString("If you produce an output file, use the `write` tool (not `bash` with a heredoc). The `write` tool saves the file and orchicon captures it as an inline artifact.\n")
+
+	// Machine-generated runtime environment facts (never authored worker
+	// context): the worker runs in an ephemeral rootless container with a
+	// known toolkit, so it stops probing the environment and can focus on
+	// the work. This reflects the resolved image for the run.
+	sb.WriteString(runtimeEnvironmentBlock(wi.RuntimeImage))
+
 	return sb.String(), nil
+}
+
+// runtimeEnvironmentBlock is the machine-generated "## Runtime
+// environment" section appended to every composite prompt. It tells the
+// worker the ground truth about its execution sandbox so it does not
+// waste cycles empirically probing the container (and so it uses the
+// rootless system-library escape hatch instead of hitting a wall).
+func runtimeEnvironmentBlock(image string) string {
+	img := strings.TrimSpace(image)
+	if img == "" {
+		img = "the default Orchicon runtime base image"
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "\n## Runtime environment\n\n")
+	fmt.Fprintf(&sb, "You are running inside an ephemeral, rootless Linux container (`%s`). Everything you install is wiped when the workflow run ends, so only save durable work to the project directory.\n\n", img)
+	sb.WriteString("- You are **not root** and cannot become root: `sudo` is blocked and `apt-get` refuses to run without root. Do not attempt them.\n")
+	sb.WriteString("- You may install tools freely into the ephemeral filesystem with the user-space package managers that ship in the image: `pip install` (PIP_BREAK_SYSTEM_PACKAGES is set), `npm install`, `mise install <tool>`, `uv`, `bun`, `curl`. These need no root and are wiped at run end.\n")
+	sb.WriteString("- System packages are baked at build time; `apt-get install` will not work. If you need a system shared library that is missing (e.g. `libGL.so.1` for a GUI toolkit), fetch and extract it without root:\n\n")
+	sb.WriteString("    apt-get download <pkg> && dpkg-deb -x <pkg>*.deb <prefix> && export LD_LIBRARY_PATH=<prefix>/usr/lib/x86_64-linux-gnu\n\n")
+	sb.WriteString("- There is no X server and usually no offscreen graphics libs. Prefer headless modes for GUI toolkits (e.g. `QT_QPA_PLATFORM=offscreen`), or install the missing libs with the pattern above.\n")
+	return sb.String()
 }
 
 // walkAncestors walks the parent_id chain from a work item up to the
@@ -2196,6 +2260,56 @@ func readStepRecoveryConfig(config string) stepRecoveryConfig {
 		cfg.RetryDelaySeconds = outer.Recovery.RetryDelaySeconds
 	}
 	return cfg
+}
+
+// resolveRuntimeImage determines the runtime container image for a run
+// at start:
+//   - template runs (run.WorkItemID set): the bound work item's stored
+//     runtime_image (backend-stamped; empty = base image);
+//   - one-shot runs: the WORK_ITEM canvas markers' work items' stored
+//     runtime_image values. All empty → base image; one distinct non-empty
+//     → that image; two different non-empty values → error (a single
+//     container cannot serve two images).
+//
+// The resolved value is stored on the run row so the adapter's self-heal
+// recreates the container with the identical image.
+func (r *WorkflowReconciler) resolveRuntimeImage(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, steps []workflow.StepWire) (string, error) {
+	if run.WorkItemID != "" {
+		wi, err := db.GetWorkItem(ctx, tx, tenantID, run.WorkItemID)
+		if err != nil {
+			return "", fmt.Errorf("get bound work item: %w", err)
+		}
+		return strings.TrimSpace(wi.RuntimeImage), nil
+	}
+	// One-shot: collect WORK_ITEM markers' images; all must agree.
+	var chosen string
+	seen := map[string]bool{}
+	for _, s := range steps {
+		if s.Kind != domain.StepKindWorkItem {
+			continue
+		}
+		wid := readConfigWorkItemID(s.Config)
+		if wid == "" {
+			continue
+		}
+		wi, err := db.GetWorkItem(ctx, tx, tenantID, wid)
+		if err != nil {
+			if err == db.ErrNotFound {
+				continue
+			}
+			return "", fmt.Errorf("get marker work item %s: %w", wid, err)
+		}
+		img := strings.TrimSpace(wi.RuntimeImage)
+		if img == "" || seen[img] {
+			continue
+		}
+		seen[img] = true
+		if chosen != "" && img != chosen {
+			return "", fmt.Errorf("conflicting runtime images on work items (%s vs %s) — a workflow run uses one container", chosen, img)
+		}
+		chosen = img
+	}
+	return chosen, nil
 }
 
 // upstreamWorkItemIDs walks step.DependsOn looking for WORK_ITEM steps

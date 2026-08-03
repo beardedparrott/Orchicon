@@ -114,6 +114,15 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	workItemSvc.SetStartWorkflowStarter(func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
 		return workflow.StartWorkflowDirect(ctx, deps.Pool, deps.Log, tenantID, workflowID, projectID, workItemID)
 	})
+	if deps.RuntimeClient != nil {
+		workItemSvc.SetRuntimeImageResolver(func(ctx context.Context) string {
+			imgs, err := deps.RuntimeClient.Images(ctx)
+			if err != nil || imgs == nil {
+				return ""
+			}
+			return imgs.Default
+		})
+	}
 	mux.Handle(apiv1connect.NewWorkItemServiceHandler(workItemSvc, interceptorOpt))
 
 	// RuntimeAdapterService (docs/07 §3.7).

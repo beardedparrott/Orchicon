@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -21,6 +22,12 @@ import (
 // Injected by the server wired to the workflow service.
 type StartWorkflowStarter func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error
 
+// RuntimeImageResolver resolves the base runtime image tag (or "" when no
+// daemon is configured). Injected by the server so the backend can stamp
+// the work item's runtime_image default (AGENTS.md: the default is a
+// concrete stored value, never a UI-only affordance).
+type RuntimeImageResolver func(ctx context.Context) string
+
 // Service implements the WorkItemService Connect handler
 // (apiv1connect.WorkItemServiceHandler). Each mutation writes an outbox
 // row in the same transaction as the state change (AGENTS.md invariant
@@ -31,6 +38,7 @@ type Service struct {
 	pool            *db.Pool
 	log             *slog.Logger
 	startWorkflowFn StartWorkflowStarter
+	runtimeImageFn  RuntimeImageResolver
 	apiv1connect.UnimplementedWorkItemServiceHandler
 }
 
@@ -45,6 +53,10 @@ func New(pool *db.Pool, log *slog.Logger) *Service {
 // SetStartWorkflowStarter injects the function to start a bound workflow run.
 // Called by the server before the reconciler starts (docs/11 §5.2).
 func (s *Service) SetStartWorkflowStarter(fn StartWorkflowStarter) { s.startWorkflowFn = fn }
+
+// SetRuntimeImageResolver injects the function that resolves the base
+// runtime image tag, used to stamp the work item's runtime_image default.
+func (s *Service) SetRuntimeImageResolver(fn RuntimeImageResolver) { s.runtimeImageFn = fn }
 
 // CreateWorkItem creates a new work item within a project. Depth is
 // constrained to 4 levels (docs/02 §2.2).
@@ -152,6 +164,14 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		ScheduledStartAt:   scheduledStartAt,
 		AutoStartWorkflow:  autoStart,
 	}
+	// Stamp the runtime image: the caller's choice wins; empty = the base
+	// image (resolved from the daemon). The value is stored concretely so
+	// it carries forward to the workflow run regardless of when it fires.
+	runtimeImage := strings.TrimSpace(msg.RuntimeImage)
+	if runtimeImage == "" && s.runtimeImageFn != nil {
+		runtimeImage = s.runtimeImageFn(ctx)
+	}
+	row.RuntimeImage = runtimeImage
 	if workflowID == "" {
 		row.WorkflowID = nil
 	}
@@ -312,6 +332,14 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if msg.WorkflowRunId != nil {
 		v := *msg.WorkflowRunId
 		fields.WorkflowRunID = &v
+	}
+	if msg.RuntimeImage != nil {
+		v := strings.TrimSpace(*msg.RuntimeImage)
+		if v == "" && s.runtimeImageFn != nil {
+			// Empty = reset to the base image.
+			v = s.runtimeImageFn(ctx)
+		}
+		fields.RuntimeImage = &v
 	}
 
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
@@ -849,6 +877,7 @@ func rowToProto(w db.WorkItemRow) *apiv1.WorkItem {
 	}
 	av := w.AutoStartWorkflow
 	p.AutoStartWorkflow = &av
+	p.RuntimeImage = w.RuntimeImage
 	return p
 }
 

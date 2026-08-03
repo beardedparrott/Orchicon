@@ -60,10 +60,14 @@ func (l *Lifecycle) EnsureForRun(ctx context.Context, run db.WorkflowRunRow) err
 			mounts = append(mounts, MountSpec{Source: project.ProjectDir, Dest: project.ProjectDir})
 		}
 	}
-	if _, err := l.client.Create(ctx, CreateRequest{WorkflowID: run.ID, Mounts: mounts}); err != nil {
+	// Resolve the image: the run's runtime_image (captured at run start)
+	// or the daemon default (empty -> base). Empty means the daemon's
+	// configured base image.
+	image := run.RuntimeImage
+	if _, err := l.client.Create(ctx, CreateRequest{WorkflowID: run.ID, Image: image, Mounts: mounts}); err != nil {
 		return fmt.Errorf("ensure runtime for run %s: %w", run.ID, err)
 	}
-	l.log.Info("workflow runtime ensured", "run", run.ID, "project", run.ProjectID)
+	l.log.Info("workflow runtime ensured", "run", run.ID, "project", run.ProjectID, "image", image)
 	return nil
 }
 
