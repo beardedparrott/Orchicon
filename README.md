@@ -30,6 +30,15 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.177 (2026-08-03)
+
+| Type | Change |
+|---|---|
+| Bug fix | **AI approvers no longer double-dispatch.** The worker-backed approval step creates a dedicated approval work item ("ready" + assigned worker), and the standalone TaskReconciler scan dispatched it in parallel with the workflow's inline dispatch — two approver executions ran for one step, and once the run finished the orphaned ticket got dispatched again as a ghost execution (failing because its runtime container was already reaped). The scan now skips any item that belongs to a workflow run: workflow steps are dispatched exclusively by the workflow reconciler's inline (step-run) path. |
+| Bug fix | **AI approval steps actually complete.** The approval step polled the approval work item's status, which under the run-bound model never tracks the approver's execution — so the step sat "running" forever even after the approver succeeded. Approval steps now poll their own execution (same as task steps), and the approve/reject decision routes exactly as before. |
+| Bug fix | **A rejected approval no longer fires the success branch.** When the AI approver rejected, the loop-back left the superseded approval step "succeeded", so the downstream success-branch step dispatched in the same pass while the loop also re-ran. Superseded steps no longer satisfy dependencies, and the loop now re-creates the approval step (pending) so the work is re-approved before the success branch can fire. Verified: through 3 rejection loops the success-branch step stayed pending, then the run failed cleanly at max_iterations (which also fixed a pre-existing "step failed" loop where a rejected approval at max_iterations never committed its failure). |
+| Chore | Docs updated (README, UPDATES.md). Verified E2E on dev with the free model: the approve path ran exactly 3 executions and completed; the reject path looped correctly and failed cleanly; the previously-stuck run `01KZ43ZTTFRTA2VZ7FTV56Z007` self-healed (approval completed with decision `success`, pipeline resumed). |
+
 ### v0.1.176 (2026-08-03)
 
 | Type | Change |
@@ -46,14 +55,6 @@ deployment, troubleshooting, and every subsystem.
 | Feature | **Recovery is scoped per failing step run — nothing is lost.** Each failing step gets its own full 6-step recovery cycle (capture → summarize → preserve → review → plan → resume), keyed by the failed execution, so two steps failing on the same ticket each recover independently instead of one swallowing the other. The ticket is never flipped to `recovering`/`ready`; the recovery summary lands on the step run (`_recovery_summary`) so the replacement execution's prompt includes the failure context (no "same failure twice" loop). The run terminal-state check also no longer wrongly marks a run `completed` when its only step fails (a `Failed` step now also clears the all-succeeded flag). |
 | Chore | Docs updated (README, DOCUMENTATION.md, AGENTS.md) for the work-item-as-input model. Verified E2E on dev: two parallel steps on one ticket each got their own execution and succeeded (real free-model output); a single-step failure ran its full recovery cycle, re-dispatched, failed again, and the run/ticket correctly ended `failed` with the recovery episode in the narrative. |
 | Chore | Docs updated (README, DOCUMENTATION.md, AGENTS.md, landing page) to make the mount-never-bake licensing policy explicit. Verified E2E on dev: images contain no opencode; a single-step workflow ran through the mounted opencode in the runtime container (execution succeeded with real output, run completed, container reaped). |
-
-### v0.1.175 (2026-08-02)
-
-| Type | Change |
-|---|---|
-| Bug fix | **No more "succeeded" executions with empty output.** opencode's `--format json` emits an entire model response as one stdout line, and the workflow-runtime path read that stream through `bufio.Scanner` buffers capped at **64KB** (vs the local path's 1MB). A response larger than the cap silently dropped the line AND every event after it — so a big final answer (e.g. a PR review) made the execution come back `succeeded` with no output, the loop_decision saw no `_decision`, and it re-asked until the run failed. The runtime path now uses the same 1MB cap as the local path, and the adapter tracks `step_start`/`step_finish` so a clean exit with an unfinished final step is downgraded to a failure (`execution ended before the final model step completed`) instead of a silent success. |
-| Bug fix | **Work item bound to a workflow run reflects the run, not each step.** Every step of a workflow operates on the shared bound work item, and each step's successful execution used to flip the whole item to `succeeded` — so the item looked done while the run was still mid-flight. Bound items now stay `running`/`assigned` while the run is active (task steps are polled on their own execution, not the shared item's status) and reach `succeeded`/`failed` only when the run completes/fails. |
-| Chore | Reaped two stale pre-reap-logic workflow-runtime containers and terminalized their July-30 orphaned runs (step runs referenced executions that no longer exist), so the adopt sweep no longer recreates them at every boot. |
 
 
 ## Installation

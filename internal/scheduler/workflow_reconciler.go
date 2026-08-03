@@ -314,8 +314,17 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			}
 			currentIter := currentLoopIteration(runByID, cfg.LoopBranch)
 			if currentIter >= cfg.MaxIterations {
-				return r.failStep(ctx, ttx.Tx, tenantID, run, sr, runByID,
-					fmt.Errorf("approval step %q: max_iterations (%d) exhausted (rejected)", step.Name, cfg.MaxIterations))
+				// Mark the step failed and CONTINUE the pass so the
+				// transaction commits (the completion check then fails the
+				// run). A bare `return failStep(...)` returns before the
+				// commit, the deferred rollback undoes the failed mark, and
+				// every subsequent pass re-fails the same step forever.
+				if err := r.failStep(ctx, ttx.Tx, tenantID, run, sr, runByID,
+					fmt.Errorf("approval step %q: max_iterations (%d) exhausted (rejected)", step.Name, cfg.MaxIterations)); err != nil {
+					return err
+				}
+				madeProgress = true
+				continue
 			}
 			if err := r.approvalReenter(ctx, ttx.Tx, tenantID, run, sr, step, runByID, cfg.LoopBranch, currentIter, time.Now().UTC(), steps); err != nil {
 				return err
@@ -774,6 +783,12 @@ func (r *WorkflowReconciler) buildRunNarrative(ctx context.Context, tx pgx.Tx, t
 // depsSatisfied returns true if all depends_on steps of `step` are in a
 // terminal-success state (succeeded or skipped). Loop decision steps
 // accept a failed upstream as satisfied so they can evaluate looping.
+//
+// A SUPERSEDED step run never satisfies deps: it was replaced by a loop
+// re-entry (e.g. a rejected approval loops back), and the success branch
+// must not fire until the new iteration re-approves. Without this, a
+// rejected approval left "succeeded" + superseded would still let the
+// downstream success-branch step dispatch in the same pass.
 func (r *WorkflowReconciler) depsSatisfied(step workflow.StepWire, runs map[string]db.WorkflowStepRunRow) bool {
 	isLoopDecision := step.Kind == domain.StepKindLoopDecision
 	for _, dep := range step.DependsOn {
@@ -783,6 +798,10 @@ func (r *WorkflowReconciler) depsSatisfied(step workflow.StepWire, runs map[stri
 			return false
 		}
 		r.log.Debug("DEBUG: depsSatisfied check", "step", step.ID, "dep", dep, "depStatus", sr.Status)
+		if sr.SupersededBy != "" {
+			r.log.Debug("DEBUG: depsSatisfied dep superseded", "step", step.ID, "dep", dep)
+			return false
+		}
 		if sr.Status == domain.StepRunSucceeded || sr.Status == domain.StepRunSkipped {
 			r.log.Debug("DEBUG: depsSatisfied dep satisfied", "step", step.ID, "dep", dep, "status", sr.Status)
 			continue
@@ -2268,59 +2287,44 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 		return false, false, fmt.Errorf("get work item: %w", err)
 	}
 
-	// Approval steps have no worker execution — they poll the linked
-	// (approval) work item's status exactly as before. Task steps instead
-	// complete on their OWN execution's terminal state: the work item may
-	// be shared across every task step of the run and stays "running"
-	// until the run finishes (see TaskReconciler.boundToActiveRun), so
-	// polling the shared item's status would wrongly complete every step
-	// as soon as the first one succeeds.
-	if sr.StepKind == domain.StepKindApproval {
-		switch wi.Status {
-		case domain.WorkItemSucceeded:
-			return true, false, nil
-		case domain.WorkItemFailed, domain.WorkItemCancelled:
-			// fall through to the recovery block below.
-		default:
+	// Task AND worker-backed approval steps complete on their OWN
+	// execution's terminal state. (Human approval steps sit in
+	// `approval_pending` and are resolved by the ApproveStep/RejectStep
+	// RPC, not polled here.) The approval work item is a per-step artifact
+	// created by dispatchStep and is never polled for completion: under
+	// the run-bound model its status does not track the approver's
+	// execution (transitionWorkItemOnResult leaves it untouched), so
+	// polling it would leave the step "running" forever even after the
+	// approver succeeded. A step run with NO execution link means the
+	// dispatch never produced an execution — WAIT rather than fall back
+	// to another execution for the same work item.
+	if sr.WorkerExecutionID == "" {
+		// Two cases:
+		//   (a) dispatchStep just set this step running (first dispatch
+		//       or a recovering-step re-dispatch); the inline
+		//       DispatchTask links the replacement execution moments
+		//       after the reconcile transaction commits. Wait a short
+		//       grace for the link instead of guessing.
+		//   (b) the dispatch was lost (inline dispatch failed, adapter
+		//       down) and no execution ever materialized. After the
+		//       grace, fall through to the recovery block so the step
+		//       is retried rather than wedged forever as "running".
+		if sr.StartedAt != nil && time.Since(*sr.StartedAt) < dispatchLinkGrace {
 			return false, false, nil
 		}
 	} else {
-		// Task steps complete on their OWN execution's terminal state. A
-		// step run with NO execution link means the dispatch never produced
-		// an execution — WAIT rather than fall back to another execution
-		// for the same work item. The work item may be shared across many
-		// steps and re-run across many workflow runs, so the "latest
-		// execution" could be a different step's or a previous run's —
-		// completing this step off it would mark work as done that never
-		// ran.
-		if sr.WorkerExecutionID == "" {
-			// Two cases:
-			//   (a) dispatchStep just set this step running (first dispatch
-			//       or a recovering-step re-dispatch); the inline
-			//       DispatchTask links the replacement execution moments
-			//       after the reconcile transaction commits. Wait a short
-			//       grace for the link instead of guessing.
-			//   (b) the dispatch was lost (inline dispatch failed, adapter
-			//       down) and no execution ever materialized. After the
-			//       grace, fall through to the recovery block so the step
-			//       is retried rather than wedged forever as "running".
-			if sr.StartedAt != nil && time.Since(*sr.StartedAt) < dispatchLinkGrace {
-				return false, false, nil
-			}
-		} else {
-			exec, err := db.GetExecution(ctx, tx, tenantID, sr.WorkerExecutionID)
-			if err != nil {
-				// Lookup failed — don't guess; wait for the next pass.
-				return false, false, nil
-			}
-			switch exec.Status {
-			case domain.ExecutionSucceeded:
-				return true, false, nil
-			case domain.ExecutionFailed, domain.ExecutionFailedToStart, domain.ExecutionTerminated:
-				// fall through to the recovery block below.
-			default:
-				return false, false, nil
-			}
+		exec, err := db.GetExecution(ctx, tx, tenantID, sr.WorkerExecutionID)
+		if err != nil {
+			// Lookup failed — don't guess; wait for the next pass.
+			return false, false, nil
+		}
+		switch exec.Status {
+		case domain.ExecutionSucceeded:
+			return true, false, nil
+		case domain.ExecutionFailed, domain.ExecutionFailedToStart, domain.ExecutionTerminated:
+			// fall through to the recovery block below.
+		default:
+			return false, false, nil
 		}
 	}
 
@@ -2565,10 +2569,30 @@ func (r *WorkflowReconciler) approvalReenter(ctx context.Context, tx pgx.Tx, ten
 		return fmt.Errorf("approval step %q: create chain runs: %w", step.Name, err)
 	}
 
+	// Re-create the approval step itself as a PENDING run so the loop
+	// re-approves before the success branch can fire: step-b depends on
+	// this approval step, and the superseded "succeeded" run must not
+	// satisfy that dependency (see depsSatisfied). The new run blocks
+	// downstream until its re-dispatch approves.
+	newApproval := db.NewID()
+	newRun := db.WorkflowStepRunRow{
+		ID:            newApproval,
+		TenantID:      tenantID,
+		WorkflowRunID: run.ID,
+		StepID:        step.ID,
+		StepName:      step.Name + " (loop)",
+		StepKind:      domain.StepKindApproval,
+		Status:        domain.StepRunPending,
+		Iteration:     nextIter,
+	}
+	if _, err := db.CreateWorkflowStepRun(ctx, tx, newRun); err != nil {
+		return fmt.Errorf("approval step %q: create re-entry run: %w", step.Name, err)
+	}
+
 	supersededResult, _ := json.Marshal(map[string]string{"_decision": "rejected", "_loop": "re-entered"})
 	superseded, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 		EndedAt:      &now,
-		SupersededBy: strPtr(db.NewID()),
+		SupersededBy: &newApproval,
 		Result:       &supersededResult,
 	})
 	if err != nil {
