@@ -590,9 +590,17 @@ func (d *Daemon) handleSignal(w http.ResponseWriter, r *http.Request, id string)
 }
 
 // handleExecStatus reports whether an exec is still running inside a
-// runtime container (the execution-liveness reaper's query). A missing
-// container or a client error returns alive:false (200) so the caller
-// treats it as dead; only a daemon outage (request failure) is an error.
+// runtime container (the execution-liveness reaper's query).
+//
+// The answer must distinguish three cases so the reaper never kills a
+// healthy execution on a transient blip:
+//   - container missing       -> alive:false, container:false (definitive dead)
+//   - supervisor answers      -> alive:<its verdict>          (definitive)
+//   - the probe itself failed -> unknown:true                 (UNDETERMINABLE)
+//
+// The old code swallowed the docker-exec error and defaulted to
+// alive:false, so a transient docker/socket hiccup made a running exec
+// look dead and the single-probe reaper reaped it.
 func (d *Daemon) handleExecStatus(w http.ResponseWriter, id, execID string) {
 	name := d.containerName(id)
 	if running, err := d.containerRunning(name); err != nil || !running {
@@ -606,7 +614,14 @@ func (d *Daemon) handleExecStatus(w http.ResponseWriter, id, execID string) {
 	}
 	cmd := exec.Command(d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
 	cmd.Stdin = bytes.NewReader(reqJSON)
-	out, _ := cmd.Output()
+	out, perr := cmd.Output()
+	if perr != nil {
+		// Probe failed (docker exec hiccup, supervisor socket momentarily
+		// unavailable) — not a definitive "dead". Report undeterminable so
+		// the reaper skips instead of reaping a healthy execution.
+		writeJSON(w, http.StatusOK, map[string]any{"alive": false, "container": true, "unknown": true})
+		return
+	}
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	for sc.Scan() {
 		var ev AgentEvent
@@ -615,7 +630,8 @@ func (d *Daemon) handleExecStatus(w http.ResponseWriter, id, execID string) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"alive": false, "container": true})
+	// The supervisor didn't answer the status query — undeterminable.
+	writeJSON(w, http.StatusOK, map[string]any{"alive": false, "container": true, "unknown": true})
 }
 
 func (d *Daemon) handleKill(w http.ResponseWriter, id string) {

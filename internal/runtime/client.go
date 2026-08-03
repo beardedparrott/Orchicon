@@ -149,12 +149,14 @@ func (c *Client) Signal(ctx context.Context, workflowID string, req SignalReques
 
 // ExecAlive reports whether an exec is still running inside a workflow's
 // runtime container. Returns (false, nil) when the container is gone or
-// the exec is not alive; an error only when the daemon itself is
-// unreachable (the caller should skip, not reap).
+// the exec is not alive; an error when the probe itself was undeterminable
+// (docker/socket hiccup) or the daemon is unreachable — the caller should
+// skip, not reap, on an error.
 func (c *Client) ExecAlive(ctx context.Context, workflowID, execID string) (bool, error) {
 	var out struct {
 		Alive     bool `json:"alive"`
 		Container bool `json:"container"`
+		Unknown   bool `json:"unknown"`
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		"http://runtime"+"/v1/runtimes/"+workflowID+"/execs/"+execID, nil)
@@ -171,6 +173,9 @@ func (c *Client) ExecAlive(ctx context.Context, workflowID, execID string) (bool
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return false, err
+	}
+	if out.Unknown {
+		return false, fmt.Errorf("runtime liveness probe undeterminable")
 	}
 	return out.Alive, nil
 }
