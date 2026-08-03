@@ -30,6 +30,15 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.178 (2026-08-03)
+
+| Type | Change |
+|---|---|
+| Feature | **Runtime Images — a self-service image builder for worker sandboxes.** New **Runtime Images** sidebar page defines and builds the container images workers execute in. A form (apt packages, toolchain install lines, env vars) generates a live Dockerfile preview that doubles as an advanced raw-Dockerfile editor; **Deploy** streams the `docker build` log from the host runtime daemon to ready/failed. Every image is structurally derived from the runtime base: the daemon rewrites the Dockerfile's `FROM` line to the base and injects the `org.orchicon.runtime-base=true` label (inherited through `FROM`), which is also the container-create gate — a locally-present image carrying that label is accepted without registration, and anything else is refused. A stock `:gui` variant (headless Qt/tkinter/X11 libs) ships alongside the base. Delete removes both the spec row and the local Docker image (gated on no active run using it). |
+| Feature | **Per-work-item runtime image selection.** `runtime_image` on a work item picks which container its workflow run dispatches into (backend-stamped to the base image when unset, so the default is a concrete stored value). The workflow-run start resolves the image (template → the bound work item; one-shot → the canvas WORK_ITEM markers' items, all must agree or the run fails at start with a clear error) and stores it on the run, so a self-healed container is recreated with the identical image. The execution is dispatched into the selected image, and every composite prompt carries a machine-generated **Runtime environment** block naming the image and teaching the rootless no-apt install patterns (`pip`/`npm`/`mise`/`uv` + the `apt-get download` + `dpkg-deb -x` + `LD_LIBRARY_PATH` escape hatch for missing system libs). |
+| Feature | **Operators can add stock images** via `ORCHICON_RUNTIME_IMAGES` (comma-separated allowlist; the base is always included). Custom images built in the UI are accepted via the base label and need no entry. |
+| Chore | Docs updated (README, DOCUMENTATION.md, AGENTS.md, .env.example); Ask Orchicon gained list/get/create/delete runtime-image tools. Verified E2E on dev: built a `pyside6-gui` image from the UI (PySide6 offscreen + tkinter run in the container), a template-bound workflow run resolved and dispatched into `pyside6-gui:latest` (execution succeeded with real output, run completed, container reaped), the label gate refused a non-base image, and delete removed both the DB row and the local Docker image. |
+
 ### v0.1.177 (2026-08-03)
 
 | Type | Change |
