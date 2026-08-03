@@ -98,6 +98,16 @@ build_image() {
     docker build --build-arg BASE_IMAGE="$RUNTIME_IMAGE" -f "$RT_GUI_DOCKERFILE" -t "$GUI_IMAGE" "$RT_CONTEXT"
     log_ok "Runtime GUI image $GUI_IMAGE built"
   fi
+
+  # Orchicon-dev variant (dogfooding): Go/Node/buf/atlas + baked Postgres so
+  # a worker can build and DB-test the Orchicon repo in-sandbox.
+  local RT_DEV_DOCKERFILE="$PROJECT_ROOT/deploy/runtime/Dockerfile.dev"
+  if [ -f "$RT_DEV_DOCKERFILE" ]; then
+    local DEV_IMAGE="${ORCHICON_RUNTIME_DEV_IMAGE:-orchicon-runtime:local-dev}"
+    log_dim "Building $DEV_IMAGE from $RT_DEV_DOCKERFILE (base $RUNTIME_IMAGE)…"
+    docker build --build-arg BASE_IMAGE="$RUNTIME_IMAGE" -f "$RT_DEV_DOCKERFILE" -t "$DEV_IMAGE" "$RT_CONTEXT"
+    log_ok "Runtime dev image $DEV_IMAGE built"
+  fi
 }
 
 # start_runtime_daemon ensures the host-side runtime orchestrator is

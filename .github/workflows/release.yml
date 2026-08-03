@@ -165,6 +165,8 @@ jobs:
           docker tag "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" ghcr.io/beardedparrott/orchicon-runtime:latest
           docker build --build-arg "BASE_IMAGE=ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" -f deploy/runtime/Dockerfile.gui -t "ghcr.io/beardedparrott/orchicon-runtime:gui-${ORCHICON_VERSION}" deploy/runtime
           docker tag "ghcr.io/beardedparrott/orchicon-runtime:gui-${ORCHICON_VERSION}" ghcr.io/beardedparrott/orchicon-runtime:gui
+          docker build --build-arg "BASE_IMAGE=ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" -f deploy/runtime/Dockerfile.dev -t "ghcr.io/beardedparrott/orchicon-runtime:dev-${ORCHICON_VERSION}" deploy/runtime
+          docker tag "ghcr.io/beardedparrott/orchicon-runtime:dev-${ORCHICON_VERSION}" ghcr.io/beardedparrott/orchicon-runtime:dev
 
       - name: Push runtime image
         env:
@@ -175,6 +177,8 @@ jobs:
           docker push ghcr.io/beardedparrott/orchicon-runtime:latest
           docker push "ghcr.io/beardedparrott/orchicon-runtime:gui-${ORCHICON_VERSION}"
           docker push ghcr.io/beardedparrott/orchicon-runtime:gui
+          docker push "ghcr.io/beardedparrott/orchicon-runtime:dev-${ORCHICON_VERSION}"
+          docker push ghcr.io/beardedparrott/orchicon-runtime:dev
 
   release:
     name: Create Release
