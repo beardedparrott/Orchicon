@@ -10,7 +10,6 @@ syntax = "proto3";
 
 package orchicon.api.v1;
 
-import "google/protobuf/timestamp.proto";
 import "orchicon/api/v1/runtime_image.proto";
 
 service RuntimeImageService {

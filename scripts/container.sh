@@ -94,8 +94,8 @@ build_image() {
   local RT_GUI_DOCKERFILE="$PROJECT_ROOT/deploy/runtime/Dockerfile.gui"
   if [ -f "$RT_GUI_DOCKERFILE" ]; then
     local GUI_IMAGE="${ORCHICON_RUNTIME_GUI_IMAGE:-orchicon-runtime:local-gui}"
-    log_dim "Building $GUI_IMAGE from $RT_GUI_DOCKERFILE…"
-    docker build -f "$RT_GUI_DOCKERFILE" -t "$GUI_IMAGE" "$RT_CONTEXT"
+    log_dim "Building $GUI_IMAGE from $RT_GUI_DOCKERFILE (base $RUNTIME_IMAGE)…"
+    docker build --build-arg BASE_IMAGE="$RUNTIME_IMAGE" -f "$RT_GUI_DOCKERFILE" -t "$GUI_IMAGE" "$RT_CONTEXT"
     log_ok "Runtime GUI image $GUI_IMAGE built"
   fi
 }

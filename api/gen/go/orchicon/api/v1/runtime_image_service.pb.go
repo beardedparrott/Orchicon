@@ -18,7 +18,6 @@ package apiv1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	_ "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -872,7 +871,7 @@ var File_orchicon_api_v1_runtime_image_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_runtime_image_service_proto_rawDesc = "" +
 	"\n" +
-	"+orchicon/api/v1/runtime_image_service.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a#orchicon/api/v1/runtime_image.proto\"\x9a\x02\n" +
+	"+orchicon/api/v1/runtime_image_service.proto\x12\x0forchicon.api.v1\x1a#orchicon/api/v1/runtime_image.proto\"\x9a\x02\n" +
 	"\x19CreateRuntimeImageRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +

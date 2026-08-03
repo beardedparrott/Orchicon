@@ -163,7 +163,7 @@ jobs:
           cp ./orchicon deploy/runtime/orchicon
           docker build -f deploy/runtime/Dockerfile -t "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" deploy/runtime
           docker tag "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" ghcr.io/beardedparrott/orchicon-runtime:latest
-          docker build -f deploy/runtime/Dockerfile.gui -t "ghcr.io/beardedparrott/orchicon-runtime:gui-${ORCHICON_VERSION}" deploy/runtime
+          docker build --build-arg "BASE_IMAGE=ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" -f deploy/runtime/Dockerfile.gui -t "ghcr.io/beardedparrott/orchicon-runtime:gui-${ORCHICON_VERSION}" deploy/runtime
           docker tag "ghcr.io/beardedparrott/orchicon-runtime:gui-${ORCHICON_VERSION}" ghcr.io/beardedparrott/orchicon-runtime:gui
 
       - name: Push runtime image

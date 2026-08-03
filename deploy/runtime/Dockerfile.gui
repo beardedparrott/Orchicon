@@ -9,7 +9,12 @@
 # This file doubles as the reference template for building your own custom
 # runtime images in the UI: FROM the base, USER root, install, re-chown,
 # USER orchicon.
-FROM ghcr.io/beardedparrott/orchicon-runtime:latest
+#
+# BASE_IMAGE lets container.sh point local builds at the locally-built
+# base (orchicon-runtime:local) while the release workflow defaults to
+# the published base.
+ARG BASE_IMAGE=ghcr.io/beardedparrott/orchicon-runtime:latest
+FROM ${BASE_IMAGE}
 
 USER root
 RUN apt-get update \
@@ -17,7 +22,7 @@ RUN apt-get update \
       libgl1 libegl1 libfontconfig1 libxkbcommon0 libdbus-1-3 \
       libx11-6 libxext6 libxrender1 libxcb1 libxcb-cursor0 \
       xvfb xauth \
-      tk tcl \
+      python3-tk tk tcl \
  && rm -rf /var/lib/apt/lists/*
 # Keep the writable-rootfs property: the runtime user must be able to
 # write anywhere in the ephemeral filesystem (rootless installs).
