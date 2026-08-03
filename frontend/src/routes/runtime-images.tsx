@@ -5,6 +5,7 @@ import { Trash2, SearchX, Boxes, Loader2, CheckCircle2, XCircle } from "lucide-r
 import {
   useListRuntimeImages,
   useDeleteRuntimeImage,
+  useAvailableRuntimeImages,
 } from "@/api/runtimeImages";
 import { Button } from "@/components/ui/button";
 import {
@@ -77,6 +78,10 @@ function RuntimeImagesPage() {
     statusFilter ? Number(statusFilter) : undefined,
     search || undefined,
   );
+  const { data: available } = useAvailableRuntimeImages();
+  // Stock images = the daemon's shipped images (base first). Custom
+  // images with no spec row are derived by removing the stock ones.
+  const stockImages = available?.stockImages ?? [];
 
   const toggleSelect = (id: string) => {
     setSelected((prev) => {
@@ -160,6 +165,32 @@ function RuntimeImagesPage() {
         )}
       </div>
 
+      {/* Stock images shipped with Orchicon (read-only; base first). */}
+      {stockImages.length > 0 && (
+        <div>
+          <h2 className="mb-2 text-sm font-semibold text-muted-foreground">
+            Stock images (shipped with Orchicon)
+          </h2>
+          <div className="space-y-2">
+            {stockImages.map((tag) => (
+              <Card key={tag} className="opacity-80">
+                <CardContent className="flex items-center gap-3 p-3">
+                  <Boxes className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate font-mono text-sm">
+                    {tag}
+                  </span>
+                  {tag === (available?.defaultImage ?? "") && (
+                    <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">
+                      default
+                    </span>
+                  )}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
       {isLoading && (
         <p className="text-sm text-muted-foreground">Loading…</p>
       )}
@@ -169,22 +200,30 @@ function RuntimeImagesPage() {
         </p>
       )}
       {!isLoading && !error && (!images || images.length === 0) && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <SearchX className="h-5 w-5 text-muted-foreground" />
-              No runtime images yet
-            </CardTitle>
-            <CardDescription>
-              Create an image to define the toolchain/system libraries your
-              workers get in their runtime container.
-            </CardDescription>
-          </CardHeader>
-        </Card>
+        <div>
+          <h2 className="mb-2 text-sm font-semibold text-muted-foreground">
+            Custom images (built by Orchicon)
+          </h2>
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <SearchX className="h-5 w-5 text-muted-foreground" />
+                No custom runtime images yet
+              </CardTitle>
+              <CardDescription>
+                Create an image to define the toolchain/system libraries your
+                workers get in their runtime container.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </div>
       )}
 
       {images && images.length > 0 && (
         <div className="space-y-2">
+          <h2 className="text-sm font-semibold text-muted-foreground">
+            Custom images (built by Orchicon)
+          </h2>
           <div className="flex items-center gap-2 px-2 py-1">
             <input
               type="checkbox"

@@ -128,8 +128,17 @@ start_runtime_daemon() {
   log_dim "starting runtime daemon…"
   # Local dev: pin the daemon to the locally-built runtime image (the
   # daemon's default is the GHCR release image for one-command installs).
+  # Register the locally-built :gui and :dev variants in the daemon's
+  # image allowlist so they show up in the work-item dropdown (an
+  # operator ORCHICON_RUNTIME_IMAGES overrides the default list).
+  local DEFAULT_RUNTIME_IMAGES=""
+  for v in gui dev; do
+    if docker image inspect "$RUNTIME_IMAGE-$v" >/dev/null 2>&1; then
+      DEFAULT_RUNTIME_IMAGES="${DEFAULT_RUNTIME_IMAGES:+$DEFAULT_RUNTIME_IMAGES,}$RUNTIME_IMAGE-$v"
+    fi
+  done
   ORCHICON_RUNTIME_IMAGE="${ORCHICON_RUNTIME_IMAGE:-$RUNTIME_IMAGE}" \
-  ORCHICON_RUNTIME_IMAGES="${ORCHICON_RUNTIME_IMAGES:-}" \
+  ORCHICON_RUNTIME_IMAGES="${ORCHICON_RUNTIME_IMAGES:-$DEFAULT_RUNTIME_IMAGES}" \
   setsid nohup "$PROJECT_ROOT/bin/orchicon" runtime-daemon </dev/null \
     >/tmp/orchicon-runtime-daemon.log 2>&1 &
   for _ in $(seq 1 20); do

@@ -41,7 +41,7 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 		SocketPath:   socketPath,
 		DockerBin:    "docker",
 		Image:        env("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:latest"),
-		Images:       splitCSV(env("ORCHICON_RUNTIME_IMAGES", "")),
+		Images:       runtimeImagesAllowlist(env("ORCHICON_RUNTIME_IMAGES", "")),
 		UserID:       hostUID,
 		GroupID:      hostGID,
 		HostHome:     hostHome,
@@ -106,4 +106,23 @@ func splitCSV(v string) []string {
 		}
 	}
 	return out
+}
+
+// runtimeImagesAllowlist resolves the daemon's stock image allowlist.
+// The published :gui and :dev variants ship with the product and are
+// included by default (based on the daemon's default image tag); an
+// explicit ORCHICON_RUNTIME_IMAGES overrides the defaults entirely.
+func runtimeImagesAllowlist(csv string) []string {
+	if csv != "" {
+		return splitCSV(csv)
+	}
+	// Default base tag is "<repo>:<tag>"; variants tag as
+	// "<repo>:<variant>-<tag>" (e.g. "orchicon-runtime:gui-latest").
+	img := env("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:latest")
+	colon := strings.LastIndex(img, ":")
+	if colon <= 0 {
+		return nil
+	}
+	repo, tag := img[:colon], img[colon+1:]
+	return []string{repo + ":gui-" + tag, repo + ":dev-" + tag}
 }
