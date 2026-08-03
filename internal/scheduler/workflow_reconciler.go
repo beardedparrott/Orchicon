@@ -2282,8 +2282,7 @@ func (r *WorkflowReconciler) resolveRuntimeImage(ctx context.Context, tx pgx.Tx,
 		return strings.TrimSpace(wi.RuntimeImage), nil
 	}
 	// One-shot: collect WORK_ITEM markers' images; all must agree.
-	var chosen string
-	seen := map[string]bool{}
+	values := []string{}
 	for _, s := range steps {
 		if s.Kind != domain.StepKindWorkItem {
 			continue
@@ -2299,15 +2298,29 @@ func (r *WorkflowReconciler) resolveRuntimeImage(ctx context.Context, tx pgx.Tx,
 			}
 			return "", fmt.Errorf("get marker work item %s: %w", wid, err)
 		}
-		img := strings.TrimSpace(wi.RuntimeImage)
-		if img == "" || seen[img] {
+		if img := strings.TrimSpace(wi.RuntimeImage); img != "" {
+			values = append(values, img)
+		}
+	}
+	return resolveImageFromValues(values)
+}
+
+// resolveImageFromValues applies the one-shot image agreement rule: all
+// non-empty values must be identical, or a single container cannot serve
+// the run. Empty (no markers, or all unset) → "" (base image).
+func resolveImageFromValues(values []string) (string, error) {
+	var chosen string
+	for _, img := range values {
+		if img == "" {
 			continue
 		}
-		seen[img] = true
-		if chosen != "" && img != chosen {
+		if chosen == "" {
+			chosen = img
+			continue
+		}
+		if img != chosen {
 			return "", fmt.Errorf("conflicting runtime images on work items (%s vs %s) — a workflow run uses one container", chosen, img)
 		}
-		chosen = img
 	}
 	return chosen, nil
 }
