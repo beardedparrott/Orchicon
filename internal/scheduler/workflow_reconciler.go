@@ -224,6 +224,17 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// dispatch after the transaction commits.
 	var dispatchedWIDs []string
 
+	// Recovery triggers collected during this pass are invoked AFTER the
+	// transaction commits. TriggerOnFailure opens its OWN transaction on a
+	// separate connection, so calling it synchronously from inside this
+	// pass while the pass holds row locks on the affected work item (e.g.
+	// dispatchStep just re-dispatched it) makes the child transaction
+	// block on this pass's locks — and this pass then blocks waiting for
+	// the child to return: a cross-connection self-deadlock Postgres
+	// cannot detect, wedging the run forever. Deferring the trigger to
+	// post-commit (like inline dispatch) removes the cycle.
+	var recoveryTriggers []recoveryTriggerReq
+
 	// DAG progression loop: repeat pending→ready, dispatch, and poll
 	// until no step makes progress in a full pass. This ensures that
 	// when a task step is polled terminal, downstream pending steps
@@ -425,7 +436,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				continue
 			}
 			var stepWIDs []string
-			if err := r.dispatchStep(ctx, ttx.Tx, tenantID, run, step, sr, runByID, steps, &stepWIDs); err != nil {
+			if err := r.dispatchStep(ctx, ttx.Tx, tenantID, run, step, sr, runByID, steps, &stepWIDs, &recoveryTriggers); err != nil {
 				return err
 			}
 			madeProgress = true
@@ -448,7 +459,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			if s, ok := stepByID[sr.StepID]; ok {
 				stepCfg = s.Config
 			}
-			terminal, failed, err := r.pollTaskStep(ctx, ttx.Tx, tenantID, run, sr, stepCfg, runByID)
+			terminal, failed, err := r.pollTaskStep(ctx, ttx.Tx, tenantID, run, sr, stepCfg, runByID, &recoveryTriggers)
 			if err != nil {
 				return err
 			}
@@ -655,6 +666,20 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	if err := ttx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
+	// Recovery triggers run AFTER the transaction commits: TriggerOnFailure
+	// opens its own transaction on a separate connection, and calling it
+	// while this pass still holds row locks on the affected work item (the
+	// dispatch section may have just re-dispatched it) would deadlock
+	// (child tx waits on this pass's lock; this pass waits on the child's
+	// return). Post-commit the locks are gone.
+	if r.recovery != nil {
+		for _, tr := range recoveryTriggers {
+			if err := r.recovery.TriggerOnFailure(context.Background(), tr.tenantID, tr.workItemID, tr.failedExecID, tr.reason); err != nil {
+				r.log.Warn("post-commit recovery trigger failed",
+					"run", runID, "work_item", tr.workItemID, "error", err)
+			}
+		}
+	}
 	// Inline dispatch: hand dispatched work items to the TaskReconciler
 	// immediately so executions appear in the UI without waiting for the
 	// next TaskReconciler heartbeat (~1s). The dispatch happens after the
@@ -746,7 +771,7 @@ func (r *WorkflowReconciler) evaluateGate(ctx context.Context, step workflow.Ste
 //     assigned_worker_ref — docs/03 §8 invariant #1).
 //   - The step run tracks the primary work item id under
 //     _work_item_id in result JSON so pollTaskStep can poll.
-func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, step workflow.StepWire, sr db.WorkflowStepRunRow, runs map[string]db.WorkflowStepRunRow, allSteps []workflow.StepWire, dispatchedWIDs *[]string) error {
+func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, step workflow.StepWire, sr db.WorkflowStepRunRow, runs map[string]db.WorkflowStepRunRow, allSteps []workflow.StepWire, dispatchedWIDs *[]string, recoveryTriggers *[]recoveryTriggerReq) error {
 	now := time.Now().UTC()
 	switch step.Kind {
 	case domain.StepKindProject:
@@ -897,12 +922,20 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			*dispatchedWIDs = append(*dispatchedWIDs, primaryWID)
 		}
 		// Record the primary work item id on the step run so
-		// pollTaskStep can poll it.
+		// pollTaskStep can poll it. Clear any stale worker_execution_id
+		// (a recovering step re-dispatched here still references its
+		// FAILED execution): pollTaskStep would otherwise see the old
+		// failed execution and re-trigger recovery in the same pass,
+		// racing the inline dispatch that links the replacement
+		// execution. With the id cleared, the step WAITS (empty-link
+		// path) until the inline DispatchTask writes the new execution
+		// onto the step run.
 		stepResult, _ := json.Marshal(map[string]string{"_work_item_id": primaryWID})
 		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-			Status:    strPtr(domain.StepRunRunning),
-			Result:    &stepResult,
-			StartedAt: &now,
+			Status:            strPtr(domain.StepRunRunning),
+			Result:            &stepResult,
+			WorkerExecutionID: strPtr(""),
+			StartedAt:         &now,
 		})
 		if err != nil {
 			return fmt.Errorf("mark task step running: %w", err)
@@ -979,8 +1012,16 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 				if latest, err := db.GetLatestExecutionForTask(ctx, tx, tenantID, upResult.WorkItemID); err == nil {
 					failedExecID = latest.ID
 				}
-				if err := r.recovery.TriggerOnFailure(ctx, tenantID, upResult.WorkItemID, failedExecID, "loop_decision:upstream_failed"); err != nil {
-					r.log.Warn("loop_decision: trigger recovery on failure", "run", run.ID, "step", step.ID, "work_item", upResult.WorkItemID, "error", err)
+				// Defer the trigger to post-commit (see reconcileRun):
+				// TriggerOnFailure opens its own transaction, which would
+				// block on this pass's locks on the same work item.
+				if recoveryTriggers != nil {
+					*recoveryTriggers = append(*recoveryTriggers, recoveryTriggerReq{
+						tenantID:     tenantID,
+						workItemID:   upResult.WorkItemID,
+						failedExecID: failedExecID,
+						reason:       "loop_decision:upstream_failed",
+					})
 				}
 			}
 			nextIter := currentLoopIteration(runs, step.ID) + 1
@@ -2088,6 +2129,25 @@ func upstreamWorkItemIDs(step workflow.StepWire, allSteps []workflow.StepWire) [
 	return ids
 }
 
+// recoveryTriggerReq is a deferred recovery trigger collected during a
+// reconcile pass and invoked AFTER the pass's transaction commits (see
+// reconcileRun — TriggerOnFailure opens its own transaction on a separate
+// connection, so invoking it while the pass still holds row locks on the
+// affected work item would cross-connection self-deadlock).
+type recoveryTriggerReq struct {
+	tenantID     string
+	workItemID   string
+	failedExecID string
+	reason       string
+}
+
+// dispatchLinkGrace is how long a task step running with NO execution
+// link waits before it is treated as a lost dispatch (inline DispatchTask
+// failed / adapter down) and routed to recovery instead of hanging as
+// "running" forever. The inline dispatch links the execution moments
+// after the reconcile transaction commits, so the grace is generous.
+const dispatchLinkGrace = 15 * time.Second
+
 // pollTaskStep checks the WorkItem linked to a running task step. Returns
 // (terminal, failed, error). The WorkItem id is stored in the step run's
 // result JSON under _work_item_id.
@@ -2107,7 +2167,7 @@ func upstreamWorkItemIDs(step workflow.StepWire, allSteps []workflow.StepWire) [
 //
 // Terminal failure only occurs after all attempts are exhausted,
 // regardless of strategy.
-func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, stepConfig string, runByID map[string]db.WorkflowStepRunRow) (bool, bool, error) {
+func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, stepConfig string, runByID map[string]db.WorkflowStepRunRow, recoveryTriggers *[]recoveryTriggerReq) (bool, bool, error) {
 	var parsed struct {
 		WorkItemID string `json:"_work_item_id"`
 	}
@@ -2141,27 +2201,40 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 	} else {
 		// Task steps complete on their OWN execution's terminal state. A
 		// step run with NO execution link means the dispatch never produced
-		// an execution (e.g. a shared-work-item dispatch race) — WAIT rather
-		// than fall back to another execution for the same work item. The
-		// work item may be shared across many steps and re-run across many
-		// workflow runs, so the "latest execution" could be a different
-		// step's or a previous run's — completing this step off it would
-		// mark work as done that never ran.
+		// an execution — WAIT rather than fall back to another execution
+		// for the same work item. The work item may be shared across many
+		// steps and re-run across many workflow runs, so the "latest
+		// execution" could be a different step's or a previous run's —
+		// completing this step off it would mark work as done that never
+		// ran.
 		if sr.WorkerExecutionID == "" {
-			return false, false, nil
-		}
-		exec, err := db.GetExecution(ctx, tx, tenantID, sr.WorkerExecutionID)
-		if err != nil {
-			// Lookup failed — don't guess; wait for the next pass.
-			return false, false, nil
-		}
-		switch exec.Status {
-		case domain.ExecutionSucceeded:
-			return true, false, nil
-		case domain.ExecutionFailed, domain.ExecutionFailedToStart, domain.ExecutionTerminated:
-			// fall through to the recovery block below.
-		default:
-			return false, false, nil
+			// Two cases:
+			//   (a) dispatchStep just set this step running (first dispatch
+			//       or a recovering-step re-dispatch); the inline
+			//       DispatchTask links the replacement execution moments
+			//       after the reconcile transaction commits. Wait a short
+			//       grace for the link instead of guessing.
+			//   (b) the dispatch was lost (inline dispatch failed, adapter
+			//       down) and no execution ever materialized. After the
+			//       grace, fall through to the recovery block so the step
+			//       is retried rather than wedged forever as "running".
+			if sr.StartedAt != nil && time.Since(*sr.StartedAt) < dispatchLinkGrace {
+				return false, false, nil
+			}
+		} else {
+			exec, err := db.GetExecution(ctx, tx, tenantID, sr.WorkerExecutionID)
+			if err != nil {
+				// Lookup failed — don't guess; wait for the next pass.
+				return false, false, nil
+			}
+			switch exec.Status {
+			case domain.ExecutionSucceeded:
+				return true, false, nil
+			case domain.ExecutionFailed, domain.ExecutionFailedToStart, domain.ExecutionTerminated:
+				// fall through to the recovery block below.
+			default:
+				return false, false, nil
+			}
 		}
 	}
 
@@ -2216,11 +2289,21 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 			return false, false, nil
 
 		case "summarize_restart":
-			if r.recovery != nil {
-				failedExecID := r.getFailedExecID(ctx, tx, tenantID, parsed.WorkItemID)
-				if err := r.recovery.TriggerOnFailure(ctx, tenantID, parsed.WorkItemID, failedExecID, "step_recovery"); err != nil {
-					r.log.Warn("step recovery: trigger on failure", "work_item", parsed.WorkItemID, "error", err)
-				}
+			if r.recovery != nil && recoveryTriggers != nil {
+				// Defer the trigger to post-commit (see reconcileRun):
+				// TriggerOnFailure opens its own transaction, and this pass
+				// may hold locks on the work item (dispatchStep re-dispatches
+				// a recovering step in the same pass) — invoking it here
+				// would deadlock against our own transaction. The failed
+				// execution is sr.WorkerExecutionID (the one that just
+				// failed THIS step — not GetLatestExecutionForTask, which on
+				// a shared work item could resolve to another step's run).
+				*recoveryTriggers = append(*recoveryTriggers, recoveryTriggerReq{
+					tenantID:     tenantID,
+					workItemID:   parsed.WorkItemID,
+					failedExecID: sr.WorkerExecutionID,
+					reason:       "step_recovery",
+				})
 			}
 			stepResult, _ := json.Marshal(map[string]string{"_work_item_id": parsed.WorkItemID})
 			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
@@ -2257,17 +2340,6 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 			return true, true, nil
 		}
 	}
-}
-
-// getFailedExecID returns the latest execution ID for the given work
-// item. Best-effort — returns "" on any error so recovery can still
-// proceed without a specific execution reference.
-func (r *WorkflowReconciler) getFailedExecID(ctx context.Context, tx pgx.Tx, tenantID, workItemID string) string {
-	exec, err := db.GetLatestExecutionForTask(ctx, tx, tenantID, workItemID)
-	if err != nil {
-		return ""
-	}
-	return exec.ID
 }
 
 // --- event helpers ---------------------------------------------------------
