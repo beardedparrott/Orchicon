@@ -7,6 +7,7 @@ import { z } from "zod";
 import { useCreateWorkItem } from "@/api/workItems";
 import { useListWorkItems } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
+import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -100,6 +101,7 @@ function NewWorkItemPage() {
 
   const selectedKind = watch("kind");
   const selectedParentId = watch("parentId");
+  const [runtimeImage, setRuntimeImage] = useState("");
 
   // Validate parent/kind consistency — allow skipping levels (e.g.
   // Task under Epic), but reject same-level or deeper parents.
@@ -119,6 +121,7 @@ function NewWorkItemPage() {
       description: values.description || undefined,
       acceptanceCriteria: values.acceptanceCriteria || undefined,
       priority: values.priority,
+      runtimeImage: runtimeImage || undefined,
     });
     navigate({
       to: "/work-items/$id",
@@ -239,6 +242,15 @@ function NewWorkItemPage() {
                 )}
               </div>
             )}
+
+            <div className="space-y-2">
+              <Label htmlFor="runtimeImage">Runtime image</Label>
+              <RuntimeImageSelect value={runtimeImage} onChange={setRuntimeImage} />
+              <p className="text-xs text-muted-foreground">
+                The container image workers run in for this item&apos;s
+                workflow. Defaults to the base image.
+              </p>
+            </div>
 
             <div className="space-y-2">
               <Label htmlFor="description">Description (optional)</Label>

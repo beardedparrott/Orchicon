@@ -15,6 +15,7 @@ import { Route as WorkItemsRouteImport } from './routes/work-items'
 import { Route as WebhooksRouteImport } from './routes/webhooks'
 import { Route as TelemetryRouteImport } from './routes/telemetry'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as RuntimeImagesRouteImport } from './routes/runtime-images'
 import { Route as RecoveryRouteImport } from './routes/recovery'
 import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as PoliciesRouteImport } from './routes/policies'
@@ -32,6 +33,8 @@ import { Route as WorkersIdRouteImport } from './routes/workers_.$id'
 import { Route as WorkItemsNewRouteImport } from './routes/work-items_.new'
 import { Route as WorkItemsGraphRouteImport } from './routes/work-items_.graph'
 import { Route as WorkItemsIdRouteImport } from './routes/work-items_.$id'
+import { Route as RuntimeImagesNewRouteImport } from './routes/runtime-images_.new'
+import { Route as RuntimeImagesIdRouteImport } from './routes/runtime-images_.$id'
 import { Route as RecoveryIdRouteImport } from './routes/recovery_.$id'
 import { Route as ProjectsNewRouteImport } from './routes/projects_.new'
 import { Route as ProjectsIdRouteImport } from './routes/projects_.$id'
@@ -69,6 +72,11 @@ const TelemetryRoute = TelemetryRouteImport.update({
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RuntimeImagesRoute = RuntimeImagesRouteImport.update({
+  id: '/runtime-images',
+  path: '/runtime-images',
   getParentRoute: () => rootRouteImport,
 } as any)
 const RecoveryRoute = RecoveryRouteImport.update({
@@ -156,6 +164,16 @@ const WorkItemsIdRoute = WorkItemsIdRouteImport.update({
   path: '/work-items/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RuntimeImagesNewRoute = RuntimeImagesNewRouteImport.update({
+  id: '/runtime-images_/new',
+  path: '/runtime-images/new',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RuntimeImagesIdRoute = RuntimeImagesIdRouteImport.update({
+  id: '/runtime-images_/$id',
+  path: '/runtime-images/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const RecoveryIdRoute = RecoveryIdRouteImport.update({
   id: '/recovery_/$id',
   path: '/recovery/$id',
@@ -208,6 +226,7 @@ export interface FileRoutesByFullPath {
   '/policies': typeof PoliciesRoute
   '/projects': typeof ProjectsRoute
   '/recovery': typeof RecoveryRoute
+  '/runtime-images': typeof RuntimeImagesRoute
   '/settings': typeof SettingsRoute
   '/telemetry': typeof TelemetryRoute
   '/webhooks': typeof WebhooksRoute
@@ -221,6 +240,8 @@ export interface FileRoutesByFullPath {
   '/projects/$id': typeof ProjectsIdRoute
   '/projects/new': typeof ProjectsNewRoute
   '/recovery/$id': typeof RecoveryIdRoute
+  '/runtime-images/$id': typeof RuntimeImagesIdRoute
+  '/runtime-images/new': typeof RuntimeImagesNewRoute
   '/work-items/$id': typeof WorkItemsIdRoute
   '/work-items/graph': typeof WorkItemsGraphRoute
   '/work-items/new': typeof WorkItemsNewRoute
@@ -241,6 +262,7 @@ export interface FileRoutesByTo {
   '/policies': typeof PoliciesRoute
   '/projects': typeof ProjectsRoute
   '/recovery': typeof RecoveryRoute
+  '/runtime-images': typeof RuntimeImagesRoute
   '/settings': typeof SettingsRoute
   '/telemetry': typeof TelemetryRoute
   '/webhooks': typeof WebhooksRoute
@@ -254,6 +276,8 @@ export interface FileRoutesByTo {
   '/projects/$id': typeof ProjectsIdRoute
   '/projects/new': typeof ProjectsNewRoute
   '/recovery/$id': typeof RecoveryIdRoute
+  '/runtime-images/$id': typeof RuntimeImagesIdRoute
+  '/runtime-images/new': typeof RuntimeImagesNewRoute
   '/work-items/$id': typeof WorkItemsIdRoute
   '/work-items/graph': typeof WorkItemsGraphRoute
   '/work-items/new': typeof WorkItemsNewRoute
@@ -275,6 +299,7 @@ export interface FileRoutesById {
   '/policies': typeof PoliciesRoute
   '/projects': typeof ProjectsRoute
   '/recovery': typeof RecoveryRoute
+  '/runtime-images': typeof RuntimeImagesRoute
   '/settings': typeof SettingsRoute
   '/telemetry': typeof TelemetryRoute
   '/webhooks': typeof WebhooksRoute
@@ -288,6 +313,8 @@ export interface FileRoutesById {
   '/projects_/$id': typeof ProjectsIdRoute
   '/projects_/new': typeof ProjectsNewRoute
   '/recovery_/$id': typeof RecoveryIdRoute
+  '/runtime-images_/$id': typeof RuntimeImagesIdRoute
+  '/runtime-images_/new': typeof RuntimeImagesNewRoute
   '/work-items_/$id': typeof WorkItemsIdRoute
   '/work-items_/graph': typeof WorkItemsGraphRoute
   '/work-items_/new': typeof WorkItemsNewRoute
@@ -310,6 +337,7 @@ export interface FileRouteTypes {
     | '/policies'
     | '/projects'
     | '/recovery'
+    | '/runtime-images'
     | '/settings'
     | '/telemetry'
     | '/webhooks'
@@ -323,6 +351,8 @@ export interface FileRouteTypes {
     | '/projects/$id'
     | '/projects/new'
     | '/recovery/$id'
+    | '/runtime-images/$id'
+    | '/runtime-images/new'
     | '/work-items/$id'
     | '/work-items/graph'
     | '/work-items/new'
@@ -343,6 +373,7 @@ export interface FileRouteTypes {
     | '/policies'
     | '/projects'
     | '/recovery'
+    | '/runtime-images'
     | '/settings'
     | '/telemetry'
     | '/webhooks'
@@ -356,6 +387,8 @@ export interface FileRouteTypes {
     | '/projects/$id'
     | '/projects/new'
     | '/recovery/$id'
+    | '/runtime-images/$id'
+    | '/runtime-images/new'
     | '/work-items/$id'
     | '/work-items/graph'
     | '/work-items/new'
@@ -376,6 +409,7 @@ export interface FileRouteTypes {
     | '/policies'
     | '/projects'
     | '/recovery'
+    | '/runtime-images'
     | '/settings'
     | '/telemetry'
     | '/webhooks'
@@ -389,6 +423,8 @@ export interface FileRouteTypes {
     | '/projects_/$id'
     | '/projects_/new'
     | '/recovery_/$id'
+    | '/runtime-images_/$id'
+    | '/runtime-images_/new'
     | '/work-items_/$id'
     | '/work-items_/graph'
     | '/work-items_/new'
@@ -410,6 +446,7 @@ export interface RootRouteChildren {
   PoliciesRoute: typeof PoliciesRoute
   ProjectsRoute: typeof ProjectsRoute
   RecoveryRoute: typeof RecoveryRoute
+  RuntimeImagesRoute: typeof RuntimeImagesRoute
   SettingsRoute: typeof SettingsRoute
   TelemetryRoute: typeof TelemetryRoute
   WebhooksRoute: typeof WebhooksRoute
@@ -423,6 +460,8 @@ export interface RootRouteChildren {
   ProjectsIdRoute: typeof ProjectsIdRoute
   ProjectsNewRoute: typeof ProjectsNewRoute
   RecoveryIdRoute: typeof RecoveryIdRoute
+  RuntimeImagesIdRoute: typeof RuntimeImagesIdRoute
+  RuntimeImagesNewRoute: typeof RuntimeImagesNewRoute
   WorkItemsIdRoute: typeof WorkItemsIdRoute
   WorkItemsGraphRoute: typeof WorkItemsGraphRoute
   WorkItemsNewRoute: typeof WorkItemsNewRoute
@@ -475,6 +514,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/runtime-images': {
+      id: '/runtime-images'
+      path: '/runtime-images'
+      fullPath: '/runtime-images'
+      preLoaderRoute: typeof RuntimeImagesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/recovery': {
@@ -596,6 +642,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkItemsIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/runtime-images_/new': {
+      id: '/runtime-images_/new'
+      path: '/runtime-images/new'
+      fullPath: '/runtime-images/new'
+      preLoaderRoute: typeof RuntimeImagesNewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/runtime-images_/$id': {
+      id: '/runtime-images_/$id'
+      path: '/runtime-images/$id'
+      fullPath: '/runtime-images/$id'
+      preLoaderRoute: typeof RuntimeImagesIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/recovery_/$id': {
       id: '/recovery_/$id'
       path: '/recovery/$id'
@@ -666,6 +726,7 @@ const rootRouteChildren: RootRouteChildren = {
   PoliciesRoute: PoliciesRoute,
   ProjectsRoute: ProjectsRoute,
   RecoveryRoute: RecoveryRoute,
+  RuntimeImagesRoute: RuntimeImagesRoute,
   SettingsRoute: SettingsRoute,
   TelemetryRoute: TelemetryRoute,
   WebhooksRoute: WebhooksRoute,
@@ -679,6 +740,8 @@ const rootRouteChildren: RootRouteChildren = {
   ProjectsIdRoute: ProjectsIdRoute,
   ProjectsNewRoute: ProjectsNewRoute,
   RecoveryIdRoute: RecoveryIdRoute,
+  RuntimeImagesIdRoute: RuntimeImagesIdRoute,
+  RuntimeImagesNewRoute: RuntimeImagesNewRoute,
   WorkItemsIdRoute: WorkItemsIdRoute,
   WorkItemsGraphRoute: WorkItemsGraphRoute,
   WorkItemsNewRoute: WorkItemsNewRoute,
