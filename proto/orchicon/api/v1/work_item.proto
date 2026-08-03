@@ -72,6 +72,7 @@ message WorkItem {
   int32 version = 16; // optimistic concurrency (docs/09 §5)
   google.protobuf.Timestamp created_at = 17;
   google.protobuf.Timestamp updated_at = 18;
+  string runtime_image = 24; // runtime container image tag; empty = base image
 }
 
 // WorkItemStatus — schedulable kinds follow:

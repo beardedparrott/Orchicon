@@ -717,6 +717,13 @@ export class WorkflowRun extends Message<WorkflowRun> {
    */
   workItemId = "";
 
+  /**
+   * resolved runtime container image tag at run start
+   *
+   * @generated from field: string runtime_image = 15;
+   */
+  runtimeImage = "";
+
   constructor(data?: PartialMessage<WorkflowRun>) {
     super();
     proto3.util.initPartial(data, this);
@@ -739,6 +746,7 @@ export class WorkflowRun extends Message<WorkflowRun> {
     { no: 12, name: "created_at", kind: "message", T: Timestamp },
     { no: 13, name: "updated_at", kind: "message", T: Timestamp },
     { no: 14, name: "work_item_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 15, name: "runtime_image", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowRun {

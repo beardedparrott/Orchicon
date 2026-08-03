@@ -538,6 +538,11 @@ table "work_items" {
     null = false
     default = "{}"
   }
+  column "runtime_image" {
+    type = text
+    null = false
+    default = ""
+  }
   column "version" {
     type = integer
     null = false
@@ -1070,6 +1075,11 @@ table "workflow_runs" {
     null = false
     default = "{}"
   }
+  column "runtime_image" {
+    type = text
+    null = false
+    default = ""
+  }
   column "version" {
     type = integer
     null = false
@@ -1463,4 +1473,29 @@ table "webhook_deliveries" {
   index "webhook_deliveries_tenant_idx" { columns = [column.tenant_id] }
   index "webhook_deliveries_status_idx" { columns = [column.status] }
   index "webhook_deliveries_retry_idx" { columns = [column.status, column.next_attempt_at] }
+}
+
+table "runtime_images" {
+  schema = schema.public
+  comment = "Tenant runtime container image specs built by the runtime daemon (AGENTS.md §Runtime Images). RLS-enabled."
+  column "id" { type = text; null = false }
+  column "tenant_id" { type = text; null = false }
+  column "name" { type = text; null = false }
+  column "slug" { type = text; null = false }
+  column "description" { type = text; null = false; default = "" }
+  column "base_image_ref" { type = text; null = false; default = "" }
+  column "apt_packages" { type = jsonb; null = false; default = "[]" }
+  column "toolchains" { type = jsonb; null = false; default = "[]" }
+  column "env" { type = jsonb; null = false; default = "{}" }
+  column "dockerfile_override" { type = text; null = false; default = "" }
+  column "tag" { type = text; null = false; default = "" }
+  column "status" { type = text; null = false; default = "draft" }
+  column "build_log" { type = text; null = false; default = "" }
+  column "error" { type = text; null = false; default = "" }
+  column "version" { type = integer; null = false; default = 1 }
+  column "created_at" { type = timestamptz; null = false; default = sql("now()") }
+  column "updated_at" { type = timestamptz; null = false; default = sql("now()") }
+  primary_key { columns = [column.id] }
+  index "runtime_images_tenant_idx" { columns = [column.tenant_id] }
+  index "runtime_images_tenant_status_idx" { columns = [column.tenant_id, column.status] }
 }

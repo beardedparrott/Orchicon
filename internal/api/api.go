@@ -28,6 +28,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/policy"
 	"github.com/beardedparrott/orchicon/internal/project"
 	"github.com/beardedparrott/orchicon/internal/recovery"
+	"github.com/beardedparrott/orchicon/internal/runtime"
+	"github.com/beardedparrott/orchicon/internal/runtimeimage"
 	"github.com/beardedparrott/orchicon/internal/settings"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
@@ -62,6 +64,10 @@ type Dependencies struct {
 	BlobStore blobstore.Store
 	// PostgresDSN is the Postgres connection string for backup/restore.
 	PostgresDSN string
+	// RuntimeClient talks to the host-side runtime daemon over its unix
+	// socket (build/remove runtime images). Nil when the daemon is not
+	// configured (headless serve).
+	RuntimeClient *runtime.Client
 }
 
 // Mount returns an http.Handler serving the Orchicon API. Generated
@@ -150,6 +156,10 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// SettingsService — tenant-level configuration defaults.
 	settingsSvc := settings.New(deps.Pool, deps.Log, deps.PostgresDSN)
 	mux.Handle(apiv1connect.NewSettingsServiceHandler(settingsSvc, interceptorOpt))
+
+	// RuntimeImageService — tenant runtime container image specs + build.
+	runtimeImageSvc := runtimeimage.New(deps.Pool, deps.Log, deps.RuntimeClient)
+	mux.Handle(apiv1connect.NewRuntimeImageServiceHandler(runtimeImageSvc, interceptorOpt))
 
 	// AskOrchiconService — conversational agent.
 	askSvc := askorchicon.New(deps.Pool, deps.Log, deps.BlobStore, deps.ModelDiscoverer)

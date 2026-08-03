@@ -62,6 +62,7 @@ type WorkflowRunRow struct {
 	RunContext      []byte // jsonb
 	WorkItemID      string // bound work item id; empty for one-shot runs
 	BoundWorkerRef  []byte // jsonb; reserved for future use
+	RuntimeImage    string // resolved runtime container image tag at run start
 	Version         int
 	StartedAt       *time.Time
 	EndedAt         *time.Time
@@ -485,10 +486,10 @@ func boundWorkerRefVal(b []byte) []byte {
 func CreateWorkflowRun(ctx context.Context, tx pgx.Tx, r WorkflowRunRow) (WorkflowRunRow, error) {
 	const q = `INSERT INTO workflow_runs
 		(id, tenant_id, workflow_id, workflow_version, project_id, status,
-		 current_step, run_context, work_item_id, bound_worker_ref, started_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		 current_step, run_context, work_item_id, bound_worker_ref, runtime_image, started_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id, tenant_id, workflow_id, workflow_version, project_id, status,
-			current_step, run_context, work_item_id, bound_worker_ref,
+			current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
 			version, started_at, ended_at, created_at, updated_at`
 	row := r
 	var wiID *string
@@ -496,11 +497,11 @@ func CreateWorkflowRun(ctx context.Context, tx pgx.Tx, r WorkflowRunRow) (Workfl
 		r.ID, r.TenantID, r.WorkflowID, r.WorkflowVersion, r.ProjectID,
 		r.Status, r.CurrentStep, r.RunContext,
 		workItemVal(r.WorkItemID), boundWorkerRefVal(r.BoundWorkerRef),
-		r.StartedAt,
+		r.RuntimeImage, r.StartedAt,
 	).Scan(
 		&row.ID, &row.TenantID, &row.WorkflowID, &row.WorkflowVersion,
 		&row.ProjectID, &row.Status, &row.CurrentStep, &row.RunContext,
-		&wiID, &row.BoundWorkerRef,
+		&wiID, &row.BoundWorkerRef, &row.RuntimeImage,
 		&row.Version, &row.StartedAt, &row.EndedAt,
 		&row.CreatedAt, &row.UpdatedAt,
 	)
@@ -516,7 +517,7 @@ func CreateWorkflowRun(ctx context.Context, tx pgx.Tx, r WorkflowRunRow) (Workfl
 // GetWorkflowRun fetches a single workflow run by id within the tenant.
 func GetWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkflowRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
-		current_step, run_context, work_item_id, bound_worker_ref,
+		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
 		version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs WHERE id = $1 AND tenant_id = $2`
 	var r WorkflowRunRow
@@ -524,7 +525,7 @@ func GetWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (Workfl
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 		&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
-		&wiID, &r.BoundWorkerRef,
+		&wiID, &r.BoundWorkerRef, &r.RuntimeImage,
 		&r.Version, &r.StartedAt, &r.EndedAt,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -556,7 +557,7 @@ func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) 
 		f.PageSize = 100
 	}
 	q := `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
-		current_step, run_context, work_item_id, bound_worker_ref,
+		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
 		version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND ($2 = '' OR id > $2)`
@@ -583,7 +584,7 @@ func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) 
 		if err := rows.Scan(
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
-			&wiID, &r.BoundWorkerRef,
+			&wiID, &r.BoundWorkerRef, &r.RuntimeImage,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
@@ -611,6 +612,9 @@ type UpdateWorkflowRunFields struct {
 	// WorkItemID links a bound run to its work item (docs/11 §2.1).
 	WorkItemID     *string
 	BoundWorkerRef *[]byte
+	// RuntimeImage is the resolved runtime container image tag captured
+	// at run start.
+	RuntimeImage *string
 }
 
 // UpdateWorkflowRun applies a partial update with optimistic concurrency.
@@ -658,16 +662,21 @@ func UpdateWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string, expe
 		args = append(args, boundWorkerRefVal(*f.BoundWorkerRef))
 		setIdx++
 	}
+	if f.RuntimeImage != nil {
+		q += fmt.Sprintf(`, runtime_image = $%d`, setIdx)
+		args = append(args, *f.RuntimeImage)
+		setIdx++
+	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, workflow_id, workflow_version, project_id, status,
-		current_step, run_context, work_item_id, bound_worker_ref,
+		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
 		version, started_at, ended_at, created_at, updated_at`
 	var r WorkflowRunRow
 	var wiID *string
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 		&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
-		&wiID, &r.BoundWorkerRef,
+		&wiID, &r.BoundWorkerRef, &r.RuntimeImage,
 		&r.Version, &r.StartedAt, &r.EndedAt,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -914,7 +923,7 @@ func UpdateWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string, 
 // by the WorkflowReconciler to find runs to progress (docs/03 §2).
 func ListPendingWorkflowRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkflowRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
-		current_step, run_context, work_item_id, bound_worker_ref,
+		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
 		version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND status IN ('pending', 'running', 'paused')
@@ -931,7 +940,7 @@ func ListPendingWorkflowRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([
 		if err := rows.Scan(
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
-			&wiID, &r.BoundWorkerRef,
+			&wiID, &r.BoundWorkerRef, &r.RuntimeImage,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {

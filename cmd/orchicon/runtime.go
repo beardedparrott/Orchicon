@@ -41,9 +41,10 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 		SocketPath:   socketPath,
 		DockerBin:    "docker",
 		Image:        env("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:latest"),
+		Images:       splitCSV(env("ORCHICON_RUNTIME_IMAGES", "")),
 		UserID:       hostUID,
-		GroupID:       hostGID,
-		HostHome:      hostHome,
+		GroupID:      hostGID,
+		HostHome:     hostHome,
 		AllowedRoots:  allowedRoots,
 		CPUs:          env("ORCHICON_RUNTIME_CPUS", "4"),
 		Memory:        env("ORCHICON_RUNTIME_MEMORY", "4g"),
@@ -93,4 +94,16 @@ func envDur(key string, fallback time.Duration) time.Duration {
 		}
 	}
 	return fallback
+}
+
+// splitCSV splits a comma-separated env var into a trimmed slice,
+// dropping empties.
+func splitCSV(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

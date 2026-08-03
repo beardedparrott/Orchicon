@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -184,6 +185,82 @@ func (c *Client) ExecAlive(ctx context.Context, workflowID, execID string) (bool
 func (c *Client) Ready(ctx context.Context) bool {
 	var out map[string]string
 	return c.getJSON(ctx, "/v1/health", &out) == nil
+}
+
+// Images returns the daemon's base image + allowlisted stock images.
+func (c *Client) Images(ctx context.Context) (*ImageList, error) {
+	var out ImageList
+	if err := c.getJSON(ctx, "/v1/images", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// BuildImage streams a `docker build` for a custom runtime image. Log
+// chunks arrive via fn; the final event carries the exit code. Returns
+// the build's exit code (0 = success).
+func (c *Client) BuildImage(ctx context.Context, req BuildRequest, fn func(AgentEvent) error) (int, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return 1, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://runtime"+"/v1/images", bytes.NewReader(body))
+	if err != nil {
+		return 1, err
+	}
+	resp, err := c.hc.Do(httpReq)
+	if err != nil {
+		return 1, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		var e map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&e)
+		return 1, fmt.Errorf("runtime image build: %s", e["error"])
+	}
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	exit := 1
+	for sc.Scan() {
+		var ev AgentEvent
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+			continue
+		}
+		if fn != nil {
+			if err := fn(ev); err != nil {
+				return 1, err
+			}
+		}
+		if ev.Event == "exit" {
+			exit = ev.ExitCode
+			if ev.Error != "" {
+				return exit, fmt.Errorf("runtime image build: %s", ev.Error)
+			}
+			break
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return 1, err
+	}
+	return exit, nil
+}
+
+// RemoveImage removes a locally-built runtime image (docker rmi, best-effort).
+func (c *Client) RemoveImage(ctx context.Context, ref string) error {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+		"http://runtime"+"/v1/images?ref="+url.QueryEscape(ref), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.hc.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return readError(resp.Body)
+	}
+	return nil
 }
 
 func (c *Client) postJSON(ctx context.Context, path string, in, out any) error {

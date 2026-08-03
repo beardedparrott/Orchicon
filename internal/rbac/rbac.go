@@ -80,6 +80,8 @@ func serviceToResource(service string) string {
 		return "auth"
 	case "WebhookService":
 		return "webhook"
+	case "RuntimeImageService":
+		return "runtimeimage"
 	}
 	return ""
 }
