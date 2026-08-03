@@ -103,8 +103,13 @@ var _ ExecutionCallbacks = (*TaskReconciler)(nil)
 // recovery when an execution fails (docs/06 §2). Satisfied by the
 // recovery.Engine; declared here to avoid a scheduler→recovery import
 // (loose coupling).
+//
+// stepRunID is the workflow step run the failed execution belongs to
+// ("" for standalone, non-workflow failures). Recovery is scoped per
+// failing step run so every step that fails gets its own recovery cycle,
+// and the work item (the ticket) stays untouched during a run.
 type RecoveryTrigger interface {
-	TriggerOnFailure(ctx context.Context, tenantID, taskID, failedExecID, triggerReason string) error
+	TriggerOnFailure(ctx context.Context, tenantID, taskID, failedExecID, stepRunID, triggerReason string) error
 }
 
 // PolicyEvaluator is the interface the WorkflowReconciler uses to
@@ -124,6 +129,11 @@ type PolicyEvaluator interface {
 // WorkerExecutions). The WorkflowReconciler calls DispatchTask after
 // its own transaction commits so the work item is visible to the
 // TaskReconciler's dispatch transaction.
+//
+// stepRunID is the workflow step run this dispatch is for ("" for
+// standalone dispatch). Dispatch is scoped to the step run — the work
+// item is a shared input reference, so multiple steps bound to the same
+// item each get their own execution without mutating the item.
 type TaskDispatcher interface {
-	DispatchTask(ctx context.Context, taskID string) error
+	DispatchTask(ctx context.Context, taskID, stepRunID string) error
 }

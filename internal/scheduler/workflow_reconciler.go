@@ -220,9 +220,11 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		r.log.Debug("DEBUG: runByID entry", "key", k, "id", v.ID, "status", v.Status, "version", v.Version)
 	}
 
-	// Collect work items dispatched in this pass for inline TaskReconciler
-	// dispatch after the transaction commits.
-	var dispatchedWIDs []string
+	// Collect steps dispatched in this pass for inline TaskReconciler
+	// dispatch after the transaction commits. Each dispatch is scoped to a
+	// (task, step run) pair — the work item is a shared input reference, so
+	// parallel steps bound to it each get their own execution.
+	var dispatchedSteps []dispatchReq
 
 	// Recovery triggers collected during this pass are invoked AFTER the
 	// transaction commits. TriggerOnFailure opens its OWN transaction on a
@@ -400,15 +402,18 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 					continue
 				}
 			}
-			// For recovering steps, skip if the work item is still in
-			// recovery (recovery engine hasn't completed yet).
+			// For recovering steps, skip while their recovery is still in
+			// flight. Recovery is scoped per failing step run (the work
+			// item is a shared input reference and never flips to
+			// "recovering"), so the gate consults the recovery rows: an
+			// active recovery for the failed execution this step run is
+			// waiting on → wait; none → re-dispatch.
 			if sr.Status == domain.StepRunRecovering && sr.StepKind == domain.StepKindTask {
 				var parsed struct {
 					WorkItemID string `json:"_work_item_id"`
 				}
-				if err := json.Unmarshal(sr.Result, &parsed); err == nil && parsed.WorkItemID != "" {
-					wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, parsed.WorkItemID)
-					if err == nil && wi.Status == domain.WorkItemRecovering {
+				if err := json.Unmarshal(sr.Result, &parsed); err == nil && parsed.WorkItemID != "" && sr.WorkerExecutionID != "" {
+					if _, err := db.GetActiveRecoveryForExecution(ctx, ttx.Tx, tenantID, parsed.WorkItemID, sr.WorkerExecutionID); err == nil {
 						// Recovery still in progress — wait for next pass.
 						continue
 					}
@@ -435,12 +440,12 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				}
 				continue
 			}
-			var stepWIDs []string
-			if err := r.dispatchStep(ctx, ttx.Tx, tenantID, run, step, sr, runByID, steps, &stepWIDs, &recoveryTriggers); err != nil {
+			var stepDispatches []dispatchReq
+			if err := r.dispatchStep(ctx, ttx.Tx, tenantID, run, step, sr, runByID, steps, &stepDispatches, &recoveryTriggers); err != nil {
 				return err
 			}
 			madeProgress = true
-			dispatchedWIDs = append(dispatchedWIDs, stepWIDs...)
+			dispatchedSteps = append(dispatchedSteps, stepDispatches...)
 		}
 
 		// Poll running task steps + worker-backed approval steps: check
@@ -558,6 +563,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		case domain.StepRunSucceeded, domain.StepRunSkipped:
 		case domain.StepRunFailed, domain.StepRunBlocked:
 			anyFailed = true
+			allSucceeded = false
 		case domain.StepRunApprovalPending:
 			allSucceeded = false
 		case domain.StepRunRecovering:
@@ -598,9 +604,13 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		if run.WorkItemID != "" {
 			if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID); err == nil {
 				status := domain.WorkItemSucceeded
-				if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, db.UpdateWorkItemFields{
-					Status: &status,
-				}); err != nil {
+				fields := db.UpdateWorkItemFields{Status: &status}
+				if narrative, err := r.buildRunNarrative(ctx, ttx.Tx, tenantID, run, stepRuns, domain.WorkflowRunCompleted); err != nil {
+					r.log.Warn("build run narrative", "run", runID, "error", err)
+				} else if narrative != nil {
+					fields.Results = narrative
+				}
+				if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, fields); err != nil {
 					return fmt.Errorf("mark bound work item succeeded: %w", err)
 				}
 			}
@@ -620,13 +630,18 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		}
 	} else if anyFailed {
 		now := time.Now().UTC()
-		// Update the linked work item to failed.
+		// Update the linked work item to failed, carrying the run-level
+		// narrative.
 		if run.WorkItemID != "" {
 			if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID); err == nil {
 				status := domain.WorkItemFailed
-				_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, db.UpdateWorkItemFields{
-					Status: &status,
-				})
+				fields := db.UpdateWorkItemFields{Status: &status}
+				if narrative, err := r.buildRunNarrative(ctx, ttx.Tx, tenantID, run, stepRuns, domain.WorkflowRunFailed); err != nil {
+					r.log.Warn("build run narrative", "run", runID, "error", err)
+				} else if narrative != nil {
+					fields.Results = narrative
+				}
+				_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, fields)
 			}
 		}
 		// Terminate any running worker executions linked to this run.
@@ -674,22 +689,24 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// return). Post-commit the locks are gone.
 	if r.recovery != nil {
 		for _, tr := range recoveryTriggers {
-			if err := r.recovery.TriggerOnFailure(context.Background(), tr.tenantID, tr.workItemID, tr.failedExecID, tr.reason); err != nil {
+			if err := r.recovery.TriggerOnFailure(context.Background(), tr.tenantID, tr.workItemID, tr.failedExecID, tr.stepRunID, tr.reason); err != nil {
 				r.log.Warn("post-commit recovery trigger failed",
 					"run", runID, "work_item", tr.workItemID, "error", err)
 			}
 		}
 	}
-	// Inline dispatch: hand dispatched work items to the TaskReconciler
+	// Inline dispatch: hand dispatched steps to the TaskReconciler
 	// immediately so executions appear in the UI without waiting for the
 	// next TaskReconciler heartbeat (~1s). The dispatch happens after the
-	// workflow transaction commits so the work item (status=ready) is
-	// visible to the TaskReconciler's own transaction (docs/03 §8 invariant
-	// #1: only the TaskReconciler creates WorkerExecutions).
+	// workflow transaction commits so the step run + prompt are visible
+	// to the TaskReconciler's own transaction (docs/03 §8 invariant #1:
+	// only the TaskReconciler creates WorkerExecutions). Dispatch is scoped
+	// per step run — the work item is a shared input reference, so parallel
+	// steps bound to it each get their own execution.
 	if r.taskDispatcher != nil {
-		for _, wid := range dispatchedWIDs {
-			if err := r.taskDispatcher.DispatchTask(context.Background(), wid); err != nil {
-				r.log.Warn("inline dispatch failed", "work_item", wid, "error", err)
+		for _, d := range dispatchedSteps {
+			if err := r.taskDispatcher.DispatchTask(context.Background(), d.taskID, d.stepRunID); err != nil {
+				r.log.Warn("inline dispatch failed", "work_item", d.taskID, "step_run", d.stepRunID, "error", err)
 			}
 		}
 	}
@@ -697,6 +714,61 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		r.log.Info("workflow run progressed", "run", runID, "status", run.Status)
 	}
 	return nil
+}
+
+// buildRunNarrative aggregates the run's step results + recovery episodes
+// into the bound work item's results — the run-level narrative. The
+// ticket is the Jira-style record of the whole run: step outputs live on
+// the step runs, and this is the ticket's read-only summary of them. It
+// returns the merged results JSON (or nil if the run has no bound item),
+// leaving status/Results writes to the caller.
+func (r *WorkflowReconciler) buildRunNarrative(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, stepRuns []db.WorkflowStepRunRow, finalStatus string) (*[]byte, error) {
+	if run.WorkItemID == "" {
+		return nil, nil
+	}
+	wi, err := db.GetWorkItem(ctx, tx, tenantID, run.WorkItemID)
+	if err != nil {
+		return nil, fmt.Errorf("get bound work item for narrative: %w", err)
+	}
+	var steps []map[string]any
+	for _, sr := range stepRuns {
+		var meta map[string]any
+		_ = json.Unmarshal(sr.Result, &meta)
+		entry := map[string]any{
+			"step_id":   sr.StepID,
+			"step_name": sr.StepName,
+			"status":    sr.Status,
+		}
+		for _, k := range []string{"_summary", "_decision", "_issues", "_worker", "_recovery_summary"} {
+			if v, ok := meta[k]; ok {
+				entry[strings.TrimPrefix(k, "_")] = v
+			}
+		}
+		steps = append(steps, entry)
+	}
+	var recoveries []map[string]any
+	if recs, err := db.ListRecoveries(ctx, tx, db.ListRecoveriesFilter{TenantID: tenantID, TaskID: run.WorkItemID}); err == nil {
+		for _, rec := range recs {
+			recoveries = append(recoveries, map[string]any{
+				"recovery_id": rec.ID,
+				"summary":     rec.Summary,
+				"reason":      rec.TriggerReason,
+				"status":      rec.Status,
+			})
+		}
+	}
+	merged := map[string]any{}
+	if len(wi.Results) > 0 {
+		_ = json.Unmarshal(wi.Results, &merged)
+	}
+	merged["_run_narrative"] = map[string]any{
+		"run_id":     run.ID,
+		"status":     finalStatus,
+		"steps":      steps,
+		"recoveries": recoveries,
+	}
+	mergedJSON, _ := json.Marshal(merged)
+	return &mergedJSON, nil
 }
 
 // depsSatisfied returns true if all depends_on steps of `step` are in a
@@ -771,7 +843,7 @@ func (r *WorkflowReconciler) evaluateGate(ctx context.Context, step workflow.Ste
 //     assigned_worker_ref — docs/03 §8 invariant #1).
 //   - The step run tracks the primary work item id under
 //     _work_item_id in result JSON so pollTaskStep can poll.
-func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, step workflow.StepWire, sr db.WorkflowStepRunRow, runs map[string]db.WorkflowStepRunRow, allSteps []workflow.StepWire, dispatchedWIDs *[]string, recoveryTriggers *[]recoveryTriggerReq) error {
+func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, step workflow.StepWire, sr db.WorkflowStepRunRow, runs map[string]db.WorkflowStepRunRow, allSteps []workflow.StepWire, dispatchedSteps *[]dispatchReq, recoveryTriggers *[]recoveryTriggerReq) error {
 	now := time.Now().UTC()
 	switch step.Kind {
 	case domain.StepKindProject:
@@ -818,9 +890,16 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		return r.succeedStep(ctx, tx, tenantID, run, sr, runs, now, "work_item marker")
 
 	case domain.StepKindTask:
-		// For recovering steps, the retry work item was already created
-		// by pollTaskStep and its ID is stored in _work_item_id. Use it
-		// directly instead of looking up upstream canvas markers.
+		// The work item is a shared INPUT reference: the step reads the
+		// ticket (title/description/AC + upstream step-run context) and
+		// produces its OWN execution + output. The ticket is NEVER mutated
+		// here — no assigned_worker_ref / workflow_step_id / prompt_context
+		// / status writes. Two steps bound to the same ticket can therefore
+		// dispatch in parallel; each gets its own execution keyed by this
+		// step run, and the ticket itself just stays "running" for the run.
+		//
+		// For recovering steps, the retry work item id is stored in
+		// _work_item_id (set when the step was first dispatched).
 		var upstream []string
 		if sr.Status == domain.StepRunRecovering {
 			var parsed struct {
@@ -845,38 +924,6 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			return r.failStep(ctx, tx, tenantID, run, sr, runs,
 				fmt.Errorf("worker step %q has no worker ref", step.Name))
 		}
-		workerRef, err := json.Marshal(map[string]any{
-			"worker_id": step.Ref,
-			"version":   step.WorkerVersion,
-		})
-		if err != nil {
-			return fmt.Errorf("marshal worker ref: %w", err)
-		}
-		wfID := run.WorkflowID
-		var primaryWID string
-		for _, wid := range upstream {
-			wi, err := db.GetWorkItem(ctx, tx, tenantID, wid)
-			if err != nil {
-				if err == db.ErrNotFound {
-					return r.failStep(ctx, tx, tenantID, run, sr, runs,
-						fmt.Errorf("work item %s not found", wid))
-				}
-				return fmt.Errorf("load work item: %w", err)
-			}
-		// PR B (context propagation): build the composite prompt
-		// the worker should see. The prompt is the work item
-		// itself + ancestor chain + summaries from upstream
-		// stages in this run. It is stored on the work item
-		// before dispatch; the opencode adapter reads it via
-		// the TaskReconciler → manifest Goal.
-		//
-		// Worker identity (Role / Skills / Behavior / AGENTS.md) is
-		// prepended so the visible prompt the operator inspects in
-		// the execution detail page is the full context the model
-		// actually sees. The runtime delivers this same content as
-		// the system prompt via OPENCODE_CONFIG_CONTENT (see the
-		// opencode adapter) so the worker identity lands on every
-		// conversation turn, not just the first.
 		workerVer, err := db.GetWorkerVersionByID(ctx, tx, tenantID, step.Ref, fmt.Sprintf("v%d", step.WorkerVersion))
 		if err != nil {
 			if err == db.ErrNotFound {
@@ -890,47 +937,60 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 				return fmt.Errorf("load worker version for %s: %w", step.Ref, err)
 			}
 		}
-		// Set the WorkflowStepID before building the prompt so
-		// upstreamContext marks THIS step as the current one, not
-		// the step from a prior dispatch of the same work item.
-		wi.WorkflowStepID = sr.StepID
-		composite, err := r.buildCompositePrompt(ctx, tx, tenantID, wi, workerVer, allSteps, runs)
-		if err != nil {
-			return fmt.Errorf("build composite prompt for %s: %w", wid, err)
-		}
-		pcJSON, _ := json.Marshal(map[string]any{
-			"composite": composite,
-		})
-			assignFields := db.UpdateWorkItemFields{
-				AssignedWorkerRef: &workerRef,
-				WorkflowID:        &wfID,
-				WorkflowRunID:     &run.ID,
-				WorkflowStepID:    &sr.StepID,
-				Status:            strPtr(domain.WorkItemReady),
+		// Build the composite prompt from the (read-only) work item +
+		// upstream step-run context. Mark THIS step as the current one in
+		// the in-memory copy so buildCompositePrompt positions the worker
+		// in the DAG — the DB row is untouched.
+		var primaryWID string
+		var composite string
+		for _, wid := range upstream {
+			wi, err := db.GetWorkItem(ctx, tx, tenantID, wid)
+			if err != nil {
+				if err == db.ErrNotFound {
+					return r.failStep(ctx, tx, tenantID, run, sr, runs,
+						fmt.Errorf("work item %s not found", wid))
+				}
+				return fmt.Errorf("load work item: %w", err)
 			}
-			if pcJSON != nil {
-				assignFields.PromptContext = &pcJSON
-			}
-			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, wi.ID, wi.Version, assignFields); err != nil {
-				return fmt.Errorf("assign worker to work item: %w", err)
+			wi.WorkflowStepID = sr.StepID
+			composite, err = r.buildCompositePrompt(ctx, tx, tenantID, wi, workerVer, allSteps, runs)
+			if err != nil {
+				return fmt.Errorf("build composite prompt for %s: %w", wid, err)
 			}
 			primaryWID = wid
 		}
-		// Record the primary work item id for inline TaskReconciler
-		// dispatch after the workflow transaction commits.
-		if dispatchedWIDs != nil {
-			*dispatchedWIDs = append(*dispatchedWIDs, primaryWID)
+		// Record the primary work item id + the composite prompt + the
+		// step's worker on the STEP RUN (per-step, not on the shared
+		// ticket). The inline DispatchTask reads _prompt / _worker_id /
+		// _worker_version from the step run to build the execution
+		// manifest; the ticket stays untouched.
+		stepResult, _ := json.Marshal(map[string]any{
+			"_work_item_id":   primaryWID,
+			"_prompt":         composite,
+			"_worker_id":      step.Ref,
+			"_worker_version": step.WorkerVersion,
+		})
+		// Preserve the recovery narrative across a re-dispatch so the run
+		// view keeps showing it after the step runs again.
+		if sr.Status == domain.StepRunRecovering {
+			var prev struct {
+				RecoverySummary string `json:"_recovery_summary"`
+			}
+			_ = json.Unmarshal(sr.Result, &prev)
+			if prev.RecoverySummary != "" {
+				var newResult map[string]any
+				_ = json.Unmarshal(stepResult, &newResult)
+				newResult["_recovery_summary"] = prev.RecoverySummary
+				stepResult, _ = json.Marshal(newResult)
+			}
 		}
-		// Record the primary work item id on the step run so
-		// pollTaskStep can poll it. Clear any stale worker_execution_id
-		// (a recovering step re-dispatched here still references its
-		// FAILED execution): pollTaskStep would otherwise see the old
-		// failed execution and re-trigger recovery in the same pass,
-		// racing the inline dispatch that links the replacement
-		// execution. With the id cleared, the step WAITS (empty-link
-		// path) until the inline DispatchTask writes the new execution
-		// onto the step run.
-		stepResult, _ := json.Marshal(map[string]string{"_work_item_id": primaryWID})
+		// Clear any stale worker_execution_id (a recovering step
+		// re-dispatched here still references its FAILED execution):
+		// pollTaskStep would otherwise see the old failed execution and
+		// re-trigger recovery in the same pass, racing the inline dispatch
+		// that links the replacement execution. With the id cleared, the
+		// step WAITS (empty-link path) until the inline DispatchTask writes
+		// the new execution onto the step run.
 		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 			Status:            strPtr(domain.StepRunRunning),
 			Result:            &stepResult,
@@ -943,6 +1003,9 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		runs[step.ID] = updated
 		if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepStarted, run, updated); err != nil {
 			return fmt.Errorf("enqueue step_started: %w", err)
+		}
+		if dispatchedSteps != nil {
+			*dispatchedSteps = append(*dispatchedSteps, dispatchReq{taskID: primaryWID, stepRunID: sr.ID})
 		}
 		r.log.Info("workflow worker dispatched",
 			"run", run.ID, "step", step.ID,
@@ -985,10 +1048,13 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		// Find the upstream step run (the one we branch from).
 		var upResult struct {
 			WorkItemID string `json:"_work_item_id"`
+			Decision   string `json:"_decision"`
 		}
+		var upRun db.WorkflowStepRunRow
 		var upstreamStatus string
 		for _, dep := range step.DependsOn {
 			if s, ok := runs[dep]; ok {
+				upRun = s
 				upstreamStatus = s.Status
 				json.Unmarshal(s.Result, &upResult)
 				break
@@ -1008,10 +1074,10 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		// the recovery — wrong.
 		if upstreamStatus != domain.StepRunSucceeded {
 			if r.recovery != nil && upResult.WorkItemID != "" {
-				failedExecID := ""
-				if latest, err := db.GetLatestExecutionForTask(ctx, tx, tenantID, upResult.WorkItemID); err == nil {
-					failedExecID = latest.ID
-				}
+				// The failed execution + step run are the upstream step
+				// run's own (not GetLatestExecutionForTask — on a shared
+				// work item that could resolve to a different step's run).
+				failedExecID := upRun.WorkerExecutionID
 				// Defer the trigger to post-commit (see reconcileRun):
 				// TriggerOnFailure opens its own transaction, which would
 				// block on this pass's locks on the same work item.
@@ -1020,6 +1086,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 						tenantID:     tenantID,
 						workItemID:   upResult.WorkItemID,
 						failedExecID: failedExecID,
+						stepRunID:    upRun.ID,
 						reason:       "loop_decision:upstream_failed",
 					})
 				}
@@ -1032,9 +1099,14 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			break
 		}
 
-		// Upstream succeeded. Parse the work item's results for a decision signal.
+		// Upstream succeeded. Prefer the decision from the upstream STEP
+		// RUN's result (the ticket is a shared input reference — its
+		// results are the run-level narrative, not per-step decisions).
+		// Fall back to the ticket for legacy/custom decision fields.
 		var decision string
-		if upResult.WorkItemID != "" {
+		if upResult.Decision != "" {
+			decision = upResult.Decision
+		} else if upResult.WorkItemID != "" {
 			wi, err := db.GetWorkItem(ctx, tx, tenantID, upResult.WorkItemID)
 			if err == nil && len(wi.Results) > 0 {
 				var wiResult map[string]any
@@ -1239,8 +1311,8 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, wid, 1, assignFields); err != nil {
 				return fmt.Errorf("assign approver work item: %w", err)
 			}
-			if dispatchedWIDs != nil {
-				*dispatchedWIDs = []string{wid}
+			if dispatchedSteps != nil {
+				*dispatchedSteps = []dispatchReq{{taskID: wid, stepRunID: sr.ID}}
 			}
 			resultPayload, _ := json.Marshal(map[string]any{
 				"_work_item_id":    wid,
@@ -1541,6 +1613,21 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	// iterations. The worker should use the existing branch.
 	sb.WriteString("Use the existing git branch from the previous iteration if one exists. Do NOT create a new branch unless the previous work was on `main`.\n\n")
 
+	// Recovery context: if THIS step is being re-dispatched after a
+	// recovery (its step run is recovering and carries a recovery
+	// summary), show the narrative so the replacement execution learns
+	// from the failure instead of repeating it ("same failure twice"
+	// loop).
+	if currentRun, ok := runs[wi.WorkflowStepID]; ok {
+		var recMeta struct {
+			RecoverySummary string `json:"_recovery_summary"`
+		}
+		_ = json.Unmarshal(currentRun.Result, &recMeta)
+		if recMeta.RecoverySummary != "" {
+			fmt.Fprintf(&sb, "## Recovery\n\nA previous execution of this step failed and was recovered. Recovery summary:\n%s\n\n", recMeta.RecoverySummary)
+		}
+	}
+
 	// Only instruct the worker to read .orchicon/ files when prior
 	// steps have completed. On the first step there's nothing to read.
 	hasPriorSteps := false
@@ -1820,27 +1907,14 @@ func (r *WorkflowReconciler) renderUpstreamStep(ctx context.Context, tx pgx.Tx, 
 	// worker most needs.
 	switch s.Kind {
 	case domain.StepKindTask:
-		// Linked work item id is stored in the step run's result
-		// JSON when the task was dispatched. We load the work item
-		// to read its _decision, _summary, and _touched_files from
-		// the results JSONB — no full output dump.
-		var ref struct {
-			WorkItemID string `json:"_work_item_id"`
-		}
-		if err := json.Unmarshal(sr.Result, &ref); err != nil || ref.WorkItemID == "" {
-			break
-		}
-		wi, err := db.GetWorkItem(ctx, tx, tenantID, ref.WorkItemID)
-		if err != nil {
-			if err == db.ErrNotFound {
-				r.log.Debug("upstream step: work item missing", "step", s.ID, "work_item_id", ref.WorkItemID)
-				break
-			}
-			return fmt.Errorf("load work item for upstream step %s: %w", s.ID, err)
-		}
+		// The step run's result holds the execution's fields — _decision,
+		// _summary, _touched_files, _recovery_summary (written by
+		// propagateStepRunResults on completion + the recovery engine on
+		// resume). The shared ticket is NOT read: it is an input
+		// reference, and its results are the run-level narrative.
 		var parsed map[string]any
-		if len(wi.Results) > 0 {
-			_ = json.Unmarshal(wi.Results, &parsed)
+		if len(sr.Result) > 0 {
+			_ = json.Unmarshal(sr.Result, &parsed)
 		}
 		if d, ok := parsed["_decision"].(string); ok && d != "" {
 			fmt.Fprintf(sb, "Decision: %s\n", d)
@@ -2129,15 +2203,27 @@ func upstreamWorkItemIDs(step workflow.StepWire, allSteps []workflow.StepWire) [
 	return ids
 }
 
+// dispatchReq is an inline TaskReconciler dispatch queued during a
+// reconcile pass and invoked after the pass's transaction commits.
+// Dispatch is scoped to a (task, step run) pair: the work item is a
+// shared input reference for all steps bound to it, so each step run
+// gets its own execution without mutating the item.
+type dispatchReq struct {
+	taskID    string
+	stepRunID string
+}
+
 // recoveryTriggerReq is a deferred recovery trigger collected during a
 // reconcile pass and invoked AFTER the pass's transaction commits (see
 // reconcileRun — TriggerOnFailure opens its own transaction on a separate
 // connection, so invoking it while the pass still holds row locks on the
-// affected work item would cross-connection self-deadlock).
+// affected work item would cross-connection self-deadlock). stepRunID is
+// the failing step run the recovery targets ("" for non-workflow).
 type recoveryTriggerReq struct {
 	tenantID     string
 	workItemID   string
 	failedExecID string
+	stepRunID    string
 	reason       string
 }
 
@@ -2302,6 +2388,7 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 					tenantID:     tenantID,
 					workItemID:   parsed.WorkItemID,
 					failedExecID: sr.WorkerExecutionID,
+					stepRunID:    sr.ID,
 					reason:       "step_recovery",
 				})
 			}

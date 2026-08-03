@@ -77,7 +77,7 @@ func (s *Service) TriggerRecovery(ctx context.Context, req *connect.Request[apiv
 	if len(execs) > 0 {
 		failedExecID = execs[0].ID
 	}
-	if err := s.engine.TriggerOnFailure(ctx, tenantID, req.Msg.TaskId, failedExecID, triggerReason); err != nil {
+	if err := s.engine.TriggerOnFailure(ctx, tenantID, req.Msg.TaskId, failedExecID, "", triggerReason); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	// Fetch the created recovery.

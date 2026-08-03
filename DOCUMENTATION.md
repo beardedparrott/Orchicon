@@ -682,7 +682,7 @@ An execution is only reported `succeeded` when the run completes with the final 
 3. Add description, acceptance criteria, and assign a worker
 4. Work items form a DAG with dependency edges (cycle detection enforced)
 
-**Status while bound to a workflow run:** a work item that kicks off (or is bound to) a workflow run reflects the **run's** state, not any single step's. `StartWorkflow` moves it to `running`, and it stays in a working state (`running`/`assigned`) while the run is in flight — each step's execution finishes without flipping the item to `succeeded` early (steps are polled on their own execution, not the shared item's status). The item reaches `succeeded`/`failed` only when the whole run completes/fails.
+**Status while bound to a workflow run:** a work item that kicks off (or is bound to) a workflow run is a **shared input reference** — every step reads the same ticket (title, description, acceptance criteria, upstream context) and produces its own execution and output. `StartWorkflow` moves it to `running`, and it stays `running` for the whole run; it is never mutated per-step (no `assigned_worker_ref`, `workflow_step_id`, or prompt writes, no `ready`/`assigned`/`recovering` flips). The item reaches `succeeded`/`failed` only when the whole run completes/fails. Because the ticket is never written per-step, **two steps bound to the same ticket can run in parallel** — each step run owns its own execution (`worker_execution_id`) and its own results. When the run ends, the ticket's `results` carry a run-level narrative (`_run_narrative`) aggregating each step's summary/decision/issues plus every recovery episode.
 
 #### Building Workflows (Visual Editor)
 1. Navigate to **Workflows** → **New Workflow**
@@ -732,10 +732,11 @@ Workers now receive full execution context including:
 4. Filter, search, sort, and bulk-delete executions
 
 #### Recovery from Failures
-1. When an execution fails, recovery can be triggered
-2. Default recovery: capture → summarize → preserve → review → plan → resume
-3. L1 → L2 → L3 escalation with bounded auto-relax
-4. View recovery timeline in the **Recovery** section
+1. When a step's execution fails, recovery is triggered automatically (opt-out, not opt-in)
+2. **Recovery is scoped per failing step run** — the work item is a shared input reference and is never flipped to `recovering`. Each failing step run goes `recovering`, gets its own recovery cycle (capture → summarize → preserve → review → plan → resume), and re-dispatches with a fresh execution once recovery completes. Two steps failing on the same ticket each get their own recovery.
+3. The recovery summary is written to the step run (`_recovery_summary`) so the replacement execution's prompt includes the failure context (prevents repeating the same failure)
+4. L1 → L2 → L3 escalation with bounded auto-relax
+5. View recovery timeline in the **Recovery** section; the ticket's run-level narrative (`_run_narrative.recoveries`) lists every episode
 
 #### Policy Management
 1. Navigate to **Policies** → **New Policy**
