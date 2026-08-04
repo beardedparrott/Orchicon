@@ -33,6 +33,7 @@ The project's model spend is rising. Be economical but **never at the expense of
 - Keep edits surgical — match surrounding style, don't reflow untouched code.
 - Skip preamble/postamble in responses; the diff speaks for itself.
 - Run `make ci` once at the end, not after every edit.
+- Disk hygiene during dev: the Go build cache grows to tens of GB (`~/.cache/go-build`) and repeated container builds leave dangling Docker images. Reclaim with `make clean` (go cache + `bin/`) and `make clean-docker` (dangling images + stopped containers + unused volumes — keeps the live dev/prod instances and their data volumes). The serve/detached log file is auto-rotated (size + time) and pruned via Settings → Defaults → Log management — never `rm` a live log by hand. The embedded telemetry is retention-bounded (Loki + Tempo 14d, VictoriaMetrics 30d) so the instance volume can't grow unbounded. **Run `make clean` at the end of a heavy dev session, and always check `make cache-check` before starting work** — if the Go cache is already multi-GB, clear it *before* building so the session doesn't grow it further.
 
 ## Git Workflow
 

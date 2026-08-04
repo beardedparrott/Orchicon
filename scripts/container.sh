@@ -108,6 +108,14 @@ build_image() {
     docker build --build-arg BASE_IMAGE="$RUNTIME_IMAGE" -f "$RT_DEV_DOCKERFILE" -t "$DEV_IMAGE" "$RT_CONTEXT"
     log_ok "Runtime dev image $DEV_IMAGE built"
   fi
+
+  # Every `docker build -t <tag>` above repoints the tag and leaves the
+  # previous image dangling. Prune those orphans now so repeated dev
+  # builds do not accumulate tens of GB of unreferenced layers. Only
+  # dangling (untagged) images are removed — running containers pin their
+  # image by ID, so nothing in use is touched.
+  log_dim "Pruning dangling images from this build…"
+  docker image prune -f --filter "dangling=true" >/dev/null
 }
 
 # start_runtime_daemon ensures the host-side runtime orchestrator is
@@ -299,6 +307,9 @@ up_instance() {
   # worker processes run as the host user.
   docker run -d --name "$NAME" \
     --label orchicon-instance="$inst" \
+    --log-driver json-file \
+    --log-opt max-size=100m \
+    --log-opt max-file=7 \
     ${PORTS} \
     -e ORCHICON_GRAFANA_PUBLIC_URL="$GRAFANA_URL" \
     -e "ORCHICON_HOST_UID=$(id -u)" \

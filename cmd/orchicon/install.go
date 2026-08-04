@@ -203,6 +203,7 @@ func ensureInstallContainer(instance, name, dataVolume, socketDir, image string)
 
 	args := []string{"run", "-d", "--name", name,
 		"--label", "orchicon-instance=" + instance,
+		"--log-driver", "json-file", "--log-opt", "max-size=100m", "--log-opt", "max-file=7",
 		"-p", controlPort + ":8080", "-p", grafanaPort + ":3000",
 		"-v", dataVolume + ":/var/lib/orchicon",
 		"-e", "ORCHICON_GRAFANA_PUBLIC_URL=http://localhost:" + controlPort + "/grafana",

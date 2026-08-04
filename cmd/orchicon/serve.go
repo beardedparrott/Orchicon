@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -12,10 +13,12 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	assets "github.com/beardedparrott/orchicon"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/logging"
 	"github.com/beardedparrott/orchicon/internal/migrate"
 	"github.com/beardedparrott/orchicon/internal/server"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
@@ -68,6 +71,10 @@ func killOrphans() {
 // forking again.
 const serveEnvDetached = "ORCHICON_SERVE_DETACHED"
 
+// serveEnvLogFile tells the serve child where to write its rotating log
+// file (set by serveDetach). When unset, logs go to stdout/stderr.
+const serveEnvLogFile = "ORCHICON_SERVE_LOG_FILE"
+
 // runServe dispatches `serve` subcommands:
 //
 //	orchicon serve              run the server in the foreground (blocks)
@@ -98,12 +105,42 @@ func runServe(args []string) int {
 // serveForeground runs the server until SIGTERM/SIGINT. Also the body of
 // the forked child started by serveDetach (the ORCHICON_SERVE_DETACHED
 // env var short-circuits the dispatch above so the child never re-forks).
+//
+// When ORCHICON_SERVE_LOG_FILE is set (detached mode), the JSON slog
+// output goes through a rotating file writer (size + time ceiling,
+// retention pruning — internal/logging) instead of stdout, and the log
+// file is dup2'd onto fds 1/2 so panics and stray prints land in the
+// current log. The log rotation config is layered from env/config at
+// boot; the server live-applies Settings → Defaults changes afterwards.
 func serveForeground() int {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
+	var logOut io.Writer = os.Stdout
+	var rotator *logging.RotatingWriter
+	if logPath := os.Getenv(serveEnvLogFile); logPath != "" {
+		cfg := config.Default()
+		rw, err := logging.New(loggingFromEnv(cfg, logPath))
+		if err != nil {
+			// Detached: stdout/stderr are /dev/null, so a silent fallback
+			// would lose every log line. Surface the failure at the log
+			// path the operator is already watching, then bail.
+			if ferr, e2 := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); e2 == nil {
+				fmt.Fprintf(ferr, "failed to open rotating log file: %v\n", err)
+				ferr.Close()
+			}
+			fmt.Fprintf(os.Stderr, "✗ failed to open rotating log file %s: %v\n", logPath, err)
+			return 1
+		}
+		rotator = rw
+		logOut = rw
+		logging.RedirectStdStreams(rw.Current())
+		rw.SetOnRotate(func() { logging.RedirectStdStreams(rw.Current()) })
+		defer rw.Close()
+	}
+
 	log := slog.New(telemetry.MultiHandler(
-		slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}),
+		slog.NewJSONHandler(logOut, &slog.HandlerOptions{Level: slog.LevelInfo}),
 		telemetry.NewOtelSlogHandler(),
 	))
 	killOrphans()
@@ -133,7 +170,7 @@ func serveForeground() int {
 		pool.Close()
 	}
 
-	srv, err := server.New(cfg, log)
+	srv, err := server.New(cfg, log, rotator)
 	if err != nil {
 		log.Error("failed to construct server", "error", err)
 		return 1
@@ -151,10 +188,15 @@ func serveForeground() int {
 }
 
 // serveDetach forks the server into the background (own process group,
-// logs to the same file the dev subcommand uses), writes the PID file,
-// and returns immediately — the caller must NOT block, because a tool or
+// logs to the rotating file at serveLogFile), writes the PID file, and
+// returns immediately — the caller must NOT block, because a tool or
 // script waiting on this command would hang until the server exits. The
 // caller polls /healthz (see serveStatus / docs).
+//
+// The child (not the parent) owns the log file: serveForeground opens a
+// rotating writer on ORCHICON_SERVE_LOG_FILE, redirects its own fd 1/2
+// to it, and live-applies Settings → Defaults log management. The parent
+// only passes the path and creates the directory.
 func serveDetach() int {
 	if pid, running := procRunning(servePIDFile); running {
 		fmt.Fprintf(os.Stderr, "✗ serve is already running (PID %s)\n", pid)
@@ -170,18 +212,12 @@ func serveDetach() int {
 		fmt.Fprintf(os.Stderr, "✗ failed to create log directory: %v\n", err)
 		return 1
 	}
-	logFile, err := os.OpenFile(serveLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "✗ failed to open log file: %v\n", err)
-		return 1
-	}
-	defer logFile.Close()
 
 	cmd := exec.Command(os.Args[0], "serve")
-	cmd.Env = append(os.Environ(), serveEnvDetached+"=1")
+	cmd.Env = append(os.Environ(), serveEnvDetached+"=1", serveEnvLogFile+"="+serveLogFile)
 	cmd.Stdin = nil // /dev/null — the child must not inherit the caller's stdin
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+	cmd.Stdout = nil
+	cmd.Stderr = nil
 	setProcAttrBackground(cmd)
 
 	if err := cmd.Start(); err != nil {
@@ -234,4 +270,45 @@ func serveStatus() int {
 	}
 	fmt.Println("serve is not running")
 	return 1
+}
+
+// loggingFromEnv layers the log rotation config for a given log file
+// path. Precedence: ORCHICON_LOG_* env vars, then built-in defaults. The
+// DB-backed Settings → Defaults values are applied live by the server
+// after boot (server.New + Run). logPath wins as the directory/base even
+// when ORCHICON_LOG_DIR is set, because it is the path serveDetach
+// actually opened for the PID/log contract.
+func loggingFromEnv(cfg config.Config, logPath string) logging.Config {
+	c := logging.DefaultConfig()
+	if d := os.Getenv("ORCHICON_LOG_DIR"); d != "" {
+		c.Dir = d
+	}
+	if v := os.Getenv("ORCHICON_LOG_MAX_SIZE_MB"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			c.MaxSizeBytes = n << 20
+		}
+	}
+	if v := os.Getenv("ORCHICON_LOG_ROLL_INTERVAL_HOURS"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			c.RollInterval = time.Duration(n) * time.Hour
+		}
+	}
+	if v := os.Getenv("ORCHICON_LOG_RETENTION_DAYS"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			c.RetentionDays = int(n)
+		}
+	}
+	if v := os.Getenv("ORCHICON_LOG_MAX_FILES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			c.MaxFiles = int(n)
+		}
+	}
+	dir, base := filepath.Dir(logPath), filepath.Base(logPath)
+	if dir != "" {
+		c.Dir = dir
+	}
+	if base != "" {
+		c.BaseName = base
+	}
+	return c
 }

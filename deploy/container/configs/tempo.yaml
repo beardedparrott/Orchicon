@@ -23,5 +23,13 @@ storage:
     local:
       path: "@DATA_DIR@/tempo/blocks"
 
+# Compaction + retention: prune trace blocks older than this window so
+# the telemetry volume cannot grow unbounded (Tempo's default is 336h,
+# pinned explicitly here to match Loki's retention).
+compactor:
+  compaction:
+    block_retention: 336h
+    compacted_block_retention: 1h
+
 usage_report:
   reporting_enabled: false

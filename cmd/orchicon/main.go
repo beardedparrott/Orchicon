@@ -88,7 +88,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	srv, err := server.New(cfg, log)
+	srv, err := server.New(cfg, log, nil)
 	if err != nil {
 		log.Error("failed to construct server", "error", err)
 		os.Exit(1)

@@ -26,6 +26,11 @@ type TenantSettingsRow struct {
 	BackupSchedule               string // cron expression; empty = disabled
 	BackupRetentionDays           int32  // 0 = keep all
 	BackupDirectory              string // empty = default
+	LogDirectory                 string // serve log dir; empty = env/code default
+	LogMaxSizeMB                 int64  // max log file size before rotation (MB); 0 = default
+	LogRollIntervalHours         int64  // time-based roll interval (hours); 0 = default
+	LogRetentionDays             int32  // days rotated logs are kept; 0 = default
+	LogMaxFiles                  int32  // max rotated log files kept; 0 = default
 	CreatedAt                    time.Time
 	UpdatedAt                    time.Time
 }
@@ -40,6 +45,8 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		execution_reap_grace_seconds, execution_reap_consecutive_failures,
 		execution_reconnect_attempts, execution_reconnect_grace_seconds,
 		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
+		COALESCE(log_directory, ''), COALESCE(log_max_size_mb, 0), COALESCE(log_roll_interval_hours, 0),
+		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
 		created_at, updated_at
 		FROM tenant_settings WHERE tenant_id = $1`
 	row, err := tx.Query(ctx, q, tenantID)
@@ -60,6 +67,8 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		execution_reap_grace_seconds, execution_reap_consecutive_failures,
 		execution_reconnect_attempts, execution_reconnect_grace_seconds,
 		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
+		COALESCE(log_directory, ''), COALESCE(log_max_size_mb, 0), COALESCE(log_roll_interval_hours, 0),
+		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
 		created_at, updated_at`
 	ins, err := tx.Query(ctx, insertQ, tenantID)
 	if err != nil {
@@ -85,8 +94,10 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		execution_reap_grace_seconds, execution_reap_consecutive_failures,
 		execution_reconnect_attempts, execution_reconnect_grace_seconds,
 		backup_schedule, backup_retention_days, backup_directory,
+		log_directory, log_max_size_mb, log_roll_interval_hours,
+		log_retention_days, log_max_files,
 		updated_at
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, now())
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, now())
 	ON CONFLICT (tenant_id) DO UPDATE SET
 		default_worker_model = CASE WHEN $2 <> '' THEN $2 ELSE tenant_settings.default_worker_model END,
 		default_ask_orchicon_model = CASE WHEN $3 <> '' THEN $3 ELSE tenant_settings.default_ask_orchicon_model END,
@@ -103,6 +114,11 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		backup_schedule = CASE WHEN $14 <> '' THEN $14 ELSE tenant_settings.backup_schedule END,
 		backup_retention_days = CASE WHEN $15 <> 0 THEN $15 ELSE tenant_settings.backup_retention_days END,
 		backup_directory = CASE WHEN $16 <> '' THEN $16 ELSE tenant_settings.backup_directory END,
+		log_directory = CASE WHEN $17 <> '' THEN $17 ELSE tenant_settings.log_directory END,
+		log_max_size_mb = CASE WHEN $18 <> 0 THEN $18 ELSE tenant_settings.log_max_size_mb END,
+		log_roll_interval_hours = CASE WHEN $19 <> 0 THEN $19 ELSE tenant_settings.log_roll_interval_hours END,
+		log_retention_days = CASE WHEN $20 <> 0 THEN $20 ELSE tenant_settings.log_retention_days END,
+		log_max_files = CASE WHEN $21 <> 0 THEN $21 ELSE tenant_settings.log_max_files END,
 		updated_at = now()
 	RETURNING tenant_id, default_worker_model, default_ask_orchicon_model,
 		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
@@ -111,6 +127,8 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		execution_reap_grace_seconds, execution_reap_consecutive_failures,
 		execution_reconnect_attempts, execution_reconnect_grace_seconds,
 		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
+		COALESCE(log_directory, ''), COALESCE(log_max_size_mb, 0), COALESCE(log_roll_interval_hours, 0),
+		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
 		created_at, updated_at`
 	row, err := tx.Query(ctx, q,
 		tenantID, in.DefaultWorkerModel, in.DefaultAskOrchiconModel,
@@ -120,6 +138,8 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		in.ExecutionReapGraceSeconds, in.ExecutionReapConsecutiveFailures,
 		in.ExecutionReconnectAttempts, in.ExecutionReconnectGraceSeconds,
 		in.BackupSchedule, in.BackupRetentionDays, in.BackupDirectory,
+		in.LogDirectory, in.LogMaxSizeMB, in.LogRollIntervalHours,
+		in.LogRetentionDays, in.LogMaxFiles,
 	)
 	if err != nil {
 		return TenantSettingsRow{}, fmt.Errorf("db: update tenant settings: %w", err)
@@ -141,6 +161,8 @@ func scanTenantSettings(row pgx.Rows) (TenantSettingsRow, error) {
 		&r.ExecutionReapGraceSeconds, &r.ExecutionReapConsecutiveFailures,
 		&r.ExecutionReconnectAttempts, &r.ExecutionReconnectGraceSeconds,
 		&r.BackupSchedule, &r.BackupRetentionDays, &r.BackupDirectory,
+		&r.LogDirectory, &r.LogMaxSizeMB, &r.LogRollIntervalHours,
+		&r.LogRetentionDays, &r.LogMaxFiles,
 		&r.CreatedAt, &r.UpdatedAt,
 	); err != nil {
 		return TenantSettingsRow{}, fmt.Errorf("db: scan tenant settings: %w", err)

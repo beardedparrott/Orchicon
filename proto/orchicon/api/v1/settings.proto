@@ -10,7 +10,8 @@ import "google/protobuf/timestamp.proto";
 //
 // Sections mirror the UI layout:
 //   - appearance:    theme/mode (client-side, persisted in localStorage)
-//   - defaults:      model refs, stall parameters, etc.
+//   - defaults:      model refs, stall parameters, budgets, log management
+//   - backups:       schedule + retention for automatic snapshots
 //   - future:        additional sections as the product grows
 message TenantSettings {
   // Default model ref used when a worker version has no model_ref set.
@@ -103,6 +104,32 @@ message TenantSettings {
   // Directory where backup snapshots are stored. Empty uses the default
   // (~/.local/share/orchicon/backups/).
   string backup_directory = 22;
+
+  // --- Log management (rotating on-disk logs) ---
+  // These drive the serve process's rotating file logger. The serve
+  // child reads them from the default tenant at boot and live-applies
+  // changes every few seconds (no restart required). An empty/zero value
+  // means "use the env var or built-in default".
+
+  // Directory where serve log files are stored. Empty = default
+  // (env ORCHICON_LOG_DIR, else .dev/logs).
+  string log_directory = 23;
+
+  // Max size of a single log file before it is rotated (MB).
+  // Default 100. Zero = default.
+  int64 log_max_size_mb = 24;
+
+  // How often the log rolls by time (hours; 24 = daily, 1 = hourly).
+  // Default 24. Zero = default.
+  int64 log_roll_interval_hours = 25;
+
+  // How many days rotated log files are retained before cleanup.
+  // Default 7. Zero = default.
+  int32 log_retention_days = 26;
+
+  // Max rotated log files kept on disk (newest kept). Default 7.
+  // Zero = default.
+  int32 log_max_files = 27;
 
   google.protobuf.Timestamp created_at = 100;
   google.protobuf.Timestamp updated_at = 101;
