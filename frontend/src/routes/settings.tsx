@@ -466,6 +466,10 @@ function DefaultsTab() {
   const [draftTextLoop, setDraftTextLoop] = useState("");
   const [draftRepetitionCount, setDraftRepetitionCount] = useState("");
   const [draftRepetitionWindow, setDraftRepetitionWindow] = useState("");
+  const [draftBudgetTokens, setDraftBudgetTokens] = useState("");
+  const [draftBudgetCost, setDraftBudgetCost] = useState("");
+  const [draftBudgetWallClock, setDraftBudgetWallClock] = useState("");
+  const [draftBudgetToolCalls, setDraftBudgetToolCalls] = useState("");
   const [draftReapGrace, setDraftReapGrace] = useState("");
   const [draftReapFailures, setDraftReapFailures] = useState("");
   const [draftReconnectAttempts, setDraftReconnectAttempts] = useState("");
@@ -481,6 +485,11 @@ function DefaultsTab() {
       setDraftTextLoop(String(settings.stallTextLoopWindowSeconds ?? ""));
       setDraftRepetitionCount(String(settings.stallRepetitionCount ?? ""));
       setDraftRepetitionWindow(String(settings.stallRepetitionWindowSeconds ?? ""));
+      const budget = parseBudgetDefaults(settings.defaultBudgetOverrides);
+      setDraftBudgetTokens(budget.tokens);
+      setDraftBudgetCost(budget.costUsd);
+      setDraftBudgetWallClock(budget.wallClockSeconds);
+      setDraftBudgetToolCalls(budget.toolCallCount);
       setDraftReapGrace(String(settings.executionReapGraceSeconds ?? ""));
       setDraftReapFailures(String(settings.executionReapConsecutiveFailures ?? ""));
       setDraftReconnectAttempts(String(settings.executionReconnectAttempts ?? ""));
@@ -499,6 +508,12 @@ function DefaultsTab() {
         stallTextLoopWindowSeconds: parseInt(draftTextLoop) || 0,
         stallRepetitionCount: parseInt(draftRepetitionCount) || 0,
         stallRepetitionWindowSeconds: parseInt(draftRepetitionWindow) || 0,
+        defaultBudgetOverrides: buildBudgetDefaults(
+          draftBudgetTokens,
+          draftBudgetCost,
+          draftBudgetWallClock,
+          draftBudgetToolCalls,
+        ),
         executionReapGraceSeconds: parseInt(draftReapGrace) || 0,
         executionReapConsecutiveFailures: parseInt(draftReapFailures) || 0,
         executionReconnectAttempts: parseInt(draftReconnectAttempts) || 0,
@@ -591,6 +606,52 @@ function DefaultsTab() {
                 value={draftRepetitionWindow}
                 onChange={setDraftRepetitionWindow}
                 placeholder="300"
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {!isLoading && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Execution budget (defaults)</CardTitle>
+            <CardDescription>
+              Default per-execution budget ceilings applied when a worker does not
+              set its own value for a field. A worker&apos;s <code>budget_overrides</code>{" "}
+              overrides these per-field. Values are the tenant-level defaults; leave a
+              field empty to fall back to the built-in default.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <StallField
+                label="Token limit"
+                description="Max tokens per execution. Empty = built-in default (1,000,000)."
+                value={draftBudgetTokens}
+                onChange={setDraftBudgetTokens}
+                placeholder="1000000"
+              />
+              <StallField
+                label="Cost limit (USD)"
+                description="Max spend per execution. Empty = built-in default ($10)."
+                value={draftBudgetCost}
+                onChange={setDraftBudgetCost}
+                placeholder="10"
+              />
+              <StallField
+                label="Wall clock timeout (seconds)"
+                description="Hard per-execution deadline. Empty = built-in default (3600). A worker can set 0 to disable its own timeout."
+                value={draftBudgetWallClock}
+                onChange={setDraftBudgetWallClock}
+                placeholder="3600"
+              />
+              <StallField
+                label="Tool call limit"
+                description="Max tool calls per execution. Empty = built-in default (100)."
+                value={draftBudgetToolCalls}
+                onChange={setDraftBudgetToolCalls}
+                placeholder="100"
               />
             </div>
           </CardContent>
@@ -798,6 +859,44 @@ function ThemeCard({
       </div>
     </button>
   );
+}
+
+// Parse the tenant default_budget_overrides JSON into form strings.
+function parseBudgetDefaults(raw?: string): {
+  tokens: string;
+  costUsd: string;
+  wallClockSeconds: string;
+  toolCallCount: string;
+} {
+  const empty = { tokens: "", costUsd: "", wallClockSeconds: "", toolCallCount: "" };
+  if (!raw) return empty;
+  try {
+    const m = JSON.parse(raw);
+    return {
+      tokens: m.tokens != null ? String(m.tokens) : "",
+      costUsd: m.cost_usd != null ? String(m.cost_usd) : "",
+      wallClockSeconds: m.wall_clock_seconds != null ? String(m.wall_clock_seconds) : "",
+      toolCallCount: m.tool_call_count != null ? String(m.tool_call_count) : "",
+    };
+  } catch {
+    return empty;
+  }
+}
+
+// Build the default_budget_overrides JSON from the four form fields. Empty
+// fields are omitted so the worker/tenant fall back to built-in defaults.
+function buildBudgetDefaults(
+  tokens: string,
+  costUsd: string,
+  wallClockSeconds: string,
+  toolCallCount: string,
+): string {
+  const out: Record<string, number> = {};
+  if (tokens !== "") out.tokens = Number(tokens);
+  if (costUsd !== "") out.cost_usd = Number(costUsd);
+  if (wallClockSeconds !== "") out.wall_clock_seconds = Number(wallClockSeconds);
+  if (toolCallCount !== "") out.tool_call_count = Number(toolCallCount);
+  return JSON.stringify(out);
 }
 
 // ─── Backup directory browser (server-side filesystem tree) ───────

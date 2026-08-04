@@ -1,4 +1,4 @@
-h1:HMYHiZUrtpW6LTwif785lfa7Er/wl/G4m3yMdwnFt1g=
+h1:vJdmxs73ieFOwz45gAsOL/yZImi9u2KLBTdFon3lqo8=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712192105_initial_schema_down.sql h1:RDSZVdJtR8DJx9HvT6WrBdEOEoJpM/46JutUdlPs5wU=
 20260712223028_add_outbox.sql h1:+idZYfVIjOHjGIluT5JM5M0dMF6L1+VmeHeGy66DLEI=
@@ -107,3 +107,5 @@ h1:HMYHiZUrtpW6LTwif785lfa7Er/wl/G4m3yMdwnFt1g=
 20260731000018_backup_settings_down.sql h1:Ep3Yz1VtQgFK/ju0h7TL2aqzpRAKro1sNVLJsmppdr0=
 20260802220000_execution_reaper_settings.sql h1:qyUv2Fgs4YsNlk94VhF9JBMFINT02WvxmN9tEWvnQU0=
 20260803000000_execution_reconnect_settings.sql h1:mfzhD/3SFwWj/h9ZWI7whUi99QQmtWG/HprL971evyU=
+20260803120000_runtime_images.sql h1:19o44xmhFUwoFy+lqF23MBsz9VwlgBTTMgjj53XZbFM=
+20260804000000_default_budget_overrides.sql h1:1cJwMjbd+tdSZ9q1h8iWIL+A8PpeO3CYRBivm/EOmaU=

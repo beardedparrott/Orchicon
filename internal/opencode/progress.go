@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -305,28 +306,66 @@ func envInt(key string, fallback int) int {
 // adapter's existing OnHealth path.
 var _ = domain.HealthStalled
 
-// wallClockDeadline parses the worker's budget_overrides.wall_clock_seconds
-// (docs/05 §8) and returns the absolute deadline for the execution.
-// Returns ok=false if no wall-clock budget is set (no deadline). The
-// deadline is enforced via context.WithDeadline in Start; when it hits,
-// the subprocess is killed (exec.CommandContext) and OnResult(false)
-// fires → recovery with reason "wall_clock_timeout" (docs/06 §2 budget
-// overrun trigger).
+// isFatalStall reports whether a stall reason warrants terminating the
+// subprocess (hard kill → recovery) versus being advisory-only.
 //
-// A worker may set wall_clock_seconds to 0 to disable the hard timeout
-// (relying solely on stall detection); this is unusual and discouraged.
+//   - no_progress / text_loop / repetition: genuine hangs or loops — the
+//     worker is not making progress. Terminating routes the execution to
+//     `failed` via OnResult(false), which the workflow reconciler's
+//     pollTaskStep already turns into recovery.
+//   - no_file_progress: advisory. A reviewer or QA worker may
+//     legitimately go long stretches without modifying files while still
+//     producing output (token/text progress), so killing it would reap a
+//     healthy execution (observed: an SSE worker flagged no_file_progress
+//     yet completed successfully moments later).
+func isFatalStall(reason string) bool {
+	return !strings.HasPrefix(reason, "stalled:no_file_progress")
+}
+
+// defaultWallClockTimeout is the hard per-execution timeout applied when a
+// worker's final merged budget (tenant default + worker override) omits
+// wall_clock_seconds. AGENTS.md documents this as the default (3600s) — the
+// runaway-spend backstop that kills the subprocess even when the model is
+// still producing output.
+const defaultWallClockTimeout = 3600 * time.Second
+
+// wallClockDeadline parses the execution's merged budget JSON
+// (budget_overrides after tenant-default merge, docs/05 §8) and returns the
+// absolute deadline for the execution. Returns ok=false if no wall-clock
+// budget is set (no deadline). The deadline is enforced via
+// context.WithDeadline in Start; when it hits, the subprocess is killed
+// (exec.CommandContext) and OnResult(false) fires → recovery with reason
+// "wall_clock_timeout" (docs/06 §2 budget overrun trigger).
+//
+// Precedence (applied before this call, in the reconciler): worker
+// budget_overrides.wall_clock_seconds (explicit) → tenant
+// default_budget_overrides.wall_clock_seconds → this default (3600). An
+// explicit 0 in the worker OR the tenant default disables the hard timeout
+// (relying solely on stall detection); an unset field falls back to
+// defaultWallClockTimeout so every execution has a hard backstop.
 func wallClockDeadline(ctx context.Context, budgets []byte) (time.Time, bool) {
+	if v := os.Getenv("ORCHICON_STALL_WALL_CLOCK_SECONDS"); v != "" {
+		if d, err := time.ParseDuration(v + "s"); err == nil && d > 0 {
+			return time.Now().Add(d), true
+		}
+	}
 	if len(budgets) == 0 {
-		return time.Time{}, false
+		return time.Now().Add(defaultWallClockTimeout), true
 	}
 	var b struct {
-		WallClockSeconds float64 `json:"wall_clock_seconds"`
+		WallClockSeconds *float64 `json:"wall_clock_seconds"`
 	}
 	if err := json.Unmarshal(budgets, &b); err != nil {
+		// Unparseable budgets — fall back to the default backstop.
+		return time.Now().Add(defaultWallClockTimeout), true
+	}
+	// Absent field → default backstop (3600s).
+	if b.WallClockSeconds == nil {
+		return time.Now().Add(defaultWallClockTimeout), true
+	}
+	// Explicit 0 (or negative) disables the hard timeout.
+	if *b.WallClockSeconds <= 0 {
 		return time.Time{}, false
 	}
-	if b.WallClockSeconds <= 0 {
-		return time.Time{}, false
-	}
-	return time.Now().Add(time.Duration(b.WallClockSeconds * float64(time.Second))), true
+	return time.Now().Add(time.Duration(*b.WallClockSeconds * float64(time.Second))), true
 }

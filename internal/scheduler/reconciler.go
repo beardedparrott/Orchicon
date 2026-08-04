@@ -471,6 +471,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	var stallNoProgress, stallNoFileDiff, stallTextLoop int64
 	var stallRepCount int32
 	var stallRepWindow int64
+	var defaultBudgetOverrides []byte
 	var reconnectAttempts int32
 	var reconnectGrace int64
 	{
@@ -485,6 +486,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				stallTextLoop = s.StallTextLoopWindowSeconds
 				stallRepCount = s.StallRepetitionCount
 				stallRepWindow = s.StallRepetitionWindowSeconds
+				defaultBudgetOverrides = s.DefaultBudgetOverrides
 				reconnectAttempts = s.ExecutionReconnectAttempts
 				reconnectGrace = s.ExecutionReconnectGraceSeconds
 			}
@@ -505,6 +507,12 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		}
 	}
 
+	// Merge the tenant-level default budget (base) with the worker's own
+	// budget_overrides (override) so a worker's explicit field always wins
+	// per-field over the tenant default. The merged JSON is what the
+	// adapter enforces (e.g. wall_clock_seconds -> hard deadline).
+	budgetsJSON := mergeBudgets(defaultBudgetOverrides, version.BudgetOverrides)
+
 	manifest := ExecutionManifest{
 		ExecutionID:                 exec.ID,
 		TaskID:                      exec.TaskID,
@@ -517,7 +525,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		ModelRef:                    version.ModelRef,
 		DefaultModelRef:             defaultModelRef,
 		ContextSources:              version.ContextSources,
-		Budgets:                     version.BudgetOverrides,
+		Budgets:                     budgetsJSON,
 		Permissions:                 version.Permissions,
 		ProjectDir:                  projectDir,
 		RuntimeWorkflowID:           task.WorkflowRunID,
@@ -1288,6 +1296,34 @@ func enqueueWorkItemEvent(ctx context.Context, tx pgx.Tx, eventType string, w db
 		Payload:       payload,
 		OccurredAt:    time.Now().UTC(),
 	})
+}
+
+// mergeBudgets merges the tenant-level default budget (base) with a worker's
+// own budget_overrides (override) into a single JSON document, so a worker's
+// explicit field always wins per-key over the tenant default. Fields absent
+// from both are omitted (the adapter's built-in defaults apply). Either input
+// may be empty.
+func mergeBudgets(tenantDefault, workerOverride []byte) []byte {
+	out := map[string]any{}
+	mu := func(b []byte) {
+		if len(b) == 0 {
+			return
+		}
+		var m map[string]any
+		if json.Unmarshal(b, &m) == nil {
+			for k, v := range m {
+				out[k] = v
+			}
+		}
+	}
+	// Tenant default is the base; worker override is layered on top.
+	mu(tenantDefault)
+	mu(workerOverride)
+	b, err := json.Marshal(out)
+	if err != nil {
+		return workerOverride
+	}
+	return b
 }
 
 func strPtr(s string) *string { return &s }

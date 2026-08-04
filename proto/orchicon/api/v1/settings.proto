@@ -82,6 +82,14 @@ message TenantSettings {
   // Seconds. Default 60.
   int64 execution_reconnect_grace_seconds = 18;
 
+  // --- Execution budget (defaults) ---
+  // Default budget JSON applied to executions whose worker does not set its
+  // own budget_overrides. Recognized keys: tokens, cost_usd,
+  // wall_clock_seconds, tool_call_count. A worker's explicit
+  // budget_overrides overrides these per-field. Empty ({}) means "use the
+  // built-in defaults".
+  string default_budget_overrides = 19;
+
   // --- Backup configuration ---
 
   // Backup schedule in cron expression format (e.g. "0 3 * * *" for daily 3am).

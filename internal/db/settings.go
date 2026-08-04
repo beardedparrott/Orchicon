@@ -18,6 +18,7 @@ type TenantSettingsRow struct {
 	StallTextLoopWindowSeconds    int64
 	StallRepetitionCount          int32
 	StallRepetitionWindowSeconds  int64
+	DefaultBudgetOverrides        []byte // jsonb: default budget JSON (tokens/cost_usd/wall_clock_seconds/tool_call_count); a worker's budget_overrides overrides these
 	ExecutionReapGraceSeconds     int64 // liveness reaper: min age before an execution is reaping-eligible
 	ExecutionReapConsecutiveFailures int32 // liveness reaper: consecutive not-alive probes before reaping
 	ExecutionReconnectAttempts    int32 // transport resilience: client retry attempts on a broken exec stream
@@ -35,7 +36,7 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 	const q = `SELECT tenant_id, default_worker_model, default_ask_orchicon_model,
 		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
 		stall_text_loop_window_seconds, stall_repetition_count,
-		stall_repetition_window_seconds,
+		stall_repetition_window_seconds, default_budget_overrides,
 		execution_reap_grace_seconds, execution_reap_consecutive_failures,
 		execution_reconnect_attempts, execution_reconnect_grace_seconds,
 		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
@@ -55,7 +56,7 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		tenant_id, default_worker_model, default_ask_orchicon_model,
 		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
 		stall_text_loop_window_seconds, stall_repetition_count,
-		stall_repetition_window_seconds,
+		stall_repetition_window_seconds, default_budget_overrides,
 		execution_reap_grace_seconds, execution_reap_consecutive_failures,
 		execution_reconnect_attempts, execution_reconnect_grace_seconds,
 		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
@@ -77,44 +78,45 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 // Returns the full row after update.
 func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in TenantSettingsRow) (TenantSettingsRow, error) {
 	const q = `INSERT INTO tenant_settings (
-			tenant_id, default_worker_model, default_ask_orchicon_model,
-			stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
-			stall_text_loop_window_seconds, stall_repetition_count,
-			stall_repetition_window_seconds,
-			execution_reap_grace_seconds, execution_reap_consecutive_failures,
-			execution_reconnect_attempts, execution_reconnect_grace_seconds,
-			backup_schedule, backup_retention_days, backup_directory,
-			updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())
-		ON CONFLICT (tenant_id) DO UPDATE SET
-			default_worker_model = CASE WHEN $2 <> '' THEN $2 ELSE tenant_settings.default_worker_model END,
-			default_ask_orchicon_model = CASE WHEN $3 <> '' THEN $3 ELSE tenant_settings.default_ask_orchicon_model END,
-			stall_no_progress_window_seconds = CASE WHEN $4 <> 0 THEN $4 ELSE tenant_settings.stall_no_progress_window_seconds END,
-			stall_no_file_diff_window_seconds = CASE WHEN $5 <> 0 THEN $5 ELSE tenant_settings.stall_no_file_diff_window_seconds END,
-			stall_text_loop_window_seconds = CASE WHEN $6 <> 0 THEN $6 ELSE tenant_settings.stall_text_loop_window_seconds END,
-			stall_repetition_count = CASE WHEN $7 <> 0 THEN $7 ELSE tenant_settings.stall_repetition_count END,
-			stall_repetition_window_seconds = CASE WHEN $8 <> 0 THEN $8 ELSE tenant_settings.stall_repetition_window_seconds END,
-			execution_reap_grace_seconds = CASE WHEN $9 <> 0 THEN $9 ELSE tenant_settings.execution_reap_grace_seconds END,
-			execution_reap_consecutive_failures = CASE WHEN $10 <> 0 THEN $10 ELSE tenant_settings.execution_reap_consecutive_failures END,
-			execution_reconnect_attempts = CASE WHEN $11 <> 0 THEN $11 ELSE tenant_settings.execution_reconnect_attempts END,
-			execution_reconnect_grace_seconds = CASE WHEN $12 <> 0 THEN $12 ELSE tenant_settings.execution_reconnect_grace_seconds END,
-			backup_schedule = CASE WHEN $13 <> '' THEN $13 ELSE tenant_settings.backup_schedule END,
-			backup_retention_days = CASE WHEN $14 <> 0 THEN $14 ELSE tenant_settings.backup_retention_days END,
-			backup_directory = CASE WHEN $15 <> '' THEN $15 ELSE tenant_settings.backup_directory END,
-			updated_at = now()
-		RETURNING tenant_id, default_worker_model, default_ask_orchicon_model,
-			stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
-			stall_text_loop_window_seconds, stall_repetition_count,
-			stall_repetition_window_seconds,
-			execution_reap_grace_seconds, execution_reap_consecutive_failures,
-			execution_reconnect_attempts, execution_reconnect_grace_seconds,
-			COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
-			created_at, updated_at`
+		tenant_id, default_worker_model, default_ask_orchicon_model,
+		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
+		stall_text_loop_window_seconds, stall_repetition_count,
+		stall_repetition_window_seconds, default_budget_overrides,
+		execution_reap_grace_seconds, execution_reap_consecutive_failures,
+		execution_reconnect_attempts, execution_reconnect_grace_seconds,
+		backup_schedule, backup_retention_days, backup_directory,
+		updated_at
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, now())
+	ON CONFLICT (tenant_id) DO UPDATE SET
+		default_worker_model = CASE WHEN $2 <> '' THEN $2 ELSE tenant_settings.default_worker_model END,
+		default_ask_orchicon_model = CASE WHEN $3 <> '' THEN $3 ELSE tenant_settings.default_ask_orchicon_model END,
+		stall_no_progress_window_seconds = CASE WHEN $4 <> 0 THEN $4 ELSE tenant_settings.stall_no_progress_window_seconds END,
+		stall_no_file_diff_window_seconds = CASE WHEN $5 <> 0 THEN $5 ELSE tenant_settings.stall_no_file_diff_window_seconds END,
+		stall_text_loop_window_seconds = CASE WHEN $6 <> 0 THEN $6 ELSE tenant_settings.stall_text_loop_window_seconds END,
+		stall_repetition_count = CASE WHEN $7 <> 0 THEN $7 ELSE tenant_settings.stall_repetition_count END,
+		stall_repetition_window_seconds = CASE WHEN $8 <> 0 THEN $8 ELSE tenant_settings.stall_repetition_window_seconds END,
+		default_budget_overrides = CASE WHEN $9 <> '{}'::jsonb THEN $9 ELSE tenant_settings.default_budget_overrides END,
+		execution_reap_grace_seconds = CASE WHEN $10 <> 0 THEN $10 ELSE tenant_settings.execution_reap_grace_seconds END,
+		execution_reap_consecutive_failures = CASE WHEN $11 <> 0 THEN $11 ELSE tenant_settings.execution_reap_consecutive_failures END,
+		execution_reconnect_attempts = CASE WHEN $12 <> 0 THEN $12 ELSE tenant_settings.execution_reconnect_attempts END,
+		execution_reconnect_grace_seconds = CASE WHEN $13 <> 0 THEN $13 ELSE tenant_settings.execution_reconnect_grace_seconds END,
+		backup_schedule = CASE WHEN $14 <> '' THEN $14 ELSE tenant_settings.backup_schedule END,
+		backup_retention_days = CASE WHEN $15 <> 0 THEN $15 ELSE tenant_settings.backup_retention_days END,
+		backup_directory = CASE WHEN $16 <> '' THEN $16 ELSE tenant_settings.backup_directory END,
+		updated_at = now()
+	RETURNING tenant_id, default_worker_model, default_ask_orchicon_model,
+		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
+		stall_text_loop_window_seconds, stall_repetition_count,
+		stall_repetition_window_seconds, default_budget_overrides,
+		execution_reap_grace_seconds, execution_reap_consecutive_failures,
+		execution_reconnect_attempts, execution_reconnect_grace_seconds,
+		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
+		created_at, updated_at`
 	row, err := tx.Query(ctx, q,
 		tenantID, in.DefaultWorkerModel, in.DefaultAskOrchiconModel,
 		in.StallNoProgressWindowSeconds, in.StallNoFileDiffWindowSeconds,
 		in.StallTextLoopWindowSeconds, in.StallRepetitionCount,
-		in.StallRepetitionWindowSeconds,
+		in.StallRepetitionWindowSeconds, in.DefaultBudgetOverrides,
 		in.ExecutionReapGraceSeconds, in.ExecutionReapConsecutiveFailures,
 		in.ExecutionReconnectAttempts, in.ExecutionReconnectGraceSeconds,
 		in.BackupSchedule, in.BackupRetentionDays, in.BackupDirectory,
@@ -135,7 +137,7 @@ func scanTenantSettings(row pgx.Rows) (TenantSettingsRow, error) {
 		&r.TenantID, &r.DefaultWorkerModel, &r.DefaultAskOrchiconModel,
 		&r.StallNoProgressWindowSeconds, &r.StallNoFileDiffWindowSeconds,
 		&r.StallTextLoopWindowSeconds, &r.StallRepetitionCount,
-		&r.StallRepetitionWindowSeconds,
+		&r.StallRepetitionWindowSeconds, &r.DefaultBudgetOverrides,
 		&r.ExecutionReapGraceSeconds, &r.ExecutionReapConsecutiveFailures,
 		&r.ExecutionReconnectAttempts, &r.ExecutionReconnectGraceSeconds,
 		&r.BackupSchedule, &r.BackupRetentionDays, &r.BackupDirectory,

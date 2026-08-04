@@ -101,12 +101,52 @@ func TestWallClockDeadline(t *testing.T) {
 	if !ok || d.IsZero() {
 		t.Fatal("expected a deadline")
 	}
-	// No budget → no deadline.
-	if _, ok := wallClockDeadline(nil, []byte(`{}`)); ok {
-		t.Fatal("expected no deadline when wall_clock_seconds absent")
+	if want := time.Duration(30) * time.Second; time.Until(d) > want+time.Second || time.Until(d) < want-time.Second {
+		t.Fatalf("deadline = %v from now, want ~%v", time.Until(d), want)
 	}
-	// Zero disables.
+	// No budget → the documented default backstop (3600s) applies so every
+	// execution has a hard timeout even when the worker doesn't opt in.
+	d, ok = wallClockDeadline(nil, []byte(`{}`))
+	if !ok {
+		t.Fatal("expected the default deadline when wall_clock_seconds absent")
+	}
+	if want := defaultWallClockTimeout; time.Until(d) > want+time.Second || time.Until(d) < want-time.Second {
+		t.Fatalf("default deadline = %v from now, want ~%v", time.Until(d), want)
+	}
+	// Zero disables the hard timeout.
 	if _, ok := wallClockDeadline(nil, []byte(`{"wall_clock_seconds":0}`)); ok {
 		t.Fatal("expected no deadline when wall_clock_seconds=0")
+	}
+	// Negative is treated as disabled too (never a past deadline).
+	if _, ok := wallClockDeadline(nil, []byte(`{"wall_clock_seconds":-5}`)); ok {
+		t.Fatal("expected no deadline when wall_clock_seconds negative")
+	}
+	// Unparseable budgets → fall back to the default backstop (never hang).
+	d, ok = wallClockDeadline(nil, []byte(`not-json`))
+	if !ok {
+		t.Fatal("expected the default deadline on unparseable budgets")
+	}
+	if want := defaultWallClockTimeout; time.Until(d) > want+time.Second || time.Until(d) < want-time.Second {
+		t.Fatalf("unparseable fallback = %v from now, want ~%v", time.Until(d), want)
+	}
+}
+
+// TestIsFatalStall verifies which stall signals terminate the subprocess
+// (routing to recovery) versus advisory-only.
+func TestIsFatalStall(t *testing.T) {
+	fatal := []string{
+		"stalled:no_progress",
+		"stalled:text_loop:you are talking in circles",
+		"stalled:repetition:bash|[\"ls\"]",
+	}
+	for _, r := range fatal {
+		if !isFatalStall(r) {
+			t.Errorf("isFatalStall(%q) = false, want true (genuine hang/loop)", r)
+		}
+	}
+	// no_file_progress is advisory: a reviewer may legitimately produce
+	// output without touching files (SSE case — flagged yet completed).
+	if isFatalStall("stalled:no_file_progress") {
+		t.Error("isFatalStall(no_file_progress) = true, want false (advisory)")
 	}
 }
