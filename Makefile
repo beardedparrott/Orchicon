@@ -79,6 +79,19 @@ cache-check: ## Show the Go build cache size
 	@echo "GOCACHE: $(shell $(GO) env GOCACHE)"
 	@du -sh "$$($(GO) env GOCACHE)" 2>/dev/null | cut -f1 || echo "0B"
 
+# clean-docker reclaims disk from Docker build leftovers WITHOUT touching
+# the running stateful instance containers (dev/prod), their data volumes,
+# or the Postgres volumes that preserve instance data. Safe to run
+# regularly during dev: dangling (untagged) images, stopped containers, and
+# volumes not referenced by any container. Note this WILL remove orphaned
+# anonymous volumes from old compose-era/test runs — it does NOT remove
+# tagged images you might still want (e.g. the rocm/vllm images).
+.PHONY: clean-docker
+clean-docker: ## Prune dangling Docker images, stopped containers, and unused volumes
+	@docker image prune -f --filter "dangling=true"
+	@docker container prune -f
+	@docker volume prune -f
+
 # --- Database --------------------------------------------------------------
 .PHONY: migrate migrate-diff migrate-hash rls-check
 migrate: ## Apply pending Atlas migrations to $$DB_URL

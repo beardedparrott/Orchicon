@@ -964,6 +964,10 @@ For source-level iteration on the control plane itself, rebuild the image and re
 | **Install** | |
 | `install-dry-run` | Dry-run the install script (no changes made) |
 | `install-uninstall` | Uninstall Orchicon via the install script |
+| **Hygiene** | |
+| `clean` | Clear the Go build cache (`go clean -cache -testcache -modcache`) + `bin/` |
+| `cache-check` | Report the current Go build cache size |
+| `clean-docker` | Prune dangling Docker images + stopped containers + unused volumes (keeps live instances + data volumes) |
 | **CI** | |
 | `ci` | Full CI gate: lint → gen → vet → test → rls-check |
 
@@ -1147,12 +1151,28 @@ path prune dangling images after each build. To reclaim space from
 pre-existing orphans or the Go build cache:
 
 ```bash
-docker image prune -f --filter "dangling=true"   # remove untagged image layers
-make clean                                        # clear the Go build cache (go clean -cache -testcache -modcache)
+make clean-docker                                   # prune dangling images + stopped containers + unused volumes
+make clean                                          # clear the Go build cache (go clean -cache -testcache -modcache)
+make cache-check                                    # report the current Go build cache size
 ```
 
 `make clean` only touches the Go build cache and `bin/`; it never
 touches the database, container images, or runtime data.
+`make clean-docker` prunes dangling images, stopped containers, and
+volumes referenced by no container — the live instance containers
+(dev/prod), their data volumes, and the Postgres volumes that preserve
+instance data are always kept.
+
+### Telemetry data retention
+
+The embedded telemetry backends prune their data so the instance data
+volume cannot grow unbounded:
+
+| Backend | Retention | Config |
+|---|---|---|
+| Loki (logs) | 14 days | `retention_period: 336h` + compactor (`retention_enabled`, `delete_request_store: filesystem`) in `deploy/container/configs/loki.yaml` |
+| Tempo (traces) | 14 days | `compactor.compaction.block_retention: 336h` in `deploy/container/configs/tempo.yaml` |
+| VictoriaMetrics (metrics) | 30 days | `-retentionPeriod=720h` flag in `cmd/orchicon/container.go` |
 
 ---
 
