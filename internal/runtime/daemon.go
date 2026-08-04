@@ -151,7 +151,10 @@ func (d *Daemon) ListenAndServe(ctx context.Context) error {
 
 // sweepOrphans periodically removes runtime containers older than MaxAge.
 // It is the hard backstop for leftover containers; the control plane's
-// state-aware adopt sweep is the primary (and faster) cleanup.
+// state-aware adopt sweep is the primary (and faster) cleanup. The first
+// sweep runs immediately at daemon start so containers leaked by a crash
+// are reaped within seconds of the daemon coming back, not after the
+// first interval tick.
 func (d *Daemon) sweepOrphans(ctx context.Context) {
 	if d.MaxAge <= 0 {
 		return
@@ -160,6 +163,7 @@ func (d *Daemon) sweepOrphans(ctx context.Context) {
 	if interval <= 0 {
 		interval = 5 * time.Minute
 	}
+	d.sweepOnce()
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
 	for {
@@ -168,23 +172,27 @@ func (d *Daemon) sweepOrphans(ctx context.Context) {
 			return
 		case <-tick.C:
 		}
-		names, err := d.listRuntimes("")
+		d.sweepOnce()
+	}
+}
+
+func (d *Daemon) sweepOnce() {
+	names, err := d.listRuntimes("")
+	if err != nil {
+		d.Log.Warn("orphan sweep: list", "error", err)
+		return
+	}
+	for _, name := range names {
+		created, err := d.containerCreated(name)
 		if err != nil {
-			d.Log.Warn("orphan sweep: list", "error", err)
 			continue
 		}
-		for _, name := range names {
-			created, err := d.containerCreated(name)
-			if err != nil {
-				continue
-			}
-			if time.Since(created) <= d.MaxAge {
-				continue
-			}
-			d.Log.Warn("orphan sweep: removing aged runtime container", "name", name, "age", time.Since(created).Round(time.Minute).String())
-			if out, err := d.docker("rm", "-f", name); err != nil {
-				d.Log.Warn("orphan sweep: remove failed", "name", name, "error", err, "out", strings.TrimSpace(out))
-			}
+		if time.Since(created) <= d.MaxAge {
+			continue
+		}
+		d.Log.Warn("orphan sweep: removing aged runtime container", "name", name, "age", time.Since(created).Round(time.Minute).String())
+		if out, err := d.docker("rm", "-f", name); err != nil {
+			d.Log.Warn("orphan sweep: remove failed", "name", name, "error", err, "out", strings.TrimSpace(out))
 		}
 	}
 }

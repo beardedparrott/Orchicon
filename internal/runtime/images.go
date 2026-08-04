@@ -223,6 +223,16 @@ func (d *Daemon) handleBuild(w http.ResponseWriter, r *http.Request, req BuildRe
 	if flusher != nil {
 		flusher.Flush()
 	}
+	if code == 0 {
+		// Rebuilding a tag orphans the previous image (which is still
+		// referenced by nothing but its now-overwritten tag). Prune the
+		// dangling orphans so repeated custom-image builds don't pile up
+		// tens of GB of unreferenced layers. Only untagged images are
+		// removed; running containers pin their image by ID.
+		if out, perr := d.docker("image", "prune", "-f", "--filter", "dangling=true"); perr == nil {
+			_ = out
+		}
+	}
 }
 
 // rewriteDockerfileBase strips any FROM lines from the user's Dockerfile

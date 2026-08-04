@@ -1099,6 +1099,60 @@ See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
 | `ORCHICON_REAP_CONSECUTIVE_FAILURES` | `3` | Liveness reaper: consecutive not-alive probes before an execution is reaped (overrides DB setting) |
 | `ORCHICON_RECONNECT_ATTEMPTS` | `3` | Transport resilience: client retries of a broken exec stream (overrides DB setting) |
 | `ORCHICON_RECONNECT_GRACE_SECONDS` | `60` | Transport resilience: supervisor keep-alive for an orphaned child before killing it (overrides DB setting) |
+| `ORCHICON_LOG_DIR` | `.dev/logs` | Directory for the rotating serve log file (detached `serve --detach`) |
+| `ORCHICON_LOG_MAX_SIZE_MB` | `100` | Rotate the active log file once it exceeds this size (MB) |
+| `ORCHICON_LOG_ROLL_INTERVAL_HOURS` | `24` | Rotate by time at least this often (hours; 24 = daily, 1 = hourly) |
+| `ORCHICON_LOG_RETENTION_DAYS` | `7` | Prune rotated log files older than this many days |
+| `ORCHICON_LOG_MAX_FILES` | `7` | Keep at most this many rotated log files (newest kept) |
+| `ORCHICON_RUNTIME_MAX_AGE` | `24h` | Runtime daemon: remove orphaned `orchicon-runtime-*` containers older than this (crash backstop) |
+| `ORCHICON_RUNTIME_SWEEP_INTERVAL` | `5m` | Runtime daemon: how often the age-based orphan sweep runs |
+
+---
+
+## Log Management (Rotating Serve Logs)
+
+`orchicon serve --detach` writes its structured log to a single rotating
+file (default `.dev/logs/orchicon.log`). The serve child owns the file
+and rotates it **by size** (when it exceeds the size ceiling) **or by
+time** (whichever comes first), then **prunes** old rotated files by
+retention age and a maximum file count. A run-away component can no
+longer grow an unbounded single log file — the file is always capped at
+`max_size` and only `retention_days`/`max_files` of history are kept.
+
+The rotated files are siblings named `orchicon.log.<timestamp>` in the
+same directory. The serve child also dup2's the current log file onto
+fds 1/2, so panics and stray prints (which bypass slog) land in the
+current log, and re-points those fds after each rotation.
+
+Configuration precedence (per field):
+
+1. **Settings → Defaults → Log management** (tenant DB) — live-applied to
+   a running detached serve every ~5s, no restart needed.
+2. **`ORCHICON_LOG_*` env vars** — dev overrides.
+3. **Built-in defaults** — 100 MB max size, 24h roll, 7 days retention,
+   7 files.
+
+In the single-container deployment the control plane's stdout goes to
+Docker's `json-file` log driver, which is bounded by the
+`--log-opt max-size=100m` / `max-file=7` flags set on the instance
+containers (`scripts/container.sh` and `orchicon install`).
+
+## Container Image Hygiene
+
+Repeated local builds of the four tagged images (`orchicon:local`,
+`orchicon-runtime:local`, `:local-gui`, `:orchicon-dev`) and custom
+runtime-image builds orphan the previous image as a dangling layer.
+Both `scripts/container.sh build` and the runtime daemon's image-build
+path prune dangling images after each build. To reclaim space from
+pre-existing orphans or the Go build cache:
+
+```bash
+docker image prune -f --filter "dangling=true"   # remove untagged image layers
+make clean                                        # clear the Go build cache (go clean -cache -testcache -modcache)
+```
+
+`make clean` only touches the Go build cache and `bin/`; it never
+touches the database, container images, or runtime data.
 
 ---
 

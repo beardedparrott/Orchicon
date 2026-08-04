@@ -474,6 +474,11 @@ function DefaultsTab() {
   const [draftReapFailures, setDraftReapFailures] = useState("");
   const [draftReconnectAttempts, setDraftReconnectAttempts] = useState("");
   const [draftReconnectGrace, setDraftReconnectGrace] = useState("");
+  const [draftLogDirectory, setDraftLogDirectory] = useState("");
+  const [draftLogMaxSize, setDraftLogMaxSize] = useState("");
+  const [draftLogRollInterval, setDraftLogRollInterval] = useState("");
+  const [draftLogRetention, setDraftLogRetention] = useState("");
+  const [draftLogMaxFiles, setDraftLogMaxFiles] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -494,6 +499,11 @@ function DefaultsTab() {
       setDraftReapFailures(String(settings.executionReapConsecutiveFailures ?? ""));
       setDraftReconnectAttempts(String(settings.executionReconnectAttempts ?? ""));
       setDraftReconnectGrace(String(settings.executionReconnectGraceSeconds ?? ""));
+      setDraftLogDirectory(settings.logDirectory ?? "");
+      setDraftLogMaxSize(settings.logMaxSizeMb ? String(settings.logMaxSizeMb) : "");
+      setDraftLogRollInterval(settings.logRollIntervalHours ? String(settings.logRollIntervalHours) : "");
+      setDraftLogRetention(settings.logRetentionDays ? String(settings.logRetentionDays) : "");
+      setDraftLogMaxFiles(settings.logMaxFiles ? String(settings.logMaxFiles) : "");
     }
   }, [settings]);
 
@@ -518,6 +528,11 @@ function DefaultsTab() {
         executionReapConsecutiveFailures: parseInt(draftReapFailures) || 0,
         executionReconnectAttempts: parseInt(draftReconnectAttempts) || 0,
         executionReconnectGraceSeconds: parseInt(draftReconnectGrace) || 0,
+        logDirectory: draftLogDirectory,
+        logMaxSizeMb: parseInt(draftLogMaxSize) || 0,
+        logRollIntervalHours: parseInt(draftLogRollInterval) || 0,
+        logRetentionDays: parseInt(draftLogRetention) || 0,
+        logMaxFiles: parseInt(draftLogMaxFiles) || 0,
       } as any);
     } finally {
       setSaving(false);
@@ -699,6 +714,68 @@ function DefaultsTab() {
                 value={draftReconnectGrace}
                 onChange={setDraftReconnectGrace}
                 placeholder="60"
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {!isLoading && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Log management</CardTitle>
+            <CardDescription>
+              Rotating on-disk serve logs. The serve process rotates the active
+              log file when it exceeds the size ceiling or the roll interval
+              elapses, and prunes old rotated files past the retention window.
+              Values are applied live to a running detached serve (no restart
+              needed). Empty fields keep the current env/config default. Zero
+              means &quot;use the built-in default&quot;.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <label className="mb-1 block text-sm font-medium">
+                Log directory
+              </label>
+              <Input
+                value={draftLogDirectory}
+                onChange={(e) => setDraftLogDirectory(e.target.value)}
+                placeholder=".dev/logs"
+              />
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Where serve log files are stored. Empty = default (env
+                ORCHICON_LOG_DIR, else .dev/logs).
+              </p>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <StallField
+                label="Max log size (MB)"
+                description="Rotate a file once it exceeds this size. Empty = default (100)."
+                value={draftLogMaxSize}
+                onChange={setDraftLogMaxSize}
+                placeholder="100"
+              />
+              <StallField
+                label="Roll interval (hours)"
+                description="Rotate by time even when under the size ceiling. 24 = daily, 1 = hourly. Empty = default (24)."
+                value={draftLogRollInterval}
+                onChange={setDraftLogRollInterval}
+                placeholder="24"
+              />
+              <StallField
+                label="Retention (days)"
+                description="Delete rotated log files older than this. Empty = default (7)."
+                value={draftLogRetention}
+                onChange={setDraftLogRetention}
+                placeholder="7"
+              />
+              <StallField
+                label="Max rotated files"
+                description="Keep at most this many rotated files (newest kept). Empty = default (7)."
+                value={draftLogMaxFiles}
+                onChange={setDraftLogMaxFiles}
+                placeholder="7"
               />
             </div>
           </CardContent>

@@ -27,6 +27,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/backup"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
+	"github.com/beardedparrott/orchicon/internal/logging"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/outbox"
 	"github.com/beardedparrott/orchicon/internal/policy"
@@ -60,12 +61,17 @@ type Server struct {
 	// Execution liveness reaper (fails executions orphaned by a plane
 	// restart / lost runtime container).
 	reaper *scheduler.ExecutionReaper
+	// Rotating on-disk log writer (nil when not detached). Settings →
+	// Defaults log management values are live-applied to it.
+	logWriter *logging.RotatingWriter
 }
 
 // New constructs a Server from configuration. It opens the DB pool,
 // connects to NATS, sets up OTel, starts the outbox relay, and mounts
-// the API.
-func New(cfg config.Config, log *slog.Logger) (*Server, error) {
+// the API. logWriter is the optional rotating on-disk log sink (detached
+// serve); when non-nil the server live-applies Settings → Defaults log
+// management values to it and prunes on shutdown.
+func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -247,7 +253,7 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	}
 
 	s := &Server{cfg: cfg, log: log, pool: pool, httpSrv: httpSrv, otel: otelShutdown,
-		blobs: blobs, authH: authHandler, webhookD: webhookDisp}
+		blobs: blobs, authH: authHandler, webhookD: webhookDisp, logWriter: logWriter}
 	if pub != nil {
 		s.relay = outbox.NewRelay(pool, pub, log)
 	}
@@ -463,6 +469,13 @@ func (s *Server) Run(ctx context.Context) error {
 		defer bSched.Stop()
 	}
 
+	// Live-apply Settings → Defaults log management values to the
+	// rotating on-disk log writer every few seconds (no restart needed
+	// when the operator changes log size/roll/retention in the UI).
+	if s.logWriter != nil {
+		go s.applyLogSettingsLoop(ctx)
+	}
+
 	select {
 	case <-ctx.Done():
 		s.log.Info("shutting down", "timeout", s.cfg.ShutdownTimeout)
@@ -493,6 +506,72 @@ func (s *Server) shutdownOTel() {
 	if s.otel != nil {
 		s.otel.Shutdown(context.Background())
 	}
+}
+
+// applyLogSettingsLoop polls the default tenant's Settings → Defaults log
+// management values and live-applies them to the rotating on-disk log
+// writer. Runs for the lifetime of the server (the ctx is the Run ctx,
+// which is cancelled on shutdown). Failures (DB down, no row) are skipped
+// silently — the writer keeps its last good config.
+func (s *Server) applyLogSettingsLoop(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	s.applyLogSettingsOnce(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			if s.logWriter != nil {
+				_ = s.logWriter.Close()
+			}
+			return
+		case <-ticker.C:
+			s.applyLogSettingsOnce(ctx)
+		}
+	}
+}
+
+func (s *Server) applyLogSettingsOnce(ctx context.Context) {
+	qCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stx, err := s.pool.BeginTenantTx(qCtx, "tnt_dev")
+	if err != nil {
+		return
+	}
+	defer stx.Rollback(qCtx)
+	row, err := db.GetTenantSettings(qCtx, stx.Tx, "tnt_dev")
+	if err != nil {
+		return
+	}
+	cfg := s.logSettingsFromRow(row)
+	if cfg != nil {
+		s.logWriter.Apply(*cfg)
+	}
+}
+
+// logSettingsFromRow maps tenant settings to the rotating writer config,
+// layered on the writer's CURRENT config (env/config defaults from boot).
+// Only explicitly-set DB values override. Returns nil when nothing is set.
+func (s *Server) logSettingsFromRow(row db.TenantSettingsRow) *logging.Config {
+	if s.logWriter == nil {
+		return nil
+	}
+	base := s.logWriter.Config()
+	if row.LogDirectory != "" {
+		base.Dir = row.LogDirectory
+	}
+	if row.LogMaxSizeMB > 0 {
+		base.MaxSizeBytes = row.LogMaxSizeMB << 20
+	}
+	if row.LogRollIntervalHours > 0 {
+		base.RollInterval = time.Duration(row.LogRollIntervalHours) * time.Hour
+	}
+	if row.LogRetentionDays > 0 {
+		base.RetentionDays = int(row.LogRetentionDays)
+	}
+	if row.LogMaxFiles > 0 {
+		base.MaxFiles = int(row.LogMaxFiles)
+	}
+	return &base
 }
 
 // heartbeatDevAdapter renews the in-process dev adapter's heartbeat

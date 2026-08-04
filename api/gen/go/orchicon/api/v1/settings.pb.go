@@ -28,7 +28,8 @@ const (
 //
 // Sections mirror the UI layout:
 //   - appearance:    theme/mode (client-side, persisted in localStorage)
-//   - defaults:      model refs, stall parameters, etc.
+//   - defaults:      model refs, stall parameters, budgets, log management
+//   - backups:       schedule + retention for automatic snapshots
 //   - future:        additional sections as the product grows
 type TenantSettings struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -84,11 +85,26 @@ type TenantSettings struct {
 	BackupRetentionDays int32 `protobuf:"varint,21,opt,name=backup_retention_days,json=backupRetentionDays,proto3" json:"backup_retention_days,omitempty"`
 	// Directory where backup snapshots are stored. Empty uses the default
 	// (~/.local/share/orchicon/backups/).
-	BackupDirectory string                 `protobuf:"bytes,22,opt,name=backup_directory,json=backupDirectory,proto3" json:"backup_directory,omitempty"`
-	CreatedAt       *timestamppb.Timestamp `protobuf:"bytes,100,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt       *timestamppb.Timestamp `protobuf:"bytes,101,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	BackupDirectory string `protobuf:"bytes,22,opt,name=backup_directory,json=backupDirectory,proto3" json:"backup_directory,omitempty"`
+	// Directory where serve log files are stored. Empty = default
+	// (env ORCHICON_LOG_DIR, else .dev/logs).
+	LogDirectory string `protobuf:"bytes,23,opt,name=log_directory,json=logDirectory,proto3" json:"log_directory,omitempty"`
+	// Max size of a single log file before it is rotated (MB).
+	// Default 100. Zero = default.
+	LogMaxSizeMb int64 `protobuf:"varint,24,opt,name=log_max_size_mb,json=logMaxSizeMb,proto3" json:"log_max_size_mb,omitempty"`
+	// How often the log rolls by time (hours; 24 = daily, 1 = hourly).
+	// Default 24. Zero = default.
+	LogRollIntervalHours int64 `protobuf:"varint,25,opt,name=log_roll_interval_hours,json=logRollIntervalHours,proto3" json:"log_roll_interval_hours,omitempty"`
+	// How many days rotated log files are retained before cleanup.
+	// Default 7. Zero = default.
+	LogRetentionDays int32 `protobuf:"varint,26,opt,name=log_retention_days,json=logRetentionDays,proto3" json:"log_retention_days,omitempty"`
+	// Max rotated log files kept on disk (newest kept). Default 7.
+	// Zero = default.
+	LogMaxFiles   int32                  `protobuf:"varint,27,opt,name=log_max_files,json=logMaxFiles,proto3" json:"log_max_files,omitempty"`
+	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,100,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,101,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *TenantSettings) Reset() {
@@ -226,6 +242,41 @@ func (x *TenantSettings) GetBackupDirectory() string {
 	return ""
 }
 
+func (x *TenantSettings) GetLogDirectory() string {
+	if x != nil {
+		return x.LogDirectory
+	}
+	return ""
+}
+
+func (x *TenantSettings) GetLogMaxSizeMb() int64 {
+	if x != nil {
+		return x.LogMaxSizeMb
+	}
+	return 0
+}
+
+func (x *TenantSettings) GetLogRollIntervalHours() int64 {
+	if x != nil {
+		return x.LogRollIntervalHours
+	}
+	return 0
+}
+
+func (x *TenantSettings) GetLogRetentionDays() int32 {
+	if x != nil {
+		return x.LogRetentionDays
+	}
+	return 0
+}
+
+func (x *TenantSettings) GetLogMaxFiles() int32 {
+	if x != nil {
+		return x.LogMaxFiles
+	}
+	return 0
+}
+
 func (x *TenantSettings) GetCreatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.CreatedAt
@@ -244,7 +295,7 @@ var File_orchicon_api_v1_settings_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"\n" +
-	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa6\b\n" +
+	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xfb\t\n" +
 	"\x0eTenantSettings\x120\n" +
 	"\x14default_worker_model\x18\x01 \x01(\tR\x12defaultWorkerModel\x12;\n" +
 	"\x1adefault_ask_orchicon_model\x18\x02 \x01(\tR\x17defaultAskOrchiconModel\x12F\n" +
@@ -261,7 +312,12 @@ const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"\x18default_budget_overrides\x18\x13 \x01(\tR\x16defaultBudgetOverrides\x12'\n" +
 	"\x0fbackup_schedule\x18\x14 \x01(\tR\x0ebackupSchedule\x122\n" +
 	"\x15backup_retention_days\x18\x15 \x01(\x05R\x13backupRetentionDays\x12)\n" +
-	"\x10backup_directory\x18\x16 \x01(\tR\x0fbackupDirectory\x129\n" +
+	"\x10backup_directory\x18\x16 \x01(\tR\x0fbackupDirectory\x12#\n" +
+	"\rlog_directory\x18\x17 \x01(\tR\flogDirectory\x12%\n" +
+	"\x0flog_max_size_mb\x18\x18 \x01(\x03R\flogMaxSizeMb\x125\n" +
+	"\x17log_roll_interval_hours\x18\x19 \x01(\x03R\x14logRollIntervalHours\x12,\n" +
+	"\x12log_retention_days\x18\x1a \x01(\x05R\x10logRetentionDays\x12\"\n" +
+	"\rlog_max_files\x18\x1b \x01(\x05R\vlogMaxFiles\x129\n" +
 	"\n" +
 	"created_at\x18d \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +

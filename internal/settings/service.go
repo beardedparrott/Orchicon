@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -95,6 +96,11 @@ func settingsRowToProto(r *db.TenantSettingsRow) *apiv1.TenantSettings {
 		BackupSchedule:                  r.BackupSchedule,
 		BackupRetentionDays:             r.BackupRetentionDays,
 		BackupDirectory:                 r.BackupDirectory,
+		LogDirectory:                    r.LogDirectory,
+		LogMaxSizeMb:                    r.LogMaxSizeMB,
+		LogRollIntervalHours:            r.LogRollIntervalHours,
+		LogRetentionDays:                r.LogRetentionDays,
+		LogMaxFiles:                     r.LogMaxFiles,
 		CreatedAt:                       timestamppb.New(r.CreatedAt),
 		UpdatedAt:                       timestamppb.New(r.UpdatedAt),
 	}
@@ -104,6 +110,13 @@ func settingsProtoToRow(s *apiv1.TenantSettings) db.TenantSettingsRow {
 	if s == nil {
 		return db.TenantSettingsRow{}
 	}
+	budget := s.DefaultBudgetOverrides
+	if strings.TrimSpace(budget) == "" {
+		// The column is jsonb NOT NULL DEFAULT '{}'; an empty string is
+		// invalid JSON. Treat an unset field as "no override" so a client
+		// that only edits log settings doesn't break the update.
+		budget = "{}"
+	}
 	return db.TenantSettingsRow{
 		DefaultWorkerModel:          s.DefaultWorkerModel,
 		DefaultAskOrchiconModel:     s.DefaultAskOrchiconModel,
@@ -112,7 +125,7 @@ func settingsProtoToRow(s *apiv1.TenantSettings) db.TenantSettingsRow {
 		StallTextLoopWindowSeconds:   s.StallTextLoopWindowSeconds,
 		StallRepetitionCount:         s.StallRepetitionCount,
 		StallRepetitionWindowSeconds: s.StallRepetitionWindowSeconds,
-		DefaultBudgetOverrides:       []byte(s.DefaultBudgetOverrides),
+		DefaultBudgetOverrides:       []byte(budget),
 		ExecutionReapGraceSeconds:    s.ExecutionReapGraceSeconds,
 		ExecutionReapConsecutiveFailures: s.ExecutionReapConsecutiveFailures,
 		ExecutionReconnectAttempts:   s.ExecutionReconnectAttempts,
@@ -120,6 +133,11 @@ func settingsProtoToRow(s *apiv1.TenantSettings) db.TenantSettingsRow {
 		BackupSchedule:              s.BackupSchedule,
 		BackupRetentionDays:         s.BackupRetentionDays,
 		BackupDirectory:             s.BackupDirectory,
+		LogDirectory:                s.LogDirectory,
+		LogMaxSizeMB:                s.LogMaxSizeMb,
+		LogRollIntervalHours:        s.LogRollIntervalHours,
+		LogRetentionDays:            s.LogRetentionDays,
+		LogMaxFiles:                 s.LogMaxFiles,
 	}
 }
 

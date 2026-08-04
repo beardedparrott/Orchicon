@@ -13,7 +13,8 @@ import { Message, proto3, protoInt64, Timestamp } from "@bufbuild/protobuf";
  *
  * Sections mirror the UI layout:
  *   - appearance:    theme/mode (client-side, persisted in localStorage)
- *   - defaults:      model refs, stall parameters, etc.
+ *   - defaults:      model refs, stall parameters, budgets, log management
+ *   - backups:       schedule + retention for automatic snapshots
  *   - future:        additional sections as the product grows
  *
  * @generated from message orchicon.api.v1.TenantSettings
@@ -148,6 +149,46 @@ export class TenantSettings extends Message<TenantSettings> {
   backupDirectory = "";
 
   /**
+   * Directory where serve log files are stored. Empty = default
+   * (env ORCHICON_LOG_DIR, else .dev/logs).
+   *
+   * @generated from field: string log_directory = 23;
+   */
+  logDirectory = "";
+
+  /**
+   * Max size of a single log file before it is rotated (MB).
+   * Default 100. Zero = default.
+   *
+   * @generated from field: int64 log_max_size_mb = 24;
+   */
+  logMaxSizeMb = protoInt64.zero;
+
+  /**
+   * How often the log rolls by time (hours; 24 = daily, 1 = hourly).
+   * Default 24. Zero = default.
+   *
+   * @generated from field: int64 log_roll_interval_hours = 25;
+   */
+  logRollIntervalHours = protoInt64.zero;
+
+  /**
+   * How many days rotated log files are retained before cleanup.
+   * Default 7. Zero = default.
+   *
+   * @generated from field: int32 log_retention_days = 26;
+   */
+  logRetentionDays = 0;
+
+  /**
+   * Max rotated log files kept on disk (newest kept). Default 7.
+   * Zero = default.
+   *
+   * @generated from field: int32 log_max_files = 27;
+   */
+  logMaxFiles = 0;
+
+  /**
    * @generated from field: google.protobuf.Timestamp created_at = 100;
    */
   createdAt?: Timestamp;
@@ -180,6 +221,11 @@ export class TenantSettings extends Message<TenantSettings> {
     { no: 20, name: "backup_schedule", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 21, name: "backup_retention_days", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 22, name: "backup_directory", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 23, name: "log_directory", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 24, name: "log_max_size_mb", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 25, name: "log_roll_interval_hours", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 26, name: "log_retention_days", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 27, name: "log_max_files", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 100, name: "created_at", kind: "message", T: Timestamp },
     { no: 101, name: "updated_at", kind: "message", T: Timestamp },
   ]);

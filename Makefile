@@ -62,6 +62,17 @@ vet: ## Run go vet
 tidy: ## Run go mod tidy
 	$(GO) mod tidy
 
+# clean removes local build artifacts + the Go build cache. The Go cache
+# grows to tens of GB during heavy dev (the compiler keeps every
+# intermediate build artifact); Go auto-trims it lazily but rarely down to
+# a small size. Run this when disk is tight — it does NOT touch the DB,
+# container images, or any runtime data.
+.PHONY: clean
+clean: ## Remove local build artifacts and the Go build cache (dev hygiene)
+	$(GO) clean -cache -testcache
+	@command -v $(GO) >/dev/null 2>&1 && go clean -modcache 2>/dev/null || true
+	@rm -f $(BIN_DIR)/orchicon
+
 # --- Database --------------------------------------------------------------
 .PHONY: migrate migrate-diff migrate-hash rls-check
 migrate: ## Apply pending Atlas migrations to $$DB_URL
