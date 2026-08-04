@@ -30,6 +30,12 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.179 (2026-08-04)
+
+| Type | Change |
+|---|---|
+| Bug fix | **The workflow decision is now a single source of truth.** A workflow's routing used to read `_decision` from three competing signals — the `ORCHICON WORKER SUMMARY: success\|failure` word, a standalone `_decision:` line, and a hard rule that forced `failure` whenever an `_issues:` block was parsed. The substring parser matched `_issues:` *anywhere* in a line, so a reviewer writing "Nitpicks (non-blocking, not `_issues:`)" was misread as a blockers list and the workflow looped back despite a `success` summary — observed on run `01KZ55262Z2QSPV17NQZPSV8PZ`, which burned all 4 loop iterations before aborting. The decision now comes **only** from the first word after `ORCHICON WORKER SUMMARY:`; a standalone `_decision:` line is ignored and `_issues:` is captured for the run view / `.orchicon/issues` but never flips the decision. The composite prompt (and the re-ask prompt + AI Approver seed) now tell workers exactly this instead of instructing an `_issues:` failure channel. Unit tests cover the exact reviewer/QA output shapes that previously looped. |
+
 ### v0.1.178 (2026-08-03)
 
 | Type | Change |
