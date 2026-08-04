@@ -763,7 +763,7 @@ Workers now receive full execution context including:
 3. **Defaults → Default models**:
    - **Default worker model**: fallback when a worker version has no `model_ref` set. If both are empty, dispatch fails (no hardcoded fallback).
    - **Default Ask Orchicon model**: model used by the Ask Orchicon conversational agent. If empty, dispatch will fail.
- 4. **Defaults → Recovery stall parameters**: per-execution stall thresholds stored in the DB and read at dispatch time. Each field has an env-var override (`ORCHICON_STALL_*`) for dev debugging.
+ 4. **Defaults → Recovery stall parameters**: per-execution stall thresholds stored in the DB and read at dispatch time. Each field has an env-var override (`ORCHICON_STALL_*`) for dev debugging. Includes the **wall clock timeout (seconds)** — the hard per-execution deadline that kills the subprocess even if the model is still producing output (the runaway-spend backstop). Tenant value `0` means "use the env var or built-in default (3600)"; a worker's own `budget_overrides.wall_clock_seconds` overrides this, and an explicit worker `0` disables that worker's timeout. Env override: `ORCHICON_STALL_WALL_CLOCK_SECONDS`.
  5. **Defaults → Execution liveness reaper**: tuning for the execution-liveness reaper (the sweep that fails executions whose runtime process is gone). The liveness probe can false-negative on a transient docker/socket hiccup, so an execution is only reaped once it is **older than the grace window** (default 60s) **and** has been reported not-alive for **consecutive-failures** checks in a row (default 3). Env overrides: `ORCHICON_REAP_GRACE_SECONDS`, `ORCHICON_REAP_CONSECUTIVE_FAILURES`.
  6. **Defaults → Execution transport resilience**: the exec stream between the control plane and the runtime supervisor can break on a transient socket/docker hiccup. The execution is **not** failed on a broken stream: the client retries (**reconnect attempts**, default 3) and the supervisor keeps the child running for the **reconnect grace** (default 60s) so a re-attach can resume. Only when the retries are exhausted (or the context was explicitly cancelled) does the execution fail and fall through to recovery. Env overrides: `ORCHICON_RECONNECT_ATTEMPTS`, `ORCHICON_RECONNECT_GRACE_SECONDS`.
 
@@ -1093,6 +1093,7 @@ See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
 | `ORCHICON_STALL_TEXT_LOOP_WINDOW` | `10m` | Time of text-only output with no meaningful action before stall (overrides DB setting) |
 | `ORCHICON_STALL_REPETITION_COUNT` | `5` | Repeated tool calls before stall within window (overrides DB setting) |
 | `ORCHICON_STALL_REPETITION_WINDOW` | `300s` | Window for repetition count detection (overrides DB setting) |
+| `ORCHICON_STALL_WALL_CLOCK_SECONDS` | `3600` | Hard per-execution timeout in seconds. 0 = disabled. Default 3600 (1 hour). (overrides DB setting) |
 | `ORCHICON_REAP_GRACE_SECONDS` | `60` | Liveness reaper: min execution age before reaping is considered (overrides DB setting) |
 | `ORCHICON_REAP_CONSECUTIVE_FAILURES` | `3` | Liveness reaper: consecutive not-alive probes before an execution is reaped (overrides DB setting) |
 | `ORCHICON_RECONNECT_ATTEMPTS` | `3` | Transport resilience: client retries of a broken exec stream (overrides DB setting) |

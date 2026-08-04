@@ -82,6 +82,14 @@ message TenantSettings {
   // Seconds. Default 60.
   int64 execution_reconnect_grace_seconds = 18;
 
+  // --- Execution budget / wall clock ---
+  // Hard per-execution timeout in seconds. A worker's own
+  // budget_overrides.wall_clock_seconds overrides this; this is the
+  // tenant-level default applied when a worker does not specify one.
+  // Zero uses env ORCHICON_STALL_WALL_CLOCK_SECONDS, else the built-in
+  // default 3600 (1 hour). Explicit 0 on a worker disables its timeout.
+  int64 stall_wall_clock_seconds = 19;
+
   // --- Backup configuration ---
 
   // Backup schedule in cron expression format (e.g. "0 3 * * *" for daily 3am).

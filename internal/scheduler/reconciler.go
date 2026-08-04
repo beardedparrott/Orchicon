@@ -471,6 +471,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	var stallNoProgress, stallNoFileDiff, stallTextLoop int64
 	var stallRepCount int32
 	var stallRepWindow int64
+	var stallWallClock int64
 	var reconnectAttempts int32
 	var reconnectGrace int64
 	{
@@ -485,6 +486,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				stallTextLoop = s.StallTextLoopWindowSeconds
 				stallRepCount = s.StallRepetitionCount
 				stallRepWindow = s.StallRepetitionWindowSeconds
+				stallWallClock = s.StallWallClockSeconds
 				reconnectAttempts = s.ExecutionReconnectAttempts
 				reconnectGrace = s.ExecutionReconnectGraceSeconds
 			}
@@ -527,6 +529,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		StallTextLoopWindowSeconds:    stallTextLoop,
 		StallRepetitionCount:          stallRepCount,
 		StallRepetitionWindowSeconds:  stallRepWindow,
+		StallWallClockSeconds:         stallWallClock,
 		ReconnectAttempts:             reconnectAttempts,
 		ReconnectGraceSeconds:         reconnectGrace,
 	}

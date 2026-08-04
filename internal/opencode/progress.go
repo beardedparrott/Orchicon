@@ -336,22 +336,46 @@ const defaultWallClockTimeout = 3600 * time.Second
 // fires → recovery with reason "wall_clock_timeout" (docs/06 §2 budget
 // overrun trigger).
 //
-// A worker may set wall_clock_seconds to 0 to disable the hard timeout
-// (relying solely on stall detection); this is unusual and discouraged.
-// An ABSENT field falls back to defaultWallClockTimeout so every
-// execution has a hard backstop even when the worker does not opt in.
-func wallClockDeadline(ctx context.Context, budgets []byte) (time.Time, bool) {
+// tenantDefaultSeconds is the tenant-level stall_wall_clock_seconds setting
+// (0 = unset); it is used when the worker's budget_overrides do not
+// explicitly set wall_clock_seconds. A worker may set wall_clock_seconds
+// to 0 to disable the hard timeout (relying solely on stall detection);
+// this is unusual and discouraged. The fallback chain is: explicit worker
+// value → tenant default → env ORCHICON_STALL_WALL_CLOCK_SECONDS → code
+// default (3600s), so every execution has a hard backstop.
+func wallClockDeadline(ctx context.Context, budgets []byte, tenantDefaultSeconds int64) (time.Time, bool) {
+	want := func() (time.Duration, bool) {
+		if v := os.Getenv("ORCHICON_STALL_WALL_CLOCK_SECONDS"); v != "" {
+			if d, err := time.ParseDuration(v + "s"); err == nil && d > 0 {
+				return d, true
+			}
+		}
+		if tenantDefaultSeconds > 0 {
+			return time.Duration(tenantDefaultSeconds) * time.Second, true
+		}
+		return 0, false
+	}
 	if len(budgets) == 0 {
+		if d, ok := want(); ok {
+			return time.Now().Add(d), true
+		}
 		return time.Now().Add(defaultWallClockTimeout), true
 	}
 	var b struct {
 		WallClockSeconds *float64 `json:"wall_clock_seconds"`
 	}
 	if err := json.Unmarshal(budgets, &b); err != nil {
-		return time.Time{}, false
+		// Unparseable budgets — fall back to the tenant/env default.
+		if d, ok := want(); ok {
+			return time.Now().Add(d), true
+		}
+		return time.Now().Add(defaultWallClockTimeout), true
 	}
-	// Absent field → documented default backstop (3600s).
+	// Absent field → tenant/env/default backstop.
 	if b.WallClockSeconds == nil {
+		if d, ok := want(); ok {
+			return time.Now().Add(d), true
+		}
 		return time.Now().Add(defaultWallClockTimeout), true
 	}
 	// Explicit 0 (or negative) disables the hard timeout.

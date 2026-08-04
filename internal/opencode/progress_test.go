@@ -97,7 +97,7 @@ func TestStallNoTripWhenProgressing(t *testing.T) {
 // produces a deadline.
 func TestWallClockDeadline(t *testing.T) {
 	// Set budget → deadline returned.
-	d, ok := wallClockDeadline(nil, []byte(`{"wall_clock_seconds":30}`))
+	d, ok := wallClockDeadline(nil, []byte(`{"wall_clock_seconds":30}`), 0)
 	if !ok || d.IsZero() {
 		t.Fatal("expected a deadline")
 	}
@@ -106,7 +106,7 @@ func TestWallClockDeadline(t *testing.T) {
 	}
 	// No budget → the documented default backstop (3600s) applies so every
 	// execution has a hard timeout even when the worker doesn't opt in.
-	d, ok = wallClockDeadline(nil, []byte(`{}`))
+	d, ok = wallClockDeadline(nil, []byte(`{}`), 0)
 	if !ok {
 		t.Fatal("expected the default deadline when wall_clock_seconds absent")
 	}
@@ -114,16 +114,46 @@ func TestWallClockDeadline(t *testing.T) {
 		t.Fatalf("default deadline = %v from now, want ~%v", time.Until(d), want)
 	}
 	// Zero disables the hard timeout.
-	if _, ok := wallClockDeadline(nil, []byte(`{"wall_clock_seconds":0}`)); ok {
+	if _, ok := wallClockDeadline(nil, []byte(`{"wall_clock_seconds":0}`), 0); ok {
 		t.Fatal("expected no deadline when wall_clock_seconds=0")
 	}
 	// Negative is treated as disabled too (never a past deadline).
-	if _, ok := wallClockDeadline(nil, []byte(`{"wall_clock_seconds":-5}`)); ok {
+	if _, ok := wallClockDeadline(nil, []byte(`{"wall_clock_seconds":-5}`), 0); ok {
 		t.Fatal("expected no deadline when wall_clock_seconds negative")
 	}
-	// Unparseable budgets → no deadline (fail safe).
-	if _, ok := wallClockDeadline(nil, []byte(`not-json`)); ok {
-		t.Fatal("expected no deadline on unparseable budgets")
+	// Unparseable budgets → fall back to the default backstop (never hang).
+	d, ok = wallClockDeadline(nil, []byte(`not-json`), 0)
+	if !ok {
+		t.Fatal("expected the default deadline on unparseable budgets")
+	}
+	if want := defaultWallClockTimeout; time.Until(d) > want+time.Second || time.Until(d) < want-time.Second {
+		t.Fatalf("unparseable fallback = %v from now, want ~%v", time.Until(d), want)
+	}
+}
+
+// TestWallClockDeadlineTenantDefault verifies the tenant-level
+// stall_wall_clock_seconds setting is used when the worker budget does not
+// explicitly set wall_clock_seconds.
+func TestWallClockDeadlineTenantDefault(t *testing.T) {
+	// Worker has no explicit wall clock; tenant default supplies it.
+	d, ok := wallClockDeadline(nil, []byte(`{}`), 120)
+	if !ok {
+		t.Fatal("expected a deadline from the tenant default")
+	}
+	if want := time.Duration(120) * time.Second; time.Until(d) > want+time.Second || time.Until(d) < want-time.Second {
+		t.Fatalf("tenant default deadline = %v from now, want ~%v", time.Until(d), want)
+	}
+	// Worker's explicit value overrides the tenant default.
+	d, ok = wallClockDeadline(nil, []byte(`{"wall_clock_seconds":30}`), 120)
+	if !ok {
+		t.Fatal("expected explicit worker value to win")
+	}
+	if want := time.Duration(30) * time.Second; time.Until(d) > want+time.Second || time.Until(d) < want-time.Second {
+		t.Fatalf("explicit worker value = %v from now, want ~%v", time.Until(d), want)
+	}
+	// Explicit 0 in the worker disables even when a tenant default exists.
+	if _, ok := wallClockDeadline(nil, []byte(`{"wall_clock_seconds":0}`), 120); ok {
+		t.Fatal("explicit zero must disable even with a tenant default set")
 	}
 }
 

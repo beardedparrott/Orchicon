@@ -466,6 +466,7 @@ function DefaultsTab() {
   const [draftTextLoop, setDraftTextLoop] = useState("");
   const [draftRepetitionCount, setDraftRepetitionCount] = useState("");
   const [draftRepetitionWindow, setDraftRepetitionWindow] = useState("");
+  const [draftWallClockSeconds, setDraftWallClockSeconds] = useState("");
   const [draftReapGrace, setDraftReapGrace] = useState("");
   const [draftReapFailures, setDraftReapFailures] = useState("");
   const [draftReconnectAttempts, setDraftReconnectAttempts] = useState("");
@@ -481,6 +482,7 @@ function DefaultsTab() {
       setDraftTextLoop(String(settings.stallTextLoopWindowSeconds ?? ""));
       setDraftRepetitionCount(String(settings.stallRepetitionCount ?? ""));
       setDraftRepetitionWindow(String(settings.stallRepetitionWindowSeconds ?? ""));
+      setDraftWallClockSeconds(String(settings.stallWallClockSeconds ?? ""));
       setDraftReapGrace(String(settings.executionReapGraceSeconds ?? ""));
       setDraftReapFailures(String(settings.executionReapConsecutiveFailures ?? ""));
       setDraftReconnectAttempts(String(settings.executionReconnectAttempts ?? ""));
@@ -499,6 +501,7 @@ function DefaultsTab() {
         stallTextLoopWindowSeconds: parseInt(draftTextLoop) || 0,
         stallRepetitionCount: parseInt(draftRepetitionCount) || 0,
         stallRepetitionWindowSeconds: parseInt(draftRepetitionWindow) || 0,
+        stallWallClockSeconds: parseInt(draftWallClockSeconds) || 0,
         executionReapGraceSeconds: parseInt(draftReapGrace) || 0,
         executionReapConsecutiveFailures: parseInt(draftReapFailures) || 0,
         executionReconnectAttempts: parseInt(draftReconnectAttempts) || 0,
@@ -591,6 +594,13 @@ function DefaultsTab() {
                 value={draftRepetitionWindow}
                 onChange={setDraftRepetitionWindow}
                 placeholder="300"
+              />
+              <StallField
+                label="Wall clock timeout (seconds)"
+                description="Hard per-execution timeout. 0 = disabled. Default 3600 (1 hour)."
+                value={draftWallClockSeconds}
+                onChange={setDraftWallClockSeconds}
+                placeholder="3600"
               />
             </div>
           </CardContent>

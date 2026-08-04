@@ -41,6 +41,7 @@ type ExecutionManifest struct {
 	StallTextLoopWindowSeconds    int64
 	StallRepetitionCount          int32
 	StallRepetitionWindowSeconds  int64
+	StallWallClockSeconds         int64
 	// ReconnectAttempts is how many times the adapter retries a broken exec
 	// stream (transport blip) before failing the execution. Zero = built-in
 	// default (3).

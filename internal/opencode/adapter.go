@@ -242,7 +242,7 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// BeginTenantTx fails with "context deadline exceeded" and the
 	// execution stays running forever (observed live on a wall-clock E2E).
 	procCtx := ctx
-	if deadline, ok := wallClockDeadline(ctx, manifest.Budgets); ok {
+	if deadline, ok := wallClockDeadline(ctx, manifest.Budgets, manifest.StallWallClockSeconds); ok {
 		var cancel context.CancelFunc
 		procCtx, cancel = context.WithDeadline(ctx, deadline)
 		defer cancel()
@@ -1125,7 +1125,7 @@ func (a *Adapter) startInRuntime(ctx context.Context, execRow db.ExecutionRow, m
 	// execution never transitions).
 	execCtx, execCancel := context.WithCancel(ctx)
 	defer execCancel()
-	if deadline, ok := wallClockDeadline(ctx, manifest.Budgets); ok {
+	if deadline, ok := wallClockDeadline(ctx, manifest.Budgets, manifest.StallWallClockSeconds); ok {
 		var dcancel context.CancelFunc
 		execCtx, dcancel = context.WithDeadline(execCtx, deadline)
 		defer dcancel()
