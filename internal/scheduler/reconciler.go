@@ -781,29 +781,19 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 		results["_summary"] = summary
 	}
 	results["_worker"] = exec.WorkerID
-	// Extract structured fields from worker output for the
-	// loop_decision step: _decision (success/failure) and _issues.
-	// The worker's AGENTS.md instructs it to emit these on their
-	// own line at the end of the response. Without this extraction
-	// the _decision signal stays buried in _output text and the
-	// loop decision can't route to success/failure — it falls
-	// through to re-ask every time.
-	extractStructuredResult(output, results)
-
-	// Fallback: if no explicit _decision marker was found, parse it
-	// from the ORCHICON WORKER SUMMARY: <decision> — <text> format.
-	if _, ok := results["_decision"]; !ok {
-		if d := extractSummaryDecision(output); d != "" {
-			results["_decision"] = d
-		}
+	// The decision signal is a SINGLE source of truth: the first word
+	// after the ORCHICON WORKER SUMMARY: marker. There is deliberately
+	// no separate `_decision:` or `_issues:` channel that can contradict
+	// it — a standalone `_decision:` line or an `_issues:` block must
+	// never override the summary word. `_issues` is still captured for
+	// the run view and .orchicon/issues (informational only). The
+	// decision key is only set when a marker was found, so a step run
+	// that starts with a placeholder (e.g. worker-backed approval's
+	// `_decision: "pending"`) keeps it until a real signal lands.
+	if d := extractSummaryDecision(output); d != "" {
+		results["_decision"] = d
 	}
-	// Hard rule: if the worker explicitly wrote _issues: in its output,
-	// the work is not accepted regardless of what _decision the model
-	// chose. _issues is no longer auto-preserved from prior iterations,
-	// so any _issues present must come from the current worker's output.
-	if issues, ok := results["_issues"].(string); ok && strings.TrimSpace(issues) != "" {
-		results["_decision"] = "failure"
-	}
+	extractIssuesLine(output, results)
 	// Extract list of modified files from diff markers in the output.
 	if output != "" {
 		if files := extractTouchedFiles(output); len(files) > 0 {
@@ -1302,81 +1292,30 @@ func enqueueWorkItemEvent(ctx context.Context, tx pgx.Tx, eventType string, w db
 
 func strPtr(s string) *string { return &s }
 
-// extractStructuredResult scans the worker's text output for structured
-// fields that the loop_decision step reads from the work item's top-level
-// results JSON. Recognised fields:
-//
-//	_decision: success  — the work was accepted (forward)
-//	_decision: failure  — the work was rejected (loop back)
-//	_issues: <text>      — details about what needs fixing
-//
-// Only fields at the start of a line (with optional code-fence markers)
-// are extracted — inline references like "The team decided: failure" are
-// ignored to avoid false matches. Each extracted field is written into
-// `results` under its key so the loop_decision's code path at
-// workflow_reconciler.go:838 finds it via wiResult[cfg.DecisionField].
-func extractStructuredResult(output string, results map[string]any) {
+// extractIssuesLine captures an `_issues:` block from the worker's
+// output for the run view and .orchicon/issues. It is INFORMATIONAL
+// ONLY — it never influences the workflow decision, which is the single
+// ORCHICON WORKER SUMMARY: word. It matches only lines that START with
+// `_issues:` (after optional markdown list bullets / code-fence markers)
+// so the literal substring `_issues:` in prose like "(not `_issues:`)"
+// can never be misread as an issues block.
+func extractIssuesLine(output string, results map[string]any) {
 	if output == "" {
 		return
 	}
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
+	for _, line := range strings.Split(output, "\n") {
 		trimmed := strings.TrimSpace(line)
-		// Strip markdown code-fence markers the worker might have
-		// wrapped the signal in (e.g. `_decision: success`).
+		// Strip a leading markdown list bullet ("- " / "* ").
+		trimmed = strings.TrimPrefix(trimmed, "- ")
+		trimmed = strings.TrimPrefix(trimmed, "* ")
+		trimmed = strings.TrimSpace(trimmed)
+		// Strip markdown code-fence markers.
 		trimmed = strings.TrimPrefix(trimmed, "```")
 		trimmed = strings.TrimSuffix(trimmed, "```")
 		trimmed = strings.TrimSpace(trimmed)
-	}
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		trimmed = strings.TrimPrefix(trimmed, "```")
-		trimmed = strings.TrimSuffix(trimmed, "```")
-		trimmed = strings.TrimSpace(trimmed)
-
-		// Extract _decision: handles any delimiter (":" alone or
-		// ":space") and concatenated tokens like
-		// "_decision:failuresomething" by prefix-matching the first
-		// word for "success" or "failure".
-		if idx := strings.Index(trimmed, "_decision:"); idx >= 0 {
-			after := strings.TrimSpace(trimmed[idx+len("_decision:"):])
-			parts := strings.Fields(after)
-			if len(parts) > 0 {
-				first := parts[0]
-				var decision string
-				switch {
-				case strings.HasPrefix(first, "success"):
-					decision = "success"
-				case strings.HasPrefix(first, "failure"):
-					decision = "failure"
-				}
-				if decision != "" {
-					results["_decision"] = decision
-					// Extract _issues whether it follows as a
-					// separate token or is concatenated with the
-					// decision token (e.g. "failure_issues:...").
-					rest := strings.TrimSpace(strings.TrimPrefix(after, first))
-					if i := strings.Index(rest, "_issues:"); i >= 0 {
-						issues := strings.TrimSpace(rest[i+len("_issues:"):])
-						if issues != "" {
-							results["_issues"] = issues
-						}
-					} else if i := strings.Index(first, "_issues:"); i >= 0 {
-						// Concatenated: "failure_issues:..."
-						issues := strings.TrimSpace(first[i+len("_issues:"):])
-						if issues != "" {
-							results["_issues"] = issues
-						}
-					}
-				}
-			}
-		}
-
-		// Extract _issues: when it's on its own line (not already
-		// captured from the _decision line above).
-		if i := strings.Index(trimmed, "_issues:"); i >= 0 {
+		if i := strings.Index(trimmed, "_issues:"); i == 0 {
 			if _, ok := results["_issues"]; !ok {
-				issues := strings.TrimSpace(trimmed[i+len("_issues:"):])
+				issues := strings.TrimSpace(trimmed[len("_issues:"):])
 				if issues != "" {
 					results["_issues"] = issues
 				}

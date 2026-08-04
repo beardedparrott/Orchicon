@@ -1581,13 +1581,12 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	// 3. Instructions.
 	sb.WriteString("# Instructions\n\n")
 
-	// Guidance on _issues: only include blocking problems that the next
-	// worker MUST address. Cosmetic nitpicks or optional suggestions do
-	// not count as issues. If you include _issues:, the workflow treats
-	// the result as FAILURE regardless of the ORCHICON WORKER SUMMARY
-	// status word — so only use _issues: when work genuinely cannot
-	// proceed without fixes.
-	sb.WriteString("If you find bugs or problems that block acceptance, include `_issues:` with a brief description of what needs fixing. Only use `_issues:` for genuine blockers — the system treats any `_issues:` content as a failure signal.\n\n")
+	// The workflow decision comes from exactly ONE signal: the word after
+	// ORCHICON WORKER SUMMARY:. There is no separate _issues:/_decision:
+	// failure channel. Blocking problems are reported by ending with
+	// `ORCHICON WORKER SUMMARY: failure` and describing them in the
+	// summary text — that is the only way the workflow routes to a loop.
+	sb.WriteString("The workflow routes on exactly one signal: the word after `ORCHICON WORKER SUMMARY:` — `success` or `failure`. There is no `_issues:` failure channel. If work genuinely cannot be accepted, end with `ORCHICON WORKER SUMMARY: failure` and say what needs fixing in the summary text. Non-blocking observations belong in the summary text only and never affect the routing.\n\n")
 
 	// Workflow-aware role context: tell the worker where they fit in the
 	// overall workflow so they don't perform work meant for other steps.
@@ -1705,7 +1704,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	sb.WriteString("or\n")
 	sb.WriteString("```\nORCHICON WORKER SUMMARY: failure — Found 3 bugs in the implementation.\n```\n\n")
 	sb.WriteString("The first word (`success` or `failure`) is used to route the workflow. The text after `—` is passed to the next stage as the summary of your work.\n\n")
-	sb.WriteString("**Important:** If you include `_issues:` in your response, the workflow treats the result as `failure` regardless of the status word. Only use `_issues:` when you find blocking problems. If you have minor suggestions that don't block progress, leave them out of `_issues:` and mention them in your summary text instead.\n\n")
+	sb.WriteString("**Important:** The workflow routes on the single word after `ORCHICON WORKER SUMMARY:` — `success` or `failure`. There is no `_issues:` failure channel: any `_issues:` block in your response is informational only and never changes the routing. If you find blocking problems, end with `failure` and explain them in the summary text. If you have only minor suggestions, keep the routing `success` and mention them in your summary text.\n\n")
 
 	// Prior execution timeline: show what each completed step produced,
 	// so the worker understands the full context including loop-backs.
@@ -1811,6 +1810,7 @@ func runtimeEnvironmentBlock(image string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "\n## Runtime environment\n\n")
 	fmt.Fprintf(&sb, "You are running inside an ephemeral, rootless Linux container (`%s`). Everything you install is wiped when the workflow run ends, so only save durable work to the project directory.\n\n", img)
+	sb.WriteString("- **Scratch directory:** `/tmp/orchicon` is the ONE place outside the project you may read and write. Put ephemeral files there (screenshots, logs, downloaded artifacts you need to inspect). It is wiped at run end — never put durable work there, and always save final outputs to the project directory.\n")
 	sb.WriteString("- You are **not root** and cannot become root: `sudo` is blocked and `apt-get` refuses to run without root. Do not attempt them.\n")
 	sb.WriteString("- You may install tools freely into the ephemeral filesystem with the user-space package managers that ship in the image: `pip install` (PIP_BREAK_SYSTEM_PACKAGES is set), `npm install`, `mise install <tool>`, `uv`, `bun`, `curl`. These need no root and are wiped at run end.\n")
 	sb.WriteString("- System packages are baked at build time; `apt-get install` will not work. If you need a system shared library that is missing (e.g. `libGL.so.1` for a GUI toolkit), fetch and extract it without root:\n\n")
@@ -2794,7 +2794,7 @@ func (r *WorkflowReconciler) reaskDecisionStep(ctx context.Context, tx pgx.Tx, t
 				"```\nORCHICON WORKER SUMMARY: failure — <summary>\n```\n" +
 				"The first word (`success` or `failure`) routes the workflow. " +
 				"If the work is complete and correct, use `success`. " +
-				"If there are issues that need fixing, use `failure` and include `_issues` with details."
+				"If there are issues that need fixing, use `failure` and explain what needs fixing in the summary text."
 
 			// Preserve the existing composite (worker identity, project,
 			// task, ancestors, workflow context, recovery, instructions)

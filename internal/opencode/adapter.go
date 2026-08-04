@@ -227,9 +227,10 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// still run commands against paths outside the project root); the
 	// actual sandbox is enforced by the permission rules injected into
 	// OPENCODE_CONFIG_CONTENT in BuildConfigContent — external_directory
-	// is denied and destructive bash commands are hard-denied, both of
-	// which hold even under --auto (docs/05 §10: workers must operate
-	// within their assigned project directory).
+	// is denied except for the single ScratchDir carve-out (/tmp/orchicon)
+	// and destructive bash commands are hard-denied, both of which hold
+	// even under --auto (docs/05 §10: workers must operate within their
+	// assigned project directory).
 	if manifest.SystemPrompt != "" {
 		args = append(args, "--agent", workerAgent)
 	}

@@ -83,6 +83,13 @@ func RunSupervisor(socketPath string, log *slog.Logger) error {
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
 		return fmt.Errorf("supervisor: mkdir: %w", err)
 	}
+	// Pre-create the worker scratch directory (matching the opencode
+	// external_directory carve-out in internal/opencode/config.go) so it
+	// exists as the runtime user's own dir before any worker runs. /tmp is
+	// a tmpfs here, so this is ephemeral — wiped with the container.
+	if err := os.MkdirAll("/tmp/orchicon", 0o755); err != nil {
+		return fmt.Errorf("supervisor: mkdir scratch: %w", err)
+	}
 	l, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return fmt.Errorf("supervisor: listen %s: %w", socketPath, err)

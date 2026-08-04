@@ -231,6 +231,16 @@ func normalizeMCPEntries(entries map[string]any) map[string]any {
 	return result
 }
 
+// ScratchDir is the single directory workers may use outside the project
+// for ephemeral scratch (screenshots, logs, downloaded files). It is the
+// ONLY external_directory carve-out: a precise `/tmp/orchicon/**` allow,
+// so the supervisor socket (/tmp/orchicon-agent.sock), the execution
+// guard shims (/tmp/orchicon-guard-*), and the opencode-data dirs
+// (/tmp/opencode-data-*, which hold the seeded model auth.json copies)
+// stay behind the deny. Workers are told to use it in the composite
+// prompt's runtime-environment block.
+const ScratchDir = "/tmp/orchicon"
+
 // permissionRules builds the opencode `permission` config injected into every
 // worker execution. Rules with an explicit "deny" are enforced even when the
 // adapter spawns opencode with --auto (auto-approval only affects "ask"), so a
@@ -238,9 +248,12 @@ func normalizeMCPEntries(entries map[string]any) map[string]any {
 //
 // external_directory is the primary guard: it is triggered by any tool that
 // reads or writes a path outside the project working directory (read, edit,
-// glob, grep, and path-carrying bash commands). Denying it hard-scopes every
-// worker to its --dir project directory, which is the scoping Orchicon
-// documents for workers (workers must operate within their assigned project).
+// glob, grep, and path-carrying bash commands). It is denied by default with a
+// single precise carve-out for ScratchDir — a worker may read/write ephemeral
+// scratch under /tmp/orchicon but nothing else outside the project. opencode
+// evaluates the rules in order with the LAST matching rule winning, so the
+// catch-all "*" deny comes first and the specific scratch allow overrides it
+// only for that subtree (see config_permission_test.go).
 //
 // The bash deny list is the second layer. opencode matches each rule against
 // the command string, so these only see the exact command the Bash tool runs:
@@ -301,8 +314,11 @@ func permissionRules() map[string]any {
 		rules[p] = "deny"
 	}
 	return map[string]any{
-		"external_directory": "deny",
-		"bash":               rules,
+		"external_directory": map[string]any{
+			"*":                     "deny",
+			ScratchDir + "/**":      "allow",
+		},
+		"bash": rules,
 	}
 }
 

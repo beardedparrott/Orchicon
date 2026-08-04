@@ -210,13 +210,13 @@ var cannedWorkers = []cannedWorker{
 			"- Is the work ready to ship, or does it need another iteration?\n\n" +
 			"If rejecting, explain specifically what needs to be fixed before the next review cycle.\n\n" +
 			"## Decision format\n" +
-			"At the end of your review, output a decision signal on its own line:\n\n" +
+			"At the end of your review, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — either `success` or `failure` — and a short paragraph explaining your decision:\n\n" +
 			bt + bt + bt + "\n" +
-			"_decision: approved\n" +
+			"ORCHICON WORKER SUMMARY: success — The work meets the acceptance criteria and is ready to ship.\n" +
 			bt + bt + bt + "\n" +
 			"or\n" +
 			bt + bt + bt + "\n" +
-			"_decision: rejected\n" +
+			"ORCHICON WORKER SUMMARY: failure — The work needs another iteration; the readouts don't match the acceptance criteria.\n" +
 			bt + bt + bt,
 	},
 }
