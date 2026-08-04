@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -46,6 +47,13 @@ type Adapter struct {
 	log    *slog.Logger
 	mu     sync.Mutex
 	active map[string]*exec.Cmd // execution_id → running subprocess
+
+	// stallReason records the stall reason that terminated an execution,
+	// so the OnResult(false) error message keeps the actual trigger
+	// (e.g. "stalled:no_progress") instead of a generic "signal: killed".
+	// Keyed by execution id; set by the monitor's onStall closure before
+	// the kill, read+cleared by the terminal error builder.
+	stallReason map[string]string
 
 	// rt is the workflow runtime daemon client. When non-nil AND an
 	// execution carries a RuntimeWorkflowID, the adapter dispatches into
@@ -108,6 +116,47 @@ type UsageRecorderFunc func(ctx context.Context, in UsageRecord) error
 // constructs it from the aigateway.UsageRecorder.
 func (a *Adapter) SetUsageRecorder(fn UsageRecorderFunc) { a.usageRecorder = fn }
 
+// recordStallReason remembers which stall signal terminated an execution so
+// the terminal error message preserves the real trigger (e.g.
+// "stalled:no_progress") instead of a generic "signal: killed". Read+cleared
+// by the terminal error builders in Start and startInRuntime.
+func (a *Adapter) recordStallReason(execID, reason string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.stallReason[execID] = reason
+}
+
+// takeStallReason returns and clears the recorded stall reason for an
+// execution ("" if none — normal completion or non-stall failure).
+func (a *Adapter) takeStallReason(execID string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	r := a.stallReason[execID]
+	delete(a.stallReason, execID)
+	return r
+}
+
+// terminateOnStall kills the subprocess for a fatal stall so the execution
+// lands in `failed` via the normal OnResult(false) → pollTaskStep recovery
+// path. workflowID is the runtime container the exec runs in ("" for a local
+// in-process subprocess). For the runtime path it signals the supervisor to
+// SIGKILL the opencode child; for the local path it kills the tracked
+// subprocess directly. The stall reason is recorded first so the terminal
+// error message preserves why the execution was terminated.
+func (a *Adapter) terminateOnStall(ctx context.Context, execID, reason, workflowID string) {
+	a.recordStallReason(execID, reason)
+	if workflowID != "" && a.rt != nil {
+		_ = a.rt.Signal(ctx, workflowID, runtime.SignalRequest{ExecID: execID, Signal: "SIGKILL"})
+		return
+	}
+	a.mu.Lock()
+	cmd := a.active[execID]
+	a.mu.Unlock()
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+}
+
 // workerAgent is the opencode agent name the adapter injects the worker's
 // composed system prompt under (selected with --agent).
 const workerAgent = "orchicon-worker"
@@ -124,8 +173,9 @@ const (
 // New creates an OpenCode adapter bridge.
 func New(log *slog.Logger) *Adapter {
 	return &Adapter{
-		log:    log,
-		active: make(map[string]*exec.Cmd),
+		log:         log,
+		active:      make(map[string]*exec.Cmd),
+		stallReason: make(map[string]string),
 	}
 }
 
@@ -184,9 +234,17 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// The worker's budget_overrides.wall_clock_seconds bounds the
 	// subprocess; when the deadline hits the process is killed →
 	// OnResult(false) → recovery with reason "wall_clock_timeout".
+	//
+	// The deadline is applied ONLY to the subprocess context (procCtx),
+	// never to the ctx handed to callbacks: when the deadline fires the
+	// process is killed, but the terminal OnResult/OnStall writebacks must
+	// still complete against the DB. Passing the exhausted ctx into
+	// BeginTenantTx fails with "context deadline exceeded" and the
+	// execution stays running forever (observed live on a wall-clock E2E).
+	procCtx := ctx
 	if deadline, ok := wallClockDeadline(ctx, manifest.Budgets); ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithDeadline(ctx, deadline)
+		procCtx, cancel = context.WithDeadline(ctx, deadline)
 		defer cancel()
 	}
 
@@ -287,7 +345,7 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// directory). See internal/opencode/lint.go.
 	writeSafetyLint(runDir)
 
-	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd := exec.CommandContext(procCtx, binary, args...)
 	if runDir != "" {
 		cmd.Dir = runDir
 	}
@@ -421,6 +479,17 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	monitor := newProgressMonitor(execRow.ID, stallWindowsFromManifest(manifest))
 	go monitor.run(ctx, func(execID, reason string) {
 		callbacks.OnStall(ctx, execID, reason)
+		// Hard-kill on a genuine hang/loop so the execution lands in
+		// `failed` via the normal OnResult(false) → pollTaskStep recovery
+		// path. Without this a stalled execution sits `unhealthy` and is
+		// ignored by the workflow reconciler (observed: a PR Reviewer
+		// `no_progress` stall never recovered and the subprocess leaked
+		// in the runtime container for 48+ minutes). no_file_progress is
+		// advisory-only — a reviewer may legitimately go long stretches
+		// without writing files while still producing output.
+		if isFatalStall(reason) {
+			a.terminateOnStall(ctx, execID, reason, manifest.RuntimeWorkflowID)
+		}
 	})
 	defer monitor.close()
 
@@ -462,7 +531,12 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// JSON-stream error (extracted from opencode's structured error
 	// event) is the real cause — e.g. a provider 401 or rate-limit.
 	// Stderr has surrounding context. Exit status is the fallback.
+	// A stall-triggered kill surfaces the stall signal FIRST so the
+	// recovery/UI reason matches what actually happened.
 	var parts []string
+	if reason := a.takeStallReason(execRow.ID); reason != "" {
+		parts = append(parts, reason)
+	}
 	if unfinishedStep {
 		parts = append(parts, "execution ended before the final model step completed (model response stream truncated or event dropped)")
 	}
@@ -1031,15 +1105,31 @@ func (a *Adapter) startInRuntime(ctx context.Context, execRow db.ExecutionRow, m
 	monitor := newProgressMonitor(execRow.ID, stallWindowsFromManifest(manifest))
 	go monitor.run(ctx, func(execID, reason string) {
 		callbacks.OnStall(ctx, execID, reason)
+		// Hard-kill on a genuine hang/loop so the execution lands in
+		// `failed` via the normal OnResult(false) → pollTaskStep recovery
+		// path (same rationale as the local path; see Start). For the
+		// runtime container this signals the supervisor to SIGKILL the
+		// opencode child. no_file_progress is advisory-only.
+		if isFatalStall(reason) {
+			a.terminateOnStall(ctx, execID, reason, manifest.RuntimeWorkflowID)
+		}
 	})
 	defer monitor.close()
 
-	// execCtx is the exec session's context. The parent ctx carries the
-	// wall-clock deadline; execCtx lets us distinguish "the exec finished
-	// normally" from "the parent ctx was cancelled" for the explicit-kill
-	// signal below.
+	// execCtx is the exec session's context. It carries the wall-clock
+	// deadline (applied HERE, not on the parent ctx) so that when the
+	// deadline fires the Exec call is cancelled and the explicit-kill
+	// goroutine SIGKILLs the child — while the parent ctx stays clean for
+	// the OnResult/OnStall DB writebacks (passing the exhausted ctx into
+	// BeginTenantTx fails with "context deadline exceeded" and the
+	// execution never transitions).
 	execCtx, execCancel := context.WithCancel(ctx)
 	defer execCancel()
+	if deadline, ok := wallClockDeadline(ctx, manifest.Budgets); ok {
+		var dcancel context.CancelFunc
+		execCtx, dcancel = context.WithDeadline(execCtx, deadline)
+		defer dcancel()
+	}
 
 	// Explicit termination: if the exec context is cancelled while the run
 	// is in flight (wall-clock deadline, abort, plane shutdown), tell the
@@ -1049,8 +1139,12 @@ func (a *Adapter) startInRuntime(ctx context.Context, execRow db.ExecutionRow, m
 	// re-attaches instead).
 	go func() {
 		<-execCtx.Done()
-		if ctx.Err() == nil {
-			return // normal completion — execCtx was cancelled by the defer
+		// Normal completion: execCtx was cancelled by the defer, the parent
+		// ctx is alive, and no deadline fired. Explicit termination: parent
+		// cancelled OR the wall-clock deadline fired (execCtx.Err() is
+		// DeadlineExceeded).
+		if ctx.Err() == nil && !errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+			return
 		}
 		_ = a.rt.Signal(ctx, manifest.RuntimeWorkflowID, runtime.SignalRequest{ExecID: execRow.ID, Signal: "SIGKILL"})
 	}()
@@ -1124,6 +1218,9 @@ func (a *Adapter) startInRuntime(ctx context.Context, execRow db.ExecutionRow, m
 		succeeded = false
 	}
 	var parts []string
+	if reason := a.takeStallReason(execRow.ID); reason != "" {
+		parts = append(parts, reason)
+	}
 	if unfinishedStep {
 		parts = append(parts, "execution ended before the final model step completed (model response stream truncated or event dropped)")
 	}

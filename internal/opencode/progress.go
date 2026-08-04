@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -305,6 +306,28 @@ func envInt(key string, fallback int) int {
 // adapter's existing OnHealth path.
 var _ = domain.HealthStalled
 
+// isFatalStall reports whether a stall reason warrants terminating the
+// subprocess (hard kill → recovery) versus being advisory-only.
+//
+//   - no_progress / text_loop / repetition: genuine hangs or loops — the
+//     worker is not making progress. Terminating routes the execution to
+//     `failed` via OnResult(false), which the workflow reconciler's
+//     pollTaskStep already turns into recovery.
+//   - no_file_progress: advisory. A reviewer or QA worker may
+//     legitimately go long stretches without modifying files while still
+//     producing output (token/text progress), so killing it would reap a
+//     healthy execution (observed: an SSE worker flagged no_file_progress
+//     yet completed successfully moments later).
+func isFatalStall(reason string) bool {
+	return !strings.HasPrefix(reason, "stalled:no_file_progress")
+}
+
+// defaultWallClockTimeout is the hard per-execution timeout applied when a
+// worker's budget_overrides omit wall_clock_seconds. AGENTS.md documents
+// this as the default (3600s) — the runaway-spend backstop that kills the
+// subprocess even when the model is still producing output.
+const defaultWallClockTimeout = 3600 * time.Second
+
 // wallClockDeadline parses the worker's budget_overrides.wall_clock_seconds
 // (docs/05 §8) and returns the absolute deadline for the execution.
 // Returns ok=false if no wall-clock budget is set (no deadline). The
@@ -315,18 +338,25 @@ var _ = domain.HealthStalled
 //
 // A worker may set wall_clock_seconds to 0 to disable the hard timeout
 // (relying solely on stall detection); this is unusual and discouraged.
+// An ABSENT field falls back to defaultWallClockTimeout so every
+// execution has a hard backstop even when the worker does not opt in.
 func wallClockDeadline(ctx context.Context, budgets []byte) (time.Time, bool) {
 	if len(budgets) == 0 {
-		return time.Time{}, false
+		return time.Now().Add(defaultWallClockTimeout), true
 	}
 	var b struct {
-		WallClockSeconds float64 `json:"wall_clock_seconds"`
+		WallClockSeconds *float64 `json:"wall_clock_seconds"`
 	}
 	if err := json.Unmarshal(budgets, &b); err != nil {
 		return time.Time{}, false
 	}
-	if b.WallClockSeconds <= 0 {
+	// Absent field → documented default backstop (3600s).
+	if b.WallClockSeconds == nil {
+		return time.Now().Add(defaultWallClockTimeout), true
+	}
+	// Explicit 0 (or negative) disables the hard timeout.
+	if *b.WallClockSeconds <= 0 {
 		return time.Time{}, false
 	}
-	return time.Now().Add(time.Duration(b.WallClockSeconds * float64(time.Second))), true
+	return time.Now().Add(time.Duration(*b.WallClockSeconds * float64(time.Second))), true
 }

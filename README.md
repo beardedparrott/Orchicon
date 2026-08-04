@@ -30,6 +30,13 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.180 (2026-08-04)
+
+| Type | Change |
+|---|---|
+| Bug fix | **A stalled execution now actually recovers.** The stall monitor's `OnStall` marked an execution `unhealthy`, but the workflow reconciler's `pollTaskStep` only treated `failed`/`failed_to_start`/`terminated` as terminal-failure — so a stalled execution sat `unhealthy` forever and **no recovery ever fired** (observed on dev run `01KZ5G3JPR4R18NJRTJFKX3CXH`: the PR Reviewer hit `stalled:no_progress`, the subprocess leaked in the runtime container for 48+ minutes, and zero `recovery_executions` rows were created). Fix: a genuine hang/loop signal (`no_progress`, `text_loop`, `repetition`) now **hard-kills the subprocess** (local: `Process.Kill`; runtime: SIGKILL via the supervisor) so the execution lands in `failed` through the normal `OnResult(false)` path — which `pollTaskStep` already turns into recovery. `no_file_progress` stays **advisory-only**: a reviewer/QA worker may legitimately produce output for long stretches without touching files, so killing it would reap a healthy execution (the SSE worker flagged `no_file_progress` completed successfully moments later). The stall reason is now threaded into the terminal error message. |
+| Bug fix | **The wall-clock timeout is a hard stop that completes.** `budget_overrides.wall_clock_seconds` is enforced as a `context.WithDeadline` that kills the subprocess even while the model is producing output (the runaway-spend backstop) — but the terminal DB writeback was passed the *deadline-exhausted* context, so `OnResult` failed with `context deadline exceeded` and the execution stayed `running` forever (verified live on a wall-clock E2E). The deadline is now applied only to the subprocess/exec context; the callback context stays clean so `failed` + recovery always land. Also: an **absent** `wall_clock_seconds` now defaults to **3600s** (was: no deadline), so every execution has a hard cap even a slow-but-progressing worker can't exceed; explicit `0` still disables it. Verified E2E on dev with a real free-model workflow: each execution was killed at exactly the deadline, landed `failed`, triggered recovery, re-dispatched, and the run failed cleanly at `max_attempts`. |
+
 ### v0.1.179 (2026-08-04)
 
 | Type | Change |
