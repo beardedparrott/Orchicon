@@ -112,16 +112,16 @@ export class TenantSettings extends Message<TenantSettings> {
   executionReconnectGraceSeconds = protoInt64.zero;
 
   /**
-   * --- Execution budget / wall clock ---
-   * Hard per-execution timeout in seconds. A worker's own
-   * budget_overrides.wall_clock_seconds overrides this; this is the
-   * tenant-level default applied when a worker does not specify one.
-   * Zero uses env ORCHICON_STALL_WALL_CLOCK_SECONDS, else the built-in
-   * default 3600 (1 hour). Explicit 0 on a worker disables its timeout.
+   * --- Execution budget (defaults) ---
+   * Default budget JSON applied to executions whose worker does not set its
+   * own budget_overrides. Recognized keys: tokens, cost_usd,
+   * wall_clock_seconds, tool_call_count. A worker's explicit
+   * budget_overrides overrides these per-field. Empty ({}) means "use the
+   * built-in defaults".
    *
-   * @generated from field: int64 stall_wall_clock_seconds = 19;
+   * @generated from field: string default_budget_overrides = 19;
    */
-  stallWallClockSeconds = protoInt64.zero;
+  defaultBudgetOverrides = "";
 
   /**
    * Backup schedule in cron expression format (e.g. "0 3 * * *" for daily 3am).
@@ -176,7 +176,7 @@ export class TenantSettings extends Message<TenantSettings> {
     { no: 16, name: "execution_reap_consecutive_failures", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 17, name: "execution_reconnect_attempts", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 18, name: "execution_reconnect_grace_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
-    { no: 19, name: "stall_wall_clock_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 19, name: "default_budget_overrides", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 20, name: "backup_schedule", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 21, name: "backup_retention_days", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 22, name: "backup_directory", kind: "scalar", T: 9 /* ScalarType.STRING */ },

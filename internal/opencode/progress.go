@@ -323,59 +323,44 @@ func isFatalStall(reason string) bool {
 }
 
 // defaultWallClockTimeout is the hard per-execution timeout applied when a
-// worker's budget_overrides omit wall_clock_seconds. AGENTS.md documents
-// this as the default (3600s) — the runaway-spend backstop that kills the
-// subprocess even when the model is still producing output.
+// worker's final merged budget (tenant default + worker override) omits
+// wall_clock_seconds. AGENTS.md documents this as the default (3600s) — the
+// runaway-spend backstop that kills the subprocess even when the model is
+// still producing output.
 const defaultWallClockTimeout = 3600 * time.Second
 
-// wallClockDeadline parses the worker's budget_overrides.wall_clock_seconds
-// (docs/05 §8) and returns the absolute deadline for the execution.
-// Returns ok=false if no wall-clock budget is set (no deadline). The
-// deadline is enforced via context.WithDeadline in Start; when it hits,
-// the subprocess is killed (exec.CommandContext) and OnResult(false)
-// fires → recovery with reason "wall_clock_timeout" (docs/06 §2 budget
-// overrun trigger).
+// wallClockDeadline parses the execution's merged budget JSON
+// (budget_overrides after tenant-default merge, docs/05 §8) and returns the
+// absolute deadline for the execution. Returns ok=false if no wall-clock
+// budget is set (no deadline). The deadline is enforced via
+// context.WithDeadline in Start; when it hits, the subprocess is killed
+// (exec.CommandContext) and OnResult(false) fires → recovery with reason
+// "wall_clock_timeout" (docs/06 §2 budget overrun trigger).
 //
-// tenantDefaultSeconds is the tenant-level stall_wall_clock_seconds setting
-// (0 = unset); it is used when the worker's budget_overrides do not
-// explicitly set wall_clock_seconds. A worker may set wall_clock_seconds
-// to 0 to disable the hard timeout (relying solely on stall detection);
-// this is unusual and discouraged. The fallback chain is: explicit worker
-// value → tenant default → env ORCHICON_STALL_WALL_CLOCK_SECONDS → code
-// default (3600s), so every execution has a hard backstop.
-func wallClockDeadline(ctx context.Context, budgets []byte, tenantDefaultSeconds int64) (time.Time, bool) {
-	want := func() (time.Duration, bool) {
-		if v := os.Getenv("ORCHICON_STALL_WALL_CLOCK_SECONDS"); v != "" {
-			if d, err := time.ParseDuration(v + "s"); err == nil && d > 0 {
-				return d, true
-			}
-		}
-		if tenantDefaultSeconds > 0 {
-			return time.Duration(tenantDefaultSeconds) * time.Second, true
-		}
-		return 0, false
-	}
-	if len(budgets) == 0 {
-		if d, ok := want(); ok {
+// Precedence (applied before this call, in the reconciler): worker
+// budget_overrides.wall_clock_seconds (explicit) → tenant
+// default_budget_overrides.wall_clock_seconds → this default (3600). An
+// explicit 0 in the worker OR the tenant default disables the hard timeout
+// (relying solely on stall detection); an unset field falls back to
+// defaultWallClockTimeout so every execution has a hard backstop.
+func wallClockDeadline(ctx context.Context, budgets []byte) (time.Time, bool) {
+	if v := os.Getenv("ORCHICON_STALL_WALL_CLOCK_SECONDS"); v != "" {
+		if d, err := time.ParseDuration(v + "s"); err == nil && d > 0 {
 			return time.Now().Add(d), true
 		}
+	}
+	if len(budgets) == 0 {
 		return time.Now().Add(defaultWallClockTimeout), true
 	}
 	var b struct {
 		WallClockSeconds *float64 `json:"wall_clock_seconds"`
 	}
 	if err := json.Unmarshal(budgets, &b); err != nil {
-		// Unparseable budgets — fall back to the tenant/env default.
-		if d, ok := want(); ok {
-			return time.Now().Add(d), true
-		}
+		// Unparseable budgets — fall back to the default backstop.
 		return time.Now().Add(defaultWallClockTimeout), true
 	}
-	// Absent field → tenant/env/default backstop.
+	// Absent field → default backstop (3600s).
 	if b.WallClockSeconds == nil {
-		if d, ok := want(); ok {
-			return time.Now().Add(d), true
-		}
 		return time.Now().Add(defaultWallClockTimeout), true
 	}
 	// Explicit 0 (or negative) disables the hard timeout.

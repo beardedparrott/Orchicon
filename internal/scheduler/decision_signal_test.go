@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -98,5 +99,30 @@ func TestIssuesLineCapturesLineStart(t *testing.T) {
 	}
 	if got := results["_decision"]; got != "failure" {
 		t.Errorf("_decision = %q, want failure", got)
+	}
+}
+
+// TestMergeBudgets verifies tenant default (base) + worker override
+// (per-field wins) merge into one budget JSON.
+func TestMergeBudgets(t *testing.T) {
+	tenant := []byte(`{"wall_clock_seconds":3600,"tokens":1000000}`)
+	worker := []byte(`{"wall_clock_seconds":60,"tool_call_count":50}`)
+	got := mergeBudgets(tenant, worker)
+	var m map[string]any
+	if err := json.Unmarshal(got, &m); err != nil {
+		t.Fatalf("unmarshal merged: %v", err)
+	}
+	if v, ok := m["wall_clock_seconds"].(float64); !ok || v != 60 {
+		t.Errorf("worker override lost for wall_clock_seconds: %v", m["wall_clock_seconds"])
+	}
+	if v, ok := m["tokens"].(float64); !ok || v != 1000000 {
+		t.Errorf("tenant default lost for tokens: %v", m["tokens"])
+	}
+	if v, ok := m["tool_call_count"].(float64); !ok || v != 50 {
+		t.Errorf("worker field missing: %v", m["tool_call_count"])
+	}
+	// Empty inputs → empty JSON, not nil/error.
+	if got := mergeBudgets(nil, nil); string(got) != "{}" {
+		t.Errorf("empty merge = %s, want {}", got)
 	}
 }

@@ -18,7 +18,7 @@ type TenantSettingsRow struct {
 	StallTextLoopWindowSeconds    int64
 	StallRepetitionCount          int32
 	StallRepetitionWindowSeconds  int64
-	StallWallClockSeconds         int64  // wall-clock deadline (seconds), 0 = disabled, 0 with default = 3600
+	DefaultBudgetOverrides        []byte // jsonb: default budget JSON (tokens/cost_usd/wall_clock_seconds/tool_call_count); a worker's budget_overrides overrides these
 	ExecutionReapGraceSeconds     int64 // liveness reaper: min age before an execution is reaping-eligible
 	ExecutionReapConsecutiveFailures int32 // liveness reaper: consecutive not-alive probes before reaping
 	ExecutionReconnectAttempts    int32 // transport resilience: client retry attempts on a broken exec stream
@@ -36,7 +36,7 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 	const q = `SELECT tenant_id, default_worker_model, default_ask_orchicon_model,
 		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
 		stall_text_loop_window_seconds, stall_repetition_count,
-		stall_repetition_window_seconds, stall_wall_clock_seconds,
+		stall_repetition_window_seconds, default_budget_overrides,
 		execution_reap_grace_seconds, execution_reap_consecutive_failures,
 		execution_reconnect_attempts, execution_reconnect_grace_seconds,
 		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
@@ -56,7 +56,7 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		tenant_id, default_worker_model, default_ask_orchicon_model,
 		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
 		stall_text_loop_window_seconds, stall_repetition_count,
-		stall_repetition_window_seconds, stall_wall_clock_seconds,
+		stall_repetition_window_seconds, default_budget_overrides,
 		execution_reap_grace_seconds, execution_reap_consecutive_failures,
 		execution_reconnect_attempts, execution_reconnect_grace_seconds,
 		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
@@ -77,11 +77,11 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 // values. Empty/zero fields are NOT updated (only non-zero, non-empty values set).
 // Returns the full row after update.
 func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in TenantSettingsRow) (TenantSettingsRow, error) {
-const q = `INSERT INTO tenant_settings (
+	const q = `INSERT INTO tenant_settings (
 		tenant_id, default_worker_model, default_ask_orchicon_model,
 		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
 		stall_text_loop_window_seconds, stall_repetition_count,
-		stall_repetition_window_seconds, stall_wall_clock_seconds,
+		stall_repetition_window_seconds, default_budget_overrides,
 		execution_reap_grace_seconds, execution_reap_consecutive_failures,
 		execution_reconnect_attempts, execution_reconnect_grace_seconds,
 		backup_schedule, backup_retention_days, backup_directory,
@@ -95,7 +95,7 @@ const q = `INSERT INTO tenant_settings (
 		stall_text_loop_window_seconds = CASE WHEN $6 <> 0 THEN $6 ELSE tenant_settings.stall_text_loop_window_seconds END,
 		stall_repetition_count = CASE WHEN $7 <> 0 THEN $7 ELSE tenant_settings.stall_repetition_count END,
 		stall_repetition_window_seconds = CASE WHEN $8 <> 0 THEN $8 ELSE tenant_settings.stall_repetition_window_seconds END,
-		stall_wall_clock_seconds = CASE WHEN $9 <> 0 THEN $9 ELSE tenant_settings.stall_wall_clock_seconds END,
+		default_budget_overrides = CASE WHEN $9 <> '{}'::jsonb THEN $9 ELSE tenant_settings.default_budget_overrides END,
 		execution_reap_grace_seconds = CASE WHEN $10 <> 0 THEN $10 ELSE tenant_settings.execution_reap_grace_seconds END,
 		execution_reap_consecutive_failures = CASE WHEN $11 <> 0 THEN $11 ELSE tenant_settings.execution_reap_consecutive_failures END,
 		execution_reconnect_attempts = CASE WHEN $12 <> 0 THEN $12 ELSE tenant_settings.execution_reconnect_attempts END,
@@ -107,7 +107,7 @@ const q = `INSERT INTO tenant_settings (
 	RETURNING tenant_id, default_worker_model, default_ask_orchicon_model,
 		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
 		stall_text_loop_window_seconds, stall_repetition_count,
-		stall_repetition_window_seconds, stall_wall_clock_seconds,
+		stall_repetition_window_seconds, default_budget_overrides,
 		execution_reap_grace_seconds, execution_reap_consecutive_failures,
 		execution_reconnect_attempts, execution_reconnect_grace_seconds,
 		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
@@ -116,7 +116,7 @@ const q = `INSERT INTO tenant_settings (
 		tenantID, in.DefaultWorkerModel, in.DefaultAskOrchiconModel,
 		in.StallNoProgressWindowSeconds, in.StallNoFileDiffWindowSeconds,
 		in.StallTextLoopWindowSeconds, in.StallRepetitionCount,
-		in.StallRepetitionWindowSeconds, in.StallWallClockSeconds,
+		in.StallRepetitionWindowSeconds, in.DefaultBudgetOverrides,
 		in.ExecutionReapGraceSeconds, in.ExecutionReapConsecutiveFailures,
 		in.ExecutionReconnectAttempts, in.ExecutionReconnectGraceSeconds,
 		in.BackupSchedule, in.BackupRetentionDays, in.BackupDirectory,
@@ -137,7 +137,7 @@ func scanTenantSettings(row pgx.Rows) (TenantSettingsRow, error) {
 		&r.TenantID, &r.DefaultWorkerModel, &r.DefaultAskOrchiconModel,
 		&r.StallNoProgressWindowSeconds, &r.StallNoFileDiffWindowSeconds,
 		&r.StallTextLoopWindowSeconds, &r.StallRepetitionCount,
-		&r.StallRepetitionWindowSeconds, &r.StallWallClockSeconds,
+		&r.StallRepetitionWindowSeconds, &r.DefaultBudgetOverrides,
 		&r.ExecutionReapGraceSeconds, &r.ExecutionReapConsecutiveFailures,
 		&r.ExecutionReconnectAttempts, &r.ExecutionReconnectGraceSeconds,
 		&r.BackupSchedule, &r.BackupRetentionDays, &r.BackupDirectory,
