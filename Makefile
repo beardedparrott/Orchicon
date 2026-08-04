@@ -67,11 +67,17 @@ tidy: ## Run go mod tidy
 # intermediate build artifact); Go auto-trims it lazily but rarely down to
 # a small size. Run this when disk is tight — it does NOT touch the DB,
 # container images, or any runtime data.
-.PHONY: clean
+.PHONY: clean cache-check
 clean: ## Remove local build artifacts and the Go build cache (dev hygiene)
 	$(GO) clean -cache -testcache
 	@command -v $(GO) >/dev/null 2>&1 && go clean -modcache 2>/dev/null || true
 	@rm -f $(BIN_DIR)/orchicon
+
+# cache-check reports the current Go build cache size so devs can decide
+# whether to run `make clean` before a heavy session (AGENTS.md disk hygiene).
+cache-check: ## Show the Go build cache size
+	@echo "GOCACHE: $(shell $(GO) env GOCACHE)"
+	@du -sh "$$($(GO) env GOCACHE)" 2>/dev/null | cut -f1 || echo "0B"
 
 # --- Database --------------------------------------------------------------
 .PHONY: migrate migrate-diff migrate-hash rls-check
