@@ -1,0 +1,146 @@
+// Orchicon RuntimeImageService.
+//
+// CRUD + build orchestration for tenant runtime images. Building is
+// delegated to the runtime daemon (the only process with the Docker
+// socket); this service persists the spec, streams the build, and
+// exposes the merged stock + custom image list for the work-item
+// runtime_image dropdown. All mutations use optimistic concurrency via
+// the version column (docs/09 §5).
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "orchicon/api/v1/runtime_image.proto";
+
+service RuntimeImageService {
+  // CreateRuntimeImage saves a new image spec (status=draft).
+  rpc CreateRuntimeImage(CreateRuntimeImageRequest) returns (CreateRuntimeImageResponse);
+
+  // GetRuntimeImage returns one image spec + build outcome.
+  rpc GetRuntimeImage(GetRuntimeImageRequest) returns (GetRuntimeImageResponse);
+
+  // ListRuntimeImages returns the tenant's image specs.
+  rpc ListRuntimeImages(ListRuntimeImagesRequest) returns (ListRuntimeImagesResponse);
+
+  // UpdateRuntimeImage edits a draft/failed image spec (optimistic
+  // concurrency). Ready images must be rebuilt via BuildRuntimeImage.
+  rpc UpdateRuntimeImage(UpdateRuntimeImageRequest) returns (UpdateRuntimeImageResponse);
+
+  // DeleteRuntimeImage removes the spec row AND the local docker image
+  // (best-effort, gated on no active workflow run referencing the tag).
+  rpc DeleteRuntimeImage(DeleteRuntimeImageRequest) returns (DeleteRuntimeImageResponse);
+
+  // BuildRuntimeImage runs `docker build` on the daemon, streaming log
+  // chunks until the image is ready or the build fails.
+  rpc BuildRuntimeImage(BuildRuntimeImageRequest) returns (stream BuildRuntimeImageResponse);
+
+  // ListAvailableRuntimeImages returns the merged dropdown list for the
+  // work-item runtime_image field: the daemon's stock images (base + any
+  // ORCHICON_RUNTIME_IMAGES variants) plus this tenant's ready custom
+  // images. `default_image` is the base image to pre-select.
+  rpc ListAvailableRuntimeImages(ListAvailableRuntimeImagesRequest) returns (ListAvailableRuntimeImagesResponse);
+
+  // GetStockImageTemplate returns the shipped Dockerfile for a stock
+  // runtime image (base / :gui / :orchicon-dev), read-only, so users can
+  // see how a shipped image is built and copy the pattern. Lookup is by
+  // image tag (e.g. "orchicon-runtime:local" or "orchicon-runtime:gui").
+  rpc GetStockImageTemplate(GetStockImageTemplateRequest) returns (GetStockImageTemplateResponse);
+}
+
+message CreateRuntimeImageRequest {
+  string tenant_id = 1;
+  string name = 2;
+  string slug = 3;
+  string description = 4;
+  string apt_packages = 5; // JSON array
+  string toolchains = 6; // JSON array
+  string env = 7; // JSON object
+  string dockerfile_override = 8; // empty = generate from structured fields
+  string tag = 9; // optional; defaults to "<slug>:latest"
+}
+
+message CreateRuntimeImageResponse {
+  RuntimeImage runtime_image = 1;
+}
+
+message GetRuntimeImageRequest {
+  string id = 1;
+}
+
+message GetRuntimeImageResponse {
+  RuntimeImage runtime_image = 1;
+}
+
+message ListRuntimeImagesRequest {
+  string tenant_id = 1;
+  optional RuntimeImageStatus status = 2; // filter by status
+  string search = 3;
+  string page_token = 4;
+  int32 page_size = 5;
+}
+
+message ListRuntimeImagesResponse {
+  repeated RuntimeImage runtime_images = 1;
+  string next_page_token = 2;
+}
+
+message UpdateRuntimeImageRequest {
+  string id = 1;
+  optional string name = 2;
+  optional string slug = 3;
+  optional string description = 4;
+  optional string apt_packages = 5;
+  optional string toolchains = 6;
+  optional string env = 7;
+  optional string dockerfile_override = 8;
+  optional string tag = 9;
+  int32 version = 10; // optimistic concurrency
+}
+
+message UpdateRuntimeImageResponse {
+  RuntimeImage runtime_image = 1;
+}
+
+message DeleteRuntimeImageRequest {
+  string id = 1;
+}
+
+message DeleteRuntimeImageResponse {}
+
+message BuildRuntimeImageRequest {
+  string id = 1;
+  int32 version = 2; // optimistic concurrency (draft or failed → building)
+}
+
+message BuildRuntimeImageResponse {
+  // Chunk of build output (stdout/stderr interleaved), one per message.
+  string log = 1;
+  // Set on the final message: the image's new status + any error.
+  RuntimeImageStatus status = 2;
+  string error = 3;
+  string tag = 4;
+}
+
+message ListAvailableRuntimeImagesRequest {
+  string tenant_id = 1;
+}
+
+message ListAvailableRuntimeImagesResponse {
+  // Stock images shipped by the daemon (base always first).
+  repeated string stock_images = 1;
+  // This tenant's ready custom images (full tags).
+  repeated string custom_images = 2;
+  // The image to pre-select in the dropdown (the base image).
+  string default_image = 3;
+}
+
+message GetStockImageTemplateRequest {
+  string tag = 1; // image tag, e.g. "orchicon-runtime:local" or "orchicon-runtime:gui"
+}
+
+message GetStockImageTemplateResponse {
+  string tag = 1;
+  string name = 2; // display name, e.g. "Runtime base image"
+  string description = 3; // what the variant is for
+  string dockerfile = 4; // the shipped Dockerfile content (read-only)
+}

@@ -29,6 +29,7 @@ type Daemon struct {
 	SocketPath   string
 	DockerBin    string
 	Image        string   // image + tag, e.g. orchicon-runtime:local
+	Images       []string // additional allowlisted stock image tags (base is always included)
 	UserID       int      // host uid the runtime runs as (writes project mounts)
 	GroupID      int      // host gid
 	HostHome     string   // host user home, mounted as the container HOME
@@ -111,6 +112,7 @@ func (d *Daemon) handler() http.Handler {
 	mux.HandleFunc("/v1/health", d.handleHealth)
 	mux.HandleFunc("/v1/runtimes", d.handleRuntimes)
 	mux.HandleFunc("/v1/runtimes/", d.handleRuntime)
+	mux.HandleFunc("/v1/images", d.handleImages)
 	return mux
 }
 
@@ -285,7 +287,10 @@ func (d *Daemon) validateCreate(req CreateRequest) error {
 	if !validWorkflowID(req.WorkflowID) {
 		return fmt.Errorf("invalid workflow_id")
 	}
-	if d.Image != "" && req.Image != "" && req.Image != d.Image {
+	// Image allowlist: the base image, operator-configured stock images,
+	// or any image carrying the inherited runtime-base label (UI-built
+	// custom images). The base is always allowed.
+	if req.Image != "" && !d.imageAllowed(req.Image) {
 		return fmt.Errorf("image not allowed: %s", req.Image)
 	}
 	if req.Image == "" && d.Image == "" {

@@ -92,6 +92,7 @@ message WorkflowRun {
   google.protobuf.Timestamp created_at = 12;
   google.protobuf.Timestamp updated_at = 13;
   string work_item_id = 14; // bound work item id, if any; empty for one-shot runs
+  string runtime_image = 15; // resolved runtime container image tag at run start
 }
 
 // WorkflowStepRun is the runtime state of a single step within a

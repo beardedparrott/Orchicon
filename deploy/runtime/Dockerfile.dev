@@ -1,0 +1,56 @@
+# Orchicon workflow-runtime DEV image — the canned image for working ON
+# Orchicon (dogfooding) in a worker.
+#
+# Everything in the base image, plus the toolchain needed to build and
+# test the Orchicon repo in-sandbox:
+#   - Go 1.26.x (control plane) + Node 22.x (frontend)
+#   - buf (protobuf codegen) + atlas (migrations)
+#   - PostgreSQL 15 server + client: a worker can boot a DISPOSABLE
+#     in-sandbox Postgres (initdb + pg_ctl run fine as the non-root user)
+#     and run the full `make ci` DB path (migrations, RLS gate, DB unit
+#     tests) against localhost:5432. It dies with the container and never
+#     touches the plane's Postgres, so the no-DB-route sandbox invariant
+#     is preserved.
+#
+# Built FROM the base image so it inherits the toolchain, the chowned-
+# rootfs security model, and the org.orchicon.runtime-base label — the
+# base is always part of this image, exactly like the :gui variant.
+#
+# BASE_IMAGE lets container.sh point local builds at the locally-built
+# base (orchicon-runtime:local) while the release workflow defaults to
+# the published base.
+ARG BASE_IMAGE=ghcr.io/beardedparrott/orchicon-runtime:latest
+FROM ${BASE_IMAGE}
+
+USER root
+# Postgres 15 (baked so deps resolve; runs as the non-root worker via
+# initdb/pg_ctl into the ephemeral tmpfs) + the Orchicon toolchain.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      postgresql-15 postgresql-client-15 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Go toolchain (control plane) into /usr/local (on PATH).
+RUN curl -fsSL https://go.dev/dl/go1.26.4.linux-amd64.tar.gz -o /tmp/go.tgz \
+ && tar -C /usr/local -xzf /tmp/go.tgz \
+ && ln -sf /usr/local/go/bin/go /usr/local/bin/go \
+ && ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt \
+ && rm /tmp/go.tgz
+
+# Node 22 (frontend toolchain) into /usr/local (overrides the apt node 18).
+RUN curl -fsSL https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-x64.tar.xz -o /tmp/node.txz \
+ && tar -C /usr/local -xJf /tmp/node.txz --strip-components=1 \
+ && rm /tmp/node.txz
+
+# buf (protobuf lint + codegen) + atlas (migrations) as static binaries.
+RUN curl -sSfL https://github.com/bufbuild/buf/releases/download/v1.72.0/buf-Linux-x86_64 -o /usr/local/bin/buf \
+ && chmod +x /usr/local/bin/buf
+RUN curl -sSfL https://atlasgo.sh | sh
+
+# Keep the writable-rootfs property: the runtime user must be able to
+# write anywhere in the ephemeral filesystem (rootless installs + the
+# in-sandbox Postgres data dir).
+RUN chown -R 1000:1000 /usr /opt /var /etc/postgresql 2>/dev/null || true
+
+USER orchicon
+WORKDIR /home/orchicon

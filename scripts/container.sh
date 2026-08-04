@@ -87,6 +87,27 @@ build_image() {
   cp "$PROJECT_ROOT/bin/orchicon" "$RT_CONTEXT/orchicon"
   docker build -f "$RT_DOCKERFILE" -t "$RUNTIME_IMAGE" "$RT_CONTEXT"
   log_ok "Runtime image $RUNTIME_IMAGE built"
+
+  # GUI variant of the runtime base (headless GUI libs — PySide6 offscreen,
+  # tkinter, browser screenshots). Built FROM the base so the label + chown
+  # model are inherited. Tagged "<base-tag>-gui" (e.g. orchicon-runtime:local-gui).
+  local RT_GUI_DOCKERFILE="$PROJECT_ROOT/deploy/runtime/Dockerfile.gui"
+  if [ -f "$RT_GUI_DOCKERFILE" ]; then
+    local GUI_IMAGE="${ORCHICON_RUNTIME_GUI_IMAGE:-orchicon-runtime:local-gui}"
+    log_dim "Building $GUI_IMAGE from $RT_GUI_DOCKERFILE (base $RUNTIME_IMAGE)…"
+    docker build --build-arg BASE_IMAGE="$RUNTIME_IMAGE" -f "$RT_GUI_DOCKERFILE" -t "$GUI_IMAGE" "$RT_CONTEXT"
+    log_ok "Runtime GUI image $GUI_IMAGE built"
+  fi
+
+  # Orchicon-dev variant (dogfooding): Go/Node/buf/atlas + baked Postgres so
+  # a worker can build and DB-test the Orchicon repo in-sandbox.
+  local RT_DEV_DOCKERFILE="$PROJECT_ROOT/deploy/runtime/Dockerfile.dev"
+  if [ -f "$RT_DEV_DOCKERFILE" ]; then
+    local DEV_IMAGE="${ORCHICON_RUNTIME_DEV_IMAGE:-orchicon-runtime:orchicon-dev}"
+    log_dim "Building $DEV_IMAGE from $RT_DEV_DOCKERFILE (base $RUNTIME_IMAGE)…"
+    docker build --build-arg BASE_IMAGE="$RUNTIME_IMAGE" -f "$RT_DEV_DOCKERFILE" -t "$DEV_IMAGE" "$RT_CONTEXT"
+    log_ok "Runtime dev image $DEV_IMAGE built"
+  fi
 }
 
 # start_runtime_daemon ensures the host-side runtime orchestrator is
@@ -107,7 +128,19 @@ start_runtime_daemon() {
   log_dim "starting runtime daemon…"
   # Local dev: pin the daemon to the locally-built runtime image (the
   # daemon's default is the GHCR release image for one-command installs).
+  # Register the locally-built :gui and :orchicon-dev variants in the
+  # daemon's image allowlist so they show up in the work-item dropdown
+  # (an operator ORCHICON_RUNTIME_IMAGES overrides the default list).
+  local DEFAULT_RUNTIME_IMAGES=""
+  local GUI_IMAGE="${ORCHICON_RUNTIME_GUI_IMAGE:-$RUNTIME_IMAGE-gui}"
+  local DEV_IMAGE="${ORCHICON_RUNTIME_DEV_IMAGE:-orchicon-runtime:orchicon-dev}"
+  for img in "$GUI_IMAGE" "$DEV_IMAGE"; do
+    if docker image inspect "$img" >/dev/null 2>&1; then
+      DEFAULT_RUNTIME_IMAGES="${DEFAULT_RUNTIME_IMAGES:+$DEFAULT_RUNTIME_IMAGES,}$img"
+    fi
+  done
   ORCHICON_RUNTIME_IMAGE="${ORCHICON_RUNTIME_IMAGE:-$RUNTIME_IMAGE}" \
+  ORCHICON_RUNTIME_IMAGES="${ORCHICON_RUNTIME_IMAGES:-$DEFAULT_RUNTIME_IMAGES}" \
   setsid nohup "$PROJECT_ROOT/bin/orchicon" runtime-daemon </dev/null \
     >/tmp/orchicon-runtime-daemon.log 2>&1 &
   for _ in $(seq 1 20); do

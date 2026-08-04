@@ -27,6 +27,7 @@ const NAV: NavItem[] = [
   { label: "Workers", to: "/workers" },
   { label: "Workflows", to: "/workflows" },
   { label: "Policies", to: "/policies" },
+  { label: "Runtime Images", to: "/runtime-images" },
   { label: "Recovery", to: "/recovery" },
   { label: "Executions", to: "/executions" },
   { label: "Approvals", to: "/approvals" },

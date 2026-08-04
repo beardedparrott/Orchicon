@@ -1070,6 +1070,7 @@ func (a *Adapter) startInRuntime(ctx context.Context, execRow db.ExecutionRow, m
 	// the project mount against the allowed roots.
 	if _, cerr := a.rt.Create(ctx, runtime.CreateRequest{
 		WorkflowID: manifest.RuntimeWorkflowID,
+		Image:      manifest.RuntimeImage,
 		Mounts:     projectMount(manifest.ProjectDir),
 	}); cerr != nil {
 		a.log.Warn("ensure runtime container on dispatch failed", "run", manifest.RuntimeWorkflowID, "execution", execRow.ID, "error", cerr)

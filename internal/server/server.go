@@ -210,10 +210,14 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		return err
 	})
 	taskRec := scheduler.NewTaskReconciler(pool, log, adapterBridge)
-	// Phase 7: the TaskReconciler triggers recovery when an execution
-	// fails (docs/06 §2). The RecoveryEngine satisfies the scheduler's
-	// RecoveryTrigger interface (loose coupling — no scheduler→recovery
-	// import).
+	// Per-workflow runtime containers: the control plane talks to the
+	// host-side runtime daemon over a unix socket. When the socket is
+	// absent (headless `orchicon serve`), the lifecycle is disabled and
+	// execution stays in-process.
+	var rtClient *runtime.Client
+	if cfg.RuntimeSocket != "" {
+		rtClient = runtime.NewClient(cfg.RuntimeSocket, cfg.Instance)
+	}
 	deps := api.Dependencies{
 		Pool:              pool,
 		Log:               log,
@@ -229,6 +233,7 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 		MCPDiscoverer:     mcpDiscoverer,
 		BlobStore:         blobs,
 		PostgresDSN:       cfg.PostgresDSN,
+		RuntimeClient:     rtClient,
 	}
 	handler := api.Mount(mux, deps)
 
@@ -260,8 +265,8 @@ func New(cfg config.Config, log *slog.Logger) (*Server, error) {
 	// is absent (headless `orchicon serve`), the lifecycle is disabled and
 	// execution stays in-process.
 	var runtimeLifecycle *runtime.Lifecycle
-	if cfg.RuntimeSocket != "" {
-		if rtClient := runtime.NewClient(cfg.RuntimeSocket, cfg.Instance); rtClient.Ready(context.Background()) {
+	if rtClient != nil {
+		if rtClient.Ready(context.Background()) {
 			runtimeLifecycle = runtime.NewLifecycle(rtClient, pool, log)
 			// Route executions that belong to a workflow run into that
 			// workflow's runtime container instead of a local subprocess.

@@ -52,7 +52,12 @@ func runInstall(args []string, log *slog.Logger) error {
 
 	// 2. Ensure the published images are present (skip the pull when the
 	// tag is already local — idempotent re-runs and local dev images).
-	for _, img := range []string{containerImage, runtimeImage} {
+	// The :gui and :dev runtime variants ship with the product (work-item
+	// dropdown stock images), so pull them alongside the base.
+	for _, img := range []string{containerImage, runtimeImage,
+		"ghcr.io/beardedparrott/orchicon-runtime:gui-" + imageTag,
+		"ghcr.io/beardedparrott/orchicon-runtime:dev-" + imageTag,
+	} {
 		if imagePresent(img) {
 			fmt.Printf("image %s present\n", img)
 			continue

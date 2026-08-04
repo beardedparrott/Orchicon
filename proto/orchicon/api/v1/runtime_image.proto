@@ -1,0 +1,50 @@
+// Orchicon RuntimeImage entity.
+//
+// A RuntimeImage is a tenant-owned buildable container image derived from
+// the Orchicon runtime base image. Workers execute in one per-workflow-run
+// runtime container; the image chosen for that container (via the bound
+// work item's runtime_image) determines which tools/system libraries the
+// worker has. Images are built by the runtime daemon (the only process with
+// the Docker socket) from a structured spec — apt packages, toolchain
+// install lines, and environment — plus an optional raw Dockerfile override.
+// The base image is always part of the build: the daemon writes the
+// `FROM <base>` line itself, and every built image inherits the
+// `org.orchicon.runtime-base=true` label so the container-create gate
+// accepts it.
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// RuntimeImageStatus is the build lifecycle of a runtime image.
+enum RuntimeImageStatus {
+  RUNTIME_IMAGE_STATUS_UNSPECIFIED = 0;
+  RUNTIME_IMAGE_STATUS_DRAFT = 1;    // spec saved, never built
+  RUNTIME_IMAGE_STATUS_BUILDING = 2; // a build is in flight
+  RUNTIME_IMAGE_STATUS_READY = 3;    // last build succeeded, tag usable
+  RUNTIME_IMAGE_STATUS_FAILED = 4;   // last build failed (build_log has why)
+}
+
+// RuntimeImage is a buildable container image spec + its latest build
+// outcome. Published/ready images are immutable once built; edits create
+// a new tag and a fresh build.
+message RuntimeImage {
+  string id = 1;
+  string tenant_id = 2;
+  string name = 3;
+  string slug = 4; // image tag name, e.g. "orchicon-runtime-custom-gui"
+  string description = 5; // Markdown
+  string base_image_ref = 6; // resolved base image, e.g. "ghcr.io/beardedparrott/orchicon-runtime:latest"
+  string apt_packages = 7; // JSON array of apt package names
+  string toolchains = 8; // JSON array of toolchain install lines (pip/npm/mise/curl)
+  string env = 9; // JSON object of environment variables
+  string dockerfile_override = 10; // full Dockerfile text (advanced mode); empty = generated from the structured fields
+  string tag = 11; // full image ref the daemon builds/pushes, e.g. "orchicon-runtime-custom-gui:latest"
+  RuntimeImageStatus status = 12;
+  string build_log = 13; // last build output (streamed live, persisted on completion)
+  string error = 14; // build failure message (last build)
+  int32 version = 15; // optimistic concurrency (docs/09 §5)
+  google.protobuf.Timestamp created_at = 16;
+  google.protobuf.Timestamp updated_at = 17;
+}

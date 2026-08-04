@@ -26,6 +26,12 @@
 # mounted by the daemon at runtime, not baked in.
 FROM debian:bookworm-slim
 
+# Mark this image as the Orchicon runtime base. Docker inherits labels
+# through `FROM`, so any image built on top of this one carries it, and
+# the runtime daemon's container-create gate accepts derived images
+# (AGENTS.md §Runtime Images).
+LABEL org.orchicon.runtime-base=true
+
 ENV DEBIAN_FRONTEND=noninteractive
 
 # System toolchain — the "quick and efficient" baseline so workers don't

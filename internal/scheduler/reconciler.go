@@ -492,6 +492,19 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		}
 	}
 
+	// Resolve the workflow run's runtime container image so the adapter's
+	// self-heal recreates the container with the identical image the
+	// WorkflowReconciler used at run start.
+	runtimeImage := ""
+	if task.WorkflowRunID != "" {
+		if rtx, err := r.pool.BeginTenantTx(context.Background(), exec.TenantID); err == nil {
+			if run, gerr := db.GetWorkflowRun(context.Background(), rtx.Tx, exec.TenantID, task.WorkflowRunID); gerr == nil {
+				runtimeImage = run.RuntimeImage
+			}
+			_ = rtx.Rollback(context.Background())
+		}
+	}
+
 	manifest := ExecutionManifest{
 		ExecutionID:                 exec.ID,
 		TaskID:                      exec.TaskID,
@@ -508,6 +521,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		Permissions:                 version.Permissions,
 		ProjectDir:                  projectDir,
 		RuntimeWorkflowID:           task.WorkflowRunID,
+		RuntimeImage:                runtimeImage,
 		StallNoProgressWindowSeconds:  stallNoProgress,
 		StallNoFileDiffWindowSeconds:  stallNoFileDiff,
 		StallTextLoopWindowSeconds:    stallTextLoop,

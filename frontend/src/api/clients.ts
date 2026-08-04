@@ -25,6 +25,7 @@ import { AskOrchiconService } from "@/api/gen/orchicon/api/v1/ask_orchicon_servi
 import { AuthService } from "@/api/gen/orchicon/api/v1/auth_service_connect";
 import { WebhookService } from "@/api/gen/orchicon/api/v1/webhook_service_connect";
 import { SettingsService } from "@/api/gen/orchicon/api/v1/settings_service_connect";
+import { RuntimeImageService } from "@/api/gen/orchicon/api/v1/runtime_image_service_connect";
 import { getAccessToken, refreshAccessToken } from "@/auth/session";
 
 // TenantHeader is retained for the dev pre-login fallback (when the
@@ -102,6 +103,7 @@ export const authClient = createClient(AuthService, connectTransport);
 export const webhookClient = createClient(WebhookService, connectTransport);
 export const settingsClient = createClient(SettingsService, connectTransport);
 export const askOrchiconClient = createClient(AskOrchiconService, connectTransport);
+export const runtimeImageClient = createClient(RuntimeImageService, connectTransport);
 
 // Grafana UI base URL for the embedded telemetry explorer (docs/10 §11).
 export const GRAFANA_UI_URL = "/grafana";

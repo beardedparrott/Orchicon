@@ -15,6 +15,7 @@ import { useListProjects } from "@/api/projects";
 import { useListWorkflows } from "@/api/workflows";
 import { EntityYamlView } from "@/components/EntityYamlView";
 import { Markdown } from "@/components/markdown";
+import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -62,6 +63,7 @@ function WorkItemDetailPage() {
   const [status, setStatus] = useState(0);
   const [editProjectId, setEditProjectId] = useState("");
   const [editWorkflowId, setEditWorkflowId] = useState("");
+  const [editRuntimeImage, setEditRuntimeImage] = useState("");
   const [editScheduledStartAt, setEditScheduledStartAt] = useState("");
   const [editAutoStartWorkflow, setEditAutoStartWorkflow] = useState(true);
 
@@ -173,6 +175,7 @@ function WorkItemDetailPage() {
                 setContextWindow(item.contextWindow ?? 0);
                 setEditProjectId(item.projectId);
                 setEditWorkflowId(item.workflowId ?? "");
+                setEditRuntimeImage(item.runtimeImage ?? "");
                 setEditScheduledStartAt(
                   item.scheduledStartAt
                     ? localDatetimeString(
@@ -453,6 +456,21 @@ function WorkItemDetailPage() {
             )}
           </CardHeader>
         </Card>
+        <Card>
+          <CardHeader>
+            <CardDescription>Runtime image</CardDescription>
+            <CardTitle className="text-base">
+              {editing ? (
+                <RuntimeImageSelect
+                  value={editRuntimeImage}
+                  onChange={setEditRuntimeImage}
+                />
+              ) : (
+                item.runtimeImage || "default (base image)"
+              )}
+            </CardTitle>
+          </CardHeader>
+        </Card>
       </div>
 
       {/* Description */}
@@ -532,6 +550,7 @@ function WorkItemDetailPage() {
                   status,
                   projectId: editProjectId,
                   workflowId: editWorkflowId,
+                  runtimeImage: editRuntimeImage || undefined,
                   scheduledStartAt: editScheduledStartAt
                     ? Timestamp.fromDate(new Date(editScheduledStartAt))
                     : undefined,

@@ -383,6 +383,38 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "status": {Type: "string", Description: "Optional status filter"}},
 		},
 
+		// --- Runtime Images ---
+		{
+			Name:        "list_runtime_images",
+			Description: "List all runtime images for the current tenant (container images workers run in).",
+			Mutating:    false,
+			Fn:          toolListRuntimeImages,
+		},
+		{
+			Name:        "get_runtime_image",
+			Description: "Get a single runtime image by ID, including its build status and spec.",
+			Mutating:    false,
+			Fn:          toolGetRuntimeImage,
+			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Runtime image ID"}},
+			Required:    []string{"id"},
+		},
+		{
+			Name:        "create_runtime_image",
+			Description: "Create a new runtime image spec (draft status) with a name, slug, and optional apt packages + toolchain lines. The image is built later via the UI.",
+			Mutating:    true,
+			Fn:          toolCreateRuntimeImage,
+			Properties:  map[string]PropertySchema{"name": {Type: "string", Description: "Image name"}, "slug": {Type: "string", Description: "Image slug (lowercase words with hyphens)"}, "description": {Type: "string", Description: "Optional description"}, "apt_packages": {Type: "array", Description: "Optional list of apt package names"}, "toolchains": {Type: "array", Description: "Optional toolchain install lines (pip/npm/mise/curl)"}},
+			Required:    []string{"name", "slug"},
+		},
+		{
+			Name:        "delete_runtime_image",
+			Description: "Delete a runtime image by ID and its local Docker image. This is irreversible.",
+			Mutating:    true,
+			Fn:          toolDeleteRuntimeImage,
+			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Runtime image ID"}},
+			Required:    []string{"id"},
+		},
+
 		// --- Settings ---
 		{
 			Name:        "get_settings",

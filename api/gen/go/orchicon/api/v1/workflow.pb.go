@@ -749,7 +749,8 @@ type WorkflowRun struct {
 	EndedAt         *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`
 	CreatedAt       *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt       *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	WorkItemId      string                 `protobuf:"bytes,14,opt,name=work_item_id,json=workItemId,proto3" json:"work_item_id,omitempty"` // bound work item id, if any; empty for one-shot runs
+	WorkItemId      string                 `protobuf:"bytes,14,opt,name=work_item_id,json=workItemId,proto3" json:"work_item_id,omitempty"`     // bound work item id, if any; empty for one-shot runs
+	RuntimeImage    string                 `protobuf:"bytes,15,opt,name=runtime_image,json=runtimeImage,proto3" json:"runtime_image,omitempty"` // resolved runtime container image tag at run start
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -878,6 +879,13 @@ func (x *WorkflowRun) GetUpdatedAt() *timestamppb.Timestamp {
 func (x *WorkflowRun) GetWorkItemId() string {
 	if x != nil {
 		return x.WorkItemId
+	}
+	return ""
+}
+
+func (x *WorkflowRun) GetRuntimeImage() string {
+	if x != nil {
+		return x.RuntimeImage
 	}
 	return ""
 }
@@ -1226,7 +1234,7 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"position_x\x18\t \x01(\x01R\tpositionX\x12\x1d\n" +
 	"\n" +
 	"position_y\x18\n" +
-	" \x01(\x01R\tpositionY\"\xc9\x04\n" +
+	" \x01(\x01R\tpositionY\"\xee\x04\n" +
 	"\vWorkflowRun\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1f\n" +
@@ -1249,7 +1257,8 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12 \n" +
 	"\fwork_item_id\x18\x0e \x01(\tR\n" +
-	"workItemId\"\x99\x05\n" +
+	"workItemId\x12#\n" +
+	"\rruntime_image\x18\x0f \x01(\tR\fruntimeImage\"\x99\x05\n" +
 	"\x0fWorkflowStepRun\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12&\n" +

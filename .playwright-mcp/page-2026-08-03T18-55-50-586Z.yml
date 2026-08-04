@@ -1,0 +1,76 @@
+- generic [ref=f1e3]:
+  - complementary [ref=f1e4]:
+    - generic [ref=f1e5]: Orchicon
+    - navigation [ref=f1e7]:
+      - link "Dashboard" [ref=f1e8] [cursor=pointer]:
+        - /url: /
+      - link "Ask Orchicon" [ref=f1e9] [cursor=pointer]:
+        - /url: /ask-orchicon
+      - link "Projects" [ref=f1e10] [cursor=pointer]:
+        - /url: /projects
+      - link "Work Items" [ref=f1e11] [cursor=pointer]:
+        - /url: /work-items
+      - link "Workers" [ref=f1e12] [cursor=pointer]:
+        - /url: /workers
+      - link "Workflows" [ref=f1e13] [cursor=pointer]:
+        - /url: /workflows
+      - link "Policies" [ref=f1e14] [cursor=pointer]:
+        - /url: /policies
+      - link "Runtime Images" [ref=f1e15] [cursor=pointer]:
+        - /url: /runtime-images
+      - link "Recovery" [ref=f1e16] [cursor=pointer]:
+        - /url: /recovery
+      - link "Executions" [ref=f1e17] [cursor=pointer]:
+        - /url: /executions
+      - link "Approvals" [ref=f1e18] [cursor=pointer]:
+        - /url: /approvals
+      - link "Telemetry" [ref=f1e19] [cursor=pointer]:
+        - /url: /telemetry
+      - link "Adapters" [ref=f1e20] [cursor=pointer]:
+        - /url: /adapters
+      - link "Webhooks" [ref=f1e21] [cursor=pointer]:
+        - /url: /webhooks
+      - link "Settings" [ref=f1e22] [cursor=pointer]:
+        - /url: /settings
+  - generic [ref=f1e23]:
+    - banner [ref=f1e24]:
+      - generic [ref=f1e25]: Orchicon control plane · v0.1.178
+      - generic [ref=f1e26]:
+        - button "Switch to light mode" [ref=f1e27] [cursor=pointer]
+        - link "Sign in" [ref=f1e34] [cursor=pointer]:
+          - /url: /login
+    - main [ref=f1e35]:
+      - generic [ref=f1e37]:
+        - generic [ref=f1e38]:
+          - generic [ref=f1e39]:
+            - button "Back" [ref=f1e40] [cursor=pointer]
+            - generic [ref=f1e41]:
+              - heading "PySide6 GUI" [level=1] [ref=f1e42]
+              - paragraph [ref=f1e43]:
+                - code [ref=f1e44]: pyside6-gui:latest
+                - text: · base
+                - code [ref=f1e45]: orchicon-runtime:local
+          - generic [ref=f1e46]:
+            - button "Edit" [ref=f1e47] [cursor=pointer]
+            - button "Deploy" [ref=f1e48] [cursor=pointer]
+            - button "Delete" [ref=f1e49] [cursor=pointer]
+        - generic [ref=f1e50]:
+          - generic [ref=f1e51]:
+            - generic [ref=f1e52]: Spec
+            - generic [ref=f1e54]:
+              - paragraph [ref=f1e55]: "Status: ready"
+              - paragraph [ref=f1e56]: "Slug: pyside6-gui"
+              - paragraph [ref=f1e57]: "Description: E2E GUI image with PySide6"
+              - paragraph [ref=f1e58]: "apt packages: libglib2.0-0"
+              - paragraph [ref=f1e59]: "Toolchains: pip install --break-system-packages PySide6-Essentials"
+              - paragraph [ref=f1e60]: "Env: QT_QPA_PLATFORM=offscreen"
+          - generic [ref=f1e61]:
+            - generic [ref=f1e62]:
+              - generic [ref=f1e63]: Dockerfile
+              - generic [ref=f1e64]: The exact build input (base FROM rewritten by the daemon on build).
+            - generic [ref=f1e65]: FROM orchicon-runtime:local USER root RUN apt-get update && apt-get install -y --no-install-recommends \ libglib2.0-0 && rm -rf /var/lib/apt/lists/* RUN pip install --break-system-packages PySide6-Essentials ENV QT_QPA_PLATFORM=offscreen RUN chown -R 1000:1000 /usr /opt /var 2>/dev/null || true USER orchicon WORKDIR /home/orchicon
+        - generic [ref=f1e69]:
+          - generic [ref=f1e70]: Build Log
+          - generic [ref=f1e72]: "DEPRECATED: The legacy builder is deprecated and will be removed in a future release. Install the buildx component to build images with BuildKit: https://docs.docker.com/go/buildx/Sending build context to Docker daemon 2.048kB Step 1/9 : FROM orchicon-runtime:local ---> 8f88c5180f65Step 2/9 : LABEL org.orchicon.runtime-base=true ---> Running in 0732a48fdef6 ---> Removed intermediate container 0732a48fdef6 ---> de520e9d54ebStep 3/9 : USER root ---> Running in 1bbf5efd139a ---> Removed intermediate container 1bbf5efd139a ---> 05d7fae829daStep 4/9 : RUN apt-get update && apt-get install -y --no-install-recommends libglib2.0-0 && rm -rf /var/lib/apt/lists/* ---> Running in 49dfc16cb343Get:1 http://deb.debian.org/debian bookworm InRelease [151 kB]Get:2 http://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]Get:3 http://deb.debian.org/debian-security bookworm-security InRelease [34.8 kB]Get:4 http://deb.debian.org/debian bookworm/main amd64 Packages [8790 kB]Get:5 http://deb.debian.org/debian bookworm-updates/main amd64 Packages [6924 B]Get:6 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages [321 kB]Fetched 9360 kB in 1s (8506 kB/s)Reading package lists...Reading package lists...Building dependency tree...Reading state information...Suggested packages: low-memory-monitorRecommended packages: libglib2.0-data shared-mime-info xdg-user-dirsThe following NEW packages will be installed: libglib2.0-00 upgraded, 1 newly installed, 0 to remove and 0 not upgraded.Need to get 1403 kB of archives.After this operation, 4234 kB of additional disk space will be used.Get:1 http://deb.debian.org/debian bookworm/main amd64 libglib2.0-0 amd64 2.74.6-2+deb12u9 [1403 kB]\x1b[91mdebconf: delaying package configuration, since apt-utils is not installed\x1b[0mFetched 1403 kB in 0s (7884 kB/s)Selecting previously unselected package libglib2.0-0:amd64.(Reading database ... (Reading database ... 5% (Reading database ... 10% (Reading database ... 15% (Reading database ... 20% (Reading database ... 25% (Reading database ... 30% (Reading database ... 35% (Reading database ... 40% (Reading database ... 45% (Reading database ... 50% (Reading database ... 55% (Reading database ... 60% (Reading database ... 65% (Reading database ... 70% (Reading database ... 75% (Reading database ... 80% (Reading database ... 85% (Reading database ... 90% (Reading database ... 95% (Reading database ... 100% (Reading database ... 45205 files and directories currently installed.)Preparing to unpack .../libglib2.0-0_2.74.6-2+deb12u9_amd64.deb ...Unpacking libglib2.0-0:amd64 (2.74.6-2+deb12u9) ...Setting up libglib2.0-0:amd64 (2.74.6-2+deb12u9) ...No schema files found: doing nothing.Processing triggers for libc-bin (2.36-9+deb12u14) ... ---> Removed intermediate container 49dfc16cb343 ---> 19cb2e181502Step 5/9 : RUN pip install --break-system-packages PySide6-Essentials ---> Running in 7ecbad5f78e7\x1b[91mWARNING: The directory '/root/.cache/pip' or its parent directory is not owned or is not writable by the current user. The cache has been disabled. Check the permissions and owner of that directory. If executing pip with sudo, you should use sudo's -H flag.\x1b[0mCollecting PySide6-Essentials Downloading pyside6_essentials-6.11.1-cp310-abi3-manylinux_2_34_x86_64.whl (79.9 MB) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 79.9/79.9 MB 39.5 MB/s eta 0:00:00Collecting shiboken6==6.11.1 Downloading shiboken6-6.11.1-cp310-abi3-manylinux_2_34_x86_64.whl (272 kB) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 272.2/272.2 kB 24.7 MB/s eta 0:00:00Installing collected packages: shiboken6, PySide6-EssentialsSuccessfully installed PySide6-Essentials-6.11.1 shiboken6-6.11.1\x1b[91mWARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv\x1b[0m ---> Removed intermediate container 7ecbad5f78e7 ---> 954f42857631Step 6/9 : ENV QT_QPA_PLATFORM=offscreen ---> Running in 0efe8e573bd2 ---> Removed intermediate container 0efe8e573bd2 ---> c8fff4fe5997Step 7/9 : RUN chown -R 1000:1000 /usr /opt /var 2>/dev/null || true ---> Running in ad60603e7aad ---> Removed intermediate container ad60603e7aad ---> 98bdb76c5f6aStep 8/9 : USER orchicon ---> Running in e0c49a40717b ---> Removed intermediate container e0c49a40717b ---> 83ed77f7d8efStep 9/9 : WORKDIR /home/orchicon ---> Running in 1c3d7d3e0f11 ---> Removed intermediate container 1c3d7d3e0f11 ---> 116714be1a9aSuccessfully built 116714be1a9aSuccessfully tagged pyside6-gui:latest"
+        - link "← All runtime images" [ref=f1e68] [cursor=pointer]:
+          - /url: /runtime-images

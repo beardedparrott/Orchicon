@@ -30,6 +30,10 @@ type ExecutionManifest struct {
 	// daemon is configured, the adapter runs `opencode` inside the
 	// workflow's runtime container instead of as a local subprocess.
 	RuntimeWorkflowID string
+	// RuntimeImage is the resolved runtime container image tag for the
+	// workflow run (captured at run start). Empty = the daemon's default
+	// base image.
+	RuntimeImage string
 	// Stall detection thresholds from tenant settings. Zero means "use
 	// env-var or built-in default".
 	StallNoProgressWindowSeconds  int64

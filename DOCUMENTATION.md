@@ -337,7 +337,9 @@ Orchicon/
 │
 ├── deploy/
 │   ├── container/               # Single-container image (Dockerfile + embedded configs)
-│   └── runtime/                 # Workflow runtime container image (toolchain base)
+│   └── runtime/                 # Workflow runtime container image (toolchain base + :gui variant)
+│       ├── Dockerfile           #   base image (baked toolchain, no-root model)
+│       └── Dockerfile.gui       #   :gui variant (headless GUI libs) + custom-image template
 │
 ├── internal/
 │   ├── adapter/                 # RuntimeAdapterService (list adapters, capabilities)
@@ -354,7 +356,8 @@ Orchicon/
 │   ├── migrate/                 # In-binary SQL migration runner
 │   ├── opencode/                # OpenCode CLI adapter bridge + stall detection
 │   ├── guard/                   # OS-level execution guard shim (leaf package)
-│   ├── runtime/                 # Workflow runtime containers: daemon client, in-container agent, lifecycle
+│   ├── runtime/                 # Workflow runtime containers: daemon client, in-container agent, lifecycle, image build
+│   ├── runtimeimage/            # RuntimeImageService: image spec CRUD + build orchestration
 │   ├── outbox/                  # Outbox event types + background relay
 │   ├── policy/                  # OPA/Rego policy engine + PolicyService
 │   ├── project/                 # ProjectService + validation
@@ -451,6 +454,7 @@ Orchicon/
 │           ├── workers{,_.new,_.$id}.tsx
 │           ├── workflows{,_.new,_.$id,_.$id_.runs.$runId}.tsx
 │           ├── policies{,_.new,_.$id}.tsx
+│           ├── runtime-images{,_.new,_.$id}.tsx
 │           ├── recovery{,_.$id}.tsx
 │           ├── executions{,_.$id}.tsx
 │           ├── telemetry.tsx
@@ -500,6 +504,8 @@ Orchicon/
 | **Policy engine** (OPA/Rego) | `internal/policy/engine.go` |
 | **Auth (OIDC, API keys, JWT)** | `internal/auth/` |
 | **Adapter bridge** (OpenCode CLI) | `internal/opencode/` |
+| **Runtime image service** (build specs) | `internal/runtimeimage/` |
+| **Runtime containers** (daemon/client/agent) | `internal/runtime/` |
 | **Event bus** (NATS) | `internal/eventbus/nats.go` |
 | **Outbox relay** | `internal/outbox/relay.go` |
 | **Telemetry setup** (OTel) | `internal/telemetry/telemetry.go` |
@@ -884,7 +890,7 @@ Worker executions run inside **one short-lived container per active workflow run
 
 **Components:**
 
-- **`orchicon runtime-daemon`** (host process): the only process with access to the Docker socket. Serves a narrow HTTP API over a unix socket (default `/tmp/orchicon-runtime/runtime.sock`, bind-mounted as a **directory** into the supervisor container at `/var/run/orchicon-runtime`): create/kill/list runtime containers, exec into them, signal a running exec. The directory mount (not a single-file mount) means a daemon restart — which recreates the socket file — never staleness the supervisor container's socket. The daemon also runs an age-based orphan sweep (default: remove `orchicon-runtime-*` containers older than 24h; `ORCHICON_RUNTIME_MAX_AGE` / `ORCHICON_RUNTIME_SWEEP_INTERVAL`) as a hard backstop for containers leaked while the plane is down. Every request is validated — image allowlist (`orchicon-runtime:*`), mount sources restricted to the projects root, and an argv[0] allowlist (`opencode`, `orchicon`, `bash`, `sh`) — so the control plane can never create an arbitrary container. Started by `scripts/container.sh up`; manage with `scripts/container.sh runtime-daemon` / `runtime-stop`.
+- **`orchicon runtime-daemon`** (host process): the only process with access to the Docker socket. Serves a narrow HTTP API over a unix socket (default `/tmp/orchicon-runtime/runtime.sock`, bind-mounted as a **directory** into the supervisor container at `/var/run/orchicon-runtime`): create/kill/list runtime containers, exec into them, signal a running exec, build/remove runtime images. The directory mount (not a single-file mount) means a daemon restart — which recreates the socket file — never staleness the supervisor container's socket. The daemon also runs an age-based orphan sweep (default: remove `orchicon-runtime-*` containers older than 24h; `ORCHICON_RUNTIME_MAX_AGE` / `ORCHICON_RUNTIME_SWEEP_INTERVAL`) as a hard backstop for containers leaked while the plane is down. Every request is validated — image allowlist (the base + `ORCHICON_RUNTIME_IMAGES` stock images + any locally-present image carrying the inherited `org.orchicon.runtime-base` label), mount sources restricted to the projects root, and an argv[0] allowlist (`opencode`, `orchicon`, `bash`, `sh`) — so the control plane can never create an arbitrary container. Started by `scripts/container.sh up`; manage with `scripts/container.sh runtime-daemon` / `runtime-stop`.
 - **`orchicon runtime-supervisor`** (PID 1 inside each runtime container): listens on a unix socket (`/tmp/orchicon-agent.sock`), runs `opencode run` as a child, streams stdout/stderr back, and signals children by exec_id. Builds the execution-guard shim in-container so workers run under the same `rm`/`sudo`/`dd`/`mkfs` path-scoped safety guard as the in-process path.
 - **`orchicon runtime-client`** (in-container): forwards a dispatch request from the daemon (via `docker exec`) to the supervisor socket and relays the streamed events back, so the daemon never needs shell-level access to the container.
 
@@ -899,7 +905,11 @@ Worker executions run inside **one short-lived container per active workflow run
 - The daemon mounts `~/.config/opencode` and `~/.local/share/opencode` **read-only**; the supervisor redirects each worker's opencode state to an ephemeral `XDG_DATA_HOME` under `/tmp` (seeded with `auth.json`), so sessions/keys never touch the host's real opencode data. Git identity + credential store are mounted read-only (PR/merge workers need them).
 - Per-runtime resource limits: 4 CPU / 4 GB memory / 2 GB tmpfs `/tmp` (configurable via `ORCHICON_RUNTIME_CPUS` / `_MEMORY` / `_TMPFS` on the daemon).
 
-**Build:** `make container-build` also builds `orchicon-runtime:local`. The release workflow ships the runtime image to GHCR (`ghcr.io/beardedparrott/orchicon-runtime:<version>` + `:latest`) — the one-command install pulls it, and the runtime daemon defaults to that image (`ORCHICON_RUNTIME_IMAGE` overrides; local dev pins the locally-built tag). **Model note:** executions dispatch with the worker's pinned `model_ref`; verification workers should pin a free model (e.g. `opencode/deepseek-v4-flash-free`).
+**Runtime images (self-service builds):** the image a workflow run's container uses is chosen **per work item** (`work_items.runtime_image`, backend-stamped to the base image when empty). The **Runtime Images** page (sidebar) lets you define and **build** custom images on the host runtime daemon: a structured form (apt packages, toolchain lines, env) with a **live Dockerfile preview** that doubles as an advanced raw-Dockerfile editor, plus a **Deploy** button that streams the `docker build` log. Editing a ready image reverts it to draft so it must be rebuilt; delete removes both the spec row and the local Docker image (gated on no active run using it). Every build is guaranteed to derive from the base image — the daemon rewrites the Dockerfile's `FROM` line to the base and injects the `org.orchicon.runtime-base=true` label, which is also the container-create gate (a locally-present image carrying that inherited label is accepted without a separate registration). The workflow-run start resolves the image (template → bound work item; one-shot → the WORK_ITEM markers' items, all must agree or the run fails at start) and stores it on the run, so a self-healed container is recreated with the identical image. Stock variants ship alongside the base: **`:gui`** (`deploy/runtime/Dockerfile.gui`, headless Qt/tkinter/X11 libs) and **`:dev`** (`deploy/runtime/Dockerfile.dev`, the dogfooding image — Go/Node/buf/atlas plus a baked PostgreSQL 15 for in-sandbox DB testing). Both double as reference templates for custom images.
+
+**Dogfooding Orchicon (the `:dev` image):** to have a worker build and test the Orchicon repo itself, set the project's `project_dir` to your Orchicon checkout on the host and give its work items the `:dev` runtime image. The per-workflow runtime container mounts `project_dir` automatically at container-create time (`Lifecycle.EnsureForRun` reads it from the projects table — no `sync-mounts` needed for runtime containers; that script only applies to the long-lived single-container instance, where Docker can't add bind mounts to a running container). The checkout must be under the daemon's `AllowedRoots` (default `$HOME/projects`). Inside the sandbox a worker can run `go build`/`go vet`/`make gen`/`make fe-build` and the full `make ci` DB path by booting a **disposable in-sandbox Postgres** (non-root): `initdb` + `pg_ctl` into the ephemeral tmpfs, then `psql` to create the `orchicon` database — the RLS gate (`check-rls.sh`), migrations, and DB unit tests then run against `localhost:5432`. The instance dies with the container and never touches the plane's Postgres, preserving the no-DB-route sandbox invariant.
+
+**Build:** `make container-build` also builds `orchicon-runtime:local` (plus `orchicon-runtime:local-gui` and `orchicon-runtime:orchicon-dev`). The release workflow ships the runtime image to GHCR (`ghcr.io/beardedparrott/orchicon-runtime:<version>` + `:latest`, plus the `:gui` and `:dev` variants) — the one-command install pulls it, and the runtime daemon defaults to that image (`ORCHICON_RUNTIME_IMAGE` overrides; local dev pins the locally-built tag). `ORCHICON_RUNTIME_IMAGES` adds extra allowlisted stock images (base always included). **Model note:** executions dispatch with the worker's pinned `model_ref`; verification workers should pin a free model (e.g. `opencode/deepseek-v4-flash-free`).
 
 ### Manual Development Setup
 

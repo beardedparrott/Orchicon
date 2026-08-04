@@ -47,6 +47,7 @@ type CreateWorkItemRequest struct {
 	WorkflowId         string                 `protobuf:"bytes,12,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`                               // bind to this workflow template; empty = no binding
 	ScheduledStartAt   *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=scheduled_start_at,json=scheduledStartAt,proto3" json:"scheduled_start_at,omitempty"`           // optional scheduled start; null = start immediately if auto_start_workflow
 	AutoStartWorkflow  *bool                  `protobuf:"varint,14,opt,name=auto_start_workflow,json=autoStartWorkflow,proto3,oneof" json:"auto_start_workflow,omitempty"` // default true when unset; set false to defer start
+	RuntimeImage       string                 `protobuf:"bytes,15,opt,name=runtime_image,json=runtimeImage,proto3" json:"runtime_image,omitempty"`                         // runtime container image tag; empty = base image
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -177,6 +178,13 @@ func (x *CreateWorkItemRequest) GetAutoStartWorkflow() bool {
 		return *x.AutoStartWorkflow
 	}
 	return false
+}
+
+func (x *CreateWorkItemRequest) GetRuntimeImage() string {
+	if x != nil {
+		return x.RuntimeImage
+	}
+	return ""
 }
 
 type CreateWorkItemResponse struct {
@@ -487,6 +495,7 @@ type UpdateWorkItemRequest struct {
 	ScheduledStartAt   *timestamppb.Timestamp `protobuf:"bytes,16,opt,name=scheduled_start_at,json=scheduledStartAt,proto3,oneof" json:"scheduled_start_at,omitempty"`
 	AutoStartWorkflow  *bool                  `protobuf:"varint,17,opt,name=auto_start_workflow,json=autoStartWorkflow,proto3,oneof" json:"auto_start_workflow,omitempty"`
 	WorkflowRunId      *string                `protobuf:"bytes,18,opt,name=workflow_run_id,json=workflowRunId,proto3,oneof" json:"workflow_run_id,omitempty"` // set to empty string to allow re-schedule
+	RuntimeImage       *string                `protobuf:"bytes,19,opt,name=runtime_image,json=runtimeImage,proto3,oneof" json:"runtime_image,omitempty"`      // runtime container image tag; empty = base image
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -615,6 +624,13 @@ func (x *UpdateWorkItemRequest) GetAutoStartWorkflow() bool {
 func (x *UpdateWorkItemRequest) GetWorkflowRunId() string {
 	if x != nil && x.WorkflowRunId != nil {
 		return *x.WorkflowRunId
+	}
+	return ""
+}
+
+func (x *UpdateWorkItemRequest) GetRuntimeImage() string {
+	if x != nil && x.RuntimeImage != nil {
+		return *x.RuntimeImage
 	}
 	return ""
 }
@@ -1323,7 +1339,7 @@ var File_orchicon_api_v1_work_item_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\n" +
-	"'orchicon/api/v1/work_item_service.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1forchicon/api/v1/work_item.proto\"\xc0\x04\n" +
+	"'orchicon/api/v1/work_item_service.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1forchicon/api/v1/work_item.proto\"\xe5\x04\n" +
 	"\x15CreateWorkItemRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1d\n" +
 	"\n" +
@@ -1342,7 +1358,8 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\vworkflow_id\x18\f \x01(\tR\n" +
 	"workflowId\x12H\n" +
 	"\x12scheduled_start_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\x10scheduledStartAt\x123\n" +
-	"\x13auto_start_workflow\x18\x0e \x01(\bH\x00R\x11autoStartWorkflow\x88\x01\x01B\x16\n" +
+	"\x13auto_start_workflow\x18\x0e \x01(\bH\x00R\x11autoStartWorkflow\x88\x01\x01\x12#\n" +
+	"\rruntime_image\x18\x0f \x01(\tR\fruntimeImageB\x16\n" +
 	"\x14_auto_start_workflow\"P\n" +
 	"\x16CreateWorkItemResponse\x126\n" +
 	"\twork_item\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkItemR\bworkItem\"$\n" +
@@ -1369,7 +1386,7 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\x15ListWorkItemsResponse\x128\n" +
 	"\n" +
 	"work_items\x18\x01 \x03(\v2\x19.orchicon.api.v1.WorkItemR\tworkItems\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xae\x06\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xea\x06\n" +
 	"\x15UpdateWorkItemRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\x05title\x18\x02 \x01(\tH\x00R\x05title\x88\x01\x01\x12%\n" +
@@ -1389,7 +1406,8 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\x12scheduled_start_at\x18\x10 \x01(\v2\x1a.google.protobuf.TimestampH\tR\x10scheduledStartAt\x88\x01\x01\x123\n" +
 	"\x13auto_start_workflow\x18\x11 \x01(\bH\n" +
 	"R\x11autoStartWorkflow\x88\x01\x01\x12+\n" +
-	"\x0fworkflow_run_id\x18\x12 \x01(\tH\vR\rworkflowRunId\x88\x01\x01B\b\n" +
+	"\x0fworkflow_run_id\x18\x12 \x01(\tH\vR\rworkflowRunId\x88\x01\x01\x12(\n" +
+	"\rruntime_image\x18\x13 \x01(\tH\fR\fruntimeImage\x88\x01\x01B\b\n" +
 	"\x06_titleB\x0e\n" +
 	"\f_descriptionB\x16\n" +
 	"\x14_acceptance_criteriaB\t\n" +
@@ -1402,7 +1420,8 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\f_workflow_idB\x15\n" +
 	"\x13_scheduled_start_atB\x16\n" +
 	"\x14_auto_start_workflowB\x12\n" +
-	"\x10_workflow_run_id\"P\n" +
+	"\x10_workflow_run_idB\x10\n" +
+	"\x0e_runtime_image\"P\n" +
 	"\x16UpdateWorkItemResponse\x126\n" +
 	"\twork_item\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkItemR\bworkItem\"'\n" +
 	"\x15DeleteWorkItemRequest\x12\x0e\n" +

@@ -356,6 +356,13 @@ export class WorkItem extends Message<WorkItem> {
    */
   updatedAt?: Timestamp;
 
+  /**
+   * runtime container image tag; empty = base image
+   *
+   * @generated from field: string runtime_image = 24;
+   */
+  runtimeImage = "";
+
   constructor(data?: PartialMessage<WorkItem>) {
     super();
     proto3.util.initPartial(data, this);
@@ -387,6 +394,7 @@ export class WorkItem extends Message<WorkItem> {
     { no: 16, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 17, name: "created_at", kind: "message", T: Timestamp },
     { no: 18, name: "updated_at", kind: "message", T: Timestamp },
+    { no: 24, name: "runtime_image", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkItem {

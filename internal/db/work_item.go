@@ -42,6 +42,10 @@ type WorkItemRow struct {
 	PromptContext   []byte // jsonb
 	ScheduledStartAt *time.Time // scheduled workflow start; nil = immediate
 	AutoStartWorkflow bool      // true = auto-start bound workflow on save
+	// RuntimeImage is the runtime container image tag for this item's
+	// workflow run (empty = base image). Stamped by the backend at
+	// create/update so the value always carries forward to the run.
+	RuntimeImage     string
 	Version          int
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
@@ -64,27 +68,27 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		 acceptance_criteria, status, assigned_worker_ref, workflow_id,
 		 workflow_run_id, workflow_step_id,
 		 priority, budgets, context_window, results, prompt_context,
-		 scheduled_start_at, auto_start_workflow)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+		 scheduled_start_at, auto_start_workflow, runtime_image)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 		RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
 			acceptance_criteria, status, assigned_worker_ref, workflow_id,
 			workflow_run_id, workflow_step_id,
 			priority, budgets, context_window, results, prompt_context,
-			scheduled_start_at, auto_start_workflow, version, created_at, updated_at`
+			scheduled_start_at, auto_start_workflow, runtime_image, version, created_at, updated_at`
 	row := w
 	err := tx.QueryRow(ctx, q,
 		w.ID, w.TenantID, w.ProjectID, w.ParentID, w.Kind, w.Title, w.Description,
 		w.AcceptanceCriteria, w.Status, w.AssignedWorkerRef, w.WorkflowID,
 		w.WorkflowRunID, w.WorkflowStepID,
 		w.Priority, w.Budgets, w.ContextWindow, w.Results, w.PromptContext,
-		w.ScheduledStartAt, w.AutoStartWorkflow,
+		w.ScheduledStartAt, w.AutoStartWorkflow, w.RuntimeImage,
 	).Scan(
 		&row.ID, &row.TenantID, &row.ProjectID, &row.ParentID, &row.Kind, &row.Title,
 		&row.Description, &row.AcceptanceCriteria, &row.Status, &row.AssignedWorkerRef,
 		&row.WorkflowID, &row.WorkflowRunID, &row.WorkflowStepID,
 		&row.Priority, &row.Budgets, &row.ContextWindow, &row.Results,
 		&row.PromptContext,
-		&row.ScheduledStartAt, &row.AutoStartWorkflow,
+		&row.ScheduledStartAt, &row.AutoStartWorkflow, &row.RuntimeImage,
 		&row.Version, &row.CreatedAt, &row.UpdatedAt,
 	)
 	if err != nil {
@@ -99,7 +103,7 @@ func GetWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkItemR
 		acceptance_criteria, status, assigned_worker_ref, workflow_id,
 		workflow_run_id, workflow_step_id,
 		priority, budgets, context_window, results, prompt_context,
-		scheduled_start_at, auto_start_workflow, version, created_at, updated_at
+		scheduled_start_at, auto_start_workflow, runtime_image, version, created_at, updated_at
 		FROM work_items WHERE id = $1 AND tenant_id = $2`
 	var w WorkItemRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
@@ -108,7 +112,7 @@ func GetWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkItemR
 		&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
 		&w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
 		&w.PromptContext,
-		&w.ScheduledStartAt, &w.AutoStartWorkflow,
+		&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage,
 		&w.Version, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -144,7 +148,7 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 		acceptance_criteria, status, assigned_worker_ref, workflow_id,
 		workflow_run_id, workflow_step_id,
 		priority, budgets, context_window, results, prompt_context,
-		scheduled_start_at, auto_start_workflow, version, created_at, updated_at
+		scheduled_start_at, auto_start_workflow, runtime_image, version, created_at, updated_at
 		FROM work_items
 		WHERE tenant_id = $1 AND ($2 = '' OR project_id = $2) AND ($3 = '' OR id > $3)`
 	args := []any{f.TenantID, f.ProjectID, f.AfterID}
@@ -193,7 +197,7 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 			&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
 			&w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
 			&w.PromptContext,
-			&w.ScheduledStartAt, &w.AutoStartWorkflow,
+			&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage,
 			&w.Version, &w.CreatedAt, &w.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan work item: %w", err)
@@ -240,6 +244,10 @@ type UpdateWorkItemFields struct {
 	// ClearScheduledStartAt, when true, sets scheduled_start_at = NULL.
 	// Used when auto_start_workflow is enabled to clear a prior schedule.
 	ClearScheduledStartAt bool
+	// RuntimeImage is the runtime container image tag; empty string resets
+	// to the base image. Stamped at create/update so the value carries
+	// forward to the workflow run.
+	RuntimeImage *string
 }
 
 // UpdateWorkItem applies a partial update with optimistic concurrency.
@@ -335,12 +343,17 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 		args = append(args, *f.AutoStartWorkflow)
 		setIdx++
 	}
+	if f.RuntimeImage != nil {
+		q += fmt.Sprintf(`, runtime_image = $%d`, setIdx)
+		args = append(args, *f.RuntimeImage)
+		setIdx++
+	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
 		acceptance_criteria, status, assigned_worker_ref, workflow_id,
 		workflow_run_id, workflow_step_id,
 		priority, budgets, context_window, results, prompt_context,
-		scheduled_start_at, auto_start_workflow, version, created_at, updated_at`
+		scheduled_start_at, auto_start_workflow, runtime_image, version, created_at, updated_at`
 	var w WorkItemRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
@@ -348,7 +361,7 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 		&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
 		&w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
 		&w.PromptContext,
-		&w.ScheduledStartAt, &w.AutoStartWorkflow,
+		&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage,
 		&w.Version, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
