@@ -30,19 +30,18 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
-### v0.1.182 (2026-08-04)
+### v0.1.184 (2026-08-05)
+
+| Type | Change |
+|---|---|
+| Feature | **The binary version always matches the release.** The version embedded at build time used to come from `git describe --tags --abbrev=0` on the local checkout — and since `git pull` doesn't fetch tags while the auto-release workflow creates the canonical tag on GitHub, a local rebuild could embed an older version than the merged code (a rebuilt prod instance reported `v0.1.181` for merged `v0.1.183` code). The Makefile build now runs `git fetch --tags` first (best-effort; offline builds fall back to local tags) and resolves the version at recipe time, and `make build VERSION=v0.1.x` overrides the tag explicitly. GitHub-release binaries and GHCR images already embedded the exact release version and are unaffected. |
+
+### v0.1.183 (2026-08-05)
 
 | Type | Change |
 |---|---|
 | Feature | **Advisory stalls no longer fail healthy executions.** A `no_file_progress` stall (worker went the `no_file_diff` window, default 15m, without touching files) used to mark the execution `unhealthy` and — for standalone dispatches — fail the work item, even though the subprocess kept running and the worker often completed successfully (observed: the SSE worker was flagged yet succeeded). Now an advisory stall is purely informational: the execution gets a non-terminal `stalled` health notice + reason, keeps `running`, and the stall monitor **revives it back to `healthy`** (`OnRecovered`) once file progress resumes. Only genuine hang/loop signals (`no_progress`, `text_loop`, `repetition`) still hard-kill and route to recovery. Also fixed: a succeeded execution no longer keeps a stale `stalled:...` error message. |
 | Feature | **Senior Software Engineer worker now makes progress visible.** The canned SSE seed prompt gained a "Make progress visible" block — write incrementally (scaffold, partial implementations) and persist something concrete after each meaningful phase, because Orchicon monitors execution health from file-modification activity. Seed marker bumped to `orchicon.safety=v6` so the update rolls forward to existing workers. |
-
-### v0.1.181 (2026-08-04)
-
-| Type | Change |
-|---|---|
-| Feature | **Rotating, size-bounded serve logs with Settings-driven management.** A run-away component previously grew `.dev/logs/orchicon.log` unbounded (observed at 300+ GB). The detached serve now writes through a rotating file writer: it rotates the active log by size (default 100 MB) or by time (default daily, whichever comes first) and prunes rotated files past the retention window (default 7 days / 7 files). The serve child re-points fds 1/2 onto the current file after each rotation so panics/stray prints stay in the log. Config precedence: **Settings → Defaults → Log management** (new `log_directory`, `log_max_size_mb`, `log_roll_interval_hours`, `log_retention_days`, `log_max_files`) live-applied every ~5s with no restart, then `ORCHICON_LOG_*` env vars, then built-in defaults. The single-container instances also pin Docker's `json-file` driver to `max-size=100m`/`max-file=7`. |
-| Chore | **Disk hygiene: telemetry retention + container image + Go cache.** (1) The embedded **Loki config had NO retention** — telemetry logs accumulated forever in the instance volume; it now prunes after 14 days (`retention_period: 336h` + compactor), Tempo's trace retention is pinned to 14 days, and VictoriaMetrics stays at 30 days. (2) Repeated builds orphaned ~229 dangling images (~240 GB); `scripts/container.sh build` and the runtime daemon's custom-image build now prune dangling images after each build, and the runtime daemon's orphan sweep runs immediately at start. (3) The Go build cache grew to 35 GB; new `make clean` / `make cache-check` / `make clean-docker` targets manage it and reclaim Docker build leftovers. One-time cleanup removed the legacy SigNoz/ClickHouse images + orphaned compose-era volumes (~9 GB) and the stale pre-single-container binaries. |
 
 ## Installation
 
