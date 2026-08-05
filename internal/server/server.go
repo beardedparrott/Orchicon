@@ -270,7 +270,13 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// to the host-side runtime daemon over a unix socket. When the socket
 	// is absent (headless `orchicon serve`), the lifecycle is disabled and
 	// execution stays in-process.
-	var runtimeLifecycle *runtime.Lifecycle
+	//
+	// Declared as the INTERFACE type (not *runtime.Lifecycle) so an absent
+	// daemon leaves the interface genuinely nil — a typed-nil
+	// *runtime.Lifecycle wrapped in the interface is non-nil to the
+	// reconciler and its EnsureForRun/ReapForRun nil-dereference the
+	// receiver, crashing the whole plane on the first workflow run.
+	var runtimeLifecycle scheduler.RuntimeLifecycle
 	if rtClient != nil {
 		if rtClient.Ready(context.Background()) {
 			runtimeLifecycle = runtime.NewLifecycle(rtClient, pool, log)
@@ -290,7 +296,12 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		s.reaper = scheduler.NewExecutionReaper(pool, nil, adapterBridge.IsExecutionActive, taskRec.FailLostExecution, log)
 	}
 	workflowRec := scheduler.NewWorkflowReconciler(pool, log, policyEngine, taskRec, recoveryEngine, runtimeLifecycle)
-	s.runtime = runtimeLifecycle
+	// The Server keeps a concrete *runtime.Lifecycle for the adopt sweep;
+	// the interface may be nil (no daemon) while the concrete value is
+	// set — type-assert to extract it.
+	if lc, ok := runtimeLifecycle.(*runtime.Lifecycle); ok {
+		s.runtime = lc
+	}
 	// Wire the workflow notifier: when a work item completes, enqueue
 	// the workflow run ID so the WorkflowReconciler progresses the DAG
 	// immediately instead of waiting for its next scan pass (200ms).

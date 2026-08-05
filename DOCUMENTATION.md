@@ -713,11 +713,12 @@ The **Approval** step kind blocks a workflow at a human (or AI) review gate. It 
 **Worker-backed approval (AI Approver):**
 1. In the step's Properties Panel, set **Reviewer** to **Worker**
 2. Select an approver worker (e.g. AI Approver — an opinionated worker that outputs approve/reject)
-3. The step dispatches the approver worker like a task step
+3. The step dispatches the approver worker like a task step, against the run's **shared work item** (the ticket from an upstream WORK_ITEM marker or the run's bound item) — no per-step approval work item is ever created; the **step run itself is the approval record**, carrying the composite prompt, the approver worker pin, the upstream review context, and the decision. Work Items stay clean — no "Approval: …" clutter rows.
 4. The worker's `ORCHICON WORKER SUMMARY` output determines the decision:
    - `success` → approved, workflow proceeds
    - `failure` → rejected, workflow loops back (if loop_branch configured)
 5. The decision is visible in the Approvals list alongside human reviews
+6. On failure/retry the same ticket is re-dispatched (attempt counter incremented, still no work item created); a worker-backed approval step on a one-shot run with no bound ticket and no upstream WORK_ITEM marker fails with a clear message (same constraint as TASK steps)
 
 **Loop-back configuration:**
 - **Loop branch**: Set by connecting the loop outlet (right, rose handle) to a topologically-prior step
