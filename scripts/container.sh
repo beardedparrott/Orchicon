@@ -69,6 +69,44 @@ log_dim()  { echo -e "${C_DIM}$*${C_RESET}"; }
 log_warn() { echo -e "${C_YELLOW}!${C_RESET} $*"; }
 log_err()  { echo -e "${C_RED}✗${C_RESET} $*" >&2; }
 
+# sha12 prints the first 12 hex chars of a file's SHA-256 — the "did the
+# build inputs change?" signal used to version-gate the stock runtime
+# images (same git-tag + content-hash pattern as the rest of Orchicon).
+sha12() { sha256sum "$1" | cut -c1-12; }
+
+# runtime_image_version computes the desired version label for a stock
+# runtime image: "<app-version>-<dockerfile-sha12>". Embedding the base's
+# version in the derived (:gui/:dev) versions gives the rebuild cascade for
+# free — a base change alters the derived versions, so they rebuild too.
+# $VERSION matches the Makefile's git-tag resolution and stays stable
+# between builds within one work item; only a Dockerfile edit (or a new tag)
+# changes these versions.
+runtime_image_version() {
+  local dockerfile="$1" prefix="$2"
+  if [ -f "$dockerfile" ]; then
+    echo "${prefix}-$(sha12 "$dockerfile")"
+  else
+    echo ""
+  fi
+}
+
+# runtime_image_needs_rebuild reports whether a stock runtime image must be
+# (re)built: the image is missing, its org.orchicon.runtime.version label
+# differs from the desired version, or FORCE_RUNTIME / ORCHICON_FORCE_RUNTIME_REBUILD
+# is set. Inspecting the label is cheap (no build), which is the whole point
+# of the gate: an unchanged Dockerfile means the label matches and the build
+# is skipped, so `make container-build` no longer re-runs the slow :gui/:dev
+# installs on every build.
+runtime_image_needs_rebuild() {
+  local tag="$1" ver="$2"
+  if [ "${FORCE_RUNTIME:-}" = "1" ] || [ "${ORCHICON_FORCE_RUNTIME_REBUILD:-}" = "1" ]; then
+    return 0
+  fi
+  local current
+  current=$(docker image inspect "$tag" --format '{{index .Config.Labels "org.orchicon.runtime.version"}}' 2>/dev/null || true)
+  [ "$current" != "$ver" ]
+}
+
 build_image() {
   log_dim "Building $IMAGE from $DOCKERFILE…"
   if [ ! -f "$PROJECT_ROOT/bin/orchicon" ]; then
@@ -81,12 +119,25 @@ build_image() {
 
   # Workflow runtime base image (one short-lived container per active
   # workflow run — see DOCUMENTATION.md §Workflow Runtime Containers).
+  # The orchicon binary is NOT baked into this image anymore — the runtime
+  # daemon bind-mounts its own executable into every container it creates,
+  # so a rebuilt bin/orchicon is picked up without an image rebuild. The
+  # image content is a pure function of the Dockerfiles, so each variant is
+  # version-gated (label org.orchicon.runtime.version) and only rebuilt when
+  # its Dockerfile (or, for :gui/:dev, the base it derives from) changed.
   local RT_DOCKERFILE="$PROJECT_ROOT/deploy/runtime/Dockerfile"
   local RT_CONTEXT="$PROJECT_ROOT/deploy/runtime"
-  log_dim "Building $RUNTIME_IMAGE from $RT_DOCKERFILE…"
-  cp "$PROJECT_ROOT/bin/orchicon" "$RT_CONTEXT/orchicon"
-  docker build -f "$RT_DOCKERFILE" -t "$RUNTIME_IMAGE" "$RT_CONTEXT"
-  log_ok "Runtime image $RUNTIME_IMAGE built"
+  local APP_VERSION="${VERSION:-$(git describe --tags --abbrev=0 2>/dev/null || echo dev)}"
+  local RT_BASE_VERSION RT_GUI_VERSION RT_DEV_VERSION
+  RT_BASE_VERSION="$(runtime_image_version "$RT_DOCKERFILE" "$APP_VERSION")"
+
+  if runtime_image_needs_rebuild "$RUNTIME_IMAGE" "$RT_BASE_VERSION"; then
+    log_dim "Building $RUNTIME_IMAGE from $RT_DOCKERFILE (runtime v$RT_BASE_VERSION)…"
+    docker build --label "org.orchicon.runtime.version=$RT_BASE_VERSION" -f "$RT_DOCKERFILE" -t "$RUNTIME_IMAGE" "$RT_CONTEXT"
+    log_ok "Runtime image $RUNTIME_IMAGE built"
+  else
+    log_dim "Runtime image $RUNTIME_IMAGE up to date (runtime v$RT_BASE_VERSION) — skipping"
+  fi
 
   # GUI variant of the runtime base (headless GUI libs — PySide6 offscreen,
   # tkinter, browser screenshots). Built FROM the base so the label + chown
@@ -94,9 +145,14 @@ build_image() {
   local RT_GUI_DOCKERFILE="$PROJECT_ROOT/deploy/runtime/Dockerfile.gui"
   if [ -f "$RT_GUI_DOCKERFILE" ]; then
     local GUI_IMAGE="${ORCHICON_RUNTIME_GUI_IMAGE:-orchicon-runtime:local-gui}"
-    log_dim "Building $GUI_IMAGE from $RT_GUI_DOCKERFILE (base $RUNTIME_IMAGE)…"
-    docker build --build-arg BASE_IMAGE="$RUNTIME_IMAGE" -f "$RT_GUI_DOCKERFILE" -t "$GUI_IMAGE" "$RT_CONTEXT"
-    log_ok "Runtime GUI image $GUI_IMAGE built"
+    RT_GUI_VERSION="$(runtime_image_version "$RT_GUI_DOCKERFILE" "$RT_BASE_VERSION")"
+    if runtime_image_needs_rebuild "$GUI_IMAGE" "$RT_GUI_VERSION"; then
+      log_dim "Building $GUI_IMAGE from $RT_GUI_DOCKERFILE (runtime v$RT_GUI_VERSION, base $RUNTIME_IMAGE)…"
+      docker build --label "org.orchicon.runtime.version=$RT_GUI_VERSION" --build-arg BASE_IMAGE="$RUNTIME_IMAGE" -f "$RT_GUI_DOCKERFILE" -t "$GUI_IMAGE" "$RT_CONTEXT"
+      log_ok "Runtime GUI image $GUI_IMAGE built"
+    else
+      log_dim "Runtime GUI image $GUI_IMAGE up to date (runtime v$RT_GUI_VERSION) — skipping"
+    fi
   fi
 
   # Orchicon-dev variant (dogfooding): Go/Node/buf/atlas + baked Postgres so
@@ -104,16 +160,25 @@ build_image() {
   local RT_DEV_DOCKERFILE="$PROJECT_ROOT/deploy/runtime/Dockerfile.dev"
   if [ -f "$RT_DEV_DOCKERFILE" ]; then
     local DEV_IMAGE="${ORCHICON_RUNTIME_DEV_IMAGE:-orchicon-runtime:orchicon-dev}"
-    log_dim "Building $DEV_IMAGE from $RT_DEV_DOCKERFILE (base $RUNTIME_IMAGE)…"
-    docker build --build-arg BASE_IMAGE="$RUNTIME_IMAGE" -f "$RT_DEV_DOCKERFILE" -t "$DEV_IMAGE" "$RT_CONTEXT"
-    log_ok "Runtime dev image $DEV_IMAGE built"
+    RT_DEV_VERSION="$(runtime_image_version "$RT_DEV_DOCKERFILE" "$RT_BASE_VERSION")"
+    if runtime_image_needs_rebuild "$DEV_IMAGE" "$RT_DEV_VERSION"; then
+      log_dim "Building $DEV_IMAGE from $RT_DEV_DOCKERFILE (runtime v$RT_DEV_VERSION, base $RUNTIME_IMAGE)…"
+      docker build --label "org.orchicon.runtime.version=$RT_DEV_VERSION" --build-arg BASE_IMAGE="$RUNTIME_IMAGE" -f "$RT_DEV_DOCKERFILE" -t "$DEV_IMAGE" "$RT_CONTEXT"
+      log_ok "Runtime dev image $DEV_IMAGE built"
+    else
+      log_dim "Runtime dev image $DEV_IMAGE up to date (runtime v$RT_DEV_VERSION) — skipping"
+    fi
   fi
 
   # Every `docker build -t <tag>` above repoints the tag and leaves the
   # previous image dangling. Prune those orphans now so repeated dev
   # builds do not accumulate tens of GB of unreferenced layers. Only
   # dangling (untagged) images are removed — running containers pin their
-  # image by ID, so nothing in use is touched.
+  # image by ID, so nothing in use is touched. The main `orchicon:local`
+  # build always runs (it embeds the binary + frontend), so the prune runs
+  # every time; when no runtime variant rebuilt there are no new runtime
+  # orphans, but the prune is cheap — the expensive part this work item
+  # removes is the rebuilds themselves.
   log_dim "Pruning dangling images from this build…"
   docker image prune -f --filter "dangling=true" >/dev/null
 }

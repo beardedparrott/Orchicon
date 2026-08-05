@@ -12,7 +12,7 @@ import (
 // at a different base.
 func TestRewriteDockerfileBase(t *testing.T) {
 	df := "FROM ubuntu:24.04\nUSER root\nRUN apt-get install -y xyz\nUSER orchicon\n"
-	got := rewriteDockerfileBase(df, "orchicon-runtime:local")
+	got := rewriteDockerfileBase(df, "orchicon-runtime:local", 0)
 	if !strings.HasPrefix(got, "FROM orchicon-runtime:local\n") {
 		t.Errorf("expected daemon base first, got:\n%s", got)
 	}
@@ -27,10 +27,33 @@ func TestRewriteDockerfileBase(t *testing.T) {
 	}
 }
 
+// TestRewriteDockerfileBaseSpecVersion verifies the spec-version label is
+// injected next to the runtime-base label when the build carries a spec
+// version, and omitted when it is unknown (0). The label records which
+// runtime_images.version the image was built from.
+func TestRewriteDockerfileBaseSpecVersion(t *testing.T) {
+	got := rewriteDockerfileBase("RUN echo hi\n", "base:1", 7)
+	if !strings.Contains(got, "LABEL org.orchicon.runtime.spec-version=7") {
+		t.Errorf("expected spec-version label injected, got:\n%s", got)
+	}
+	if !strings.Contains(got, "LABEL org.orchicon.runtime-base=true") {
+		t.Errorf("runtime-base label must stay present, got:\n%s", got)
+	}
+	if !strings.Contains(got, "echo hi") {
+		t.Errorf("user content lost")
+	}
+	// The label is only emitted for a known version — no stray labels for
+	// callers that don't track one (e.g. 0).
+	noVer := rewriteDockerfileBase("RUN echo hi\n", "base:1", 0)
+	if strings.Contains(noVer, "spec-version") {
+		t.Errorf("spec-version label must be omitted when version is 0, got:\n%s", noVer)
+	}
+}
+
 // TestRewriteDockerfileBaseNoUserFrom handles a Dockerfile with no FROM
 // at all (the service-generated easy-mode content already omits it).
 func TestRewriteDockerfileBaseNoUserFrom(t *testing.T) {
-	got := rewriteDockerfileBase("USER root\nRUN echo hi\n", "base:1")
+	got := rewriteDockerfileBase("USER root\nRUN echo hi\n", "base:1", 0)
 	if !strings.HasPrefix(got, "FROM base:1\n") {
 		t.Errorf("expected FROM base first, got:\n%s", got)
 	}

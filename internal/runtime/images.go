@@ -42,6 +42,12 @@ type BuildRequest struct {
 	Tag        string `json:"tag"`
 	Base       string `json:"base_image_ref"`
 	Dockerfile string `json:"dockerfile"`
+	// SpecVersion is the runtime_images.version of the spec being built
+	// (0 when unknown). It is baked into the image as the
+	// org.orchicon.runtime.spec-version label so the row and the image can
+	// be cross-checked after the fact; it is the rebuild signal on the
+	// service side (built_version == version), not a daemon gate.
+	SpecVersion int `json:"spec_version"`
 }
 
 // BuildResponse is the final status of POST /v1/images/build (streamed as
@@ -153,7 +159,7 @@ func (d *Daemon) validateBuild(req BuildRequest) error {
 // ALWAYS rewritten to the daemon's base image and the runtime-base label
 // injected — the base-inclusion guarantee is enforced here, not documented.
 func (d *Daemon) handleBuild(w http.ResponseWriter, r *http.Request, req BuildRequest) {
-	df := rewriteDockerfileBase(req.Dockerfile, d.Image)
+	df := rewriteDockerfileBase(req.Dockerfile, d.Image, req.SpecVersion)
 
 	// Build context: a temp dir under the daemon's writable area holding
 	// just the generated Dockerfile. Nothing else is copied in.
@@ -237,8 +243,12 @@ func (d *Daemon) handleBuild(w http.ResponseWriter, r *http.Request, req BuildRe
 
 // rewriteDockerfileBase strips any FROM lines from the user's Dockerfile
 // and prepends `FROM <base>` + the runtime-base label, guaranteeing every
-// built image derives from the base regardless of the author's text.
-func rewriteDockerfileBase(dockerfile, base string) string {
+// built image derives from the base regardless of the author's text. When
+// specVersion > 0 it also injects the org.orchicon.runtime.spec-version
+// label next to the runtime-base label so the built image records which
+// spec version it was built from (audit/trace; the label is inherited
+// through FROM like the base label).
+func rewriteDockerfileBase(dockerfile, base string, specVersion int) string {
 	var body []string
 	for _, line := range strings.Split(dockerfile, "\n") {
 		t := strings.TrimSpace(line)
@@ -250,6 +260,9 @@ func rewriteDockerfileBase(dockerfile, base string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "FROM %s\n", base)
 	fmt.Fprintf(&sb, "LABEL %s=true\n", baseImageLabel)
+	if specVersion > 0 {
+		fmt.Fprintf(&sb, "LABEL org.orchicon.runtime.spec-version=%d\n", specVersion)
+	}
 	sb.WriteString(strings.Join(body, "\n"))
 	return sb.String()
 }

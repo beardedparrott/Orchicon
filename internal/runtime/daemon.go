@@ -34,6 +34,14 @@ type Daemon struct {
 	GroupID      int      // host gid
 	HostHome     string   // host user home, mounted as the container HOME
 	AllowedRoots []string // host prefixes a project mount may be under
+	// ExePath is the daemon's own executable, resolved at process start. It
+	// is bind-mounted read-only into every runtime container at
+	// /usr/local/bin/orchicon so the container can exec `orchicon
+	// runtime-supervisor` / `runtime-client` without the binary being baked
+	// into the image — a rebuilt daemon binary is picked up by every
+	// newly-created container with no image rebuild (the same "mount, never
+	// bake" pattern as the adapter CLIs).
+	ExePath      string
 	CPUs         string
 	Memory       string
 	TmpfsSize    string
@@ -422,6 +430,22 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 		// Put the mounted adapter CLI on PATH so the supervisor's
 		// `exec.Command("opencode", ...)` resolves it.
 		args = append(args, "-e", "PATH="+filepath.Join(d.HostHome, ".opencode", "bin")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	}
+	// The daemon's own executable: bind-mounted read-only at
+	// /usr/local/bin/orchicon so the container can exec `orchicon
+	// runtime-supervisor` (PID 1 entrypoint below) and `orchicon
+	// runtime-client` (docker exec paths). The binary is deliberately not
+	// baked into the image; Docker resolves bind sources at `docker run`
+	// time, so a rebuilt bin/orchicon is picked up by newly-created
+	// containers without an image rebuild. Stat the source first — if the
+	// executable is somehow gone, skip the mount (log a warning) rather
+	// than let `docker run` fail on a missing bind source.
+	if d.ExePath != "" {
+		if st, err := os.Stat(d.ExePath); err == nil && !st.IsDir() {
+			args = append(args, "-v", d.ExePath+":/usr/local/bin/orchicon:ro")
+		} else {
+			d.Log.Warn("daemon executable missing — skipping orchicon mount", "path", d.ExePath)
+		}
 	}
 	args = append(args, image, "orchicon", "runtime-supervisor")
 

@@ -599,6 +599,15 @@ export class BuildRuntimeImageResponse extends Message<BuildRuntimeImageResponse
    */
   tag = "";
 
+  /**
+   * Set on the final message when the build was SKIPPED because the spec
+   * is unchanged: the image is already up to date at the current version,
+   * so no docker build (and no prune) ran.
+   *
+   * @generated from field: bool skipped = 5;
+   */
+  skipped = false;
+
   constructor(data?: PartialMessage<BuildRuntimeImageResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -611,6 +620,7 @@ export class BuildRuntimeImageResponse extends Message<BuildRuntimeImageResponse
     { no: 2, name: "status", kind: "enum", T: proto3.getEnumType(RuntimeImageStatus) },
     { no: 3, name: "error", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 4, name: "tag", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "skipped", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): BuildRuntimeImageResponse {

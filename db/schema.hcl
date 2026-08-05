@@ -1493,6 +1493,7 @@ table "runtime_images" {
   column "build_log" { type = text; null = false; default = "" }
   column "error" { type = text; null = false; default = "" }
   column "version" { type = integer; null = false; default = 1 }
+  column "built_version" { type = integer; null = false; default = 0 }
   column "created_at" { type = timestamptz; null = false; default = sql("now()") }
   column "updated_at" { type = timestamptz; null = false; default = sql("now()") }
   primary_key { columns = [column.id] }

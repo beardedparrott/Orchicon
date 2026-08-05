@@ -1,4 +1,4 @@
-h1:n3rLNDTRwhoNSfevNhjcGzcWsJm3UTomViLtx8S+ufE=
+h1:1DUnjsa0tWxCzPjrxZbfqusirMVsIeRtmzzNrm4Vfsc=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712192105_initial_schema_down.sql h1:RDSZVdJtR8DJx9HvT6WrBdEOEoJpM/46JutUdlPs5wU=
 20260712223028_add_outbox.sql h1:+idZYfVIjOHjGIluT5JM5M0dMF6L1+VmeHeGy66DLEI=
@@ -110,3 +110,4 @@ h1:n3rLNDTRwhoNSfevNhjcGzcWsJm3UTomViLtx8S+ufE=
 20260803120000_runtime_images.sql h1:19o44xmhFUwoFy+lqF23MBsz9VwlgBTTMgjj53XZbFM=
 20260804000000_default_budget_overrides.sql h1:1cJwMjbd+tdSZ9q1h8iWIL+A8PpeO3CYRBivm/EOmaU=
 20260804120000_log_settings.sql h1:rN9J+0TOiwaJUciN1HLT+nvqtQEbdgYARujepZ57ib8=
+20260805120000_runtime_image_built_version.sql h1:g4mtiaZGYHzUq01rhnl9+eFN/K3gAfsQNs97OcgzVMc=

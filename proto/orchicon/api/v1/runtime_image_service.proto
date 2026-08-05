@@ -119,6 +119,10 @@ message BuildRuntimeImageResponse {
   RuntimeImageStatus status = 2;
   string error = 3;
   string tag = 4;
+  // Set on the final message when the build was SKIPPED because the spec
+  // is unchanged: the image is already up to date at the current version,
+  // so no docker build (and no prune) ran.
+  bool skipped = 5;
 }
 
 message ListAvailableRuntimeImagesRequest {

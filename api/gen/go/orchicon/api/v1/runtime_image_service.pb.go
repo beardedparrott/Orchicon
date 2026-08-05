@@ -695,9 +695,13 @@ type BuildRuntimeImageResponse struct {
 	// Chunk of build output (stdout/stderr interleaved), one per message.
 	Log string `protobuf:"bytes,1,opt,name=log,proto3" json:"log,omitempty"`
 	// Set on the final message: the image's new status + any error.
-	Status        RuntimeImageStatus `protobuf:"varint,2,opt,name=status,proto3,enum=orchicon.api.v1.RuntimeImageStatus" json:"status,omitempty"`
-	Error         string             `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
-	Tag           string             `protobuf:"bytes,4,opt,name=tag,proto3" json:"tag,omitempty"`
+	Status RuntimeImageStatus `protobuf:"varint,2,opt,name=status,proto3,enum=orchicon.api.v1.RuntimeImageStatus" json:"status,omitempty"`
+	Error  string             `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	Tag    string             `protobuf:"bytes,4,opt,name=tag,proto3" json:"tag,omitempty"`
+	// Set on the final message when the build was SKIPPED because the spec
+	// is unchanged: the image is already up to date at the current version,
+	// so no docker build (and no prune) ran.
+	Skipped       bool `protobuf:"varint,5,opt,name=skipped,proto3" json:"skipped,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -758,6 +762,13 @@ func (x *BuildRuntimeImageResponse) GetTag() string {
 		return x.Tag
 	}
 	return ""
+}
+
+func (x *BuildRuntimeImageResponse) GetSkipped() bool {
+	if x != nil {
+		return x.Skipped
+	}
+	return false
 }
 
 type ListAvailableRuntimeImagesRequest struct {
@@ -1042,12 +1053,13 @@ const file_orchicon_api_v1_runtime_image_service_proto_rawDesc = "" +
 	"\x1aDeleteRuntimeImageResponse\"D\n" +
 	"\x18BuildRuntimeImageRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
-	"\aversion\x18\x02 \x01(\x05R\aversion\"\x92\x01\n" +
+	"\aversion\x18\x02 \x01(\x05R\aversion\"\xac\x01\n" +
 	"\x19BuildRuntimeImageResponse\x12\x10\n" +
 	"\x03log\x18\x01 \x01(\tR\x03log\x12;\n" +
 	"\x06status\x18\x02 \x01(\x0e2#.orchicon.api.v1.RuntimeImageStatusR\x06status\x12\x14\n" +
 	"\x05error\x18\x03 \x01(\tR\x05error\x12\x10\n" +
-	"\x03tag\x18\x04 \x01(\tR\x03tag\"@\n" +
+	"\x03tag\x18\x04 \x01(\tR\x03tag\x12\x18\n" +
+	"\askipped\x18\x05 \x01(\bR\askipped\"@\n" +
 	"!ListAvailableRuntimeImagesRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\"\x91\x01\n" +
 	"\"ListAvailableRuntimeImagesResponse\x12!\n" +

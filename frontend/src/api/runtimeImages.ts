@@ -114,7 +114,9 @@ export function useDeleteRuntimeImage() {
 
 // useBuildRuntimeImage triggers a docker build on the daemon. The
 // mutationFn receives a callback that yields each streamed log chunk;
-// it resolves once the build finishes (status ready|failed).
+// it resolves once the build finishes (status ready|failed). When the
+// spec is unchanged and the image is already up to date, the daemon skips
+// the build entirely and the final chunk carries `skipped: true`.
 export function useBuildRuntimeImage() {
   const qc = useQueryClient();
   return useMutation({
@@ -127,6 +129,7 @@ export function useBuildRuntimeImage() {
       let finalStatus: RuntimeImage["status"] | undefined;
       let finalError = "";
       let finalTag = "";
+      let skipped = false;
       for await (const chunk of runtimeImageClient.buildRuntimeImage({ id, version })) {
         if (chunk.log) onLog(chunk.log);
         if (chunk.status !== 0) {
@@ -134,11 +137,12 @@ export function useBuildRuntimeImage() {
           finalError = chunk.error;
           finalTag = chunk.tag;
         }
+        if (chunk.skipped) skipped = true;
       }
       if (finalStatus === 4 || finalError) {
         throw new Error(finalError || "image build failed");
       }
-      return { status: finalStatus, tag: finalTag };
+      return { status: finalStatus, tag: finalTag, skipped };
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: runtimeImageKeys.all });

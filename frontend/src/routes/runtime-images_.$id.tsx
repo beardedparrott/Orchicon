@@ -130,11 +130,14 @@ function RuntimeImageDetailPage() {
     setBuildLog("");
     setBuildError("");
     try {
-      await buildImage.mutateAsync({
+      const res = await buildImage.mutateAsync({
         id: img.id,
         version: img.version,
         onLog: (chunk) => setBuildLog((prev) => prev + chunk),
       });
+      if (res.skipped) {
+        setBuildLog("Runtime image is already up to date — no rebuild needed.");
+      }
     } catch (e) {
       setBuildError(String(e));
     }
