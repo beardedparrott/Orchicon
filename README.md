@@ -45,13 +45,6 @@ deployment, troubleshooting, and every subsystem.
 |---|---|
 | Feature | **The binary version always matches the release.** The version embedded at build time used to come from `git describe --tags --abbrev=0` on the local checkout — and since `git pull` doesn't fetch tags while the auto-release workflow creates the canonical tag on GitHub, a local rebuild could embed an older version than the merged code (a rebuilt prod instance reported `v0.1.181` for merged `v0.1.183` code). The Makefile build now runs `git fetch --tags` first (best-effort; offline builds fall back to local tags) and resolves the version at recipe time, and `make build VERSION=v0.1.x` overrides the tag explicitly. GitHub-release binaries and GHCR images already embedded the exact release version and are unaffected. |
 
-### v0.1.183 (2026-08-05)
-
-| Type | Change |
-|---|---|
-| Feature | **Advisory stalls no longer fail healthy executions.** A `no_file_progress` stall (worker went the `no_file_diff` window, default 15m, without touching files) used to mark the execution `unhealthy` and — for standalone dispatches — fail the work item, even though the subprocess kept running and the worker often completed successfully (observed: the SSE worker was flagged yet succeeded). Now an advisory stall is purely informational: the execution gets a non-terminal `stalled` health notice + reason, keeps `running`, and the stall monitor **revives it back to `healthy`** (`OnRecovered`) once file progress resumes. Only genuine hang/loop signals (`no_progress`, `text_loop`, `repetition`) still hard-kill and route to recovery. Also fixed: a succeeded execution no longer keeps a stale `stalled:...` error message. |
-| Feature | **Senior Software Engineer worker now makes progress visible.** The canned SSE seed prompt gained a "Make progress visible" block — write incrementally (scaffold, partial implementations) and persist something concrete after each meaningful phase, because Orchicon monitors execution health from file-modification activity. Seed marker bumped to `orchicon.safety=v6` so the update rolls forward to existing workers. |
-
 ## Installation
 
 ### One-line install (Linux / macOS)
