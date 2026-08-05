@@ -477,20 +477,30 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// Stall thresholds come from tenant settings (ExecutionManifest)
 	// with env-var fallback for dev debugging overrides.
 	monitor := newProgressMonitor(execRow.ID, stallWindowsFromManifest(manifest))
-	go monitor.run(ctx, func(execID, reason string) {
-		callbacks.OnStall(ctx, execID, reason)
-		// Hard-kill on a genuine hang/loop so the execution lands in
-		// `failed` via the normal OnResult(false) → pollTaskStep recovery
-		// path. Without this a stalled execution sits `unhealthy` and is
-		// ignored by the workflow reconciler (observed: a PR Reviewer
-		// `no_progress` stall never recovered and the subprocess leaked
-		// in the runtime container for 48+ minutes). no_file_progress is
-		// advisory-only — a reviewer may legitimately go long stretches
-		// without writing files while still producing output.
-		if isFatalStall(reason) {
-			a.terminateOnStall(ctx, execID, reason, manifest.RuntimeWorkflowID)
-		}
-	})
+	go monitor.run(ctx,
+		func(execID, reason string) {
+			// Fatal: hard-kill so the execution lands in `failed` via the
+			// normal OnResult(false) → pollTaskStep recovery path. Without
+			// this a stalled execution sits `unhealthy` and is ignored by the
+			// workflow reconciler (observed: a PR Reviewer `no_progress` stall
+			// never recovered and the subprocess leaked in the runtime
+			// container for 48+ minutes).
+			//
+			// Advisory (no_file_progress): NOT fatal — the subprocess keeps
+			// running, the execution gets a non-terminal `stalled` health
+			// notice, and OnRecovered revives it to healthy once file progress
+			// resumes (a reviewer may legitimately go long stretches without
+			// writing files while still producing output).
+			fatal := isFatalStall(reason)
+			callbacks.OnStall(ctx, execID, reason, fatal)
+			if fatal {
+				a.terminateOnStall(ctx, execID, reason, manifest.RuntimeWorkflowID)
+			}
+		},
+		func(execID, recovered string) {
+			callbacks.OnRecovered(ctx, execID, recovered)
+		},
+	)
 	defer monitor.close()
 
 	// Parse stdout JSON lines into telemetry events
@@ -1103,17 +1113,24 @@ func (a *Adapter) startInRuntime(ctx context.Context, execRow db.ExecutionRow, m
 	var output strings.Builder
 	stats := &execStreamState{}
 	monitor := newProgressMonitor(execRow.ID, stallWindowsFromManifest(manifest))
-	go monitor.run(ctx, func(execID, reason string) {
-		callbacks.OnStall(ctx, execID, reason)
-		// Hard-kill on a genuine hang/loop so the execution lands in
-		// `failed` via the normal OnResult(false) → pollTaskStep recovery
-		// path (same rationale as the local path; see Start). For the
-		// runtime container this signals the supervisor to SIGKILL the
-		// opencode child. no_file_progress is advisory-only.
-		if isFatalStall(reason) {
-			a.terminateOnStall(ctx, execID, reason, manifest.RuntimeWorkflowID)
-		}
-	})
+	go monitor.run(ctx,
+		func(execID, reason string) {
+			fatal := isFatalStall(reason)
+			callbacks.OnStall(ctx, execID, reason, fatal)
+			// Hard-kill on a genuine hang/loop so the execution lands in
+			// `failed` via the normal OnResult(false) → pollTaskStep recovery
+			// path (same rationale as the local path; see Start). For the
+			// runtime container this signals the supervisor to SIGKILL the
+			// opencode child. no_file_progress is advisory-only — the
+			// subprocess keeps running and OnRecovered revives the execution.
+			if fatal {
+				a.terminateOnStall(ctx, execID, reason, manifest.RuntimeWorkflowID)
+			}
+		},
+		func(execID, recovered string) {
+			callbacks.OnRecovered(ctx, execID, recovered)
+		},
+	)
 	defer monitor.close()
 
 	// execCtx is the exec session's context. It carries the wall-clock

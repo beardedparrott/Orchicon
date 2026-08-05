@@ -71,8 +71,21 @@ type ExecutionCallbacks interface {
 	OnHealth(ctx context.Context, execID, healthState string)
 	// OnStall signals a detected stall (the reason carries which signal
 	// tripped: stalled:no_progress | stalled:no_file_progress |
-	// stalled:repetition:<sig>). The receiver triggers recovery.
-	OnStall(ctx context.Context, execID, reason string)
+	// stalled:repetition:<sig>). `fatal` distinguishes a genuine
+	// hang/loop (true — the adapter has already hard-killed the
+	// subprocess, so the receiver should fail the execution and trigger
+	// recovery) from the advisory no_file_progress signal (false — the
+	// subprocess keeps running; the receiver should surface a
+	// non-terminal stalled health notice and let OnRecovered / the
+	// terminal OnResult decide the outcome).
+	OnStall(ctx context.Context, execID, reason string, fatal bool)
+	// OnRecovered is called when an advisory stall clears — the worker
+	// resumed the missing progress signal (a file_diff after a
+	// no_file_progress trip) before the execution terminated. The
+	// receiver flips the execution back to healthy and clears the stall
+	// notice; status stays running and the terminal OnResult still
+	// decides success/failure.
+	OnRecovered(ctx context.Context, execID, recovered string)
 	// OnToolCall notifies the runtime that the worker invoked a tool.
 	// Published as a tool_call execution event for the live session pane.
 	OnToolCall(ctx context.Context, execID, toolName string, input, output []byte)

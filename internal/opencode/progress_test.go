@@ -50,6 +50,37 @@ func TestStallNoFileDiff(t *testing.T) {
 	}
 }
 
+// TestAdvisoryStallRevives verifies the advisory no_file_progress signal
+// is revivable: the monitor keeps running after the trip and reports a
+// recovery once a file_diff arrives again, and the cleared warning state
+// lets the window trip a second time if file progress stops again.
+func TestAdvisoryStallRevives(t *testing.T) {
+	w := stallWindows{noProgress: time.Hour, noFileDiff: 10 * time.Second, repetitionN: 100, repetitionW: time.Minute}
+	m := newTestMonitor(w)
+	m.mu.Lock()
+	m.lastFileDiff = m.now().Add(-11 * time.Second)
+	m.mu.Unlock()
+	if reason := m.check(); reason != "stalled:no_file_progress" {
+		t.Fatalf("expected advisory trip, got %q", reason)
+	}
+	// No file_diff yet — no revival.
+	if rec := m.checkRevival(); rec != "" {
+		t.Fatalf("expected no revival yet, got %q", rec)
+	}
+	// A file_diff arrives → the advisory warning clears.
+	m.observe("file_diff", map[string]any{"path": "/x"})
+	if rec := m.checkRevival(); rec != "recovered:no_file_progress" {
+		t.Fatalf("expected revival after file_diff, got %q", rec)
+	}
+	// warned cleared — a second quiet window can trip the advisory again.
+	m.mu.Lock()
+	m.lastFileDiff = m.now().Add(-11 * time.Second)
+	m.mu.Unlock()
+	if reason := m.check(); reason != "stalled:no_file_progress" {
+		t.Fatalf("expected advisory to trip again, got %q", reason)
+	}
+}
+
 // TestStallRepetition verifies the repetition signal trips when the same
 // tool_call signature exceeds the threshold within the window.
 func TestStallRepetition(t *testing.T) {
