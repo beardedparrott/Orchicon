@@ -39,8 +39,16 @@ import (
 //
 // When any signal trips, the monitor calls OnStall(execID, reason) which
 // the TaskReconciler uses to trigger recovery (idempotent — docs/06 §9).
-// The monitor fires at most once per execution (a stall trigger that
-// itself loops would be a bug; the recovery it triggers is the response).
+//
+// Fatal signals (no_progress / text_loop / repetition) fire at most once
+// per execution — the hard-kill + recovery they trigger is the response.
+// The no_file_progress signal is ADVISORY: it never kills the subprocess,
+// puts the execution into a non-terminal `stalled` health notice instead
+// of failing it, and revives the execution back to `healthy` via
+// OnRecovered when file progress resumes (see checkRevival). A reviewer
+// or analyst that legitimately produces output for long stretches without
+// touching files must not be reaped mid-flight (observed: the SSE worker
+// was flagged no_file_progress yet completed successfully moments later).
 
 // stallWindows is the set of tunable stall thresholds. Loaded from env at
 // adapter construction so operators can tighten/loosen per environment.
@@ -117,10 +125,20 @@ type progressMonitor struct {
 	// signature (tool+args hash) → timestamps within the window.
 	sigs map[string][]time.Time
 
-	// fired tracks whether the monitor has already raised a stall for this
-	// execution. A stall trigger fires once; the recovery it triggers is
-	// the response (docs/06 §9 idempotency guards against re-trigger).
+	// fired tracks whether the monitor has already raised a FATAL stall
+	// (no_progress / text_loop / repetition) for this execution. A fatal
+	// trigger fires once; the hard-kill + recovery it triggers is the
+	// response (docs/06 §9 idempotency guards against re-trigger).
 	fired bool
+
+	// warned tracks an active ADVISORY stall (no_file_progress). Unlike a
+	// fatal trip, an advisory trip does not end monitoring: the subprocess
+	// is not killed, the execution stays running with a non-terminal
+	// `stalled` health notice, and the monitor keeps ticking so it can
+	// revive the execution to `healthy` (checkRevival) when the missing
+	// file progress resumes — or trip a fatal signal if the worker truly
+	// hangs. `warned` clears on revival so the window can trip again.
+	warned bool
 
 	stop chan struct{}
 }
@@ -193,7 +211,10 @@ func (m *progressMonitor) observe(eventType string, part map[string]any) {
 
 // run starts the background stall checker. It ticks every pollInterval
 // and, on the first tripped signal, calls onStall once with the reason.
-func (m *progressMonitor) run(ctx context.Context, onStall func(execID, reason string)) {
+// A fatal stall ends monitoring (the subprocess is hard-killed). An
+// advisory stall (no_file_progress) keeps monitoring so the execution can
+// revive to healthy via onRecovered when the missing file progress resumes.
+func (m *progressMonitor) run(ctx context.Context, onStall func(execID, reason string), onRecovered func(execID, recovered string)) {
 	poll := m.w.noProgress
 	if m.w.noFileDiff < poll && m.w.noFileDiff > 0 {
 		poll = m.w.noFileDiff
@@ -219,7 +240,15 @@ func (m *progressMonitor) run(ctx context.Context, onStall func(execID, reason s
 			reason := m.check()
 			if reason != "" {
 				onStall(m.execID, reason)
-				return // fire once
+				// Fatal: fire once and stop. Advisory: keep ticking so the
+				// execution can revive when file progress picks back up.
+				if isFatalStall(reason) {
+					return
+				}
+				continue
+			}
+			if recovered := m.checkRevival(); recovered != "" {
+				onRecovered(m.execID, recovered)
 			}
 		}
 	}
@@ -241,8 +270,16 @@ func (m *progressMonitor) check() string {
 	// no_file_diff: no file modifications within the window.
 	// Skipped when noFileDiff is 0 or negative (disabled), because
 	// reviewers/QA workers may never write files.
-	if m.w.noFileDiff > 0 && now.Sub(m.lastFileDiff) > m.w.noFileDiff {
-		m.fired = true
+	//
+	// ADVISORY (not fatal): trips into the revivable `warned` state rather
+	// than `fired`. The subprocess is not killed and the execution is not
+	// failed — it gets a non-terminal `stalled` health notice and revives
+	// to healthy (checkRevival) once a file_diff arrives again. A reviewer
+	// or analyst may legitimately go long stretches without touching files
+	// while still producing output (observed: the SSE worker was flagged
+	// yet completed successfully).
+	if m.w.noFileDiff > 0 && now.Sub(m.lastFileDiff) > m.w.noFileDiff && !m.warned {
+		m.warned = true
 		return "stalled:no_file_progress"
 	}
 	// text_loop: text flowing but no meaningful action (tool call, file
@@ -269,6 +306,30 @@ func (m *progressMonitor) check() string {
 				return fmt.Sprintf("stalled:repetition:%s", sig)
 			}
 		}
+	}
+	return ""
+}
+
+// checkRevival returns a revival reason (and clears the `warned` state)
+// when an active advisory stall has cleared — i.e. the missing progress
+// signal arrived before the execution terminated. Currently the only
+// advisory signal is no_file_progress, which clears when a file_diff event
+// arrives again: lastFileDiff only advances on file_diff events, so the
+// "back within the window" condition is exactly "a diff landed since the
+// trip". The caller (run) turns this into an OnRecovered callback so the
+// reconciler flips the execution back to healthy and clears the stall
+// notice, while status stays running and the terminal OnResult still
+// decides success/failure.
+func (m *progressMonitor) checkRevival() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.warned {
+		return ""
+	}
+	now := m.now()
+	if m.w.noFileDiff > 0 && now.Sub(m.lastFileDiff) <= m.w.noFileDiff {
+		m.warned = false
+		return "recovered:no_file_progress"
 	}
 	return ""
 }
@@ -317,7 +378,9 @@ var _ = domain.HealthStalled
 //     legitimately go long stretches without modifying files while still
 //     producing output (token/text progress), so killing it would reap a
 //     healthy execution (observed: an SSE worker flagged no_file_progress
-//     yet completed successfully moments later).
+//     yet completed successfully moments later). The monitor keeps the
+//     execution running with a non-terminal `stalled` health notice and
+//     revives it to `healthy` when file progress resumes.
 func isFatalStall(reason string) bool {
 	return !strings.HasPrefix(reason, "stalled:no_file_progress")
 }

@@ -695,6 +695,13 @@ func (r *TaskReconciler) OnResult(ctx context.Context, execID string, succeeded 
 		status = domain.ExecutionFailed
 	}
 	r.updateExecStatus(ctx, execID, status, domain.HealthTerminating, output, errorMessage)
+	// A succeeded execution must not carry a stale advisory stall notice
+	// (observed: the SSE worker succeeded yet kept `stalled:no_file_progress`
+	// in error_message). Only stall-prefixed reasons are cleared — a real
+	// failure reason on a failed execution is never touched.
+	if succeeded {
+		r.clearStallNotice(ctx, execID)
+	}
 	r.transitionWorkItemOnResult(ctx, execID, succeeded, output)
 }
 
@@ -991,22 +998,31 @@ func (r *TaskReconciler) OnHealth(ctx context.Context, execID, healthState strin
 // stall window"; docs/03 §5). The reason carries which signal fired:
 // stalled:no_progress | stalled:no_file_progress | stalled:repetition:<sig>.
 //
-// It updates the execution's health_state to stalled and triggers recovery
-// (opt-out, not opt-in — docs/06 §1; idempotent — §9: an active recovery
-// for the task short-circuits a duplicate trigger). This closes the
-// "worker stuck looping" gap: a worker that repeats the same tool calls,
-// makes no file changes, or makes no token progress is recovered rather
-// than running forever.
-func (r *TaskReconciler) OnStall(ctx context.Context, execID, reason string) {
-	r.log.Warn("execution stalled — triggering recovery",
-		"execution", execID, "reason", reason)
-	// Update health_state to stalled and persist the stall reason as
-	// error_message so the UI surfaces why recovery was triggered.
+// `fatal` distinguishes the two cases:
+//
+//   - FATAL (no_progress / text_loop / repetition): a genuine hang/loop.
+//     The adapter has already hard-killed the subprocess, so the execution
+//     is marked unhealthy and the work item transitions to failed — the
+//     downstream recover step (if any) activates on the next reconcile
+//     pass. This closes the "worker stuck looping" gap: a worker that
+//     repeats the same tool calls, makes no file changes, or makes no
+//     token progress is recovered rather than running forever.
+//   - ADVISORY (no_file_progress): the subprocess is NOT killed and the
+//     execution is NOT failed. A reviewer or analyst may legitimately go
+//     long stretches without touching files while still producing output
+//     (observed: the SSE worker was flagged yet completed successfully).
+//     The execution gets a non-terminal `stalled` health notice + reason
+//     so the operator sees the flag, stays `running`, and is either
+//     revived to healthy when file progress resumes (OnRecovered) or
+//     reaches its real terminal state via OnResult.
+func (r *TaskReconciler) OnStall(ctx context.Context, execID, reason string, fatal bool) {
+	r.log.Warn("execution stalled",
+		"execution", execID, "reason", reason, "fatal", fatal)
+	// Surface the stall: health_state → stalled (non-terminal) and persist
+	// the reason so the UI shows why the execution was flagged.
 	r.OnHealth(ctx, execID, domain.HealthStalled)
 	ttx, txErr := r.pool.BeginTenantTx(ctx, "tnt_dev")
-	if txErr != nil {
-		r.log.Error("on stall: begin tx for error_message", "execution", execID, "error", txErr)
-	} else {
+	if txErr == nil {
 		current, getErr := db.GetExecution(ctx, ttx.Tx, "tnt_dev", execID)
 		if getErr == nil {
 			_, _ = db.UpdateExecution(ctx, ttx.Tx, "tnt_dev", execID, current.Version, db.UpdateExecutionFields{
@@ -1015,10 +1031,71 @@ func (r *TaskReconciler) OnStall(ctx context.Context, execID, reason string) {
 		}
 		_ = ttx.Commit(ctx)
 	}
+	if !fatal {
+		return
+	}
 	// Terminate the execution and fail the work item so the downstream
 	// recover step (if any) activates on the next reconcile pass.
 	r.updateExecStatus(ctx, execID, domain.ExecutionUnhealthy, domain.HealthUnhealthy, "", reason)
 	r.transitionWorkItemOnResult(ctx, execID, false, reason)
+}
+
+// OnRecovered is called by the adapter bridge's progress monitor when an
+// advisory stall clears — the worker resumed the missing progress signal
+// (a file_diff after a no_file_progress trip) before the execution
+// terminated. The execution is revived back to healthy and the stall
+// notice is cleared. This is non-terminal: status stays `running` and the
+// terminal OnResult still decides success/failure.
+func (r *TaskReconciler) OnRecovered(ctx context.Context, execID, recovered string) {
+	r.log.Info("execution recovered from advisory stall",
+		"execution", execID, "recovered", recovered)
+	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		return
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetExecution(ctx, ttx.Tx, "tnt_dev", execID)
+	if err != nil {
+		return
+	}
+	// Only revive an execution still in flight — a terminal execution
+	// (OnResult already landed) must not be resurrected.
+	if current.Status != domain.ExecutionRunning {
+		return
+	}
+	healthy := domain.HealthHealthy
+	fields := db.UpdateExecutionFields{HealthState: &healthy}
+	if strings.HasPrefix(current.ErrorMessage, "stalled:") {
+		clear := ""
+		fields.ErrorMessage = &clear
+	}
+	_, _ = db.UpdateExecution(ctx, ttx.Tx, "tnt_dev", execID, current.Version, fields)
+	_ = ttx.Commit(ctx)
+}
+
+// clearStallNotice removes a "stalled:" reason from error_message. Called
+// when an execution that was flagged by the advisory stall monitor reaches
+// success, so a succeeded execution doesn't carry a stale stall error
+// (observed: the SSE worker completed successfully yet kept
+// `error_message = stalled:no_file_progress`).
+func (r *TaskReconciler) clearStallNotice(ctx context.Context, execID string) {
+	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		return
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetExecution(ctx, ttx.Tx, "tnt_dev", execID)
+	if err != nil {
+		return
+	}
+	if !strings.HasPrefix(current.ErrorMessage, "stalled:") {
+		return
+	}
+	clear := ""
+	_, _ = db.UpdateExecution(ctx, ttx.Tx, "tnt_dev", execID, current.Version, db.UpdateExecutionFields{
+		ErrorMessage: &clear,
+	})
+	_ = ttx.Commit(ctx)
 }
 
 // OnToolCall publishes a tool_call execution event so the frontend live
