@@ -41,6 +41,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -71,6 +72,19 @@ type WorkflowReconciler struct {
 type RuntimeLifecycle interface {
 	EnsureForRun(ctx context.Context, run db.WorkflowRunRow) error
 	ReapForRun(ctx context.Context, runID string) error
+}
+
+// runtimeEnabled reports whether runtime-container lifecycle is wired.
+// It guards BOTH a nil interface and an interface wrapping a typed-nil
+// pointer (a `var lc *runtime.Lifecycle` passed as RuntimeLifecycle is
+// non-nil to the interface — calling its methods then nil-dereferences
+// the receiver and crashes the plane; see server.go wiring).
+func (r *WorkflowReconciler) runtimeEnabled() bool {
+	if r.runtime == nil {
+		return false
+	}
+	rv := reflect.ValueOf(r.runtime)
+	return rv.Kind() != reflect.Ptr || !rv.IsNil()
 }
 
 // NewWorkflowReconciler creates a WorkflowReconciler. The policy
@@ -165,7 +179,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	ensureRuntime := false
 	reapRuntime := false
 	defer func() {
-		if r.runtime == nil {
+		if !r.runtimeEnabled() {
 			return
 		}
 		bg := context.Background()
@@ -314,14 +328,13 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			runByID[sr.StepID] = sr
 		}
 
-		// Phase 0: Handle rejected approval steps. Read the decision
-		// from two sources:
-		//   a) Step run result (human approval via ApproveStep RPC writes
-		//      _decision: "rejected")
-		//   b) Work item results (worker-backed approval — the standard
-		//      ORCHICON WORKER SUMMARY produces _decision: "success" /
-		//      "failure"; human propagation also produces "approved" /
-		//      "rejected")
+		// Phase 0: Handle rejected approval steps. The decision comes
+		// from the STEP RUN — the approval record. Human reviews write
+		// _decision ("approved"/"rejected") via the ApproveStep RPC;
+		// worker-backed approvals propagate the approver's ORCHICON
+		// WORKER SUMMARY decision ("success"/"failure") onto the step
+		// run when the execution completes. The work item is only
+		// consulted for legacy step runs that carry no decision.
 		// Map: success/approved → forward, failure/rejected → loop back.
 		for _, sr := range runByID {
 			if sr.SupersededBy != "" || sr.StepKind != domain.StepKindApproval {
@@ -338,16 +351,18 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			}
 			json.Unmarshal(sr.Result, &srResult)
 
-			// If not rejected in the step run, check the work item.
+			// The step run is the approval record: its _decision (written
+			// by the ApproveStep RPC for human reviews, or propagated from
+			// the approver execution's ORCHICON WORKER SUMMARY for
+			// worker-backed approvals) is authoritative. Fall back to the
+			// work item's results ONLY when the step run carries no
+			// decision at all (legacy rows) — a stale _decision left on a
+			// shared ticket by a prior run/step must never override the
+			// current step run's real decision.
 			decision := srResult.Decision
-			if decision != "rejected" && srResult.WorkItemID != "" {
-				if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, srResult.WorkItemID); err == nil && len(wi.Results) > 0 {
-					var wiResult map[string]any
-					if json.Unmarshal(wi.Results, &wiResult) == nil {
-						if v, ok := wiResult["_decision"].(string); ok {
-							decision = v
-						}
-					}
+			if decision == "" && srResult.WorkItemID != "" {
+				if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, srResult.WorkItemID); err == nil {
+					decision = approvalDecisionFromSources("", wi.Results)
 				}
 			}
 
@@ -468,8 +483,11 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			// item is a shared input reference and never flips to
 			// "recovering"), so the gate consults the recovery rows: an
 			// active recovery for the failed execution this step run is
-			// waiting on → wait; none → re-dispatch.
-			if sr.Status == domain.StepRunRecovering && sr.StepKind == domain.StepKindTask {
+			// waiting on → wait; none → re-dispatch. Applies to TASK and
+			// worker-backed APPROVAL steps alike (an approval step using
+			// the summarize_restart strategy must wait for its recovery
+			// before the approver is re-dispatched).
+			if sr.Status == domain.StepRunRecovering && (sr.StepKind == domain.StepKindTask || sr.StepKind == domain.StepKindApproval) {
 				var parsed struct {
 					WorkItemID string `json:"_work_item_id"`
 				}
@@ -1354,59 +1372,56 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			if workerRefStr == "" {
 				return fmt.Errorf("worker-backed approval step %s has no worker ref", step.ID)
 			}
-			workerRef, _ := json.Marshal(map[string]any{
-				"worker_id": workerRefStr,
-				"version":   cfg.WorkerVersion,
-			})
-			wid := db.NewID()
-			now := time.Now().UTC()
-			wi := db.WorkItemRow{
-				ID:                 wid,
-				TenantID:           tenantID,
-				ProjectID:          run.ProjectID,
-				Kind:               "task",
-				Title:              "Approval: " + step.Name + " (" + run.WorkflowID + ")",
-				Description:        "Worker-backed approval gate. Review the upstream context and approve or reject.",
-				Status:             domain.WorkItemReady,
-				WorkflowRunID:      run.ID,
-				WorkflowStepID:     sr.StepID,
-				AssignedWorkerRef:  workerRef,
-			}
-			if _, err := db.CreateWorkItem(ctx, tx, wi); err != nil {
-				return fmt.Errorf("create approval work item: %w", err)
+			// The approval execution runs against the run's shared work
+			// item (the ticket) — NO per-step approval work item is ever
+			// created; the step run IS the approval record. Resolve the
+			// ticket the same way TASK steps do: for recovering steps the
+			// ticket is already recorded in _work_item_id; otherwise look
+			// for WORK_ITEM markers upstream, then the run's bound item.
+			upstream := resolveApprovalWorkItems(sr, step, allSteps, run.WorkItemID)
+			if len(upstream) == 0 {
+				return r.failStep(ctx, tx, tenantID, run, sr, runs,
+					fmt.Errorf("worker-backed approval step %q has no upstream work_item", step.Name))
 			}
 			workerVer, err := db.GetLatestWorkerVersion(ctx, tx, tenantID, workerRefStr, true)
 			if err != nil {
 				return fmt.Errorf("load approver worker version: %w", err)
 			}
-			composite, err := r.buildCompositePrompt(ctx, tx, tenantID, wi, workerVer, allSteps, runs)
-			if err != nil {
-				return fmt.Errorf("build composite prompt for approver: %w", err)
+			var primaryWID string
+			var composite string
+			for _, wid := range upstream {
+				wi, err := db.GetWorkItem(ctx, tx, tenantID, wid)
+				if err != nil {
+					if err == db.ErrNotFound {
+						return r.failStep(ctx, tx, tenantID, run, sr, runs,
+							fmt.Errorf("work item %s not found", wid))
+					}
+					return fmt.Errorf("load work item: %w", err)
+				}
+				wi.WorkflowStepID = sr.StepID
+				composite, err = r.buildCompositePrompt(ctx, tx, tenantID, wi, workerVer, allSteps, runs)
+				if err != nil {
+					return fmt.Errorf("build composite prompt for approver: %w", err)
+				}
+				primaryWID = wid
 			}
-			pcJSON, _ := json.Marshal(map[string]any{"composite": composite})
-			assignFields := db.UpdateWorkItemFields{
-				AssignedWorkerRef: &workerRef,
-				WorkflowID:        &run.WorkflowID,
-				WorkflowRunID:     &run.ID,
-				WorkflowStepID:    &sr.StepID,
-				Status:            strPtr(domain.WorkItemReady),
-				PromptContext:     &pcJSON,
-			}
-			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, wid, 1, assignFields); err != nil {
-				return fmt.Errorf("assign approver work item: %w", err)
-			}
-			if dispatchedSteps != nil {
-				*dispatchedSteps = []dispatchReq{{taskID: wid, stepRunID: sr.ID}}
-			}
-			resultPayload, _ := json.Marshal(map[string]any{
-				"_work_item_id":    wid,
-				"_upstream_worker": upstreamWorker,
-				"_decision":        "pending",
-			})
+			// Record the ticket + composite prompt + the approver worker
+			// pin on the STEP RUN (exactly the TASK-step shape). The
+			// inline DispatchTask reads _prompt / _worker_id /
+			// _worker_version from the step run to build the execution
+			// manifest; the ticket stays untouched.
+			stepResult := buildApprovalStepResult(primaryWID, composite, workerRefStr, workerVer.Version,
+				upstreamWorker, upstreamSummary, upstreamFiles, ac, sr.Result)
+			// Clear any stale worker_execution_id (a recovering step
+			// re-dispatched here still references its FAILED execution):
+			// pollTaskStep would otherwise see the old failed execution
+			// and re-trigger recovery in the same pass, racing the inline
+			// dispatch that links the replacement execution.
 			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-				Status:    strPtr(domain.StepRunRunning),
-				StartedAt: &now,
-				Result:    &resultPayload,
+				Status:            strPtr(domain.StepRunRunning),
+				Result:            &stepResult,
+				WorkerExecutionID: strPtr(""),
+				StartedAt:         &now,
 			})
 			if err != nil {
 				return fmt.Errorf("mark approval step running: %w", err)
@@ -1415,6 +1430,12 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepStarted, run, updated); err != nil {
 				return fmt.Errorf("enqueue approval step_started: %w", err)
 			}
+			if dispatchedSteps != nil {
+				*dispatchedSteps = append(*dispatchedSteps, dispatchReq{taskID: primaryWID, stepRunID: sr.ID})
+			}
+			r.log.Info("workflow approver dispatched",
+				"run", run.ID, "step", step.ID,
+				"work_item", primaryWID, "worker", workerRefStr)
 		} else {
 			// Human approval: set to approval_pending and wait for
 			// human review via the ApproveStep RPC.
@@ -2378,6 +2399,94 @@ func upstreamWorkItemIDs(step workflow.StepWire, allSteps []workflow.StepWire) [
 	return ids
 }
 
+// resolveApprovalWorkItems determines the work item(s) a worker-backed
+// approval execution runs against. NO approval work item is ever
+// created — the step run IS the approval record, so the execution is
+// dispatched against the run's shared ticket, resolved exactly like a
+// TASK step:
+//   - a recovering step re-uses the ticket already recorded in its
+//     result's _work_item_id;
+//   - otherwise WORK_ITEM markers upstream of the approval step;
+//   - otherwise the run's bound work item (run.WorkItemID).
+//
+// Returns nil when no ticket exists; the caller fails the step with a
+// clear message (same contract as TASK steps).
+func resolveApprovalWorkItems(sr db.WorkflowStepRunRow, step workflow.StepWire, allSteps []workflow.StepWire, runWorkItemID string) []string {
+	var upstream []string
+	if sr.Status == domain.StepRunRecovering {
+		var parsed struct {
+			WorkItemID string `json:"_work_item_id"`
+		}
+		if err := json.Unmarshal(sr.Result, &parsed); err == nil && parsed.WorkItemID != "" {
+			upstream = []string{parsed.WorkItemID}
+		}
+	}
+	if len(upstream) == 0 {
+		upstream = upstreamWorkItemIDs(step, allSteps)
+		if len(upstream) == 0 && runWorkItemID != "" {
+			upstream = []string{runWorkItemID}
+		}
+	}
+	return upstream
+}
+
+// buildApprovalStepResult builds the result JSON written to a
+// worker-backed approval step run when it is dispatched. The step run
+// is the approval record: it carries the shared ticket id, the composite
+// prompt, the approver worker pin (so TaskReconciler.workerVersionForStepRun
+// resolves the approver without touching the ticket), the upstream
+// review context, and the pending decision marker. When re-dispatching a
+// recovering step, the previous _recovery_summary is preserved.
+func buildApprovalStepResult(primaryWID, composite, workerRefStr string, workerVersion int, upstreamWorker, upstreamSummary string, upstreamFiles []string, ac string, prevResult []byte) []byte {
+	stepResult, _ := json.Marshal(map[string]any{
+		"_work_item_id":     primaryWID,
+		"_prompt":           composite,
+		"_worker_id":        workerRefStr,
+		"_worker_version":   workerVersion,
+		"_upstream_worker":  upstreamWorker,
+		"_upstream_summary": upstreamSummary,
+		"_upstream_files":   upstreamFiles,
+		"_ac":               ac,
+		"_decision":         "pending",
+	})
+	var prev struct {
+		RecoverySummary string `json:"_recovery_summary"`
+	}
+	_ = json.Unmarshal(prevResult, &prev)
+	if prev.RecoverySummary != "" {
+		var newResult map[string]any
+		_ = json.Unmarshal(stepResult, &newResult)
+		newResult["_recovery_summary"] = prev.RecoverySummary
+		stepResult, _ = json.Marshal(newResult)
+	}
+	return stepResult
+}
+
+// approvalDecisionFromSources resolves the authoritative decision for an
+// approval step run. The step run's own _decision wins — it is the
+// approval record (written by the ApproveStep RPC for human reviews, or
+// propagated from the approver execution's ORCHICON WORKER SUMMARY for
+// worker-backed approvals). The work item's _decision is consulted ONLY
+// as a legacy fallback when the step run carries none, so a stale
+// decision left on a shared ticket by a prior run/step can never
+// override the current step run's real decision.
+func approvalDecisionFromSources(srDecision string, wiResults []byte) string {
+	if srDecision != "" {
+		return srDecision
+	}
+	if len(wiResults) == 0 {
+		return ""
+	}
+	var wiResult map[string]any
+	if json.Unmarshal(wiResults, &wiResult) != nil {
+		return ""
+	}
+	if v, ok := wiResult["_decision"].(string); ok {
+		return v
+	}
+	return ""
+}
+
 // dispatchReq is an inline TaskReconciler dispatch queued during a
 // reconcile pass and invoked after the pass's transaction commits.
 // Dispatch is scoped to a (task, step run) pair: the work item is a
@@ -2456,14 +2565,14 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 	// Task AND worker-backed approval steps complete on their OWN
 	// execution's terminal state. (Human approval steps sit in
 	// `approval_pending` and are resolved by the ApproveStep/RejectStep
-	// RPC, not polled here.) The approval work item is a per-step artifact
-	// created by dispatchStep and is never polled for completion: under
-	// the run-bound model its status does not track the approver's
-	// execution (transitionWorkItemOnResult leaves it untouched), so
-	// polling it would leave the step "running" forever even after the
-	// approver succeeded. A step run with NO execution link means the
-	// dispatch never produced an execution — WAIT rather than fall back
-	// to another execution for the same work item.
+	// RPC, not polled here.) The approval step run's `_work_item_id`
+	// points at the run's SHARED ticket, which is never polled for
+	// completion: under the run-bound model its status does not track the
+	// approver's execution (transitionWorkItemOnResult leaves it
+	// untouched), so polling it would leave the step "running" forever
+	// even after the approver succeeded. A step run with NO execution
+	// link means the dispatch never produced an execution — WAIT rather
+	// than fall back to another execution for the same work item.
 	if sr.WorkerExecutionID == "" {
 		// Two cases:
 		//   (a) dispatchStep just set this step running (first dispatch
@@ -2509,6 +2618,26 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 
 		switch rc.Strategy {
 		case "retry", "":
+			if sr.StepKind == domain.StepKindApproval {
+				// Worker-backed approval: the step run IS the approval
+				// record — never clone the shared ticket into a fresh
+				// work item on retry. Keep the same _work_item_id and
+				// mark the step recovering; the dispatch section
+				// re-dispatches the SAME step run on the next pass
+				// (dispatchStep re-resolves the ticket and clears the
+				// stale execution link). Bounded by max_attempts below.
+				stepResult, _ := json.Marshal(map[string]string{"_work_item_id": parsed.WorkItemID})
+				updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+					Status:  strPtr(domain.StepRunRecovering),
+					Attempt: &newAttempt,
+					Result:  &stepResult,
+				})
+				if err != nil {
+					return false, false, fmt.Errorf("update approval step run for retry: %w", err)
+				}
+				runByID[sr.StepID] = updated
+				return false, false, nil
+			}
 			freshID := db.NewID()
 			fresh := db.WorkItemRow{
 				ID:                 freshID,
