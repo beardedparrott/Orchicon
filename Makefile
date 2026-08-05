@@ -17,10 +17,16 @@ BIN_DIR     := bin
 
 # Git metadata injected into the binary via -ldflags (internal/version).
 GIT_COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
-GIT_TAG     := $(shell git describe --tags --abbrev=0 2>/dev/null || echo dev)
 BUILD_DATE  := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-LDFLAGS     := -X github.com/beardedparrott/orchicon/internal/version.gitCommit=$(GIT_COMMIT) \
-               -X github.com/beardedparrott/orchicon/internal/version.gitTag=$(GIT_TAG) \
+# Version tag resolution. An explicit override wins (e.g. `make build VERSION=v0.1.183`);
+# otherwise the nearest reachable tag is used. `git pull` does NOT fetch tags, and the
+# auto-release workflow creates the canonical release tag on GitHub at merge time, so a
+# stale local tag view would embed an older version (a rebuild could report v0.1.181 for
+# merged v0.1.183 code). Recursive (`=` + `?=`) so the tag is resolved at recipe time,
+# AFTER the fetch-tags prerequisite has synced the local tags.
+VERSION ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo dev)
+LDFLAGS     = -X github.com/beardedparrott/orchicon/internal/version.gitCommit=$(GIT_COMMIT) \
+               -X github.com/beardedparrott/orchicon/internal/version.gitTag=$(VERSION) \
                -X github.com/beardedparrott/orchicon/internal/version.buildDate=$(BUILD_DATE)
 
 # --- Help ------------------------------------------------------------------
@@ -45,12 +51,22 @@ lint: ## Lint the Protobuf schema (buf lint)
 proto: lint gen ## Lint + generate
 
 # --- Go control plane ------------------------------------------------------
+# fetch-tags syncs local tags with origin before a build. `git pull` does
+# not fetch tags, but the auto-release workflow creates the canonical
+# release tag on GitHub at merge time — without this, a local rebuild would
+# embed a stale version (git describe falls back to the nearest tag the
+# local repo already knows). Best-effort: offline builds fall back to local
+# tags and never fail.
+.PHONY: fetch-tags
+fetch-tags:
+	@git fetch --tags --quiet origin 2>/dev/null || true
+
 .PHONY: build run test vet tidy
-build: ## Build the control-plane binary into bin/
+build: fetch-tags ## Build the control-plane binary into bin/
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon ./cmd/orchicon
 
-run: ## Run the control plane from source
+run: fetch-tags ## Run the control plane from source
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon
 
 test: ## Run Go tests
