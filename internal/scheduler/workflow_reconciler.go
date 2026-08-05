@@ -1370,7 +1370,13 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 				workerRefStr = cfg.WorkerRef
 			}
 			if workerRefStr == "" {
-				return fmt.Errorf("worker-backed approval step %s has no worker ref", step.ID)
+				// Missing worker ref is a workflow-definition error on
+				// THIS step — fail it (clear reason, run terminalizes)
+				// rather than erroring out and rolling back the whole
+				// pass (which would leave the run "running" forever,
+				// exactly the wedge #192 fixed for TASK steps).
+				return r.failStep(ctx, tx, tenantID, run, sr, runs,
+					fmt.Errorf("worker-backed approval step %s has no worker ref", step.ID))
 			}
 			// The approval execution runs against the run's shared work
 			// item (the ticket) — NO per-step approval work item is ever
@@ -1385,7 +1391,17 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			}
 			workerVer, err := db.GetLatestWorkerVersion(ctx, tx, tenantID, workerRefStr, true)
 			if err != nil {
-				return fmt.Errorf("load approver worker version: %w", err)
+				// The approver worker has no usable version (deleted, no
+				// published version, or an index/catalog anomaly hid it).
+				// Fail THIS step instead of aborting the whole pass:
+				// returning an error here makes reconcileRun roll back the
+				// ENTIRE transaction — including steps that already
+				// completed this pass (the wedge #192 fixed for TASK
+				// steps). Failing the step surfaces a clear reason, the
+				// run terminalizes, and recovery (or the RetryStepRun
+				// RPC) re-drives it once the worker is resolvable.
+				return r.failStep(ctx, tx, tenantID, run, sr, runs,
+					fmt.Errorf("load approver worker version for %s: %w", workerRefStr, err))
 			}
 			var primaryWID string
 			var composite string

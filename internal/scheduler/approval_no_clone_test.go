@@ -415,6 +415,104 @@ func TestApprovalDispatchFailsWithoutTicket(t *testing.T) {
 	}
 }
 
+// TestApprovalDispatchFailsWithoutWorkerRef guards the failStep contract
+// (adopted from #192 for the approval worker-resolution path): a
+// worker-backed approval with NO worker ref anywhere (neither the step's
+// ref nor config.worker_ref) must FAIL this step with a clear reason —
+// not error out and roll back the whole reconcile pass, which would leave
+// the run "running" forever.
+func TestApprovalDispatchFailsWithoutWorkerRef(t *testing.T) {
+	env := newApprovalTestEnv(t)
+	ctx := context.Background()
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+
+	step := env.step
+	step.Ref = ""
+	step.Config = `{"reviewer":"worker"}`
+	sr, err := db.CreateWorkflowStepRun(ctx, ttx.Tx, db.WorkflowStepRunRow{
+		ID: db.NewID(), TenantID: approvalTestTenant,
+		WorkflowRunID: env.run.ID, StepID: step.ID,
+		StepName: step.Name, StepKind: step.Kind,
+		Status: domain.StepRunReady,
+	})
+	if err != nil {
+		t.Fatalf("create step run: %v", err)
+	}
+
+	runs := map[string]db.WorkflowStepRunRow{step.ID: sr}
+	var dispatched []dispatchReq
+	if err := env.reconciler.dispatchStep(ctx, ttx.Tx, approvalTestTenant, env.run,
+		step, sr, runs, []workflow.StepWire{step}, &dispatched, nil); err != nil {
+		t.Fatalf("dispatchStep should fail the step, not error out: %v", err)
+	}
+	if len(dispatched) != 0 {
+		t.Fatalf("expected no dispatch without a worker ref, got %+v", dispatched)
+	}
+	failed := runs[step.ID]
+	if failed.Status != domain.StepRunFailed {
+		t.Errorf("step status = %q, want failed", failed.Status)
+	}
+	var res struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(failed.Result, &res)
+	if !strings.Contains(res.Error, "no worker ref") {
+		t.Errorf("expected a clear 'no worker ref' reason, got %q", res.Error)
+	}
+}
+
+// TestApprovalDispatchFailsWhenApproverUnresolvable guards the failStep
+// contract for the approver worker-resolution failure: when the approver
+// worker has no usable version (deleted / never existed), the approval
+// step must FAIL with a clear reason instead of erroring out and rolling
+// back the whole reconcile pass (the wedge #192 fixed for TASK steps).
+func TestApprovalDispatchFailsWhenApproverUnresolvable(t *testing.T) {
+	env := newApprovalTestEnv(t)
+	ctx := context.Background()
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+
+	step := env.step
+	step.Ref = "w_does_not_exist"
+	sr, err := db.CreateWorkflowStepRun(ctx, ttx.Tx, db.WorkflowStepRunRow{
+		ID: db.NewID(), TenantID: approvalTestTenant,
+		WorkflowRunID: env.run.ID, StepID: step.ID,
+		StepName: step.Name, StepKind: step.Kind,
+		Status: domain.StepRunReady,
+	})
+	if err != nil {
+		t.Fatalf("create step run: %v", err)
+	}
+
+	runs := map[string]db.WorkflowStepRunRow{step.ID: sr}
+	var dispatched []dispatchReq
+	if err := env.reconciler.dispatchStep(ctx, ttx.Tx, approvalTestTenant, env.run,
+		step, sr, runs, []workflow.StepWire{step}, &dispatched, nil); err != nil {
+		t.Fatalf("dispatchStep should fail the step, not error out: %v", err)
+	}
+	if len(dispatched) != 0 {
+		t.Fatalf("expected no dispatch without a resolvable approver, got %+v", dispatched)
+	}
+	failed := runs[step.ID]
+	if failed.Status != domain.StepRunFailed {
+		t.Errorf("step status = %q, want failed", failed.Status)
+	}
+	var res struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(failed.Result, &res)
+	if !strings.Contains(res.Error, "load approver worker version") {
+		t.Errorf("expected a clear 'load approver worker version' reason, got %q", res.Error)
+	}
+}
+
 // mustList re-queries work items inside the caller's transaction.
 func (e *approvalTestEnv) mustList(t *testing.T, tx pgx.Tx) []db.WorkItemRow {
 	t.Helper()
