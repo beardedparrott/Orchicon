@@ -279,8 +279,24 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// whose deps just became satisfied are progressed and dispatched
 	// in the SAME scan pass — no need to wait for the next heartbeat
 	// (docs/03 §2, docs/02 §2.4).
+	//
+	// The pass is bounded to maxDAGPasses iterations. The loop breaks
+	// on !madeProgress, but a pathological run (e.g. a step whose
+	// status flips every iteration) must never pin a goroutine in a
+	// busy loop — a wedged reconcile goroutine is what froze the whole
+	// reconciler in the field (150% CPU, advisory lock never renewed).
+	// The bound converts any such pathology into a single errored pass;
+	// the run is then retried by the manager queue instead of looping
+	// forever.
 	progressed := false
+	passes := 0
 	for {
+		if passes >= maxDAGPasses {
+			r.log.Warn("workflow DAG pass limit reached — aborting pass",
+				"run", runID, "passes", passes)
+			return fmt.Errorf("workflow run %s: DAG pass limit (%d) exceeded — possible stuck run", runID, maxDAGPasses)
+		}
+		passes++
 		madeProgress := false
 
 		// Reload step runs on every outer iteration so newly-created
@@ -986,7 +1002,20 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 				// that don't pin a specific version.
 				workerVer, err = db.GetLatestWorkerVersion(ctx, tx, tenantID, step.Ref, true)
 				if err != nil {
-					return fmt.Errorf("load worker version for %s: %w", step.Ref, err)
+					// The worker has no usable version (deleted, no
+					// published version, or an index/catalog anomaly hid
+					// it). Fail THIS step instead of aborting the whole
+					// pass: returning an error here makes reconcileRun
+					// roll back the ENTIRE transaction — including steps
+					// that already completed this pass (e.g. an upstream
+					// step that was polled terminal just before). The run
+					// then stays "running" forever with a succeeded
+					// execution underneath (the wedge seen in the field).
+					// Failing the step surfaces a clear reason, the run
+					// terminalizes, and recovery (or the RetryStepRun RPC)
+					// re-drives it once the worker is resolvable.
+					return r.failStep(ctx, tx, tenantID, run, sr, runs,
+						fmt.Errorf("load worker version for %s: %w", step.Ref, err))
 				}
 			} else {
 				return fmt.Errorf("load worker version for %s: %w", step.Ref, err)
@@ -2379,6 +2408,16 @@ type recoveryTriggerReq struct {
 // "running" forever. The inline dispatch links the execution moments
 // after the reconcile transaction commits, so the grace is generous.
 const dispatchLinkGrace = 15 * time.Second
+
+// maxDAGPasses bounds the per-run DAG progression loop. A well-behaved
+// run completes its progression in a handful of passes (each step
+// transitions at most a few states); a pathological run whose step
+// status flips every iteration would otherwise loop forever, wedging the
+// reconcile goroutine in a busy loop (field incident: 150% CPU, the
+// reconciler's advisory lock never renewed). The bound converts the
+// pathology into a single errored pass; the manager requeues the run and
+// a later pass (or the stuck-run re-drive) retries it.
+const maxDAGPasses = 100
 
 // pollTaskStep checks the WorkItem linked to a running task step. Returns
 // (terminal, failed, error). The WorkItem id is stored in the step run's

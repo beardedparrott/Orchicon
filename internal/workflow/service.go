@@ -871,6 +871,119 @@ func (s *Service) RetryStepRun(ctx context.Context, req *connect.Request[apiv1.R
 	return connect.NewResponse(&apiv1.RetryStepRunResponse{}), nil
 }
 
+// ForceProgressWorkflowRun advances a stuck running run past its current
+// in-flight step run(s) regardless of their previous status. A run can wedge
+// "running" forever even though the underlying worker execution succeeded:
+// when a LATER step's dispatch fails, reconcileRun errors and rolls back the
+// ENTIRE pass — including this step's terminal mark — leaving the step
+// "running" with a succeeded execution underneath (field incident: a
+// corrupted worker_versions index hid a worker, dispatch of a downstream step
+// failed, the pass rolled back, and the run sat "running" for hours).
+//
+// This is a manual escape hatch: it marks every active non-terminal step run
+// (pending/ready/running/approval_pending) of the run as succeeded with a
+// `_forced: true` result note, terminates any still-running linked executions,
+// and enqueues a workflow.step_succeeded event so the reconciler advances the
+// DAG on its next pass.
+func (s *Service) ForceProgressWorkflowRun(ctx context.Context, req *connect.Request[apiv1.ForceProgressWorkflowRunRequest]) (*connect.Response[apiv1.ForceProgressWorkflowRunResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.RunId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("run_id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	run, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, req.Msg.RunId)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if run.Status == domain.WorkflowRunCompleted || run.Status == domain.WorkflowRunFailed || run.Status == domain.WorkflowRunAborted {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("run is already terminal (status=%s) — nothing to force", run.Status))
+	}
+
+	stepRuns, err := db.ListWorkflowStepRuns(ctx, ttx.Tx, tenantID, req.Msg.RunId)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+
+	now := time.Now().UTC()
+	var forced []string
+	for _, sr := range stepRuns {
+		if sr.SupersededBy != "" {
+			continue
+		}
+		switch sr.Status {
+		case domain.StepRunSucceeded, domain.StepRunFailed, domain.StepRunSkipped, domain.StepRunBlocked:
+			continue // already terminal — leave alone
+		}
+
+		// Annotate the result with a forced marker so the run view shows
+		// this was a manual override, not a real execution success.
+		var result map[string]any
+		if len(sr.Result) > 0 {
+			_ = json.Unmarshal(sr.Result, &result)
+		}
+		if result == nil {
+			result = map[string]any{}
+		}
+		result["_forced"] = true
+		result["_forced_at"] = now.Format(time.RFC3339)
+		result["_forced_reason"] = "manual force-progress"
+		forcedResult, _ := json.Marshal(result)
+
+		updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+			Status:  strPtr(domain.StepRunSucceeded),
+			Result:  &forcedResult,
+			EndedAt: &now,
+		})
+		if err != nil {
+			return nil, mapDBError(err)
+		}
+		forced = append(forced, sr.ID)
+
+		// Terminate a still-running linked execution so it stops burning
+		// resources (the worker's subprocess keeps running until killed).
+		if sr.WorkerExecutionID != "" {
+			if exec, err := db.GetExecution(ctx, ttx.Tx, tenantID, sr.WorkerExecutionID); err == nil {
+				if exec.Status == domain.ExecutionRunning || exec.Status == domain.ExecutionDispatching {
+					termStatus := domain.ExecutionTerminated
+					termHealth := domain.HealthUnhealthy
+					_, _ = db.UpdateExecution(ctx, ttx.Tx, tenantID, exec.ID, exec.Version, db.UpdateExecutionFields{
+						Status:       &termStatus,
+						HealthState:  &termHealth,
+						EndedAt:      &now,
+						ErrorMessage: strPtr("forced past by ForceProgressWorkflowRun"),
+					})
+				}
+			}
+		}
+
+		if err := enqueueWorkflowEvent(ctx, ttx.Tx, domain.WorkflowEventStepSucceeded, db.WorkflowRow{}, db.WorkflowVersionRow{}, run, updated.StepID); err != nil {
+			s.log.Warn("force-progress: enqueue step_succeeded failed", "run", run.ID, "step", updated.StepID, "error", err)
+		}
+	}
+	if len(forced) == 0 {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("no active step runs to force — the run may already be advancing"))
+	}
+
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	s.log.Warn("workflow run force-progressed", "run", run.ID, "forced_steps", len(forced))
+	return connect.NewResponse(&apiv1.ForceProgressWorkflowRunResponse{
+		Run:              runRowToProto(run),
+		ForcedStepRunIds: forced,
+	}), nil
+}
+
 // StreamWorkflowEvents is the server-stream RPC that fans out workflow
 // run events from NATS to connected clients (docs/07 §4, docs/10 §4.1).
 func (s *Service) StreamWorkflowEvents(ctx context.Context, req *connect.Request[apiv1.StreamWorkflowEventsRequest], stream *connect.ServerStream[apiv1.StreamWorkflowEventsResponse]) error {

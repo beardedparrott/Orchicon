@@ -88,6 +88,16 @@ type Config struct {
 
 	ReadHeaderTimeout time.Duration
 	ShutdownTimeout   time.Duration
+
+	// IndexCheckInterval controls how often the control plane runs the
+	// amcheck-based index-integrity sweep (boot + every interval). A
+	// corrupted btree index silently hides rows from `=` lookups (the
+	// planner uses the index) while seq scans still see them — the
+	// field incident where a hard host sleep corrupted
+	// worker_versions_worker_version_idx and the workflow reconciler
+	// failed to load a worker that existed. 0 disables the periodic
+	// sweep (the boot check still runs).
+	IndexCheckInterval time.Duration
 }
 
 // Default returns a Config populated with local-dev defaults that match
@@ -127,7 +137,17 @@ func Default() Config {
 		},
 		ReadHeaderTimeout: 10 * time.Second,
 		ShutdownTimeout:   15 * time.Second,
+		IndexCheckInterval: envDuration("ORCHICON_INDEX_CHECK_INTERVAL", 6*time.Hour),
 	}
+}
+
+func envDuration(key string, fallback time.Duration) time.Duration {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return fallback
 }
 
 func env(key, fallback string) string {

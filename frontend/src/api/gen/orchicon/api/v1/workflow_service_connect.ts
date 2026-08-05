@@ -17,7 +17,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortWorkflowRequest, AbortWorkflowResponse, AcquireWorkflowEditLockRequest, AcquireWorkflowEditLockResponse, CreateWorkflowRequest, CreateWorkflowResponse, CreateWorkflowVersionRequest, CreateWorkflowVersionResponse, DeleteWorkflowRequest, DeleteWorkflowResponse, DeleteWorkflowVersionRequest, DeleteWorkflowVersionResponse, DeprecateWorkflowRequest, DeprecateWorkflowResponse, GetWorkflowEditLockRequest, GetWorkflowEditLockResponse, GetWorkflowRequest, GetWorkflowResponse, GetWorkflowRunRequest, GetWorkflowRunResponse, GetWorkflowStepRunsRequest, GetWorkflowStepRunsResponse, ListWorkflowRunsRequest, ListWorkflowRunsResponse, ListWorkflowsRequest, ListWorkflowsResponse, ListWorkflowVersionsRequest, ListWorkflowVersionsResponse, PublishWorkflowRequest, PublishWorkflowResponse, ReleaseWorkflowEditLockRequest, ReleaseWorkflowEditLockResponse, RetryStepRunRequest, RetryStepRunResponse, StartWorkflowRequest, StartWorkflowResponse, StreamWorkflowEventsRequest, StreamWorkflowEventsResponse, UpdateWorkflowVersionRequest, UpdateWorkflowVersionResponse } from "./workflow_service_pb.js";
+import { AbortWorkflowRequest, AbortWorkflowResponse, AcquireWorkflowEditLockRequest, AcquireWorkflowEditLockResponse, CreateWorkflowRequest, CreateWorkflowResponse, CreateWorkflowVersionRequest, CreateWorkflowVersionResponse, DeleteWorkflowRequest, DeleteWorkflowResponse, DeleteWorkflowVersionRequest, DeleteWorkflowVersionResponse, DeprecateWorkflowRequest, DeprecateWorkflowResponse, ForceProgressWorkflowRunRequest, ForceProgressWorkflowRunResponse, GetWorkflowEditLockRequest, GetWorkflowEditLockResponse, GetWorkflowRequest, GetWorkflowResponse, GetWorkflowRunRequest, GetWorkflowRunResponse, GetWorkflowStepRunsRequest, GetWorkflowStepRunsResponse, ListWorkflowRunsRequest, ListWorkflowRunsResponse, ListWorkflowsRequest, ListWorkflowsResponse, ListWorkflowVersionsRequest, ListWorkflowVersionsResponse, PublishWorkflowRequest, PublishWorkflowResponse, ReleaseWorkflowEditLockRequest, ReleaseWorkflowEditLockResponse, RetryStepRunRequest, RetryStepRunResponse, StartWorkflowRequest, StartWorkflowResponse, StreamWorkflowEventsRequest, StreamWorkflowEventsResponse, UpdateWorkflowVersionRequest, UpdateWorkflowVersionResponse } from "./workflow_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -221,6 +221,29 @@ export const WorkflowService = {
       name: "RetryStepRun",
       I: RetryStepRunRequest,
       O: RetryStepRunResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ForceProgressWorkflowRun advances a stuck running WorkflowRun past its
+     * current in-flight step run(s) regardless of their previous status.
+     *
+     * A run can wedge "running" forever even though the underlying worker
+     * execution already succeeded — e.g. the reconcile pass errored on a LATER
+     * step and rolled back this step's terminal mark (field incident: a
+     * corrupted worker_versions index hid a worker, dispatch of a downstream
+     * step failed, and the whole pass rolled back, leaving an upstream step
+     * "running" with a succeeded execution underneath). This RPC marks every
+     * active non-terminal step run of the run as succeeded (recording a
+     * `_forced: true` note), terminates any still-running linked executions,
+     * and re-enqueues the run so the reconciler advances the DAG. Intended as
+     * a manual escape hatch, not a routine control.
+     *
+     * @generated from rpc orchicon.api.v1.WorkflowService.ForceProgressWorkflowRun
+     */
+    forceProgressWorkflowRun: {
+      name: "ForceProgressWorkflowRun",
+      I: ForceProgressWorkflowRunRequest,
+      O: ForceProgressWorkflowRunResponse,
       kind: MethodKind.Unary,
     },
     /**

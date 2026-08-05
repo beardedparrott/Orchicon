@@ -315,6 +315,14 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Workflow run ID"}},
 			Required:    []string{"id"},
 		},
+		{
+			Name:        "force_progress_workflow_run",
+			Description: "Force a stuck running workflow run past its current in-flight step run(s), regardless of their previous status. Use when a run is wedged 'running' even though the worker execution succeeded (e.g. a reconcile error on a later step rolled back an upstream step's terminal mark). Marks active step runs succeeded and lets the reconciler advance the DAG.",
+			Mutating:    true,
+			Fn:          toolForceProgressWorkflowRun,
+			Properties:  map[string]PropertySchema{"run_id": {Type: "string", Description: "Workflow run ID to force-progress"}},
+			Required:    []string{"run_id"},
+		},
 
 		// --- Executions ---
 		{

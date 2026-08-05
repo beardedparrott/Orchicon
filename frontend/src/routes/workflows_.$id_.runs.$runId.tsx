@@ -1,6 +1,6 @@
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, RefreshCw, XCircle } from "lucide-react";
+import { CheckCircle2, FastForward, RefreshCw, XCircle } from "lucide-react";
 import ReactFlow, {
   Background,
   Controls,
@@ -20,6 +20,7 @@ import { StepKind, StepRunStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import { useApproveStep } from "@/api/approvals";
 import {
   useAbortWorkflow,
+  useForceProgressWorkflowRun,
   useGetWorkflow,
   useGetWorkflowRun,
   useGetWorkflowStepRuns,
@@ -105,6 +106,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
   const { data: stepRuns } = useGetWorkflowStepRuns(runId);
   const { data: runExecs } = useListExecutions({ workflowRunId: runId, sortOrder: "asc" });
   const abortRun = useAbortWorkflow();
+  const forceProgress = useForceProgressWorkflowRun();
 
   // Live event stream (docs/10 §4). Subscribes to StreamWorkflowEvents
   // filtered to this run; invalidates the run + step-runs queries so the
@@ -320,6 +322,17 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
           </p>
         </div>
         <div className="flex gap-2">
+          {!isTerminal && (
+            <Button
+              variant="outline"
+              onClick={() => forceProgress.mutateAsync({ runId })}
+              disabled={forceProgress.isPending}
+              title="Force the run past its current step run(s), regardless of their status — use when a run is stuck 'running' after a reconcile error rolled back a completed step."
+            >
+              <FastForward className="mr-1 h-4 w-4" />
+              {forceProgress.isPending ? "Forcing…" : "Force next step"}
+            </Button>
+          )}
           {!isTerminal && (
             <Button
               variant="destructive"

@@ -266,6 +266,26 @@ export function useRetryStepRun() {
   });
 }
 
+// useForceProgressWorkflowRun advances a stuck running run past its current
+// in-flight step run(s) regardless of their previous status — a manual escape
+// hatch for runs wedged "running" after a reconcile pass errored on a LATER
+// step and rolled back an upstream step's terminal mark (e.g. a corrupted
+// worker_versions index hid a worker).
+export function useForceProgressWorkflowRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { runId: string }) => {
+      const res = await workflowClient.forceProgressWorkflowRun({ runId: input.runId });
+      return res.run as WorkflowRun;
+    },
+    onSuccess: (run) => {
+      qc.invalidateQueries({ queryKey: workflowKeys.run(run.id) });
+      qc.invalidateQueries({ queryKey: workflowKeys.stepRuns(run.id) });
+      qc.invalidateQueries({ queryKey: workflowKeys.runs(run.workflowId) });
+    },
+  });
+}
+
 // useGetWorkflowRun fetches a single workflow run by id.
 export function useGetWorkflowRun(id: string) {
   return useQuery({

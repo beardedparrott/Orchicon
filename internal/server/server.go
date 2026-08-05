@@ -430,6 +430,16 @@ func (s *Server) Run(ctx context.Context) error {
 	// (docs/04 §6.3); production adapters heartbeat themselves.
 	go s.heartbeatDevAdapter(ctx)
 
+	// Index-integrity sweep: at boot and every IndexCheckInterval, verify
+	// every user btree index with amcheck and rebuild any corrupted ones.
+	// A corrupt index silently hides rows from `=` lookups (planner uses
+	// the index) while seq scans still see them — a hard host sleep
+	// corrupted worker_versions_worker_version_idx in the field, and the
+	// workflow reconciler failed a dispatch on a worker that existed. The
+	// boot pass catches the corruption before it can wedge a run; the
+	// periodic pass catches corruption that occurs while the plane is up.
+	go s.indexHealthLoop(ctx)
+
 	// Container mode: keep the project-mounts manifest (on the data volume)
 	// in sync with the projects table so scripts/container.sh can mount the
 	// project dirs/files the user selected. ORCHICON_DATA_DIR is only set by
@@ -596,6 +606,36 @@ func (s *Server) heartbeatDevAdapter(ctx context.Context) {
 				s.log.Warn("dev adapter heartbeat failed", "error", err)
 			}
 			_ = ttx.Commit(ctx)
+		}
+	}
+}
+
+// indexHealthLoop runs the amcheck index-integrity sweep once at boot and
+// then every cfg.IndexCheckInterval. A corrupted btree index silently hides
+// rows from `=` lookups (the planner uses the index) while seq scans still
+// see them — a hard host sleep corrupted worker_versions_worker_version_idx
+// in the field, making the workflow reconciler fail a dispatch on a worker
+// that existed. The boot pass catches pre-existing corruption; the periodic
+// pass catches corruption that happens while the plane is up. An interval of
+// 0 runs only the boot pass.
+func (s *Server) indexHealthLoop(ctx context.Context) {
+	runOnce := func() {
+		if repaired := db.RepairCorruptIndexes(ctx, s.pool, s.log); len(repaired) > 0 {
+			s.log.Warn("index integrity sweep repaired corrupt indexes", "indexes", repaired)
+		}
+	}
+	runOnce()
+	if s.cfg.IndexCheckInterval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(s.cfg.IndexCheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			runOnce()
 		}
 	}
 }
