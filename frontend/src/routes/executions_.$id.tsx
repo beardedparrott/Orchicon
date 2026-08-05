@@ -246,7 +246,7 @@ function ExecutionDetailPage() {
           {/* Live chat — the primary surface. */}
           <RuntimeSessionPane
             events={events}
-            prompt={workItem?.promptContext}
+            prompt={exec.systemPrompt || workItem?.promptContext}
             streamStatus={status}
             storedOutput={exec.output}
           />

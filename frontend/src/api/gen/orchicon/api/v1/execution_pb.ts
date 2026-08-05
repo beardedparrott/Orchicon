@@ -351,6 +351,13 @@ export class WorkerExecution extends Message<WorkerExecution> {
    */
   iteration = 0;
 
+  /**
+   * the actual system prompt sent to the model for this execution — the workflow step run's _prompt (per-step composite). Empty for non-workflow / legacy dispatch.
+   *
+   * @generated from field: string system_prompt = 24;
+   */
+  systemPrompt = "";
+
   constructor(data?: PartialMessage<WorkerExecution>) {
     super();
     proto3.util.initPartial(data, this);
@@ -382,6 +389,7 @@ export class WorkerExecution extends Message<WorkerExecution> {
     { no: 21, name: "output", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 22, name: "conversation", kind: "scalar", T: 12 /* ScalarType.BYTES */ },
     { no: 23, name: "iteration", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 24, name: "system_prompt", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkerExecution {
