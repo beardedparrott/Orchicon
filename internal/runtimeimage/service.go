@@ -351,19 +351,27 @@ func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[ap
 	if s.rt == nil {
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("runtime daemon not configured (headless serve)"))
 	}
+	// Read the row under FOR UPDATE and keep the lock until the row is
+	// marked 'building' (one transaction). This is the OCC barrier that
+	// serializes concurrent Deploys: the marking transition is StatusOnly,
+	// so it does NOT bump `version` — without the row lock, two
+	// simultaneous Deploys could both pass the checks below and both run
+	// `docker build` on the same tag. The lock is held only for the
+	// read+mark window, never across the docker build itself.
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, err)
 	}
-	row, err := db.GetRuntimeImage(ctx, ttx.Tx, tenantID, req.Msg.Id)
-	_ = ttx.Rollback(ctx)
+	row, err := db.GetRuntimeImageForUpdate(ctx, ttx.Tx, tenantID, req.Msg.Id)
 	if err != nil {
+		_ = ttx.Rollback(ctx)
 		if errors.Is(err, db.ErrNotFound) {
 			return connect.NewError(connect.CodeNotFound, errors.New("runtime image not found"))
 		}
 		return connect.NewError(connect.CodeInternal, err)
 	}
 	if row.Status == "building" {
+		_ = ttx.Rollback(ctx)
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("image is already building"))
 	}
 
@@ -374,6 +382,7 @@ func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[ap
 	// version is the change signal, and the image is only rebuilt (and only
 	// pruned) when a spec edit bumped it past built_version.
 	if row.Status == "ready" && row.Tag != "" && row.BuiltVersion == row.Version {
+		_ = ttx.Rollback(ctx)
 		s.log.Info("runtime image already up to date (spec version) — skipping rebuild",
 			"id", row.ID, "tag", row.Tag, "version", row.Version)
 		msg := fmt.Sprintf("runtime image already up to date (spec version %d) — skipping rebuild", row.Version)
@@ -392,10 +401,6 @@ func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[ap
 	// changed" signal) must NOT bump.
 	building := "building"
 	clearErr := ""
-	ttx, err = s.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return connect.NewError(connect.CodeInternal, err)
-	}
 	row, err = db.UpdateRuntimeImage(ctx, ttx.Tx, tenantID, row.ID, row.Version, db.UpdateRuntimeImageFields{
 		Status:     &building,
 		Error:      &clearErr,

@@ -1,0 +1,7 @@
+# The runtime build context must contain ONLY the Dockerfiles. The orchicon
+# binary is deliberately NOT baked into runtime images anymore — the daemon
+# bind-mounts its own executable at container-create time — so a stale
+# deploy/runtime/orchicon copy (left over from before that change) must
+# never be shipped to the daemon as build context. Even if the file is
+# recreated by an older flow, docker build will not send it.
+orchicon

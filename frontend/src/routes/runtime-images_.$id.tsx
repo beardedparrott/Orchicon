@@ -136,7 +136,10 @@ function RuntimeImageDetailPage() {
         onLog: (chunk) => setBuildLog((prev) => prev + chunk),
       });
       if (res.skipped) {
-        setBuildLog("Runtime image is already up to date — no rebuild needed.");
+        // The daemon already streamed the "already up to date" log line;
+        // only fall back to a friendly message if the stream somehow
+        // carried no log (do not overwrite the server's own line).
+        setBuildLog((prev) => prev || "Runtime image is already up to date — no rebuild needed.");
       }
     } catch (e) {
       setBuildError(String(e));

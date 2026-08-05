@@ -437,16 +437,19 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 	// runtime-client` (docker exec paths). The binary is deliberately not
 	// baked into the image; Docker resolves bind sources at `docker run`
 	// time, so a rebuilt bin/orchicon is picked up by newly-created
-	// containers without an image rebuild. Stat the source first — if the
-	// executable is somehow gone, skip the mount (log a warning) rather
-	// than let `docker run` fail on a missing bind source.
-	if d.ExePath != "" {
-		if st, err := os.Stat(d.ExePath); err == nil && !st.IsDir() {
-			args = append(args, "-v", d.ExePath+":/usr/local/bin/orchicon:ro")
-		} else {
-			d.Log.Warn("daemon executable missing — skipping orchicon mount", "path", d.ExePath)
-		}
+	// containers without an image rebuild. This mount is a HARD dependency:
+	// the entrypoint is `orchicon runtime-supervisor`, so a container
+	// created without it would exec a missing binary and die — a confusing
+	// failure an operator would have to dig out of container logs. Fail the
+	// create with a clear error when the executable cannot be mounted
+	// instead of silently skipping.
+	if d.ExePath == "" {
+		return nil, fmt.Errorf("runtime daemon executable path unavailable (os.Executable failed) — cannot create runtime container: the orchicon binary is bind-mounted into every runtime container, never baked")
 	}
+	if st, err := os.Stat(d.ExePath); err != nil || st.IsDir() {
+		return nil, fmt.Errorf("runtime daemon executable %s missing — cannot create runtime container: the orchicon binary is bind-mounted into every runtime container, never baked", d.ExePath)
+	}
+	args = append(args, "-v", d.ExePath+":/usr/local/bin/orchicon:ro")
 	args = append(args, image, "orchicon", "runtime-supervisor")
 
 	// Create the container, retrying past name conflicts. A container

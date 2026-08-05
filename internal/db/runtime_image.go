@@ -74,6 +74,25 @@ func GetRuntimeImage(ctx context.Context, tx pgx.Tx, tenantID, id string) (Runti
 	return r, err
 }
 
+// GetRuntimeImageForUpdate loads one image spec by id (tenant-scoped) and
+// locks the row for the rest of the transaction (SELECT ... FOR UPDATE).
+// BuildRuntimeImage uses it to serialize concurrent Deploys: the build-flow
+// marking transition is StatusOnly (it must NOT bump `version`, the "spec
+// changed" signal), so the version-based OCC check alone cannot serialize
+// two simultaneous Deploys — both would pass it and run `docker build` on
+// the same tag. The row lock closes that gap: the first caller marks the
+// row 'building' and commits; a concurrent caller blocks on the lock and
+// then re-reads the committed row (READ COMMITTED re-evaluates after the
+// lock wait), sees status 'building', and fails fast.
+func GetRuntimeImageForUpdate(ctx context.Context, tx pgx.Tx, tenantID, id string) (RuntimeImageRow, error) {
+	q := `SELECT ` + runtimeImageCols + ` FROM runtime_images WHERE id = $1 AND tenant_id = $2 FOR UPDATE`
+	r, err := scanRuntimeImage(tx.QueryRow(ctx, q, id, tenantID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return r, ErrNotFound
+	}
+	return r, err
+}
+
 // ListRuntimeImages returns the tenant's image specs, optionally filtered.
 func ListRuntimeImages(ctx context.Context, tx pgx.Tx, f RuntimeImageFilter) ([]RuntimeImageRow, error) {
 	q := `SELECT ` + runtimeImageCols + ` FROM runtime_images WHERE tenant_id = $1`
