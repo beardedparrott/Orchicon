@@ -798,6 +798,41 @@ func GetWorkflowStepRunByStep(ctx context.Context, tx pgx.Tx, tenantID, runID, s
 	return s, nil
 }
 
+// GetWorkflowStepRunByExecution returns the workflow step run linked to a
+// worker execution (via worker_execution_id). Used to resolve the actual
+// per-step system prompt (_prompt) an execution was dispatched with — the
+// execution page should show THIS, not the shared work item's prompt_context
+// (which holds the FIRST step's composite and never changes — a field incident
+// showed every worker as "DevOps Engineer").
+func GetWorkflowStepRunByExecution(ctx context.Context, tx pgx.Tx, tenantID, executionID string) (WorkflowStepRunRow, error) {
+	const q = `SELECT id, tenant_id, workflow_run_id, step_id, step_name, step_kind,
+		status, attempt, result, 		worker_execution_id,
+		iteration, superseded_by, started_at, ended_at, version,
+		created_at, updated_at
+		FROM workflow_step_runs
+		WHERE tenant_id = $1 AND worker_execution_id = $2
+		ORDER BY created_at DESC LIMIT 1`
+	var s WorkflowStepRunRow
+	var supBy *string
+	err := tx.QueryRow(ctx, q, tenantID, executionID).Scan(
+		&s.ID, &s.TenantID, &s.WorkflowRunID, &s.StepID, &s.StepName,
+		&s.StepKind, &s.Status, &s.Attempt, &s.Result,
+		&s.WorkerExecutionID,
+		&s.Iteration, &supBy, &s.StartedAt, &s.EndedAt, &s.Version,
+		&s.CreatedAt, &s.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return WorkflowStepRunRow{}, ErrNotFound
+	}
+	if err != nil {
+		return WorkflowStepRunRow{}, fmt.Errorf("db: get workflow step run by execution: %w", err)
+	}
+	if supBy != nil {
+		s.SupersededBy = *supBy
+	}
+	return s, nil
+}
+
 // ListWorkflowStepRuns returns all step runs for a workflow run.
 func ListWorkflowStepRuns(ctx context.Context, tx pgx.Tx, tenantID, runID string) ([]WorkflowStepRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_run_id, step_id, step_name, step_kind,

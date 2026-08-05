@@ -30,6 +30,12 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.187 (2026-08-05)
+
+| Type | Change |
+|---|---|
+| Bug fix | **Execution page now shows the real per-step system prompt.** The execution detail page's "System prompt" card read the shared work item's `prompt_context` — a shared input reference that carries the FIRST step's composite forever (never mutated per-step). In a workflow run, every execution displayed "You are a DevOps Engineer" (the first step's role) regardless of the actual worker. The page now shows `WorkerExecution.system_prompt`, resolved server-side from the linked workflow step run's `_prompt` (the exact composite the execution was dispatched with), with the work item's `prompt_context` as a fallback for legacy/non-workflow dispatches. |
+
 ### v0.1.186 (2026-08-05)
 
 | Type | Change |
@@ -39,12 +45,6 @@ deployment, troubleshooting, and every subsystem.
 | Bug fix | **A step-dispatch failure no longer rolls back the whole reconcile pass.** When a task step's worker version couldn't be resolved (e.g. a corrupted `worker_versions` index hid an existing worker), `dispatchStep` returned an error that made `reconcileRun` roll back the ENTIRE transaction — including upstream steps that had just completed. The run stayed `running` forever with a succeeded execution underneath (the "devops engineer still running though it succeeded" symptom). The offending step is now failed with a clear reason, the run terminalizes, and recovery or the new force-progress action re-drives it. |
 | Feature | **Index-integrity sweep at boot + periodic (amcheck).** A corrupt btree index silently hides rows from `=` lookups (the planner uses the index) while seq scans still see them — a hard host sleep corrupted `worker_versions_worker_version_idx` in the field. The control plane now validates every user btree index with `bt_index_parent_check` at boot and every `ORCHICON_INDEX_CHECK_INTERVAL` (default 6h), rebuilding any corrupted index with `REINDEX INDEX CONCURRENTLY`. |
 | Feature | **Force-next-step action on the workflow run view.** A "Force next step" button (and matching `ForceProgressWorkflowRun` RPC + Ask Orchicon tool) manually advances a stuck run past its in-flight step run(s) regardless of their previous status — marking them succeeded with a `_forced: true` note, terminating still-running linked executions, and letting the reconciler resume the DAG. For runs wedged by the rollback bug above or any other stuck state. |
-
-### v0.1.185 (2026-08-05)
-
-| Type | Change |
-|---|---|
-| Feature | **The binary version always matches the release.** The version embedded at build time used to come from `git describe --tags --abbrev=0` on the local checkout — and since `git pull` doesn't fetch tags while the auto-release workflow creates the canonical tag on GitHub, a local rebuild could embed an older version than the merged code (a rebuilt prod instance reported `v0.1.181` for merged `v0.1.183` code). The Makefile build now runs `git fetch --tags` first (best-effort; offline builds fall back to local tags) and resolves the version at recipe time, and `make build VERSION=v0.1.x` overrides the tag explicitly. GitHub-release binaries and GHCR images already embedded the exact release version and are unaffected. |
 
 ## Installation
 

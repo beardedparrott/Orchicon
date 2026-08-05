@@ -99,7 +99,9 @@ func (s *Service) GetExecution(ctx context.Context, req *connect.Request[apiv1.G
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	return connect.NewResponse(&apiv1.GetExecutionResponse{Execution: rowToProto(e)}), nil
+	p := rowToProto(e)
+	s.enrichSystemPrompt(ctx, ttx.Tx, tenantID, p, e)
+	return connect.NewResponse(&apiv1.GetExecutionResponse{Execution: p}), nil
 }
 
 // ListExecutions returns a page of executions, optionally filtered by
@@ -141,7 +143,9 @@ func (s *Service) ListExecutions(ctx context.Context, req *connect.Request[apiv1
 	}
 	resp := &apiv1.ListExecutionsResponse{}
 	for _, e := range execs {
-		resp.Executions = append(resp.Executions, rowToProto(e))
+		p := rowToProto(e)
+		s.enrichSystemPrompt(ctx, ttx.Tx, tenantID, p, e)
+		resp.Executions = append(resp.Executions, p)
 	}
 	if len(execs) > 0 {
 		resp.NextPageToken = execs[len(execs)-1].ID
@@ -891,6 +895,33 @@ func rowToProto(e db.ExecutionRow) *apiv1.WorkerExecution {
 		p.Conversation = e.Conversation
 	}
 	return p
+}
+
+// enrichSystemPrompt resolves the ACTUAL system prompt the execution was
+// dispatched with — the workflow step run's `_prompt` (per-step composite).
+// The execution detail page must show this, not the shared work item's
+// prompt_context: the ticket is a shared input reference that carries the
+// FIRST step's composite forever (it is never mutated per-step), so reading
+// it showed every worker as the first step's role (field incident: every
+// execution in a run displayed "You are a DevOps Engineer"). The step run
+// linked via worker_execution_id holds the real per-step prompt.
+func (s *Service) enrichSystemPrompt(ctx context.Context, tx pgx.Tx, tenantID string, p *apiv1.WorkerExecution, e db.ExecutionRow) {
+	if p == nil || e.WorkflowRunID == "" || e.WorkflowStepID == "" {
+		return
+	}
+	sr, err := db.GetWorkflowStepRunByExecution(ctx, tx, tenantID, e.ID)
+	if err != nil {
+		// Best-effort: a missing step-run link (e.g. legacy direct
+		// dispatch) just leaves system_prompt empty.
+		return
+	}
+	var meta struct {
+		Prompt string `json:"_prompt"`
+	}
+	if err := json.Unmarshal(sr.Result, &meta); err != nil || meta.Prompt == "" {
+		return
+	}
+	p.SystemPrompt = meta.Prompt
 }
 
 func strPtr(s string) *string { return &s }
