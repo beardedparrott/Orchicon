@@ -212,7 +212,7 @@ sequenceDiagram
 
 ### Key Architectural Patterns
 
-1. **Kubernetes-style Reconcilers** — Four reconcilers (Task, Workflow, Recovery, ScheduledRun) run in a shared manager with per-kind PostgreSQL advisory locks for leader election. Each has a work queue with exponential backoff and a scan pass for discovering work.
+1. **Kubernetes-style Reconcilers** — Four reconcilers (Task, Workflow, Recovery, ScheduledRun) run in a shared manager with per-kind PostgreSQL advisory locks for leader election. Each has a work queue with exponential backoff and a scan pass for discovering work. The work-queue `dequeue` is bounded to one rotation pass (a single not-ready key returns `ok=false` instead of busy-looping — a field incident pinned a core at ~150% CPU and froze the reconciler), and the workflow DAG-progression loop is capped (`maxDAGPasses`) so a pathological run can never wedge a reconcile goroutine. A step-dispatch failure that can't be resolved (e.g. a missing/corrupted worker-version lookup) fails that **step** rather than erroring the whole pass, so completed upstream steps are not rolled back with it.
 
 2. **Transactional Outbox** — Every mutation writes an outbox row in the same database transaction as the state change. A background relay polls unpublished rows every 500ms and publishes to NATS JetStream for at-least-once delivery.
 
@@ -1111,6 +1111,7 @@ See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
 | `ORCHICON_LOG_MAX_FILES` | `7` | Keep at most this many rotated log files (newest kept) |
 | `ORCHICON_RUNTIME_MAX_AGE` | `24h` | Runtime daemon: remove orphaned `orchicon-runtime-*` containers older than this (crash backstop) |
 | `ORCHICON_RUNTIME_SWEEP_INTERVAL` | `5m` | Runtime daemon: how often the age-based orphan sweep runs |
+| `ORCHICON_INDEX_CHECK_INTERVAL` | `6h` | Control plane: how often the amcheck index-integrity sweep runs (0 = boot check only). A corrupted btree index silently hides rows from `=` lookups; the sweep validates every user btree index and rebuilds corrupt ones with `REINDEX INDEX CONCURRENTLY` |
 
 ---
 
@@ -1213,6 +1214,8 @@ volume cannot grow unbounded:
 | Worker execution never starts | `opencode` not in PATH | Install opencode CLI: `curl -fsSL https://opencode.ai/install | bash` |
 | System prompt not sent to worker | Wrong env var | Must use `OPENCODE_CONFIG_CONTENT` with custom agent, not `OPENCODE_SYSTEM_PROMPT` |
 | Loop decision stuck | Superseded step run conflict | Workflow reconciler must skip `SupersededBy != ""` runs |
+| Workflow run stuck "running" though the execution succeeded | A reconcile pass errored on a LATER step and rolled back the whole transaction | The run's step shows `running` but its `worker_executions` row is `succeeded`. Since v0.1.186 a step-dispatch failure fails that step instead of rolling back the pass; for runs wedged before that (or any other stuck state) use the **Force next step** button on the run view (`ForceProgressWorkflowRun` RPC), which marks the in-flight step run(s) succeeded and lets the reconciler resume. Also check the indexes: a corrupted btree index hides rows from `=` lookups (see `ORCHICON_INDEX_CHECK_INTERVAL`); the control plane now sweeps + auto-rebuilds them. |
+| Control plane CPU pegged (~150%) with no DB activity | Work-queue `dequeue` busy-loop | Fixed in v0.1.186 — dequeue is bounded to one rotation pass. Restart the control plane to clear a wedged reconcile goroutine (its advisory lock never renews while stuck). |
 | Stale decisions leaking across runs | Previous `_decision` file | Clear `.orchicon/<run_id>/` files between steps |
 | Worker cannot delete or run destructive commands | Sandbox layers | Workers are intentionally sandboxed (see Architectural Pattern 8). Direct bash is blocked by opencode permission deny rules; subprocess/TUI-issued commands (e.g. `rm -rf /` inside a python TUI) are blocked by the OS-level execution guard (`internal/guard/guard.go`, built inside the workflow runtime container); and all canned workers' prompts carry the "Safety rules" block. Review/QA workers run `semgrep scan --config .orchicon/semgrep_orchicon.yml --error .` (Semgrep + Orchicon ruleset) to catch dangerous patterns before merge. |
 | Worker wiped files outside the project | Execution guard bypassed via absolute path | The guard is defense-in-depth, not containment. A worker that invokes `/bin/rm` by absolute path or writes its own binary escapes it. Run Orchicon as the single-container deployment (§Single-Container Deployment) for a real process-isolation boundary. |

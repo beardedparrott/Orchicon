@@ -88,6 +88,21 @@ service WorkflowService {
   // reconciler picks it up on the next cycle.
   rpc RetryStepRun(RetryStepRunRequest) returns (RetryStepRunResponse);
 
+  // ForceProgressWorkflowRun advances a stuck running WorkflowRun past its
+  // current in-flight step run(s) regardless of their previous status.
+  //
+  // A run can wedge "running" forever even though the underlying worker
+  // execution already succeeded — e.g. the reconcile pass errored on a LATER
+  // step and rolled back this step's terminal mark (field incident: a
+  // corrupted worker_versions index hid a worker, dispatch of a downstream
+  // step failed, and the whole pass rolled back, leaving an upstream step
+  // "running" with a succeeded execution underneath). This RPC marks every
+  // active non-terminal step run of the run as succeeded (recording a
+  // `_forced: true` note), terminates any still-running linked executions,
+  // and re-enqueues the run so the reconciler advances the DAG. Intended as
+  // a manual escape hatch, not a routine control.
+  rpc ForceProgressWorkflowRun(ForceProgressWorkflowRunRequest) returns (ForceProgressWorkflowRunResponse);
+
   // StreamWorkflowEvents is the server-stream RPC that fans out workflow
   // run events from NATS to connected clients (docs/07 §4, docs/10 §4.1).
   // The editor run view overlays live step transitions on the canvas
@@ -266,6 +281,16 @@ message RetryStepRunRequest {
 }
 
 message RetryStepRunResponse {}
+
+message ForceProgressWorkflowRunRequest {
+  string run_id = 1;
+}
+
+message ForceProgressWorkflowRunResponse {
+  WorkflowRun run = 1;
+  // The step run ids that were forced to succeeded.
+  repeated string forced_step_run_ids = 2;
+}
 
 message StreamWorkflowEventsRequest {
   string tenant_id = 1;

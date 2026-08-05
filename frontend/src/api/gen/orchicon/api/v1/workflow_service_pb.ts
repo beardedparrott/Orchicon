@@ -1449,6 +1449,88 @@ export class RetryStepRunResponse extends Message<RetryStepRunResponse> {
 }
 
 /**
+ * @generated from message orchicon.api.v1.ForceProgressWorkflowRunRequest
+ */
+export class ForceProgressWorkflowRunRequest extends Message<ForceProgressWorkflowRunRequest> {
+  /**
+   * @generated from field: string run_id = 1;
+   */
+  runId = "";
+
+  constructor(data?: PartialMessage<ForceProgressWorkflowRunRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ForceProgressWorkflowRunRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ForceProgressWorkflowRunRequest {
+    return new ForceProgressWorkflowRunRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ForceProgressWorkflowRunRequest {
+    return new ForceProgressWorkflowRunRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ForceProgressWorkflowRunRequest {
+    return new ForceProgressWorkflowRunRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ForceProgressWorkflowRunRequest | PlainMessage<ForceProgressWorkflowRunRequest> | undefined, b: ForceProgressWorkflowRunRequest | PlainMessage<ForceProgressWorkflowRunRequest> | undefined): boolean {
+    return proto3.util.equals(ForceProgressWorkflowRunRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ForceProgressWorkflowRunResponse
+ */
+export class ForceProgressWorkflowRunResponse extends Message<ForceProgressWorkflowRunResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.WorkflowRun run = 1;
+   */
+  run?: WorkflowRun;
+
+  /**
+   * The step run ids that were forced to succeeded.
+   *
+   * @generated from field: repeated string forced_step_run_ids = 2;
+   */
+  forcedStepRunIds: string[] = [];
+
+  constructor(data?: PartialMessage<ForceProgressWorkflowRunResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ForceProgressWorkflowRunResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "run", kind: "message", T: WorkflowRun },
+    { no: 2, name: "forced_step_run_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ForceProgressWorkflowRunResponse {
+    return new ForceProgressWorkflowRunResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ForceProgressWorkflowRunResponse {
+    return new ForceProgressWorkflowRunResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ForceProgressWorkflowRunResponse {
+    return new ForceProgressWorkflowRunResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ForceProgressWorkflowRunResponse | PlainMessage<ForceProgressWorkflowRunResponse> | undefined, b: ForceProgressWorkflowRunResponse | PlainMessage<ForceProgressWorkflowRunResponse> | undefined): boolean {
+    return proto3.util.equals(ForceProgressWorkflowRunResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.StreamWorkflowEventsRequest
  */
 export class StreamWorkflowEventsRequest extends Message<StreamWorkflowEventsRequest> {

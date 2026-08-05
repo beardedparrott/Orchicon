@@ -221,11 +221,20 @@ func (q *workQueue) enqueue(key string) {
 }
 
 // dequeue returns the next ready key, or ok=false if the queue is empty.
+//
+// The scan is bounded to one pass over the queue: a not-ready key is
+// rotated to the back so FIFO order is preserved across calls, but the
+// loop stops after visiting every key once. It must NOT re-scan a
+// not-ready key until the caller comes back — capturing `now` once and
+// re-appending the same key to the end makes a single not-ready key an
+// infinite busy loop that pins a core and starves the reconciler
+// (observed in the field: 150% CPU, advisory lock never renewed).
 func (q *workQueue) dequeue() (string, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	now := time.Now()
-	for len(q.ordered) > 0 {
+	visited := 0
+	for visited < len(q.ordered) {
 		key := q.ordered[0]
 		q.ordered = q.ordered[1:]
 		entry, ok := q.pending[key]
@@ -233,8 +242,9 @@ func (q *workQueue) dequeue() (string, bool) {
 			continue
 		}
 		if now.Before(entry.readyAt) {
-			// Not ready yet — re-add to the end.
+			// Not ready yet — rotate to the back; we've scanned it once.
 			q.ordered = append(q.ordered, key)
+			visited++
 			continue
 		}
 		return key, true

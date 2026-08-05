@@ -30,7 +30,16 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
-### v0.1.184 (2026-08-05)
+### v0.1.186 (2026-08-05)
+
+| Type | Change |
+|---|---|
+| Bug fix | **Workflow reconciler no longer wedges on a single reconcile error.** The work-queue `dequeue` busy-looped forever when a single key was in backoff (captured `now` once, re-appended the not-ready key endlessly) — pinning a core (~150% CPU) and freezing the reconciler: its advisory lock never renewed and no run was reconciled again. The dequeue scan is now bounded to one pass, and the DAG progression loop is capped (`maxDAGPasses`) so a pathological run can never spin a goroutine. |
+| Bug fix | **A step-dispatch failure no longer rolls back the whole reconcile pass.** When a task step's worker version couldn't be resolved (e.g. a corrupted `worker_versions` index hid an existing worker), `dispatchStep` returned an error that made `reconcileRun` roll back the ENTIRE transaction — including upstream steps that had just completed. The run stayed `running` forever with a succeeded execution underneath (the "devops engineer still running though it succeeded" symptom). The offending step is now failed with a clear reason, the run terminalizes, and recovery or the new force-progress action re-drives it. |
+| Feature | **Index-integrity sweep at boot + periodic (amcheck).** A corrupt btree index silently hides rows from `=` lookups (the planner uses the index) while seq scans still see them — a hard host sleep corrupted `worker_versions_worker_version_idx` in the field. The control plane now validates every user btree index with `bt_index_parent_check` at boot and every `ORCHICON_INDEX_CHECK_INTERVAL` (default 6h), rebuilding any corrupted index with `REINDEX INDEX CONCURRENTLY`. |
+| Feature | **Force-next-step action on the workflow run view.** A "Force next step" button (and matching `ForceProgressWorkflowRun` RPC + Ask Orchicon tool) manually advances a stuck run past its in-flight step run(s) regardless of their previous status — marking them succeeded with a `_forced: true` note, terminating still-running linked executions, and letting the reconciler resume the DAG. For runs wedged by the rollback bug above or any other stuck state. |
+
+### v0.1.185 (2026-08-05)
 
 | Type | Change |
 |---|---|

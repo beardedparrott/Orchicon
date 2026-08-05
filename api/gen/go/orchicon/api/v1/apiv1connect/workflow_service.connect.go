@@ -95,6 +95,9 @@ const (
 	// WorkflowServiceRetryStepRunProcedure is the fully-qualified name of the WorkflowService's
 	// RetryStepRun RPC.
 	WorkflowServiceRetryStepRunProcedure = "/orchicon.api.v1.WorkflowService/RetryStepRun"
+	// WorkflowServiceForceProgressWorkflowRunProcedure is the fully-qualified name of the
+	// WorkflowService's ForceProgressWorkflowRun RPC.
+	WorkflowServiceForceProgressWorkflowRunProcedure = "/orchicon.api.v1.WorkflowService/ForceProgressWorkflowRun"
 	// WorkflowServiceStreamWorkflowEventsProcedure is the fully-qualified name of the WorkflowService's
 	// StreamWorkflowEvents RPC.
 	WorkflowServiceStreamWorkflowEventsProcedure = "/orchicon.api.v1.WorkflowService/StreamWorkflowEvents"
@@ -164,6 +167,20 @@ type WorkflowServiceClient interface {
 	// The step run's result and worker execution reference are cleared; the
 	// reconciler picks it up on the next cycle.
 	RetryStepRun(context.Context, *connect.Request[v1.RetryStepRunRequest]) (*connect.Response[v1.RetryStepRunResponse], error)
+	// ForceProgressWorkflowRun advances a stuck running WorkflowRun past its
+	// current in-flight step run(s) regardless of their previous status.
+	//
+	// A run can wedge "running" forever even though the underlying worker
+	// execution already succeeded — e.g. the reconcile pass errored on a LATER
+	// step and rolled back this step's terminal mark (field incident: a
+	// corrupted worker_versions index hid a worker, dispatch of a downstream
+	// step failed, and the whole pass rolled back, leaving an upstream step
+	// "running" with a succeeded execution underneath). This RPC marks every
+	// active non-terminal step run of the run as succeeded (recording a
+	// `_forced: true` note), terminates any still-running linked executions,
+	// and re-enqueues the run so the reconciler advances the DAG. Intended as
+	// a manual escape hatch, not a routine control.
+	ForceProgressWorkflowRun(context.Context, *connect.Request[v1.ForceProgressWorkflowRunRequest]) (*connect.Response[v1.ForceProgressWorkflowRunResponse], error)
 	// StreamWorkflowEvents is the server-stream RPC that fans out workflow
 	// run events from NATS to connected clients (docs/07 §4, docs/10 §4.1).
 	// The editor run view overlays live step transitions on the canvas
@@ -286,6 +303,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("RetryStepRun")),
 			connect.WithClientOptions(opts...),
 		),
+		forceProgressWorkflowRun: connect.NewClient[v1.ForceProgressWorkflowRunRequest, v1.ForceProgressWorkflowRunResponse](
+			httpClient,
+			baseURL+WorkflowServiceForceProgressWorkflowRunProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("ForceProgressWorkflowRun")),
+			connect.WithClientOptions(opts...),
+		),
 		streamWorkflowEvents: connect.NewClient[v1.StreamWorkflowEventsRequest, v1.StreamWorkflowEventsResponse](
 			httpClient,
 			baseURL+WorkflowServiceStreamWorkflowEventsProcedure,
@@ -315,26 +338,27 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 
 // workflowServiceClient implements WorkflowServiceClient.
 type workflowServiceClient struct {
-	createWorkflow        *connect.Client[v1.CreateWorkflowRequest, v1.CreateWorkflowResponse]
-	publishWorkflow       *connect.Client[v1.PublishWorkflowRequest, v1.PublishWorkflowResponse]
-	deprecateWorkflow     *connect.Client[v1.DeprecateWorkflowRequest, v1.DeprecateWorkflowResponse]
-	deleteWorkflow        *connect.Client[v1.DeleteWorkflowRequest, v1.DeleteWorkflowResponse]
-	getWorkflow           *connect.Client[v1.GetWorkflowRequest, v1.GetWorkflowResponse]
-	listWorkflows         *connect.Client[v1.ListWorkflowsRequest, v1.ListWorkflowsResponse]
-	listWorkflowVersions  *connect.Client[v1.ListWorkflowVersionsRequest, v1.ListWorkflowVersionsResponse]
-	createWorkflowVersion *connect.Client[v1.CreateWorkflowVersionRequest, v1.CreateWorkflowVersionResponse]
-	deleteWorkflowVersion *connect.Client[v1.DeleteWorkflowVersionRequest, v1.DeleteWorkflowVersionResponse]
-	updateWorkflowVersion *connect.Client[v1.UpdateWorkflowVersionRequest, v1.UpdateWorkflowVersionResponse]
-	startWorkflow         *connect.Client[v1.StartWorkflowRequest, v1.StartWorkflowResponse]
-	abortWorkflow         *connect.Client[v1.AbortWorkflowRequest, v1.AbortWorkflowResponse]
-	getWorkflowRun        *connect.Client[v1.GetWorkflowRunRequest, v1.GetWorkflowRunResponse]
-	listWorkflowRuns      *connect.Client[v1.ListWorkflowRunsRequest, v1.ListWorkflowRunsResponse]
-	getWorkflowStepRuns   *connect.Client[v1.GetWorkflowStepRunsRequest, v1.GetWorkflowStepRunsResponse]
-	retryStepRun          *connect.Client[v1.RetryStepRunRequest, v1.RetryStepRunResponse]
-	streamWorkflowEvents  *connect.Client[v1.StreamWorkflowEventsRequest, v1.StreamWorkflowEventsResponse]
-	acquireEditLock       *connect.Client[v1.AcquireWorkflowEditLockRequest, v1.AcquireWorkflowEditLockResponse]
-	releaseEditLock       *connect.Client[v1.ReleaseWorkflowEditLockRequest, v1.ReleaseWorkflowEditLockResponse]
-	getEditLock           *connect.Client[v1.GetWorkflowEditLockRequest, v1.GetWorkflowEditLockResponse]
+	createWorkflow           *connect.Client[v1.CreateWorkflowRequest, v1.CreateWorkflowResponse]
+	publishWorkflow          *connect.Client[v1.PublishWorkflowRequest, v1.PublishWorkflowResponse]
+	deprecateWorkflow        *connect.Client[v1.DeprecateWorkflowRequest, v1.DeprecateWorkflowResponse]
+	deleteWorkflow           *connect.Client[v1.DeleteWorkflowRequest, v1.DeleteWorkflowResponse]
+	getWorkflow              *connect.Client[v1.GetWorkflowRequest, v1.GetWorkflowResponse]
+	listWorkflows            *connect.Client[v1.ListWorkflowsRequest, v1.ListWorkflowsResponse]
+	listWorkflowVersions     *connect.Client[v1.ListWorkflowVersionsRequest, v1.ListWorkflowVersionsResponse]
+	createWorkflowVersion    *connect.Client[v1.CreateWorkflowVersionRequest, v1.CreateWorkflowVersionResponse]
+	deleteWorkflowVersion    *connect.Client[v1.DeleteWorkflowVersionRequest, v1.DeleteWorkflowVersionResponse]
+	updateWorkflowVersion    *connect.Client[v1.UpdateWorkflowVersionRequest, v1.UpdateWorkflowVersionResponse]
+	startWorkflow            *connect.Client[v1.StartWorkflowRequest, v1.StartWorkflowResponse]
+	abortWorkflow            *connect.Client[v1.AbortWorkflowRequest, v1.AbortWorkflowResponse]
+	getWorkflowRun           *connect.Client[v1.GetWorkflowRunRequest, v1.GetWorkflowRunResponse]
+	listWorkflowRuns         *connect.Client[v1.ListWorkflowRunsRequest, v1.ListWorkflowRunsResponse]
+	getWorkflowStepRuns      *connect.Client[v1.GetWorkflowStepRunsRequest, v1.GetWorkflowStepRunsResponse]
+	retryStepRun             *connect.Client[v1.RetryStepRunRequest, v1.RetryStepRunResponse]
+	forceProgressWorkflowRun *connect.Client[v1.ForceProgressWorkflowRunRequest, v1.ForceProgressWorkflowRunResponse]
+	streamWorkflowEvents     *connect.Client[v1.StreamWorkflowEventsRequest, v1.StreamWorkflowEventsResponse]
+	acquireEditLock          *connect.Client[v1.AcquireWorkflowEditLockRequest, v1.AcquireWorkflowEditLockResponse]
+	releaseEditLock          *connect.Client[v1.ReleaseWorkflowEditLockRequest, v1.ReleaseWorkflowEditLockResponse]
+	getEditLock              *connect.Client[v1.GetWorkflowEditLockRequest, v1.GetWorkflowEditLockResponse]
 }
 
 // CreateWorkflow calls orchicon.api.v1.WorkflowService.CreateWorkflow.
@@ -417,6 +441,11 @@ func (c *workflowServiceClient) RetryStepRun(ctx context.Context, req *connect.R
 	return c.retryStepRun.CallUnary(ctx, req)
 }
 
+// ForceProgressWorkflowRun calls orchicon.api.v1.WorkflowService.ForceProgressWorkflowRun.
+func (c *workflowServiceClient) ForceProgressWorkflowRun(ctx context.Context, req *connect.Request[v1.ForceProgressWorkflowRunRequest]) (*connect.Response[v1.ForceProgressWorkflowRunResponse], error) {
+	return c.forceProgressWorkflowRun.CallUnary(ctx, req)
+}
+
 // StreamWorkflowEvents calls orchicon.api.v1.WorkflowService.StreamWorkflowEvents.
 func (c *workflowServiceClient) StreamWorkflowEvents(ctx context.Context, req *connect.Request[v1.StreamWorkflowEventsRequest]) (*connect.ServerStreamForClient[v1.StreamWorkflowEventsResponse], error) {
 	return c.streamWorkflowEvents.CallServerStream(ctx, req)
@@ -492,6 +521,20 @@ type WorkflowServiceHandler interface {
 	// The step run's result and worker execution reference are cleared; the
 	// reconciler picks it up on the next cycle.
 	RetryStepRun(context.Context, *connect.Request[v1.RetryStepRunRequest]) (*connect.Response[v1.RetryStepRunResponse], error)
+	// ForceProgressWorkflowRun advances a stuck running WorkflowRun past its
+	// current in-flight step run(s) regardless of their previous status.
+	//
+	// A run can wedge "running" forever even though the underlying worker
+	// execution already succeeded — e.g. the reconcile pass errored on a LATER
+	// step and rolled back this step's terminal mark (field incident: a
+	// corrupted worker_versions index hid a worker, dispatch of a downstream
+	// step failed, and the whole pass rolled back, leaving an upstream step
+	// "running" with a succeeded execution underneath). This RPC marks every
+	// active non-terminal step run of the run as succeeded (recording a
+	// `_forced: true` note), terminates any still-running linked executions,
+	// and re-enqueues the run so the reconciler advances the DAG. Intended as
+	// a manual escape hatch, not a routine control.
+	ForceProgressWorkflowRun(context.Context, *connect.Request[v1.ForceProgressWorkflowRunRequest]) (*connect.Response[v1.ForceProgressWorkflowRunResponse], error)
 	// StreamWorkflowEvents is the server-stream RPC that fans out workflow
 	// run events from NATS to connected clients (docs/07 §4, docs/10 §4.1).
 	// The editor run view overlays live step transitions on the canvas
@@ -610,6 +653,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("RetryStepRun")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceForceProgressWorkflowRunHandler := connect.NewUnaryHandler(
+		WorkflowServiceForceProgressWorkflowRunProcedure,
+		svc.ForceProgressWorkflowRun,
+		connect.WithSchema(workflowServiceMethods.ByName("ForceProgressWorkflowRun")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workflowServiceStreamWorkflowEventsHandler := connect.NewServerStreamHandler(
 		WorkflowServiceStreamWorkflowEventsProcedure,
 		svc.StreamWorkflowEvents,
@@ -668,6 +717,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceGetWorkflowStepRunsHandler.ServeHTTP(w, r)
 		case WorkflowServiceRetryStepRunProcedure:
 			workflowServiceRetryStepRunHandler.ServeHTTP(w, r)
+		case WorkflowServiceForceProgressWorkflowRunProcedure:
+			workflowServiceForceProgressWorkflowRunHandler.ServeHTTP(w, r)
 		case WorkflowServiceStreamWorkflowEventsProcedure:
 			workflowServiceStreamWorkflowEventsHandler.ServeHTTP(w, r)
 		case WorkflowServiceAcquireEditLockProcedure:
@@ -747,6 +798,10 @@ func (UnimplementedWorkflowServiceHandler) GetWorkflowStepRuns(context.Context, 
 
 func (UnimplementedWorkflowServiceHandler) RetryStepRun(context.Context, *connect.Request[v1.RetryStepRunRequest]) (*connect.Response[v1.RetryStepRunResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.RetryStepRun is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) ForceProgressWorkflowRun(context.Context, *connect.Request[v1.ForceProgressWorkflowRunRequest]) (*connect.Response[v1.ForceProgressWorkflowRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.ForceProgressWorkflowRun is not implemented"))
 }
 
 func (UnimplementedWorkflowServiceHandler) StreamWorkflowEvents(context.Context, *connect.Request[v1.StreamWorkflowEventsRequest], *connect.ServerStream[v1.StreamWorkflowEventsResponse]) error {
