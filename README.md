@@ -30,21 +30,17 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.188 (2026-08-05)
+
+| Type | Change |
+|---|---|
+| Chore | **Architecture-notes housekeeping.** `architecture-notes/` is now in `.gitignore` and the leftover architecture note was removed from the repo. The canned DevOps Engineer worker AGENTS.md (seeded) gained a final-step instruction to remove any leftover architectural documents before PR/merge so they never confuse future workers. |
+
 ### v0.1.187 (2026-08-05)
 
 | Type | Change |
 |---|---|
 | Bug fix | **Execution page now shows the real per-step system prompt.** The execution detail page's "System prompt" card read the shared work item's `prompt_context` — a shared input reference that carries the FIRST step's composite forever (never mutated per-step). In a workflow run, every execution displayed "You are a DevOps Engineer" (the first step's role) regardless of the actual worker. The page now shows `WorkerExecution.system_prompt`, resolved server-side from the linked workflow step run's `_prompt` (the exact composite the execution was dispatched with), with the work item's `prompt_context` as a fallback for legacy/non-workflow dispatches. |
-
-### v0.1.186 (2026-08-05)
-
-| Type | Change |
-|---|---|
-| Feature | **Worker-backed approvals without work item creation.** Approval steps that dispatch an approver worker (e.g. AI Approver) no longer create per-step "Approval: …" work items — the Work Items page stays clean while the approval behavior is unchanged. The approver execution now runs against the run's shared ticket exactly like a TASK step, and the **step run is the approval record**: it carries the composite prompt, the approver worker pin, the upstream review context, and the pending decision. Failure/retry re-dispatches the same step run (attempt counter incremented, still no work item), and a stale decision on a shared ticket can no longer override the step run's real decision. |
-| Bug fix | **Workflow reconciler no longer wedges on a single reconcile error.** The work-queue `dequeue` busy-looped forever when a single key was in backoff (captured `now` once, re-appended the not-ready key endlessly) — pinning a core (~150% CPU) and freezing the reconciler: its advisory lock never renewed and no run was reconciled again. The dequeue scan is now bounded to one pass, and the DAG progression loop is capped (`maxDAGPasses`) so a pathological run can never spin a goroutine. |
-| Bug fix | **A step-dispatch failure no longer rolls back the whole reconcile pass.** When a task step's worker version couldn't be resolved (e.g. a corrupted `worker_versions` index hid an existing worker), `dispatchStep` returned an error that made `reconcileRun` roll back the ENTIRE transaction — including upstream steps that had just completed. The run stayed `running` forever with a succeeded execution underneath (the "devops engineer still running though it succeeded" symptom). The offending step is now failed with a clear reason, the run terminalizes, and recovery or the new force-progress action re-drives it. |
-| Feature | **Index-integrity sweep at boot + periodic (amcheck).** A corrupt btree index silently hides rows from `=` lookups (the planner uses the index) while seq scans still see them — a hard host sleep corrupted `worker_versions_worker_version_idx` in the field. The control plane now validates every user btree index with `bt_index_parent_check` at boot and every `ORCHICON_INDEX_CHECK_INTERVAL` (default 6h), rebuilding any corrupted index with `REINDEX INDEX CONCURRENTLY`. |
-| Feature | **Force-next-step action on the workflow run view.** A "Force next step" button (and matching `ForceProgressWorkflowRun` RPC + Ask Orchicon tool) manually advances a stuck run past its in-flight step run(s) regardless of their previous status — marking them succeeded with a `_forced: true` note, terminating still-running linked executions, and letting the reconciler resume the DAG. For runs wedged by the rollback bug above or any other stuck state. |
 
 ## Installation
 
