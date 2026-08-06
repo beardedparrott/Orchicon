@@ -18,6 +18,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -31,7 +33,10 @@ import (
 )
 
 const (
-	maxReasonLen = 5000
+	maxReasonLen       = 5000
+	maxAttachments     = 20
+	maxAttachmentBytes = 2 << 20 // 2 MiB per file
+	screenshotMaxBytes = 3 << 20 // images (screenshots) up to 3 MiB
 )
 
 // Service implements the ApprovalService Connect handler
@@ -66,6 +71,10 @@ func (s *Service) ApproveStep(ctx context.Context, req *connect.Request[apiv1.Ap
 	if len(reason) > maxReasonLen {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("reason too long (max %d characters)", maxReasonLen))
 	}
+	attachments, err := validateAttachments(msg.Attachments)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -93,12 +102,25 @@ func (s *Service) ApproveStep(ctx context.Context, req *connect.Request[apiv1.Ap
 		decisionStatus = "rejected"
 	}
 
+	// Resolve attachment write paths (project-dir .orchicon/<run_id>/attachments/)
+	// so they can be recorded in the step result and written in the same tx.
+	attPaths := make([]map[string]string, 0, len(attachments))
+	for i, a := range attachments {
+		attPaths = append(attPaths, map[string]string{
+			"filename": a.Filename,
+			"path":     filepath.Join(".orchicon", sr.WorkflowRunID, "attachments", a.Filename),
+			"content_type": a.ContentType,
+		})
+		_ = i
+	}
+
 	resultPayload, _ := json.Marshal(map[string]any{
 		"_decision":    decisionStatus,
 		"_approved":    msg.Approved,
 		"_reason":      msg.Reason,
 		"_reviewed_by": msg.ReviewedBy,
 		"_reviewed_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"_attachments": attPaths,
 	})
 
 	now := time.Now().UTC()
@@ -142,7 +164,7 @@ func (s *Service) ApproveStep(ctx context.Context, req *connect.Request[apiv1.Ap
 	}
 
 	// Write .orchicon/ files so downstream workers read the decision.
-	if err := s.writeApprovalOrchiconFiles(ctx, ttx.Tx, tenantID, sr, msg.Approved, msg.Reason); err != nil {
+	if err := s.writeApprovalOrchiconFiles(ctx, ttx.Tx, tenantID, sr, msg.Approved, msg.Reason, attachments); err != nil {
 		s.log.Warn("write approval .orchicon files", "step_run", sr.ID, "error", err)
 	}
 
@@ -158,8 +180,9 @@ func (s *Service) ApproveStep(ctx context.Context, req *connect.Request[apiv1.Ap
 }
 
 // writeApprovalOrchiconFiles writes the approval decision to .orchicon/
-// files in the project directory so downstream workers can read them.
-func (s *Service) writeApprovalOrchiconFiles(ctx context.Context, tx pgx.Tx, tenantID string, sr db.WorkflowStepRunRow, approved bool, reason string) error {
+// files in the project directory so downstream workers can read them, and
+// persists any attached files/screenshots under .orchicon/<run_id>/attachments/.
+func (s *Service) writeApprovalOrchiconFiles(ctx context.Context, tx pgx.Tx, tenantID string, sr db.WorkflowStepRunRow, approved bool, reason string, attachments []*apiv1.ApprovalAttachment) error {
 	// Find the workflow run to get the project ID.
 	run, err := db.GetWorkflowRun(ctx, tx, tenantID, sr.WorkflowRunID)
 	if err != nil {
@@ -192,6 +215,26 @@ func (s *Service) writeApprovalOrchiconFiles(ctx context.Context, tx pgx.Tx, ten
 	writeFile("worker", "human_approver")
 	writeFile("status", map[bool]string{true: "success", false: "failure"}[approved])
 	writeFile("summary", reason)
+
+	// Persist attached files/screenshots so downstream workers can read them
+	// (the runtime container mounts the project dir). Filenames are already
+	// sanitized by validateAttachments.
+	if len(attachments) > 0 {
+		attDir := filepath.Join(orchDir, "attachments")
+		if err := os.MkdirAll(attDir, 0755); err != nil {
+			return fmt.Errorf("mkdir .orchicon attachments: %w", err)
+		}
+		var manifest []string
+		for _, a := range attachments {
+			target := filepath.Join(attDir, a.Filename)
+			if err := os.WriteFile(target, a.Data, 0644); err != nil {
+				s.log.Warn("write approval attachment", "file", a.Filename, "error", err)
+				continue
+			}
+			manifest = append(manifest, a.Filename)
+		}
+		writeFile("attachments", strings.Join(manifest, "\n"))
+	}
 
 	return nil
 }
@@ -266,6 +309,8 @@ type approvalItemRow struct {
 	AcceptanceCrit   string
 	Status           string
 	Decision         string
+	Reason           string
+	AttachmentsJSON  string
 	CreatedAt        time.Time
 }
 
@@ -287,6 +332,8 @@ func listApprovalItems(ctx context.Context, tx pgx.Tx, tenantID string, req *api
 		COALESCE(wi.acceptance_criteria, ''),
 		wsr.status,
 		COALESCE(wsr.result::jsonb->>'_decision', ''),
+		COALESCE(wsr.result::jsonb->>'_reason', ''),
+		COALESCE(wsr.result::jsonb->>'_attachments', '[]'),
 		wsr.created_at
 		FROM workflow_step_runs wsr
 		JOIN workflow_runs wr ON wr.id = wsr.workflow_run_id AND wr.tenant_id = wsr.tenant_id
@@ -364,7 +411,7 @@ func listApprovalItems(ctx context.Context, tx pgx.Tx, tenantID string, req *api
 			&r.ProjectName, &r.WorkItemTitle,
 			&r.WorkflowName, &r.UpstreamWorker,
 			&r.UpstreamSummary, &r.TouchedFilesJSON,
-			&r.AcceptanceCrit, &r.Status, &r.Decision, &r.CreatedAt,
+			&r.AcceptanceCrit, &r.Status, &r.Decision, &r.Reason, &r.AttachmentsJSON, &r.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan approval item: %w", err)
 		}
@@ -373,6 +420,17 @@ func listApprovalItems(ctx context.Context, tx pgx.Tx, tenantID string, req *api
 		json.Unmarshal([]byte(r.TouchedFilesJSON), &files)
 		if files == nil {
 			files = []string{}
+		}
+
+		var attachments []struct {
+			Filename string `json:"filename"`
+		}
+		json.Unmarshal([]byte(r.AttachmentsJSON), &attachments)
+		attNames := make([]string, 0, len(attachments))
+		for _, a := range attachments {
+			if a.Filename != "" {
+				attNames = append(attNames, a.Filename)
+			}
 		}
 
 		// Map domain statuses to proto contract values ("pending" / "approved" / "rejected").
@@ -400,6 +458,8 @@ func listApprovalItems(ctx context.Context, tx pgx.Tx, tenantID string, req *api
 			TouchedFiles:      files,
 			AcceptanceCriteria: r.AcceptanceCrit,
 			Status:            mappedStatus,
+			Reason:            r.Reason,
+			AttachmentNames:   attNames,
 			CreatedAt:         timestamppb.New(r.CreatedAt),
 		}
 		out = append(out, item)
@@ -418,3 +478,50 @@ func requireTenant(ctx context.Context) (string, error) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// safeFilenameRe accepts plain filenames: word chars, dots, dashes, spaces,
+// plus a single extension separator — no slashes, no "..", no control chars.
+var safeFilenameRe = regexp.MustCompile(`^[A-Za-z0-9._ -]+$`)
+
+// validateAttachments checks each attached file/screenshot: count, per-file
+// size (images get a slightly larger budget), and a safe filename. Returns
+// the sanitized list (basename only, no path components).
+func validateAttachments(in []*apiv1.ApprovalAttachment) ([]*apiv1.ApprovalAttachment, error) {
+	if len(in) > maxAttachments {
+		return nil, fmt.Errorf("too many attachments (max %d)", maxAttachments)
+	}
+	out := make([]*apiv1.ApprovalAttachment, 0, len(in))
+	used := make(map[string]bool)
+	for i, a := range in {
+		if a == nil {
+			continue
+		}
+		base := strings.TrimSpace(a.Filename)
+		if base == "" || strings.ContainsAny(base, "/\\") || strings.Contains(base, "..") || !safeFilenameRe.MatchString(base) {
+			return nil, fmt.Errorf("attachment %d: invalid filename %q (use a plain filename)", i+1, a.Filename)
+		}
+		limit := maxAttachmentBytes
+		if strings.HasPrefix(strings.ToLower(a.ContentType), "image/") {
+			limit = screenshotMaxBytes
+		}
+		if len(a.Data) == 0 {
+			return nil, fmt.Errorf("attachment %d (%s): empty", i+1, base)
+		}
+		if len(a.Data) > limit {
+			return nil, fmt.Errorf("attachment %d (%s): too large (max %d bytes)", i+1, base, limit)
+		}
+		// De-duplicate colliding names so writes never clobber each other.
+		name := base
+		for n := 2; used[name]; n++ {
+			ext := filepath.Ext(base)
+			name = strings.TrimSuffix(base, ext) + fmt.Sprintf("-%d%s", n, ext)
+		}
+		used[name] = true
+		out = append(out, &apiv1.ApprovalAttachment{
+			Filename:    name,
+			ContentType: a.ContentType,
+			Data:        a.Data,
+		})
+	}
+	return out, nil
+}

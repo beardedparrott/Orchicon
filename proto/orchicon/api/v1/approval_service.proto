@@ -34,6 +34,16 @@ message ApproveStepRequest {
   bool approved = 2;       // true = approve, false = reject
   string reason = 3;       // human's feedback — written to .orchicon/<run_id>/summary
   string reviewed_by = 4;  // who reviewed — identity from auth; skeleton for future RBAC
+  // Files + screenshots the human attaches so the worker can see the issues.
+  // Each is written to .orchicon/<run_id>/attachments/ in the project dir and
+  // surfaced to downstream workers (they read them back with their tools).
+  repeated ApprovalAttachment attachments = 5;
+}
+
+message ApprovalAttachment {
+  string filename = 1;     // display name (sanitized server-side on write)
+  string content_type = 2; // e.g. "image/png", "text/plain"
+  bytes data = 3;          // file content
 }
 
 message ApproveStepResponse {}
@@ -51,6 +61,8 @@ message ApprovalItem {
   string status = 10;              // "pending" | "approved" | "rejected"
   google.protobuf.Timestamp created_at = 11;
   string workflow_id = 12;         // owning workflow — for deep links back to the run
+  string reason = 13;              // human's review feedback (resolved items)
+  repeated string attachment_names = 14; // attached files/screenshots (resolved items)
 }
 
 message ListPendingStepApprovalsRequest {

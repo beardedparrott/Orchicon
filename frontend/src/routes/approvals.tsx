@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Link, createRoute } from "@tanstack/react-router";
-import { CheckCircle2, XCircle, Clock, ExternalLink } from "lucide-react";
+import { CheckCircle2, XCircle, Clock, ExternalLink, Paperclip, ImagePlus, X } from "lucide-react";
 
 import { useApproveStep, useListPendingStepApprovals } from "@/api/approvals";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Route as rootRoute } from "@/routes/__root";
+import { ApprovalAttachment } from "@/api/gen/orchicon/api/v1/approval_service_pb";
 
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
@@ -33,13 +34,35 @@ const SORT_OPTIONS = [
   { value: "workflow_name", label: "Workflow" },
 ];
 
+// AttachmentDraft is an attachment staged for an approval decision, with an
+// optional object URL for image preview.
+interface AttachmentDraft {
+  att: ApprovalAttachment;
+  url?: string;
+}
+
+// fileToAttachment converts a File (picked or pasted) into the proto
+// ApprovalAttachment carrying its bytes.
+function fileToAttachment(file: File): Promise<ApprovalAttachment> {
+  return file.arrayBuffer().then(
+    (buf) =>
+      new ApprovalAttachment({
+        filename: file.name || `screenshot-${Date.now()}.png`,
+        contentType: file.type || "application/octet-stream",
+        data: new Uint8Array(buf),
+      }),
+  );
+}
+
 function ApprovalsPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("pending");
   const [sortBy, setSortBy] = useState("created_at");
   const [sortOrder, setSortOrder] = useState("desc");
   const [reasonText, setReasonText] = useState<Record<string, string>>({});
+  const [attachmentsByRun, setAttachmentsByRun] = useState<Record<string, AttachmentDraft[]>>({});
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const fileInputs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const statusParam = statusFilter === "all" ? undefined : statusFilter;
   const { data: items, isLoading, error } = useListPendingStepApprovals({
@@ -90,8 +113,9 @@ function ApprovalsPage() {
 
   const handleApprove = (stepRunId: string, approved: boolean) => {
     const reason = reasonText[stepRunId] ?? "";
+    const attachments = (attachmentsByRun[stepRunId] ?? []).map((d) => d.att);
     approveMutation.mutate(
-      { stepRunId, approved, reason, reviewedBy: "" },
+      { stepRunId, approved, reason, reviewedBy: "", attachments },
       {
         onSuccess: () => {
           setReasonText((prev) => {
@@ -99,9 +123,56 @@ function ApprovalsPage() {
             delete next[stepRunId];
             return next;
           });
+          setAttachmentsByRun((prev) => {
+            const next = { ...prev };
+            for (const d of next[stepRunId] ?? []) if (d.url) URL.revokeObjectURL(d.url);
+            delete next[stepRunId];
+            return next;
+          });
         },
       },
     );
+  };
+
+  const addFiles = (stepRunId: string, files: File[]) => {
+    if (!files.length) return;
+    Promise.all(files.map((f) => fileToAttachment(f))).then((converted) => {
+      setAttachmentsByRun((prev) => {
+        const current = prev[stepRunId] ?? [];
+        const drafts: AttachmentDraft[] = converted.map((att, i) => ({
+          att,
+          url: files[i]?.type?.startsWith("image/")
+            ? URL.createObjectURL(files[i])
+            : undefined,
+        }));
+        return { ...prev, [stepRunId]: [...current, ...drafts].slice(0, 20) };
+      });
+    });
+  };
+
+  // onPaste on the reason box captures screenshots pasted straight from the
+  // clipboard (e.g. cmd+shift+4 / snip), like in opencode.
+  const handlePaste = (stepRunId: string, e: React.ClipboardEvent) => {
+    const images = Array.from(e.clipboardData?.items ?? [])
+      .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
+      .map((it) => it.getAsFile())
+      .filter((f): f is File => !!f);
+    if (images.length) {
+      e.preventDefault();
+      addFiles(stepRunId, images);
+    }
+  };
+
+  const removeAttachment = (stepRunId: string, index: number) => {
+    setAttachmentsByRun((prev) => {
+      const current = prev[stepRunId] ?? [];
+      if (current[index]?.url) URL.revokeObjectURL(current[index].url!);
+      const next = current.filter((_, i) => i !== index);
+      const out = { ...prev };
+      if (next.length) out[stepRunId] = next;
+      else delete out[stepRunId];
+      return out;
+    });
   };
 
   return (
@@ -304,14 +375,70 @@ function ApprovalsPage() {
                 {isPending && (
                   <div className="space-y-2 border-t pt-3">
                     <textarea
-                      placeholder="Reason / feedback (optional) — written to .orchicon/ for the downstream worker..."
+                      placeholder="Reason / feedback (optional) — written to .orchicon/ for the downstream worker. Paste a screenshot (cmd+shift+4 / snip) into this box to attach it."
                       className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                       rows={2}
                       value={reasonText[item.stepRunId] ?? ""}
                       onChange={(e) =>
                         setReasonText((prev) => ({ ...prev, [item.stepRunId]: e.target.value }))
                       }
+                      onPaste={(e) => handlePaste(item.stepRunId, e)}
                     />
+
+                    {/* Attachments */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        type="button"
+                        onClick={() => fileInputs.current[item.stepRunId]?.click()}
+                      >
+                        <Paperclip className="mr-1 h-3.5 w-3.5" />
+                        Attach files
+                      </Button>
+                      <span className="text-xs text-muted-foreground">
+                        or paste a screenshot into the feedback box
+                      </span>
+                      <input
+                        ref={(el) => { fileInputs.current[item.stepRunId] = el; }}
+                        type="file"
+                        multiple
+                        className="hidden"
+                        onChange={(e) => {
+                          if (e.target.files) addFiles(item.stepRunId, Array.from(e.target.files));
+                          e.target.value = "";
+                        }}
+                      />
+                    </div>
+                    {(attachmentsByRun[item.stepRunId] ?? []).length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {(attachmentsByRun[item.stepRunId] ?? []).map((d, i) => (
+                          <div
+                            key={i}
+                            className="group relative flex items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-1 text-xs"
+                          >
+                            {d.url ? (
+                              <img
+                                src={d.url}
+                                alt={d.att.filename}
+                                className="h-10 w-16 rounded object-cover"
+                              />
+                            ) : (
+                              <ImagePlus className="h-3.5 w-3.5 text-muted-foreground" />
+                            )}
+                            <span className="max-w-40 truncate">{d.att.filename}</span>
+                            <button
+                              type="button"
+                              onClick={() => removeAttachment(item.stepRunId, i)}
+                              className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                              aria-label={`Remove ${d.att.filename}`}
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     <div className="flex gap-2">
                       <Button
                         size="sm"
@@ -331,6 +458,26 @@ function ApprovalsPage() {
                         <XCircle className="mr-1 h-4 w-4" />
                         Reject
                       </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Resolved feedback + attachments */}
+                {!isPending && item.reason && (
+                  <div className="rounded-md border bg-muted/30 p-3">
+                    <p className="text-xs font-medium text-muted-foreground">Review feedback</p>
+                    <p className="mt-1 text-sm whitespace-pre-wrap">{item.reason}</p>
+                  </div>
+                )}
+                {!isPending && item.attachmentNames.length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground">
+                      Attachments shared with the worker
+                    </p>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {item.attachmentNames.map((n) => (
+                        <code key={n} className="rounded bg-muted px-1.5 py-0.5 text-xs">{n}</code>
+                      ))}
                     </div>
                   </div>
                 )}

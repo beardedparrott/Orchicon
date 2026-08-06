@@ -48,6 +48,15 @@ export class ApproveStepRequest extends Message<ApproveStepRequest> {
    */
   reviewedBy = "";
 
+  /**
+   * Files + screenshots the human attaches so the worker can see the issues.
+   * Each is written to .orchicon/<run_id>/attachments/ in the project dir and
+   * surfaced to downstream workers (they read them back with their tools).
+   *
+   * @generated from field: repeated orchicon.api.v1.ApprovalAttachment attachments = 5;
+   */
+  attachments: ApprovalAttachment[] = [];
+
   constructor(data?: PartialMessage<ApproveStepRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -60,6 +69,7 @@ export class ApproveStepRequest extends Message<ApproveStepRequest> {
     { no: 2, name: "approved", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 3, name: "reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 4, name: "reviewed_by", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "attachments", kind: "message", T: ApprovalAttachment, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ApproveStepRequest {
@@ -76,6 +86,61 @@ export class ApproveStepRequest extends Message<ApproveStepRequest> {
 
   static equals(a: ApproveStepRequest | PlainMessage<ApproveStepRequest> | undefined, b: ApproveStepRequest | PlainMessage<ApproveStepRequest> | undefined): boolean {
     return proto3.util.equals(ApproveStepRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ApprovalAttachment
+ */
+export class ApprovalAttachment extends Message<ApprovalAttachment> {
+  /**
+   * display name (sanitized server-side on write)
+   *
+   * @generated from field: string filename = 1;
+   */
+  filename = "";
+
+  /**
+   * e.g. "image/png", "text/plain"
+   *
+   * @generated from field: string content_type = 2;
+   */
+  contentType = "";
+
+  /**
+   * file content
+   *
+   * @generated from field: bytes data = 3;
+   */
+  data = new Uint8Array(0);
+
+  constructor(data?: PartialMessage<ApprovalAttachment>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ApprovalAttachment";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "filename", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "content_type", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "data", kind: "scalar", T: 12 /* ScalarType.BYTES */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ApprovalAttachment {
+    return new ApprovalAttachment().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ApprovalAttachment {
+    return new ApprovalAttachment().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ApprovalAttachment {
+    return new ApprovalAttachment().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ApprovalAttachment | PlainMessage<ApprovalAttachment> | undefined, b: ApprovalAttachment | PlainMessage<ApprovalAttachment> | undefined): boolean {
+    return proto3.util.equals(ApprovalAttachment, a, b);
   }
 }
 
@@ -182,6 +247,20 @@ export class ApprovalItem extends Message<ApprovalItem> {
    */
   workflowId = "";
 
+  /**
+   * human's review feedback (resolved items)
+   *
+   * @generated from field: string reason = 13;
+   */
+  reason = "";
+
+  /**
+   * attached files/screenshots (resolved items)
+   *
+   * @generated from field: repeated string attachment_names = 14;
+   */
+  attachmentNames: string[] = [];
+
   constructor(data?: PartialMessage<ApprovalItem>) {
     super();
     proto3.util.initPartial(data, this);
@@ -202,6 +281,8 @@ export class ApprovalItem extends Message<ApprovalItem> {
     { no: 10, name: "status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 11, name: "created_at", kind: "message", T: Timestamp },
     { no: 12, name: "workflow_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 13, name: "reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 14, name: "attachment_names", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ApprovalItem {

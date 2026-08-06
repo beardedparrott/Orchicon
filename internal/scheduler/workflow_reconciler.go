@@ -1762,7 +1762,8 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		fmt.Fprintf(&sb, "- `.orchicon/%s/status` — `success` or `failure` from the previous step\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/summary` — what the previous worker did\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/issues` — issues found by the previous reviewer (if any)\n", wi.WorkflowRunID)
-		fmt.Fprintf(&sb, "- `.orchicon/%s/worker` — which worker produced the previous results\n\n", wi.WorkflowRunID)
+		fmt.Fprintf(&sb, "- `.orchicon/%s/worker` — which worker produced the previous results\n", wi.WorkflowRunID)
+		fmt.Fprintf(&sb, "- `.orchicon/%s/attachments/` — files/screenshots the human attached to an approval decision (read them!)\n\n", wi.WorkflowRunID)
 	}
 	sb.WriteString("Review the task above, but only complete the work that matches your Role and the step you are assigned to. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — either `success` or `failure` — and a short paragraph summarizing what you did.\n\n")
 	sb.WriteString("Format:\n")
@@ -1781,7 +1782,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	for _, s := range allSteps {
 		stepNameByID[s.ID] = s.Name
 	}
-	type histEntry struct{ stepName, status, summary, issues, iteration string }
+	type histEntry struct{ stepName, status, summary, issues, reason, iteration string; attachments []string }
 	var history []histEntry
 	seen := make(map[string]bool)
 	for stepID, sr := range runs {
@@ -1793,8 +1794,13 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 			continue
 		}
 		var rData struct {
-			Summary string `json:"_summary"`
-			Issues  string `json:"_issues"`
+			Summary     string   `json:"_summary"`
+			Issues      string   `json:"_issues"`
+			Reason      string   `json:"_reason"`
+			Attachments []struct {
+				Filename string `json:"filename"`
+				Path     string `json:"path"`
+			} `json:"_attachments"`
 		}
 		json.Unmarshal(sr.Result, &rData)
 		iterLabel := "first"
@@ -1806,7 +1812,13 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 			status:    sr.Status,
 			summary:   rData.Summary,
 			issues:    rData.Issues,
+			reason:    rData.Reason,
 			iteration: iterLabel,
+		}
+		for _, a := range rData.Attachments {
+			if a.Filename != "" {
+				entry.attachments = append(entry.attachments, a.Filename)
+			}
 		}
 		if !seen[sr.ID] {
 			history = append(history, entry)
@@ -1846,6 +1858,14 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 					h.issues = h.issues[:120] + "…"
 				}
 				fmt.Fprintf(&sb, "  - Issues: %s\n", h.issues)
+			}
+			// Human review feedback (approval step) + any attached files /
+			// screenshots the human shared so the worker can SEE the issues.
+			if h.reason != "" {
+				fmt.Fprintf(&sb, "  - Human review: %s\n", h.reason)
+			}
+			if len(h.attachments) > 0 {
+				fmt.Fprintf(&sb, "  - Human attachments (read them from the project dir): %s\n", strings.Join(h.attachments, ", "))
 			}
 		}
 		sb.WriteString("\n")
