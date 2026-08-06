@@ -30,6 +30,12 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.192 (2026-08-06)
+
+| Type | Change |
+|---|---|
+| Bug fix | **Canned workers now appear in prod even when the slugs were taken.** The UI workers were created manually (before they were canned) in prod, so the seeder's insert collided on the slug index and **aborted the whole batch** — the canned UI workers never seeded and the manual shells stayed empty. The seeder now resolves each canned worker by slug too: an **empty shell** (no prompt content) is **adopted in place** — its ID is preserved (workflow step refs stay valid) and its version is filled with the canned profile; a customized worker keeps the slug untouched. `SeedDevWorkers` also continues past a failing worker instead of aborting the batch. |
+
 ### v0.1.191 (2026-08-06)
 
 | Type | Change |

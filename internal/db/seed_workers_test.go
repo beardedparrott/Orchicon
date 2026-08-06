@@ -175,3 +175,102 @@ func TestSeedPublishesLatestDraftWhenNoPublishedVersion(t *testing.T) {
 		t.Errorf("current_version should follow the promoted draft, got %d want 3", curVer)
 	}
 }
+
+// replaceCannedWorkerWithUserShell deletes a canned worker and re-creates it
+// as a user-created worker with a ULID id but the SAME slug, simulating the
+// prod situation where the user built the worker before it was canned.
+// If withContent is true the shell's version carries a non-empty role.
+func replaceCannedWorkerWithUserShell(t *testing.T, pool *db.Pool, cannedID, slug string, withContent bool) string {
+	t.Helper()
+	ctx := context.Background()
+	userID := "usr_" + cannedID
+	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if _, err := ttx.Exec(ctx,
+		`DELETE FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev'`, cannedID); err != nil {
+		t.Fatalf("delete versions: %v", err)
+	}
+	if _, err := ttx.Exec(ctx,
+		`DELETE FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev'`, cannedID); err != nil {
+		t.Fatalf("delete worker: %v", err)
+	}
+	role := ""
+	if withContent {
+		role = "A customized worker the user owns."
+	}
+	if _, err := ttx.Exec(ctx,
+		`INSERT INTO workers (id, tenant_id, name, slug, description, purpose, status, current_version, created_by)
+		 VALUES ($1, 'tnt_dev', $2, $3, '', '', 'published', 1, 'someone')`, userID, slug, slug); err != nil {
+		t.Fatalf("insert user worker: %v", err)
+	}
+	if _, err := ttx.Exec(ctx,
+		`INSERT INTO worker_versions (id, tenant_id, worker_id, version, version_note, status,
+			runtime_ref, model_ref, role, skills, behavior, agents_md,
+			context_sources, permissions, gated_tools, budget_overrides, execution_policy_ref,
+			concurrency_limit, recovery_workflow_ref, labels, published_at, created_at)
+		 VALUES ($1, 'tnt_dev', $2, 1, 'user', 'published', 'opencode', 'opencode-go/deepseek-v4-flash',
+			$3, '', '', '', '[]', '{}', '[]', '{}', '', 1, '', '{}', now(), now())`,
+		"vusr_"+cannedID, userID, role); err != nil {
+		t.Fatalf("insert user version: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	return userID
+}
+
+// TestSeedAdoptsEmptySlugOwner: a user-created worker that owns the canned
+// slug but is an empty shell is adopted by the seeder — its ID is preserved
+// (workflow step refs stay valid) and its version gets the canned profile.
+func TestSeedAdoptsEmptySlugOwner(t *testing.T) {
+	pool := seedTestPool(t)
+	ctx := context.Background()
+	const cannedID = "w_ui_qa_engineer"
+	userID := replaceCannedWorkerWithUserShell(t, pool, cannedID, "ui-qa-engineer", false)
+
+	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+
+	// The canned worker must NOT be created (the slug is owned), and the user
+	// worker keeps its ID but now carries the canned profile.
+	var exists string
+	if err := pool.QueryRow(ctx,
+		`SELECT id FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev'`, cannedID).Scan(&exists); err == nil {
+		t.Errorf("canned worker %s should not be created when the slug is adopted", cannedID)
+	}
+	var roleLen int
+	if err := pool.QueryRow(ctx,
+		`SELECT length(role) FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+		userID).Scan(&roleLen); err != nil {
+		t.Fatalf("query adopted role: %v", err)
+	}
+	if roleLen == 0 {
+		t.Errorf("adopted worker v1 should carry the canned role, got empty")
+	}
+}
+
+// TestSeedSkipsCustomizedSlugOwner: a user-created worker that owns the canned
+// slug AND has real content is left untouched — the seeder neither adopts it
+// nor crashes the batch.
+func TestSeedSkipsCustomizedSlugOwner(t *testing.T) {
+	pool := seedTestPool(t)
+	ctx := context.Background()
+	const cannedID = "w_ui_qa_engineer"
+	userID := replaceCannedWorkerWithUserShell(t, pool, cannedID, "ui-qa-engineer", true)
+
+	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+	var role string
+	if err := pool.QueryRow(ctx,
+		`SELECT role FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+		userID).Scan(&role); err != nil {
+		t.Fatalf("query user role: %v", err)
+	}
+	if role != "A customized worker the user owns." {
+		t.Errorf("customized worker must keep its own role, got %q", role)
+	}
+}

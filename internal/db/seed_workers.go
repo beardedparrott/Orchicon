@@ -2,8 +2,11 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // bt is a helper to include backticks in otherwise-backtick-delimited strings.
@@ -343,159 +346,248 @@ var cannedWorkers = []cannedWorker{
 }
 
 // SeedDevWorkers creates or updates all canned workers in the dev tenant.
-// Idempotent — safe to call on every boot.
+// Idempotent — safe to call on every boot. A single failing worker (e.g. a
+// slug owned by a user-created worker that isn't adoptable) is logged and
+// skipped; the remaining canned workers still seed.
 func SeedDevWorkers(ctx context.Context, p *Pool) error {
+	var errs []error
 	for _, w := range cannedWorkers {
 		ttx, err := p.BeginTenantTx(ctx, "tnt_dev")
 		if err != nil {
-			return fmt.Errorf("seed worker %s: begin tx: %w", w.ID, err)
+			errs = append(errs, fmt.Errorf("seed worker %s: begin tx: %w", w.ID, err))
+			continue
 		}
 
 		if err := seedWorker(ctx, ttx, w); err != nil {
 			ttx.Rollback(ctx)
-			return fmt.Errorf("seed worker %s: %w", w.ID, err)
+			errs = append(errs, fmt.Errorf("seed worker %s: %w", w.ID, err))
+			continue
 		}
 
 		if err := ttx.Commit(ctx); err != nil {
-			return fmt.Errorf("seed worker %s: commit: %w", w.ID, err)
+			errs = append(errs, fmt.Errorf("seed worker %s: commit: %w", w.ID, err))
+			continue
 		}
 	}
+	return errors.Join(errs...)
+}
+
+// errSeedSkipWorker marks a canned worker that must not be seeded: its slug
+// is owned by a user-created worker with real content. The seeder skips it
+// quietly (the user's customized worker keeps the slug).
+var errSeedSkipWorker = errors.New("canned worker skipped (slug owned by a customized worker)")
+
+func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
+	// Resolve the worker to sync against. Prefer the canned ID; if it is
+	// free but a user-created worker already owns the canned slug (e.g. the
+	// user built a UI worker before it was canned), adopt that worker ONLY
+	// when it is an empty shell — the canned profile then lands on the worker
+	// the user already references (its ID is preserved, so workflow step
+	// refs stay valid) without ever clobbering a customized worker.
+	targetID, err := seedTargetWorkerID(ctx, ttx, w)
+	if errors.Is(err, errSeedSkipWorker) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if targetID == "" {
+		return seedNewWorker(ctx, ttx, w)
+	}
+
+	// Worker exists (canned ID or adopted slug owner). Keep the row fresh.
+	if _, err := ttx.Exec(ctx,
+		`UPDATE workers SET status = 'published', name = $1, purpose = $2, description = $3
+		 WHERE id = $4 AND tenant_id = 'tnt_dev'`,
+		w.Name, w.Purpose, w.Description, targetID,
+	); err != nil {
+		return fmt.Errorf("update worker: %w", err)
+	}
+
+	// Load the current published version to decide whether the seed's
+	// safety context is already present on it.
+	var curVer int
+	var pubID, curAgents string
+	_ = ttx.QueryRow(ctx,
+		`SELECT current_version FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev'`, targetID,
+	).Scan(&curVer)
+	verErr := ttx.QueryRow(ctx,
+		`SELECT id, agents_md FROM worker_versions
+		  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = $2`,
+		targetID, curVer,
+	).Scan(&pubID, &curAgents)
+
+	// The seed is the source of truth for canned-worker prompt context.
+	// When the current published version is missing the safety marker —
+	// e.g. the worker predates this seed change, or a user edit dropped
+	// the safety rules — roll a new published version forward carrying
+	// the seed's full context. This ensures safety updates reach EVERY
+	// canned worker, not just untouched v1s. Idempotent: once the marker
+	// is present no further versions are created.
+	needSync := verErr != nil || !strings.Contains(curAgents, seedSafetyMarker)
+
+	if needSync {
+		if curVer == 1 {
+			// v1 is the canonical seed version — sync it in place.
+			_, _ = ttx.Exec(ctx,
+				`UPDATE worker_versions
+				    SET role = $1, skills = $2, behavior = $3, agents_md = $4
+				  WHERE worker_id = $5 AND tenant_id = 'tnt_dev'
+				    AND version = 1`,
+				w.Role, w.Skills, w.Behavior, w.AgentsMD, targetID,
+			)
+		} else {
+			// Newer versions are user-created; preserve them and append
+			// a new published version carrying the seed context.
+			newVer := curVer + 1
+			_, _ = ttx.Exec(ctx,
+				`INSERT INTO worker_versions
+				    (id, tenant_id, worker_id, version, version_note, status,
+				     runtime_ref, model_ref, role, skills, behavior, agents_md,
+				     context_sources, permissions, gated_tools, budget_overrides,
+				     execution_policy_ref, concurrency_limit, recovery_workflow_ref,
+				     labels, published_at, created_at)
+				 SELECT $1, 'tnt_dev', worker_id, $2, 'Safety context roll-forward',
+				        'published', runtime_ref, 'opencode-go/deepseek-v4-flash', $3, $4, $5, $6,
+				        context_sources, permissions, gated_tools, budget_overrides,
+				        execution_policy_ref, concurrency_limit, recovery_workflow_ref,
+				        labels, now(), now()
+				   FROM worker_versions
+				  WHERE id = $7 AND tenant_id = 'tnt_dev'`,
+				NewID(), newVer, w.Role, w.Skills, w.Behavior, w.AgentsMD, pubID,
+			)
+			_, _ = ttx.Exec(ctx,
+				`UPDATE workers SET current_version = $1 WHERE id = $2 AND tenant_id = 'tnt_dev'`,
+				newVer, targetID,
+			)
+		}
+	}
+
+	// Keep the canned worker published without clobbering the user's
+	// draft-edit workflow. Previously every stray draft was force-
+	// published on boot — a user mid-edit on a canned worker (e.g. a new
+	// draft version) had it silently published by the next restart.
+	// Now a draft is only promoted when the worker has NO published
+	// version left at all (the seeder's own v1 is always published, so
+	// this only fires after a user deletes every published version), and
+	// only the latest draft is promoted — user drafts alongside a
+	// published version are left untouched. When a draft is promoted,
+	// current_version follows it so dispatch never points at a missing
+	// version.
+	pubTag, _ := ttx.Exec(ctx,
+		`UPDATE worker_versions SET status = 'published',
+			model_ref = COALESCE(NULLIF(model_ref, ''), 'opencode-go/deepseek-v4-flash')
+		 WHERE tenant_id = 'tnt_dev' AND status = 'draft'
+		   AND worker_id = $1
+		   AND NOT EXISTS (
+		     SELECT 1 FROM worker_versions p
+		     WHERE p.worker_id = worker_versions.worker_id
+		       AND p.tenant_id = worker_versions.tenant_id
+		       AND p.status = 'published'
+		   )
+		   AND version = (
+		     SELECT max(version) FROM worker_versions
+		     WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND status = 'draft'
+		   )`,
+		targetID,
+	)
+	if pubTag.RowsAffected() > 0 {
+		_, _ = ttx.Exec(ctx,
+			`UPDATE workers SET current_version = (
+			   SELECT max(version) FROM worker_versions
+			   WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND status = 'published'
+			 )
+			 WHERE id = $1 AND tenant_id = 'tnt_dev'`,
+			targetID,
+		)
+	}
+
+	// Canned-worker model_ref is seed-managed. Older seeds defaulted to
+	// 'opencode/deepseek-v4-flash', which is not a valid model for this
+	// runtime (the paid model is 'opencode-go/deepseek-v4-flash' — the
+	// one the configured API key covers); the stale value propagated to
+	// every roll-forward version. Keep all versions aligned so dispatch
+	// never targets a dead model. (model_ref is not a user-edited field
+	// on canned workers — role/skills/behavior/agents_md are.)
+	_, _ = ttx.Exec(ctx,
+		`UPDATE worker_versions SET model_ref = 'opencode-go/deepseek-v4-flash'
+		 WHERE worker_id = $1 AND tenant_id = 'tnt_dev'
+		   AND model_ref != 'opencode-go/deepseek-v4-flash'`,
+		targetID,
+	)
 	return nil
 }
 
-func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
-	// Check if worker already exists.
-	var existingID string
+// seedTargetWorkerID resolves which worker the canned seed should sync
+// against. Returns "" when the worker must be created fresh.
+func seedTargetWorkerID(ctx context.Context, ttx *TenantTx, w cannedWorker) (string, error) {
+	var targetID string
 	err := ttx.QueryRow(ctx,
 		`SELECT id FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev'`, w.ID,
-	).Scan(&existingID)
-
+	).Scan(&targetID)
 	if err == nil {
-		// Worker exists. Keep the worker row metadata fresh.
-		if _, err := ttx.Exec(ctx,
-			`UPDATE workers SET status = 'published', purpose = $1, description = $2
-			 WHERE id = $3 AND tenant_id = 'tnt_dev'`,
-			w.Purpose, w.Description, w.ID,
-		); err != nil {
-			return fmt.Errorf("update worker: %w", err)
-		}
-
-		// Load the current published version to decide whether the seed's
-		// safety context is already present on it.
-		var curVer int
-		var pubID, curAgents string
-		_ = ttx.QueryRow(ctx,
-			`SELECT current_version FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev'`, w.ID,
-		).Scan(&curVer)
-		verErr := ttx.QueryRow(ctx,
-			`SELECT id, agents_md FROM worker_versions
-			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = $2`,
-			w.ID, curVer,
-		).Scan(&pubID, &curAgents)
-
-		// The seed is the source of truth for canned-worker prompt context.
-		// When the current published version is missing the safety marker —
-		// e.g. the worker predates this seed change, or a user edit dropped
-		// the safety rules — roll a new published version forward carrying
-		// the seed's full context. This ensures safety updates reach EVERY
-		// canned worker, not just untouched v1s. Idempotent: once the marker
-		// is present no further versions are created.
-		needSync := verErr != nil || !strings.Contains(curAgents, seedSafetyMarker)
-
-		if needSync {
-			if curVer == 1 {
-				// v1 is the canonical seed version — sync it in place.
-				_, _ = ttx.Exec(ctx,
-					`UPDATE worker_versions
-					    SET role = $1, skills = $2, behavior = $3, agents_md = $4
-					  WHERE worker_id = $5 AND tenant_id = 'tnt_dev'
-					    AND version = 1`,
-					w.Role, w.Skills, w.Behavior, w.AgentsMD, w.ID,
-				)
-			} else {
-				// Newer versions are user-created; preserve them and append
-				// a new published version carrying the seed context.
-				newVer := curVer + 1
-				_, _ = ttx.Exec(ctx,
-					`INSERT INTO worker_versions
-					    (id, tenant_id, worker_id, version, version_note, status,
-					     runtime_ref, model_ref, role, skills, behavior, agents_md,
-					     context_sources, permissions, gated_tools, budget_overrides,
-					     execution_policy_ref, concurrency_limit, recovery_workflow_ref,
-					     labels, published_at, created_at)
-					 SELECT $1, 'tnt_dev', worker_id, $2, 'Safety context roll-forward',
-					        'published', runtime_ref, 'opencode-go/deepseek-v4-flash', $3, $4, $5, $6,
-					        context_sources, permissions, gated_tools, budget_overrides,
-					        execution_policy_ref, concurrency_limit, recovery_workflow_ref,
-					        labels, now(), now()
-					   FROM worker_versions
-					  WHERE id = $7 AND tenant_id = 'tnt_dev'`,
-					NewID(), newVer, w.Role, w.Skills, w.Behavior, w.AgentsMD, pubID,
-				)
-				_, _ = ttx.Exec(ctx,
-					`UPDATE workers SET current_version = $1 WHERE id = $2 AND tenant_id = 'tnt_dev'`,
-					newVer, w.ID,
-				)
-			}
-		}
-
-		// Keep the canned worker published without clobbering the user's
-		// draft-edit workflow. Previously every stray draft was force-
-		// published on boot — a user mid-edit on a canned worker (e.g. a new
-		// draft version) had it silently published by the next restart.
-		// Now a draft is only promoted when the worker has NO published
-		// version left at all (the seeder's own v1 is always published, so
-		// this only fires after a user deletes every published version), and
-		// only the latest draft is promoted — user drafts alongside a
-		// published version are left untouched. When a draft is promoted,
-		// current_version follows it so dispatch never points at a missing
-		// version.
-		pubTag, _ := ttx.Exec(ctx,
-			`UPDATE worker_versions SET status = 'published',
-				model_ref = COALESCE(NULLIF(model_ref, ''), 'opencode-go/deepseek-v4-flash')
-			 WHERE tenant_id = 'tnt_dev' AND status = 'draft'
-			   AND worker_id = $1
-			   AND NOT EXISTS (
-			     SELECT 1 FROM worker_versions p
-			     WHERE p.worker_id = worker_versions.worker_id
-			       AND p.tenant_id = worker_versions.tenant_id
-			       AND p.status = 'published'
-			   )
-			   AND version = (
-			     SELECT max(version) FROM worker_versions
-			     WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND status = 'draft'
-			   )`,
-			w.ID,
-		)
-		if pubTag.RowsAffected() > 0 {
-			_, _ = ttx.Exec(ctx,
-				`UPDATE workers SET current_version = (
-				   SELECT max(version) FROM worker_versions
-				   WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND status = 'published'
-				 )
-				 WHERE id = $1 AND tenant_id = 'tnt_dev'`,
-				w.ID,
-			)
-		}
-
-		// Canned-worker model_ref is seed-managed. Older seeds defaulted to
-		// 'opencode/deepseek-v4-flash', which is not a valid model for this
-		// runtime (the paid model is 'opencode-go/deepseek-v4-flash' — the
-		// one the configured API key covers); the stale value propagated to
-		// every roll-forward version. Keep all versions aligned so dispatch
-		// never targets a dead model. (model_ref is not a user-edited field
-		// on canned workers — role/skills/behavior/agents_md are.)
-		_, _ = ttx.Exec(ctx,
-			`UPDATE worker_versions SET model_ref = 'opencode-go/deepseek-v4-flash'
-			 WHERE worker_id = $1 AND tenant_id = 'tnt_dev'
-			   AND model_ref != 'opencode-go/deepseek-v4-flash'`,
-			w.ID,
-		)
-		return nil
+		return targetID, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("lookup worker: %w", err)
 	}
 
+	// Canned ID is free — does a user-created worker own the slug?
+	var ownerID string
+	oerr := ttx.QueryRow(ctx,
+		`SELECT id FROM workers WHERE tenant_id = 'tnt_dev' AND slug = $1`, w.Slug,
+	).Scan(&ownerID)
+	if errors.Is(oerr, pgx.ErrNoRows) {
+		return "", nil // slug free — create
+	}
+	if oerr != nil {
+		return "", fmt.Errorf("lookup slug owner: %w", oerr)
+	}
+
+	empty, err := workerIsEmptyShell(ctx, ttx, ownerID)
+	if err != nil {
+		return "", fmt.Errorf("inspect slug owner %s: %w", ownerID, err)
+	}
+	if empty {
+		return ownerID, nil // adopt the empty shell so the canned profile lands on it
+	}
+	return "", errSeedSkipWorker // user customized this slug — leave their worker untouched
+}
+
+// workerIsEmptyShell reports whether a worker's current version carries no
+// prompt content at all (role/skills/behavior/agents_md/system_prompt all
+// blank). Empty shells are adoptable by the canned seeder; anything with
+// content is a real user worker and is never touched.
+func workerIsEmptyShell(ctx context.Context, ttx *TenantTx, workerID string) (bool, error) {
+	var curVer int
+	if err := ttx.QueryRow(ctx,
+		`SELECT current_version FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev'`, workerID,
+	).Scan(&curVer); err != nil {
+		return false, err
+	}
+	var role, skills, behavior, agents, sp string
+	err := ttx.QueryRow(ctx,
+		`SELECT role, skills, behavior, agents_md, system_prompt
+		   FROM worker_versions
+		  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = $2`,
+		workerID, curVer,
+	).Scan(&role, &skills, &behavior, &agents, &sp)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil // no current version — nothing to preserve
+	}
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(role) == "" && strings.TrimSpace(skills) == "" &&
+		strings.TrimSpace(behavior) == "" && strings.TrimSpace(agents) == "" &&
+		strings.TrimSpace(sp) == "", nil
+}
+
+// seedNewWorker inserts a brand-new canned worker (its slug is confirmed
+// free) with a published v1 carrying the canned profile.
+func seedNewWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	// Create worker.
-	_, err = ttx.Exec(ctx,
+	_, err := ttx.Exec(ctx,
 		`INSERT INTO workers (id, tenant_id, name, slug, description, purpose, status, current_version, created_by)
 		 VALUES ($1, 'tnt_dev', $2, $3, $4, $5, 'published', 1, 'orchicon')
 		 ON CONFLICT (id) DO NOTHING`,
