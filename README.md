@@ -30,17 +30,17 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.196 (2026-08-06)
+
+| Type | Change |
+|---|---|
+| Feature | **Expanded light & dark theme palette (28 themes incl. Gruvbox Light).** All 10 existing light themes were darkened (background L 97–100 % → 93–96 %) and 10 existing dark themes lightened (background L 7–8 % → 10–11 %) so workflows stay visible in both bright rooms and direct light. 8 new themes were added: **Gruvbox Light** (warm parchment `#fbf1c7` background, deep Gruvbox blue primary), **Paper**, **Ash**, and **Porcelain** in the light set, plus **Graphite**, **Dusk**, **Forest**, and **Cocoa** as lighter darks (13–15 % background) for bright-lighting readability. Muted-foreground contrast was raised on the dark side and the light-mode canvas edge accents darkened to pass ≥3:1 non-text contrast. All 28 themes are selectable from the theme picker and persisted ids stay valid. |
+
 ### v0.1.195 (2026-08-06)
 
 | Type | Change |
 |---|---|
 | Bug fix | **Approval deep links now include the workflow ID segment.** The Approvals page rendered broken run links (`http://localhost:8080/workflows//runs/{run_id}`) because the frontend passed an empty workflow id — `ApprovalItem` never carried it. The proto now exposes `workflow_id` (field 12), the backend `listApprovalItems` SELECT/Scan populates it from the `workflow_runs` join (the inner join on `workflow_runs` guarantees a non-empty segment), and both approvals.tsx links render `/workflows/{workflow_id}/runs/{run_id}`. |
-
-### v0.1.192 (2026-08-06)
-
-| Type | Change |
-|---|---|
-| Bug fix | **Canned workers now appear in prod even when the slugs were taken.** The UI workers were created manually (before they were canned) in prod, so the seeder's insert collided on the slug index and **aborted the whole batch** — the canned UI workers never seeded and the manual shells stayed empty. The seeder now resolves each canned worker by slug too: an **empty shell** (no prompt content) is **adopted in place** — its ID is preserved (workflow step refs stay valid) and its version is filled with the canned profile; a customized worker keeps the slug untouched. `SeedDevWorkers` also continues past a failing worker instead of aborting the batch. |
 
 ## Installation
 
