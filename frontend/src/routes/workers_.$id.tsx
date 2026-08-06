@@ -42,6 +42,7 @@ import {
 } from "@/components/WorkerFormSections";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
+import type { WorkerVersion } from "@/api/gen/orchicon/api/v1/worker_pb";
 
 // Worker detail page: read-only for published/deprecated/retired workers;
 // editable for draft workers. Published workers get a "New version" button
@@ -80,6 +81,26 @@ interface EditFormData {
   budgetOverrides: string;
   contextSources: string;
   versionNote: string;
+}
+
+// promptFields returns the four structured prompt fields from a version.
+// Newer versions expose them directly; legacy versions only carry the
+// composed `system_prompt`, so fall back to parsing its `# Heading` sections.
+function promptFields(v: WorkerVersion | undefined): Pick<EditFormData, "role" | "skills" | "behavior" | "agentsMd"> {
+  const empty = { role: "", skills: "", behavior: "", agentsMd: "" };
+  if (!v) return empty;
+  if (v.role || v.skills || v.behavior || v.agentsMd) {
+    return { role: v.role, skills: v.skills, behavior: v.behavior, agentsMd: v.agentsMd };
+  }
+  const sp = v.systemPrompt || "";
+  const extract = (heading: string) =>
+    sp.match(new RegExp(`# ${heading}\n\n([\\s\\S]*?)(?=\\n# |\\n*$)`))?.[1] ?? "";
+  return {
+    role: extract("Role"),
+    skills: extract("Skills"),
+    behavior: extract("Behavior"),
+    agentsMd: extract("AGENTS\\.md"),
+  };
 }
 
 function WorkerDetailPage() {
@@ -123,19 +144,22 @@ function WorkerDetailPage() {
       versionNote: "",
     },
     values: (selectedVersion ?? latestVersion)
-      ? {
-          runtimeRef: (selectedVersion ?? latestVersion)!.runtimeRef ?? "",
-          modelRef: (selectedVersion ?? latestVersion)!.modelRef ?? "",
-          role: (selectedVersion ?? latestVersion)!.systemPrompt?.match(/# Role\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
-          skills: (selectedVersion ?? latestVersion)!.systemPrompt?.match(/# Skills\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
-          behavior: (selectedVersion ?? latestVersion)!.systemPrompt?.match(/# Behavior\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
-          agentsMd: (selectedVersion ?? latestVersion)!.systemPrompt?.match(/# AGENTS\.md\n\n([\s\S]*?)(?=\n# |\n*$)/)?.[1] ?? "",
-          permissions: (selectedVersion ?? latestVersion)!.permissions || DEFAULT_PERMISSIONS,
-          gatedTools: (selectedVersion ?? latestVersion)!.gatedTools || "[]",
-          budgetOverrides: (selectedVersion ?? latestVersion)!.budgetOverrides || DEFAULT_BUDGETS,
-          contextSources: (selectedVersion ?? latestVersion)!.contextSources || "[]",
-          versionNote: (selectedVersion ?? latestVersion)!.versionNote ?? "",
-        }
+      ? (() => {
+          const pf = promptFields(selectedVersion ?? latestVersion);
+          return {
+            runtimeRef: (selectedVersion ?? latestVersion)!.runtimeRef ?? "",
+            modelRef: (selectedVersion ?? latestVersion)!.modelRef ?? "",
+            role: pf.role,
+            skills: pf.skills,
+            behavior: pf.behavior,
+            agentsMd: pf.agentsMd,
+            permissions: (selectedVersion ?? latestVersion)!.permissions || DEFAULT_PERMISSIONS,
+            gatedTools: (selectedVersion ?? latestVersion)!.gatedTools || "[]",
+            budgetOverrides: (selectedVersion ?? latestVersion)!.budgetOverrides || DEFAULT_BUDGETS,
+            contextSources: (selectedVersion ?? latestVersion)!.contextSources || "[]",
+            versionNote: (selectedVersion ?? latestVersion)!.versionNote ?? "",
+          };
+        })()
       : undefined,
   });
 
@@ -237,7 +261,10 @@ function WorkerDetailPage() {
                       versionId: draftVersion.id,
                       runtimeRef: formData.runtimeRef,
                       modelRef: formData.modelRef,
-                      systemPrompt: [formData.role, formData.skills, formData.behavior, formData.agentsMd].filter(Boolean).join("\n\n"),
+                      role: formData.role,
+                      skills: formData.skills,
+                      behavior: formData.behavior,
+                      agentsMd: formData.agentsMd,
                       permissions: formData.permissions,
                       gatedTools: formData.gatedTools,
                       budgetOverrides: formData.budgetOverrides,
@@ -363,11 +390,25 @@ function WorkerDetailPage() {
               `Clone of ${worker.name}`,
             );
             if (!name) return;
+            const pf = promptFields(latestVersion);
             const result = await createWorker.mutateAsync({
               name,
-              slug: worker.slug,
+              // The server dedupes slugs per tenant (-2, -3, ...) so a
+              // repeated clone can never collide on the slug index.
+              slug: `${worker.slug}-clone`,
               description: worker.description,
               purpose: worker.purpose,
+              runtimeRef: latestVersion?.runtimeRef,
+              modelRef: latestVersion?.modelRef,
+              role: pf.role,
+              skills: pf.skills,
+              behavior: pf.behavior,
+              agentsMd: pf.agentsMd,
+              permissions: latestVersion?.permissions,
+              gatedTools: latestVersion?.gatedTools,
+              budgetOverrides: latestVersion?.budgetOverrides,
+              contextSources: latestVersion?.contextSources,
+              concurrencyLimit: latestVersion?.concurrencyLimit ?? 0,
             });
             navigate({ to: `/workers/${result.worker.id}` });
           }}
@@ -495,7 +536,10 @@ function WorkerDetailPage() {
                   versionId: draftVersion.id,
                   runtimeRef: formData.runtimeRef,
                   modelRef: formData.modelRef,
-                  systemPrompt: [formData.role, formData.skills, formData.behavior, formData.agentsMd].filter(Boolean).join("\n\n"),
+                  role: formData.role,
+                  skills: formData.skills,
+                  behavior: formData.behavior,
+                  agentsMd: formData.agentsMd,
                   permissions: formData.permissions,
                   gatedTools: formData.gatedTools,
                   budgetOverrides: formData.budgetOverrides,
@@ -708,15 +752,11 @@ function WorkerVersionStatusBadge({ status }: { status: number }) {
   return <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium", styles[status] ?? "")}>{labels[status] ?? "unknown"}</span>;
 }
 function VersionDetailPanel({ version }: { version: import("@/api/gen/orchicon/api/v1/worker_pb").WorkerVersion }) {
-  const sp = version.systemPrompt || "";
-  const extract = (heading: string) => {
-    const re = new RegExp(`# ${heading}\n\n([\\s\\S]*?)(?=\\n# |\\n*$)`);
-    return sp.match(re)?.[1]?.trim() || "";
-  };
-  const role = extract("Role");
-  const skills = extract("Skills");
-  const behavior = extract("Behavior");
-  const agents = extract("AGENTS\\.md");
+  const pf = promptFields(version);
+  const role = pf.role;
+  const skills = pf.skills;
+  const behavior = pf.behavior;
+  const agents = pf.agentsMd;
   return (
     <div className="border-t p-3 space-y-4">
       <div className="grid gap-4 md:grid-cols-2">

@@ -60,6 +60,17 @@ type WorkerVersionRow struct {
 	CreatedAt          time.Time
 }
 
+// WorkerSlugExists reports whether a worker with the given slug already
+// exists in the tenant. Used by the service to dedupe slugs (e.g. cloning a
+// worker) so the unique workers_tenant_slug_idx constraint is never hit.
+func WorkerSlugExists(ctx context.Context, tx pgx.Tx, tenantID, slug string) (bool, error) {
+	var exists bool
+	err := tx.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM workers WHERE tenant_id = $1 AND slug = $2)`,
+		tenantID, slug).Scan(&exists)
+	return exists, err
+}
+
 // CreateWorker inserts a new worker header row within the given tenant
 // transaction. The caller controls the transaction so the outbox row can
 // be enqueued in the same atomic unit (docs/09 §6). Version starts at 1;

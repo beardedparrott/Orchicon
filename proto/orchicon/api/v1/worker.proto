@@ -51,6 +51,14 @@ message WorkerVersion {
   string labels = 16; // JSON: free-form key/value for filtering
   google.protobuf.Timestamp published_at = 17;
   google.protobuf.Timestamp created_at = 18;
+  // Structured prompt fields (docs/05 §3). These are the editable source of
+  // truth; `system_prompt` above is the composed view (Role + Skills +
+  // Behavior + AGENTS.md joined with `# Heading` separators) built server-side.
+  // When all four are empty, `system_prompt` holds the raw prompt (legacy).
+  string role = 19; // the worker's identity/role statement
+  string skills = 20; // bullet-style skill list
+  string behavior = 21; // working-style guidance
+  string agents_md = 22; // project-level conventions (AGENTS.md)
 }
 
 // Worker lifecycle states. draft → published → deprecated → retired

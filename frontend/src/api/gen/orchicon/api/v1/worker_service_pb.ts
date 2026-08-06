@@ -127,6 +127,29 @@ export class CreateWorkerRequest extends Message<CreateWorkerRequest> {
    */
   requestId = "";
 
+  /**
+   * Structured prompt fields — when any is set they become the version's
+   * source of truth (system_prompt is then composed server-side).
+   *
+   * @generated from field: string role = 19;
+   */
+  role = "";
+
+  /**
+   * @generated from field: string skills = 20;
+   */
+  skills = "";
+
+  /**
+   * @generated from field: string behavior = 21;
+   */
+  behavior = "";
+
+  /**
+   * @generated from field: string agents_md = 22;
+   */
+  agentsMd = "";
+
   constructor(data?: PartialMessage<CreateWorkerRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -153,6 +176,10 @@ export class CreateWorkerRequest extends Message<CreateWorkerRequest> {
     { no: 16, name: "labels", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 17, name: "version_note", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 18, name: "request_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 19, name: "role", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 20, name: "skills", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 21, name: "behavior", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 22, name: "agents_md", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkerRequest {
@@ -1263,6 +1290,29 @@ export class UpdateWorkerVersionRequest extends Message<UpdateWorkerVersionReque
    */
   versionNote?: string;
 
+  /**
+   * Structured prompt fields; when any is set the version's system_prompt
+   * is recomposed server-side from the four fields.
+   *
+   * @generated from field: optional string role = 18;
+   */
+  role?: string;
+
+  /**
+   * @generated from field: optional string skills = 19;
+   */
+  skills?: string;
+
+  /**
+   * @generated from field: optional string behavior = 20;
+   */
+  behavior?: string;
+
+  /**
+   * @generated from field: optional string agents_md = 21;
+   */
+  agentsMd?: string;
+
   constructor(data?: PartialMessage<UpdateWorkerVersionRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1285,6 +1335,10 @@ export class UpdateWorkerVersionRequest extends Message<UpdateWorkerVersionReque
     { no: 15, name: "recovery_workflow_ref", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 16, name: "labels", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 17, name: "version_note", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 18, name: "role", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 19, name: "skills", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 20, name: "behavior", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 21, name: "agents_md", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkerVersionRequest {
@@ -1412,6 +1466,29 @@ export class CreateWorkerVersionRequest extends Message<CreateWorkerVersionReque
    */
   versionNote?: string;
 
+  /**
+   * Structured prompt fields; when any is set the version's system_prompt
+   * is recomposed server-side from the four fields.
+   *
+   * @generated from field: optional string role = 18;
+   */
+  role?: string;
+
+  /**
+   * @generated from field: optional string skills = 19;
+   */
+  skills?: string;
+
+  /**
+   * @generated from field: optional string behavior = 20;
+   */
+  behavior?: string;
+
+  /**
+   * @generated from field: optional string agents_md = 21;
+   */
+  agentsMd?: string;
+
   constructor(data?: PartialMessage<CreateWorkerVersionRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1433,6 +1510,10 @@ export class CreateWorkerVersionRequest extends Message<CreateWorkerVersionReque
     { no: 15, name: "recovery_workflow_ref", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 16, name: "labels", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 17, name: "version_note", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 18, name: "role", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 19, name: "skills", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 20, name: "behavior", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 21, name: "agents_md", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkerVersionRequest {

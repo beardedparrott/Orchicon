@@ -322,6 +322,39 @@ export class WorkerVersion extends Message<WorkerVersion> {
    */
   createdAt?: Timestamp;
 
+  /**
+   * Structured prompt fields (docs/05 §3). These are the editable source of
+   * truth; `system_prompt` above is the composed view (Role + Skills +
+   * Behavior + AGENTS.md joined with `# Heading` separators) built server-side.
+   * When all four are empty, `system_prompt` holds the raw prompt (legacy).
+   *
+   * the worker's identity/role statement
+   *
+   * @generated from field: string role = 19;
+   */
+  role = "";
+
+  /**
+   * bullet-style skill list
+   *
+   * @generated from field: string skills = 20;
+   */
+  skills = "";
+
+  /**
+   * working-style guidance
+   *
+   * @generated from field: string behavior = 21;
+   */
+  behavior = "";
+
+  /**
+   * project-level conventions (AGENTS.md)
+   *
+   * @generated from field: string agents_md = 22;
+   */
+  agentsMd = "";
+
   constructor(data?: PartialMessage<WorkerVersion>) {
     super();
     proto3.util.initPartial(data, this);
@@ -348,6 +381,10 @@ export class WorkerVersion extends Message<WorkerVersion> {
     { no: 16, name: "labels", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 17, name: "published_at", kind: "message", T: Timestamp },
     { no: 18, name: "created_at", kind: "message", T: Timestamp },
+    { no: 19, name: "role", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 20, name: "skills", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 21, name: "behavior", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 22, name: "agents_md", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkerVersion {

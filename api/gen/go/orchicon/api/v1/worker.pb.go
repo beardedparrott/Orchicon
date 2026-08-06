@@ -300,8 +300,16 @@ type WorkerVersion struct {
 	Labels              string                 `protobuf:"bytes,16,opt,name=labels,proto3" json:"labels,omitempty"` // JSON: free-form key/value for filtering
 	PublishedAt         *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=published_at,json=publishedAt,proto3" json:"published_at,omitempty"`
 	CreatedAt           *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Structured prompt fields (docs/05 §3). These are the editable source of
+	// truth; `system_prompt` above is the composed view (Role + Skills +
+	// Behavior + AGENTS.md joined with `# Heading` separators) built server-side.
+	// When all four are empty, `system_prompt` holds the raw prompt (legacy).
+	Role          string `protobuf:"bytes,19,opt,name=role,proto3" json:"role,omitempty"`                         // the worker's identity/role statement
+	Skills        string `protobuf:"bytes,20,opt,name=skills,proto3" json:"skills,omitempty"`                     // bullet-style skill list
+	Behavior      string `protobuf:"bytes,21,opt,name=behavior,proto3" json:"behavior,omitempty"`                 // working-style guidance
+	AgentsMd      string `protobuf:"bytes,22,opt,name=agents_md,json=agentsMd,proto3" json:"agents_md,omitempty"` // project-level conventions (AGENTS.md)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WorkerVersion) Reset() {
@@ -460,6 +468,34 @@ func (x *WorkerVersion) GetCreatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *WorkerVersion) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *WorkerVersion) GetSkills() string {
+	if x != nil {
+		return x.Skills
+	}
+	return ""
+}
+
+func (x *WorkerVersion) GetBehavior() string {
+	if x != nil {
+		return x.Behavior
+	}
+	return ""
+}
+
+func (x *WorkerVersion) GetAgentsMd() string {
+	if x != nil {
+		return x.AgentsMd
+	}
+	return ""
+}
+
 // EditLock is an explicit advisory lock on a Worker for the visual
 // editor (docs/07 §3.3). Prevents concurrent edits; other users see
 // "currently being edited by [user]" and can view read-only. Lock
@@ -553,7 +589,7 @@ const file_orchicon_api_v1_worker_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xd6\x05\n" +
+	"updated_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xbb\x06\n" +
 	"\rWorkerVersion\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x12\x18\n" +
@@ -576,7 +612,11 @@ const file_orchicon_api_v1_worker_proto_rawDesc = "" +
 	"\x06labels\x18\x10 \x01(\tR\x06labels\x12=\n" +
 	"\fpublished_at\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampR\vpublishedAt\x129\n" +
 	"\n" +
-	"created_at\x18\x12 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\xbc\x01\n" +
+	"created_at\x18\x12 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x12\n" +
+	"\x04role\x18\x13 \x01(\tR\x04role\x12\x16\n" +
+	"\x06skills\x18\x14 \x01(\tR\x06skills\x12\x1a\n" +
+	"\bbehavior\x18\x15 \x01(\tR\bbehavior\x12\x1b\n" +
+	"\tagents_md\x18\x16 \x01(\tR\bagentsMd\"\xbc\x01\n" +
 	"\bEditLock\x12\x1f\n" +
 	"\vresource_id\x18\x01 \x01(\tR\n" +
 	"resourceId\x12\x17\n" +
