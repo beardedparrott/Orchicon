@@ -30,6 +30,12 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.197 (2026-08-06)
+
+| Type | Change |
+|---|---|
+| Feature | **New Schedules page** — shows all scheduled work items in chronological order with their next runtimes (Upcoming, default view) plus a history of previous runs (History toggle, `?view=` deep-linkable). Agenda timeline grouped by local day, live ticking clock, countdown chips, stats strip, standard filter bar (search/project/kind/sort + select-all + bulk Cancel or Delete), clickable links to work items and workflows, and a reserved "One-time" frequency slot ready for future recurring schedules. Frontend-only: no proto/DB changes. |
+
 ### v0.1.196 (2026-08-06)
 
 | Type | Change |

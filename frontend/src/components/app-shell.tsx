@@ -24,6 +24,7 @@ const NAV: NavItem[] = [
   { label: "Ask Orchicon", to: "/ask-orchicon" },
   { label: "Projects", to: "/projects" },
   { label: "Work Items", to: "/work-items" },
+  { label: "Schedules", to: "/schedules" },
   { label: "Workers", to: "/workers" },
   { label: "Workflows", to: "/workflows" },
   { label: "Policies", to: "/policies" },
@@ -42,7 +43,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-screen bg-background">
       <Sidebar />
-      <div className="flex flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col">
         <TopBar />
         <main className="flex-1 p-6 lg:p-8">{children}</main>
       </div>

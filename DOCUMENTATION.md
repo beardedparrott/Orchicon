@@ -451,6 +451,7 @@ Orchicon/
 │           ├── login.tsx         # Login page
 │           ├── projects{,_.new,_.$id}.tsx
 │           ├── work-items{,_.new,_.$id,_.graph}.tsx
+│           ├── schedules.tsx     # Upcoming/History view of scheduled work items
 │           ├── workers{,_.new,_.$id}.tsx
 │           ├── workflows{,_.new,_.$id,_.$id_.runs.$runId}.tsx
 │           ├── policies{,_.new,_.$id}.tsx
@@ -694,6 +695,14 @@ An execution is only reported `succeeded` when the run completes with the final 
 4. Work items form a DAG with dependency edges (cycle detection enforced)
 
 **Status while bound to a workflow run:** a work item that kicks off (or is bound to) a workflow run is a **shared input reference** — every step reads the same ticket (title, description, acceptance criteria, upstream context) and produces its own execution and output. `StartWorkflow` moves it to `running`, and it stays `running` for the whole run; it is never mutated per-step (no `assigned_worker_ref`, `workflow_step_id`, or prompt writes, no `ready`/`assigned`/`recovering` flips). The item reaches `succeeded`/`failed` only when the whole run completes/fails. Because the ticket is never written per-step, **two steps bound to the same ticket can run in parallel** — each step run owns its own execution (`worker_execution_id`) and its own results. When the run ends, the ticket's `results` carry a run-level narrative (`_run_narrative`) aggregating each step's summary/decision/issues plus every recovery episode.
+
+#### Viewing Schedules
+1. Navigate to **Schedules** in the sidebar
+2. The **Upcoming** view (default) lists scheduled work items (`status = scheduled`) in chronological order with their next runtimes, grouped by local day (Today / Tomorrow / weekday date)
+3. Each card links to the work item (`/work-items/$id`) and its bound workflow (`/workflows/$id`); a right-aligned frequency slot shows **One-time** today and is the placeholder for future recurring schedules
+4. The **History** view (toggle or `?view=history`) shows items that had a scheduled start and reached a terminal status, most recent first, with links to the workflow run when one exists
+5. The standard filter bar applies: search, project, kind (schedulable kinds only), and run-time sort order; bulk actions cancel upcoming schedules or hard-delete history items
+6. A live clock and countdown chips are driven by a single page-level timer (paused while the tab is hidden)
 
 #### Building Workflows (Visual Editor)
 1. Navigate to **Workflows** → **New Workflow**
