@@ -5,7 +5,7 @@
 // tree/board/graph views refetch server-confirmed state (no optimistic
 // status transitions — invariant #3).
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { workItemClient } from "@/api/clients";
 import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
@@ -73,6 +73,9 @@ export function useListWorkItems(
     // hidden (TanStack default refetchIntervalInBackground=false), and
     // refetch when the window regains focus (the global default in
     // main.tsx is false — this page opts back in).
+    // keepPreviousData prevents the board from flashing empty during
+    // refetches after mutations (e.g. drag-and-drop status changes).
+    placeholderData: keepPreviousData,
     refetchInterval: opts?.refetchInterval ?? 5_000,
     refetchOnWindowFocus: true,
   });

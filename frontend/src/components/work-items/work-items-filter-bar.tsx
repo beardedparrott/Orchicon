@@ -74,7 +74,7 @@ export function WorkItemsFilterBar({
     "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:ring-2 focus-visible:ring-ring";
 
   return (
-    <div className="flex flex-wrap items-center gap-3">
+    <div className="flex flex-wrap items-center gap-3 shrink-0">
       {/* ── Row 1: project + search + filters + sort ── */}
       <select
         value={projectId}

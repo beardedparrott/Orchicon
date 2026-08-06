@@ -132,8 +132,8 @@ function WorkItemsPage() {
   const hasQuery = statusFilter !== "" || kindFilter !== "" || debouncedSearch !== "";
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4">
+    <div className="flex flex-col gap-6" style={{ height: "calc(100vh - 64px)" }}>
+      <div className="flex flex-wrap items-center justify-between gap-4 shrink-0">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Work Items</h1>
           <p className="text-sm text-muted-foreground">
@@ -188,9 +188,9 @@ function WorkItemsPage() {
       )}
 
       {hasProjects && (
-        <>
+        <div className="flex flex-1 min-h-0 flex-col">
           {!projectId && (
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-muted-foreground shrink-0">
               Dependency state (blocked/blocking chips) is per-project — select a
               project above to see it.
             </p>
@@ -222,7 +222,7 @@ function WorkItemsPage() {
               />
             )}
           </TooltipProvider>
-        </>
+        </div>
       )}
     </div>
   );

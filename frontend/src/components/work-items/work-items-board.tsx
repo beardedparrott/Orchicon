@@ -7,11 +7,16 @@
 // - One column per server status; the drop target maps 1:1 to a
 //   WorkItemStatus value (ADR-8). checkpointing/recovering render in
 //   Running, scheduled in Pending — the card keeps its REAL status pill.
-// - Columns are responsive: flex-1 min-w-[200px] so they share the
+// - Columns are responsive: flex-1 min-w-[280px] so they share the
 //   viewport width. Horizontal scroll is a fallback on very small screens.
-// - Drag & drop via @dnd-kit (Pointer + Keyboard sensors). Drops are
-//   server-confirmed (ADR-5): the card shows a transient "moving…" state
-//   and stays in its origin column until the refetch lands.
+// - Drag & drop via @dnd-kit (Pointer + Keyboard sensors). Collision
+//   detection uses pointerWithin (not closestCenter) to prevent cross-
+//   column snapping — the pointer must be literally inside a droppable.
+//   Running is fully read-only: useDroppable disabled + pointerWithin
+//   exclusion + explicit guard in handleDragEnd.
+// - Drops are server-confirmed (ADR-5): the card shows a transient
+//   "moving…" state and stays in its origin column until the refetch
+//   lands. keepPreviousData on the list query prevents empty flashes.
 // - Advisory gates before the mutation: a blocked card cannot be dropped
 //   on Ready, and Epics/Features accept only pending|succeeded|cancelled.
 // - "Move to…" select per card = the assistive/keyboard path (design §5.5).
@@ -24,7 +29,7 @@ import {
   DndContext,
   KeyboardSensor,
   PointerSensor,
-  closestCenter,
+  pointerWithin,
   useDroppable,
   useSensor,
   useSensors,
@@ -47,6 +52,7 @@ import type { BlockState } from "@/components/work-items/dependency-utils";
 import { blockingTitles } from "@/components/work-items/dependency-utils";
 import { WorkItemCard } from "@/components/work-items/work-item-card";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 
@@ -178,9 +184,9 @@ export function WorkItemsBoard({
     if (overData?.type === "column") targetStatus = overData.status;
     else if (overData?.type === "card") targetStatus = overData.status;
     if (targetStatus == null) return;
-    // Guard: Running is a read-only column. closestCenter can
-    // incorrectly snap to the nearest card/column boundary, so this
-    // explicit check prevents accidental workflow kicks.
+    // Guard: Running is a read-only column — only the server sets this
+    // status when a workflow is executing. Even with pointerWithin, this
+    // check prevents accidental workflow kicks.
     if (READ_ONLY_STATUSES.has(targetStatus)) return;
     handleMove(item, targetStatus);
   };
@@ -188,14 +194,14 @@ export function WorkItemsBoard({
   if (isLoading) {
     return (
       <div
-        className="flex gap-3 overflow-hidden rounded-lg border"
-        style={{ height: "calc(100vh - 280px)", minHeight: "400px" }}
+        className="flex flex-1 gap-3 overflow-hidden rounded-lg border"
+        style={{ minHeight: "400px" }}
         aria-busy="true"
       >
         {BOARD_COLUMNS.map((col) => (
           <div
             key={col.status}
-            className="h-full flex-1 min-w-[200px] animate-pulse rounded-lg border bg-card/50"
+            className="h-full flex-1 min-w-[280px] animate-pulse rounded-lg border bg-card/50"
           />
         ))}
       </div>
@@ -229,12 +235,16 @@ export function WorkItemsBoard({
   return (
     <DndContext
       sensors={sensors}
-      collisionDetection={closestCenter}
+      // pointerWithin only triggers when the pointer is literally inside a
+      // droppable — prevents closestCenter from snapping to the nearest
+      // card/column boundary (which could incorrectly land on the
+      // read-only Running column when dropping between Pending and Running).
+      collisionDetection={pointerWithin}
       onDragEnd={handleDragEnd}
     >
       <div
-        className="flex gap-3 overflow-x-auto rounded-lg border bg-card/20 p-2"
-        style={{ height: "calc(100vh - 280px)", minHeight: "400px" }}
+        className="flex flex-1 gap-3 overflow-x-auto rounded-lg border bg-muted/20 p-3"
+        style={{ minHeight: "400px" }}
       >
         {BOARD_COLUMNS.map((col) => {
           const colItems = items.filter((i) => columnForStatus(i.status) === col.status);
@@ -302,19 +312,26 @@ function BoardColumn({
       ref={setNodeRef}
       aria-label={`${column.label} column${isReadOnly ? " (read-only)" : ""}`}
       className={cn(
-        "flex flex-1 min-w-[200px] snap-start flex-col rounded-lg border bg-card/40 transition-colors",
+        "flex flex-1 min-w-[280px] snap-start flex-col rounded-lg border transition-colors",
         isOver && !isReadOnly && "bg-accent/40 ring-2 ring-ring",
-        isReadOnly && "opacity-80",
+        isReadOnly
+          ? "border-dashed bg-muted/30 opacity-75"
+          : "bg-card/40",
       )}
     >
-      <div className="sticky top-0 z-10 flex items-center gap-2 rounded-t-lg border-b bg-card/90 px-3 py-2 backdrop-blur">
+      <div className="sticky top-0 z-10 flex items-center gap-2 rounded-t-lg border-b bg-card/90 px-3 py-2.5 backdrop-blur">
         <span
           aria-hidden
-          className={cn("h-2 w-2 rounded-full", statusMeta(column.status).dot)}
+          className={cn("h-2.5 w-2.5 rounded-full", statusMeta(column.status).dot)}
         />
-        <h3 className="text-sm font-semibold">{column.label}</h3>
+        <h3 className="text-sm font-semibold tracking-tight">{column.label}</h3>
         {isReadOnly && (
-          <Lock aria-hidden className="h-3 w-3 text-muted-foreground" />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Lock aria-hidden className="h-3.5 w-3.5 text-muted-foreground" />
+            </TooltipTrigger>
+            <TooltipContent>Read-only — only set by workflows</TooltipContent>
+          </Tooltip>
         )}
         <span className="ml-auto rounded-full bg-muted px-2 py-0.5 text-xs font-medium tabular-nums text-muted-foreground">
           {items.length}
@@ -336,9 +353,11 @@ function BoardColumn({
           ))}
         </SortableContext>
         {items.length === 0 && (
-          <p className="px-2 py-6 text-center text-xs text-muted-foreground">
-            {isReadOnly ? "No items" : "Drop items here"}
-          </p>
+          <div className="flex flex-1 items-center justify-center px-2 py-8">
+            <p className="text-center text-xs text-muted-foreground">
+              {isReadOnly ? "No items" : "Drop items here"}
+            </p>
+          </div>
         )}
       </div>
     </section>
