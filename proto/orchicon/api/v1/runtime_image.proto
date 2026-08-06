@@ -52,4 +52,8 @@ message RuntimeImage {
   // if deleted); "custom" = created by the tenant. Informational — every row
   // builds through the same daemon path.
   string source = 18;
+  // Spec version the current ready image was actually built from (0 = never
+  // built). When built_version == version the image is up to date and Deploy
+  // short-circuits; a lagging built_version means a rebuild is pending.
+  int32 built_version = 19;
 }

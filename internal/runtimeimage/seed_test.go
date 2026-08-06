@@ -58,6 +58,10 @@ func TestSeedState(t *testing.T) {
 	oldContent := []byte("FROM debian:trixie\n")
 	oldSeed := string(oldContent) + "# " + cannedSeedMarker + "=" + seedVersion(oldContent) + "\n"
 
+	// Content appended AFTER the marker (the UI textarea cursor lands at the
+	// end) still leaves the marker self-consistent — but it is a user edit.
+	appendedAfterMarker := seed + "# user tweak\n"
+
 	cases := []struct {
 		name     string
 		override string
@@ -68,6 +72,7 @@ func TestSeedState(t *testing.T) {
 		{name: "older-generation seed", override: oldSeed, wantPri: true, wantCur: false},
 		{name: "edited body, marker kept", override: editedKeptMarker, wantPri: false, wantCur: false},
 		{name: "edited body, marker dropped", override: editedDroppedMarker, wantPri: false, wantCur: false},
+		{name: "content after marker", override: appendedAfterMarker, wantPri: false, wantCur: false},
 		{name: "no marker", override: string(content), wantPri: false, wantCur: false},
 		{name: "empty", override: "", wantPri: false, wantCur: false},
 	}

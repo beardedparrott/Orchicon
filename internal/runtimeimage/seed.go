@@ -160,6 +160,9 @@ func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant s
 			Slug:               fmt.Sprintf("stock-%s", variant.Variant),
 			Description:        variant.Desc,
 			BaseImageRef:       defaultRef,
+			AptPackages:        []byte("[]"),
+			Toolchains:         []byte("[]"),
+			Env:                []byte("{}"),
 			DockerfileOverride: seedDockerfile,
 			Tag:                ref,
 			Status:             "draft",
@@ -252,6 +255,12 @@ func seedState(override string, currentContent []byte) (pristine, current bool) 
 		end = len(rest)
 	}
 	marker := strings.TrimSpace(rest[:end])
+	// The marker must be the LAST content of the override. Anything after it
+	// (an edit appended below the marker line, e.g. the UI textarea cursor
+	// landing at the end) means the user changed the file — back off.
+	if strings.TrimSpace(rest[end:]) != "" {
+		return false, false
+	}
 	if len(marker) != 12 || sha12String(body) != marker {
 		return false, false
 	}

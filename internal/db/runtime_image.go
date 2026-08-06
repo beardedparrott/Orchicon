@@ -55,6 +55,11 @@ func scanRuntimeImage(row pgx.Row) (RuntimeImageRow, error) {
 
 // CreateRuntimeImage inserts a new runtime image spec row.
 func CreateRuntimeImage(ctx context.Context, tx pgx.Tx, r RuntimeImageRow) (RuntimeImageRow, error) {
+	// Every row is either a canned stock image or a tenant custom image;
+	// callers that don't care (e.g. the Ask Orchicon tool) get 'custom'.
+	if r.Source == "" {
+		r.Source = "custom"
+	}
 	q := `INSERT INTO runtime_images
 		(id, tenant_id, name, slug, description, base_image_ref,
 		 apt_packages, toolchains, env, dockerfile_override, tag, status,

@@ -682,6 +682,7 @@ func toProto(r db.RuntimeImageRow) *apiv1.RuntimeImage {
 		BuildLog:           r.BuildLog,
 		Error:              r.Error,
 		Version:            int32(r.Version),
+		BuiltVersion:       int32(r.BuiltVersion),
 		CreatedAt:          timestamppb.New(r.CreatedAt),
 		UpdatedAt:          timestamppb.New(r.UpdatedAt),
 		Source:             r.Source,

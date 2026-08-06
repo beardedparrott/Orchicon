@@ -193,6 +193,15 @@ export class RuntimeImage extends Message<RuntimeImage> {
    */
   source = "";
 
+  /**
+   * Spec version the current ready image was actually built from (0 = never
+   * built). When built_version == version the image is up to date and Deploy
+   * short-circuits; a lagging built_version means a rebuild is pending.
+   *
+   * @generated from field: int32 built_version = 19;
+   */
+  builtVersion = 0;
+
   constructor(data?: PartialMessage<RuntimeImage>) {
     super();
     proto3.util.initPartial(data, this);
@@ -219,6 +228,7 @@ export class RuntimeImage extends Message<RuntimeImage> {
     { no: 16, name: "created_at", kind: "message", T: Timestamp },
     { no: 17, name: "updated_at", kind: "message", T: Timestamp },
     { no: 18, name: "source", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 19, name: "built_version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RuntimeImage {
