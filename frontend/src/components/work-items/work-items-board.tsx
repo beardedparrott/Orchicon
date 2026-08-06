@@ -203,7 +203,7 @@ export function WorkItemsBoard({
     let targetStatus: number | undefined;
     if (overData?.type === "column") {
       targetStatus = overData.status;
-    } else if (overData?.type === "card") {
+    } else if (overData?.type === "card" && overData.status != null) {
       // Resolve the COLUMN the card is rendered in, not the card's actual
       // status. A SCHEDULED card renders in the Pending column, so dropping
       // on it should move the dragged item to Pending, not Scheduled.

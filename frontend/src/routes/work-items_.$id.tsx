@@ -1,5 +1,5 @@
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 
 import {
@@ -9,6 +9,7 @@ import {
   useDeleteWorkItem,
   useHardDeleteWorkItem,
   useAddDependency,
+  useRemoveDependency,
   useGetDependencyGraph,
 } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
@@ -28,7 +29,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { KindPill } from "@/components/work-items/work-item-badges";
-import { kindLabel } from "@/components/work-items/work-item-meta";
+import { kindLabel, kindMeta, statusMeta, isTerminal } from "@/components/work-items/work-item-meta";
+import { cn } from "@/lib/utils";
 import { Timestamp } from "@bufbuild/protobuf";
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -49,6 +51,7 @@ function WorkItemDetailPage() {
   const deleteWorkItem = useDeleteWorkItem(item?.projectId ?? "");
   const hardDeleteWorkItem = useHardDeleteWorkItem(item?.projectId ?? "");
   const addDependency = useAddDependency(item?.projectId ?? "");
+  const removeDependency = useRemoveDependency(item?.projectId ?? "");
   const createWorkItem = useCreateWorkItem();
   const { data: graph } = useGetDependencyGraph(item?.projectId ?? "");
   const { data: projects } = useListProjects();
@@ -72,6 +75,12 @@ function WorkItemDetailPage() {
 
   const [depTarget, setDepTarget] = useState("");
   const [depType, setDepType] = useState(1); // BLOCKS
+
+  // Quick lookup for dependency display
+  const itemsById = useMemo(
+    () => new Map((graph?.nodes ?? []).map((n) => [n.id, n])),
+    [graph],
+  );
 
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
@@ -573,13 +582,25 @@ function WorkItemDetailPage() {
       {/* Dependencies (DAG edges — docs/02 §2.2, docs/09 §3.2) */}
       <Card>
         <CardHeader>
-          <CardTitle>Dependencies</CardTitle>
-          <CardDescription>
-            Edges in the work DAG. Cycles are rejected at admission (recursive
-            CTE — docs/09 §11).
-          </CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>Dependencies</CardTitle>
+              <CardDescription>
+                Edges in the work DAG. Cycles are rejected at admission (recursive
+                CTE — docs/09 §11).
+              </CardDescription>
+            </div>
+            {item.projectId && (
+              <Button variant="outline" size="sm" asChild>
+                <Link to="/work-items/graph" search={{ projectId: item.projectId }}>
+                  View Graph
+                </Link>
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* Add dependency form */}
           <div className="flex items-end gap-2">
             <div className="flex-1 space-y-1">
               <Label htmlFor="depTarget">Add dependency to</Label>
@@ -624,52 +645,126 @@ function WorkItemDetailPage() {
             </p>
           )}
 
+          {/* Dependency lists */}
           <div className="grid gap-4 md:grid-cols-2">
+            {/* Incoming (what this item depends on) */}
             <div>
               <h4 className="text-xs font-medium uppercase text-muted-foreground">
                 Depends on ({incomingDeps.length})
               </h4>
-              <div className="mt-2 space-y-1">
+              <div className="mt-2 space-y-1.5">
                 {incomingDeps.length === 0 && (
                   <p className="text-xs text-muted-foreground">None</p>
                 )}
                 {incomingDeps.map((dep) => {
-                  const from = graph?.nodes?.find(
-                    (n) => n.id === dep.fromId,
-                  );
+                  const from = graph?.nodes?.find((n) => n.id === dep.fromId);
+                  const fromItem = itemsById.get(dep.fromId);
                   return (
                     <div
                       key={dep.id}
-                      className="rounded-md border p-2 text-xs"
+                      className={cn(
+                        "group flex items-center gap-2 rounded-md border p-2 text-xs transition-colors hover:bg-accent/50",
+                        fromItem && isTerminal(fromItem.status) && "opacity-60",
+                      )}
                     >
-                      <span className="font-medium">{from?.title ?? dep.fromId}</span>
-                      <span className="ml-2 text-muted-foreground">
-                        → {depTypeLabel(dep.type)}
+                      {fromItem ? (
+                        <>
+                          <span className={cn("inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-bold", kindMeta(fromItem.kind).badge)}>
+                            {kindMeta(fromItem.kind).shortLabel}
+                          </span>
+                          <Link
+                            to="/work-items/$id"
+                            params={{ id: dep.fromId }}
+                            className="min-w-0 flex-1 truncate font-medium hover:underline"
+                          >
+                            {from?.title ?? dep.fromId}
+                          </Link>
+                          <span className={cn("inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium", statusMeta(fromItem.status).pill)}>
+                            <span className={cn("h-1 w-1 rounded-full", statusMeta(fromItem.status).dot)} />
+                            {statusMeta(fromItem.status).label}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="font-medium">{from?.title ?? dep.fromId}</span>
+                      )}
+                      <span className="shrink-0 text-muted-foreground">
+                        ({depTypeLabel(dep.type)})
                       </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm(`Remove dependency from "${from?.title ?? dep.fromId}"?`)) {
+                            removeDependency.mutate(dep.id);
+                          }
+                        }}
+                        disabled={removeDependency.isPending}
+                        className="ml-auto shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                        aria-label={`Remove dependency from ${from?.title ?? dep.fromId}`}
+                      >
+                        ×
+                      </button>
                     </div>
                   );
                 })}
               </div>
             </div>
+
+            {/* Outgoing (what depends on this item) */}
             <div>
               <h4 className="text-xs font-medium uppercase text-muted-foreground">
                 Blocks ({outgoingDeps.length})
               </h4>
-              <div className="mt-2 space-y-1">
+              <div className="mt-2 space-y-1.5">
                 {outgoingDeps.length === 0 && (
                   <p className="text-xs text-muted-foreground">None</p>
                 )}
                 {outgoingDeps.map((dep) => {
                   const to = graph?.nodes?.find((n) => n.id === dep.toId);
+                  const toItem = itemsById.get(dep.toId);
                   return (
                     <div
                       key={dep.id}
-                      className="rounded-md border p-2 text-xs"
+                      className={cn(
+                        "group flex items-center gap-2 rounded-md border p-2 text-xs transition-colors hover:bg-accent/50",
+                        toItem && isTerminal(toItem.status) && "opacity-60",
+                      )}
                     >
-                      <span className="font-medium">{to?.title ?? dep.toId}</span>
-                      <span className="ml-2 text-muted-foreground">
+                      {toItem ? (
+                        <>
+                          <span className={cn("inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-bold", kindMeta(toItem.kind).badge)}>
+                            {kindMeta(toItem.kind).shortLabel}
+                          </span>
+                          <Link
+                            to="/work-items/$id"
+                            params={{ id: dep.toId }}
+                            className="min-w-0 flex-1 truncate font-medium hover:underline"
+                          >
+                            {to?.title ?? dep.toId}
+                          </Link>
+                          <span className={cn("inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium", statusMeta(toItem.status).pill)}>
+                            <span className={cn("h-1 w-1 rounded-full", statusMeta(toItem.status).dot)} />
+                            {statusMeta(toItem.status).label}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="font-medium">{to?.title ?? dep.toId}</span>
+                      )}
+                      <span className="shrink-0 text-muted-foreground">
                         ({depTypeLabel(dep.type)})
                       </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm(`Remove dependency to "${to?.title ?? dep.toId}"?`)) {
+                            removeDependency.mutate(dep.id);
+                          }
+                        }}
+                        disabled={removeDependency.isPending}
+                        className="ml-auto shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                        aria-label={`Remove dependency to ${to?.title ?? dep.toId}`}
+                      >
+                        ×
+                      </button>
                     </div>
                   );
                 })}
