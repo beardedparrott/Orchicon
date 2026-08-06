@@ -16,10 +16,29 @@ import type { UpdateWorkItemRequest } from "@/api/gen/orchicon/api/v1/work_item_
 import type { PartialMessage } from "@bufbuild/protobuf";
 
 // Query keys are centralized so invalidation is type-safe.
+//
+// `list` deliberately drops trailing `undefined` params: it must return a
+// TRUE prefix of the key the page's active list query uses. TanStack
+// Query's partial matching compares the *filter* key's elements against
+// the cached query key (`partialMatchKey(query.queryKey, queryKey)`
+// iterates `Object.keys(b)`), so a filter key that ends in `undefined`
+// at the `opts` slot can never match the real `{search, sortBy,
+// sortOrder}` object there. Before this fix, mutations invalidated
+// `["work-items","list",projectId,undefined,undefined,undefined]`, which
+// never matched `["work-items","list",projectId,undefined,undefined,
+// {search,sortBy,sortOrder}]` — the board card stayed in its origin
+// column until the 5s poll refetched. With the trimmed key
+// (`["work-items","list",projectId]`) every mutation's invalidation is a
+// real prefix and triggers an immediate refetch.
 export const workItemKeys = {
   all: ["work-items"] as const,
-  list: (projectId: string, parentId?: string, status?: number, opts?: { search?: string; sortBy?: string; sortOrder?: string }) =>
-    [...workItemKeys.all, "list", projectId, parentId, status, opts] as const,
+  list: (projectId: string, parentId?: string, status?: number, opts?: { search?: string; sortBy?: string; sortOrder?: string }) => {
+    const key: unknown[] = [...workItemKeys.all, "list", projectId];
+    if (parentId !== undefined) key.push(parentId);
+    if (status !== undefined) key.push(status);
+    if (opts !== undefined) key.push(opts);
+    return key;
+  },
   detail: (id: string) => [...workItemKeys.all, "detail", id] as const,
   graph: (projectId: string) =>
     [...workItemKeys.all, "graph", projectId] as const,

@@ -4,9 +4,18 @@
 //
 // Per design-notes/complete-ui-and-functionality-overhaul-of-work-item-page.md
 // (ADR-7): no new global tokens. All colors are component-level Tailwind
-// alpha variants of the standard hues so they adapt to light and dark
-// themes automatically (the old `bg-purple-100 text-purple-800` badges
-// were unreadable in dark themes — a WCAG AA violation).
+// alpha variants of the standard hues. Each badge/pill carries a
+// light-palette (`badge`/`pill`) and a dark-palette (`badgeDark`/
+// `pillDark`) class set; the badge components pick the set that matches
+// the ACTUAL palette (see work-item-badges.tsx `useDarkPalette`).
+//
+// The naive `text-purple-800 dark:text-purple-300` single-string variant
+// was unreadable in the app's default config (zinc theme + dark mode):
+// zinc is a LIGHT theme with no dark-palette overrides, so the page
+// keeps a light background while Tailwind's `.dark` class activates the
+// `dark:` text color — light text on a light background (1.13:1, WCAG
+// fail). Keying off the resolved theme's mode instead of the `.dark`
+// class fixes every light-theme-in-dark-mode combination.
 
 import {
   DependencyType,
@@ -24,8 +33,10 @@ export { DependencyType };
 export interface KindMeta {
   label: string; // "Epic"
   shortLabel: string; // "E" (square badge)
-  /** theme-safe badge classes (text ≥4.5:1, dot ≥3:1) */
+  /** light-palette badge classes (text ≥4.5:1) */
   badge: string;
+  /** dark-palette badge classes (text ≥4.5:1) */
+  badgeDark: string;
   /** solid dot color used for indent guides / timeline dots */
   dot: string;
   /** kind-colored left accent bar on cards */
@@ -36,28 +47,32 @@ const KIND_META: Record<number, KindMeta> = {
   [WorkItemKind.EPIC]: {
     label: "Epic",
     shortLabel: "E",
-    badge: "bg-purple-500/15 text-purple-800 dark:text-purple-300",
+    badge: "bg-purple-500/15 text-purple-800",
+    badgeDark: "bg-purple-500/15 text-purple-300",
     dot: "bg-purple-500",
     accentBar: "border-l-purple-500",
   },
   [WorkItemKind.FEATURE]: {
     label: "Feature",
     shortLabel: "F",
-    badge: "bg-indigo-500/15 text-indigo-800 dark:text-indigo-300",
+    badge: "bg-indigo-500/15 text-indigo-800",
+    badgeDark: "bg-indigo-500/15 text-indigo-300",
     dot: "bg-indigo-500",
     accentBar: "border-l-indigo-500",
   },
   [WorkItemKind.TASK]: {
     label: "Task",
     shortLabel: "T",
-    badge: "bg-blue-500/15 text-blue-800 dark:text-blue-300",
+    badge: "bg-blue-500/15 text-blue-800",
+    badgeDark: "bg-blue-500/15 text-blue-300",
     dot: "bg-blue-500",
     accentBar: "border-l-blue-500",
   },
   [WorkItemKind.SUBTASK]: {
     label: "Subtask",
     shortLabel: "S",
-    badge: "bg-cyan-500/15 text-cyan-800 dark:text-cyan-300",
+    badge: "bg-cyan-500/15 text-cyan-800",
+    badgeDark: "bg-cyan-500/15 text-cyan-300",
     dot: "bg-cyan-500",
     accentBar: "border-l-cyan-500",
   },
@@ -66,28 +81,32 @@ const KIND_META: Record<number, KindMeta> = {
   [WorkItemKind.RECOVERY_STOP]: {
     label: "Recovery: Stop",
     shortLabel: "R",
-    badge: "bg-amber-500/15 text-amber-800 dark:text-amber-300",
+    badge: "bg-amber-500/15 text-amber-800",
+    badgeDark: "bg-amber-500/15 text-amber-300",
     dot: "bg-amber-500",
     accentBar: "border-l-amber-500",
   },
   [WorkItemKind.RECOVERY_SUMMARIZE_RESTART]: {
     label: "Recovery: Summarize & Restart",
     shortLabel: "R",
-    badge: "bg-amber-500/15 text-amber-800 dark:text-amber-300",
+    badge: "bg-amber-500/15 text-amber-800",
+    badgeDark: "bg-amber-500/15 text-amber-300",
     dot: "bg-amber-500",
     accentBar: "border-l-amber-500",
   },
   [WorkItemKind.RECOVERY_HUMAN_ESCALATION]: {
     label: "Recovery: Human Escalation",
     shortLabel: "R",
-    badge: "bg-rose-500/15 text-rose-800 dark:text-rose-300",
+    badge: "bg-rose-500/15 text-rose-800",
+    badgeDark: "bg-rose-500/15 text-rose-300",
     dot: "bg-rose-500",
     accentBar: "border-l-rose-500",
   },
   [WorkItemKind.RECOVERY_RETRY_N]: {
     label: "Recovery: Retry",
     shortLabel: "R",
-    badge: "bg-amber-500/15 text-amber-800 dark:text-amber-300",
+    badge: "bg-amber-500/15 text-amber-800",
+    badgeDark: "bg-amber-500/15 text-amber-300",
     dot: "bg-amber-500",
     accentBar: "border-l-amber-500",
   },
@@ -99,6 +118,7 @@ export function kindMeta(kind: number): KindMeta {
       label: "Unknown",
       shortLabel: "?",
       badge: "bg-muted text-muted-foreground",
+      badgeDark: "bg-muted text-muted-foreground",
       dot: "bg-muted",
       accentBar: "border-l-muted",
     }
@@ -123,8 +143,10 @@ export const KIND_FILTER_OPTIONS = [
 
 export interface StatusMeta {
   label: string;
-  /** theme-safe pill classes (text ≥4.5:1) */
+  /** light-palette pill classes (text ≥4.5:1) */
   pill: string;
+  /** dark-palette pill classes (text ≥4.5:1) */
+  pillDark: string;
   /** small dot shown next to counts / column headers */
   dot: string;
 }
@@ -132,52 +154,62 @@ export interface StatusMeta {
 const STATUS_META: Record<number, StatusMeta> = {
   [WorkItemStatus.PENDING]: {
     label: "pending",
-    pill: "bg-gray-500/15 text-gray-700 dark:text-gray-300",
+    pill: "bg-gray-500/15 text-gray-700",
+    pillDark: "bg-gray-500/15 text-gray-300",
     dot: "bg-gray-400",
   },
   [WorkItemStatus.READY]: {
     label: "ready",
-    pill: "bg-blue-500/15 text-blue-800 dark:text-blue-300",
+    pill: "bg-blue-500/15 text-blue-800",
+    pillDark: "bg-blue-500/15 text-blue-300",
     dot: "bg-blue-500",
   },
   [WorkItemStatus.ASSIGNED]: {
     label: "assigned",
-    pill: "bg-amber-500/15 text-amber-800 dark:text-amber-300",
+    pill: "bg-amber-500/15 text-amber-800",
+    pillDark: "bg-amber-500/15 text-amber-300",
     dot: "bg-amber-500",
   },
   [WorkItemStatus.RUNNING]: {
     label: "running",
-    pill: "bg-green-500/15 text-green-800 dark:text-green-300",
+    pill: "bg-green-500/15 text-green-800",
+    pillDark: "bg-green-500/15 text-green-300",
     dot: "bg-green-500",
   },
   [WorkItemStatus.CHECKPOINTING]: {
     label: "checkpointing",
-    pill: "bg-sky-500/15 text-sky-800 dark:text-sky-300",
+    pill: "bg-sky-500/15 text-sky-800",
+    pillDark: "bg-sky-500/15 text-sky-300",
     dot: "bg-sky-500",
   },
   [WorkItemStatus.SUCCEEDED]: {
     label: "succeeded",
-    pill: "bg-emerald-500/15 text-emerald-800 dark:text-emerald-300",
+    pill: "bg-emerald-500/15 text-emerald-800",
+    pillDark: "bg-emerald-500/15 text-emerald-300",
     dot: "bg-emerald-500",
   },
   [WorkItemStatus.FAILED]: {
     label: "failed",
-    pill: "bg-red-500/15 text-red-800 dark:text-red-300",
+    pill: "bg-red-500/15 text-red-800",
+    pillDark: "bg-red-500/15 text-red-300",
     dot: "bg-red-500",
   },
   [WorkItemStatus.CANCELLED]: {
     label: "cancelled",
-    pill: "bg-gray-500/15 text-gray-600 dark:text-gray-400",
+    pill: "bg-gray-500/15 text-gray-600",
+    pillDark: "bg-gray-500/15 text-gray-400",
     dot: "bg-gray-400",
   },
   [WorkItemStatus.RECOVERING]: {
     label: "recovering",
-    pill: "bg-orange-500/15 text-orange-800 dark:text-orange-300",
+    pill: "bg-orange-500/15 text-orange-800",
+    pillDark: "bg-orange-500/15 text-orange-300",
     dot: "bg-orange-500",
   },
   [WorkItemStatus.SCHEDULED]: {
     label: "scheduled",
-    pill: "bg-purple-500/15 text-purple-800 dark:text-purple-300",
+    pill: "bg-purple-500/15 text-purple-800",
+    pillDark: "bg-purple-500/15 text-purple-300",
     dot: "bg-purple-500",
   },
 };
@@ -187,6 +219,7 @@ export function statusMeta(status: number): StatusMeta {
     STATUS_META[status] ?? {
       label: "unknown",
       pill: "bg-muted text-muted-foreground",
+      pillDark: "bg-muted text-muted-foreground",
       dot: "bg-muted",
     }
   );

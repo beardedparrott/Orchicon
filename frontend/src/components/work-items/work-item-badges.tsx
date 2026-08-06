@@ -5,24 +5,32 @@
 // were unreadable in dark themes — WCAG AA).
 //
 // Colors come from work-item-meta.ts (ADR-7): translucent alpha variants
-// of the standard hues that hold up in both light and dark themes.
+// of the standard hues with a light-palette and a dark-palette class
+// set each. Which set is active is decided by `useDarkPalette`, which
+// reads the RESOLVED theme's mode — NOT the global `.dark` class. The
+// app's default config is zinc (a light theme) + dark mode: the `.dark`
+// class is present but the palette stays light, so `dark:` variants made
+// badge text light-on-light (1.13:1). Only dark themes define a dark
+// palette, so that is the flag the variants key off.
 
 import { cn } from "@/lib/utils";
 
 import { kindMeta, statusMeta } from "@/components/work-items/work-item-meta";
+import { useDarkPalette } from "@/components/work-items/use-dark-palette";
 
 /**
  * Compact square kind badge ("E", "F", "T", "S", "R") — the Jira-style
  * scan badge used on tree rows and board cards.
  */
 export function KindBadge({ kind, className }: { kind: number; className?: string }) {
+  const isDark = useDarkPalette();
   const meta = kindMeta(kind);
   return (
     <span
       aria-hidden
       className={cn(
         "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-xs font-bold",
-        meta.badge,
+        isDark ? meta.badgeDark : meta.badge,
         className,
       )}
     >
@@ -36,12 +44,13 @@ export function KindBadge({ kind, className }: { kind: number; className?: strin
  * header, where the full kind name matters.
  */
 export function KindPill({ kind, className }: { kind: number; className?: string }) {
+  const isDark = useDarkPalette();
   const meta = kindMeta(kind);
   return (
     <span
       className={cn(
         "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
-        meta.badge,
+        isDark ? meta.badgeDark : meta.badge,
         className,
       )}
     >
@@ -53,12 +62,13 @@ export function KindPill({ kind, className }: { kind: number; className?: string
 
 /** Rounded status pill ("pending", "running", …) — theme-safe. */
 export function StatusPill({ status, className }: { status: number; className?: string }) {
+  const isDark = useDarkPalette();
   const meta = statusMeta(status);
   return (
     <span
       className={cn(
         "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
-        meta.pill,
+        isDark ? meta.pillDark : meta.pill,
         className,
       )}
     >

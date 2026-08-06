@@ -13,8 +13,12 @@ import { Link2, Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 
 import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
-import { KindBadge, StatusPill } from "@/components/work-items/work-item-badges";
+import {
+  KindBadge,
+  StatusPill,
+} from "@/components/work-items/work-item-badges";
 import { kindMeta, priorityLabel, relativeAge } from "@/components/work-items/work-item-meta";
+import { useDarkPalette } from "@/components/work-items/use-dark-palette";
 import {
   Tooltip,
   TooltipContent,
@@ -38,6 +42,7 @@ export function BlockedChip({
 }) {
   const blockers = blockedBy?.get(id) ?? [];
   const titles = blockers.map((b) => b.title).join(", ");
+  const isDark = useDarkPalette();
 
   if (blockers.length > 0) {
     return (
@@ -47,7 +52,8 @@ export function BlockedChip({
             tabIndex={0}
             aria-label={`Blocked by ${titles}`}
             className={cn(
-              "inline-flex items-center gap-0.5 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-semibold text-amber-800 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 dark:text-amber-300",
+              "inline-flex items-center gap-0.5 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-semibold focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+              isDark ? "text-amber-300" : "text-amber-800",
               className,
             )}
           >
