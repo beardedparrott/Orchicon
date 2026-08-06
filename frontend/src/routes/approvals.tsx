@@ -240,7 +240,7 @@ function ApprovalsPage() {
                       <CardTitle className="text-base">
                         <Link
                           to="/workflows/$id/runs/$runId"
-                          params={{ id: "", runId: item.workflowRunId }}
+                          params={{ id: item.workflowId, runId: item.workflowRunId }}
                           className="hover:underline"
                         >
                           {item.projectName && `${item.projectName} — `}
@@ -262,7 +262,7 @@ function ApprovalsPage() {
                     </Badge>
                     <Link
                       to="/workflows/$id/runs/$runId"
-                      params={{ id: "", runId: item.workflowRunId }}
+                      params={{ id: item.workflowId, runId: item.workflowRunId }}
                     >
                       <Button variant="ghost" size="icon" className="h-8 w-8">
                         <ExternalLink className="h-4 w-4" />

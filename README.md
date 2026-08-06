@@ -30,26 +30,17 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.195 (2026-08-06)
+
+| Type | Change |
+|---|---|
+| Bug fix | **Approval deep links now include the workflow ID segment.** The Approvals page rendered broken run links (`http://localhost:8080/workflows//runs/{run_id}`) because the frontend passed an empty workflow id — `ApprovalItem` never carried it. The proto now exposes `workflow_id` (field 12), the backend `listApprovalItems` SELECT/Scan populates it from the `workflow_runs` join (the inner join on `workflow_runs` guarantees a non-empty segment), and both approvals.tsx links render `/workflows/{workflow_id}/runs/{run_id}`. |
+
 ### v0.1.192 (2026-08-06)
 
 | Type | Change |
 |---|---|
 | Bug fix | **Canned workers now appear in prod even when the slugs were taken.** The UI workers were created manually (before they were canned) in prod, so the seeder's insert collided on the slug index and **aborted the whole batch** — the canned UI workers never seeded and the manual shells stayed empty. The seeder now resolves each canned worker by slug too: an **empty shell** (no prompt content) is **adopted in place** — its ID is preserved (workflow step refs stay valid) and its version is filled with the canned profile; a customized worker keeps the slug untouched. `SeedDevWorkers` also continues past a failing worker instead of aborting the batch. |
-
-### v0.1.191 (2026-08-06)
-
-| Type | Change |
-|---|---|
-| Feature | **UI workers are canned + browser-ready.** Three UI-focused workers are seeded on boot — **UI Design Architect**, **UI Developer**, **UI QA Engineer** — with UI-development-focused profiles and a shared **Browser automation (Playwright)** AGENTS.md block (`--no-sandbox` instruction + a `scripts/browser.mjs` helper for headless Chromium, which the runtime container cannot sandbox since it has no root process). The `:orchicon-dev` runtime image now preinstalls Playwright + headless Chromium (`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`). |
-| Bug fix | **Worker prompt edits no longer vanish.** Editing Role/Skills/Behavior/AGENTS.md on a worker draft saved into a `system_prompt` blob that the DB never persisted — edits silently disappeared. These four fields are now first-class in the API (`role`/`skills`/`behavior`/`agents_md` on `WorkerVersion` + the create/update/version requests); the server stores them as the source of truth and recomposes `system_prompt`. |
-| Bug fix | **Cloning a worker no longer fails.** Code-view Clone sent the source worker's slug, hitting the unique `workers_tenant_slug_idx` constraint. `CreateWorker` now dedupes slugs per tenant (`-2`, `-3`, …) and Clone sends a `-clone` slug + copies the version fields (prompt, model, permissions, budgets). |
-| Bug fix | **Canned-worker drafts are no longer force-published on reboot.** The seeder used to promote any stray draft version on a canned worker every boot — an in-progress edit got silently published by the next restart. Drafts are now only promoted when the worker has *no* published version left (and then only the latest one); user drafts alongside a published version stay drafts. |
-
-### v0.1.190 (2026-08-05)
-
-| Type | Change |
-|---|---|
-| Feature | **Canned stock runtime images are now editable rows.** The shipped runtime images (base / `:gui` / `:orchicon-dev`) were host-only docker images shown in a separate read-only UI section with no visible version and no edit path. They now seed as normal `runtime_images` rows (`source='stock'`) on every boot — exactly like canned workers — so you can see each one's spec version / `built_version`, edit it (advanced Dockerfile mode), deploy it, or delete it (re-seeded next boot). The seeder writes the shipped Dockerfile template plus a versioned seed marker; a row that is still an intact seed is rolled forward and auto-built when the template changes (pruning the previous version of the tag), while any user-edited row is preserved untouched. `scripts/container.sh` now also skips rebuilding any image that carries a daemon-built `org.orchicon.runtime.spec-version` label, so an edited+redeployed canned image survives `make container-rebuild`. |
 
 ## Installation
 

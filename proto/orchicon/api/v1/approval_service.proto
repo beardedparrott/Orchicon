@@ -50,6 +50,7 @@ message ApprovalItem {
   string acceptance_criteria = 9;
   string status = 10;              // "pending" | "approved" | "rejected"
   google.protobuf.Timestamp created_at = 11;
+  string workflow_id = 12;         // owning workflow — for deep links back to the run
 }
 
 message ListPendingStepApprovalsRequest {

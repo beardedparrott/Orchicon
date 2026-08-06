@@ -175,6 +175,13 @@ export class ApprovalItem extends Message<ApprovalItem> {
    */
   createdAt?: Timestamp;
 
+  /**
+   * owning workflow — for deep links back to the run
+   *
+   * @generated from field: string workflow_id = 12;
+   */
+  workflowId = "";
+
   constructor(data?: PartialMessage<ApprovalItem>) {
     super();
     proto3.util.initPartial(data, this);
@@ -194,6 +201,7 @@ export class ApprovalItem extends Message<ApprovalItem> {
     { no: 9, name: "acceptance_criteria", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 10, name: "status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 11, name: "created_at", kind: "message", T: Timestamp },
+    { no: 12, name: "workflow_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ApprovalItem {

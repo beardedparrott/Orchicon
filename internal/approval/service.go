@@ -256,6 +256,7 @@ func (s *Service) ListPendingStepApprovals(ctx context.Context, req *connect.Req
 type approvalItemRow struct {
 	StepRunID        string
 	WorkflowRunID    string
+	WorkflowID       string
 	ProjectName      string
 	WorkItemTitle    string
 	WorkflowName     string
@@ -276,6 +277,7 @@ func listApprovalItems(ctx context.Context, tx pgx.Tx, tenantID string, req *api
 	q := `SELECT
 		wsr.id,
 		wr.id,
+		w.id,
 		COALESCE(p.name, ''),
 		COALESCE(wi.title, ''),
 		COALESCE(w.name, ''),
@@ -358,7 +360,7 @@ func listApprovalItems(ctx context.Context, tx pgx.Tx, tenantID string, req *api
 	for rows.Next() {
 		var r approvalItemRow
 		if err := rows.Scan(
-			&r.StepRunID, &r.WorkflowRunID,
+			&r.StepRunID, &r.WorkflowRunID, &r.WorkflowID,
 			&r.ProjectName, &r.WorkItemTitle,
 			&r.WorkflowName, &r.UpstreamWorker,
 			&r.UpstreamSummary, &r.TouchedFilesJSON,
@@ -389,6 +391,7 @@ func listApprovalItems(ctx context.Context, tx pgx.Tx, tenantID string, req *api
 		item := &apiv1.ApprovalItem{
 			StepRunId:         r.StepRunID,
 			WorkflowRunId:     r.WorkflowRunID,
+			WorkflowId:        r.WorkflowID,
 			ProjectName:       r.ProjectName,
 			WorkItemName:      r.WorkItemTitle,
 			WorkflowName:      r.WorkflowName,
