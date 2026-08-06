@@ -50,11 +50,14 @@ RUN curl -sSfL https://atlasgo.sh | sh
 # Playwright + Chromium (headless browser automation for UI workers).
 # Installed at build time as root (dpkg refuses non-root). PLAYWRIGHT_BROWSERS_PATH
 # keeps the browsers in a shared dir chowned to the runtime user (uid 1000) so
-# workers can drive headless Chrome without sudo. The runtime user runs Chromium
-# with --no-sandbox (no root process => the setuid sandbox cannot run) — the
-# canned UI workers' AGENTS.md carries that instruction + a scripts/browser.mjs
-# helper.
+# workers can drive headless Chrome without sudo. NODE_PATH makes the globally
+# installed playwright package resolvable via `require("playwright")` from any
+# project directory (ESM `import` ignores NODE_PATH, so scripts should use
+# CommonJS). The runtime user runs Chromium with --no-sandbox (no root process
+# => the setuid sandbox cannot run) — the canned UI workers' AGENTS.md carries
+# that instruction + a scripts/browser.cjs helper.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ENV NODE_PATH=/usr/local/lib/node_modules
 RUN npm install -g playwright \
  && npx playwright install --with-deps chromium \
  && chown -R 1000:1000 /ms-playwright
