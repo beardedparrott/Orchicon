@@ -35,6 +35,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/reconciler"
 	"github.com/beardedparrott/orchicon/internal/recovery"
 	"github.com/beardedparrott/orchicon/internal/runtime"
+	"github.com/beardedparrott/orchicon/internal/runtimeimage"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/workflow"
@@ -223,6 +224,15 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	var rtClient *runtime.Client
 	if cfg.RuntimeSocket != "" {
 		rtClient = runtime.NewClient(cfg.RuntimeSocket, cfg.Instance)
+	}
+
+	// Seed canned "stock" runtime image rows (one per daemon-reported stock
+	// variant) so they appear as normal, editable rows in the Runtime Images
+	// page — the canned-image equivalent of SeedDevWorkers. Idempotent;
+	// pristine rows auto-build when a new seed version appears. Skips
+	// silently when the daemon is absent (headless serve).
+	if err := runtimeimage.SeedCannedImages(context.Background(), pool, log, rtClient); err != nil {
+		log.Warn("seed canned runtime images failed (continuing)", "error", err)
 	}
 	deps := api.Dependencies{
 		Pool:              pool,

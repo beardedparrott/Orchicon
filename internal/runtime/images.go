@@ -30,6 +30,22 @@ var imageTagPattern = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+
 type ImageList struct {
 	Default string   `json:"default"`
 	Images  []string `json:"images"`
+	// Infos carries per-image version labels, aligned with Images by index:
+	// RuntimeVersion = org.orchicon.runtime.version (stock builds:
+	// "<app-version>-<dockerfile-sha12>"), SpecVersion =
+	// org.orchicon.runtime.spec-version (custom/daemon builds: the
+	// runtime_images.version the image was built from). Either may be empty
+	// when the label is absent. The control plane uses this to reconcile
+	// canned stock rows against the actual local images (skip auto-builds
+	// when container.sh already produced a current pristine image).
+	Infos []ImageInfo `json:"infos"`
+}
+
+// ImageInfo is the version-label view of one image in ImageList.Infos.
+type ImageInfo struct {
+	Ref            string `json:"ref"`
+	RuntimeVersion string `json:"runtime_version,omitempty"`
+	SpecVersion    string `json:"spec_version,omitempty"`
 }
 
 // BuildRequest is the body of POST /v1/images/build. `Base` must resolve
@@ -94,6 +110,18 @@ func (d *Daemon) imageAllowed(name string) bool {
 	return strings.TrimSpace(out) == "true"
 }
 
+// imageLabel reads one config label from a local image. Best-effort: an
+// inspect failure (image missing) yields "". The image must already be local
+// for the label to exist — allowedImages only lists the base + configured
+// variants, which container.sh / the release workflow build or pull first.
+func (d *Daemon) imageLabel(name, label string) string {
+	out, err := d.docker("image", "inspect", "--format", `{{index .Config.Labels "`+label+`"}}`, name)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
 // handleImages implements the image routes:
 //
 //	GET    /v1/images          -> base + allowlist (work-item dropdown)
@@ -102,7 +130,16 @@ func (d *Daemon) imageAllowed(name string) bool {
 func (d *Daemon) handleImages(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, ImageList{Default: d.Image, Images: d.allowedImages()})
+		imgs := d.allowedImages()
+		infos := make([]ImageInfo, 0, len(imgs))
+		for _, ref := range imgs {
+			infos = append(infos, ImageInfo{
+				Ref:            ref,
+				RuntimeVersion: d.imageLabel(ref, "org.orchicon.runtime.version"),
+				SpecVersion:    d.imageLabel(ref, "org.orchicon.runtime.spec-version"),
+			})
+		}
+		writeJSON(w, http.StatusOK, ImageList{Default: d.Image, Images: imgs, Infos: infos})
 	case http.MethodPost:
 		var req BuildRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

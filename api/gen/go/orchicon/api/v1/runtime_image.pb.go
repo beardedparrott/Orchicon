@@ -114,8 +114,13 @@ type RuntimeImage struct {
 	Version            int32                  `protobuf:"varint,15,opt,name=version,proto3" json:"version,omitempty"`                  // optimistic concurrency (docs/09 §5)
 	CreatedAt          *timestamppb.Timestamp `protobuf:"bytes,16,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt          *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Where the row came from: "stock" = a canned image seeded from the shipped
+	// Dockerfile templates on boot (editable like any other, re-seeded on boot
+	// if deleted); "custom" = created by the tenant. Informational — every row
+	// builds through the same daemon path.
+	Source        string `protobuf:"bytes,18,opt,name=source,proto3" json:"source,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RuntimeImage) Reset() {
@@ -267,11 +272,18 @@ func (x *RuntimeImage) GetUpdatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *RuntimeImage) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
 var File_orchicon_api_v1_runtime_image_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_runtime_image_proto_rawDesc = "" +
 	"\n" +
-	"#orchicon/api/v1/runtime_image.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc3\x04\n" +
+	"#orchicon/api/v1/runtime_image.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xdb\x04\n" +
 	"\fRuntimeImage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x12\n" +
@@ -294,7 +306,8 @@ const file_orchicon_api_v1_runtime_image_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x10 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt*\xbe\x01\n" +
+	"updated_at\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x16\n" +
+	"\x06source\x18\x12 \x01(\tR\x06source*\xbe\x01\n" +
 	"\x12RuntimeImageStatus\x12$\n" +
 	" RUNTIME_IMAGE_STATUS_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aRUNTIME_IMAGE_STATUS_DRAFT\x10\x01\x12!\n" +

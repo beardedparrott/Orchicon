@@ -183,6 +183,16 @@ export class RuntimeImage extends Message<RuntimeImage> {
    */
   updatedAt?: Timestamp;
 
+  /**
+   * Where the row came from: "stock" = a canned image seeded from the shipped
+   * Dockerfile templates on boot (editable like any other, re-seeded on boot
+   * if deleted); "custom" = created by the tenant. Informational — every row
+   * builds through the same daemon path.
+   *
+   * @generated from field: string source = 18;
+   */
+  source = "";
+
   constructor(data?: PartialMessage<RuntimeImage>) {
     super();
     proto3.util.initPartial(data, this);
@@ -208,6 +218,7 @@ export class RuntimeImage extends Message<RuntimeImage> {
     { no: 15, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 16, name: "created_at", kind: "message", T: Timestamp },
     { no: 17, name: "updated_at", kind: "message", T: Timestamp },
+    { no: 18, name: "source", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RuntimeImage {

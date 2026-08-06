@@ -28,6 +28,7 @@ type RuntimeImageRow struct {
 	Error              string
 	Version            int
 	BuiltVersion       int // spec version the current ready image was built from (0 = never built)
+	Source             string // "stock" (canned, seeded) or "custom" (tenant-created)
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 }
@@ -36,18 +37,19 @@ type RuntimeImageRow struct {
 type RuntimeImageFilter struct {
 	TenantID string
 	Status   string // optional status filter; empty = all
+	Source   string // optional source filter ("stock"/"custom"); empty = all
 	Search   string // optional free-text on name/slug
 }
 
 const runtimeImageCols = `id, tenant_id, name, slug, description, base_image_ref,
 	apt_packages, toolchains, env, dockerfile_override, tag, status, build_log, error,
-	version, built_version, created_at, updated_at`
+	version, built_version, source, created_at, updated_at`
 
 func scanRuntimeImage(row pgx.Row) (RuntimeImageRow, error) {
 	var r RuntimeImageRow
 	err := row.Scan(&r.ID, &r.TenantID, &r.Name, &r.Slug, &r.Description, &r.BaseImageRef,
 		&r.AptPackages, &r.Toolchains, &r.Env, &r.DockerfileOverride, &r.Tag, &r.Status,
-		&r.BuildLog, &r.Error, &r.Version, &r.BuiltVersion, &r.CreatedAt, &r.UpdatedAt)
+		&r.BuildLog, &r.Error, &r.Version, &r.BuiltVersion, &r.Source, &r.CreatedAt, &r.UpdatedAt)
 	return r, err
 }
 
@@ -56,12 +58,12 @@ func CreateRuntimeImage(ctx context.Context, tx pgx.Tx, r RuntimeImageRow) (Runt
 	q := `INSERT INTO runtime_images
 		(id, tenant_id, name, slug, description, base_image_ref,
 		 apt_packages, toolchains, env, dockerfile_override, tag, status,
-		 build_log, error, version)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,1)
+		 build_log, error, version, source)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,1,$15)
 		RETURNING ` + runtimeImageCols
 	return scanRuntimeImage(tx.QueryRow(ctx, q, r.ID, r.TenantID, r.Name, r.Slug, r.Description,
 		r.BaseImageRef, r.AptPackages, r.Toolchains, r.Env, r.DockerfileOverride, r.Tag,
-		r.Status, r.BuildLog, r.Error))
+		r.Status, r.BuildLog, r.Error, r.Source))
 }
 
 // GetRuntimeImage loads one image spec by id (tenant-scoped).
@@ -74,9 +76,19 @@ func GetRuntimeImage(ctx context.Context, tx pgx.Tx, tenantID, id string) (Runti
 	return r, err
 }
 
+// GetRuntimeImageByTag loads one image spec by tag (tenant-scoped). Used by
+// the canned-image seeder to match a daemon-reported stock tag to its row.
+func GetRuntimeImageByTag(ctx context.Context, tx pgx.Tx, tenantID, tag string) (RuntimeImageRow, error) {
+	q := `SELECT ` + runtimeImageCols + ` FROM runtime_images WHERE tenant_id = $1 AND tag = $2`
+	r, err := scanRuntimeImage(tx.QueryRow(ctx, q, tenantID, tag))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return r, ErrNotFound
+	}
+	return r, err
+}
+
 // GetRuntimeImageForUpdate loads one image spec by id (tenant-scoped) and
 // locks the row for the rest of the transaction (SELECT ... FOR UPDATE).
-// BuildRuntimeImage uses it to serialize concurrent Deploys: the build-flow
 // marking transition is StatusOnly (it must NOT bump `version`, the "spec
 // changed" signal), so the version-based OCC check alone cannot serialize
 // two simultaneous Deploys — both would pass it and run `docker build` on
@@ -101,6 +113,11 @@ func ListRuntimeImages(ctx context.Context, tx pgx.Tx, f RuntimeImageFilter) ([]
 	if f.Status != "" {
 		q += fmt.Sprintf(" AND status = $%d", n)
 		args = append(args, f.Status)
+		n++
+	}
+	if f.Source != "" {
+		q += fmt.Sprintf(" AND source = $%d", n)
+		args = append(args, f.Source)
 		n++
 	}
 	if f.Search != "" {

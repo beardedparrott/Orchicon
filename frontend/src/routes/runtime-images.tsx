@@ -1,12 +1,10 @@
 import { createRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
-import { Trash2, SearchX, Boxes, Loader2, CheckCircle2, XCircle, ChevronDown, ChevronRight, Copy } from "lucide-react";
+import { Trash2, SearchX, Boxes, Loader2, CheckCircle2, XCircle } from "lucide-react";
 
 import {
   useListRuntimeImages,
   useDeleteRuntimeImage,
-  useAvailableRuntimeImages,
-  useStockImageTemplate,
 } from "@/api/runtimeImages";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,14 +16,15 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { useToast } from "@/components/ui/toast";
 import { Route as rootRoute } from "@/routes/__root";
 import type { RuntimeImage } from "@/api/gen/orchicon/api/v1/runtime_image_pb";
 
 // Runtime images page: tenant container image specs built by the runtime
 // daemon. Workers execute in a per-workflow-run runtime container whose
 // image is chosen per work item; this page is where those images are
-// defined and built.
+// defined and built. The shipped stock images (base / :gui / :orchicon-dev)
+// are seeded here as normal, editable rows (source = "stock") on boot — they
+// behave exactly like any other image: edit, deploy, delete, version-tracked.
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/runtime-images",
@@ -80,10 +79,6 @@ function RuntimeImagesPage() {
     statusFilter ? Number(statusFilter) : undefined,
     search || undefined,
   );
-  const { data: available } = useAvailableRuntimeImages();
-  // Stock images = the daemon's shipped images (base first). Custom
-  // images with no spec row are derived by removing the stock ones.
-  const stockImages = available?.stockImages ?? [];
 
   const toggleSelect = (id: string) => {
     setSelected((prev) => {
@@ -107,9 +102,11 @@ function RuntimeImagesPage() {
     const count = selected.size;
     if (
       !window.confirm(
-        `Delete ${count} runtime image${count === 1 ? "" : "s"}? This also removes the local Docker image${
-          count === 1 ? "" : "s"
-        }.`,
+        `Delete ${count} runtime image${count === 1 ? "" : "s"}?${
+          count === 1
+            ? ""
+            : " Canned (stock) images are re-seeded on the next boot."
+        }`,
       )
     ) {
       return;
@@ -126,8 +123,9 @@ function RuntimeImagesPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Runtime Images</h1>
           <p className="text-sm text-muted-foreground">
-            Container images workers run in, built by Orchicon from a
-            base image you always inherit. Pick one per work item.
+            Container images workers run in, built by Orchicon from a base
+            image you always inherit. Pick one per work item. The shipped
+            stock images appear here as editable rows.
           </p>
         </div>
         <Button asChild>
@@ -167,24 +165,6 @@ function RuntimeImagesPage() {
         )}
       </div>
 
-      {/* Stock images shipped with Orchicon (read-only; base first). */}
-      {stockImages.length > 0 && (
-        <div>
-          <h2 className="mb-2 text-sm font-semibold text-muted-foreground">
-            Stock images (shipped with Orchicon) — click to view the template
-          </h2>
-          <div className="space-y-2">
-            {stockImages.map((tag) => (
-              <StockImageCard
-                key={tag}
-                tag={tag}
-                isDefault={tag === (available?.defaultImage ?? "")}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
       {isLoading && (
         <p className="text-sm text-muted-foreground">Loading…</p>
       )}
@@ -194,30 +174,23 @@ function RuntimeImagesPage() {
         </p>
       )}
       {!isLoading && !error && (!images || images.length === 0) && (
-        <div>
-          <h2 className="mb-2 text-sm font-semibold text-muted-foreground">
-            Custom images (built by Orchicon)
-          </h2>
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <SearchX className="h-5 w-5 text-muted-foreground" />
-                No custom runtime images yet
-              </CardTitle>
-              <CardDescription>
-                Create an image to define the toolchain/system libraries your
-                workers get in their runtime container.
-              </CardDescription>
-            </CardHeader>
-          </Card>
-        </div>
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <SearchX className="h-5 w-5 text-muted-foreground" />
+              No runtime images yet
+            </CardTitle>
+            <CardDescription>
+              The shipped stock images are seeded on boot; create an image to
+              define the toolchain/system libraries your workers get in their
+              runtime container.
+            </CardDescription>
+          </CardHeader>
+        </Card>
       )}
 
       {images && images.length > 0 && (
         <div className="space-y-2">
-          <h2 className="text-sm font-semibold text-muted-foreground">
-            Custom images (built by Orchicon)
-          </h2>
           <div className="flex items-center gap-2 px-2 py-1">
             <input
               type="checkbox"
@@ -253,6 +226,15 @@ function RuntimeImagesPage() {
                     {img.slug || img.tag || "no tag"}
                   </p>
                 </Link>
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  v{img.version}
+                  {img.builtVersion > 0 ? ` · built v${img.builtVersion}` : ""}
+                </span>
+                {img.source === "stock" && (
+                  <span className="shrink-0 rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-800">
+                    stock
+                  </span>
+                )}
                 {img.error && (
                   <span className="max-w-64 truncate text-xs text-destructive">
                     {img.error}
@@ -264,69 +246,5 @@ function RuntimeImagesPage() {
         </div>
       )}
     </div>
-  );
-}
-
-// StockImageCard shows a shipped runtime image and, on click, expands to
-// display its Dockerfile template read-only — so users can see exactly how
-// a stock image is built and copy the pattern for their own custom image.
-function StockImageCard({ tag, isDefault }: { tag: string; isDefault: boolean }) {
-  const [open, setOpen] = useState(false);
-  const { data: tpl, isLoading } = useStockImageTemplate(open ? tag : "");
-  const toast = useToast();
-
-  const copyTemplate = () => {
-    if (!tpl?.dockerfile) return;
-    navigator.clipboard
-      .writeText(tpl.dockerfile)
-      .then(() => toast.success("Dockerfile template copied"))
-      .catch(() => toast.error("Failed to copy"));
-  };
-
-  return (
-    <Card className={cn(open ? "" : "opacity-80", "transition-colors")}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-3 p-3 text-left"
-      >
-        {open ? (
-          <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-        ) : (
-          <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-        )}
-        <Boxes className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate font-mono text-sm">{tag}</span>
-        {isDefault && (
-          <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">
-            default
-          </span>
-        )}
-      </button>
-      {open && (
-        <CardContent className="border-t p-3">
-          {isLoading && (
-            <p className="text-sm text-muted-foreground">Loading template…</p>
-          )}
-          {tpl && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium">{tpl.name}</p>
-                  <p className="text-xs text-muted-foreground">{tpl.description}</p>
-                </div>
-                <Button variant="outline" size="sm" onClick={copyTemplate}>
-                  <Copy className="mr-1 h-3.5 w-3.5" />
-                  Copy template
-                </Button>
-              </div>
-              <pre className="max-h-96 overflow-auto rounded-md bg-muted p-3 text-xs">
-                {tpl.dockerfile}
-              </pre>
-            </div>
-          )}
-        </CardContent>
-      )}
-    </Card>
   );
 }
