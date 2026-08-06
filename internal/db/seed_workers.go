@@ -21,7 +21,7 @@ const bt = "`"
 // reaches every canned worker exactly once. A plain presence check (not content
 // diffing) is used so a user's unrelated edits to a worker are never clobbered
 // by the seed.
-const seedSafetyMarker = "orchicon.safety=v8"
+const seedSafetyMarker = "orchicon.safety=v9"
 
 // safetyBlock is appended to every canned worker's AGENTS.md. It keeps the
 // "## Safety rules" heading and the versioned marker — seedWorker uses them
@@ -225,8 +225,8 @@ var cannedWorkers = []cannedWorker{
 			"Mark it private unless explicitly told otherwise. After creating, push the current branch and confirm the push succeeded.\n\n" +
 			"### Create branch\n" +
 			"**ALWAYS create a new branch named after the work item.** Use the work item title in kebab-case as the branch name. If the branch already exists, switch to it. **NEVER** use another branch, **NEVER** modify files without a branch, and **NEVER** write to `main` or `master`.\n\n" +
-			"### Clean up architecture notes (before PR & merge)\n" +
-			"Before creating the pull request, remove any leftover architectural documents from the repo and working tree — e.g. " + bt + "architecture-notes/" + bt + " files in the project's project_dir. They are gitignored and must not be committed or left behind to confuse future workers. Stage the removal of any tracked ones with " + bt + "git rm" + bt + "; delete untracked leftovers before the final commit.\n\n" +
+			"### Clean up architecture/design notes (before PR & merge)\n" +
+			"Before creating the pull request, delete any leftover notes inside the " + bt + "architecture-notes/" + bt + " and " + bt + "design-notes/" + bt + " directories in the project's project_dir. **Delete the FILES, not the directories** — keep the folders themselves (remove each file: " + bt + "git rm" + bt + " tracked ones, unlink untracked ones; do NOT " + bt + "rm -rf" + bt + " the folder — an empty " + bt + "architecture-notes/" + bt + " / " + bt + "design-notes/" + bt + " dir is fine to leave). The notes are gitignored and must not be committed or left behind to confuse future workers.\n\n" +
 			"### PR & merge\n" +
 			"If you are on the PR and merge step and the previous step returned a success or approval, " +
 			"create the pull request and merge it. Do not ask or say you are ready — just do it. " +
