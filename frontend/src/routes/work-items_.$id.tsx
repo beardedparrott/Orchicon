@@ -27,7 +27,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { cn } from "@/lib/utils";
+import { KindPill } from "@/components/work-items/work-item-badges";
+import { kindLabel } from "@/components/work-items/work-item-meta";
 import { Timestamp } from "@bufbuild/protobuf";
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -143,7 +144,7 @@ function WorkItemDetailPage() {
           </Button>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <KindBadge kind={item.kind} />
+              <KindPill kind={item.kind} />
               <h1 className="text-lg font-semibold tracking-tight sm:text-2xl">
                 {item.title}
               </h1>
@@ -681,41 +682,6 @@ function WorkItemDetailPage() {
       )}
     </div>
   );
-}
-
-function KindBadge({ kind }: { kind: number }) {
-  const labels: Record<number, string> = {
-    1: "Epic",
-    2: "Feature",
-    3: "Task",
-    4: "Subtask",
-  };
-  const styles: Record<number, string> = {
-    1: "bg-purple-100 text-purple-800",
-    2: "bg-indigo-100 text-indigo-800",
-    3: "bg-blue-100 text-blue-800",
-    4: "bg-cyan-100 text-cyan-800",
-  };
-  return (
-    <span
-      className={cn(
-        "rounded-full px-2 py-0.5 text-xs font-medium",
-        styles[kind] ?? "bg-muted text-muted-foreground",
-      )}
-    >
-      {labels[kind] ?? "unknown"}
-    </span>
-  );
-}
-
-function kindLabel(kind: number): string {
-  const labels: Record<number, string> = {
-    1: "epic",
-    2: "feature",
-    3: "task",
-    4: "subtask",
-  };
-  return labels[kind] ?? "unknown";
 }
 
 function depTypeLabel(type: number): string {

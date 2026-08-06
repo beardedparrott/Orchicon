@@ -50,7 +50,12 @@ export function useListWorkItems(
       return res.workItems as WorkItem[];
     },
     enabled: true, // empty projectId = list all
+    // Auto-refresh (design §5.5): poll every 5s, pause while the tab is
+    // hidden (TanStack default refetchIntervalInBackground=false), and
+    // refetch when the window regains focus (the global default in
+    // main.tsx is false — this page opts back in).
     refetchInterval: opts?.refetchInterval ?? 5_000,
+    refetchOnWindowFocus: true,
   });
 }
 
@@ -67,8 +72,12 @@ export function useGetWorkItem(id: string) {
 }
 
 // useGetDependencyGraph fetches the full DAG (nodes + edges) for a
-// project. Used by the read-only React Flow dependency graph (docs/10).
-export function useGetDependencyGraph(projectId: string) {
+// project. Used by the read-only React Flow dependency graph (docs/10)
+// and by the tree/board for blocked-state chips.
+export function useGetDependencyGraph(
+  projectId: string,
+  opts?: { refetchInterval?: number },
+) {
   return useQuery({
     queryKey: workItemKeys.graph(projectId),
     queryFn: async () => {
@@ -76,6 +85,10 @@ export function useGetDependencyGraph(projectId: string) {
       return res.graph as DependencyGraph;
     },
     enabled: !!projectId,
+    // Auto-refresh alongside the list (design §5.5) so blocked-state
+    // chips stay current; refetch on window focus.
+    refetchInterval: opts?.refetchInterval ?? 5_000,
+    refetchOnWindowFocus: true,
   });
 }
 
