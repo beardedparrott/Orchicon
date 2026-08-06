@@ -1,26 +1,45 @@
-import { createRoute, Link } from "@tanstack/react-router";
-import { useState } from "react";
-import { Trash2, SearchX } from "lucide-react";
+// Work items page (design-notes/complete-ui-and-functionality-overhaul-of-work-item-page.md).
+// Thin route shell: owns filter state, the shared selection, and the
+// list/graph queries; delegates rendering to the shared work-items
+// module. Provides the Tree view (Epic → Feature → Task → Subtask
+// hierarchy with cascade selection) and the Kanban board (dnd-kit drag &
+// drop, server-confirmed status transitions).
+//
+// Auto-refresh (design §5.5): the list + graph queries poll every 5s,
+// pause while the tab is hidden (TanStack default
+// refetchIntervalInBackground=false), refetch on window focus, and the
+// LiveRefreshIndicator in the header makes it visible.
 
-import { useBatchDeleteWorkItems, useListWorkItems } from "@/api/workItems";
+import { createRoute, Link } from "@tanstack/react-router";
+import { useCallback, useEffect, useMemo, useState } from "react";
+
+import { useBatchDeleteWorkItems, useGetDependencyGraph, useListWorkItems } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
 import { Button } from "@/components/ui/button";
 import {
   Card,
-  CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { computeBlockState, buildTreeData, filterItemsByKindStatus } from "@/components/work-items/dependency-utils";
+import {
+  useWorkItemSelection,
+  visibleSelectionState,
+} from "@/components/work-items/use-work-item-selection";
+import {
+  WorkItemsBoard,
+} from "@/components/work-items/work-items-board";
+import {
+  WorkItemsFilterBar,
+  type WorkItemsView,
+} from "@/components/work-items/work-items-filter-bar";
+import { useDebouncedValue } from "@/components/work-items/use-debounced-value";
+import { WorkItemsTree } from "@/components/work-items/work-items-tree";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
-import type { WorkItem as WorkItemProto } from "@/api/gen/orchicon/api/v1/work_item_pb";
 
-// Work items page (docs/10 §5, docs/02 §2.2). Provides a tree view
-// (Epic → Feature → Task → Subtask hierarchy) and a Kanban board
-// (status columns). The user selects a project to scope the view and
-// can search/sort/filter the work items within.
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/work-items",
@@ -30,33 +49,76 @@ export const Route = createRoute({
 function WorkItemsPage() {
   const { data: projects } = useListProjects();
   const [projectId, setProjectId] = useState<string>("");
-  const [view, setView] = useState<"tree" | "board">("tree");
+  const [view, setView] = useState<WorkItemsView>("board");
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search, 300);
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [kindFilter, setKindFilter] = useState<string>("");
   const [sortBy, setSortBy] = useState("created_at");
   const [sortOrder, setSortOrder] = useState("desc");
-  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const hasProjects = projects && projects.length > 0;
   const batchDelete = useBatchDeleteWorkItems();
 
-  const toggleSelect = (id: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
+  // Server state (design §3): list + DAG, both auto-refreshed. The shell
+  // owns the queries so the filter bar's select-all/count and the shared
+  // selection see exactly the same data as the active view.
+  //
+  // Search is intentionally NOT sent to the server: a server-side search
+  // returns only the matching rows, orphaning a searched task's epic and
+  // leaving an empty tree. We fetch the full page (pageSize 1000) and
+  // apply search + kind + status client-side (design §5.4) so filtered
+  // results keep their ancestors (file-explorer behavior).
+  const {
+    data: items,
+    isLoading,
+    error,
+    dataUpdatedAt,
+    isFetching,
+  } = useListWorkItems(projectId, {
+    sortBy: sortBy || undefined,
+    sortOrder: sortOrder || undefined,
+  });
+  const { data: graph } = useGetDependencyGraph(projectId, { refetchInterval: 5_000 });
 
-  const toggleSelectAll = (items: WorkItemProto[]) => {
-    if (selected.size === items.length) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(items.map((i) => i.id)));
-    }
-  };
+  const blockState = useMemo(
+    () => computeBlockState(graph?.nodes, graph?.edges),
+    [graph],
+  );
+
+  // Client-side filtering (design §5.4): kind + status + search compose
+  // over the full fetched set so the tree hierarchy stays intact.
+  const filteredItems = useMemo(
+    () => filterItemsByKindStatus(items, kindFilter, statusFilter, debouncedSearch),
+    [items, kindFilter, statusFilter, debouncedSearch],
+  );
+  const treeData = useMemo(
+    () => buildTreeData(items, kindFilter, statusFilter, debouncedSearch),
+    [items, kindFilter, statusFilter, debouncedSearch],
+  );
+
+  // Selection (design §5.1): cascade selection uses the FULL items list
+  // so checking/unchecking a parent always affects ALL its children
+  // regardless of active filters. The `childrenOf` callback must walk
+  // the complete hierarchy (not just filtered treeItems) so that
+  // cascade toggles reach descendants that may be hidden by the current
+  // kind/status/search filter.
+  const resetKey = [projectId, statusFilter, kindFilter, debouncedSearch, sortBy, sortOrder].join("|");
+  const childrenOf = useCallback(
+    (parentId: string) => (items ?? []).filter((i) => i.parentId === parentId),
+    [items],
+  );
+  const { selected, toggle, toggleAll, setSelected } = useWorkItemSelection(childrenOf, resetKey);
+
+  // The header select-all + count operate over the MATCHES (the items
+  // that actually pass the filters), never the dimmed ancestor container
+  // rows — otherwise "select all" under a type filter would mark
+  // filtered-out epics/features for bulk delete.
+  const visibleItems = view === "tree" ? treeData.matches : filteredItems;
+  const visibleIds = useMemo(() => visibleItems.map((i) => i.id), [visibleItems]);
+  const { allChecked, allIndeterminate } = visibleSelectionState(visibleIds, selected);
+
+  const handleToggleAll = () => toggleAll(visibleIds);
 
   const handleBatchDelete = () => {
     if (selected.size === 0) return;
@@ -67,9 +129,11 @@ function WorkItemsPage() {
     });
   };
 
+  const hasQuery = statusFilter !== "" || kindFilter !== "" || debouncedSearch !== "";
+
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="flex flex-col gap-6" style={{ height: "calc(100vh - 64px)" }}>
+      <div className="flex flex-wrap items-center justify-between gap-4 shrink-0">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Work Items</h1>
           <p className="text-sm text-muted-foreground">
@@ -78,6 +142,7 @@ function WorkItemsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <LiveRefreshIndicator lastUpdated={dataUpdatedAt} isFetching={isFetching} />
           <Button asChild>
             <Link to="/work-items/new" search={{ projectId: projectId ?? "", parentId: "" }}>
               New Work Item
@@ -86,131 +151,30 @@ function WorkItemsPage() {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
-        <select
-          className="rounded-md border bg-background px-3 py-1.5 text-sm"
-          value={projectId}
-          onChange={(e) => {
-            setProjectId(e.target.value);
-            setSelected(new Set());
-          }}
-          disabled={!projects || projects.length === 0}
-        >
-          <option value="">All</option>
-          {projects && projects.length > 0 ? (
-            projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))
-          ) : (
-            <option value="" disabled>No projects available</option>
-          )}
-        </select>
-
-        <Input
-          placeholder="Search title or description…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="h-9 w-48"
-        />
-
-        <select
-          className="rounded-md border bg-background px-3 py-1.5 text-sm"
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-        >
-          <option value="">All</option>
-          <option value="1">pending</option>
-          <option value="2">ready</option>
-          <option value="3">assigned</option>
-          <option value="4">running</option>
-          <option value="6">succeeded</option>
-          <option value="7">failed</option>
-          <option value="8">cancelled</option>
-          <option value="9">recovering</option>
-          <option value="10">scheduled</option>
-        </select>
-
-        <select
-          className="rounded-md border bg-background px-3 py-1.5 text-sm"
-          value={kindFilter}
-          onChange={(e) => setKindFilter(e.target.value)}
-        >
-          <option value="">All Types</option>
-          <option value="1">Epic</option>
-          <option value="2">Feature</option>
-          <option value="3">Task</option>
-          <option value="4">Subtask</option>
-        </select>
-
-        <select
-          className="rounded-md border bg-background px-3 py-1.5 text-sm"
-          value={sortBy}
-          onChange={(e) => setSortBy(e.target.value)}
-        >
-          <option value="created_at">Sort: created</option>
-          <option value="title">Sort: title</option>
-          <option value="priority">Sort: priority</option>
-        </select>
-
-        <select
-          className="rounded-md border bg-background px-3 py-1.5 text-sm"
-          value={sortOrder}
-          onChange={(e) => setSortOrder(e.target.value)}
-        >
-          <option value="desc">desc</option>
-          <option value="asc">asc</option>
-        </select>
-
-        <div className="flex rounded-md border">
-          <button
-            className={cn(
-              "px-3 py-1.5 text-sm font-medium transition-colors",
-              view === "tree"
-                ? "bg-accent text-accent-foreground"
-                : "text-muted-foreground hover:bg-accent/50",
-            )}
-            onClick={() => setView("tree")}
-          >
-            Tree
-          </button>
-          <button
-            className={cn(
-              "px-3 py-1.5 text-sm font-medium transition-colors",
-              view === "board"
-                ? "bg-accent text-accent-foreground"
-                : "text-muted-foreground hover:bg-accent/50",
-            )}
-            onClick={() => setView("board")}
-          >
-            Board
-          </button>
-        </div>
-
-        {projectId && (
-          <Button variant="outline" asChild>
-            <Link
-              to="/work-items/graph"
-              search={{ projectId: projectId }}
-            >
-              Dependency Graph
-            </Link>
-          </Button>
-        )}
-
-        {selected.size > 0 && (
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={handleBatchDelete}
-            disabled={batchDelete.isPending}
-          >
-            <Trash2 className="mr-1 h-3.5 w-3.5" />
-            Delete {selected.size} selected
-          </Button>
-        )}
-      </div>
+      <WorkItemsFilterBar
+        projects={projects}
+        projectId={projectId}
+        onProjectChange={setProjectId}
+        search={search}
+        onSearchChange={setSearch}
+        statusFilter={statusFilter}
+        onStatusFilterChange={setStatusFilter}
+        kindFilter={kindFilter}
+        onKindFilterChange={setKindFilter}
+        sortBy={sortBy}
+        onSortByChange={setSortBy}
+        sortOrder={sortOrder}
+        onSortOrderChange={setSortOrder}
+        view={view}
+        onViewChange={setView}
+        visibleCount={visibleItems.length}
+        selectedCount={selected.size}
+        allChecked={allChecked}
+        allIndeterminate={allIndeterminate}
+        onToggleAll={handleToggleAll}
+        onDeleteSelected={handleBatchDelete}
+        deletePending={batchDelete.isPending}
+      />
 
       {!hasProjects && (
         <Card>
@@ -223,345 +187,116 @@ function WorkItemsPage() {
         </Card>
       )}
 
-      {hasProjects && view === "tree" && (
-        <TreeView
-          projectId={projectId}
-          search={search}
-          statusFilter={statusFilter}
-          kindFilter={kindFilter}
-          sortBy={sortBy}
-          sortOrder={sortOrder}
-          selected={selected}
-          onToggleSelect={toggleSelect}
-          onToggleSelectAll={toggleSelectAll}
-        />
-      )}
-      {hasProjects && view === "board" && (
-        <KanbanBoard
-          projectId={projectId}
-          search={search}
-          kindFilter={kindFilter}
-          sortBy={sortBy}
-          sortOrder={sortOrder}
-          selected={selected}
-          onToggleSelect={toggleSelect}
-        />
-      )}
-    </div>
-  );
-}
-
-function TreeView({
-  projectId,
-  search,
-  statusFilter,
-  kindFilter,
-  sortBy,
-  sortOrder,
-  selected,
-  onToggleSelect,
-  onToggleSelectAll,
-}: {
-  projectId: string;
-  search: string;
-  statusFilter: string;
-  kindFilter: string;
-  sortBy: string;
-  sortOrder: string;
-  selected: Set<string>;
-  onToggleSelect: (id: string) => void;
-  onToggleSelectAll: (items: WorkItemProto[]) => void;
-}) {
-  const { data: items, isLoading, error } = useListWorkItems(projectId, {
-    search: search || undefined,
-    status: statusFilter ? (Number(statusFilter) as WorkItemProto["status"]) : undefined,
-    sortBy: sortBy || undefined,
-    sortOrder: sortOrder || undefined,
-  });
-
-  const filteredItems = kindFilter
-    ? (items ?? []).filter((i) => i.kind === Number(kindFilter))
-    : (items ?? []);
-
-  if (isLoading) {
-    return <p className="text-sm text-muted-foreground">Loading…</p>;
-  }
-  if (error) {
-    return (
-      <p className="text-sm text-destructive">
-        Failed to load work items: {String(error)}
-      </p>
-    );
-  }
-  if (!filteredItems || filteredItems.length === 0) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <SearchX className="h-5 w-5 text-muted-foreground" />
-            No work items yet
-          </CardTitle>
-          <CardDescription>
-            Create an epic to start building the work hierarchy.
-          </CardDescription>
-        </CardHeader>
-      </Card>
-    );
-  }
-
-  // Build the tree: epics (parent_id = nil) at the top.
-  const epics = filteredItems.filter((i) => !i.parentId);
-  const childrenOf = (parentId: string) =>
-    filteredItems.filter((i) => i.parentId === parentId);
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2 px-2 py-1">
-        <input
-          type="checkbox"
-          checked={filteredItems.length > 0 && selected.size === filteredItems.length}
-          onChange={() => onToggleSelectAll(filteredItems)}
-          className="h-4 w-4 rounded border-input"
-        />
-        <span className="text-xs text-muted-foreground">
-          {selected.size > 0
-            ? `${selected.size} of ${filteredItems.length} selected`
-            : `${filteredItems.length} work item${filteredItems.length === 1 ? "" : "s"}`}
-        </span>
-      </div>
-      {epics.map((epic) => (
-        <TreeNode
-          key={epic.id}
-          item={epic}
-          childrenOf={childrenOf}
-          depth={0}
-          selected={selected}
-          onToggleSelect={onToggleSelect}
-        />
-      ))}
-    </div>
-  );
-}
-
-function TreeNode({
-  item,
-  childrenOf,
-  depth,
-  selected,
-  onToggleSelect,
-}: {
-  item: WorkItemProto;
-  childrenOf: (parentId: string) => WorkItemProto[];
-  depth: number;
-  selected: Set<string>;
-  onToggleSelect: (id: string) => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const children = childrenOf(item.id);
-  const hasChildren = children.length > 0;
-
-  return (
-    <div>
-      <div
-        className="flex items-center gap-2 rounded-md border p-2 hover:bg-accent/50"
-        style={{ marginLeft: `${depth * 20}px` }}
-      >
-        <input
-          type="checkbox"
-          checked={selected.has(item.id)}
-          onChange={() => onToggleSelect(item.id)}
-          className="h-4 w-4 rounded border-input"
-        />
-        {hasChildren ? (
-          <button
-            onClick={() => setExpanded(!expanded)}
-            className="text-xs text-muted-foreground hover:text-foreground"
-          >
-            {expanded ? "▼" : "▶"}
-          </button>
-        ) : (
-          <span className="w-3" />
-        )}
-        <KindBadge kind={item.kind} />
-        <Link
-          to="/work-items/$id"
-          params={{ id: item.id }}
-          className="flex-1 truncate text-sm font-medium hover:underline"
-        >
-          {item.title}
-        </Link>
-        <StatusPill status={item.status} />
-      </div>
-      {expanded &&
-        children.map((child) => (
-          <TreeNode
-            key={child.id}
-            item={child}
-            childrenOf={childrenOf}
-            depth={depth + 1}
-            selected={selected}
-            onToggleSelect={onToggleSelect}
-          />
-        ))}
-    </div>
-  );
-}
-
-function KanbanBoard({
-  projectId,
-  search,
-  kindFilter,
-  sortBy,
-  sortOrder,
-  selected,
-  onToggleSelect,
-}: {
-  projectId: string;
-  search: string;
-  kindFilter: string;
-  sortBy: string;
-  sortOrder: string;
-  selected: Set<string>;
-  onToggleSelect: (id: string) => void;
-}) {
-  const { data: items, isLoading, error } = useListWorkItems(projectId, {
-    search: search || undefined,
-    sortBy: sortBy || undefined,
-    sortOrder: sortOrder || undefined,
-  });
-
-  const filteredItems = kindFilter
-    ? (items ?? []).filter((i) => i.kind === Number(kindFilter))
-    : (items ?? []);
-
-  if (isLoading) {
-    return <p className="text-sm text-muted-foreground">Loading…</p>;
-  }
-  if (error) {
-    return (
-      <p className="text-sm text-destructive">
-        Failed to load: {String(error)}
-      </p>
-    );
-  }
-  if (!filteredItems || filteredItems.length === 0) {
-    return <p className="text-sm text-muted-foreground">No work items.</p>;
-  }
-
-  const columns = [
-    { status: 1, label: "Pending" },
-    { status: 2, label: "Ready" },
-    { status: 3, label: "Assigned" },
-    { status: 4, label: "Running" },
-    { status: 6, label: "Succeeded" },
-    { status: 7, label: "Failed" },
-    { status: 8, label: "Cancelled" },
-  ];
-
-  return (
-    <div className="grid gap-4 md:grid-cols-4 lg:grid-cols-7">
-      {columns.map((col) => {
-        const colItems = filteredItems.filter((i) => i.status === col.status);
-        return (
-          <div key={col.status} className="space-y-2">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold">{col.label}</h3>
-              <span className="text-xs text-muted-foreground">
-                {colItems.length}
-              </span>
-            </div>
-            {colItems.map((item) => (
-              <div key={item.id} className="group flex items-start gap-1">
-                <input
-                  type="checkbox"
-                  checked={selected.has(item.id)}
-                  onChange={() => onToggleSelect(item.id)}
-                  className="mt-2 shrink-0 h-3.5 w-3.5 rounded border-input"
-                />
-                <Link
-                  to="/work-items/$id"
-                  params={{ id: item.id }}
-                  className="min-w-0 flex-1"
-                >
-                  <Card className="transition-colors hover:bg-accent">
-                    <CardContent className="p-3">
-                      <KindBadge kind={item.kind} />
-                      <p className="mt-1 text-sm font-medium line-clamp-2">
-                        {item.title}
-                      </p>
-                    </CardContent>
-                  </Card>
-                </Link>
-              </div>
-            ))}
-            {colItems.length === 0 && (
-              <p className="text-xs text-muted-foreground">—</p>
+      {hasProjects && (
+        <div className="flex flex-1 min-h-0 flex-col">
+          {!projectId && (
+            <p className="text-xs text-muted-foreground shrink-0">
+              Dependency state (blocked/blocking chips) is per-project — select a
+              project above to see it.
+            </p>
+          )}
+          <TooltipProvider delayDuration={200}>
+            {view === "tree" ? (
+              <WorkItemsTree
+                treeItems={treeData.treeItems}
+                matchIds={new Set(treeData.matches.map((i) => i.id))}
+                ancestorIds={treeData.ancestorIds}
+                filterActive={hasQuery}
+                blockState={blockState}
+                selected={selected}
+                onToggleSelect={toggle}
+                isLoading={isLoading}
+                error={error}
+                hasQuery={hasQuery}
+              />
+            ) : (
+              <WorkItemsBoard
+                projectId={projectId}
+                items={filteredItems}
+                blockState={blockState}
+                selected={selected}
+                onToggleSelect={toggle}
+                isLoading={isLoading}
+                error={error}
+                hasQuery={hasQuery}
+              />
             )}
-          </div>
-        );
-      })}
+          </TooltipProvider>
+        </div>
+      )}
     </div>
   );
 }
 
-function KindBadge({ kind }: { kind: number }) {
-  const labels: Record<number, string> = {
-    1: "E",
-    2: "F",
-    3: "T",
-    4: "S",
-  };
-  const styles: Record<number, string> = {
-    1: "bg-purple-100 text-purple-800",
-    2: "bg-indigo-100 text-indigo-800",
-    3: "bg-blue-100 text-blue-800",
-    4: "bg-cyan-100 text-cyan-800",
-  };
+// ---------------------------------------------------------------------------
+// Live refresh indicator (design §4/§5.5 — reuse of the Schedules
+// LiveClock pattern): pulsing dot + last-refresh time, paused while the
+// tab is hidden (the same visibilitychange logic the Schedules page
+// uses for its ticker).
+// ---------------------------------------------------------------------------
+
+function LiveRefreshIndicator({
+  lastUpdated,
+  isFetching,
+}: {
+  lastUpdated?: number;
+  isFetching: boolean;
+}) {
+  const now = useNow(1000);
+  const d = new Date(lastUpdated ?? now);
+  const time = d.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
   return (
-    <span
-      className={cn(
-        "inline-flex h-5 w-5 items-center justify-center rounded text-xs font-bold",
-        styles[kind] ?? "bg-muted text-muted-foreground",
-      )}
+    <div
+      role="timer"
+      aria-label={`Auto-refreshes every 5 seconds. Last refreshed at ${time}`}
+      className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2"
     >
-      {labels[kind] ?? "?"}
-    </span>
+      <span
+        className={cn(
+          "h-2 w-2 animate-pulse rounded-full motion-reduce:animate-none",
+          isFetching ? "bg-sky-500" : "bg-emerald-500",
+        )}
+      />
+      <span className="font-mono text-xs font-medium tabular-nums text-foreground">
+        Live {time}
+      </span>
+    </div>
   );
 }
 
-function StatusPill({ status }: { status: number }) {
-  const labels: Record<number, string> = {
-    1: "pending",
-    10: "scheduled",
-    2: "ready",
-    3: "assigned",
-    4: "running",
-    5: "checkpointing",
-    6: "succeeded",
-    7: "failed",
-    8: "cancelled",
-    9: "recovering",
-  };
-  const styles: Record<number, string> = {
-    1: "bg-gray-100 text-gray-700",
-    10: "bg-purple-100 text-purple-800",
-    2: "bg-blue-100 text-blue-800",
-    3: "bg-yellow-100 text-yellow-800",
-    4: "bg-green-100 text-green-800",
-    5: "bg-orange-100 text-orange-800",
-    6: "bg-green-600 text-white",
-    7: "bg-red-100 text-red-800",
-    8: "bg-gray-200 text-gray-600",
-    9: "bg-orange-600 text-white",
-  };
-  return (
-    <span
-      className={cn(
-        "rounded-full px-2 py-0.5 text-xs font-medium",
-        styles[status] ?? "bg-muted text-muted-foreground",
-      )}
-    >
-      {labels[status] ?? "unknown"}
-    </span>
-  );
+// One page-level `now` ticker for the live indicator; pauses when the tab
+// is hidden (browsers throttle background timers anyway; this makes it
+// explicit and cheap). Mirrors Schedules' useNow.
+function useNow(intervalMs = 1000) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const start = () => {
+      if (timer) return;
+      setNow(Date.now());
+      timer = setInterval(() => setNow(Date.now()), intervalMs);
+    };
+    const stop = () => {
+      if (timer) {
+        clearInterval(timer);
+        timer = undefined;
+      }
+    };
+    const onVisibility = () => {
+      if (document.hidden) stop();
+      else start();
+    };
+    start();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [intervalMs]);
+  return now;
 }

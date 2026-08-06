@@ -694,6 +694,16 @@ An execution is only reported `succeeded` when the run completes with the final 
 3. Add description, acceptance criteria, and assign a worker
 4. Work items form a DAG with dependency edges (cycle detection enforced)
 
+#### Work Items page (tree + kanban board)
+The **Work Items** list page has two views sharing one filter bar, selection set, and auto-refresh loop:
+
+- **Tree** — the Epic → Feature → Task → Subtask hierarchy with cascade (subtree) selection, tri-state parent checkboxes, indent guides, and file-explorer auto-expand when filters are active (ancestors of matches are shown so filtered results stay reachable). Rows surface **blocked** state from the dependency DAG (chain chip + tooltip listing the blocking items).
+- **Board** — a Jira-style kanban with one column per server status (Pending/Ready/Assigned/Running/Succeeded/Failed/Cancelled; checkpointing/recovering render in Running, scheduled in Pending). Cards drag & drop between columns via dnd-kit (`@dnd-kit/core` + `sortable` + `utilities`); drops are **server-confirmed** (no optimistic transitions) with a transient "moving…" state and toasts. Two advisory gates reject obviously-wrong moves before the mutation: a **blocked** item cannot be dropped on Ready, and Epics/Features accept only pending/succeeded/cancelled. A per-card **"Move to…"** menu performs the identical mutation for keyboard/touch users.
+- **Filtering** — search, kind, and status all compose **client-side** over the full fetched set (pageSize 1000); only sort goes server-side. (Search is client-side deliberately: a server-side search returns only the matching rows, orphaning a searched task from its epic and emptying the tree.) Select-all is tri-state over the visible filtered set — it selects only the items that pass the filters, never the dimmed ancestor container rows — and the selection clears on any filter change.
+- **Auto refresh** — the list and dependency-graph queries poll every 5s, pause while the tab is hidden, refetch on window focus, and a `Live HH:MM:SS` indicator in the header makes the refresh visible.
+
+Shared presentation lives in `frontend/src/components/work-items/` (meta, badges, card, tree, board, filter bar, selection hook, dependency utils); the route file is a thin shell. Schedules and the work-item detail page import the same theme-safe `KindBadge`/`KindPill`/`StatusPill` (the old hardcoded light-only colors are gone).
+
 **Status while bound to a workflow run:** a work item that kicks off (or is bound to) a workflow run is a **shared input reference** — every step reads the same ticket (title, description, acceptance criteria, upstream context) and produces its own execution and output. `StartWorkflow` moves it to `running`, and it stays `running` for the whole run; it is never mutated per-step (no `assigned_worker_ref`, `workflow_step_id`, or prompt writes, no `ready`/`assigned`/`recovering` flips). The item reaches `succeeded`/`failed` only when the whole run completes/fails. Because the ticket is never written per-step, **two steps bound to the same ticket can run in parallel** — each step run owns its own execution (`worker_execution_id`) and its own results. When the run ends, the ticket's `results` carry a run-level narrative (`_run_narrative`) aggregating each step's summary/decision/issues plus every recovery episode.
 
 #### Viewing Schedules

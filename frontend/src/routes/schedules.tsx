@@ -48,6 +48,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { KindBadge, KindDot, StatusPill } from "@/components/work-items/work-item-badges";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -467,10 +468,9 @@ function AgendaGroup({
                 {formatTime(tsToMs(item.scheduledStartAt))}
               </div>
               <div className="relative flex flex-col items-center">
-                <span
-                  aria-hidden
-                  className="mt-4 h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-background"
-                  style={{ backgroundColor: kindDotColor(item.kind) }}
+                <KindDot
+                  kind={item.kind}
+                  className="mt-4 ring-2 ring-background"
                 />
                 {!isLast && (
                   <span
@@ -657,10 +657,9 @@ function HistoryView({
               {formatTime(tsToMs(item.scheduledStartAt))}
             </div>
             <div className="relative flex flex-col items-center">
-              <span
-                aria-hidden
-                className="mt-4 h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-background"
-                style={{ backgroundColor: kindDotColor(item.kind) }}
+              <KindDot
+                kind={item.kind}
+                className="mt-4 ring-2 ring-background"
               />
               {ii !== items.length - 1 && (
                 <span
@@ -865,105 +864,6 @@ function CountdownChip({ target, now }: { target: number; now: number }) {
       )}
     >
       {text}
-    </span>
-  );
-}
-
-function KindDot({ kind }: { kind: number }) {
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        "h-2.5 w-2.5 shrink-0 rounded-full",
-        kindDotColor(kind),
-      )}
-    />
-  );
-}
-
-// Kind dot palette reuses the work-items KindBadge hues (Epic purple,
-// Feature indigo, Task blue, Subtask cyan, recovery amber/rose) — no new
-// colors invented for this page.
-function kindDotColor(kind: number): string {
-  const colors: Record<number, string> = {
-    1: "bg-purple-500",
-    2: "bg-indigo-500",
-    3: "bg-blue-500",
-    4: "bg-cyan-500",
-    5: "bg-amber-500",
-    6: "bg-amber-500",
-    7: "bg-rose-500",
-    8: "bg-amber-500",
-  };
-  return colors[kind] ?? "bg-muted";
-}
-
-function KindBadge({ kind }: { kind: number }) {
-  const labels: Record<number, string> = {
-    1: "E",
-    2: "F",
-    3: "T",
-    4: "S",
-    5: "R",
-    6: "R",
-    7: "R",
-    8: "R",
-  };
-  const styles: Record<number, string> = {
-    1: "bg-purple-100 text-purple-800",
-    2: "bg-indigo-100 text-indigo-800",
-    3: "bg-blue-100 text-blue-800",
-    4: "bg-cyan-100 text-cyan-800",
-    5: "bg-amber-100 text-amber-800",
-    6: "bg-amber-100 text-amber-800",
-    7: "bg-rose-100 text-rose-800",
-    8: "bg-amber-100 text-amber-800",
-  };
-  return (
-    <span
-      className={cn(
-        "inline-flex h-5 w-5 items-center justify-center rounded text-xs font-bold",
-        styles[kind] ?? "bg-muted text-muted-foreground",
-      )}
-    >
-      {labels[kind] ?? "?"}
-    </span>
-  );
-}
-
-function StatusPill({ status }: { status: number }) {
-  const labels: Record<number, string> = {
-    1: "pending",
-    10: "scheduled",
-    2: "ready",
-    3: "assigned",
-    4: "running",
-    5: "checkpointing",
-    6: "succeeded",
-    7: "failed",
-    8: "cancelled",
-    9: "recovering",
-  };
-  const styles: Record<number, string> = {
-    1: "bg-gray-100 text-gray-700",
-    10: "bg-purple-100 text-purple-800",
-    2: "bg-blue-100 text-blue-800",
-    3: "bg-yellow-100 text-yellow-800",
-    4: "bg-green-100 text-green-800",
-    5: "bg-orange-100 text-orange-800",
-    6: "bg-green-600 text-white",
-    7: "bg-red-100 text-red-800",
-    8: "bg-gray-200 text-gray-600",
-    9: "bg-orange-600 text-white",
-  };
-  return (
-    <span
-      className={cn(
-        "rounded-full px-2 py-0.5 text-xs font-medium",
-        styles[status] ?? "bg-muted text-muted-foreground",
-      )}
-    >
-      {labels[status] ?? "unknown"}
     </span>
   );
 }

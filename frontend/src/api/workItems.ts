@@ -5,7 +5,7 @@
 // tree/board/graph views refetch server-confirmed state (no optimistic
 // status transitions — invariant #3).
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { workItemClient } from "@/api/clients";
 import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
@@ -16,10 +16,29 @@ import type { UpdateWorkItemRequest } from "@/api/gen/orchicon/api/v1/work_item_
 import type { PartialMessage } from "@bufbuild/protobuf";
 
 // Query keys are centralized so invalidation is type-safe.
+//
+// `list` deliberately drops trailing `undefined` params: it must return a
+// TRUE prefix of the key the page's active list query uses. TanStack
+// Query's partial matching compares the *filter* key's elements against
+// the cached query key (`partialMatchKey(query.queryKey, queryKey)`
+// iterates `Object.keys(b)`), so a filter key that ends in `undefined`
+// at the `opts` slot can never match the real `{search, sortBy,
+// sortOrder}` object there. Before this fix, mutations invalidated
+// `["work-items","list",projectId,undefined,undefined,undefined]`, which
+// never matched `["work-items","list",projectId,undefined,undefined,
+// {search,sortBy,sortOrder}]` — the board card stayed in its origin
+// column until the 5s poll refetched. With the trimmed key
+// (`["work-items","list",projectId]`) every mutation's invalidation is a
+// real prefix and triggers an immediate refetch.
 export const workItemKeys = {
   all: ["work-items"] as const,
-  list: (projectId: string, parentId?: string, status?: number, opts?: { search?: string; sortBy?: string; sortOrder?: string }) =>
-    [...workItemKeys.all, "list", projectId, parentId, status, opts] as const,
+  list: (projectId: string, parentId?: string, status?: number, opts?: { search?: string; sortBy?: string; sortOrder?: string }) => {
+    const key: unknown[] = [...workItemKeys.all, "list", projectId];
+    if (parentId !== undefined) key.push(parentId);
+    if (status !== undefined) key.push(status);
+    if (opts !== undefined) key.push(opts);
+    return key;
+  },
   detail: (id: string) => [...workItemKeys.all, "detail", id] as const,
   graph: (projectId: string) =>
     [...workItemKeys.all, "graph", projectId] as const,
@@ -50,7 +69,15 @@ export function useListWorkItems(
       return res.workItems as WorkItem[];
     },
     enabled: true, // empty projectId = list all
+    // Auto-refresh (design §5.5): poll every 5s, pause while the tab is
+    // hidden (TanStack default refetchIntervalInBackground=false), and
+    // refetch when the window regains focus (the global default in
+    // main.tsx is false — this page opts back in).
+    // keepPreviousData prevents the board from flashing empty during
+    // refetches after mutations (e.g. drag-and-drop status changes).
+    placeholderData: keepPreviousData,
     refetchInterval: opts?.refetchInterval ?? 5_000,
+    refetchOnWindowFocus: true,
   });
 }
 
@@ -67,8 +94,12 @@ export function useGetWorkItem(id: string) {
 }
 
 // useGetDependencyGraph fetches the full DAG (nodes + edges) for a
-// project. Used by the read-only React Flow dependency graph (docs/10).
-export function useGetDependencyGraph(projectId: string) {
+// project. Used by the read-only React Flow dependency graph (docs/10)
+// and by the tree/board for blocked-state chips.
+export function useGetDependencyGraph(
+  projectId: string,
+  opts?: { refetchInterval?: number },
+) {
   return useQuery({
     queryKey: workItemKeys.graph(projectId),
     queryFn: async () => {
@@ -76,6 +107,10 @@ export function useGetDependencyGraph(projectId: string) {
       return res.graph as DependencyGraph;
     },
     enabled: !!projectId,
+    // Auto-refresh alongside the list (design §5.5) so blocked-state
+    // chips stay current; refetch on window focus.
+    refetchInterval: opts?.refetchInterval ?? 5_000,
+    refetchOnWindowFocus: true,
   });
 }
 
