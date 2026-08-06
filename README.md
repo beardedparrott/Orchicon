@@ -30,6 +30,12 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.200 (2026-08-06)
+
+| Type | Change |
+|---|---|
+| Feature | **UI workers can now actually look at the browser.** The `:orchicon-dev` runtime image already had Playwright + Chromium, but workers couldn't `require('playwright')` from a project dir — ESM `import` ignores `NODE_PATH`, so the global install was unreachable. The image now sets `NODE_PATH=/usr/local/lib/node_modules`, and the canned UI workers' AGENTS.md carries a full **visual verification** protocol: start the app in-container, launch headless Chromium (`--no-sandbox`), navigate at desktop + mobile viewports, screenshot to `/tmp/orchicon/`, and **read the screenshot back** to see the UI — then iterate against the acceptance criteria. Helper: `scripts/browser.cjs` with `launch()`/`shot()`. |
+
 ### v0.1.197 (2026-08-06)
 
 | Type | Change |
