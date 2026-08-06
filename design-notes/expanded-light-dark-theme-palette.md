@@ -57,8 +57,10 @@ background.
   `--input` uses Gruvbox `bg4` (`#a89984`) so fields read as fields.
 - **D5** The global light-mode `--kind-*` set (canvas edge accents) is darkened
   so edges pass ≥3:1 non-text contrast on the darkest new light background
-  (Gruvbox bg0). Dark-mode `--kind-*` set is unchanged (verified ≥7:1 on the
-  lightest new dark background).
+  (Gruvbox bg0). Dark-mode `--kind-*` set is unchanged; on the lightest new
+  dark background (graphite) it measures 4.30:1–9.77:1 — indigo 4.30:1, violet
+  4.70:1, rose 4.80:1, sky 7.02:1, amber 8.52:1, yellow 9.77:1, emerald 8.46:1,
+  cyan 8.99:1 — all above the ≥3:1 non-text floor.
 - **D6** Contrast floor: body text ≥ 4.5:1, muted text ≥ 4.5:1 (where muted is
   used for meaningful labels), UI components / kind accents ≥ 3:1. All values
   below verified.
@@ -112,7 +114,7 @@ defined.
 - `--background` `40 30% 98%` → `40 30% 94%`; `--card`/`--popover` `40 30% 94%`
 - `--primary-foreground` `40 30% 98%` → `40 30% 96%`
 - `--secondary`/`--muted` `40 20% 94%` → `40 20% 90%`
-- `--muted-foreground` `30 8% 46%` → `30 8% 43%`
+- `--muted-foreground` `30 8% 46%` → `30 8% 42%`
 - `--accent` `30 15% 90%` → `30 15% 87%`
 - `--border` `30 15% 88%` → `30 15% 82%`; `--input` `30 15% 88%` → `30 15% 84%`
 
@@ -130,7 +132,7 @@ defined.
 - `--primary` `346 77% 50%` → `346 77% 46%`; `--ring` → `346 77% 46%`
 - `--secondary` `350 30% 94%` → `350 30% 90%`
 - `--muted` `350 20% 94%` → `350 20% 90%`
-- `--muted-foreground` `340 8% 48%` → `340 8% 45%`
+- `--muted-foreground` `340 8% 48%` → `340 8% 44%`
 - `--accent` `350 25% 90%` → `350 25% 88%`
 - `--border` `340 20% 88%` → `340 20% 83%`; `--input` `340 20% 88%` → `340 20% 85%`
 
@@ -195,7 +197,7 @@ Gruvbox hex → HSL. Place it first in `LIGHT_THEMES` (marquee theme).
 | card-foreground | `20 5% 22%` |
 | popover | `43 59% 81%` |
 | popover-foreground | `20 5% 22%` |
-| primary | `183 33% 34%` (#2b6064 — deep Gruvbox blue; 6.25:1 on bg) |
+| primary | `184 40% 28%` (#2b6064 — deep Gruvbox blue; 6.25:1 on bg) |
 | primary-foreground | `48 87% 88%` |
 | secondary | `43 59% 81%` |
 | secondary-foreground | `20 5% 22%` |
@@ -207,7 +209,7 @@ Gruvbox hex → HSL. Place it first in `LIGHT_THEMES` (marquee theme).
 | destructive-foreground | `0 0% 100%` |
 | border | `40 38% 73%` (#d5c4a1 — soft Gruvbox border by design) |
 | input | `35 17% 59%` (#a89984 — darker so fields read) |
-| ring | `183 33% 34%` (#2b6064 — strong focus indicator, 6.25:1) |
+| ring | `184 40% 28%` (#2b6064 — strong focus indicator, 6.25:1) |
 
 Swatches: `["#fbf1c7", "#ebdbb2", "#d5c4a1", "#3c3836", "#cc241d"]`
 
@@ -220,7 +222,7 @@ Swatches: `["#fbf1c7", "#ebdbb2", "#d5c4a1", "#3c3836", "#cc241d"]`
 | foreground | `30 15% 15%` |
 | card / card-foreground | `40 25% 95%` / `30 15% 15%` |
 | popover / popover-foreground | `40 25% 95%` / `30 15% 15%` |
-| primary / primary-foreground | `30 35% 26%` / `40 25% 95%` (8.43:1) |
+| primary / primary-foreground | `30 35% 26%` / `40 25% 95%` (8.14:1) |
 | secondary / secondary-foreground | `40 20% 89%` / `30 20% 20%` |
 | muted / muted-foreground | `40 18% 90%` / `30 10% 42%` (4.53:1 on bg) |
 | accent / accent-foreground | `35 15% 86%` / `30 20% 20%` |
@@ -238,7 +240,7 @@ Swatches: `["#f2efe9", "#f5f3ef", "#d8d2ca", "#2c2621", "#df4020"]`
 | foreground | `222 30% 14%` |
 | card / card-foreground | `210 12% 94%` / `222 30% 14%` |
 | popover / popover-foreground | `210 12% 94%` / `222 30% 14%` |
-| primary / primary-foreground | `215 30% 24%` / `210 12% 94%` (10.08:1) |
+| primary / primary-foreground | `215 30% 24%` / `210 12% 94%` (9.62:1) |
 | secondary / secondary-foreground | `210 15% 88%` / `222 25% 18%` |
 | muted / muted-foreground | `210 12% 89%` / `215 12% 41%` (4.85:1 on bg) |
 | accent / accent-foreground | `215 10% 85%` / `222 25% 18%` |
@@ -256,7 +258,7 @@ Swatches: `["#e8ebed", "#eef0f2", "#c7cbd1", "#191f2e", "#db2424"]`
 | foreground | `240 10% 12%` |
 | card / card-foreground | `240 6% 95%` / `240 10% 12%` |
 | popover / popover-foreground | `240 6% 95%` / `240 10% 12%` |
-| primary / primary-foreground | `240 8% 22%` / `240 6% 95%` (10.92:1) |
+| primary / primary-foreground | `240 8% 22%` / `240 6% 95%` (10.44:1) |
 | secondary / secondary-foreground | `240 5% 89%` / `240 8% 18%` |
 | muted / muted-foreground | `240 5% 90%` / `240 4% 42%` (4.75:1 on bg) |
 | accent / accent-foreground | `240 5% 86%` / `240 8% 18%` |
