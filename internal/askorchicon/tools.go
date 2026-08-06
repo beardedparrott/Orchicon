@@ -165,7 +165,7 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 				"title": {Type: "string", Description: "Work item title"},
 				"project_id": {Type: "string", Description: "Project ID"},
 				"parent_id": {Type: "string", Description: "Optional parent work item ID"},
-				"kind": {Type: "string", Description: "Work item kind (Epic, Feature, Task, Subtask)"},
+				"kind": {Type: "string", Description: "Work item kind (epic, feature, task, subtask)"},
 				"description": {Type: "string", Description: "Detailed description"},
 				"acceptance_criteria": {Type: "string", Description: "Acceptance criteria"},
 				"priority": {Type: "number", Description: "Priority (1-5)"},
