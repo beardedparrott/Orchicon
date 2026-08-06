@@ -284,9 +284,20 @@ export function columnForStatus(status: number): number {
 }
 
 // ---------------------------------------------------------------------------
+// System-managed statuses — users cannot manually drag items into these.
+// Running is set by the TaskReconciler when a workflow executes;
+// Checkpointing and Recovering are transient states within a workflow.
+// ---------------------------------------------------------------------------
+export const MANUALLY_UNMOVABLE_STATUSES = new Set<number>([
+  WorkItemStatus.RUNNING,
+  WorkItemStatus.CHECKPOINTING,
+  WorkItemStatus.RECOVERING,
+]);
+
+// ---------------------------------------------------------------------------
 // Advisory status-transition matrix (ADR-3 / design §5.4). The server stays
 // authoritative; this only prevents obviously-wrong drops in the UI.
-// Epics/Features are not schedulable: pending | succeeded | cancelled.
+// Epics/Features accept: pending, ready, assigned, succeeded, cancelled.
 // Tasks/Subtasks (and recovery kinds) accept any board column.
 // ---------------------------------------------------------------------------
 
@@ -295,11 +306,15 @@ const ALL_BOARD_STATUSES = BOARD_COLUMNS.map((c) => c.status);
 export const ALLOWED_STATUSES_PER_KIND: Record<number, number[]> = {
   [WorkItemKind.EPIC]: [
     WorkItemStatus.PENDING,
+    WorkItemStatus.READY,
+    WorkItemStatus.ASSIGNED,
     WorkItemStatus.SUCCEEDED,
     WorkItemStatus.CANCELLED,
   ],
   [WorkItemKind.FEATURE]: [
     WorkItemStatus.PENDING,
+    WorkItemStatus.READY,
+    WorkItemStatus.ASSIGNED,
     WorkItemStatus.SUCCEEDED,
     WorkItemStatus.CANCELLED,
   ],

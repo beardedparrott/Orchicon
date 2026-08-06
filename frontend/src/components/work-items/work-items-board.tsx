@@ -25,6 +25,7 @@
 //   parent card within the same column.
 
 import { useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   DndContext,
   KeyboardSensor,
@@ -39,10 +40,11 @@ import { SortableContext, sortableKeyboardCoordinates, useSortable } from "@dnd-
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronRight, Lock, SearchX } from "lucide-react";
 
-import { useUpdateWorkItem } from "@/api/workItems";
+import { useUpdateWorkItem, workItemKeys } from "@/api/workItems";
 import { WorkItemStatus, type WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import {
   BOARD_COLUMNS,
+  MANUALLY_UNMOVABLE_STATUSES,
   allowedStatusesForKind,
   columnForStatus,
   kindMeta,
@@ -55,9 +57,6 @@ import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/ca
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
-
-/** Statuses that are read-only on the board — only the server sets these. */
-const READ_ONLY_STATUSES = new Set<number>([WorkItemStatus.RUNNING]);
 
 export interface WorkItemsBoardProps {
   projectId: string;
@@ -114,6 +113,7 @@ export function WorkItemsBoard({
   hasQuery,
 }: WorkItemsBoardProps) {
   const updateStatus = useUpdateWorkItem(projectId);
+  const qc = useQueryClient();
   const toast = useToast();
   const [movingId, setMovingId] = useState<string | null>(null);
 
@@ -129,13 +129,14 @@ export function WorkItemsBoard({
   const handleMove = (item: WorkItem, targetStatus: number) => {
     if (targetStatus === item.status) return;
 
-    // Running is read-only: only the server sets this status when a
-    // workflow is executing. Users must go INTO the work item to start
-    // a workflow — drag-and-drop and the Move-to menu cannot set it.
-    if (READ_ONLY_STATUSES.has(targetStatus)) {
+    // System-managed statuses: Running, Checkpointing, Recovering are only
+    // set by the TaskReconciler when a workflow is executing. Users must
+    // go INTO the work item to start a workflow — drag-and-drop and the
+    // Move-to menu cannot set these statuses.
+    if (MANUALLY_UNMOVABLE_STATUSES.has(targetStatus)) {
       toast.info(
         `"${item.title}" cannot be moved to ${statusMeta(targetStatus).label} via drag. Open the work item to start a workflow.`,
-        { title: "Read-only status" },
+        { title: "System-managed status" },
       );
       return;
     }
@@ -150,7 +151,7 @@ export function WorkItemsBoard({
       return;
     }
 
-    // Advisory kind gate: Epics/Features are not schedulable.
+    // Advisory kind gate: Epics/Features accept only certain statuses.
     if (!allowedStatusesForKind(item.kind).includes(targetStatus)) {
       toast.error(
         `"${item.title}" cannot move to ${statusMeta(targetStatus).label}: ${kindMeta(item.kind).label}s only accept ${allowedStatusesForKind(item.kind).map((s) => statusMeta(s).label).join(", ")}.`,
@@ -159,16 +160,35 @@ export function WorkItemsBoard({
       return;
     }
 
+    // Optimistic cache update: immediately move the card to the target
+    // column so it doesn't disappear during the mutation. The card will
+    // snap back if the server rejects the move.
+    const listKey = workItemKeys.list(projectId);
+    qc.setQueryData(listKey, (old: WorkItem[] | undefined) => {
+      if (!old) return old;
+      return old.map((i) =>
+        i.id === item.id ? { ...i, status: targetStatus } : i,
+      );
+    });
+
     setMovingId(item.id);
     updateStatus.mutate(
       { id: item.id, status: targetStatus as WorkItemStatus },
       {
         onSuccess: (updated) => {
+          // Server confirms — update with the real server data
+          qc.setQueryData(listKey, (old: WorkItem[] | undefined) => {
+            if (!old) return old;
+            return old.map((i) => (i.id === updated.id ? updated : i));
+          });
           toast.success(
             `Moved "${updated.title}" to ${statusMeta(updated.status).label}`,
           );
         },
-        // Errors surface via the global mutation onError toast (main.tsx).
+        onError: () => {
+          // Revert optimistic update on error
+          qc.invalidateQueries({ queryKey: listKey });
+        },
         onSettled: () => setMovingId(null),
       },
     );
@@ -181,13 +201,20 @@ export function WorkItemsBoard({
     if (!item) return;
     const overData = over.data.current as { type?: string; status?: number } | undefined;
     let targetStatus: number | undefined;
-    if (overData?.type === "column") targetStatus = overData.status;
-    else if (overData?.type === "card") targetStatus = overData.status;
+    if (overData?.type === "column") {
+      targetStatus = overData.status;
+    } else if (overData?.type === "card") {
+      // Resolve the COLUMN the card is rendered in, not the card's actual
+      // status. A SCHEDULED card renders in the Pending column, so dropping
+      // on it should move the dragged item to Pending, not Scheduled.
+      // Without this, dropping on a card in the wrong status snaps the
+      // dragged item to the wrong column (ADR-9 §3).
+      targetStatus = columnForStatus(overData.status);
+    }
     if (targetStatus == null) return;
-    // Guard: Running is a read-only column — only the server sets this
-    // status when a workflow is executing. Even with pointerWithin, this
-    // check prevents accidental workflow kicks.
-    if (READ_ONLY_STATUSES.has(targetStatus)) return;
+    // Guard: system-managed statuses (Running, Checkpointing, Recovering)
+    // are read-only — only the server sets these via workflow execution.
+    if (MANUALLY_UNMOVABLE_STATUSES.has(targetStatus)) return;
     handleMove(item, targetStatus);
   };
 
@@ -195,7 +222,7 @@ export function WorkItemsBoard({
     return (
       <div
         className="flex flex-1 gap-3 overflow-hidden rounded-lg border"
-        style={{ minHeight: "400px" }}
+        style={{ minHeight: "calc(100vh - 280px)" }}
         aria-busy="true"
       >
         {BOARD_COLUMNS.map((col) => (
@@ -244,7 +271,7 @@ export function WorkItemsBoard({
     >
       <div
         className="flex flex-1 gap-3 overflow-x-auto rounded-lg border bg-muted/20 p-3"
-        style={{ minHeight: "400px" }}
+        style={{ minHeight: "calc(100vh - 280px)" }}
       >
         {BOARD_COLUMNS.map((col) => {
           const colItems = items.filter((i) => columnForStatus(i.status) === col.status);
@@ -290,10 +317,11 @@ function BoardColumn({
   movingId: string | null;
   onMove: (item: WorkItem, targetStatus: number) => void;
 }) {
-  const isReadOnly = READ_ONLY_STATUSES.has(column.status);
+  const isReadOnly = MANUALLY_UNMOVABLE_STATUSES.has(column.status);
 
-  // Read-only columns (e.g. Running) are not droppable — only the
-  // server transitions items into these statuses via workflow execution.
+  // Read-only columns (Running, Checkpointing, Recovering) are not
+  // droppable — only the server transitions items into these statuses
+  // via workflow execution.
   const { setNodeRef, isOver } = useDroppable({
     id: `col-${column.status}`,
     data: { type: "column", status: column.status },
@@ -303,14 +331,13 @@ function BoardColumn({
   // Build hierarchy for this column's items
   const hierarchy = useMemo(() => {
     const nodes = buildHierarchy(items);
-    // Only show root-level items in the column; children are nested
     return nodes;
   }, [items]);
 
   return (
     <section
       ref={setNodeRef}
-      aria-label={`${column.label} column${isReadOnly ? " (read-only)" : ""}`}
+      aria-label={`${column.label} column${isReadOnly ? " (system-managed)" : ""}`}
       className={cn(
         "flex flex-1 min-w-[280px] snap-start flex-col rounded-lg border transition-colors",
         isOver && !isReadOnly && "bg-accent/40 ring-2 ring-ring",
@@ -324,13 +351,20 @@ function BoardColumn({
           aria-hidden
           className={cn("h-2.5 w-2.5 rounded-full", statusMeta(column.status).dot)}
         />
-        <h3 className="text-sm font-semibold tracking-tight">{column.label}</h3>
+        <div className="flex flex-col">
+          <h3 className="text-sm font-semibold tracking-tight">{column.label}</h3>
+          {isReadOnly && (
+            <span className="text-[10px] leading-tight text-muted-foreground">
+              System-managed
+            </span>
+          )}
+        </div>
         {isReadOnly && (
           <Tooltip>
             <TooltipTrigger asChild>
               <Lock aria-hidden className="h-3.5 w-3.5 text-muted-foreground" />
             </TooltipTrigger>
-            <TooltipContent>Read-only — only set by workflows</TooltipContent>
+            <TooltipContent>System-managed — only set by workflows</TooltipContent>
           </Tooltip>
         )}
         <span className="ml-auto rounded-full bg-muted px-2 py-0.5 text-xs font-medium tabular-nums text-muted-foreground">
@@ -521,7 +555,8 @@ function SortableCard({
 
 /** Assistive/keyboard path: a small select listing the allowed target
  *  statuses, performing the identical server-confirmed mutation.
- *  Running is excluded — it is a system-managed status. */
+ *  System-managed statuses (Running, Checkpointing, Recovering) are
+ *  excluded — only the server sets these via workflow execution. */
 function MoveToMenu({
   item,
   disabled,
@@ -531,9 +566,9 @@ function MoveToMenu({
   disabled: boolean;
   onMove: (item: WorkItem, targetStatus: number) => void;
 }) {
-  // Exclude current status and all read-only statuses (Running, etc.)
+  // Exclude current status and all system-managed statuses
   const allowed = allowedStatusesForKind(item.kind).filter(
-    (s) => s !== item.status && !READ_ONLY_STATUSES.has(s),
+    (s) => s !== item.status && !MANUALLY_UNMOVABLE_STATUSES.has(s),
   );
   return (
     <select

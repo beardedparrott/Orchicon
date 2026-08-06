@@ -78,14 +78,18 @@ describe("board column mapping and transition matrix (regression guards)", () =>
     expect(columnForStatus(WorkItemStatus.RUNNING)).toBe(WorkItemStatus.RUNNING);
   });
 
-  it("epics/features accept only pending|succeeded|cancelled", () => {
+  it("epics/features accept pending|ready|assigned|succeeded|cancelled", () => {
     expect(allowedStatusesForKind(WorkItemKind.EPIC)).toEqual([
       WorkItemStatus.PENDING,
+      WorkItemStatus.READY,
+      WorkItemStatus.ASSIGNED,
       WorkItemStatus.SUCCEEDED,
       WorkItemStatus.CANCELLED,
     ]);
     expect(allowedStatusesForKind(WorkItemKind.FEATURE)).toEqual([
       WorkItemStatus.PENDING,
+      WorkItemStatus.READY,
+      WorkItemStatus.ASSIGNED,
       WorkItemStatus.SUCCEEDED,
       WorkItemStatus.CANCELLED,
     ]);
