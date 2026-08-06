@@ -50,8 +50,14 @@ type CreateWorkerRequest struct {
 	Labels              string `protobuf:"bytes,16,opt,name=labels,proto3" json:"labels,omitempty"` // JSON
 	VersionNote         string `protobuf:"bytes,17,opt,name=version_note,json=versionNote,proto3" json:"version_note,omitempty"`
 	RequestId           string `protobuf:"bytes,18,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"` // idempotency (docs/07 §5.5)
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Structured prompt fields — when any is set they become the version's
+	// source of truth (system_prompt is then composed server-side).
+	Role          string `protobuf:"bytes,19,opt,name=role,proto3" json:"role,omitempty"`
+	Skills        string `protobuf:"bytes,20,opt,name=skills,proto3" json:"skills,omitempty"`
+	Behavior      string `protobuf:"bytes,21,opt,name=behavior,proto3" json:"behavior,omitempty"`
+	AgentsMd      string `protobuf:"bytes,22,opt,name=agents_md,json=agentsMd,proto3" json:"agents_md,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CreateWorkerRequest) Reset() {
@@ -206,6 +212,34 @@ func (x *CreateWorkerRequest) GetVersionNote() string {
 func (x *CreateWorkerRequest) GetRequestId() string {
 	if x != nil {
 		return x.RequestId
+	}
+	return ""
+}
+
+func (x *CreateWorkerRequest) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *CreateWorkerRequest) GetSkills() string {
+	if x != nil {
+		return x.Skills
+	}
+	return ""
+}
+
+func (x *CreateWorkerRequest) GetBehavior() string {
+	if x != nil {
+		return x.Behavior
+	}
+	return ""
+}
+
+func (x *CreateWorkerRequest) GetAgentsMd() string {
+	if x != nil {
+		return x.AgentsMd
 	}
 	return ""
 }
@@ -1423,8 +1457,14 @@ type UpdateWorkerVersionRequest struct {
 	RecoveryWorkflowRef *string `protobuf:"bytes,15,opt,name=recovery_workflow_ref,json=recoveryWorkflowRef,proto3,oneof" json:"recovery_workflow_ref,omitempty"`
 	Labels              *string `protobuf:"bytes,16,opt,name=labels,proto3,oneof" json:"labels,omitempty"`
 	VersionNote         *string `protobuf:"bytes,17,opt,name=version_note,json=versionNote,proto3,oneof" json:"version_note,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Structured prompt fields; when any is set the version's system_prompt
+	// is recomposed server-side from the four fields.
+	Role          *string `protobuf:"bytes,18,opt,name=role,proto3,oneof" json:"role,omitempty"`
+	Skills        *string `protobuf:"bytes,19,opt,name=skills,proto3,oneof" json:"skills,omitempty"`
+	Behavior      *string `protobuf:"bytes,20,opt,name=behavior,proto3,oneof" json:"behavior,omitempty"`
+	AgentsMd      *string `protobuf:"bytes,21,opt,name=agents_md,json=agentsMd,proto3,oneof" json:"agents_md,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *UpdateWorkerVersionRequest) Reset() {
@@ -1555,6 +1595,34 @@ func (x *UpdateWorkerVersionRequest) GetVersionNote() string {
 	return ""
 }
 
+func (x *UpdateWorkerVersionRequest) GetRole() string {
+	if x != nil && x.Role != nil {
+		return *x.Role
+	}
+	return ""
+}
+
+func (x *UpdateWorkerVersionRequest) GetSkills() string {
+	if x != nil && x.Skills != nil {
+		return *x.Skills
+	}
+	return ""
+}
+
+func (x *UpdateWorkerVersionRequest) GetBehavior() string {
+	if x != nil && x.Behavior != nil {
+		return *x.Behavior
+	}
+	return ""
+}
+
+func (x *UpdateWorkerVersionRequest) GetAgentsMd() string {
+	if x != nil && x.AgentsMd != nil {
+		return *x.AgentsMd
+	}
+	return ""
+}
+
 type UpdateWorkerVersionResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Version       *WorkerVersion         `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
@@ -1615,8 +1683,14 @@ type CreateWorkerVersionRequest struct {
 	RecoveryWorkflowRef *string `protobuf:"bytes,15,opt,name=recovery_workflow_ref,json=recoveryWorkflowRef,proto3,oneof" json:"recovery_workflow_ref,omitempty"`
 	Labels              *string `protobuf:"bytes,16,opt,name=labels,proto3,oneof" json:"labels,omitempty"`
 	VersionNote         *string `protobuf:"bytes,17,opt,name=version_note,json=versionNote,proto3,oneof" json:"version_note,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Structured prompt fields; when any is set the version's system_prompt
+	// is recomposed server-side from the four fields.
+	Role          *string `protobuf:"bytes,18,opt,name=role,proto3,oneof" json:"role,omitempty"`
+	Skills        *string `protobuf:"bytes,19,opt,name=skills,proto3,oneof" json:"skills,omitempty"`
+	Behavior      *string `protobuf:"bytes,20,opt,name=behavior,proto3,oneof" json:"behavior,omitempty"`
+	AgentsMd      *string `protobuf:"bytes,21,opt,name=agents_md,json=agentsMd,proto3,oneof" json:"agents_md,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CreateWorkerVersionRequest) Reset() {
@@ -1736,6 +1810,34 @@ func (x *CreateWorkerVersionRequest) GetLabels() string {
 func (x *CreateWorkerVersionRequest) GetVersionNote() string {
 	if x != nil && x.VersionNote != nil {
 		return *x.VersionNote
+	}
+	return ""
+}
+
+func (x *CreateWorkerVersionRequest) GetRole() string {
+	if x != nil && x.Role != nil {
+		return *x.Role
+	}
+	return ""
+}
+
+func (x *CreateWorkerVersionRequest) GetSkills() string {
+	if x != nil && x.Skills != nil {
+		return *x.Skills
+	}
+	return ""
+}
+
+func (x *CreateWorkerVersionRequest) GetBehavior() string {
+	if x != nil && x.Behavior != nil {
+		return *x.Behavior
+	}
+	return ""
+}
+
+func (x *CreateWorkerVersionRequest) GetAgentsMd() string {
+	if x != nil && x.AgentsMd != nil {
+		return *x.AgentsMd
 	}
 	return ""
 }
@@ -2068,7 +2170,7 @@ var File_orchicon_api_v1_worker_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\n" +
-	"$orchicon/api/v1/worker_service.proto\x12\x0forchicon.api.v1\x1a\x1corchicon/api/v1/worker.proto\"\xfd\x04\n" +
+	"$orchicon/api/v1/worker_service.proto\x12\x0forchicon.api.v1\x1a\x1corchicon/api/v1/worker.proto\"\xe2\x05\n" +
 	"\x13CreateWorkerRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
@@ -2091,7 +2193,11 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\x06labels\x18\x10 \x01(\tR\x06labels\x12!\n" +
 	"\fversion_note\x18\x11 \x01(\tR\vversionNote\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x12 \x01(\tR\trequestId\"\x81\x01\n" +
+	"request_id\x18\x12 \x01(\tR\trequestId\x12\x12\n" +
+	"\x04role\x18\x13 \x01(\tR\x04role\x12\x16\n" +
+	"\x06skills\x18\x14 \x01(\tR\x06skills\x12\x1a\n" +
+	"\bbehavior\x18\x15 \x01(\tR\bbehavior\x12\x1b\n" +
+	"\tagents_md\x18\x16 \x01(\tR\bagentsMd\"\x81\x01\n" +
 	"\x14CreateWorkerResponse\x12/\n" +
 	"\x06worker\x18\x01 \x01(\v2\x17.orchicon.api.v1.WorkerR\x06worker\x128\n" +
 	"\aversion\x18\x02 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"u\n" +
@@ -2158,7 +2264,7 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\x17GetWorkerVersionRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"T\n" +
 	"\x18GetWorkerVersionResponse\x128\n" +
-	"\aversion\x18\x01 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"\xba\x06\n" +
+	"\aversion\x18\x01 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"\xe2\a\n" +
 	"\x1aUpdateWorkerVersionRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x1d\n" +
 	"\n" +
@@ -2178,7 +2284,11 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\x15recovery_workflow_ref\x18\x0f \x01(\tH\tR\x13recoveryWorkflowRef\x88\x01\x01\x12\x1b\n" +
 	"\x06labels\x18\x10 \x01(\tH\n" +
 	"R\x06labels\x88\x01\x01\x12&\n" +
-	"\fversion_note\x18\x11 \x01(\tH\vR\vversionNote\x88\x01\x01B\x0e\n" +
+	"\fversion_note\x18\x11 \x01(\tH\vR\vversionNote\x88\x01\x01\x12\x17\n" +
+	"\x04role\x18\x12 \x01(\tH\fR\x04role\x88\x01\x01\x12\x1b\n" +
+	"\x06skills\x18\x13 \x01(\tH\rR\x06skills\x88\x01\x01\x12\x1f\n" +
+	"\bbehavior\x18\x14 \x01(\tH\x0eR\bbehavior\x88\x01\x01\x12 \n" +
+	"\tagents_md\x18\x15 \x01(\tH\x0fR\bagentsMd\x88\x01\x01B\x0e\n" +
 	"\f_runtime_refB\f\n" +
 	"\n" +
 	"_model_refB\x10\n" +
@@ -2191,9 +2301,14 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\x12_concurrency_limitB\x18\n" +
 	"\x16_recovery_workflow_refB\t\n" +
 	"\a_labelsB\x0f\n" +
-	"\r_version_note\"W\n" +
+	"\r_version_noteB\a\n" +
+	"\x05_roleB\t\n" +
+	"\a_skillsB\v\n" +
+	"\t_behaviorB\f\n" +
+	"\n" +
+	"_agents_md\"W\n" +
 	"\x1bUpdateWorkerVersionResponse\x128\n" +
-	"\aversion\x18\x01 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"\x9b\x06\n" +
+	"\aversion\x18\x01 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"\xc3\a\n" +
 	"\x1aCreateWorkerVersionRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12$\n" +
 	"\vruntime_ref\x18\x06 \x01(\tH\x00R\n" +
@@ -2211,7 +2326,11 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\x15recovery_workflow_ref\x18\x0f \x01(\tH\tR\x13recoveryWorkflowRef\x88\x01\x01\x12\x1b\n" +
 	"\x06labels\x18\x10 \x01(\tH\n" +
 	"R\x06labels\x88\x01\x01\x12&\n" +
-	"\fversion_note\x18\x11 \x01(\tH\vR\vversionNote\x88\x01\x01B\x0e\n" +
+	"\fversion_note\x18\x11 \x01(\tH\vR\vversionNote\x88\x01\x01\x12\x17\n" +
+	"\x04role\x18\x12 \x01(\tH\fR\x04role\x88\x01\x01\x12\x1b\n" +
+	"\x06skills\x18\x13 \x01(\tH\rR\x06skills\x88\x01\x01\x12\x1f\n" +
+	"\bbehavior\x18\x14 \x01(\tH\x0eR\bbehavior\x88\x01\x01\x12 \n" +
+	"\tagents_md\x18\x15 \x01(\tH\x0fR\bagentsMd\x88\x01\x01B\x0e\n" +
 	"\f_runtime_refB\f\n" +
 	"\n" +
 	"_model_refB\x10\n" +
@@ -2224,7 +2343,12 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\x12_concurrency_limitB\x18\n" +
 	"\x16_recovery_workflow_refB\t\n" +
 	"\a_labelsB\x0f\n" +
-	"\r_version_note\"W\n" +
+	"\r_version_noteB\a\n" +
+	"\x05_roleB\t\n" +
+	"\a_skillsB\v\n" +
+	"\t_behaviorB\f\n" +
+	"\n" +
+	"_agents_md\"W\n" +
 	"\x1bCreateWorkerVersionResponse\x128\n" +
 	"\aversion\x18\x01 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"K\n" +
 	"\x16AcquireEditLockRequest\x12\x1b\n" +

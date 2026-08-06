@@ -103,6 +103,12 @@ message CreateWorkerRequest {
   string labels = 16; // JSON
   string version_note = 17;
   string request_id = 18; // idempotency (docs/07 §5.5)
+  // Structured prompt fields — when any is set they become the version's
+  // source of truth (system_prompt is then composed server-side).
+  string role = 19;
+  string skills = 20;
+  string behavior = 21;
+  string agents_md = 22;
 }
 
 message CreateWorkerResponse {
@@ -229,6 +235,12 @@ message UpdateWorkerVersionRequest {
   optional string recovery_workflow_ref = 15;
   optional string labels = 16;
   optional string version_note = 17;
+  // Structured prompt fields; when any is set the version's system_prompt
+  // is recomposed server-side from the four fields.
+  optional string role = 18;
+  optional string skills = 19;
+  optional string behavior = 20;
+  optional string agents_md = 21;
 }
 
 message UpdateWorkerVersionResponse {
@@ -250,6 +262,12 @@ message CreateWorkerVersionRequest {
   optional string recovery_workflow_ref = 15;
   optional string labels = 16;
   optional string version_note = 17;
+  // Structured prompt fields; when any is set the version's system_prompt
+  // is recomposed server-side from the four fields.
+  optional string role = 18;
+  optional string skills = 19;
+  optional string behavior = 20;
+  optional string agents_md = 21;
 }
 
 message CreateWorkerVersionResponse {

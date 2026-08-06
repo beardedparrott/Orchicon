@@ -47,6 +47,18 @@ RUN curl -sSfL https://github.com/bufbuild/buf/releases/download/v1.72.0/buf-Lin
  && chmod +x /usr/local/bin/buf
 RUN curl -sSfL https://atlasgo.sh | sh
 
+# Playwright + Chromium (headless browser automation for UI workers).
+# Installed at build time as root (dpkg refuses non-root). PLAYWRIGHT_BROWSERS_PATH
+# keeps the browsers in a shared dir chowned to the runtime user (uid 1000) so
+# workers can drive headless Chrome without sudo. The runtime user runs Chromium
+# with --no-sandbox (no root process => the setuid sandbox cannot run) — the
+# canned UI workers' AGENTS.md carries that instruction + a scripts/browser.mjs
+# helper.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npm install -g playwright \
+ && npx playwright install --with-deps chromium \
+ && chown -R 1000:1000 /ms-playwright
+
 # Keep the writable-rootfs property: the runtime user must be able to
 # write anywhere in the ephemeral filesystem (rootless installs + the
 # in-sandbox Postgres data dir).

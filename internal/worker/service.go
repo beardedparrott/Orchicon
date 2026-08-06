@@ -85,6 +85,22 @@ func (s *Service) CreateWorker(ctx context.Context, req *connect.Request[apiv1.C
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	role, err := validateTextField(msg.Role, maxPromptLen, "role")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	skills, err := validateTextField(msg.Skills, maxPromptLen, "skills")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	behavior, err := validateTextField(msg.Behavior, maxPromptLen, "behavior")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	agentsMD, err := validateTextField(msg.AgentsMd, maxPromptLen, "agents_md")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	executionPolicyRef, err := validateTextField(msg.ExecutionPolicyRef, maxNameLen, "execution_policy_ref")
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
@@ -127,6 +143,14 @@ func (s *Service) CreateWorker(ctx context.Context, req *connect.Request[apiv1.C
 	}
 	defer ttx.Rollback(ctx)
 
+	// Dedupe the slug against the tenant so clones and re-created workers
+	// never hit the unique workers_tenant_slug_idx constraint: append -2, -3,
+	// ... until the slug is free.
+	slug, err = uniqueSlug(ctx, ttx.Tx, tenantID, slug)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
 	workerRow := db.WorkerRow{
 		ID:             workerID,
 		TenantID:       tenantID,
@@ -143,25 +167,36 @@ func (s *Service) CreateWorker(ctx context.Context, req *connect.Request[apiv1.C
 		return nil, mapDBError(err)
 	}
 
-	// First version is always version 1, in draft state (docs/05 §4).
+	// Structured prompt fields are the source of truth for the version; the
+	// composed system_prompt is derived so the DB column always matches what
+	// dispatch would send. Legacy clients that only send system_prompt keep
+	// working (structured fields stay empty and the raw prompt is stored).
 	versionRow := db.WorkerVersionRow{
-		ID:                 versionID,
-		TenantID:           tenantID,
-		WorkerID:           workerID,
-		Version:            1,
-		VersionNote:        versionNote,
-		Status:             domain.WorkerVersionDraft,
-		RuntimeRef:         runtimeRef,
-		ModelRef:           modelRef,
-		SystemPrompt:       systemPrompt,
-		ContextSources:     contextSources,
-		Permissions:        permissions,
-		GatedTools:         gatedTools,
-		BudgetOverrides:    budgetOverrides,
-		ExecutionPolicyRef: executionPolicyRef,
-		ConcurrencyLimit:   concurrencyLimit,
+		ID:                  versionID,
+		TenantID:            tenantID,
+		WorkerID:            workerID,
+		Version:             1,
+		VersionNote:         versionNote,
+		Status:              domain.WorkerVersionDraft,
+		RuntimeRef:          runtimeRef,
+		ModelRef:            modelRef,
+		Role:                role,
+		Skills:              skills,
+		Behavior:            behavior,
+		AgentsMD:            agentsMD,
+		ContextSources:      contextSources,
+		Permissions:         permissions,
+		GatedTools:          gatedTools,
+		BudgetOverrides:     budgetOverrides,
+		ExecutionPolicyRef:  executionPolicyRef,
+		ConcurrencyLimit:    concurrencyLimit,
 		RecoveryWorkflowRef: recoveryWorkflowRef,
-		Labels:             labels,
+		Labels:              labels,
+	}
+	if role == "" && skills == "" && behavior == "" && agentsMD == "" {
+		versionRow.SystemPrompt = systemPrompt
+	} else {
+		versionRow.SystemPrompt = composeWorkerPrompt(versionRow)
 	}
 	createdVersion, err := db.CreateWorkerVersion(ctx, ttx.Tx, versionRow)
 	if err != nil {
@@ -625,6 +660,29 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 	if msg.SystemPrompt != nil {
 		merged.SystemPrompt = *msg.SystemPrompt
 	}
+	if msg.Role != nil {
+		merged.Role = *msg.Role
+	}
+	if msg.Skills != nil {
+		merged.Skills = *msg.Skills
+	}
+	if msg.Behavior != nil {
+		merged.Behavior = *msg.Behavior
+	}
+	if msg.AgentsMd != nil {
+		merged.AgentsMD = *msg.AgentsMd
+	}
+	// Structured fields are the source of truth: when any changed, recompose
+	// the stored system_prompt from them so the DB column matches dispatch.
+	// A legacy client that only sends system_prompt leaves the structured
+	// fields untouched and the raw prompt is stored as-is.
+	if msg.Role != nil || msg.Skills != nil || msg.Behavior != nil || msg.AgentsMd != nil {
+		if merged.Role != "" || merged.Skills != "" || merged.Behavior != "" || merged.AgentsMD != "" {
+			merged.SystemPrompt = composeWorkerPrompt(merged)
+		} else if msg.SystemPrompt != nil {
+			merged.SystemPrompt = *msg.SystemPrompt
+		}
+	}
 	if msg.ContextSources != nil {
 		merged.ContextSources = []byte(*msg.ContextSources)
 	}
@@ -732,6 +790,25 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 	}
 	if msg.SystemPrompt != nil {
 		newVer.SystemPrompt = *msg.SystemPrompt
+	}
+	if msg.Role != nil {
+		newVer.Role = *msg.Role
+	}
+	if msg.Skills != nil {
+		newVer.Skills = *msg.Skills
+	}
+	if msg.Behavior != nil {
+		newVer.Behavior = *msg.Behavior
+	}
+	if msg.AgentsMd != nil {
+		newVer.AgentsMD = *msg.AgentsMd
+	}
+	if msg.Role != nil || msg.Skills != nil || msg.Behavior != nil || msg.AgentsMd != nil {
+		if newVer.Role != "" || newVer.Skills != "" || newVer.Behavior != "" || newVer.AgentsMD != "" {
+			newVer.SystemPrompt = composeWorkerPrompt(newVer)
+		} else if msg.SystemPrompt != nil {
+			newVer.SystemPrompt = *msg.SystemPrompt
+		}
 	}
 	if msg.ContextSources != nil {
 		newVer.ContextSources = []byte(*msg.ContextSources)
@@ -918,6 +995,33 @@ func mapDBError(err error) error {
 	return connect.NewError(connect.CodeInternal, err)
 }
 
+// uniqueSlug returns a tenant-unique slug for the requested slug, appending
+// "-2", "-3", ... until the workers_tenant_slug_idx constraint would accept
+// it. Guards clones and re-created workers against slug collisions.
+func uniqueSlug(ctx context.Context, tx pgx.Tx, tenantID, slug string) (string, error) {
+	if slug == "" {
+		return "", nil
+	}
+	exists, err := db.WorkerSlugExists(ctx, tx, tenantID, slug)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return slug, nil
+	}
+	for i := 2; i < 1000; i++ {
+		candidate := fmt.Sprintf("%s-%d", slug, i)
+		exists, err := db.WorkerSlugExists(ctx, tx, tenantID, candidate)
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("could not allocate a unique slug for %q", slug)
+}
+
 // workerStatusToProto maps a domain status string to the proto enum
 // value (docs/05 §4).
 func workerStatusToProto(status string) apiv1.WorkerStatus {
@@ -998,6 +1102,10 @@ func versionRowToProto(v db.WorkerVersionRow) *apiv1.WorkerVersion {
 		RuntimeRef:         v.RuntimeRef,
 		ModelRef:           v.ModelRef,
 		SystemPrompt:       composeWorkerPrompt(v),
+		Role:               v.Role,
+		Skills:             v.Skills,
+		Behavior:           v.Behavior,
+		AgentsMd:           v.AgentsMD,
 		ContextSources:     string(v.ContextSources),
 		Permissions:        string(v.Permissions),
 		GatedTools:         string(v.GatedTools),

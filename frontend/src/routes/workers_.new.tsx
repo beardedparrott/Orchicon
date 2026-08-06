@@ -171,9 +171,10 @@ function NewWorkerPage() {
       purpose: values.purpose || undefined,
       runtimeRef: values.runtimeRef,
       modelRef: values.modelRef,
-      systemPrompt: [values.role, values.skills, values.behavior, values.agentsMd]
-        .filter(Boolean)
-        .join("\n\n"),
+      role: values.role,
+      skills: values.skills,
+      behavior: values.behavior,
+      agentsMd: values.agentsMd,
       contextSources: values.contextSources || undefined,
       permissions: values.permissions || undefined,
       gatedTools: values.gatedTools || undefined,
