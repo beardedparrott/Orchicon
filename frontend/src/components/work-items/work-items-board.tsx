@@ -24,7 +24,7 @@ import {
   DndContext,
   KeyboardSensor,
   PointerSensor,
-  closestCorners,
+  closestCenter,
   useDroppable,
   useSensor,
   useSensors,
@@ -32,7 +32,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ChevronRight, SearchX } from "lucide-react";
+import { ChevronRight, Lock, SearchX } from "lucide-react";
 
 import { useUpdateWorkItem } from "@/api/workItems";
 import { WorkItemStatus, type WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
@@ -49,6 +49,9 @@ import { WorkItemCard } from "@/components/work-items/work-item-card";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
+
+/** Statuses that are read-only on the board — only the server sets these. */
+const READ_ONLY_STATUSES = new Set<number>([WorkItemStatus.RUNNING]);
 
 export interface WorkItemsBoardProps {
   projectId: string;
@@ -120,6 +123,17 @@ export function WorkItemsBoard({
   const handleMove = (item: WorkItem, targetStatus: number) => {
     if (targetStatus === item.status) return;
 
+    // Running is read-only: only the server sets this status when a
+    // workflow is executing. Users must go INTO the work item to start
+    // a workflow — drag-and-drop and the Move-to menu cannot set it.
+    if (READ_ONLY_STATUSES.has(targetStatus)) {
+      toast.info(
+        `"${item.title}" cannot be moved to ${statusMeta(targetStatus).label} via drag. Open the work item to start a workflow.`,
+        { title: "Read-only status" },
+      );
+      return;
+    }
+
     // Advisory dependency gate: blocked items cannot be dropped on Ready.
     const blockers = blockState.blockedBy.get(item.id) ?? [];
     if (targetStatus === WorkItemStatus.READY && blockers.length > 0) {
@@ -164,16 +178,24 @@ export function WorkItemsBoard({
     if (overData?.type === "column") targetStatus = overData.status;
     else if (overData?.type === "card") targetStatus = overData.status;
     if (targetStatus == null) return;
+    // Guard: Running is a read-only column. closestCenter can
+    // incorrectly snap to the nearest card/column boundary, so this
+    // explicit check prevents accidental workflow kicks.
+    if (READ_ONLY_STATUSES.has(targetStatus)) return;
     handleMove(item, targetStatus);
   };
 
   if (isLoading) {
     return (
-      <div className="flex gap-3" aria-busy="true">
+      <div
+        className="flex gap-3 overflow-hidden rounded-lg border"
+        style={{ height: "calc(100vh - 280px)", minHeight: "400px" }}
+        aria-busy="true"
+      >
         {BOARD_COLUMNS.map((col) => (
           <div
             key={col.status}
-            className="h-64 flex-1 min-w-[200px] animate-pulse rounded-lg border bg-card/50"
+            className="h-full flex-1 min-w-[200px] animate-pulse rounded-lg border bg-card/50"
           />
         ))}
       </div>
@@ -207,10 +229,13 @@ export function WorkItemsBoard({
   return (
     <DndContext
       sensors={sensors}
-      collisionDetection={closestCorners}
+      collisionDetection={closestCenter}
       onDragEnd={handleDragEnd}
     >
-      <div className="flex gap-3 overflow-x-auto pb-2">
+      <div
+        className="flex gap-3 overflow-x-auto rounded-lg border bg-card/20 p-2"
+        style={{ height: "calc(100vh - 280px)", minHeight: "400px" }}
+      >
         {BOARD_COLUMNS.map((col) => {
           const colItems = items.filter((i) => columnForStatus(i.status) === col.status);
           return (
@@ -255,9 +280,14 @@ function BoardColumn({
   movingId: string | null;
   onMove: (item: WorkItem, targetStatus: number) => void;
 }) {
+  const isReadOnly = READ_ONLY_STATUSES.has(column.status);
+
+  // Read-only columns (e.g. Running) are not droppable — only the
+  // server transitions items into these statuses via workflow execution.
   const { setNodeRef, isOver } = useDroppable({
     id: `col-${column.status}`,
     data: { type: "column", status: column.status },
+    disabled: isReadOnly,
   });
 
   // Build hierarchy for this column's items
@@ -270,10 +300,11 @@ function BoardColumn({
   return (
     <section
       ref={setNodeRef}
-      aria-label={`${column.label} column`}
+      aria-label={`${column.label} column${isReadOnly ? " (read-only)" : ""}`}
       className={cn(
         "flex flex-1 min-w-[200px] snap-start flex-col rounded-lg border bg-card/40 transition-colors",
-        isOver && "bg-accent/40 ring-2 ring-ring",
+        isOver && !isReadOnly && "bg-accent/40 ring-2 ring-ring",
+        isReadOnly && "opacity-80",
       )}
     >
       <div className="sticky top-0 z-10 flex items-center gap-2 rounded-t-lg border-b bg-card/90 px-3 py-2 backdrop-blur">
@@ -282,11 +313,14 @@ function BoardColumn({
           className={cn("h-2 w-2 rounded-full", statusMeta(column.status).dot)}
         />
         <h3 className="text-sm font-semibold">{column.label}</h3>
+        {isReadOnly && (
+          <Lock aria-hidden className="h-3 w-3 text-muted-foreground" />
+        )}
         <span className="ml-auto rounded-full bg-muted px-2 py-0.5 text-xs font-medium tabular-nums text-muted-foreground">
           {items.length}
         </span>
       </div>
-      <div className="flex flex-1 flex-col gap-1.5 p-2">
+      <div className="flex flex-1 flex-col gap-1.5 overflow-y-auto p-2">
         <SortableContext items={items.map((i) => i.id)}>
           {hierarchy.map((node) => (
             <HierarchyNodeComponent
@@ -303,7 +337,7 @@ function BoardColumn({
         </SortableContext>
         {items.length === 0 && (
           <p className="px-2 py-6 text-center text-xs text-muted-foreground">
-            Drop items here
+            {isReadOnly ? "No items" : "Drop items here"}
           </p>
         )}
       </div>
@@ -467,7 +501,8 @@ function SortableCard({
 }
 
 /** Assistive/keyboard path: a small select listing the allowed target
- *  statuses, performing the identical server-confirmed mutation. */
+ *  statuses, performing the identical server-confirmed mutation.
+ *  Running is excluded — it is a system-managed status. */
 function MoveToMenu({
   item,
   disabled,
@@ -477,7 +512,10 @@ function MoveToMenu({
   disabled: boolean;
   onMove: (item: WorkItem, targetStatus: number) => void;
 }) {
-  const allowed = allowedStatusesForKind(item.kind).filter((s) => s !== item.status);
+  // Exclude current status and all read-only statuses (Running, etc.)
+  const allowed = allowedStatusesForKind(item.kind).filter(
+    (s) => s !== item.status && !READ_ONLY_STATUSES.has(s),
+  );
   return (
     <select
       value=""

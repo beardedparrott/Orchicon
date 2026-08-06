@@ -97,13 +97,16 @@ function WorkItemsPage() {
     [items, kindFilter, statusFilter, debouncedSearch],
   );
 
-  // Selection (design §5.1): cascade in the tree, flat on the board,
-  // cleared whenever the visible set changes. Tree/Board share the Set.
+  // Selection (design §5.1): cascade selection uses the FULL items list
+  // so checking/unchecking a parent always affects ALL its children
+  // regardless of active filters. The `childrenOf` callback must walk
+  // the complete hierarchy (not just filtered treeItems) so that
+  // cascade toggles reach descendants that may be hidden by the current
+  // kind/status/search filter.
   const resetKey = [projectId, statusFilter, kindFilter, debouncedSearch, sortBy, sortOrder].join("|");
   const childrenOf = useCallback(
-    (parentId: string) =>
-      view === "tree" ? treeData.treeItems.filter((i) => i.parentId === parentId) : [],
-    [view, treeData.treeItems],
+    (parentId: string) => (items ?? []).filter((i) => i.parentId === parentId),
+    [items],
   );
   const { selected, toggle, toggleAll, setSelected } = useWorkItemSelection(childrenOf, resetKey);
 
