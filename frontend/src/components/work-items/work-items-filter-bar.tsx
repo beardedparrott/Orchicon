@@ -7,7 +7,6 @@
 // the two views (the parent computes the tri-state over the visible
 // filtered set).
 
-import { Link } from "@tanstack/react-router";
 import { Columns3, FolderTree, Search, Trash2 } from "lucide-react";
 
 import type { Project } from "@/api/gen/orchicon/api/v1/project_pb";
@@ -190,14 +189,6 @@ export function WorkItemsFilterBar({
           Board
         </button>
       </div>
-
-      {projectId && (
-        <Button variant="outline" size="sm" asChild>
-          <Link to="/work-items/graph" search={{ projectId }}>
-            Dependency Graph
-          </Link>
-        </Button>
-      )}
 
       <div className="ml-auto flex items-center gap-2">
         <input

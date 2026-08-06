@@ -32,7 +32,6 @@ import { Route as WorkflowsIdRouteImport } from './routes/workflows_.$id'
 import { Route as WorkersNewRouteImport } from './routes/workers_.new'
 import { Route as WorkersIdRouteImport } from './routes/workers_.$id'
 import { Route as WorkItemsNewRouteImport } from './routes/work-items_.new'
-import { Route as WorkItemsGraphRouteImport } from './routes/work-items_.graph'
 import { Route as WorkItemsIdRouteImport } from './routes/work-items_.$id'
 import { Route as RuntimeImagesNewRouteImport } from './routes/runtime-images_.new'
 import { Route as RuntimeImagesIdRouteImport } from './routes/runtime-images_.$id'
@@ -160,11 +159,6 @@ const WorkItemsNewRoute = WorkItemsNewRouteImport.update({
   path: '/work-items/new',
   getParentRoute: () => rootRouteImport,
 } as any)
-const WorkItemsGraphRoute = WorkItemsGraphRouteImport.update({
-  id: '/work-items_/graph',
-  path: '/work-items/graph',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const WorkItemsIdRoute = WorkItemsIdRouteImport.update({
   id: '/work-items_/$id',
   path: '/work-items/$id',
@@ -250,7 +244,6 @@ export interface FileRoutesByFullPath {
   '/runtime-images/$id': typeof RuntimeImagesIdRoute
   '/runtime-images/new': typeof RuntimeImagesNewRoute
   '/work-items/$id': typeof WorkItemsIdRoute
-  '/work-items/graph': typeof WorkItemsGraphRoute
   '/work-items/new': typeof WorkItemsNewRoute
   '/workers/$id': typeof WorkersIdRoute
   '/workers/new': typeof WorkersNewRoute
@@ -287,7 +280,6 @@ export interface FileRoutesByTo {
   '/runtime-images/$id': typeof RuntimeImagesIdRoute
   '/runtime-images/new': typeof RuntimeImagesNewRoute
   '/work-items/$id': typeof WorkItemsIdRoute
-  '/work-items/graph': typeof WorkItemsGraphRoute
   '/work-items/new': typeof WorkItemsNewRoute
   '/workers/$id': typeof WorkersIdRoute
   '/workers/new': typeof WorkersNewRoute
@@ -325,7 +317,6 @@ export interface FileRoutesById {
   '/runtime-images_/$id': typeof RuntimeImagesIdRoute
   '/runtime-images_/new': typeof RuntimeImagesNewRoute
   '/work-items_/$id': typeof WorkItemsIdRoute
-  '/work-items_/graph': typeof WorkItemsGraphRoute
   '/work-items_/new': typeof WorkItemsNewRoute
   '/workers_/$id': typeof WorkersIdRoute
   '/workers_/new': typeof WorkersNewRoute
@@ -364,7 +355,6 @@ export interface FileRouteTypes {
     | '/runtime-images/$id'
     | '/runtime-images/new'
     | '/work-items/$id'
-    | '/work-items/graph'
     | '/work-items/new'
     | '/workers/$id'
     | '/workers/new'
@@ -401,7 +391,6 @@ export interface FileRouteTypes {
     | '/runtime-images/$id'
     | '/runtime-images/new'
     | '/work-items/$id'
-    | '/work-items/graph'
     | '/work-items/new'
     | '/workers/$id'
     | '/workers/new'
@@ -438,7 +427,6 @@ export interface FileRouteTypes {
     | '/runtime-images_/$id'
     | '/runtime-images_/new'
     | '/work-items_/$id'
-    | '/work-items_/graph'
     | '/work-items_/new'
     | '/workers_/$id'
     | '/workers_/new'
@@ -476,7 +464,6 @@ export interface RootRouteChildren {
   RuntimeImagesIdRoute: typeof RuntimeImagesIdRoute
   RuntimeImagesNewRoute: typeof RuntimeImagesNewRoute
   WorkItemsIdRoute: typeof WorkItemsIdRoute
-  WorkItemsGraphRoute: typeof WorkItemsGraphRoute
   WorkItemsNewRoute: typeof WorkItemsNewRoute
   WorkersIdRoute: typeof WorkersIdRoute
   WorkersNewRoute: typeof WorkersNewRoute
@@ -648,13 +635,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkItemsNewRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/work-items_/graph': {
-      id: '/work-items_/graph'
-      path: '/work-items/graph'
-      fullPath: '/work-items/graph'
-      preLoaderRoute: typeof WorkItemsGraphRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/work-items_/$id': {
       id: '/work-items_/$id'
       path: '/work-items/$id'
@@ -764,7 +744,6 @@ const rootRouteChildren: RootRouteChildren = {
   RuntimeImagesIdRoute: RuntimeImagesIdRoute,
   RuntimeImagesNewRoute: RuntimeImagesNewRoute,
   WorkItemsIdRoute: WorkItemsIdRoute,
-  WorkItemsGraphRoute: WorkItemsGraphRoute,
   WorkItemsNewRoute: WorkItemsNewRoute,
   WorkersIdRoute: WorkersIdRoute,
   WorkersNewRoute: WorkersNewRoute,

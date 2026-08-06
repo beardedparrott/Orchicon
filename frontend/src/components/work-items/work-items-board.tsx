@@ -24,10 +24,11 @@
 //   (Epic → Feature → Task → Subtask). Children are indented under their
 //   parent card within the same column.
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   DndContext,
+  DragOverlay,
   KeyboardSensor,
   PointerSensor,
   pointerWithin,
@@ -35,6 +36,7 @@ import {
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragStartEvent,
 } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -80,11 +82,15 @@ interface HierarchyNode {
   depth: number;
 }
 
-/** Build a hierarchical tree from flat items, grouped by parentId. */
+/** Build a hierarchical tree from flat items, grouped by parentId.
+ *  Items whose parent is not in this column's item set are treated as
+ *  root-level nodes (orphaned children should still render). */
 function buildHierarchy(items: WorkItem[]): HierarchyNode[] {
+  const itemIds = new Set(items.map((i) => i.id));
   const byParent = new Map<string, WorkItem[]>();
   for (const item of items) {
-    const key = item.parentId || "";
+    // If the parent is not in this column, treat the item as root-level
+    const key = item.parentId && itemIds.has(item.parentId) ? item.parentId : "";
     const list = byParent.get(key);
     if (list) list.push(item);
     else byParent.set(key, [item]);
@@ -116,6 +122,7 @@ export function WorkItemsBoard({
   const qc = useQueryClient();
   const toast = useToast();
   const [movingId, setMovingId] = useState<string | null>(null);
+  const [activeItem, setActiveItem] = useState<WorkItem | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -125,6 +132,15 @@ export function WorkItemsBoard({
   );
 
   const itemsById = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
+
+  const handleDragStart = useCallback(
+    (event: DragStartEvent) => {
+      const { active } = event;
+      const item = itemsById.get(String(active.id));
+      if (item) setActiveItem(item);
+    },
+    [itemsById],
+  );
 
   const handleMove = (item: WorkItem, targetStatus: number) => {
     if (targetStatus === item.status) return;
@@ -195,6 +211,7 @@ export function WorkItemsBoard({
   };
 
   const handleDragEnd = (event: DragEndEvent) => {
+    setActiveItem(null);
     const { active, over } = event;
     if (!over) return;
     const item = itemsById.get(String(active.id));
@@ -228,7 +245,7 @@ export function WorkItemsBoard({
         {BOARD_COLUMNS.map((col) => (
           <div
             key={col.status}
-            className="h-full flex-1 min-w-[280px] animate-pulse rounded-lg border bg-card/50"
+            className="h-full flex-1 animate-pulse rounded-lg border bg-card/50"
           />
         ))}
       </div>
@@ -262,11 +279,8 @@ export function WorkItemsBoard({
   return (
     <DndContext
       sensors={sensors}
-      // pointerWithin only triggers when the pointer is literally inside a
-      // droppable — prevents closestCenter from snapping to the nearest
-      // card/column boundary (which could incorrectly land on the
-      // read-only Running column when dropping between Pending and Running).
       collisionDetection={pointerWithin}
+      onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
     >
       <div
@@ -290,6 +304,22 @@ export function WorkItemsBoard({
           );
         })}
       </div>
+      <DragOverlay dropAnimation={null}>
+        {activeItem ? (
+          <div className="w-[280px] opacity-90 shadow-xl ring-2 ring-ring/40">
+            <WorkItemCard
+              item={activeItem}
+              selected={selected.has(activeItem.id)}
+              onToggleSelect={() => {}}
+              blockedBy={blockState.blockedBy}
+              depsCount={
+                (blockState.blocks.get(activeItem.id)?.length ?? 0) +
+                (blockState.blockedBy.get(activeItem.id)?.length ?? 0)
+              }
+            />
+          </div>
+        ) : null}
+      </DragOverlay>
     </DndContext>
   );
 }
@@ -339,7 +369,7 @@ function BoardColumn({
       ref={setNodeRef}
       aria-label={`${column.label} column${isReadOnly ? " (system-managed)" : ""}`}
       className={cn(
-        "flex flex-1 min-w-[280px] snap-start flex-col rounded-lg border transition-colors",
+        "flex flex-1 snap-start flex-col rounded-lg border transition-colors",
         isOver && !isReadOnly && "bg-accent/40 ring-2 ring-ring",
         isReadOnly
           ? "border-dashed bg-muted/30 opacity-75"
