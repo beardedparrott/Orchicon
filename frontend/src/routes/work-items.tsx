@@ -63,6 +63,12 @@ function WorkItemsPage() {
   // Server state (design §3): list + DAG, both auto-refreshed. The shell
   // owns the queries so the filter bar's select-all/count and the shared
   // selection see exactly the same data as the active view.
+  //
+  // Search is intentionally NOT sent to the server: a server-side search
+  // returns only the matching rows, orphaning a searched task's epic and
+  // leaving an empty tree. We fetch the full page (pageSize 1000) and
+  // apply search + kind + status client-side (design §5.4) so filtered
+  // results keep their ancestors (file-explorer behavior).
   const {
     data: items,
     isLoading,
@@ -70,7 +76,6 @@ function WorkItemsPage() {
     dataUpdatedAt,
     isFetching,
   } = useListWorkItems(projectId, {
-    search: debouncedSearch || undefined,
     sortBy: sortBy || undefined,
     sortOrder: sortOrder || undefined,
   });
@@ -81,15 +86,15 @@ function WorkItemsPage() {
     [graph],
   );
 
-  // Client-side filtering (design §5.4): kind + status compose over the
-  // full fetched set so the tree hierarchy stays intact.
-  const boardItems = useMemo(
-    () => filterItemsByKindStatus(items, kindFilter, statusFilter),
-    [items, kindFilter, statusFilter],
+  // Client-side filtering (design §5.4): kind + status + search compose
+  // over the full fetched set so the tree hierarchy stays intact.
+  const filteredItems = useMemo(
+    () => filterItemsByKindStatus(items, kindFilter, statusFilter, debouncedSearch),
+    [items, kindFilter, statusFilter, debouncedSearch],
   );
   const treeData = useMemo(
-    () => buildTreeData(items, kindFilter, statusFilter),
-    [items, kindFilter, statusFilter],
+    () => buildTreeData(items, kindFilter, statusFilter, debouncedSearch),
+    [items, kindFilter, statusFilter, debouncedSearch],
   );
 
   // Selection (design §5.1): cascade in the tree, flat on the board,
@@ -102,7 +107,11 @@ function WorkItemsPage() {
   );
   const { selected, toggle, toggleAll, setSelected } = useWorkItemSelection(childrenOf, resetKey);
 
-  const visibleItems = view === "tree" ? treeData.treeItems : boardItems;
+  // The header select-all + count operate over the MATCHES (the items
+  // that actually pass the filters), never the dimmed ancestor container
+  // rows — otherwise "select all" under a type filter would mark
+  // filtered-out epics/features for bulk delete.
+  const visibleItems = view === "tree" ? treeData.matches : filteredItems;
   const visibleIds = useMemo(() => visibleItems.map((i) => i.id), [visibleItems]);
   const { allChecked, allIndeterminate } = visibleSelectionState(visibleIds, selected);
 
@@ -176,33 +185,41 @@ function WorkItemsPage() {
       )}
 
       {hasProjects && (
-        <TooltipProvider delayDuration={200}>
-          {view === "tree" ? (
-            <WorkItemsTree
-              treeItems={treeData.treeItems}
-              matchIds={new Set(treeData.matches.map((i) => i.id))}
-              ancestorIds={treeData.ancestorIds}
-              filterActive={statusFilter !== "" || kindFilter !== ""}
-              blockState={blockState}
-              selected={selected}
-              onToggleSelect={toggle}
-              isLoading={isLoading}
-              error={error}
-              hasQuery={hasQuery}
-            />
-          ) : (
-            <WorkItemsBoard
-              projectId={projectId}
-              items={boardItems}
-              blockState={blockState}
-              selected={selected}
-              onToggleSelect={toggle}
-              isLoading={isLoading}
-              error={error}
-              hasQuery={hasQuery}
-            />
+        <>
+          {!projectId && (
+            <p className="text-xs text-muted-foreground">
+              Dependency state (blocked/blocking chips) is per-project — select a
+              project above to see it.
+            </p>
           )}
-        </TooltipProvider>
+          <TooltipProvider delayDuration={200}>
+            {view === "tree" ? (
+              <WorkItemsTree
+                treeItems={treeData.treeItems}
+                matchIds={new Set(treeData.matches.map((i) => i.id))}
+                ancestorIds={treeData.ancestorIds}
+                filterActive={hasQuery}
+                blockState={blockState}
+                selected={selected}
+                onToggleSelect={toggle}
+                isLoading={isLoading}
+                error={error}
+                hasQuery={hasQuery}
+              />
+            ) : (
+              <WorkItemsBoard
+                projectId={projectId}
+                items={filteredItems}
+                blockState={blockState}
+                selected={selected}
+                onToggleSelect={toggle}
+                isLoading={isLoading}
+                error={error}
+                hasQuery={hasQuery}
+              />
+            )}
+          </TooltipProvider>
+        </>
       )}
     </div>
   );

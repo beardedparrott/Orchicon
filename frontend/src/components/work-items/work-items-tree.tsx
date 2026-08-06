@@ -133,6 +133,13 @@ function TreeNode({
   const isMatch = matchIds.has(item.id);
   const isAncestor = ancestorIds.has(item.id);
   const expanded = filterActive ? ancestorIds.has(item.id) : userExpanded;
+  // Dimmed ancestor container rows (kept so filtered results stay
+  // reachable under their parents) are NOT selectable: checking one would
+  // cascade-select the very epics/features the user filtered out, and
+  // "Delete N selected" would hard-delete them. The header select-all
+  // also only covers matches (the page shell computes it over
+  // `treeData.matches`).
+  const selectable = !(filterActive && isAncestor && !isMatch);
 
   const subtreeState = subtreeSelectionState(
     [item.id, ...collectSubtreeIds(item.id, childrenOf)],
@@ -162,12 +169,20 @@ function TreeNode({
         <input
           type="checkbox"
           checked={checked}
+          disabled={!selectable}
           ref={(el) => {
             if (el) el.indeterminate = triState;
           }}
           onChange={() => onToggleSelect(item.id)}
-          className="h-4 w-4 shrink-0 cursor-pointer rounded border-input"
-          aria-label={`Select ${item.title}${hasChildren ? " and its descendants" : ""}`}
+          className={cn(
+            "h-4 w-4 shrink-0 rounded border-input",
+            selectable ? "cursor-pointer" : "cursor-not-allowed opacity-50",
+          )}
+          aria-label={
+            selectable
+              ? `Select ${item.title}${hasChildren ? " and its descendants" : ""}`
+              : `Select ${item.title} (filtered out — not selectable)`
+          }
         />
         {hasChildren ? (
           <button

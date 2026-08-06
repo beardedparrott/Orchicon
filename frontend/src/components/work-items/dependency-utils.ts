@@ -77,26 +77,44 @@ export function blockingTitles(
 // ---------------------------------------------------------------------------
 // Client-side filtering helpers (design §5.4). These exist so the page
 // shell can compute ONE visible set shared by the filter bar's
-// select-all/count and the active view. Kind + status are applied
-// client-side over the full fetched set (pageSize 1000) so the tree
-// hierarchy stays intact — a server-side status filter would return only
-// the matching items, orphaning their children under invisible parents.
+// select-all/count and the active view. Kind, status AND search are all
+// applied client-side over the full fetched set (pageSize 1000) so the
+// tree hierarchy stays intact — a server-side filter would return only
+// the matching rows, orphaning their children/parents under invisible
+// rows and breaking the tree (a searched task would lose its epic).
 // ---------------------------------------------------------------------------
+
+/**
+ * Free-text match mirroring the server's search semantics
+ * (`title ILIKE %q% OR description ILIKE %q%`, case-insensitive —
+ * internal/db/work_item.go). Client-side so search results keep their
+ * ancestors in the tree.
+ */
+export function matchesSearch(item: WorkItem, search: string): boolean {
+  const q = search.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    item.title.toLowerCase().includes(q) ||
+    (item.description ?? "").toLowerCase().includes(q)
+  );
+}
 
 export function filterItemsByKindStatus(
   items: WorkItem[] | undefined,
   kindFilter: string,
   statusFilter: string,
+  search = "",
 ): WorkItem[] {
   return (items ?? []).filter(
     (i) =>
+      matchesSearch(i, search) &&
       (!kindFilter || i.kind === Number(kindFilter)) &&
       (!statusFilter || i.status === Number(statusFilter)),
   );
 }
 
 export interface TreeData {
-  /** items that pass the kind/status filters (the "matches") */
+  /** items that pass the kind/status/search filters (the "matches") */
   matches: WorkItem[];
   /** matches + their ancestors, so filtered results are reachable under
    *  (possibly non-matching) parents — file-explorer behavior */
@@ -109,9 +127,10 @@ export function buildTreeData(
   items: WorkItem[] | undefined,
   kindFilter: string,
   statusFilter: string,
+  search = "",
 ): TreeData {
   const all = items ?? [];
-  const matches = filterItemsByKindStatus(all, kindFilter, statusFilter);
+  const matches = filterItemsByKindStatus(all, kindFilter, statusFilter, search);
   const byId = new Map(all.map((i) => [i.id, i]));
   const ancestors = new Map<string, WorkItem>();
 
