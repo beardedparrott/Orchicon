@@ -661,7 +661,7 @@ open http://localhost:8080
 #### Defining Workers
 1. Navigate to **Workers** → **New Worker**
 2. Configure: name, model reference, budget limits, permissions
-3. Set the system prompt (Role, Skills, Behavior, AGENTS.md fields)
+3. Set the structured prompt fields **Role, Skills, Behavior, AGENTS.md** (the editable source of truth; the server composes them into the `system_prompt` the model receives). Saving a draft round-trips these fields — they persist exactly as entered.
 4. Publish the worker (draft → published)
 5. Workers are versioned; published versions are immutable
 
@@ -675,6 +675,11 @@ open http://localhost:8080
 | DevOps Engineer | Repository setup (early steps) and PR/merge after approval (late steps) |
 | AI Approver | Worker-backed approval — evaluates context and outputs approve/reject |
 | Principal Software Architect | Architecture design, ADR documentation, and technical strategy |
+| UI Design Architect | Design systems, design tokens, UI architecture, accessibility/UX standards |
+| UI Developer | Hands-on UI implementation — accessible, responsive, design-system-driven frontend work |
+| UI QA Engineer | Validates UI — visual consistency, accessibility (WCAG), responsive behavior |
+
+The UI workers also carry a **Browser automation (Playwright)** block in their AGENTS.md: the runtime container has no root process, so headless Chromium must launch with `--no-sandbox` (via a project `scripts/browser.mjs` helper). The `:orchicon-dev` runtime image preinstalls Playwright + Chromium (`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`).
 
 The worker identity (Role, Skills, Behavior, AGENTS.md) is included in every dispatch prompt. Workers also receive workflow-aware context: step position, iteration count, execution history, and prior issues found.
 
