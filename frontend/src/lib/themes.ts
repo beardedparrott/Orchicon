@@ -8,6 +8,12 @@ export type Theme = {
 
 export const LIGHT_THEMES: Theme[] = [
   {
+    id: "gruvbox",
+    name: "Gruvbox Light",
+    mode: "light",
+    swatches: ["#fbf1c7", "#ebdbb2", "#d5c4a1", "#3c3836", "#cc241d"],
+  },
+  {
     id: "neutral",
     name: "Neutral",
     mode: "light",
@@ -66,6 +72,24 @@ export const LIGHT_THEMES: Theme[] = [
     name: "Teal",
     mode: "light",
     swatches: ["#f4fbfb", "#e6f5f4", "#d4eceb", "#11302e", "#ef4444"],
+  },
+  {
+    id: "paper",
+    name: "Paper",
+    mode: "light",
+    swatches: ["#f2efe9", "#f5f3ef", "#d8d2ca", "#2c2621", "#df4020"],
+  },
+  {
+    id: "ash",
+    name: "Ash",
+    mode: "light",
+    swatches: ["#e8ebed", "#eef0f2", "#c7cbd1", "#191f2e", "#db2424"],
+  },
+  {
+    id: "porcelain",
+    name: "Porcelain",
+    mode: "light",
+    swatches: ["#ececee", "#f1f1f3", "#c9c9cf", "#1c1c22", "#db2424"],
   },
 ];
 
@@ -129,6 +153,30 @@ export const DARK_THEMES: Theme[] = [
     name: "Abyss",
     mode: "dark",
     swatches: ["#0f1716", "#182220", "#283533", "#5cb8b0", "#bf4040"],
+  },
+  {
+    id: "graphite",
+    name: "Graphite",
+    mode: "dark",
+    swatches: ["#242428", "#29292e", "#38383e", "#f4f4f5", "#d22d2d"],
+  },
+  {
+    id: "dusk",
+    name: "Dusk",
+    mode: "dark",
+    swatches: ["#1e2229", "#24272e", "#353941", "#f3f5f6", "#ca2b2b"],
+  },
+  {
+    id: "forest",
+    name: "Forest",
+    mode: "dark",
+    swatches: ["#1d2522", "#222a28", "#343d3a", "#f1f3f3", "#ca2b2b"],
+  },
+  {
+    id: "cocoa",
+    name: "Cocoa",
+    mode: "dark",
+    swatches: ["#272420", "#2c2926", "#3f3b36", "#f4f2f1", "#ca2b2b"],
   },
 ];
 

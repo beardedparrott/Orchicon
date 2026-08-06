@@ -422,7 +422,7 @@ Orchicon/
 │       ├── main.tsx              # React entry: providers + router
 │       ├── router.tsx            # TanStack Router setup
 │       ├── routeTree.gen.ts      # Auto-generated route tree
-│       ├── index.css             # Global styles + 15 themes (Tailwind + CSS vars)
+│       ├── index.css             # Global styles + 28 themes (Tailwind + CSS vars)
 │       ├── auth/                 # AuthProvider, session management
 │       ├── api/                  # Connect-ES clients, hooks, streaming
 │       │   ├── clients.ts        # 12 generated service clients
@@ -766,7 +766,7 @@ Workers now receive full execution context including:
 
 #### Settings
 1. Navigate to **Settings** (replaces the former Preferences page)
-2. **Appearance**: light/dark mode toggle with 20 theme variants (10 light + 10 dark)
+2. **Appearance**: light/dark mode toggle with 28 theme variants (14 light + 14 dark)
 3. **Defaults → Default models**:
    - **Default worker model**: fallback when a worker version has no `model_ref` set. If both are empty, dispatch fails (no hardcoded fallback).
    - **Default Ask Orchicon model**: model used by the Ask Orchicon conversational agent. If empty, dispatch will fail.
@@ -1047,7 +1047,7 @@ Before marking any change complete:
 
 - **Go**: Standard library style, `internal/` packages, pgx parameterized queries
 - **TypeScript**: TanStack Query for server state, Zustand for UI state, shadcn/ui components
-- **CSS**: Tailwind utility classes with 15 CSS-variable themes (10 light + 10 dark)
+- **CSS**: Tailwind utility classes with 28 CSS-variable themes (14 light + 14 dark)
 - **Protobuf**: `proto/orchicon/api/v1/` for public API, `proto/orchicon/adapter/v1/` for runtime contract
 
 ---
