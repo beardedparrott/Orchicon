@@ -151,6 +151,7 @@ type ApprovalItem struct {
 	AcceptanceCriteria string                 `protobuf:"bytes,9,opt,name=acceptance_criteria,json=acceptanceCriteria,proto3" json:"acceptance_criteria,omitempty"`
 	Status             string                 `protobuf:"bytes,10,opt,name=status,proto3" json:"status,omitempty"` // "pending" | "approved" | "rejected"
 	CreatedAt          *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	WorkflowId         string                 `protobuf:"bytes,12,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"` // owning workflow — for deep links back to the run
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -260,6 +261,13 @@ func (x *ApprovalItem) GetCreatedAt() *timestamppb.Timestamp {
 		return x.CreatedAt
 	}
 	return nil
+}
+
+func (x *ApprovalItem) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
 }
 
 type ListPendingStepApprovalsRequest struct {
@@ -417,7 +425,7 @@ const file_orchicon_api_v1_approval_service_proto_rawDesc = "" +
 	"\x06reason\x18\x03 \x01(\tR\x06reason\x12\x1f\n" +
 	"\vreviewed_by\x18\x04 \x01(\tR\n" +
 	"reviewedBy\"\x15\n" +
-	"\x13ApproveStepResponse\"\xc1\x03\n" +
+	"\x13ApproveStepResponse\"\xe2\x03\n" +
 	"\fApprovalItem\x12\x1e\n" +
 	"\vstep_run_id\x18\x01 \x01(\tR\tstepRunId\x12&\n" +
 	"\x0fworkflow_run_id\x18\x02 \x01(\tR\rworkflowRunId\x12!\n" +
@@ -431,7 +439,9 @@ const file_orchicon_api_v1_approval_service_proto_rawDesc = "" +
 	"\x06status\x18\n" +
 	" \x01(\tR\x06status\x129\n" +
 	"\n" +
-	"created_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\x96\x02\n" +
+	"created_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x1f\n" +
+	"\vworkflow_id\x18\f \x01(\tR\n" +
+	"workflowId\"\x96\x02\n" +
 	"\x1fListPendingStepApprovalsRequest\x12+\n" +
 	"\x0fworkflow_run_id\x18\x01 \x01(\tH\x00R\rworkflowRunId\x88\x01\x01\x12\x1b\n" +
 	"\x06status\x18\x02 \x01(\tH\x01R\x06status\x88\x01\x01\x12\x16\n" +
