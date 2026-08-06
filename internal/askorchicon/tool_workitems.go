@@ -89,6 +89,12 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	kind := params.Kind
 	if kind == "" {
 		kind = domain.WorkItemKindTask
+	} else {
+		normalized, err := domain.NormalizeWorkItemKind(kind)
+		if err != nil {
+			return nil, err
+		}
+		kind = normalized
 	}
 	tenantID := tenant.FromContext(ctx)
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)

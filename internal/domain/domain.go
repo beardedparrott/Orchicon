@@ -6,7 +6,11 @@
 // logic — reconcilers and services operate on them.
 package domain
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // Tenant is the root of multi-tenant isolation. All tenant_id-bearing
 // tables scope to a Tenant. See docs/09_Database_Schema.md §3.1.
@@ -105,6 +109,24 @@ func IsRecoveryKind(kind string) bool {
 		return true
 	}
 	return false
+}
+
+// NormalizeWorkItemKind canonicalizes a user-supplied work item kind
+// string for storage: it trims surrounding whitespace, lowercases, and
+// validates against the canonical hierarchy kinds
+// (epic/feature/task/subtask). Recovery kinds are engine-internal and
+// are intentionally not accepted here. The returned string is always
+// one of the canonical lowercase constants, so callers can store it
+// verbatim and the strict read path (kindToProto) will map it
+// correctly.
+func NormalizeWorkItemKind(kind string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(kind))
+	switch normalized {
+	case WorkItemKindEpic, WorkItemKindFeature, WorkItemKindTask, WorkItemKindSubtask:
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("invalid work item kind %q: must be one of epic, feature, task, subtask", kind)
+	}
 }
 
 // WorkItemStatus — schedulable kinds follow:
