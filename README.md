@@ -30,6 +30,12 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.201 (2026-08-06)
+
+| Type | Change |
+|---|---|
+| Bug fix | **Board drag-and-drop now floats cards across columns.** Added `DragOverlay` so the dragged card follows the cursor instead of snapping back to its origin column. Fixed hierarchy rendering: orphaned children (items whose parent is in a different column) now render as root-level nodes instead of disappearing. Removed `min-w-[280px]` from columns so all 7 board columns share the viewport width evenly. Removed the dependency graph page (the DAG is still available via the API for block-state chips). |
+
 ### v0.1.200 (2026-08-06)
 
 | Type | Change |
