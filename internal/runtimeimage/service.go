@@ -144,6 +144,7 @@ func (s *Service) CreateRuntimeImage(ctx context.Context, req *connect.Request[a
 		DockerfileOverride: override,
 		Tag:                tag,
 		Status:             "draft",
+		Source:             "custom",
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create runtime image: %w", err))
@@ -332,14 +333,22 @@ func (s *Service) DeleteRuntimeImage(ctx context.Context, req *connect.Request[a
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	// Remove the local docker image (best-effort — the daemon may be
-	// absent or the image may already be gone).
-	if s.rt != nil && row.Tag != "" {
+	// absent or the image may already be gone). Canned (stock) rows and
+	// the daemon's configured base image are exempt: deleting a canned row
+	// just removes the spec (the seeder re-creates it on the next boot and
+	// keeps the pristine container.sh image), and the base image is the
+	// substrate every other image derives from — it must never be removed.
+	if s.rt != nil && row.Tag != "" && row.Source != "stock" && row.Tag != s.ensureBase(ctx) {
 		if err := s.rt.RemoveImage(context.Background(), row.Tag); err != nil {
 			s.log.Warn("runtime image docker rmi failed", "tag", row.Tag, "error", err)
 		}
 	}
 	return connect.NewResponse(&apiv1.DeleteRuntimeImageResponse{}), nil
 }
+
+// errAlreadyUpToDate is the sentinel buildCore returns when the image spec is
+// already built (ready + built_version == version): no docker build ran.
+var errAlreadyUpToDate = errors.New("runtime image already up to date")
 
 // BuildRuntimeImage delegates `docker build` to the runtime daemon and
 // streams log chunks until the build succeeds or fails.
@@ -351,6 +360,48 @@ func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[ap
 	if s.rt == nil {
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("runtime daemon not configured (headless serve)"))
 	}
+	final, exit, err := s.buildCore(ctx, tenantID, req.Msg.Id, func(chunk string) error {
+		if chunk == "" {
+			return nil
+		}
+		return stream.Send(&apiv1.BuildRuntimeImageResponse{Log: chunk})
+	})
+	if errors.Is(err, errAlreadyUpToDate) {
+		s.log.Info("runtime image already up to date (spec version) — skipping rebuild",
+			"id", req.Msg.Id, "tag", final.Tag, "version", final.Version)
+		msg := fmt.Sprintf("runtime image already up to date (spec version %d) — skipping rebuild", final.Version)
+		if err := stream.Send(&apiv1.BuildRuntimeImageResponse{Log: msg}); err != nil {
+			return err
+		}
+		return stream.Send(&apiv1.BuildRuntimeImageResponse{
+			Status:  imageStatusProto(final.Status),
+			Tag:     final.Tag,
+			Skipped: true,
+		})
+	}
+	if err != nil {
+		return err
+	}
+	if err := stream.Send(&apiv1.BuildRuntimeImageResponse{
+		Status: imageStatusProto(final.Status),
+		Error:  final.Error,
+		Tag:    final.Tag,
+	}); err != nil {
+		return err
+	}
+	if exit != 0 {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("image build failed: %s", final.Error))
+	}
+	return nil
+}
+
+// buildCore is the shared engine behind BuildRuntimeImage (RPC, streams
+// logs) and the canned-image seeder's auto-build (logs discarded). It runs
+// the transaction-safe build flow: row lock, skip gate, mark building,
+// daemon build, persist outcome. onLog is invoked with each build log chunk
+// (may be nil). Returns the final row, the docker build exit code, and an
+// error; errAlreadyUpToDate means the spec is already built and nothing ran.
+func (s *Service) buildCore(ctx context.Context, tenantID, id string, onLog func(string) error) (db.RuntimeImageRow, int, error) {
 	// Read the row under FOR UPDATE and keep the lock until the row is
 	// marked 'building' (one transaction). This is the OCC barrier that
 	// serializes concurrent Deploys: the marking transition is StatusOnly,
@@ -360,19 +411,19 @@ func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[ap
 	// read+mark window, never across the docker build itself.
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, err)
+		return db.RuntimeImageRow{}, 1, connect.NewError(connect.CodeInternal, err)
 	}
-	row, err := db.GetRuntimeImageForUpdate(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	row, err := db.GetRuntimeImageForUpdate(ctx, ttx.Tx, tenantID, id)
 	if err != nil {
 		_ = ttx.Rollback(ctx)
 		if errors.Is(err, db.ErrNotFound) {
-			return connect.NewError(connect.CodeNotFound, errors.New("runtime image not found"))
+			return row, 1, connect.NewError(connect.CodeNotFound, errors.New("runtime image not found"))
 		}
-		return connect.NewError(connect.CodeInternal, err)
+		return row, 1, connect.NewError(connect.CodeInternal, err)
 	}
 	if row.Status == "building" {
 		_ = ttx.Rollback(ctx)
-		return connect.NewError(connect.CodeFailedPrecondition, errors.New("image is already building"))
+		return row, 1, connect.NewError(connect.CodeFailedPrecondition, errors.New("image is already building"))
 	}
 
 	// Rebuild gate: when the row is ready and records the CURRENT spec
@@ -385,15 +436,7 @@ func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[ap
 		_ = ttx.Rollback(ctx)
 		s.log.Info("runtime image already up to date (spec version) — skipping rebuild",
 			"id", row.ID, "tag", row.Tag, "version", row.Version)
-		msg := fmt.Sprintf("runtime image already up to date (spec version %d) — skipping rebuild", row.Version)
-		if err := stream.Send(&apiv1.BuildRuntimeImageResponse{Log: msg}); err != nil {
-			return err
-		}
-		return stream.Send(&apiv1.BuildRuntimeImageResponse{
-			Status:  imageStatusProto(row.Status),
-			Tag:     row.Tag,
-			Skipped: true,
-		})
+		return row, 0, errAlreadyUpToDate
 	}
 
 	// Mark building + clear the old log/error. StatusOnly=true: this is a
@@ -408,10 +451,10 @@ func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[ap
 	})
 	if err != nil {
 		_ = ttx.Rollback(ctx)
-		return connect.NewError(connect.CodeFailedPrecondition, errors.New("optimistic concurrency conflict — reload and retry"))
+		return row, 1, connect.NewError(connect.CodeFailedPrecondition, errors.New("optimistic concurrency conflict — reload and retry"))
 	}
 	if err := ttx.Commit(ctx); err != nil {
-		return connect.NewError(connect.CodeInternal, err)
+		return row, 1, connect.NewError(connect.CodeInternal, err)
 	}
 
 	base := row.BaseImageRef
@@ -419,7 +462,7 @@ func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[ap
 		base = s.ensureBase(ctx)
 	}
 	if base == "" {
-		return connect.NewError(connect.CodeFailedPrecondition, errors.New("no base image configured"))
+		return row, 1, connect.NewError(connect.CodeFailedPrecondition, errors.New("no base image configured"))
 	}
 	df := generatedDockerfile(row, base)
 
@@ -434,7 +477,9 @@ func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[ap
 		if ev.Data != "" {
 			logBuf.WriteString(ev.Data)
 			logBuf.WriteString("\n")
-			return stream.Send(&apiv1.BuildRuntimeImageResponse{Log: ev.Data})
+			if onLog != nil {
+				return onLog(ev.Data)
+			}
 		}
 		return nil
 	})
@@ -460,7 +505,7 @@ func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[ap
 	}
 	ttx, err = s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, err)
+		return row, exit, connect.NewError(connect.CodeInternal, err)
 	}
 	fields := db.UpdateRuntimeImageFields{
 		Status:     &status,
@@ -476,24 +521,12 @@ func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[ap
 	if err != nil {
 		_ = ttx.Rollback(ctx)
 		s.log.Warn("persist runtime image build outcome failed", "id", row.ID, "error", err)
-		// The build itself succeeded on the daemon; report the persisted
-		// error so the caller can retry the status update.
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("persist build outcome: %w", err))
+		return row, exit, connect.NewError(connect.CodeInternal, fmt.Errorf("persist build outcome: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
-		return connect.NewError(connect.CodeInternal, err)
+		return final, exit, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := stream.Send(&apiv1.BuildRuntimeImageResponse{
-		Status: imageStatusProto(final.Status),
-		Error:  final.Error,
-		Tag:    final.Tag,
-	}); err != nil {
-		return err
-	}
-	if exit != 0 {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("image build failed: %s", final.Error))
-	}
-	return nil
+	return final, exit, nil
 }
 
 // ListAvailableRuntimeImages returns the merged dropdown list for the
@@ -521,7 +554,18 @@ func (s *Service) ListAvailableRuntimeImages(ctx context.Context, req *connect.R
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	resp.CustomImages = tags
+	// Canned stock rows that are ready carry the same tag as the daemon's
+	// stock images — the dropdown must not offer them twice. Drop any ready
+	// row tag that the daemon already reports as stock.
+	stock := make(map[string]bool, len(resp.StockImages))
+	for _, s := range resp.StockImages {
+		stock[s] = true
+	}
+	for _, t := range tags {
+		if !stock[t] {
+			resp.CustomImages = append(resp.CustomImages, t)
+		}
+	}
 	if resp.DefaultImage == "" && len(resp.StockImages) > 0 {
 		resp.DefaultImage = resp.StockImages[0]
 	}
@@ -638,8 +682,10 @@ func toProto(r db.RuntimeImageRow) *apiv1.RuntimeImage {
 		BuildLog:           r.BuildLog,
 		Error:              r.Error,
 		Version:            int32(r.Version),
+		BuiltVersion:       int32(r.BuiltVersion),
 		CreatedAt:          timestamppb.New(r.CreatedAt),
 		UpdatedAt:          timestamppb.New(r.UpdatedAt),
+		Source:             r.Source,
 	}
 }
 

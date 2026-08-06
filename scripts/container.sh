@@ -97,11 +97,19 @@ runtime_image_version() {
 # of the gate: an unchanged Dockerfile means the label matches and the build
 # is skipped, so `make container-build` no longer re-runs the slow :gui/:dev
 # installs on every build.
+#
+# An image that carries org.orchicon.runtime.spec-version was built by the
+# runtime daemon from a canned stock row the operator edited + redeployed
+# (custom-image build path). It is tenant-owned: container.sh must NEVER
+# clobber it with a pristine rebuild, so those images are always skipped.
 runtime_image_needs_rebuild() {
   local tag="$1" ver="$2"
   if [ "${FORCE_RUNTIME:-}" = "1" ] || [ "${ORCHICON_FORCE_RUNTIME_REBUILD:-}" = "1" ]; then
     return 0
   fi
+  local spec
+  spec=$(docker image inspect "$tag" --format '{{index .Config.Labels "org.orchicon.runtime.spec-version"}}' 2>/dev/null || true)
+  [ -n "$spec" ] && return 1
   local current
   current=$(docker image inspect "$tag" --format '{{index .Config.Labels "org.orchicon.runtime.version"}}' 2>/dev/null || true)
   [ "$current" != "$ver" ]

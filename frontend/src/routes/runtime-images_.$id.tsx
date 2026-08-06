@@ -173,6 +173,11 @@ function RuntimeImageDetailPage() {
             <p className="text-sm text-muted-foreground">
               <code className="rounded bg-muted px-1">{img.tag || "no tag"}</code>{" "}
               · base <code className="rounded bg-muted px-1">{img.baseImageRef}</code>
+              {img.source === "stock" && (
+                <span className="ml-2 rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-800">
+                  stock
+                </span>
+              )}
             </p>
           </div>
         </div>
@@ -207,6 +212,9 @@ function RuntimeImageDetailPage() {
             </CardHeader>
             <CardContent className="space-y-2 text-sm">
               <p><span className="text-muted-foreground">Status:</span> {statusLabel(img.status)}</p>
+              <p><span className="text-muted-foreground">Version:</span> v{img.version}</p>
+              <p><span className="text-muted-foreground">Built from spec:</span> v{img.builtVersion || "—"}</p>
+              <p><span className="text-muted-foreground">Source:</span> {img.source === "stock" ? "stock (canned)" : "custom"}</p>
               <p><span className="text-muted-foreground">Slug:</span> {d.slug}</p>
               <p><span className="text-muted-foreground">Description:</span> {d.description || "—"}</p>
               <p><span className="text-muted-foreground">apt packages:</span> {d.apt || "—"}</p>

@@ -47,4 +47,13 @@ message RuntimeImage {
   int32 version = 15; // optimistic concurrency (docs/09 §5)
   google.protobuf.Timestamp created_at = 16;
   google.protobuf.Timestamp updated_at = 17;
+  // Where the row came from: "stock" = a canned image seeded from the shipped
+  // Dockerfile templates on boot (editable like any other, re-seeded on boot
+  // if deleted); "custom" = created by the tenant. Informational — every row
+  // builds through the same daemon path.
+  string source = 18;
+  // Spec version the current ready image was actually built from (0 = never
+  // built). When built_version == version the image is up to date and Deploy
+  // short-circuits; a lagging built_version means a rebuild is pending.
+  int32 built_version = 19;
 }
