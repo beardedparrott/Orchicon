@@ -88,6 +88,12 @@ clean: ## Remove local build artifacts and the Go build cache (dev hygiene)
 	$(GO) clean -cache -testcache
 	@command -v $(GO) >/dev/null 2>&1 && go clean -modcache 2>/dev/null || true
 	@rm -f $(BIN_DIR)/orchicon
+	# Stale copies of the binary dropped into the container/runtime build
+	# contexts by older scripts. The runtime image no longer bakes the
+	# binary (the daemon bind-mounts its own executable), so a leftover
+	# deploy/runtime/orchicon would only bloat the build context — remove
+	# both here so a heavy dev session never leaves them behind.
+	@rm -f deploy/container/orchicon deploy/runtime/orchicon
 
 # cache-check reports the current Go build cache size so devs can decide
 # whether to run `make clean` before a heavy session (AGENTS.md disk hygiene).

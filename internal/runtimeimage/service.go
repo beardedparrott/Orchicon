@@ -351,32 +351,60 @@ func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[ap
 	if s.rt == nil {
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("runtime daemon not configured (headless serve)"))
 	}
+	// Read the row under FOR UPDATE and keep the lock until the row is
+	// marked 'building' (one transaction). This is the OCC barrier that
+	// serializes concurrent Deploys: the marking transition is StatusOnly,
+	// so it does NOT bump `version` — without the row lock, two
+	// simultaneous Deploys could both pass the checks below and both run
+	// `docker build` on the same tag. The lock is held only for the
+	// read+mark window, never across the docker build itself.
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, err)
 	}
-	row, err := db.GetRuntimeImage(ctx, ttx.Tx, tenantID, req.Msg.Id)
-	_ = ttx.Rollback(ctx)
+	row, err := db.GetRuntimeImageForUpdate(ctx, ttx.Tx, tenantID, req.Msg.Id)
 	if err != nil {
+		_ = ttx.Rollback(ctx)
 		if errors.Is(err, db.ErrNotFound) {
 			return connect.NewError(connect.CodeNotFound, errors.New("runtime image not found"))
 		}
 		return connect.NewError(connect.CodeInternal, err)
 	}
 	if row.Status == "building" {
+		_ = ttx.Rollback(ctx)
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("image is already building"))
 	}
 
-	// Mark building + clear the old log/error.
+	// Rebuild gate: when the row is ready and records the CURRENT spec
+	// version as already built, the local docker image is exactly what the
+	// spec describes — re-deploying is a no-op (no docker build, no prune).
+	// This is the acceptance-criteria mechanism for custom images: the
+	// version is the change signal, and the image is only rebuilt (and only
+	// pruned) when a spec edit bumped it past built_version.
+	if row.Status == "ready" && row.Tag != "" && row.BuiltVersion == row.Version {
+		_ = ttx.Rollback(ctx)
+		s.log.Info("runtime image already up to date (spec version) — skipping rebuild",
+			"id", row.ID, "tag", row.Tag, "version", row.Version)
+		msg := fmt.Sprintf("runtime image already up to date (spec version %d) — skipping rebuild", row.Version)
+		if err := stream.Send(&apiv1.BuildRuntimeImageResponse{Log: msg}); err != nil {
+			return err
+		}
+		return stream.Send(&apiv1.BuildRuntimeImageResponse{
+			Status:  imageStatusProto(row.Status),
+			Tag:     row.Tag,
+			Skipped: true,
+		})
+	}
+
+	// Mark building + clear the old log/error. StatusOnly=true: this is a
+	// build-flow transition, not a spec edit, so `version` (the "spec
+	// changed" signal) must NOT bump.
 	building := "building"
 	clearErr := ""
-	ttx, err = s.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return connect.NewError(connect.CodeInternal, err)
-	}
 	row, err = db.UpdateRuntimeImage(ctx, ttx.Tx, tenantID, row.ID, row.Version, db.UpdateRuntimeImageFields{
-		Status:   &building,
-		Error:    &clearErr,
+		Status:     &building,
+		Error:      &clearErr,
+		StatusOnly: true,
 	})
 	if err != nil {
 		_ = ttx.Rollback(ctx)
@@ -397,10 +425,11 @@ func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[ap
 
 	var logBuf strings.Builder
 	exit, err := s.rt.BuildImage(ctx, runtime.BuildRequest{
-		Slug:       row.Slug,
-		Tag:        row.Tag,
-		Base:       base,
-		Dockerfile: df,
+		Slug:        row.Slug,
+		Tag:         row.Tag,
+		Base:        base,
+		Dockerfile:  df,
+		SpecVersion: row.Version,
 	}, func(ev runtime.AgentEvent) error {
 		if ev.Data != "" {
 			logBuf.WriteString(ev.Data)
@@ -413,7 +442,10 @@ func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[ap
 		exit = 1
 	}
 
-	// Persist the outcome.
+	// Persist the outcome. StatusOnly=true again — no version bump — and on
+	// success stamp built_version = the spec version that was just built, so
+	// the next Deploy short-circuits. On failure built_version stays stale
+	// (status != ready), forcing a rebuild on retry.
 	status := "ready"
 	buildLog := truncate(logBuf.String(), maxBuildLogLen)
 	failMsg := ""
@@ -430,11 +462,17 @@ func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[ap
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, err)
 	}
-	final, err := db.UpdateRuntimeImage(ctx, ttx.Tx, tenantID, row.ID, row.Version, db.UpdateRuntimeImageFields{
-		Status:   &status,
-		BuildLog: &buildLog,
-		Error:    &failMsg,
-	})
+	fields := db.UpdateRuntimeImageFields{
+		Status:     &status,
+		BuildLog:   &buildLog,
+		Error:      &failMsg,
+		StatusOnly: true,
+	}
+	if exit == 0 {
+		built := row.Version
+		fields.BuiltVersion = &built
+	}
+	final, err := db.UpdateRuntimeImage(ctx, ttx.Tx, tenantID, row.ID, row.Version, fields)
 	if err != nil {
 		_ = ttx.Rollback(ctx)
 		s.log.Warn("persist runtime image build outcome failed", "id", row.ID, "error", err)

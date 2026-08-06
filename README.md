@@ -30,17 +30,17 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.190 (2026-08-05)
+
+| Type | Change |
+|---|---|
+| Chore | **No more full runtime image rebuilds on every build.** The runtime base image no longer bakes the orchicon binary — the runtime daemon bind-mounts its own executable (`os.Executable()`) read-only at `/usr/local/bin/orchicon` into every runtime container it creates, so a rebuilt binary is picked up by every new container with no image rebuild (same "mount, never bake" pattern as the adapter CLIs). Stock runtime images (`orchicon-runtime:local` / `:local-gui` / `:orchicon-dev`) are now version-gated by an `org.orchicon.runtime.version` label (app version + Dockerfile SHA-256; `:gui`/`:dev` embed the base's version so a base change cascades) — `scripts/container.sh build` skips each variant when the label matches, so an unchanged Dockerfile means no rebuild and no runtime-image churn (`FORCE_RUNTIME=1` bypasses). Custom Runtime Images Deploy is now idempotent: `runtime_images.built_version` records which spec version the `ready` image was built from, build-flow status transitions no longer bump `version` (only spec edits do), and re-deploying an unchanged ready spec short-circuits with "already up to date" — no `docker build`, no prune. The daemon also labels every custom build with `org.orchicon.runtime.spec-version=<n>` and the Deploy UI shows the skip. |
+
 ### v0.1.188 (2026-08-05)
 
 | Type | Change |
 |---|---|
 | Chore | **Architecture-notes housekeeping.** `architecture-notes/` is now in `.gitignore` and the leftover architecture note was removed from the repo. The canned DevOps Engineer worker AGENTS.md (seeded) gained a final-step instruction to remove any leftover architectural documents before PR/merge so they never confuse future workers. |
-
-### v0.1.187 (2026-08-05)
-
-| Type | Change |
-|---|---|
-| Bug fix | **Execution page now shows the real per-step system prompt.** The execution detail page's "System prompt" card read the shared work item's `prompt_context` — a shared input reference that carries the FIRST step's composite forever (never mutated per-step). In a workflow run, every execution displayed "You are a DevOps Engineer" (the first step's role) regardless of the actual worker. The page now shows `WorkerExecution.system_prompt`, resolved server-side from the linked workflow step run's `_prompt` (the exact composite the execution was dispatched with), with the work item's `prompt_context` as a fallback for legacy/non-workflow dispatches. |
 
 ## Installation
 

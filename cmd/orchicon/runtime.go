@@ -37,6 +37,18 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 		socketPath = args[0]
 	}
 
+	// Resolve the daemon's own executable once, at process start. It is
+	// bind-mounted into every runtime container (see Daemon.ExePath) so the
+	// container runs the SAME binary as the daemon, even after a rebuild —
+	// no image rebuild required.
+	exePath := ""
+	if p, err := os.Executable(); err == nil {
+		exePath = p
+		if abs, aerr := filepath.Abs(p); aerr == nil {
+			exePath = abs
+		}
+	}
+
 	d := &runtime.Daemon{
 		SocketPath:   socketPath,
 		DockerBin:    "docker",
@@ -46,6 +58,7 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 		GroupID:      hostGID,
 		HostHome:     hostHome,
 		AllowedRoots:  allowedRoots,
+		ExePath:      exePath,
 		CPUs:          env("ORCHICON_RUNTIME_CPUS", "4"),
 		Memory:        env("ORCHICON_RUNTIME_MEMORY", "4g"),
 		TmpfsSize:     env("ORCHICON_RUNTIME_TMPFS", "2g"),

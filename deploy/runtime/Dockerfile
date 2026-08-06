@@ -20,10 +20,14 @@
 #     managers (PIP_BREAK_SYSTEM_PACKAGES, npm with a user prefix,
 #     mise/uv) which write into the chowned rootfs without a superuser.
 #
-# The image ships the orchicon binary (for `runtime-supervisor` /
-# `runtime-client`) and the opencode runtime (the adapter drives it with
-# `opencode run --format json`). Runtime config (auth, git identity) is
-# mounted by the daemon at runtime, not baked in.
+# The image ships the opencode runtime (the adapter drives it with
+# `opencode run --format json`). The orchicon binary (`runtime-supervisor`
+# / `runtime-client`) is deliberately NOT baked in — the daemon bind-mounts
+# its own executable read-only at /usr/local/bin/orchicon when it creates a
+# runtime container, so a rebuilt binary is picked up by every new container
+# without an image rebuild (same "mount, never bake" pattern as the adapters).
+# Runtime config (auth, git identity) is mounted by the daemon at runtime,
+# not baked in.
 FROM debian:bookworm-slim
 
 # Mark this image as the Orchicon runtime base. Docker inherits labels
@@ -66,10 +70,6 @@ RUN curl -fsSL https://mise.run | sh \
 # mounts: ~/.opencode). Orchicon never ships, downloads, or redistributes
 # the adapter CLI — that keeps the product redistributable regardless of an
 # adapter's license (Claude Code's terms prohibit bundling it).
-
-# The orchicon binary provides `runtime-supervisor` (PID 1) and
-# `runtime-client`. Copied by the build step alongside bin/orchicon.
-COPY orchicon /usr/local/bin/orchicon
 
 # Runtime user: the same uid/gid as the host user running Orchicon, so
 # bind-mounted project dirs are owned/written by that user. Everything
