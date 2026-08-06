@@ -439,13 +439,44 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 			}
 		}
 
-		// Always publish any stray draft versions.
-		_, _ = ttx.Exec(ctx,
+		// Keep the canned worker published without clobbering the user's
+		// draft-edit workflow. Previously every stray draft was force-
+		// published on boot — a user mid-edit on a canned worker (e.g. a new
+		// draft version) had it silently published by the next restart.
+		// Now a draft is only promoted when the worker has NO published
+		// version left at all (the seeder's own v1 is always published, so
+		// this only fires after a user deletes every published version), and
+		// only the latest draft is promoted — user drafts alongside a
+		// published version are left untouched. When a draft is promoted,
+		// current_version follows it so dispatch never points at a missing
+		// version.
+		pubTag, _ := ttx.Exec(ctx,
 			`UPDATE worker_versions SET status = 'published',
 				model_ref = COALESCE(NULLIF(model_ref, ''), 'opencode-go/deepseek-v4-flash')
-			 WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND status = 'draft'`,
+			 WHERE tenant_id = 'tnt_dev' AND status = 'draft'
+			   AND worker_id = $1
+			   AND NOT EXISTS (
+			     SELECT 1 FROM worker_versions p
+			     WHERE p.worker_id = worker_versions.worker_id
+			       AND p.tenant_id = worker_versions.tenant_id
+			       AND p.status = 'published'
+			   )
+			   AND version = (
+			     SELECT max(version) FROM worker_versions
+			     WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND status = 'draft'
+			   )`,
 			w.ID,
 		)
+		if pubTag.RowsAffected() > 0 {
+			_, _ = ttx.Exec(ctx,
+				`UPDATE workers SET current_version = (
+				   SELECT max(version) FROM worker_versions
+				   WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND status = 'published'
+				 )
+				 WHERE id = $1 AND tenant_id = 'tnt_dev'`,
+				w.ID,
+			)
+		}
 
 		// Canned-worker model_ref is seed-managed. Older seeds defaulted to
 		// 'opencode/deepseek-v4-flash', which is not a valid model for this
