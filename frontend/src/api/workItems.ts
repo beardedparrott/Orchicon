@@ -30,7 +30,7 @@ export const workItemKeys = {
 // sort_by/sort_order.
 export function useListWorkItems(
   projectId: string,
-  opts?: { parentId?: string; status?: WorkItemStatus; search?: string; sortBy?: string; sortOrder?: string },
+  opts?: { parentId?: string; status?: WorkItemStatus; search?: string; sortBy?: string; sortOrder?: string; refetchInterval?: number },
 ) {
   const parentId = opts?.parentId;
   const status = opts?.status;
@@ -50,7 +50,7 @@ export function useListWorkItems(
       return res.workItems as WorkItem[];
     },
     enabled: true, // empty projectId = list all
-    refetchInterval: 5_000,
+    refetchInterval: opts?.refetchInterval ?? 5_000,
   });
 }
 

@@ -15,6 +15,7 @@ import { Route as WorkItemsRouteImport } from './routes/work-items'
 import { Route as WebhooksRouteImport } from './routes/webhooks'
 import { Route as TelemetryRouteImport } from './routes/telemetry'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as SchedulesRouteImport } from './routes/schedules'
 import { Route as RuntimeImagesRouteImport } from './routes/runtime-images'
 import { Route as RecoveryRouteImport } from './routes/recovery'
 import { Route as ProjectsRouteImport } from './routes/projects'
@@ -72,6 +73,11 @@ const TelemetryRoute = TelemetryRouteImport.update({
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SchedulesRoute = SchedulesRouteImport.update({
+  id: '/schedules',
+  path: '/schedules',
   getParentRoute: () => rootRouteImport,
 } as any)
 const RuntimeImagesRoute = RuntimeImagesRouteImport.update({
@@ -227,6 +233,7 @@ export interface FileRoutesByFullPath {
   '/projects': typeof ProjectsRoute
   '/recovery': typeof RecoveryRoute
   '/runtime-images': typeof RuntimeImagesRoute
+  '/schedules': typeof SchedulesRoute
   '/settings': typeof SettingsRoute
   '/telemetry': typeof TelemetryRoute
   '/webhooks': typeof WebhooksRoute
@@ -263,6 +270,7 @@ export interface FileRoutesByTo {
   '/projects': typeof ProjectsRoute
   '/recovery': typeof RecoveryRoute
   '/runtime-images': typeof RuntimeImagesRoute
+  '/schedules': typeof SchedulesRoute
   '/settings': typeof SettingsRoute
   '/telemetry': typeof TelemetryRoute
   '/webhooks': typeof WebhooksRoute
@@ -300,6 +308,7 @@ export interface FileRoutesById {
   '/projects': typeof ProjectsRoute
   '/recovery': typeof RecoveryRoute
   '/runtime-images': typeof RuntimeImagesRoute
+  '/schedules': typeof SchedulesRoute
   '/settings': typeof SettingsRoute
   '/telemetry': typeof TelemetryRoute
   '/webhooks': typeof WebhooksRoute
@@ -338,6 +347,7 @@ export interface FileRouteTypes {
     | '/projects'
     | '/recovery'
     | '/runtime-images'
+    | '/schedules'
     | '/settings'
     | '/telemetry'
     | '/webhooks'
@@ -374,6 +384,7 @@ export interface FileRouteTypes {
     | '/projects'
     | '/recovery'
     | '/runtime-images'
+    | '/schedules'
     | '/settings'
     | '/telemetry'
     | '/webhooks'
@@ -410,6 +421,7 @@ export interface FileRouteTypes {
     | '/projects'
     | '/recovery'
     | '/runtime-images'
+    | '/schedules'
     | '/settings'
     | '/telemetry'
     | '/webhooks'
@@ -447,6 +459,7 @@ export interface RootRouteChildren {
   ProjectsRoute: typeof ProjectsRoute
   RecoveryRoute: typeof RecoveryRoute
   RuntimeImagesRoute: typeof RuntimeImagesRoute
+  SchedulesRoute: typeof SchedulesRoute
   SettingsRoute: typeof SettingsRoute
   TelemetryRoute: typeof TelemetryRoute
   WebhooksRoute: typeof WebhooksRoute
@@ -514,6 +527,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/schedules': {
+      id: '/schedules'
+      path: '/schedules'
+      fullPath: '/schedules'
+      preLoaderRoute: typeof SchedulesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/runtime-images': {
@@ -727,6 +747,7 @@ const rootRouteChildren: RootRouteChildren = {
   ProjectsRoute: ProjectsRoute,
   RecoveryRoute: RecoveryRoute,
   RuntimeImagesRoute: RuntimeImagesRoute,
+  SchedulesRoute: SchedulesRoute,
   SettingsRoute: SettingsRoute,
   TelemetryRoute: TelemetryRoute,
   WebhooksRoute: WebhooksRoute,
