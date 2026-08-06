@@ -12,8 +12,39 @@
     },
     "playwright": {
       "type": "local",
-      "command": ["npx", "@playwright/mcp"],
+      "command": [
+        "npx",
+        "@playwright/mcp"
+      ],
       "enabled": true
+    },
+    "orchicon": {
+      "type": "local",
+      "command": [
+        "docker",
+        "exec",
+        "-i",
+        "-e",
+        "ORCHICON_MCP_TENANT_ID=tnt_dev",
+        "orchicon-cnt-prod",
+        "orchicon",
+        "mcp"
+      ],
+      "enabled": true
+    },
+    "orchicon-dev": {
+      "type": "local",
+      "command": [
+        "docker",
+        "exec",
+        "-i",
+        "-e",
+        "ORCHICON_MCP_TENANT_ID=tnt_dev",
+        "orchicon-cnt-dev",
+        "orchicon",
+        "mcp"
+      ],
+      "enabled": false
     }
   }
 }

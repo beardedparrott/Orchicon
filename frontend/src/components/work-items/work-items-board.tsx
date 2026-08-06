@@ -7,14 +7,19 @@
 // - One column per server status; the drop target maps 1:1 to a
 //   WorkItemStatus value (ADR-8). checkpointing/recovering render in
 //   Running, scheduled in Pending — the card keeps its REAL status pill.
+// - Columns are responsive: flex-1 min-w-[200px] so they share the
+//   viewport width. Horizontal scroll is a fallback on very small screens.
 // - Drag & drop via @dnd-kit (Pointer + Keyboard sensors). Drops are
 //   server-confirmed (ADR-5): the card shows a transient "moving…" state
 //   and stays in its origin column until the refetch lands.
 // - Advisory gates before the mutation: a blocked card cannot be dropped
 //   on Ready, and Epics/Features accept only pending|succeeded|cancelled.
 // - "Move to…" select per card = the assistive/keyboard path (design §5.5).
+// - Hierarchy: parent/child relationships shown with expand/collapse arrows
+//   (Epic → Feature → Task → Subtask). Children are indented under their
+//   parent card within the same column.
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   DndContext,
   KeyboardSensor,
@@ -27,7 +32,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { SearchX } from "lucide-react";
+import { ChevronRight, SearchX } from "lucide-react";
 
 import { useUpdateWorkItem } from "@/api/workItems";
 import { WorkItemStatus, type WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
@@ -57,6 +62,38 @@ export interface WorkItemsBoardProps {
   hasQuery: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Board hierarchy (expand/collapse for parent/child relationships)
+// ---------------------------------------------------------------------------
+
+interface HierarchyNode {
+  item: WorkItem;
+  children: HierarchyNode[];
+  depth: number;
+}
+
+/** Build a hierarchical tree from flat items, grouped by parentId. */
+function buildHierarchy(items: WorkItem[]): HierarchyNode[] {
+  const byParent = new Map<string, WorkItem[]>();
+  for (const item of items) {
+    const key = item.parentId || "";
+    const list = byParent.get(key);
+    if (list) list.push(item);
+    else byParent.set(key, [item]);
+  }
+
+  function buildLevel(parentId: string, depth: number): HierarchyNode[] {
+    const children = byParent.get(parentId) || [];
+    return children.map((item) => ({
+      item,
+      children: buildLevel(item.id, depth + 1),
+      depth,
+    }));
+  }
+
+  return buildLevel("", 0);
+}
+
 export function WorkItemsBoard({
   projectId,
   items,
@@ -72,11 +109,13 @@ export function WorkItemsBoard({
   const [movingId, setMovingId] = useState<string | null>(null);
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 3 },
+    }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
-  const itemsById = new Map(items.map((i) => [i.id, i]));
+  const itemsById = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
 
   const handleMove = (item: WorkItem, targetStatus: number) => {
     if (targetStatus === item.status) return;
@@ -130,11 +169,11 @@ export function WorkItemsBoard({
 
   if (isLoading) {
     return (
-      <div className="flex gap-4 overflow-x-auto" aria-busy="true">
+      <div className="flex gap-3" aria-busy="true">
         {BOARD_COLUMNS.map((col) => (
           <div
             key={col.status}
-            className="h-64 w-[280px] shrink-0 animate-pulse rounded-lg border bg-card/50"
+            className="h-64 flex-1 min-w-[200px] animate-pulse rounded-lg border bg-card/50"
           />
         ))}
       </div>
@@ -171,7 +210,7 @@ export function WorkItemsBoard({
       collisionDetection={closestCorners}
       onDragEnd={handleDragEnd}
     >
-      <div className="flex snap-x gap-4 overflow-x-auto pb-4">
+      <div className="flex gap-3 overflow-x-auto pb-2">
         {BOARD_COLUMNS.map((col) => {
           const colItems = items.filter((i) => columnForStatus(i.status) === col.status);
           return (
@@ -179,6 +218,7 @@ export function WorkItemsBoard({
               key={col.status}
               column={col}
               items={colItems}
+              allItems={items}
               selected={selected}
               onToggleSelect={onToggleSelect}
               blockState={blockState}
@@ -192,9 +232,14 @@ export function WorkItemsBoard({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Board column — responsive width, hierarchy-aware
+// ---------------------------------------------------------------------------
+
 function BoardColumn({
   column,
   items,
+  allItems,
   selected,
   onToggleSelect,
   blockState,
@@ -203,6 +248,7 @@ function BoardColumn({
 }: {
   column: { status: number; label: string };
   items: WorkItem[];
+  allItems: WorkItem[];
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
   blockState: BlockState;
@@ -214,12 +260,19 @@ function BoardColumn({
     data: { type: "column", status: column.status },
   });
 
+  // Build hierarchy for this column's items
+  const hierarchy = useMemo(() => {
+    const nodes = buildHierarchy(items);
+    // Only show root-level items in the column; children are nested
+    return nodes;
+  }, [items]);
+
   return (
     <section
       ref={setNodeRef}
       aria-label={`${column.label} column`}
       className={cn(
-        "flex w-[280px] shrink-0 snap-start flex-col rounded-lg border bg-card/40 transition-colors",
+        "flex flex-1 min-w-[200px] snap-start flex-col rounded-lg border bg-card/40 transition-colors",
         isOver && "bg-accent/40 ring-2 ring-ring",
       )}
     >
@@ -233,16 +286,17 @@ function BoardColumn({
           {items.length}
         </span>
       </div>
-      <div className="flex flex-1 flex-col gap-2 p-2">
+      <div className="flex flex-1 flex-col gap-1.5 p-2">
         <SortableContext items={items.map((i) => i.id)}>
-          {items.map((item) => (
-            <SortableCard
-              key={item.id}
-              item={item}
+          {hierarchy.map((node) => (
+            <HierarchyNodeComponent
+              key={node.item.id}
+              node={node}
+              allItems={allItems}
               selected={selected}
               onToggleSelect={onToggleSelect}
               blockState={blockState}
-              moving={movingId === item.id}
+              movingId={movingId}
               onMove={onMove}
             />
           ))}
@@ -257,6 +311,70 @@ function BoardColumn({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Hierarchy node — renders a card with expand/collapse for children
+// ---------------------------------------------------------------------------
+
+function HierarchyNodeComponent({
+  node,
+  allItems,
+  selected,
+  onToggleSelect,
+  blockState,
+  movingId,
+  onMove,
+  depth = 0,
+}: {
+  node: HierarchyNode;
+  allItems: WorkItem[];
+  selected: Set<string>;
+  onToggleSelect: (id: string) => void;
+  blockState: BlockState;
+  movingId: string | null;
+  onMove: (item: WorkItem, targetStatus: number) => void;
+  depth?: number;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const hasChildren = node.children.length > 0;
+
+  return (
+    <div>
+      <div style={{ paddingLeft: depth * 16 }}>
+        <SortableCard
+          item={node.item}
+          selected={selected}
+          onToggleSelect={onToggleSelect}
+          blockState={blockState}
+          moving={movingId === node.item.id}
+          onMove={onMove}
+          hasChildren={hasChildren}
+          expanded={expanded}
+          onToggleExpand={() => setExpanded((v) => !v)}
+        />
+      </div>
+      {expanded &&
+        hasChildren &&
+        node.children.map((child) => (
+          <HierarchyNodeComponent
+            key={child.item.id}
+            node={child}
+            allItems={allItems}
+            selected={selected}
+            onToggleSelect={onToggleSelect}
+            blockState={blockState}
+            movingId={movingId}
+            onMove={onMove}
+            depth={depth + 1}
+          />
+        ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sortable card — wraps WorkItemCard with dnd-kit sortable + hierarchy controls
+// ---------------------------------------------------------------------------
+
 function SortableCard({
   item,
   selected,
@@ -264,6 +382,9 @@ function SortableCard({
   blockState,
   moving,
   onMove,
+  hasChildren = false,
+  expanded = true,
+  onToggleExpand,
 }: {
   item: WorkItem;
   selected: Set<string>;
@@ -271,6 +392,9 @@ function SortableCard({
   blockState: BlockState;
   moving: boolean;
   onMove: (item: WorkItem, targetStatus: number) => void;
+  hasChildren?: boolean;
+  expanded?: boolean;
+  onToggleExpand?: () => void;
 }) {
   const {
     attributes,
@@ -311,7 +435,32 @@ function SortableCard({
           (blockState.blockedBy.get(item.id)?.length ?? 0)
         }
         moving={moving}
-        actions={<MoveToMenu item={item} disabled={moving} onMove={onMove} />}
+        actions={
+          <div className="flex items-center gap-1">
+            {hasChildren && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleExpand?.();
+                }}
+                onPointerDown={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+                aria-label={expanded ? "Collapse children" : "Expand children"}
+                aria-expanded={expanded}
+                className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <ChevronRight
+                  className={cn(
+                    "h-3 w-3 transition-transform",
+                    expanded && "rotate-90",
+                  )}
+                />
+              </button>
+            )}
+            <MoveToMenu item={item} disabled={moving} onMove={onMove} />
+          </div>
+        }
       />
     </div>
   );

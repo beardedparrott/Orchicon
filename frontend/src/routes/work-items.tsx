@@ -49,7 +49,7 @@ export const Route = createRoute({
 function WorkItemsPage() {
   const { data: projects } = useListProjects();
   const [projectId, setProjectId] = useState<string>("");
-  const [view, setView] = useState<WorkItemsView>("tree");
+  const [view, setView] = useState<WorkItemsView>("board");
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search, 300);
   const [statusFilter, setStatusFilter] = useState<string>("");
