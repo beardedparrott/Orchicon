@@ -159,8 +159,14 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	mux.Handle(apiv1connect.NewWebhookServiceHandler(webhookSvc, interceptorOpt))
 
 	// ApprovalService — human-in-the-loop approval gates for workflow steps.
+	// A higher read cap so approval decisions can carry attached files and
+	// screenshots (up to 20 attachments, each up to 2-3 MiB).
 	approvalSvc := approval.NewService(deps.Pool, deps.Log)
-	mux.Handle(apiv1connect.NewApprovalServiceHandler(approvalSvc, interceptorOpt))
+	mux.Handle(apiv1connect.NewApprovalServiceHandler(
+		approvalSvc,
+		interceptorOpt,
+		connect.WithReadMaxBytes(32<<20),
+	))
 
 	// SettingsService — tenant-level configuration defaults.
 	settingsSvc := settings.New(deps.Pool, deps.Log, deps.PostgresDSN)

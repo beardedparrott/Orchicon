@@ -4,7 +4,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { approvalClient } from "@/api/clients";
-import type { ApprovalItem } from "@/api/gen/orchicon/api/v1/approval_service_pb";
+import type { ApprovalAttachment, ApprovalItem } from "@/api/gen/orchicon/api/v1/approval_service_pb";
 
 export const approvalKeys = {
   all: ["approvals"] as const,
@@ -50,12 +50,14 @@ export function useApproveStep() {
       approved: boolean;
       reason: string;
       reviewedBy: string;
+      attachments?: ApprovalAttachment[];
     }) => {
       const res = await approvalClient.approveStep({
         stepRunId: req.stepRunId!,
         approved: req.approved!,
         reason: req.reason ?? "",
         reviewedBy: req.reviewedBy ?? "",
+        attachments: req.attachments ?? [],
       });
       return res;
     },

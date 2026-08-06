@@ -680,7 +680,7 @@ open http://localhost:8080
 | UI Developer | Hands-on UI implementation — accessible, responsive, design-system-driven frontend work |
 | UI QA Engineer | Validates UI — visual consistency, accessibility (WCAG), responsive behavior |
 
-The UI workers also carry a **Browser automation (Playwright)** block in their AGENTS.md: the runtime container has no root process, so headless Chromium must launch with `--no-sandbox` (via a project `scripts/browser.mjs` helper). The `:orchicon-dev` runtime image preinstalls Playwright + Chromium (`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`).
+The UI workers also carry a **Browser automation (Playwright) — VISUAL verification** block in their AGENTS.md: the runtime container has no root process, so headless Chromium must launch with `--no-sandbox` (via a project `scripts/browser.cjs` helper with `launch()`/`shot()`). The `:orchicon-dev` runtime image preinstalls Playwright + Chromium (`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`, `NODE_PATH=/usr/local/lib/node_modules` so `require('playwright')` resolves globally). The protocol: start the app in-container, launch the browser, navigate at desktop + mobile viewports, screenshot to `/tmp/orchicon/`, **read the screenshot back** (that is how the model sees the UI), and iterate against the acceptance criteria.
 
 The worker identity (Role, Skills, Behavior, AGENTS.md) is included in every dispatch prompt. Workers also receive workflow-aware context: step position, iteration count, execution history, and prior issues found.
 

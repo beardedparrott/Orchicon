@@ -3,6 +3,7 @@ package db_test
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	assets "github.com/beardedparrott/orchicon"
@@ -272,5 +273,48 @@ func TestSeedSkipsCustomizedSlugOwner(t *testing.T) {
 	}
 	if role != "A customized worker the user owns." {
 		t.Errorf("customized worker must keep its own role, got %q", role)
+	}
+}
+
+// TestSeedKeepsSyncingAdoptedWorker: once an empty shell is adopted and filled
+// by the seeder, it is seed-managed (carries the safety marker) — subsequent
+// boots must KEEP syncing it (e.g. roll the marker forward), not treat it as a
+// user worker and skip it.
+func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
+	pool := seedTestPool(t)
+	ctx := context.Background()
+	const cannedID = "w_ui_developer"
+	userID := replaceCannedWorkerWithUserShell(t, pool, cannedID, "ui-developer", false)
+
+	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+		t.Fatalf("seed (adopt): %v", err)
+	}
+	// Simulate the adopted worker having been created under an OLDER seed: its
+	// content carries the marker but with a stale version.
+	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if _, err := ttx.Exec(ctx,
+		`UPDATE worker_versions
+		    SET agents_md = replace(agents_md, 'orchicon.safety=v9', 'orchicon.safety=v0')
+		  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`, userID); err != nil {
+		t.Fatalf("stale marker: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+	var agents string
+	if err := pool.QueryRow(ctx,
+		`SELECT agents_md FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+		userID).Scan(&agents); err != nil {
+		t.Fatalf("query adopted agents: %v", err)
+	}
+	if !strings.Contains(agents, "orchicon.safety=v9") {
+		t.Errorf("adopted worker should have been rolled forward to the current marker, got %q", agents[len(agents)-40:])
 	}
 }

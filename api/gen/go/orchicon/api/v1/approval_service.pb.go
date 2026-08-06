@@ -35,11 +35,15 @@ const (
 )
 
 type ApproveStepRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	StepRunId     string                 `protobuf:"bytes,1,opt,name=step_run_id,json=stepRunId,proto3" json:"step_run_id,omitempty"`
-	Approved      bool                   `protobuf:"varint,2,opt,name=approved,proto3" json:"approved,omitempty"`                      // true = approve, false = reject
-	Reason        string                 `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`                           // human's feedback — written to .orchicon/<run_id>/summary
-	ReviewedBy    string                 `protobuf:"bytes,4,opt,name=reviewed_by,json=reviewedBy,proto3" json:"reviewed_by,omitempty"` // who reviewed — identity from auth; skeleton for future RBAC
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	StepRunId  string                 `protobuf:"bytes,1,opt,name=step_run_id,json=stepRunId,proto3" json:"step_run_id,omitempty"`
+	Approved   bool                   `protobuf:"varint,2,opt,name=approved,proto3" json:"approved,omitempty"`                      // true = approve, false = reject
+	Reason     string                 `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`                           // human's feedback — written to .orchicon/<run_id>/summary
+	ReviewedBy string                 `protobuf:"bytes,4,opt,name=reviewed_by,json=reviewedBy,proto3" json:"reviewed_by,omitempty"` // who reviewed — identity from auth; skeleton for future RBAC
+	// Files + screenshots the human attaches so the worker can see the issues.
+	// Each is written to .orchicon/<run_id>/attachments/ in the project dir and
+	// surfaced to downstream workers (they read them back with their tools).
+	Attachments   []*ApprovalAttachment `protobuf:"bytes,5,rep,name=attachments,proto3" json:"attachments,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -102,6 +106,73 @@ func (x *ApproveStepRequest) GetReviewedBy() string {
 	return ""
 }
 
+func (x *ApproveStepRequest) GetAttachments() []*ApprovalAttachment {
+	if x != nil {
+		return x.Attachments
+	}
+	return nil
+}
+
+type ApprovalAttachment struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Filename      string                 `protobuf:"bytes,1,opt,name=filename,proto3" json:"filename,omitempty"`                          // display name (sanitized server-side on write)
+	ContentType   string                 `protobuf:"bytes,2,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"` // e.g. "image/png", "text/plain"
+	Data          []byte                 `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`                                  // file content
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApprovalAttachment) Reset() {
+	*x = ApprovalAttachment{}
+	mi := &file_orchicon_api_v1_approval_service_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApprovalAttachment) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApprovalAttachment) ProtoMessage() {}
+
+func (x *ApprovalAttachment) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_approval_service_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApprovalAttachment.ProtoReflect.Descriptor instead.
+func (*ApprovalAttachment) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_approval_service_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ApprovalAttachment) GetFilename() string {
+	if x != nil {
+		return x.Filename
+	}
+	return ""
+}
+
+func (x *ApprovalAttachment) GetContentType() string {
+	if x != nil {
+		return x.ContentType
+	}
+	return ""
+}
+
+func (x *ApprovalAttachment) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
 type ApproveStepResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -110,7 +181,7 @@ type ApproveStepResponse struct {
 
 func (x *ApproveStepResponse) Reset() {
 	*x = ApproveStepResponse{}
-	mi := &file_orchicon_api_v1_approval_service_proto_msgTypes[1]
+	mi := &file_orchicon_api_v1_approval_service_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -122,7 +193,7 @@ func (x *ApproveStepResponse) String() string {
 func (*ApproveStepResponse) ProtoMessage() {}
 
 func (x *ApproveStepResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_approval_service_proto_msgTypes[1]
+	mi := &file_orchicon_api_v1_approval_service_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -135,7 +206,7 @@ func (x *ApproveStepResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApproveStepResponse.ProtoReflect.Descriptor instead.
 func (*ApproveStepResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_approval_service_proto_rawDescGZIP(), []int{1}
+	return file_orchicon_api_v1_approval_service_proto_rawDescGZIP(), []int{2}
 }
 
 type ApprovalItem struct {
@@ -151,14 +222,16 @@ type ApprovalItem struct {
 	AcceptanceCriteria string                 `protobuf:"bytes,9,opt,name=acceptance_criteria,json=acceptanceCriteria,proto3" json:"acceptance_criteria,omitempty"`
 	Status             string                 `protobuf:"bytes,10,opt,name=status,proto3" json:"status,omitempty"` // "pending" | "approved" | "rejected"
 	CreatedAt          *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	WorkflowId         string                 `protobuf:"bytes,12,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"` // owning workflow — for deep links back to the run
+	WorkflowId         string                 `protobuf:"bytes,12,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`                // owning workflow — for deep links back to the run
+	Reason             string                 `protobuf:"bytes,13,opt,name=reason,proto3" json:"reason,omitempty"`                                          // human's review feedback (resolved items)
+	AttachmentNames    []string               `protobuf:"bytes,14,rep,name=attachment_names,json=attachmentNames,proto3" json:"attachment_names,omitempty"` // attached files/screenshots (resolved items)
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
 
 func (x *ApprovalItem) Reset() {
 	*x = ApprovalItem{}
-	mi := &file_orchicon_api_v1_approval_service_proto_msgTypes[2]
+	mi := &file_orchicon_api_v1_approval_service_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -170,7 +243,7 @@ func (x *ApprovalItem) String() string {
 func (*ApprovalItem) ProtoMessage() {}
 
 func (x *ApprovalItem) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_approval_service_proto_msgTypes[2]
+	mi := &file_orchicon_api_v1_approval_service_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -183,7 +256,7 @@ func (x *ApprovalItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApprovalItem.ProtoReflect.Descriptor instead.
 func (*ApprovalItem) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_approval_service_proto_rawDescGZIP(), []int{2}
+	return file_orchicon_api_v1_approval_service_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ApprovalItem) GetStepRunId() string {
@@ -270,6 +343,20 @@ func (x *ApprovalItem) GetWorkflowId() string {
 	return ""
 }
 
+func (x *ApprovalItem) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *ApprovalItem) GetAttachmentNames() []string {
+	if x != nil {
+		return x.AttachmentNames
+	}
+	return nil
+}
+
 type ListPendingStepApprovalsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	WorkflowRunId *string                `protobuf:"bytes,1,opt,name=workflow_run_id,json=workflowRunId,proto3,oneof" json:"workflow_run_id,omitempty"` // scope to a run
@@ -285,7 +372,7 @@ type ListPendingStepApprovalsRequest struct {
 
 func (x *ListPendingStepApprovalsRequest) Reset() {
 	*x = ListPendingStepApprovalsRequest{}
-	mi := &file_orchicon_api_v1_approval_service_proto_msgTypes[3]
+	mi := &file_orchicon_api_v1_approval_service_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -297,7 +384,7 @@ func (x *ListPendingStepApprovalsRequest) String() string {
 func (*ListPendingStepApprovalsRequest) ProtoMessage() {}
 
 func (x *ListPendingStepApprovalsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_approval_service_proto_msgTypes[3]
+	mi := &file_orchicon_api_v1_approval_service_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -310,7 +397,7 @@ func (x *ListPendingStepApprovalsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPendingStepApprovalsRequest.ProtoReflect.Descriptor instead.
 func (*ListPendingStepApprovalsRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_approval_service_proto_rawDescGZIP(), []int{3}
+	return file_orchicon_api_v1_approval_service_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ListPendingStepApprovalsRequest) GetWorkflowRunId() string {
@@ -372,7 +459,7 @@ type ListPendingStepApprovalsResponse struct {
 
 func (x *ListPendingStepApprovalsResponse) Reset() {
 	*x = ListPendingStepApprovalsResponse{}
-	mi := &file_orchicon_api_v1_approval_service_proto_msgTypes[4]
+	mi := &file_orchicon_api_v1_approval_service_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -384,7 +471,7 @@ func (x *ListPendingStepApprovalsResponse) String() string {
 func (*ListPendingStepApprovalsResponse) ProtoMessage() {}
 
 func (x *ListPendingStepApprovalsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_approval_service_proto_msgTypes[4]
+	mi := &file_orchicon_api_v1_approval_service_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -397,7 +484,7 @@ func (x *ListPendingStepApprovalsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPendingStepApprovalsResponse.ProtoReflect.Descriptor instead.
 func (*ListPendingStepApprovalsResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_approval_service_proto_rawDescGZIP(), []int{4}
+	return file_orchicon_api_v1_approval_service_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ListPendingStepApprovalsResponse) GetItems() []*ApprovalItem {
@@ -418,14 +505,19 @@ var File_orchicon_api_v1_approval_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_approval_service_proto_rawDesc = "" +
 	"\n" +
-	"&orchicon/api/v1/approval_service.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x89\x01\n" +
+	"&orchicon/api/v1/approval_service.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xd0\x01\n" +
 	"\x12ApproveStepRequest\x12\x1e\n" +
 	"\vstep_run_id\x18\x01 \x01(\tR\tstepRunId\x12\x1a\n" +
 	"\bapproved\x18\x02 \x01(\bR\bapproved\x12\x16\n" +
 	"\x06reason\x18\x03 \x01(\tR\x06reason\x12\x1f\n" +
 	"\vreviewed_by\x18\x04 \x01(\tR\n" +
-	"reviewedBy\"\x15\n" +
-	"\x13ApproveStepResponse\"\xe2\x03\n" +
+	"reviewedBy\x12E\n" +
+	"\vattachments\x18\x05 \x03(\v2#.orchicon.api.v1.ApprovalAttachmentR\vattachments\"g\n" +
+	"\x12ApprovalAttachment\x12\x1a\n" +
+	"\bfilename\x18\x01 \x01(\tR\bfilename\x12!\n" +
+	"\fcontent_type\x18\x02 \x01(\tR\vcontentType\x12\x12\n" +
+	"\x04data\x18\x03 \x01(\fR\x04data\"\x15\n" +
+	"\x13ApproveStepResponse\"\xa5\x04\n" +
 	"\fApprovalItem\x12\x1e\n" +
 	"\vstep_run_id\x18\x01 \x01(\tR\tstepRunId\x12&\n" +
 	"\x0fworkflow_run_id\x18\x02 \x01(\tR\rworkflowRunId\x12!\n" +
@@ -441,7 +533,9 @@ const file_orchicon_api_v1_approval_service_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x1f\n" +
 	"\vworkflow_id\x18\f \x01(\tR\n" +
-	"workflowId\"\x96\x02\n" +
+	"workflowId\x12\x16\n" +
+	"\x06reason\x18\r \x01(\tR\x06reason\x12)\n" +
+	"\x10attachment_names\x18\x0e \x03(\tR\x0fattachmentNames\"\x96\x02\n" +
 	"\x1fListPendingStepApprovalsRequest\x12+\n" +
 	"\x0fworkflow_run_id\x18\x01 \x01(\tH\x00R\rworkflowRunId\x88\x01\x01\x12\x1b\n" +
 	"\x06status\x18\x02 \x01(\tH\x01R\x06status\x88\x01\x01\x12\x16\n" +
@@ -474,27 +568,29 @@ func file_orchicon_api_v1_approval_service_proto_rawDescGZIP() []byte {
 	return file_orchicon_api_v1_approval_service_proto_rawDescData
 }
 
-var file_orchicon_api_v1_approval_service_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_orchicon_api_v1_approval_service_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_orchicon_api_v1_approval_service_proto_goTypes = []any{
 	(*ApproveStepRequest)(nil),               // 0: orchicon.api.v1.ApproveStepRequest
-	(*ApproveStepResponse)(nil),              // 1: orchicon.api.v1.ApproveStepResponse
-	(*ApprovalItem)(nil),                     // 2: orchicon.api.v1.ApprovalItem
-	(*ListPendingStepApprovalsRequest)(nil),  // 3: orchicon.api.v1.ListPendingStepApprovalsRequest
-	(*ListPendingStepApprovalsResponse)(nil), // 4: orchicon.api.v1.ListPendingStepApprovalsResponse
-	(*timestamppb.Timestamp)(nil),            // 5: google.protobuf.Timestamp
+	(*ApprovalAttachment)(nil),               // 1: orchicon.api.v1.ApprovalAttachment
+	(*ApproveStepResponse)(nil),              // 2: orchicon.api.v1.ApproveStepResponse
+	(*ApprovalItem)(nil),                     // 3: orchicon.api.v1.ApprovalItem
+	(*ListPendingStepApprovalsRequest)(nil),  // 4: orchicon.api.v1.ListPendingStepApprovalsRequest
+	(*ListPendingStepApprovalsResponse)(nil), // 5: orchicon.api.v1.ListPendingStepApprovalsResponse
+	(*timestamppb.Timestamp)(nil),            // 6: google.protobuf.Timestamp
 }
 var file_orchicon_api_v1_approval_service_proto_depIdxs = []int32{
-	5, // 0: orchicon.api.v1.ApprovalItem.created_at:type_name -> google.protobuf.Timestamp
-	2, // 1: orchicon.api.v1.ListPendingStepApprovalsResponse.items:type_name -> orchicon.api.v1.ApprovalItem
-	0, // 2: orchicon.api.v1.ApprovalService.ApproveStep:input_type -> orchicon.api.v1.ApproveStepRequest
-	3, // 3: orchicon.api.v1.ApprovalService.ListPendingStepApprovals:input_type -> orchicon.api.v1.ListPendingStepApprovalsRequest
-	1, // 4: orchicon.api.v1.ApprovalService.ApproveStep:output_type -> orchicon.api.v1.ApproveStepResponse
-	4, // 5: orchicon.api.v1.ApprovalService.ListPendingStepApprovals:output_type -> orchicon.api.v1.ListPendingStepApprovalsResponse
-	4, // [4:6] is the sub-list for method output_type
-	2, // [2:4] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	1, // 0: orchicon.api.v1.ApproveStepRequest.attachments:type_name -> orchicon.api.v1.ApprovalAttachment
+	6, // 1: orchicon.api.v1.ApprovalItem.created_at:type_name -> google.protobuf.Timestamp
+	3, // 2: orchicon.api.v1.ListPendingStepApprovalsResponse.items:type_name -> orchicon.api.v1.ApprovalItem
+	0, // 3: orchicon.api.v1.ApprovalService.ApproveStep:input_type -> orchicon.api.v1.ApproveStepRequest
+	4, // 4: orchicon.api.v1.ApprovalService.ListPendingStepApprovals:input_type -> orchicon.api.v1.ListPendingStepApprovalsRequest
+	2, // 5: orchicon.api.v1.ApprovalService.ApproveStep:output_type -> orchicon.api.v1.ApproveStepResponse
+	5, // 6: orchicon.api.v1.ApprovalService.ListPendingStepApprovals:output_type -> orchicon.api.v1.ListPendingStepApprovalsResponse
+	5, // [5:7] is the sub-list for method output_type
+	3, // [3:5] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_approval_service_proto_init() }
@@ -502,14 +598,14 @@ func file_orchicon_api_v1_approval_service_proto_init() {
 	if File_orchicon_api_v1_approval_service_proto != nil {
 		return
 	}
-	file_orchicon_api_v1_approval_service_proto_msgTypes[3].OneofWrappers = []any{}
+	file_orchicon_api_v1_approval_service_proto_msgTypes[4].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_approval_service_proto_rawDesc), len(file_orchicon_api_v1_approval_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
