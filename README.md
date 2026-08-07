@@ -30,17 +30,17 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.205 (2026-08-07)
+
+| Type | Change |
+|---|---|
+| Bug fix | **Work Items page regressions from the #207 merge fixed.** Status/Type multi-select filters now treat an empty selection as "show nothing" (defaults are every option selected, including recovery kinds and Checkpointing) — unchecking every type or status shows an empty page on both Tree and Board instead of everything. Tree parents can be collapsed again while a filter/search is active (a persisted `treeCollapsed` set records the choice and restores it after navigation). Board parents default EXPANDED again so "Epic + Feature" actually shows features instead of only top-level epics, and the parent chevron collapses/expands children and survives reload. Storage envelopes bumped to v2 so stale pre-fix filter state resets to the new defaults. |
+
 ### v0.1.204 (2026-08-07)
 
 | Type | Change |
 |---|---|
 | Feature | **Work Items page: persisted views + multi-select filters + bulk moves.** Tree-view expand/collapse now auto-saves per project so the hierarchy looks the same when you come back; board parents gain expand/collapse controls (default collapsed). Status and Type filters became checkbox multi-select dropdowns (OR within a group, AND across groups, empty = all) that save immediately and restore on return, and the last-used Tree/Board view is remembered as the default. Selected work items can be bulk-moved — drag one selected card to move the whole selection, or use the "Move to…" select in the selection toolbar; both share one validation + partial-success toast path. Board drops no longer auto-scroll mid-drag (the drop always lands on the visible column under the pointer), the optimistic cache write targets the real list query key so cards don't flash back to their origin column, and status labels are title-cased in the filter dropdowns, move menus, and toasts to match the column headers. |
-
-### v0.1.201 (2026-08-06)
-
-| Type | Change |
-|---|---|
-| Bug fix | **Board drag-and-drop now floats cards across columns.** Added `DragOverlay` so the dragged card follows the cursor instead of snapping back to its origin column. Fixed hierarchy rendering: orphaned children (items whose parent is in a different column) now render as root-level nodes instead of disappearing. Removed `min-w-[280px]` from columns so all 7 board columns share the viewport width evenly. Removed the dependency graph page (the DAG is still available via the API for block-state chips). |
 
 ## Installation
 

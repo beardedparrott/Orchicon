@@ -99,6 +99,16 @@ export function matchesSearch(item: WorkItem, search: string): boolean {
   );
 }
 
+/**
+ * Filter the items by kind/status/search. OR within the kind and status
+ * groups, AND across groups.
+ *
+ * An EMPTY `kinds` or `statuses` array matches NOTHING (ADR-WI-6): the
+ * page defaults both to every option selected, so an empty selection
+ * means the user actively unchecked everything and expects an empty
+ * view — not an unfiltered one. The caller (the page shell) is
+ * responsible for passing the full option list as the default.
+ */
 export function filterItemsByKindStatus(
   items: WorkItem[] | undefined,
   kinds: number[],
@@ -108,8 +118,8 @@ export function filterItemsByKindStatus(
   return (items ?? []).filter(
     (i) =>
       matchesSearch(i, search) &&
-      (kinds.length === 0 || kinds.includes(i.kind)) &&
-      (statuses.length === 0 || statuses.includes(i.status)),
+      kinds.includes(i.kind) &&
+      statuses.includes(i.status),
   );
 }
 

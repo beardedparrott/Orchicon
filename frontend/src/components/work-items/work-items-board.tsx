@@ -68,9 +68,10 @@ export interface WorkItemsBoardProps {
   blockState: BlockState;
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
-  /** persisted per-project expand state; default collapsed (ADR-WI-3) */
-  expandedIds: Set<string>;
-  onToggleExpand: (id: string) => void;
+  /** persisted per-project collapse state; default EXPANDED (ADR-WI-3) —
+   *  an empty set means nothing is collapsed so children stay visible */
+  collapsedIds: Set<string>;
+  onToggleCollapse: (id: string) => void;
   isLoading: boolean;
   error: unknown;
   hasQuery: boolean;
@@ -118,8 +119,8 @@ export function WorkItemsBoard({
   blockState,
   selected,
   onToggleSelect,
-  expandedIds,
-  onToggleExpand,
+  collapsedIds,
+  onToggleCollapse,
   isLoading,
   error,
   hasQuery,
@@ -328,8 +329,8 @@ export function WorkItemsBoard({
               blockState={blockState}
               movingId={movingId}
               onMove={handleMove}
-              expandedIds={expandedIds}
-              onToggleExpand={onToggleExpand}
+              collapsedIds={collapsedIds}
+              onToggleCollapse={onToggleCollapse}
               dragCount={dragCount}
             />
           );
@@ -376,8 +377,8 @@ function BoardColumn({
   blockState,
   movingId,
   onMove,
-  expandedIds,
-  onToggleExpand,
+  collapsedIds,
+  onToggleCollapse,
   dragCount,
 }: {
   column: { status: number; label: string };
@@ -388,8 +389,8 @@ function BoardColumn({
   blockState: BlockState;
   movingId: string | null;
   onMove: (item: WorkItem, targetStatus: number) => void;
-  expandedIds: Set<string>;
-  onToggleExpand: (id: string) => void;
+  collapsedIds: Set<string>;
+  onToggleCollapse: (id: string) => void;
   dragCount: number;
 }) {
   const isReadOnly = MANUALLY_UNMOVABLE_STATUSES.has(column.status);
@@ -458,8 +459,8 @@ function BoardColumn({
               blockState={blockState}
               movingId={movingId}
               onMove={onMove}
-              expandedIds={expandedIds}
-              onToggleExpand={onToggleExpand}
+              collapsedIds={collapsedIds}
+              onToggleCollapse={onToggleCollapse}
               dragCount={dragCount}
             />
           ))}
@@ -488,8 +489,8 @@ function HierarchyNodeComponent({
   blockState,
   movingId,
   onMove,
-  expandedIds,
-  onToggleExpand,
+  collapsedIds,
+  onToggleCollapse,
   dragCount,
   depth = 0,
 }: {
@@ -500,13 +501,14 @@ function HierarchyNodeComponent({
   blockState: BlockState;
   movingId: string | null;
   onMove: (item: WorkItem, targetStatus: number) => void;
-  expandedIds: Set<string>;
-  onToggleExpand: (id: string) => void;
+  collapsedIds: Set<string>;
+  onToggleCollapse: (id: string) => void;
   dragCount: number;
   depth?: number;
 }) {
-  // Persisted per-project expand state; default collapsed (ADR-WI-3).
-  const expanded = expandedIds.has(node.item.id);
+  // Persisted per-project collapse state; default EXPANDED (ADR-WI-3) so
+  // children stay visible until the user collapses a parent.
+  const expanded = !collapsedIds.has(node.item.id);
   const hasChildren = node.children.length > 0;
 
   return (
@@ -521,7 +523,7 @@ function HierarchyNodeComponent({
           onMove={onMove}
           hasChildren={hasChildren}
           expanded={expanded}
-          onToggleExpand={() => onToggleExpand(node.item.id)}
+          onToggleExpand={() => onToggleCollapse(node.item.id)}
           multiDragCount={dragCount}
         />
       </div>
@@ -537,8 +539,8 @@ function HierarchyNodeComponent({
             blockState={blockState}
             movingId={movingId}
             onMove={onMove}
-            expandedIds={expandedIds}
-            onToggleExpand={onToggleExpand}
+            collapsedIds={collapsedIds}
+            onToggleCollapse={onToggleCollapse}
             dragCount={dragCount}
             depth={depth + 1}
           />

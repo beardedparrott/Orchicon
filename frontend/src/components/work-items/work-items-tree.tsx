@@ -6,11 +6,14 @@
 // cascade-aware tri-state checkboxes, indent guides, blocked chips, and
 // file-explorer auto-expand when a filter is active.
 //
-// Expand/collapse is persisted per project (ADR-WI-3): the page shell
-// owns the expanded id set + toggle and passes them in; the view renders
-// `expanded = filterActive ? ancestorIds.has(id) : expandedIds.has(id)`.
-// While a filter is active the visual auto-expands ancestors, but the
-// chevron click still writes the persisted set.
+// Expand/collapse is persisted per project (ADR-WI-3):
+//   - No active filter: `expandedIds` (explicitly expanded; default
+//     collapsed) drives the rows.
+//   - Active filter: rows default EXPANDED so filtered matches stay
+//     reachable under their ancestors, but the user can still collapse a
+//     parent — `collapsedIds` records the explicit collapse and survives
+//     navigation (regression fix: collapse was previously impossible
+//     while a filter was active).
 
 import { Link } from "@tanstack/react-router";
 import { ChevronRight, SearchX } from "lucide-react";
@@ -31,9 +34,12 @@ export interface WorkItemsTreeProps {
   /** ids of ancestor-only container rows (dimmed when filtering) */
   ancestorIds: Set<string>;
   filterActive: boolean;
-  /** persisted per-project expand state (ADR-WI-3) */
+  /** persisted per-project expand state (normal mode; ADR-WI-3) */
   expandedIds: Set<string>;
   onToggleExpand: (id: string) => void;
+  /** persisted per-project collapse state while a filter is active */
+  collapsedIds: Set<string>;
+  onToggleCollapse: (id: string) => void;
   blockState: BlockState;
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
@@ -49,6 +55,8 @@ export function WorkItemsTree({
   filterActive,
   expandedIds,
   onToggleExpand,
+  collapsedIds,
+  onToggleCollapse,
   blockState,
   selected,
   onToggleSelect,
@@ -111,6 +119,8 @@ export function WorkItemsTree({
             filterActive={filterActive}
             expandedIds={expandedIds}
             onToggleExpand={onToggleExpand}
+            collapsedIds={collapsedIds}
+            onToggleCollapse={onToggleCollapse}
           />
         ))}
       </div>
@@ -130,6 +140,8 @@ function TreeNode({
   filterActive,
   expandedIds,
   onToggleExpand,
+  collapsedIds,
+  onToggleCollapse,
 }: {
   item: WorkItem;
   childrenOf: (parentId: string) => WorkItem[];
@@ -142,12 +154,18 @@ function TreeNode({
   filterActive: boolean;
   expandedIds: Set<string>;
   onToggleExpand: (id: string) => void;
+  collapsedIds: Set<string>;
+  onToggleCollapse: (id: string) => void;
 }) {
   const children = childrenOf(item.id);
   const hasChildren = children.length > 0;
   const isMatch = matchIds.has(item.id);
   const isAncestor = ancestorIds.has(item.id);
-  const expanded = filterActive ? ancestorIds.has(item.id) : expandedIds.has(item.id);
+  // No active filter: the persisted expanded set drives rows (default
+  // collapsed). Active filter: rows default expanded (file-explorer
+  // auto-expand so matches stay reachable), but the user can collapse a
+  // parent explicitly — the persisted collapsed set records that choice.
+  const expanded = filterActive ? !collapsedIds.has(item.id) : expandedIds.has(item.id);
   // Dimmed ancestor container rows (kept so filtered results stay
   // reachable under their parents) are NOT selectable: checking one would
   // cascade-select the very epics/features the user filtered out, and
@@ -202,7 +220,9 @@ function TreeNode({
         {hasChildren ? (
           <button
             type="button"
-            onClick={() => onToggleExpand(item.id)}
+            onClick={() =>
+              filterActive ? onToggleCollapse(item.id) : onToggleExpand(item.id)
+            }
             aria-expanded={expanded}
             aria-label={expanded ? `Collapse ${item.title}` : `Expand ${item.title}`}
             className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
@@ -246,6 +266,8 @@ function TreeNode({
             filterActive={filterActive}
             expandedIds={expandedIds}
             onToggleExpand={onToggleExpand}
+            collapsedIds={collapsedIds}
+            onToggleCollapse={onToggleCollapse}
           />
         ))}
     </div>

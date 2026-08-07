@@ -5,8 +5,11 @@
 // on @radix-ui/react-dropdown-menu's CheckboxItem. Correct keyboard +
 // focus management comes from Radix (arrows move, Enter/Space toggles,
 // Escape closes with focus returned to the trigger, typeahead, click-
-// outside). Selection composes with OR within the group; an empty
-// selection means "no filter for this group".
+// outside). Selection composes with OR within the group.
+//
+// What an EMPTY selection means is the caller's decision (the Work Items
+// page treats empty as "show nothing" — the defaults are every option
+// selected). Use the `emptyLabel` to describe the empty state accurately.
 //
 // Kept in components/ui so the other list pages (Approvals, Executions,
 // Workers, Policies) can adopt it later.
