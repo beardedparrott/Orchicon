@@ -11,7 +11,7 @@
 // (design-notes/visual-and-functional-tweaks-to-work-items-page.md,
 // ADR-WI-2/ADR-WI-6): OR within a group, AND across groups, empty = all.
 
-import { Columns3, FolderTree, Search, Trash2 } from "lucide-react";
+import { ChevronsDownUp, ChevronsUpDown, Columns3, FolderTree, Search, Trash2 } from "lucide-react";
 
 import type { Project } from "@/api/gen/orchicon/api/v1/project_pb";
 import {
@@ -50,6 +50,11 @@ export interface WorkItemsFilterBarProps {
   onSortOrderChange: (value: string) => void;
   view: WorkItemsView;
   onViewChange: (view: WorkItemsView) => void;
+  /** Bulk expand/collapse of the whole hierarchy (ADR-WIT-4). */
+  onExpandAll: () => void;
+  onCollapseAll: () => void;
+  expandAllDisabled: boolean;
+  collapseAllDisabled: boolean;
   visibleCount: number;
   selectedCount: number;
   allChecked: boolean;
@@ -78,6 +83,10 @@ export function WorkItemsFilterBar({
   onSortOrderChange,
   view,
   onViewChange,
+  onExpandAll,
+  onCollapseAll,
+  expandAllDisabled,
+  collapseAllDisabled,
   visibleCount,
   selectedCount,
   allChecked,
@@ -194,6 +203,31 @@ export function WorkItemsFilterBar({
         >
           <Columns3 aria-hidden className="h-3.5 w-3.5" />
           Board
+        </button>
+      </div>
+
+      {/* Expand / Collapse all (ADR-WIT-4): act on every row that has
+          children in the currently loaded project, in both views. */}
+      <div className="flex items-center gap-1" role="group" aria-label="Expand all or collapse all">
+        <button
+          type="button"
+          onClick={onExpandAll}
+          disabled={expandAllDisabled}
+          title="Expand all work items"
+          className="inline-flex items-center gap-1 rounded-md border border-input px-2 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+        >
+          <ChevronsDownUp aria-hidden className="h-3.5 w-3.5" />
+          Expand all
+        </button>
+        <button
+          type="button"
+          onClick={onCollapseAll}
+          disabled={collapseAllDisabled}
+          title="Collapse all work items"
+          className="inline-flex items-center gap-1 rounded-md border border-input px-2 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+        >
+          <ChevronsUpDown aria-hidden className="h-3.5 w-3.5" />
+          Collapse all
         </button>
       </div>
 

@@ -10,6 +10,7 @@ import {
   loadExpandedPreference,
   loadFiltersPreference,
   loadViewPreference,
+  parentIds,
   saveCollapsedPreference,
   saveExpandedPreference,
   saveFiltersPreference,
@@ -149,5 +150,27 @@ describe("work-items preferences (localStorage envelopes)", () => {
       }),
     );
     expect(loadFiltersPreference("proj-1")).toEqual(DEFAULT_FILTERS);
+  });
+});
+
+describe("parentIds (expand/collapse all — ADR-WIT-4)", () => {
+  const item = (id: string, parentId?: string) => ({
+    id,
+    parentId: parentId ?? "",
+  }) as never;
+
+  it("returns every id that is someone's parent, deduplicated", () => {
+    const ids = parentIds([item("a"), item("b", "a"), item("c", "a"), item("d", "b")]);
+    expect(ids.sort()).toEqual(["a", "b"]);
+  });
+
+  it("returns an empty array when nothing has children", () => {
+    expect(parentIds([item("a"), item("b")])).toEqual([]);
+    expect(parentIds([])).toEqual([]);
+  });
+
+  it("ignores items without a parent id", () => {
+    const ids = parentIds([item("a"), item("b", "a")]);
+    expect(ids).toEqual(["a"]);
   });
 });

@@ -30,7 +30,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { KindPill } from "@/components/work-items/work-item-badges";
-import { kindLabel, kindMeta, statusMeta, isTerminal } from "@/components/work-items/work-item-meta";
+import { WorkItemParentSelect } from "@/components/work-items/work-item-parent-select";
+import { kindLabel, kindMeta, statusMeta, isTerminal, MANUALLY_UNMOVABLE_STATUSES } from "@/components/work-items/work-item-meta";
 import { cn } from "@/lib/utils";
 import { Timestamp } from "@bufbuild/protobuf";
 import { Route as rootRoute } from "@/routes/__root";
@@ -72,6 +73,7 @@ function WorkItemDetailPage() {
   const [editScheduledStartAt, setEditScheduledStartAt] = useState("");
   const [editAutoStartWorkflow, setEditAutoStartWorkflow] = useState(true);
   const [editParentId, setEditParentId] = useState("");
+  const [editKind, setEditKind] = useState(0);
 
   const { data: workflows } = useListWorkflows({ status: 2, templatesOnly: true }); // published templates only
 
@@ -148,16 +150,9 @@ function WorkItemDetailPage() {
   // The item's parent, resolved from the already-loaded project graph.
   const parentItem = item.parentId ? itemsById.get(item.parentId) : undefined;
 
-  // Valid parent candidates while editing: same project (the list query
-  // is scoped to the edit project), strictly higher in the hierarchy
-  // (epic > feature > task > subtask), and never the item itself. The
-  // server re-checks all of this — this is UX only (invariant #1).
-  const parentCandidates = (editProjectItems ?? []).filter(
-    (i) =>
-      i.id !== id &&
-      depthForKind(i.kind) < depthForKind(item.kind) &&
-      depthForKind(i.kind) > 0,
-  );
+  // Direct children — used by the kind-switch confirmation (children that
+  // can no longer sit under the item after a switch move to its parent).
+  const directChildren = graph?.nodes?.filter((n) => n.parentId === id) ?? [];
 
   const projectName =
     projects?.find((p) => p.id === item.projectId)?.name ?? item.projectId;
@@ -220,6 +215,7 @@ function WorkItemDetailPage() {
                 );
                 setEditAutoStartWorkflow(item.autoStartWorkflow !== false);
                 setStatus(item.status);
+                setEditKind(item.kind);
                 setEditing(true);
               }}
             >
@@ -418,30 +414,64 @@ function WorkItemDetailPage() {
             </CardTitle>
           </CardHeader>
         </Card>
+        {/* Type — switch between hierarchy kinds (ADR-WIT-1). Switching
+            resolves the parent/child tree server-side; the save handler
+            confirms the consequences first. Disabled while the item is
+            executing (running/checkpointing/recovering). */}
+        <Card>
+          <CardHeader>
+            <CardDescription>Type</CardDescription>
+            <CardTitle className="text-base">
+              {editing ? (
+                <select
+                  value={editKind}
+                  disabled={MANUALLY_UNMOVABLE_STATUSES.has(item.status)}
+                  onChange={(e) => setEditKind(Number(e.target.value))}
+                  title={
+                    MANUALLY_UNMOVABLE_STATUSES.has(item.status)
+                      ? "Type cannot change while the item is running"
+                      : "Switch to a different work item kind"
+                  }
+                  className="rounded-md border bg-background px-2 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <option value={1}>Epic</option>
+                  <option value={2}>Feature</option>
+                  <option value={3}>Task</option>
+                  <option value={4}>Subtask</option>
+                </select>
+              ) : (
+                <span className="inline-flex items-center gap-2">
+                  <KindPill kind={item.kind} />
+                </span>
+              )}
+            </CardTitle>
+          </CardHeader>
+        </Card>
         {/* Parent — shown for children (view) / all non-epics (edit). The
             dropdown candidates come from the edit project's items so they
-            switch when the item is reassigned. Options display the kind
-            next to the title ("Checkout flow (Feature)"). */}
-        {item.parentId || (editing && item.kind !== 1) ? (
+            switch when the item is reassigned. Uses the searchable
+            parent picker (ADR-WIT-5); candidates are filtered by the
+            SELECTED kind (a switched-to deeper kind offers deeper
+            parents, an epic switched to a non-epic forces a pick). */}
+        {item.parentId || (editing && editKind !== 1) ? (
           <Card>
             <CardHeader>
               <CardDescription>Parent</CardDescription>
               <CardTitle className="text-base">
-                {editing && item.kind !== 1 ? (
-                  <select
-                    value={editParentId}
-                    onChange={(e) => setEditParentId(e.target.value)}
-                    className="w-full rounded-md border bg-background px-2 py-1 text-sm"
-                  >
-                    <option value="">
-                      — Select parent —
-                    </option>
-                    {parentCandidates.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.title} ({kindLabel(p.kind)})
-                      </option>
-                    ))}
-                  </select>
+                {editing && editKind !== 1 ? (
+                  <WorkItemParentSelect
+                    items={editProjectItems ?? []}
+                    childKind={editKind}
+                    value={editParentId ?? ""}
+                    onChange={setEditParentId}
+                    excludeId={id}
+                    invalid={!editParentId}
+                    error={
+                      !editParentId
+                        ? `A ${kindLabel(editKind)} requires a parent.`
+                        : undefined
+                    }
+                  />
                 ) : parentItem ? (
                   <Link
                     to="/work-items/$id"
@@ -626,7 +656,40 @@ function WorkItemDetailPage() {
       {editing && (
         <div className="flex gap-2">
           <Button
-            onClick={() =>
+            onClick={() => {
+              const kindChanging = editKind !== item.kind;
+              // Epic → non-epic without a parent: force the pick before
+              // enabling Save (ADR-WIT-1 — the server requires it too).
+              if (kindChanging && editKind !== 1 && !editParentId) {
+                window.alert(
+                  `A ${kindLabel(editKind)} requires a parent. Choose one in the Parent card first.`,
+                );
+                return;
+              }
+              if (kindChanging) {
+                // Describe the automatic resolution before confirming
+                // (ADR-WIT-2): children that can no longer sit under the
+                // item move to its parent; non-schedulable kinds clear
+                // worker/schedule/status.
+                const moving = directChildren.filter(
+                  (c) => depthForKind(c.kind) <= depthForKind(editKind),
+                );
+                const lines = [
+                  `Switch type from ${kindLabel(item.kind)} to ${kindLabel(editKind)}?`,
+                ];
+                if (moving.length > 0) {
+                  lines.push(
+                    `\n${moving.length} child item${moving.length === 1 ? "" : "s"} will move under the parent:`,
+                    moving.map((c) => `  • ${c.title}`).join("\n"),
+                  );
+                }
+                if (editKind === 1 || editKind === 2) {
+                  lines.push(
+                    "\nWorker assignment, scheduled start, and ready/assigned/scheduled status will be cleared.",
+                  );
+                }
+                if (!window.confirm(lines.join("\n"))) return;
+              }
               updateWorkItem.mutate(
                 {
                   id,
@@ -644,11 +707,16 @@ function WorkItemDetailPage() {
                     : undefined,
                   autoStartWorkflow: editAutoStartWorkflow,
                   parentId: editParentId || undefined,
+                  kind: kindChanging ? editKind : undefined,
                 },
                 { onSuccess: () => setEditing(false) },
-              )
+              );
+            }}
+            disabled={
+              updateWorkItem.isPending ||
+              !title.trim() ||
+              MANUALLY_UNMOVABLE_STATUSES.has(item.status)
             }
-            disabled={updateWorkItem.isPending || !title.trim()}
           >
             {updateWorkItem.isPending ? "Saving…" : "Save changes"}
           </Button>

@@ -8,6 +8,7 @@ import { useCreateWorkItem } from "@/api/workItems";
 import { useListWorkItems } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
+import { WorkItemParentSelect } from "@/components/work-items/work-item-parent-select";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -86,6 +87,7 @@ function NewWorkItemPage() {
     register,
     handleSubmit,
     watch,
+    setValue,
     formState: { errors, isSubmitting },
   } = useForm<CreateWorkItemForm>({
     resolver: zodResolver(createWorkItemSchema),
@@ -103,15 +105,9 @@ function NewWorkItemPage() {
   const selectedParentId = watch("parentId");
   const [runtimeImage, setRuntimeImage] = useState("");
 
-  // Validate parent/kind consistency — allow skipping levels (e.g.
-  // Task under Epic), but reject same-level or deeper parents.
-  const allowedParents = projectItems?.filter((i) => {
-    if (selectedKind === "epic") return false; // epics have no parent
-    const childDepth = depthForKind(KIND_TO_PROTO[selectedKind as keyof typeof KIND_TO_PROTO]);
-    const parentDepth = depthForKind(i.kind);
-    return parentDepth < childDepth;
-  });
-
+  // The parent picker filters candidates by depth itself (only items
+  // strictly shallower than the selected kind) — this mirrors the
+  // server-side rule and is UX only (invariant #1).
   const onSubmit = async (values: CreateWorkItemForm) => {
     const workItem = await createWorkItem.mutateAsync({
       projectId: selectedProjectId,
@@ -223,23 +219,18 @@ function NewWorkItemPage() {
             {selectedKind !== "epic" && (
               <div className="space-y-2">
                 <Label htmlFor="parentId">Parent</Label>
-                <select
-                  id="parentId"
-                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
-                  {...register("parentId")}
-                >
-                  <option value="">— Select parent —</option>
-                  {(allowedParents ?? []).map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.title}
-                    </option>
-                  ))}
-                </select>
-                {!selectedParentId && (
-                  <p className="text-xs text-destructive">
-                    A {selectedKind} requires a parent.
-                  </p>
-                )}
+                <WorkItemParentSelect
+                  items={projectItems ?? []}
+                  childKind={KIND_TO_PROTO[selectedKind as keyof typeof KIND_TO_PROTO]}
+                  value={selectedParentId ?? ""}
+                  onChange={(id) => setValue("parentId", id)}
+                  invalid={!selectedParentId}
+                  error={
+                    !selectedParentId
+                      ? `A ${selectedKind} requires a parent.`
+                      : undefined
+                  }
+                />
               </div>
             )}
 
@@ -305,8 +296,4 @@ function NewWorkItemPage() {
       </Card>
     </div>
   );
-}
-
-function depthForKind(kind: number): number {
-  return kind >= 1 && kind <= 4 ? kind : 0;
 }
