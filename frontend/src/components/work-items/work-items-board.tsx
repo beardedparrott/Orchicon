@@ -295,6 +295,15 @@ export function WorkItemsBoard({
       collisionDetection={pointerWithin}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
+      // Disable dnd-kit auto-scroll: the board overflows horizontally
+      // (flex-1 min-w-[280px] columns), so near the viewport edge the
+      // auto-scroller shifts the board mid-drag and pointerWithin then
+      // resolves the drop against a DIFFERENT column than the one the
+      // pointer was over — silently moving cards to the wrong status
+      // (e.g. "Failed" → "Cancelled" at 1280px). The board is scrollable
+      // manually; the drop must always resolve to the visible column
+      // under the pointer (AC3: drag to other columns).
+      autoScroll={false}
     >
       <div
         className="flex flex-1 gap-3 overflow-x-auto rounded-lg border bg-muted/20 p-3"
