@@ -130,13 +130,14 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 
 func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		ID                  string `json:"id"`
-		Title               string `json:"title"`
-		Description         string `json:"description"`
-		Status              string `json:"status"`
-		Priority            int    `json:"priority"`
-		AcceptanceCriteria  string `json:"acceptance_criteria"`
-		ParentID            string `json:"parent_id"`
+		ID                 string `json:"id"`
+		Title              string `json:"title"`
+		Description        string `json:"description"`
+		Status             string `json:"status"`
+		Priority           int    `json:"priority"`
+		AcceptanceCriteria string `json:"acceptance_criteria"`
+		ParentID           string `json:"parent_id"`
+		Kind               string `json:"kind"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -170,13 +171,63 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if params.Priority > 0 {
 		update.Priority = &params.Priority
 	}
+	// Kind switch uses the SAME shared resolution as the Connect Update
+	// path (AGENTS.md: the tool and the service cannot drift) — parent
+	// walk-up, child reparenting, and schedulability cleanup are decided
+	// in one place, inside this transaction.
+	var kindSwitchPlan *workitem.KindSwitchPlan
+	if params.Kind != "" {
+		kind, err := domain.NormalizeWorkItemKind(params.Kind)
+		if err != nil {
+			return nil, err
+		}
+		if kind != current.Kind {
+			var explicitParent *string
+			if params.ParentID != "" {
+				explicitParent = &params.ParentID
+			}
+			plan, err := workitem.ResolveKindSwitch(ctx, ttx.Tx, tenantID, current, kind, explicitParent, current.ProjectID)
+			if err != nil {
+				return nil, err
+			}
+			kindSwitchPlan = plan
+			update.Kind = &kind
+		}
+	}
 	// Reparenting uses the same shared validation as the Connect Update
-	// path (AGENTS.md: the tool and the service cannot drift).
-	if params.ParentID != "" {
+	// path. When a kind switch is in flight the explicit parent was
+	// already validated against the NEW kind inside ResolveKindSwitch.
+	if params.ParentID != "" && kindSwitchPlan == nil {
 		if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, params.ParentID, current.Kind, current.ProjectID); err != nil {
 			return nil, err
 		}
 		update.ParentID = &params.ParentID
+	}
+	// Apply the kind-switch plan (ADR-WIT-2): resolved parent, status
+	// demotion, and schedulability clears, then reparent the children.
+	if kindSwitchPlan != nil {
+		if kindSwitchPlan.NewParentID != nil && (current.ParentID == nil || *current.ParentID != *kindSwitchPlan.NewParentID) {
+			update.ParentID = kindSwitchPlan.NewParentID
+		} else if kindSwitchPlan.NewParentID == nil && current.ParentID != nil {
+			empty := ""
+			update.ParentID = &empty
+		}
+		if kindSwitchPlan.NewStatus != nil {
+			update.Status = kindSwitchPlan.NewStatus
+		}
+		if kindSwitchPlan.ClearWorkerRef {
+			update.ClearAssignedWorkerRef = true
+		}
+		if kindSwitchPlan.ClearScheduledStartAt {
+			update.ClearScheduledStartAt = true
+		}
+		for _, cr := range kindSwitchPlan.ReparentedChildren {
+			if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, cr.ChildID, cr.ChildVersion, db.UpdateWorkItemFields{
+				ParentID: cr.NewParentID,
+			}); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, params.ID, current.Version, update); err != nil {
 		return nil, err

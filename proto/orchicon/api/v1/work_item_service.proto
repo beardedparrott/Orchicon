@@ -121,6 +121,14 @@ message UpdateWorkItemRequest {
   optional string workflow_run_id = 18; // set to empty string to allow re-schedule
   optional string runtime_image = 19; // runtime container image tag; empty = base image
   optional string parent_id = 20; // reparent: empty = clear parent (epic only); unset = unchanged
+  // Switch the work item to a different kind (epic/feature/task/subtask).
+  // The parent/child hierarchy is resolved automatically in the same
+  // transaction (ADR-WIT-2): the item's parent walks up to the nearest
+  // ancestor shallower than the new kind, direct children that can no
+  // longer sit under the item are reparented to its parent, and switching
+  // to a non-schedulable kind (epic/feature) clears the worker binding,
+  // scheduled start, and ready/assigned/scheduled status. Unset = unchanged.
+  optional WorkItemKind kind = 21;
 }
 
 message UpdateWorkItemResponse {
