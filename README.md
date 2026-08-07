@@ -30,6 +30,14 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.209 (2026-08-07)
+
+| Type | Change |
+|---|---|
+| Feature | **Switch a work item's kind with automatic hierarchy resolution.** The work item detail/edit page gains a Type control that converts any item to any hierarchy kind (task → feature, feature → epic, …). The server resolves the parent/child tree in the same transaction: the parent walks up to the nearest ancestor shallower than the new kind, direct children that no longer fit move under the item's parent (they become siblings), and switching to an Epic/Feature clears the worker binding, scheduled start, and ready/assigned/scheduled status so a re-typed item is never dispatched. A running item or one with an active workflow run is rejected; the UI confirms the consequences before saving. Mirrored in the Ask Orchicon `update_work_item` tool (`kind` param); emits a `work_item.kind_changed` outbox event. |
+| Feature | **Expand all / Collapse all on the Work Items page.** The filter bar carries Expand all / Collapse all buttons that act on every row with children, in both the tree and board views, and persist like every other view preference. |
+| Feature | **Searchable, color-coded parent picker on the create/edit pages.** The plain parent dropdown is replaced by a searchable single-select popover that shows each candidate's kind as a color-coded badge; candidates follow the selected kind so switching a task to a subtask offers task-level parents. |
+
 ### v0.1.208 (2026-08-07)
 
 | Type | Change |

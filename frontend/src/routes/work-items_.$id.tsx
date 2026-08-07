@@ -712,11 +712,7 @@ function WorkItemDetailPage() {
                 { onSuccess: () => setEditing(false) },
               );
             }}
-            disabled={
-              updateWorkItem.isPending ||
-              !title.trim() ||
-              MANUALLY_UNMOVABLE_STATUSES.has(item.status)
-            }
+            disabled={updateWorkItem.isPending || !title.trim()}
           >
             {updateWorkItem.isPending ? "Saving…" : "Save changes"}
           </Button>

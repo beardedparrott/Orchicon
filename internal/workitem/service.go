@@ -434,10 +434,17 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		return nil, mapDBError(err)
 	}
 	// Kind switch events: work_item.kind_changed for the switched item
-	// (the authoritative record of the switch) + work_item.updated for
-	// every reparented child — all in the same transaction (invariant #3).
+	// (the authoritative record of the switch, carrying old_kind +
+	// new_kind), work_item.updated for the item itself (covers any other
+	// fields changed in the same request — the kind_changed event is the
+	// authoritative switch record but consumers of work_item.updated
+	// still see the item), and work_item.updated for every reparented
+	// child — all in the same transaction (invariant #3).
 	if kindSwitchPlan != nil {
 		if err := enqueueKindChangedEvent(ctx, ttx.Tx, current, updated); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.updated", updated); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 		for _, cr := range kindSwitchPlan.ReparentedChildren {

@@ -134,6 +134,9 @@ func ResolveKindSwitch(ctx context.Context, tx pgx.Tx, tenantID string, current 
 		}
 		switch {
 		case explicit != nil:
+			if *explicit == current.ID {
+				return nil, fmt.Errorf("a work item cannot be its own parent")
+			}
 			if err := ValidateParent(ctx, tx, tenantID, *explicit, kind, projectID); err != nil {
 				return nil, err
 			}

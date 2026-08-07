@@ -214,9 +214,18 @@ func TestKindSwitchChildrenReparentDB(t *testing.T) {
 
 	// An explicit parent that is invalid for the NEW kind is rejected:
 	// switching the task to a Feature with a Task parent (same depth).
-	_, err = ResolveKindSwitch(ctx, ttx.Tx, validateParentTestTenant, task, domain.WorkItemKindFeature, strPtr(task.ID), projectA)
+	siblingTask := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
+	_, err = ResolveKindSwitch(ctx, ttx.Tx, validateParentTestTenant, task, domain.WorkItemKindFeature, strPtr(siblingTask.ID), projectA)
 	if err == nil || !strings.Contains(err.Error(), "must be deeper than its parent") {
 		t.Fatalf("explicit same-depth parent should be rejected, got %v", err)
+	}
+
+	// An explicit SELF parent must be rejected even when the depth rule
+	// would pass (an epic switched to a feature has itself as a
+	// shallower row until the kind actually changes).
+	_, err = ResolveKindSwitch(ctx, ttx.Tx, validateParentTestTenant, epic, domain.WorkItemKindFeature, strPtr(epic.ID), projectA)
+	if err == nil || !strings.Contains(err.Error(), "its own parent") {
+		t.Fatalf("explicit self-parent should be rejected, got %v", err)
 	}
 }
 
