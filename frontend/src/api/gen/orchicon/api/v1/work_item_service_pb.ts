@@ -491,6 +491,13 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
    */
   runtimeImage?: string;
 
+  /**
+   * reparent: empty = clear parent (epic only); unset = unchanged
+   *
+   * @generated from field: optional string parent_id = 20;
+   */
+  parentId?: string;
+
   constructor(data?: PartialMessage<UpdateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -514,6 +521,7 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
     { no: 17, name: "auto_start_workflow", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
     { no: 18, name: "workflow_run_id", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 19, name: "runtime_image", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 20, name: "parent_id", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkItemRequest {

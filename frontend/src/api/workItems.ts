@@ -49,7 +49,7 @@ export const workItemKeys = {
 // sort_by/sort_order.
 export function useListWorkItems(
   projectId: string,
-  opts?: { parentId?: string; status?: WorkItemStatus; search?: string; sortBy?: string; sortOrder?: string; refetchInterval?: number },
+  opts?: { parentId?: string; status?: WorkItemStatus; search?: string; sortBy?: string; sortOrder?: string; refetchInterval?: number; enabled?: boolean },
 ) {
   const parentId = opts?.parentId;
   const status = opts?.status;
@@ -68,7 +68,10 @@ export function useListWorkItems(
       });
       return res.workItems as WorkItem[];
     },
-    enabled: true, // empty projectId = list all
+    // Off by default where the caller opts out (e.g. the detail page's
+    // parent dropdown only fetches while editing). empty projectId =
+    // list all.
+    enabled: opts?.enabled ?? true,
     // Auto-refresh (design §5.5): poll every 5s, pause while the tab is
     // hidden (TanStack default refetchIntervalInBackground=false), and
     // refetch when the window regains focus (the global default in

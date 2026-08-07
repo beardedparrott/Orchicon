@@ -174,7 +174,7 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 		},
 		{
 			Name:        "update_work_item",
-			Description: "Update a work item's fields (title, description, status, priority, etc.).",
+			Description: "Update a work item's fields (title, description, status, priority, parent_id, etc.).",
 			Mutating:    true,
 			Fn:          toolUpdateWorkItem,
 			Properties: map[string]PropertySchema{
@@ -183,6 +183,7 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 				"description": {Type: "string", Description: "New description"},
 				"status": {Type: "string", Description: "New status (draft, ready, assigned, running, done, failed, cancelled)"},
 				"priority": {Type: "number", Description: "New priority (1-5)"},
+				"parent_id": {Type: "string", Description: "New parent work item ID (reparent). Must be the same project and a strictly higher-level kind (epic > feature > task > subtask)."},
 			},
 			Required: []string{"id"},
 		},

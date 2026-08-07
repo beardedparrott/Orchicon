@@ -107,23 +107,9 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	}
 
 	// Enforce hierarchy depth: a subtask's parent must be a task, etc.
-	if parentID != nil {
-		parent, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, *parentID)
-		if err != nil {
-			return nil, mapDBError(err)
-		}
-		if parent.ProjectID != msg.ProjectId {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("parent must be in the same project"))
-		}
-		parentDepth := kindOrder[parent.Kind]
-		childDepth := kindOrder[kind]
-		if childDepth <= parentDepth {
-			return nil, connect.NewError(connect.CodeInvalidArgument,
-				fmt.Errorf("a %s must be deeper than its parent (parent is %s)", kind, parent.Kind))
-		}
-	} else if kind != domain.WorkItemKindEpic {
-		return nil, connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("a top-level work item must be an epic, not a %s", kind))
+	// Shared with the Update path so the two cannot drift.
+	if err := ValidateParent(ctx, ttx.Tx, tenantID, msg.ParentId, kind, msg.ProjectId); err != nil {
+		return nil, mapParentError(err)
 	}
 
 	// Parse scheduled start and workflow binding fields (docs/11 §5.1).
@@ -318,6 +304,10 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		wfid := *msg.WorkflowId
 		fields.WorkflowID = &wfid
 	}
+	if msg.ParentId != nil {
+		pid := *msg.ParentId
+		fields.ParentID = &pid
+	}
 	if msg.ScheduledStartAt != nil {
 		t := msg.ScheduledStartAt.AsTime()
 		fields.ScheduledStartAt = &t
@@ -356,6 +346,30 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if fields.ProjectID != nil && *fields.ProjectID != current.ProjectID {
 		if err := db.RequireProjectActive(ctx, ttx.Tx, tenantID, *fields.ProjectID); err != nil {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("target project not active: %w", err))
+		}
+	}
+	// Reparenting is validated against the *effective* project — the
+	// request's project_id if also being changed, otherwise the current
+	// one — using the same rules as Create (shared helper). Clearing the
+	// parent (empty string) is only valid for epics; a non-epic must keep
+	// a parent.
+	if msg.ParentId != nil {
+		effectiveProject := current.ProjectID
+		if fields.ProjectID != nil && *fields.ProjectID != "" {
+			effectiveProject = *fields.ProjectID
+		}
+		if err := ValidateParent(ctx, ttx.Tx, tenantID, *msg.ParentId, current.Kind, effectiveProject); err != nil {
+			return nil, mapParentError(err)
+		}
+	} else if fields.ProjectID != nil && *fields.ProjectID != "" && *fields.ProjectID != current.ProjectID && current.ParentID != nil {
+		// The item is moving to another project WITHOUT an explicit
+		// reparent, so its current parent is carried over. That only
+		// stays consistent if the parent already lives in the target
+		// project (e.g. the parent was moved first). Otherwise the
+		// request must reparent explicitly — reject rather than leave
+		// the hierarchy cross-project (AGENTS.md: fix the whole class).
+		if err := ValidateParent(ctx, ttx.Tx, tenantID, *current.ParentID, current.Kind, *fields.ProjectID); err != nil {
+			return nil, mapParentError(err)
 		}
 	}
 	if err != nil {
@@ -753,6 +767,7 @@ func buildWorkItemEventPayload(eventType string, w db.WorkItemRow) ([]byte, erro
 		"kind":              w.Kind,
 		"title":             w.Title,
 		"status":            w.Status,
+		"parent_id":         parentIDString(w.ParentID),
 		"occurred_at":       time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	b, err := json.Marshal(evt)
@@ -762,11 +777,29 @@ func buildWorkItemEventPayload(eventType string, w db.WorkItemRow) ([]byte, erro
 	return b, nil
 }
 
+// parentIDString returns the parent id or "" when the item is top-level.
+func parentIDString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
 func mapDBError(err error) error {
 	if errors.Is(err, db.ErrNotFound) {
 		return connect.NewError(connect.CodeNotFound, errors.New("work item not found"))
 	}
 	return connect.NewError(connect.CodeInternal, err)
+}
+
+// mapParentError maps a ValidateParent error to a Connect error: a
+// missing parent is NotFound; every hierarchy violation is
+// InvalidArgument.
+func mapParentError(err error) error {
+	if errors.Is(err, db.ErrNotFound) {
+		return connect.NewError(connect.CodeNotFound, errors.New("parent work item not found"))
+	}
+	return connect.NewError(connect.CodeInvalidArgument, err)
 }
 
 func kindToProto(kind string) apiv1.WorkItemKind {
