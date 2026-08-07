@@ -48,7 +48,7 @@ type ChatItem =
   | { kind: "reasoning"; text: string; at: number; key: string }
   | { kind: "error"; text: string; at: number; key: string }
   | { kind: "artifact"; name: string; type: string; content: string; at: number; key: string }
-  | { kind: "session"; sessionId: string; serveUrl: string; key: string };
+  | { kind: "session"; sessionId: string; serveUrl: string; at: number; key: string };
 
 interface SessionChatPaneProps {
   executionId: string;
@@ -129,6 +129,7 @@ function transcriptItems(
             kind: "session",
             sessionId: pl.session_id,
             serveUrl: typeof pl.serve_url === "string" ? pl.serve_url : "",
+            at,
             key,
           });
         }
@@ -450,9 +451,10 @@ export function SessionChatPane({
   // Merge: running → live items + user messages from the transcript;
   // terminal → the transcript alone (durable, includes both sides).
   const items = useMemo<ChatItem[]>(() => {
+    const atOf = (i: ChatItem): number => (i.kind === "tool" ? i.tool.at : i.at);
     if (isRunning) {
       const extras = history.filter((i) => i.kind === "user" || i.kind === "session");
-      return [...extras, ...live].sort((a, b) => a.at - b.at);
+      return [...extras, ...live].sort((a, b) => atOf(a) - atOf(b));
     }
     if (history.length > 0) return history;
     // No session transcript (legacy execution / one-shot fallback): show
