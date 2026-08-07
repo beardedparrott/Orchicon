@@ -95,6 +95,7 @@ const (
 	SessionPartStepStart   = "step_start"
 	SessionPartStepFinish  = "step_finish"
 	SessionPartError       = "error"
+	SessionPartSessionInfo = "session_info"
 )
 
 // MarshalPartPayload encodes a free-form payload map as JSON bytes.

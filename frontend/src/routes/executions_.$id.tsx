@@ -29,9 +29,8 @@ import {
 } from "@/api/executions";
 import { executionKeys } from "@/api/executions";
 import { useGetUsage } from "@/api/aigateway";
-import { useGetWorkItem } from "@/api/workItems";
 import { Markdown } from "@/components/markdown";
-import { RuntimeSessionPane } from "@/components/executions/RuntimeSessionPane";
+import { SessionChatPane } from "@/components/executions/SessionChatPane";
 import { ExecutionContextSidebar } from "@/components/executions/ExecutionContextSidebar";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -55,7 +54,6 @@ function ExecutionDetailPage() {
   const qc = useQueryClient();
 
   const { data: exec, isLoading, error } = useGetExecution(id);
-  const { data: workItem } = useGetWorkItem(exec?.taskId ?? "");
   const { data: usage } = useGetUsage({ executionId: id });
   const pauseExec = usePauseExecution();
   const resumeExec = useResumeExecution();
@@ -243,12 +241,17 @@ function ExecutionDetailPage() {
             <ApprovalDialog approvals={pendingApprovals} />
           )}
 
-          {/* Live chat — the primary surface. */}
-          <RuntimeSessionPane
+          {/* Live chat — the primary surface (Ask-Orchicon-grade session
+              view; user messages right, assistant left, composer that
+              nudges the live session without creating work). */}
+          <SessionChatPane
+            executionId={exec.id}
             events={events}
-            prompt={exec.systemPrompt || workItem?.promptContext}
             streamStatus={status}
             storedOutput={exec.output}
+            workerName={exec.workerId}
+            isRunning={isRunning}
+            isTerminal={isTerminal}
           />
 
           {/* Execution context — kept as a footer card with the

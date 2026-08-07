@@ -110,6 +110,12 @@ func (r *sessionRun) run() error {
 	}
 	r.sessionID = sid
 	r.a.log.Info("opencode session created", "execution", r.execRow.ID, "session", sid, "serve", client.BaseURL())
+	// Persist the opencode session identity so the UI can show which
+	// serve/session a worker ran on (troubleshooting + follow-up seed).
+	r.recordPart(db.SessionPartSessionInfo, map[string]any{
+		"session_id": sid,
+		"serve_url":  client.BaseURL(),
+	})
 
 	// Register the live-session handle so SendExecutionMessage can route
 	// mid-run human messages into this session.
