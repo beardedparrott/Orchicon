@@ -30,36 +30,17 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.204 (2026-08-07)
+
+| Type | Change |
+|---|---|
+| Feature | **Work Items page: persisted views + multi-select filters + bulk moves.** Tree-view expand/collapse now auto-saves per project so the hierarchy looks the same when you come back; board parents gain expand/collapse controls (default collapsed). Status and Type filters became checkbox multi-select dropdowns (OR within a group, AND across groups, empty = all) that save immediately and restore on return, and the last-used Tree/Board view is remembered as the default. Selected work items can be bulk-moved — drag one selected card to move the whole selection, or use the "Move to…" select in the selection toolbar; both share one validation + partial-success toast path. Board drops no longer auto-scroll mid-drag (the drop always lands on the visible column under the pointer), the optimistic cache write targets the real list query key so cards don't flash back to their origin column, and status labels are title-cased in the filter dropdowns, move menus, and toasts to match the column headers. |
+
 ### v0.1.201 (2026-08-06)
 
 | Type | Change |
 |---|---|
 | Bug fix | **Board drag-and-drop now floats cards across columns.** Added `DragOverlay` so the dragged card follows the cursor instead of snapping back to its origin column. Fixed hierarchy rendering: orphaned children (items whose parent is in a different column) now render as root-level nodes instead of disappearing. Removed `min-w-[280px]` from columns so all 7 board columns share the viewport width evenly. Removed the dependency graph page (the DAG is still available via the API for block-state chips). |
-
-### v0.1.200 (2026-08-06)
-
-| Type | Change |
-|---|---|
-| Feature | **UI workers can now actually look at the browser.** The `:orchicon-dev` runtime image already had Playwright + Chromium, but workers couldn't `require('playwright')` from a project dir — ESM `import` ignores `NODE_PATH`, so the global install was unreachable. The image now sets `NODE_PATH=/usr/local/lib/node_modules`, and the canned UI workers' AGENTS.md carries a full **visual verification** protocol: start the app in-container, launch headless Chromium (`--no-sandbox`), navigate at desktop + mobile viewports, screenshot to `/tmp/orchicon/`, and **read the screenshot back** to see the UI — then iterate against the acceptance criteria. Helper: `scripts/browser.cjs` with `launch()`/`shot()`. |
-| Bug fix | **Architecture/design notes are emptied, not deleted.** The DevOps Engineer worker's pre-PR cleanup removed the whole `architecture-notes/` directory instead of just the note files — and never touched `design-notes/` (created by the UI workers). It now **deletes only the FILES** inside both `architecture-notes/` and `design-notes/`, keeping the directories. |
-
-### v0.1.197 (2026-08-06)
-
-| Type | Change |
-|---|---|
-| Feature | **New Schedules page** — shows all scheduled work items in chronological order with their next runtimes (Upcoming, default view) plus a history of previous runs (History toggle, `?view=` deep-linkable). Agenda timeline grouped by local day, live ticking clock, countdown chips, stats strip, standard filter bar (search/project/kind/sort + select-all + bulk Cancel or Delete), clickable links to work items and workflows, and a reserved "One-time" frequency slot ready for future recurring schedules. Frontend-only: no proto/DB changes. |
-
-### v0.1.196 (2026-08-06)
-
-| Type | Change |
-|---|---|
-| Feature | **Expanded light & dark theme palette (28 themes incl. Gruvbox Light).** All 10 existing light themes were darkened (background L 97–100 % → 93–96 %) and 10 existing dark themes lightened (background L 7–8 % → 10–11 %) so workflows stay visible in both bright rooms and direct light. 8 new themes were added: **Gruvbox Light** (warm parchment `#fbf1c7` background, deep Gruvbox blue primary), **Paper**, **Ash**, and **Porcelain** in the light set, plus **Graphite**, **Dusk**, **Forest**, and **Cocoa** as lighter darks (13–15 % background) for bright-lighting readability. Muted-foreground contrast was raised on the dark side and the light-mode canvas edge accents darkened to pass ≥3:1 non-text contrast. All 28 themes are selectable from the theme picker and persisted ids stay valid. |
-
-### v0.1.195 (2026-08-06)
-
-| Type | Change |
-|---|---|
-| Bug fix | **Approval deep links now include the workflow ID segment.** The Approvals page rendered broken run links (`http://localhost:8080/workflows//runs/{run_id}`) because the frontend passed an empty workflow id — `ApprovalItem` never carried it. The proto now exposes `workflow_id` (field 12), the backend `listApprovalItems` SELECT/Scan populates it from the `workflow_runs` join (the inner join on `workflow_runs` guarantees a non-empty segment), and both approvals.tsx links render `/workflows/{workflow_id}/runs/{run_id}`. |
 
 ## Installation
 

@@ -131,10 +131,10 @@ export function kindLabel(kind: number): string {
 }
 
 export const KIND_FILTER_OPTIONS = [
-  { value: String(WorkItemKind.EPIC), label: "Epic" },
-  { value: String(WorkItemKind.FEATURE), label: "Feature" },
-  { value: String(WorkItemKind.TASK), label: "Task" },
-  { value: String(WorkItemKind.SUBTASK), label: "Subtask" },
+  { value: WorkItemKind.EPIC, label: "Epic" },
+  { value: WorkItemKind.FEATURE, label: "Feature" },
+  { value: WorkItemKind.TASK, label: "Task" },
+  { value: WorkItemKind.SUBTASK, label: "Subtask" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -142,7 +142,12 @@ export const KIND_FILTER_OPTIONS = [
 // ---------------------------------------------------------------------------
 
 export interface StatusMeta {
+  /** Lowercase label ("ready") for inline pill/badge text. */
   label: string;
+  /** Title-case label ("Ready") matching the board column headers —
+   *  used by the filter dropdown, "Move to…" menus, and result toasts so
+   *  status names are consistent across the page. */
+  titleLabel: string;
   /** light-palette pill classes (text ≥4.5:1) */
   pill: string;
   /** dark-palette pill classes (text ≥4.5:1) */
@@ -154,60 +159,70 @@ export interface StatusMeta {
 const STATUS_META: Record<number, StatusMeta> = {
   [WorkItemStatus.PENDING]: {
     label: "pending",
+    titleLabel: "Pending",
     pill: "bg-gray-500/15 text-gray-700",
     pillDark: "bg-gray-500/15 text-gray-300",
     dot: "bg-gray-400",
   },
   [WorkItemStatus.READY]: {
     label: "ready",
+    titleLabel: "Ready",
     pill: "bg-blue-500/15 text-blue-800",
     pillDark: "bg-blue-500/15 text-blue-300",
     dot: "bg-blue-500",
   },
   [WorkItemStatus.ASSIGNED]: {
     label: "assigned",
+    titleLabel: "Assigned",
     pill: "bg-amber-500/15 text-amber-800",
     pillDark: "bg-amber-500/15 text-amber-300",
     dot: "bg-amber-500",
   },
   [WorkItemStatus.RUNNING]: {
     label: "running",
+    titleLabel: "Running",
     pill: "bg-green-500/15 text-green-800",
     pillDark: "bg-green-500/15 text-green-300",
     dot: "bg-green-500",
   },
   [WorkItemStatus.CHECKPOINTING]: {
     label: "checkpointing",
+    titleLabel: "Checkpointing",
     pill: "bg-sky-500/15 text-sky-800",
     pillDark: "bg-sky-500/15 text-sky-300",
     dot: "bg-sky-500",
   },
   [WorkItemStatus.SUCCEEDED]: {
     label: "succeeded",
+    titleLabel: "Succeeded",
     pill: "bg-emerald-500/15 text-emerald-800",
     pillDark: "bg-emerald-500/15 text-emerald-300",
     dot: "bg-emerald-500",
   },
   [WorkItemStatus.FAILED]: {
     label: "failed",
+    titleLabel: "Failed",
     pill: "bg-red-500/15 text-red-800",
     pillDark: "bg-red-500/15 text-red-300",
     dot: "bg-red-500",
   },
   [WorkItemStatus.CANCELLED]: {
     label: "cancelled",
+    titleLabel: "Cancelled",
     pill: "bg-gray-500/15 text-gray-600",
     pillDark: "bg-gray-500/15 text-gray-400",
     dot: "bg-gray-400",
   },
   [WorkItemStatus.RECOVERING]: {
     label: "recovering",
+    titleLabel: "Recovering",
     pill: "bg-orange-500/15 text-orange-800",
     pillDark: "bg-orange-500/15 text-orange-300",
     dot: "bg-orange-500",
   },
   [WorkItemStatus.SCHEDULED]: {
     label: "scheduled",
+    titleLabel: "Scheduled",
     pill: "bg-purple-500/15 text-purple-800",
     pillDark: "bg-purple-500/15 text-purple-300",
     dot: "bg-purple-500",
@@ -218,6 +233,7 @@ export function statusMeta(status: number): StatusMeta {
   return (
     STATUS_META[status] ?? {
       label: "unknown",
+      titleLabel: "Unknown",
       pill: "bg-muted text-muted-foreground",
       pillDark: "bg-muted text-muted-foreground",
       dot: "bg-muted",
@@ -226,15 +242,15 @@ export function statusMeta(status: number): StatusMeta {
 }
 
 export const STATUS_FILTER_OPTIONS = [
-  { value: String(WorkItemStatus.PENDING), label: "pending" },
-  { value: String(WorkItemStatus.READY), label: "ready" },
-  { value: String(WorkItemStatus.ASSIGNED), label: "assigned" },
-  { value: String(WorkItemStatus.RUNNING), label: "running" },
-  { value: String(WorkItemStatus.SUCCEEDED), label: "succeeded" },
-  { value: String(WorkItemStatus.FAILED), label: "failed" },
-  { value: String(WorkItemStatus.CANCELLED), label: "cancelled" },
-  { value: String(WorkItemStatus.RECOVERING), label: "recovering" },
-  { value: String(WorkItemStatus.SCHEDULED), label: "scheduled" },
+  { value: WorkItemStatus.PENDING, label: "Pending" },
+  { value: WorkItemStatus.READY, label: "Ready" },
+  { value: WorkItemStatus.ASSIGNED, label: "Assigned" },
+  { value: WorkItemStatus.RUNNING, label: "Running" },
+  { value: WorkItemStatus.SUCCEEDED, label: "Succeeded" },
+  { value: WorkItemStatus.FAILED, label: "Failed" },
+  { value: WorkItemStatus.CANCELLED, label: "Cancelled" },
+  { value: WorkItemStatus.RECOVERING, label: "Recovering" },
+  { value: WorkItemStatus.SCHEDULED, label: "Scheduled" },
 ];
 
 // ---------------------------------------------------------------------------

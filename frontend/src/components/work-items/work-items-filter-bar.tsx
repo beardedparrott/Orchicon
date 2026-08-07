@@ -6,19 +6,33 @@
 // Graph link. The select-all + count + bulk delete are shared between
 // the two views (the parent computes the tri-state over the visible
 // filtered set).
+//
+// Status/Type filters are multi-select checkbox dropdowns
+// (design-notes/visual-and-functional-tweaks-to-work-items-page.md,
+// ADR-WI-2/ADR-WI-6): OR within a group, AND across groups, empty = all.
 
 import { Columns3, FolderTree, Search, Trash2 } from "lucide-react";
 
 import type { Project } from "@/api/gen/orchicon/api/v1/project_pb";
 import {
+  BOARD_COLUMNS,
   KIND_FILTER_OPTIONS,
+  MANUALLY_UNMOVABLE_STATUSES,
   STATUS_FILTER_OPTIONS,
 } from "@/components/work-items/work-item-meta";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MultiSelect } from "@/components/ui/multi-select";
 import { cn } from "@/lib/utils";
 
 export type WorkItemsView = "tree" | "board";
+
+/** Target statuses offered by the bulk "Move to…" select — every board
+ *  column except the system-managed ones (Running etc. are only set by
+ *  workflows). Per-item advisory gates still apply to the selected set. */
+const BULK_MOVE_OPTIONS = BOARD_COLUMNS.filter(
+  (c) => !MANUALLY_UNMOVABLE_STATUSES.has(c.status),
+).map((c) => ({ value: c.status, label: c.label }));
 
 export interface WorkItemsFilterBarProps {
   projects?: Project[];
@@ -26,10 +40,10 @@ export interface WorkItemsFilterBarProps {
   onProjectChange: (id: string) => void;
   search: string;
   onSearchChange: (value: string) => void;
-  statusFilter: string;
-  onStatusFilterChange: (value: string) => void;
-  kindFilter: string;
-  onKindFilterChange: (value: string) => void;
+  statuses: number[];
+  onStatusFilterChange: (next: number[]) => void;
+  kinds: number[];
+  onKindFilterChange: (next: number[]) => void;
   sortBy: string;
   onSortByChange: (value: string) => void;
   sortOrder: string;
@@ -43,6 +57,9 @@ export interface WorkItemsFilterBarProps {
   onToggleAll: () => void;
   onDeleteSelected: () => void;
   deletePending: boolean;
+  /** Bulk "Move to…" — operates on the selected set (ADR-WI-5). */
+  onMoveSelected: (targetStatus: number) => void;
+  movePending: boolean;
 }
 
 export function WorkItemsFilterBar({
@@ -51,9 +68,9 @@ export function WorkItemsFilterBar({
   onProjectChange,
   search,
   onSearchChange,
-  statusFilter,
+  statuses,
   onStatusFilterChange,
-  kindFilter,
+  kinds,
   onKindFilterChange,
   sortBy,
   onSortByChange,
@@ -68,6 +85,8 @@ export function WorkItemsFilterBar({
   onToggleAll,
   onDeleteSelected,
   deletePending,
+  onMoveSelected,
+  movePending,
 }: WorkItemsFilterBarProps) {
   const selectClass =
     "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:ring-2 focus-visible:ring-ring";
@@ -109,33 +128,21 @@ export function WorkItemsFilterBar({
         />
       </div>
 
-      <select
-        value={statusFilter}
-        onChange={(e) => onStatusFilterChange(e.target.value)}
-        aria-label="Filter by status"
-        className={selectClass}
-      >
-        <option value="">All statuses</option>
-        {STATUS_FILTER_OPTIONS.map((s) => (
-          <option key={s.value} value={s.value}>
-            {s.label}
-          </option>
-        ))}
-      </select>
+      <MultiSelect
+        label="Filter by status"
+        options={STATUS_FILTER_OPTIONS}
+        selected={new Set(statuses)}
+        onChange={(next) => onStatusFilterChange(Array.from(next))}
+        emptyLabel="All statuses"
+      />
 
-      <select
-        value={kindFilter}
-        onChange={(e) => onKindFilterChange(e.target.value)}
-        aria-label="Filter by type"
-        className={selectClass}
-      >
-        <option value="">All types</option>
-        {KIND_FILTER_OPTIONS.map((k) => (
-          <option key={k.value} value={k.value}>
-            {k.label}
-          </option>
-        ))}
-      </select>
+      <MultiSelect
+        label="Filter by type"
+        options={KIND_FILTER_OPTIONS}
+        selected={new Set(kinds)}
+        onChange={(next) => onKindFilterChange(Array.from(next))}
+        emptyLabel="All types"
+      />
 
       <select
         value={sortBy}
@@ -207,15 +214,37 @@ export function WorkItemsFilterBar({
             : `${visibleCount} work item${visibleCount === 1 ? "" : "s"}`}
         </span>
         {selectedCount > 0 && (
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={onDeleteSelected}
-            disabled={deletePending}
-          >
-            <Trash2 className="mr-1 h-3.5 w-3.5" />
-            Delete {selectedCount} selected
-          </Button>
+          <>
+            <select
+              value=""
+              disabled={movePending}
+              aria-label="Move selected to…"
+              onChange={(e) => {
+                const status = Number(e.target.value);
+                if (status) onMoveSelected(status);
+                e.target.value = "";
+              }}
+              className="h-6 max-w-[7.5rem] cursor-pointer rounded border border-input bg-background px-1 text-[11px] text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <option value="" disabled>
+                Move to…
+              </option>
+              {BULK_MOVE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={onDeleteSelected}
+              disabled={deletePending}
+            >
+              <Trash2 className="mr-1 h-3.5 w-3.5" />
+              Delete {selectedCount} selected
+            </Button>
+          </>
         )}
       </div>
     </div>

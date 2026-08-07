@@ -44,6 +44,7 @@ import { ChevronRight, Lock, SearchX } from "lucide-react";
 
 import { useUpdateWorkItem, workItemKeys } from "@/api/workItems";
 import { WorkItemStatus, type WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
+import { useBatchMoveWorkItems, validateMove } from "@/components/work-items/batch-move";
 import {
   BOARD_COLUMNS,
   MANUALLY_UNMOVABLE_STATUSES,
@@ -67,6 +68,9 @@ export interface WorkItemsBoardProps {
   blockState: BlockState;
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
+  /** persisted per-project expand state; default collapsed (ADR-WI-3) */
+  expandedIds: Set<string>;
+  onToggleExpand: (id: string) => void;
   isLoading: boolean;
   error: unknown;
   hasQuery: boolean;
@@ -114,15 +118,20 @@ export function WorkItemsBoard({
   blockState,
   selected,
   onToggleSelect,
+  expandedIds,
+  onToggleExpand,
   isLoading,
   error,
   hasQuery,
 }: WorkItemsBoardProps) {
   const updateStatus = useUpdateWorkItem(projectId);
+  const { moveItems: batchMoveItems } = useBatchMoveWorkItems(projectId);
   const qc = useQueryClient();
   const toast = useToast();
   const [movingId, setMovingId] = useState<string | null>(null);
   const [activeItem, setActiveItem] = useState<WorkItem | null>(null);
+  /** size of the selection being dragged together; 0/1 = plain single drag */
+  const [dragCount, setDragCount] = useState(0);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -137,50 +146,53 @@ export function WorkItemsBoard({
     (event: DragStartEvent) => {
       const { active } = event;
       const item = itemsById.get(String(active.id));
-      if (item) setActiveItem(item);
+      if (item) {
+        setActiveItem(item);
+        setDragCount(selected.has(item.id) && selected.size > 1 ? selected.size : 0);
+      }
     },
-    [itemsById],
+    [itemsById, selected],
   );
 
   const handleMove = (item: WorkItem, targetStatus: number) => {
     if (targetStatus === item.status) return;
 
-    // System-managed statuses: Running, Checkpointing, Recovering are only
-    // set by the TaskReconciler when a workflow is executing. Users must
-    // go INTO the work item to start a workflow — drag-and-drop and the
-    // Move-to menu cannot set these statuses.
-    if (MANUALLY_UNMOVABLE_STATUSES.has(targetStatus)) {
-      toast.info(
-        `"${item.title}" cannot be moved to ${statusMeta(targetStatus).label} via drag. Open the work item to start a workflow.`,
-        { title: "System-managed status" },
-      );
-      return;
-    }
-
-    // Advisory dependency gate: blocked items cannot be dropped on Ready.
-    const blockers = blockState.blockedBy.get(item.id) ?? [];
-    if (targetStatus === WorkItemStatus.READY && blockers.length > 0) {
-      toast.error(
-        `Cannot move to Ready: blocked by ${blockingTitles(blockState.blockedBy, item.id)}`,
-        { title: "Blocked" },
-      );
-      return;
-    }
-
-    // Advisory kind gate: Epics/Features accept only certain statuses.
-    if (!allowedStatusesForKind(item.kind).includes(targetStatus)) {
-      toast.error(
-        `"${item.title}" cannot move to ${statusMeta(targetStatus).label}: ${kindMeta(item.kind).label}s only accept ${allowedStatusesForKind(item.kind).map((s) => statusMeta(s).label).join(", ")}.`,
-        { title: "Transition not allowed" },
-      );
-      return;
+    // Advisory per-item gate shared with the batch path (ADR-WI-4).
+    const validation = validateMove(item, targetStatus, blockState);
+    if (!validation.ok) {
+      switch (validation.code) {
+        case "system-managed":
+          toast.info(
+            `"${item.title}" cannot be moved to ${statusMeta(targetStatus).titleLabel} via drag. Open the work item to start a workflow.`,
+            { title: "System-managed status" },
+          );
+          return;
+        case "blocked":
+          toast.error(
+            `Cannot move to ${statusMeta(targetStatus).titleLabel}: blocked by ${blockingTitles(blockState.blockedBy, item.id)}`,
+            { title: "Blocked" },
+          );
+          return;
+        case "kind":
+          toast.error(
+            `"${item.title}" cannot move to ${statusMeta(targetStatus).titleLabel}: ${kindMeta(item.kind).label}s only accept ${allowedStatusesForKind(item.kind).map((s) => statusMeta(s).titleLabel).join(", ")}.`,
+            { title: "Transition not allowed" },
+          );
+          return;
+      }
     }
 
     // Optimistic cache update: immediately move the card to the target
     // column so it doesn't disappear during the mutation. The card will
     // snap back if the server rejects the move.
+    //
+    // `setQueriesData` (not `setQueryData`) with the trimmed prefix key —
+    // the page's live list query is the 4-element key ending in the
+    // `{search,sortBy,sortOrder}` opts object; a bare 3-element
+    // `setQueryData` wrote to a phantom cache entry and the card stayed
+    // in its origin column until the 5s poll refetched.
     const listKey = workItemKeys.list(projectId);
-    qc.setQueryData(listKey, (old: WorkItem[] | undefined) => {
+    qc.setQueriesData({ queryKey: listKey }, (old: WorkItem[] | undefined) => {
       if (!old) return old;
       return old.map((i) =>
         i.id === item.id ? { ...i, status: targetStatus } : i,
@@ -193,12 +205,12 @@ export function WorkItemsBoard({
       {
         onSuccess: (updated) => {
           // Server confirms — update with the real server data
-          qc.setQueryData(listKey, (old: WorkItem[] | undefined) => {
+          qc.setQueriesData({ queryKey: listKey }, (old: WorkItem[] | undefined) => {
             if (!old) return old;
             return old.map((i) => (i.id === updated.id ? updated : i));
           });
           toast.success(
-            `Moved "${updated.title}" to ${statusMeta(updated.status).label}`,
+            `Moved "${updated.title}" to ${statusMeta(updated.status).titleLabel}`,
           );
         },
         onError: () => {
@@ -212,6 +224,7 @@ export function WorkItemsBoard({
 
   const handleDragEnd = (event: DragEndEvent) => {
     setActiveItem(null);
+    setDragCount(0);
     const { active, over } = event;
     if (!over) return;
     const item = itemsById.get(String(active.id));
@@ -232,6 +245,12 @@ export function WorkItemsBoard({
     // Guard: system-managed statuses (Running, Checkpointing, Recovering)
     // are read-only — only the server sets these via workflow execution.
     if (MANUALLY_UNMOVABLE_STATUSES.has(targetStatus)) return;
+    // Multi-drag (ADR-WI-4): dragging a selected card moves the whole
+    // selection; a non-selected card still moves alone.
+    if (selected.has(item.id) && selected.size > 1) {
+      void batchMoveItems(Array.from(selected), targetStatus, { itemsById, blockState });
+      return;
+    }
     handleMove(item, targetStatus);
   };
 
@@ -282,6 +301,15 @@ export function WorkItemsBoard({
       collisionDetection={pointerWithin}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
+      // Disable dnd-kit auto-scroll: the board overflows horizontally
+      // (flex-1 min-w-[280px] columns), so near the viewport edge the
+      // auto-scroller shifts the board mid-drag and pointerWithin then
+      // resolves the drop against a DIFFERENT column than the one the
+      // pointer was over — silently moving cards to the wrong status
+      // (e.g. "Failed" → "Cancelled" at 1280px). The board is scrollable
+      // manually; the drop must always resolve to the visible column
+      // under the pointer (AC3: drag to other columns).
+      autoScroll={false}
     >
       <div
         className="flex flex-1 gap-3 overflow-x-auto rounded-lg border bg-muted/20 p-3"
@@ -300,13 +328,16 @@ export function WorkItemsBoard({
               blockState={blockState}
               movingId={movingId}
               onMove={handleMove}
+              expandedIds={expandedIds}
+              onToggleExpand={onToggleExpand}
+              dragCount={dragCount}
             />
           );
         })}
       </div>
       <DragOverlay dropAnimation={null}>
         {activeItem ? (
-          <div className="w-[280px] opacity-90 shadow-xl ring-2 ring-ring/40">
+          <div className="relative w-[280px] opacity-90 shadow-xl ring-2 ring-ring/40">
             <WorkItemCard
               item={activeItem}
               selected={selected.has(activeItem.id)}
@@ -317,6 +348,14 @@ export function WorkItemsBoard({
                 (blockState.blockedBy.get(activeItem.id)?.length ?? 0)
               }
             />
+            {dragCount > 1 && (
+              <span
+                aria-hidden
+                className="absolute -right-2 -top-2 flex h-6 min-w-6 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-semibold text-primary-foreground shadow-md"
+              >
+                +{dragCount - 1}
+              </span>
+            )}
           </div>
         ) : null}
       </DragOverlay>
@@ -337,6 +376,9 @@ function BoardColumn({
   blockState,
   movingId,
   onMove,
+  expandedIds,
+  onToggleExpand,
+  dragCount,
 }: {
   column: { status: number; label: string };
   items: WorkItem[];
@@ -346,6 +388,9 @@ function BoardColumn({
   blockState: BlockState;
   movingId: string | null;
   onMove: (item: WorkItem, targetStatus: number) => void;
+  expandedIds: Set<string>;
+  onToggleExpand: (id: string) => void;
+  dragCount: number;
 }) {
   const isReadOnly = MANUALLY_UNMOVABLE_STATUSES.has(column.status);
 
@@ -413,6 +458,9 @@ function BoardColumn({
               blockState={blockState}
               movingId={movingId}
               onMove={onMove}
+              expandedIds={expandedIds}
+              onToggleExpand={onToggleExpand}
+              dragCount={dragCount}
             />
           ))}
         </SortableContext>
@@ -440,6 +488,9 @@ function HierarchyNodeComponent({
   blockState,
   movingId,
   onMove,
+  expandedIds,
+  onToggleExpand,
+  dragCount,
   depth = 0,
 }: {
   node: HierarchyNode;
@@ -449,9 +500,13 @@ function HierarchyNodeComponent({
   blockState: BlockState;
   movingId: string | null;
   onMove: (item: WorkItem, targetStatus: number) => void;
+  expandedIds: Set<string>;
+  onToggleExpand: (id: string) => void;
+  dragCount: number;
   depth?: number;
 }) {
-  const [expanded, setExpanded] = useState(true);
+  // Persisted per-project expand state; default collapsed (ADR-WI-3).
+  const expanded = expandedIds.has(node.item.id);
   const hasChildren = node.children.length > 0;
 
   return (
@@ -466,7 +521,8 @@ function HierarchyNodeComponent({
           onMove={onMove}
           hasChildren={hasChildren}
           expanded={expanded}
-          onToggleExpand={() => setExpanded((v) => !v)}
+          onToggleExpand={() => onToggleExpand(node.item.id)}
+          multiDragCount={dragCount}
         />
       </div>
       {expanded &&
@@ -481,6 +537,9 @@ function HierarchyNodeComponent({
             blockState={blockState}
             movingId={movingId}
             onMove={onMove}
+            expandedIds={expandedIds}
+            onToggleExpand={onToggleExpand}
+            dragCount={dragCount}
             depth={depth + 1}
           />
         ))}
@@ -502,6 +561,7 @@ function SortableCard({
   hasChildren = false,
   expanded = true,
   onToggleExpand,
+  multiDragCount = 0,
 }: {
   item: WorkItem;
   selected: Set<string>;
@@ -512,6 +572,8 @@ function SortableCard({
   hasChildren?: boolean;
   expanded?: boolean;
   onToggleExpand?: () => void;
+  /** >1 when the drag carries the whole selection (ADR-WI-4) */
+  multiDragCount?: number;
 }) {
   const {
     attributes,
@@ -541,6 +603,7 @@ function SortableCard({
         isDragging && "z-10 opacity-60",
       )}
       aria-roledescription="draggable"
+      aria-label={multiDragCount > 1 ? `Dragging ${multiDragCount} items` : undefined}
     >
       <WorkItemCard
         item={item}
@@ -619,7 +682,7 @@ function MoveToMenu({
       </option>
       {allowed.map((s) => (
         <option key={s} value={s}>
-          {statusMeta(s).label}
+          {statusMeta(s).titleLabel}
         </option>
       ))}
     </select>

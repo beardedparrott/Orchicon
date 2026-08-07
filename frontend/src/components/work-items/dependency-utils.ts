@@ -101,15 +101,15 @@ export function matchesSearch(item: WorkItem, search: string): boolean {
 
 export function filterItemsByKindStatus(
   items: WorkItem[] | undefined,
-  kindFilter: string,
-  statusFilter: string,
+  kinds: number[],
+  statuses: number[],
   search = "",
 ): WorkItem[] {
   return (items ?? []).filter(
     (i) =>
       matchesSearch(i, search) &&
-      (!kindFilter || i.kind === Number(kindFilter)) &&
-      (!statusFilter || i.status === Number(statusFilter)),
+      (kinds.length === 0 || kinds.includes(i.kind)) &&
+      (statuses.length === 0 || statuses.includes(i.status)),
   );
 }
 
@@ -125,12 +125,12 @@ export interface TreeData {
 
 export function buildTreeData(
   items: WorkItem[] | undefined,
-  kindFilter: string,
-  statusFilter: string,
+  kinds: number[],
+  statuses: number[],
   search = "",
 ): TreeData {
   const all = items ?? [];
-  const matches = filterItemsByKindStatus(all, kindFilter, statusFilter, search);
+  const matches = filterItemsByKindStatus(all, kinds, statuses, search);
   const byId = new Map(all.map((i) => [i.id, i]));
   const ancestors = new Map<string, WorkItem>();
 

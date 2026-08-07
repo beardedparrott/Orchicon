@@ -68,6 +68,22 @@ describe("status meta palette variants", () => {
       expect(meta.pillDark).not.toMatch(/dark:/);
     }
   });
+
+  it("title labels are title-case and match the board column headers", () => {
+    // Filter dropdowns, "Move to…" menus, and result toasts use the
+    // title label so status names match the board column headers (the
+    // pill stays lowercase). Regression guard for the mixed-case UI.
+    const labels = Object.values(WorkItemStatus)
+      .filter((s): s is number => typeof s === "number")
+      .map((s) => statusMeta(s).titleLabel);
+    for (const label of labels) {
+      expect(label).toBeTruthy();
+      expect(label[0]).toBe(label[0]!.toUpperCase());
+    }
+    expect(statusMeta(WorkItemStatus.PENDING).titleLabel).toBe("Pending");
+    expect(statusMeta(WorkItemStatus.SUCCEEDED).titleLabel).toBe("Succeeded");
+    expect(statusMeta(WorkItemStatus.READY).label).toBe("ready");
+  });
 });
 
 describe("board column mapping and transition matrix (regression guards)", () => {
