@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -12,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -77,6 +80,15 @@ type CreateRequest struct {
 	// containers — two instances sharing one daemon must not fight over
 	// each other's orphans.
 	InstanceID string `json:"instance_id,omitempty"`
+	// ServeConfig, when non-empty, requests the opencode serve inside the
+	// container: the OPENCODE_CONFIG_CONTENT JSON the serve boots with
+	// (permission rules + MCP servers; the plane builds it). ProjectDir is
+	// the container-side project path the serve runs in (executions' bash/
+	// file tools resolve against each session's directory). When set, the
+	// daemon starts the serve, publishes its port on the host loopback,
+	// and returns ServePort/ServePassword in the response.
+	ServeConfig string `json:"serve_config,omitempty"`
+	ProjectDir  string `json:"project_dir,omitempty"`
 }
 
 // CreateResponse is returned by POST /v1/runtimes.
@@ -84,6 +96,13 @@ type CreateResponse struct {
 	ContainerID string `json:"container_id"`
 	Name        string `json:"name"`
 	Running     bool   `json:"running"`
+	// ServePort is the host-side loopback port published for the
+	// container's opencode serve (127.0.0.1:<ServePort>), and
+	// ServePassword its basic-auth password. Zero/empty when the daemon
+	// could not bring the serve up — the adapter degrades to one-shot
+	// execs inside the container.
+	ServePort     int    `json:"serve_port,omitempty"`
+	ServePassword string `json:"serve_password,omitempty"`
 }
 
 // ExecRequest is the body of POST /v1/runtimes/{id}/exec.
@@ -394,6 +413,15 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 		"--memory", d.Memory,
 		"--tmpfs", "/tmp:rw,size=" + d.TmpfsSize,
 	}
+	// Publish the container's opencode serve (internal port 4096) on a
+	// random HOST LOOPBACK port. Docker auto-assigns the host port the
+	// moment the container binds 4096; the plane reaches the serve at
+	// http://127.0.0.1:<hostport> with the serve password. Loopback-only
+	// + password auth = the only new network surface, scoped to this
+	// workflow's container.
+	if req.ServeConfig != "" {
+		args = append(args, "-p", "127.0.0.1::4096")
+	}
 	for _, m := range req.Mounts {
 		mo := ""
 		if m.RO {
@@ -483,11 +511,104 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if d.pingRuntime(name) {
-			return &CreateResponse{Name: name, Running: true}, nil
+			resp := &CreateResponse{Name: name, Running: true}
+			if req.ServeConfig != "" {
+				// Start the opencode serve inside the container and publish
+				// its port on the host loopback. A serve that cannot come
+				// up is NOT fatal to the container — the adapter degrades
+				// to one-shot execs — but the password is generated fresh
+				// per container and the host port is reported back.
+				port, pw, serr := d.startServe(name, req)
+				if serr != nil {
+					d.Log.Warn("runtime opencode serve unavailable — degrading to one-shot execs",
+						"runtime", name, "error", serr)
+				} else {
+					resp.ServePort = port
+					resp.ServePassword = pw
+				}
+			}
+			return resp, nil
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
 	return nil, fmt.Errorf("runtime %s started but supervisor socket not ready", name)
+}
+
+// startServe asks the in-container supervisor to bring up `opencode
+// serve`, then resolves the published host loopback port. Returns the
+// host port + the per-container serve password.
+func (d *Daemon) startServe(name string, req CreateRequest) (int, string, error) {
+	pw, err := randomHex(32)
+	if err != nil {
+		return 0, "", fmt.Errorf("serve password: %w", err)
+	}
+	reqJSON, err := json.Marshal(AgentRequest{
+		Cmd:        "serve",
+		Argv:       []string{"opencode", "serve", "--hostname", "127.0.0.1", "--port", "4096"},
+		Env: []string{
+			"OPENCODE_SERVER_PASSWORD=" + pw,
+			"OPENCODE_CONFIG_CONTENT=" + req.ServeConfig,
+		},
+		Cwd:        req.ProjectDir,
+		ProjectDir: req.ProjectDir,
+	})
+	if err != nil {
+		return 0, "", err
+	}
+	cmd := exec.Command(d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
+	cmd.Stdin = bytes.NewReader(reqJSON)
+	out, perr := cmd.Output()
+	if perr != nil {
+		return 0, "", fmt.Errorf("serve handshake: %v", perr)
+	}
+	// The supervisor answers {event:"serve", port:4096} when ready.
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	port := 0
+	for sc.Scan() {
+		var ev AgentEvent
+		if json.Unmarshal(sc.Bytes(), &ev) != nil {
+			continue
+		}
+		if ev.Event == "serve" {
+			port = ev.Port
+			break
+		}
+		if ev.Event == "error" {
+			return 0, "", fmt.Errorf("serve handshake error: %s", ev.Error)
+		}
+	}
+	if port == 0 {
+		return 0, "", fmt.Errorf("serve handshake: no serve event")
+	}
+
+	// Resolve the published host loopback port (docker auto-assigns it
+	// when the container binds 4096).
+	hostPort := 0
+	for i := 0; i < 30; i++ {
+		if out, err := d.docker("port", name, "4096/tcp"); err == nil {
+			s := strings.TrimSpace(out)
+			if i := strings.LastIndex(s, ":"); i >= 0 {
+				if p, err := strconv.Atoi(s[i+1:]); err == nil {
+					hostPort = p
+					break
+				}
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if hostPort == 0 {
+		return 0, "", fmt.Errorf("serve published port not assigned")
+	}
+	return hostPort, pw, nil
+}
+
+// randomHex returns n random bytes hex-encoded.
+func randomHex(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func (d *Daemon) containerRunning(name string) (bool, error) {

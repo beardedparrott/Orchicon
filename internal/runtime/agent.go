@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,11 +42,12 @@ type AgentRequest struct {
 type AgentEvent struct {
 	Stream   string `json:"stream,omitempty"` // "stdout" | "stderr"
 	Data     string `json:"data,omitempty"`
-	Event    string `json:"event,omitempty"` // "exit" | "error" | "status"
+	Event    string `json:"event,omitempty"` // "exit" | "error" | "status" | "serve"
 	ExitCode int    `json:"exit_code,omitempty"`
 	Error    string `json:"error,omitempty"`
 	Alive    bool   `json:"alive,omitempty"`
 	Pong     bool   `json:"pong,omitempty"`
+	Port     int    `json:"port,omitempty"` // serve cmd: the container-internal serve port
 }
 
 // DefaultAgentSocket is the in-container path of the supervisor's unix
@@ -119,13 +121,16 @@ func RunSupervisor(socketPath string, log *slog.Logger) error {
 // survives a client disconnect: the child keeps running for a reconnect
 // grace, so a transient transport blip can re-attach instead of killing
 // the execution. On grace expiry (no client re-attached — the plane is
-// really gone) the child is killed.
+// really gone) the child is killed. A DETACHED session (the opencode
+// serve for the container) has no clients and no grace: it lives until
+// explicitly signalled or the container tears down.
 type execSession struct {
 	id       string
 	cmd      *exec.Cmd
 	stdout   io.ReadCloser
 	stderr   io.ReadCloser
 	guardDir string
+	detached bool
 
 	mu       sync.Mutex
 	clients  map[net.Conn]*json.Encoder
@@ -177,6 +182,8 @@ func (h *childRegistry) serve(conn net.Conn) {
 		_ = enc.Encode(AgentEvent{Pong: true})
 	case "exec":
 		h.runExec(conn, enc, req)
+	case "serve":
+		h.runServe(enc, req)
 	case "signal":
 		h.signal(enc, req)
 	case "status":
@@ -279,6 +286,124 @@ func (h *childRegistry) runExec(conn net.Conn, enc *json.Encoder, req AgentReque
 	go s.broadcastStream("stdout", s.stdout)
 	go s.broadcastStream("stderr", s.stderr)
 	s.attach(conn, enc)
+}
+
+// runServe starts the container's opencode serve as a DETACHED child and
+// answers with the port once it is healthy. The serve owns the agent
+// loops for every session in this container (one per execution); the
+// plane reaches it through the daemon-published loopback port. The serve
+// is registered under a reserved exec id so signals and container teardown
+// can target it; it has no clients and no reconnect-grace kill.
+//
+// argv defaults to `opencode serve --hostname 127.0.0.1 --port 4096` (the
+// port the daemon publishes); a request may override the argv.
+func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
+	const serveExecID = "__orchicon_serve__"
+	h.mu.Lock()
+	if existing, ok := h.cmd[serveExecID]; ok {
+		h.mu.Unlock()
+		_ = enc.Encode(AgentEvent{Event: "serve", Port: defaultServePort})
+		_ = existing  // serve already up; report the port
+		return
+	}
+	h.mu.Unlock()
+
+	if len(req.Argv) == 0 {
+		req.Argv = []string{"opencode", "serve", "--hostname", "127.0.0.1", "--port", fmt.Sprintf("%d", defaultServePort)}
+	}
+	base := filepath.Base(req.Argv[0])
+	if !runtimeBinAllowlist[base] {
+		_ = enc.Encode(AgentEvent{Event: "error", Error: "argv[0] not allowlisted: " + base})
+		return
+	}
+
+	s := newExecSession(serveExecID, 0)
+	s.detached = true
+
+	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
+	if req.Cwd != "" {
+		cmd.Dir = req.Cwd
+	}
+	env := agentEnv(req)
+	env = isolateOpenCodeData(env)
+	// The serve runs the agent's tools, so the same safety guard applies:
+	// destructive commands are refused even from worker subprocesses.
+	guardDir, guardErr := guard.MakeGuard("/tmp", req.ProjectDir)
+	if guardErr != nil {
+		h.log.Warn("supervisor: guard not applied to serve", "error", guardErr)
+	} else {
+		env = prependGuard(env, guardDir)
+		s.guardDir = guardDir
+	}
+	cmd.Env = env
+	cmd.Stdout = os.Stderr // serve logs go to the supervisor log, not telemetry
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		if s.guardDir != "" {
+			os.RemoveAll(s.guardDir)
+		}
+		_ = enc.Encode(AgentEvent{Event: "error", Error: err.Error()})
+		return
+	}
+
+	h.mu.Lock()
+	h.cmd[serveExecID] = s
+	h.mu.Unlock()
+	s.cmd = cmd
+	go h.watchExec(s)
+
+	// Wait for the serve to answer /global/health with the request's
+	// password, so the plane never races a half-initialized serve.
+	password := servePassword(req.Env)
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if serveHealthy(defaultServePort, password) {
+			h.log.Info("runtime opencode serve ready", "port", defaultServePort, "pid", cmd.Process.Pid)
+			_ = enc.Encode(AgentEvent{Event: "serve", Port: defaultServePort})
+			return
+		}
+		select {
+		case <-time.After(250 * time.Millisecond):
+		case <-s.done:
+			_ = enc.Encode(AgentEvent{Event: "error", Error: "serve exited before becoming ready"})
+			return
+		}
+	}
+	_ = cmd.Process.Kill()
+	_ = enc.Encode(AgentEvent{Event: "error", Error: "serve did not become ready within 30s"})
+}
+
+// defaultServePort is the container-internal port the serve binds (and
+// the daemon publishes to a random host loopback port).
+const defaultServePort = 4096
+
+// servePassword extracts the OPENCODE_SERVER_PASSWORD value from a request
+// env (the daemon generates it and passes it in).
+func servePassword(env []string) string {
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "OPENCODE_SERVER_PASSWORD=") {
+			return strings.TrimPrefix(kv, "OPENCODE_SERVER_PASSWORD=")
+		}
+	}
+	return ""
+}
+
+// serveHealthy reports whether the in-container serve answers
+// /global/health on the given port with basic auth.
+func serveHealthy(port int, password string) bool {
+	client := &http.Client{Timeout: 2 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/global/health", port), nil)
+	if err != nil {
+		return false
+	}
+	req.SetBasicAuth("opencode", password)
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 // watchExec waits for the child to exit, records the terminal state, and

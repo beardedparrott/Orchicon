@@ -240,6 +240,13 @@ blocked_path() {
     esac
     case "$a" in
       /*)
+        # Empty PROJECT_DIR = the shared host-serve mode: no single project
+        # root, so EVERY absolute target is outside scope and blocked (this
+        # also closes the rm / leak that an empty dir would otherwise allow
+        # through the "$PROJECT_DIR"/* glob).
+        if [ -z "$PROJECT_DIR" ]; then
+          return 0
+        fi
         case "$a" in
           "$PROJECT_DIR"|"$PROJECT_DIR"/*) ;;
           *) return 0 ;;

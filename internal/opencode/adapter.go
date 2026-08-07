@@ -41,12 +41,25 @@ import (
 )
 
 // Adapter is the OpenCode CLI adapter bridge. It implements
-// scheduler.AdapterBridge by spawning `opencode` as a subprocess and
-// parsing stdout JSON lines into telemetry events.
+// scheduler.AdapterBridge. v0.1 transports: the legacy one-shot
+// `opencode run` subprocess (stdout JSON parsed into telemetry events)
+// and, when sessions are enabled, a persistent opencode session per
+// execution driven through the serve HTTP+SSE API (session_run.go).
 type Adapter struct {
 	log    *slog.Logger
 	mu     sync.Mutex
-	active map[string]*exec.Cmd // execution_id → running subprocess
+	active map[string]*exec.Cmd // execution_id → running one-shot subprocess
+
+	// sessions tracks live session-transport executions (execution_id →
+	// runner). It is the routing table for SendExecutionMessage and makes
+	// IsExecutionActive report session executions as alive until the plane
+	// restarts (an empty map after boot = every session execution orphaned
+	// and correctly reported dead).
+	sessions map[string]*sessionRun
+
+	// host is the always-on host opencode serve for the in-process
+	// (local) execution population. Nil or disabled = legacy one-shot path.
+	host *HostServe
 
 	// stallReason records the stall reason that terminated an execution,
 	// so the OnResult(false) error message keeps the actual trigger
@@ -74,14 +87,121 @@ type Adapter struct {
 // runtime container; without it the adapter runs in-process.
 func (a *Adapter) SetRuntimeClient(rt *runtime.Client) { a.rt = rt }
 
+// SetHostServe injects the always-on host opencode serve manager. When
+// set AND sessions are enabled, local (in-process) executions run as
+// persistent sessions on it. Nil = legacy one-shot subprocess path.
+func (a *Adapter) SetHostServe(hs *HostServe) { a.host = hs }
+
+// SendExecutionMessage routes a mid-run human message into a live session
+// execution. It does NOT create a new execution, work item, or workflow
+// state — the message joins the session's existing turn queue and the
+// reply streams back through the normal execution event stream. Returns
+// an error when the execution has no live session (already finished,
+// legacy one-shot path, or unknown execution).
+func (a *Adapter) SendExecutionMessage(ctx context.Context, execID, message string) error {
+	a.mu.Lock()
+	r := a.sessions[execID]
+	a.mu.Unlock()
+	if r == nil {
+		return fmt.Errorf("execution %s has no live session (not running on the session transport)", execID)
+	}
+	if err := r.client.SendMessage(ctx, r.sessionID, r.system, r.modelRef, message); err != nil {
+		return fmt.Errorf("send execution message: %w", err)
+	}
+	r.bumpPending()
+	a.log.Info("mid-run execution message sent", "execution", execID, "session", r.sessionID)
+	return nil
+}
+
+// sessionsEnabled reports whether the session transport is enabled for an
+// execution. The global kill-switch ORCHICON_OPCODE_SESSION_TRANSPORT=0
+// disables it everywhere (legacy one-shot path); otherwise sessions are
+// the default. A per-worker/tenant flag rides the manifest once the flag
+// plumbing lands (Stage 3 config).
+func (a *Adapter) sessionsEnabled(manifest scheduler.ExecutionManifest) bool {
+	return os.Getenv("ORCHICON_OPCODE_SESSION_TRANSPORT") != "0"
+}
+
+// sessionClientFor resolves the SessionClient for an execution: the
+// per-container serve for workflow-run executions (ensuring the container
+// exists + is serving), or the host serve for the in-process population.
+// Returns nil when no serve is available — the caller falls back to the
+// legacy one-shot path.
+func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.ExecutionManifest) *SessionClient {
+	if a.rt != nil && manifest.RuntimeWorkflowID != "" {
+		resp, err := a.rt.Create(ctx, runtime.CreateRequest{
+			WorkflowID:  manifest.RuntimeWorkflowID,
+			Image:       manifest.RuntimeImage,
+			Mounts:      projectMount(manifest.ProjectDir),
+			ServeConfig: a.runtimeServeConfig(manifest),
+			ProjectDir:  manifest.ProjectDir,
+		})
+		if err != nil {
+			a.log.Warn("session transport: ensure runtime container failed",
+				"run", manifest.RuntimeWorkflowID, "execution", manifest.ExecutionID, "error", err)
+			return nil
+		}
+		if resp.ServePort == 0 || resp.ServePassword == "" {
+			return nil
+		}
+		return NewSessionClient(fmt.Sprintf("http://127.0.0.1:%d", resp.ServePort), resp.ServePassword, manifest.ProjectDir)
+	}
+	if a.host != nil {
+		return a.host.Client()
+	}
+	return nil
+}
+
+// runtimeServeConfig builds the OPENCODE_CONFIG_CONTENT for a runtime
+// container's serve: the permission rules + the operator's MCP servers,
+// with the Orchicon MCP deliberately disabled (runtime containers are
+// isolated sandboxes with no route to the plane's Postgres). Worker
+// system prompts ride the per-message `system` field instead.
+func (a *Adapter) runtimeServeConfig(manifest scheduler.ExecutionManifest) string {
+	return BuildConfigContent(ConfigOptions{
+		AgentName:   workerAgent,
+		AgentPrompt: "",
+		ModelRef:    "",
+		OrchiconMCP: false,
+	})
+}
+
+// startViaSession runs an execution through a persistent opencode session
+// on the given serve. Returns nil once the execution completes (OnResult
+// fired); a non-nil error means the session transport could not be set up
+// and the caller should fall back to the one-shot subprocess path.
+func (a *Adapter) startViaSession(ctx context.Context, procCtx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, callbacks scheduler.ExecutionCallbacks, client *SessionClient, modelRef string) error {
+	if client == nil {
+		return fmt.Errorf("no opencode serve available")
+	}
+	runner := &sessionRun{
+		a:         a,
+		parentCtx: ctx,
+		procCtx:   procCtx,
+		execRow:   execRow,
+		manifest:  manifest,
+		callbacks: callbacks,
+		client:    client,
+		modelRef:  modelRef,
+		system:    manifest.SystemPrompt,
+		done:      make(chan struct{}),
+		stats:     &execStreamState{},
+	}
+	return runner.run()
+}
+
 // IsExecutionActive reports whether an in-process execution subprocess is
 // still tracked as running. Used by the execution-liveness reaper to
 // detect executions orphaned by a control-plane restart (a fresh boot has
 // an empty active map, so every previously-running in-process execution
-// is correctly reported dead).
+// is correctly reported dead). Session-transport executions are tracked
+// in the sessions registry and report active while their runner lives.
 func (a *Adapter) IsExecutionActive(execID string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if _, ok := a.sessions[execID]; ok {
+		return true
+	}
 	cmd, ok := a.active[execID]
 	if !ok || cmd == nil || cmd.Process == nil {
 		return false
@@ -175,6 +295,7 @@ func New(log *slog.Logger) *Adapter {
 	return &Adapter{
 		log:         log,
 		active:      make(map[string]*exec.Cmd),
+		sessions:    make(map[string]*sessionRun),
 		stallReason: make(map[string]string),
 	}
 }
@@ -311,6 +432,24 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	}
 	if runDir != "" {
 		args = append(args, "--dir", runDir)
+	}
+
+	// Session transport (Stage 3): drive the execution through a
+	// persistent opencode session on a serve instance (the always-on host
+	// serve for the in-process population, or the workflow's runtime
+	// container serve). This is the preferred path — it enables the
+	// liveness nudge and mid-run human messages — and falls back to the
+	// one-shot subprocess path when sessions are disabled or no serve is
+	// available (degradation).
+	if a.sessionsEnabled(manifest) {
+		if client := a.sessionClientFor(ctx, manifest); client != nil {
+			err := a.startViaSession(ctx, procCtx, execRow, manifest, callbacks, client, modelRef)
+			if err == nil {
+				return nil
+			}
+			a.log.Warn("session transport setup failed — falling back to one-shot run",
+				"execution", execRow.ID, "error", err)
+		}
 	}
 
 	// Runtime-container dispatch (pure per-workflow execution): when the
@@ -604,6 +743,18 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, 
 		a.log.Debug("opencode stdout (non-JSON)", "execution", execRow.ID, "line", line)
 		return
 	}
+	a.parseEvent(ctx, execRow, manifest, evt, callbacks, monitor, output, lastStreamErr, textSeq, stats)
+}
+
+// parseEvent dispatches a decoded opencode event into the telemetry
+// pipeline. It is the shared dispatch used by BOTH the legacy one-shot
+// subprocess path (parseStdoutLine unmarshals a line then calls this) and
+// the session transport (legacyEventFromBus builds the same {type, part}
+// object from the server SSE bus). Keeping one dispatch guarantees the
+// two transports behave identically downstream: progress monitor, usage
+// recording, artifact capture, summary accumulation, and the streaming
+// callbacks.
+func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, evt map[string]any, callbacks scheduler.ExecutionCallbacks, monitor *progressMonitor, output *strings.Builder, lastStreamErr *string, textSeq *int, stats *execStreamState) {
 	eventType, _ := evt["type"].(string)
 	part, _ := evt["part"].(map[string]any)
 	if monitor != nil {

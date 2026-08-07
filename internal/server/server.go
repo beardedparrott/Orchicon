@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/api"
@@ -65,6 +66,8 @@ type Server struct {
 	// Rotating on-disk log writer (nil when not detached). Settings →
 	// Defaults log management values are live-applied to it.
 	logWriter *logging.RotatingWriter
+	// serveCancel stops the host opencode serve on plane shutdown.
+	serveCancel context.CancelFunc
 }
 
 // New constructs a Server from configuration. It opens the DB pool,
@@ -192,6 +195,38 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// (docs/04 §6). If the binary is absent, the bridge runs in
 	// simulation mode for dev verification.
 	adapterBridge := opencode.New(log)
+
+	// Always-on host opencode serve for the in-process execution
+	// population (Stage 3 session transport): standalone dispatches,
+	// follow-ups, and any execution not bound to a workflow-run container
+	// run as persistent sessions on it. The plane supervises the serve
+	// (spawn on boot + health watchdog with restart), so the session host
+	// is never down; a serve failure degrades that population to the
+	// legacy one-shot subprocess path.
+	var hostServe *opencode.HostServe
+	var serveCancel context.CancelFunc
+	if os.Getenv("ORCHICON_OPCODE_SESSION_TRANSPORT") != "0" {
+		dataDir := ""
+		if home, herr := os.UserHomeDir(); herr == nil {
+			dataDir = filepath.Join(home, ".local", "share", "orchicon", "opencode")
+		}
+		if dataDir != "" {
+			hostServe = opencode.NewHostServe(log, dataDir, "")
+			serveCtx, cancel := context.WithCancel(context.Background())
+			serveCancel = cancel
+			go func() {
+				if err := hostServe.Start(serveCtx); err != nil {
+					log.Warn("host opencode serve unavailable — sessions disabled, falling back to one-shot runs", "error", err)
+					return
+				}
+				hostServe.Watch(serveCtx)
+			}()
+			adapterBridge.SetHostServe(hostServe)
+		} else {
+			log.Warn("host opencode serve data dir unavailable — sessions disabled")
+		}
+	}
+
 	// Phase 8: wire the AI Gateway usage recorder into the adapter so
 	// step_finish token/cost telemetry is dual-written to Postgres
 	// (source of truth) + OTel metrics (VictoriaMetrics) — docs/08 §5.2.
@@ -263,7 +298,8 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	}
 
 	s := &Server{cfg: cfg, log: log, pool: pool, httpSrv: httpSrv, otel: otelShutdown,
-		blobs: blobs, authH: authHandler, webhookD: webhookDisp, logWriter: logWriter}
+		blobs: blobs, authH: authHandler, webhookD: webhookDisp, logWriter: logWriter,
+		serveCancel: serveCancel}
 	if pub != nil {
 		s.relay = outbox.NewRelay(pool, pub, log)
 	}
@@ -357,6 +393,14 @@ func (s *Server) SetHandler(h http.Handler) {
 func (s *Server) Run(ctx context.Context) error {
 	s.log.Info("starting orchicon control plane",
 		"version", version.Current().String(), "http", s.cfg.HTTPAddr)
+
+	// The host opencode serve lives as long as the plane (its watchdog
+	// reaps it on shutdown via the cancel).
+	defer func() {
+		if s.serveCancel != nil {
+			s.serveCancel()
+		}
+	}()
 
 	// Clear stale edit locks from a prior server session. Locks have a
 	// 5-minute TTL; on restart any lock still in the DB is orphaned and

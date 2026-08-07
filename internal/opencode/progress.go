@@ -343,6 +343,25 @@ func (m *progressMonitor) close() {
 	}
 }
 
+// revive clears an active advisory stall (warned) and resets every stall
+// timestamp to now. Called when a liveness probe reply proves the worker
+// is alive even though it has not touched files — the probe response IS
+// the progress signal, so the advisory notice clears and the file window
+// restarts. Returns whether an advisory stall was actually active.
+func (m *progressMonitor) revive() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.warned {
+		return false
+	}
+	m.warned = false
+	now := m.now()
+	m.lastStepFinish = now
+	m.lastMeaningfulAction = now
+	m.lastFileDiff = now
+	return true
+}
+
 // envDuration parses a duration env var with a fallback.
 func envDuration(key string, fallback time.Duration) time.Duration {
 	if v := os.Getenv(key); v != "" {
