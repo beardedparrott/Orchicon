@@ -30,6 +30,13 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.210 (2026-08-07)
+
+| Type | Change |
+|---|---|
+| Bug fix | **Changing a work item's kind no longer starts a workflow run.** The previous guard only suppressed the post-commit auto-start when the kind switch cleared the scheduled start (switch to a non-schedulable kind) — a switch between schedulable kinds (Task → Subtask) on an immediate auto-start item still kicked off a run the user never asked for. Any kind switch now suppresses auto-start unless `autoStartWorkflow=true` is explicitly sent in the same request. |
+| Feature | **"Start immediately on save" now defaults to OFF (opt-in).** New work items created without an explicit `auto_start_workflow` are created with it `false` (server default + DB column default flipped via migration), and the edit form's "Start immediately on save" checkbox always opens unchecked — including for legacy rows created before the default flipped — so saving an edit never starts a run by surprise. |
+
 ### v0.1.209 (2026-08-07)
 
 | Type | Change |
@@ -38,18 +45,6 @@ deployment, troubleshooting, and every subsystem.
 | Feature | **Expand all / Collapse all on the Work Items page.** The filter bar carries Expand all / Collapse all buttons that act on every row with children, in both the tree and board views, and persist like every other view preference. |
 | Feature | **Searchable, color-coded parent picker on the create/edit pages.** The plain parent dropdown is replaced by a searchable single-select popover that shows each candidate's kind as a color-coded badge; candidates follow the selected kind so switching a task to a subtask offers task-level parents. |
 | Bug fix | **Kind switch + project move interplay.** Switching kind while also moving an item to another project now correctly honors an explicit parent in the target project (was falsely rejected by the carried-parent guard), never lets the auto-resolution walk-up write a cross-project parent, and no longer auto-starts a bound workflow when the switch itself cleared the future schedule. Stale parents are cleared in the create form when the kind changes, and the parent picker stops displaying a parent that is no longer a valid candidate for the new kind. |
-
-### v0.1.208 (2026-08-07)
-
-| Type | Change |
-|---|---|
-| Feature | **View and change a work item's parent from the detail/edit page.** Child work items now show a Parent card on the detail page — the parent's kind pill + title (linked) in view mode, and a dropdown in edit mode listing candidate parents as `title (kind)` so you can reparent the item (candidates are same-project items at a strictly higher level). Reparenting is enforced server-side on both `CreateWorkItem` and `UpdateWorkItem` via a shared validator (only epics are top-level, parents must be in the same project, depth must increase strictly) and is mirrored in the Ask Orchicon `update_work_item` tool; the outbox payload now carries `parent_id`. A cross-project move that would leave a child with a parent in the old project is rejected until the item is reparented in the target project. |
-
-### v0.1.207 (2026-08-07)
-
-| Type | Change |
-|---|---|
-| Bug fix | **Work Items page regressions from the #207 merge fixed.** Filter, tree-collapse, and board-collapse regressions from the previous merge corrected (see UPDATES.md #90 for the full list). |
 
 ## Installation
 

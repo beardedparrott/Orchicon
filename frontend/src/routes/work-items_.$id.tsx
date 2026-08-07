@@ -71,7 +71,7 @@ function WorkItemDetailPage() {
   const [editWorkflowId, setEditWorkflowId] = useState("");
   const [editRuntimeImage, setEditRuntimeImage] = useState("");
   const [editScheduledStartAt, setEditScheduledStartAt] = useState("");
-  const [editAutoStartWorkflow, setEditAutoStartWorkflow] = useState(true);
+  const [editAutoStartWorkflow, setEditAutoStartWorkflow] = useState(false);
   const [editParentId, setEditParentId] = useState("");
   const [editKind, setEditKind] = useState(0);
 
@@ -213,7 +213,13 @@ function WorkItemDetailPage() {
                       )
                     : "",
                 );
-                setEditAutoStartWorkflow(item.autoStartWorkflow !== false);
+                // "Start immediately on save" always defaults to OFF when
+                // opening the editor — even for items whose stored
+                // auto_start_workflow is true (legacy rows created before
+                // the default flipped). Saving an edit (e.g. a kind switch)
+                // must never kick off a run the user did not explicitly ask
+                // for; they opt in by checking the box.
+                setEditAutoStartWorkflow(false);
                 setStatus(item.status);
                 setEditKind(item.kind);
                 setEditing(true);

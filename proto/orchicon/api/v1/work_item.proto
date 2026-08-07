@@ -58,7 +58,7 @@ message WorkItem {
   string workflow_run_id = 22; // active workflow run id (set by WorkflowReconciler on dispatch)
   string workflow_step_id = 23; // active workflow step run id (set by WorkflowReconciler on dispatch)
   google.protobuf.Timestamp scheduled_start_at = 20; // scheduled start for bound runs
-  optional bool auto_start_workflow = 21; // true = auto-start on save; false = manual start only; unset defaults to true
+  optional bool auto_start_workflow = 21; // true = auto-start on save; false = manual start only; unset defaults to false (opt-in)
   int32 priority = 12;
   string budgets = 13; // JSON: tokens/cost/time (docs/02 §2.2)
   int32 context_window = 14;

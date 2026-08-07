@@ -46,7 +46,7 @@ type CreateWorkItemRequest struct {
 	RequestId          string                 `protobuf:"bytes,11,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`                                  // idempotency (docs/07 §5.5)
 	WorkflowId         string                 `protobuf:"bytes,12,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`                               // bind to this workflow template; empty = no binding
 	ScheduledStartAt   *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=scheduled_start_at,json=scheduledStartAt,proto3" json:"scheduled_start_at,omitempty"`           // optional scheduled start; null = start immediately if auto_start_workflow
-	AutoStartWorkflow  *bool                  `protobuf:"varint,14,opt,name=auto_start_workflow,json=autoStartWorkflow,proto3,oneof" json:"auto_start_workflow,omitempty"` // default true when unset; set false to defer start
+	AutoStartWorkflow  *bool                  `protobuf:"varint,14,opt,name=auto_start_workflow,json=autoStartWorkflow,proto3,oneof" json:"auto_start_workflow,omitempty"` // default false when unset (opt-in); set true to start immediately on save
 	RuntimeImage       string                 `protobuf:"bytes,15,opt,name=runtime_image,json=runtimeImage,proto3" json:"runtime_image,omitempty"`                         // runtime container image tag; empty = base image
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache

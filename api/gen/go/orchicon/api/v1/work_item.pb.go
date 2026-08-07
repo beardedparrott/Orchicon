@@ -262,7 +262,7 @@ type WorkItem struct {
 	WorkflowRunId      string                 `protobuf:"bytes,22,opt,name=workflow_run_id,json=workflowRunId,proto3" json:"workflow_run_id,omitempty"`                    // active workflow run id (set by WorkflowReconciler on dispatch)
 	WorkflowStepId     string                 `protobuf:"bytes,23,opt,name=workflow_step_id,json=workflowStepId,proto3" json:"workflow_step_id,omitempty"`                 // active workflow step run id (set by WorkflowReconciler on dispatch)
 	ScheduledStartAt   *timestamppb.Timestamp `protobuf:"bytes,20,opt,name=scheduled_start_at,json=scheduledStartAt,proto3" json:"scheduled_start_at,omitempty"`           // scheduled start for bound runs
-	AutoStartWorkflow  *bool                  `protobuf:"varint,21,opt,name=auto_start_workflow,json=autoStartWorkflow,proto3,oneof" json:"auto_start_workflow,omitempty"` // true = auto-start on save; false = manual start only; unset defaults to true
+	AutoStartWorkflow  *bool                  `protobuf:"varint,21,opt,name=auto_start_workflow,json=autoStartWorkflow,proto3,oneof" json:"auto_start_workflow,omitempty"` // true = auto-start on save; false = manual start only; unset defaults to false (opt-in)
 	Priority           int32                  `protobuf:"varint,12,opt,name=priority,proto3" json:"priority,omitempty"`
 	Budgets            string                 `protobuf:"bytes,13,opt,name=budgets,proto3" json:"budgets,omitempty"` // JSON: tokens/cost/time (docs/02 §2.2)
 	ContextWindow      int32                  `protobuf:"varint,14,opt,name=context_window,json=contextWindow,proto3" json:"context_window,omitempty"`

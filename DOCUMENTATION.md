@@ -705,6 +705,8 @@ An execution is only reported `succeeded` when the run completes with the final 
 
 The UI confirms the consequences before saving ("N child items will move under the parent", "Worker assignment and scheduled start will be cleared"). The switch emits a `work_item.kind_changed` outbox event carrying `old_kind` + `new_kind` (plus `work_item.updated` for every reparented child), all in the same transaction. No migration is required — the `kind` CHECK constraint already exists.
 
+**Auto-start is opt-in:** the edit page's **Scheduled start** card (shown for workflow-bound items) has a "Start immediately on save" checkbox that always opens **unchecked** — including legacy items whose stored `auto_start_workflow` is `true` — so saving an edit (a kind switch or any other change) never starts a workflow run unless the user explicitly checks the box. New items default `auto_start_workflow = false` (server default + the `work_items` column default, migration `20260807120000_work_item_auto_start_default_false.sql`). The server also refuses to auto-start on any kind switch unless `autoStartWorkflow=true` is sent in the same request. Scheduled runs are unaffected: `ScheduledRunReconciler` fires on `scheduled_start_at IS NOT NULL`, independent of `auto_start_workflow`.
+
 #### Work Items page (tree + kanban board)
 The **Work Items** list page has two views sharing one filter bar, selection set, and auto-refresh loop:
 
