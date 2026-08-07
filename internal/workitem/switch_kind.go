@@ -142,7 +142,7 @@ func ResolveKindSwitch(ctx context.Context, tx pgx.Tx, tenantID string, current 
 			}
 			resolvedParent = explicit
 		case current.ParentID != nil:
-			resolvedParent, err = nearestShallowerAncestor(ctx, tx, tenantID, *current.ParentID, newDepth)
+			resolvedParent, err = nearestShallowerAncestor(ctx, tx, tenantID, *current.ParentID, newDepth, projectID)
 			if err != nil {
 				return nil, err
 			}
@@ -196,12 +196,22 @@ func isSchedulableKind(kind string) bool {
 // than newDepth. The chain is strictly shallower, so an ancestor always
 // exists while the item has any parent (the topmost epic is depth 1 and
 // newDepth >= 2 here — newDepth == 1 is handled by the epic branch).
-func nearestShallowerAncestor(ctx context.Context, tx pgx.Tx, tenantID, parentID string, newDepth int) (*string, error) {
+//
+// Every visited ancestor must live in `projectID` — when a kind switch is
+// combined with a project move, a keep-parent resolution must never walk
+// back into the item's OLD project (which would silently write a
+// cross-project parent). The caller's early guard already rejects the
+// keep-parent path unless the current parent lives in the target project;
+// this check is the backstop for a chain that crosses back anyway.
+func nearestShallowerAncestor(ctx context.Context, tx pgx.Tx, tenantID, parentID string, newDepth int, projectID string) (*string, error) {
 	cur := parentID
 	for {
 		parent, err := db.GetWorkItem(ctx, tx, tenantID, cur)
 		if err != nil {
 			return nil, err
+		}
+		if parent.ProjectID != projectID {
+			return nil, fmt.Errorf("ancestor %s is not in project %s; choose the new parent explicitly", parent.ID, projectID)
 		}
 		if kindOrder[parent.Kind] < newDepth {
 			return &parent.ID, nil

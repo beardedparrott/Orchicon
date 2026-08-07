@@ -357,14 +357,34 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 			if fields.ProjectID != nil && *fields.ProjectID != "" {
 				effectiveProject = *fields.ProjectID
 			}
-			if effectiveProject != current.ProjectID && msg.ParentId == nil {
-				// Switching kind AND moving to another project without an
-				// explicit reparent: auto-resolution would walk the OLD
-				// project's ancestor chain, which cannot be carried over.
-				// Match the carried-parent guard — require an explicit
-				// parent in the target project.
-				return nil, connect.NewError(connect.CodeInvalidArgument,
-					errors.New("when switching kind and project together, choose the new parent explicitly"))
+			if effectiveProject != current.ProjectID {
+				// Switching kind AND moving to another project: the
+				// auto-resolution walk-up follows the current ancestor
+				// chain, which must not cross projects. Only a genuine
+				// explicit reparent (a parent different from the current
+				// one) is validated against the target project by
+				// ResolveKindSwitch. Naming no parent, or naming the
+				// current parent, leaves the resolution to walk the OLD
+				// project's chain — unless the current parent already
+				// lives in the target project, the request must choose
+				// the new parent explicitly (matches the carried-parent
+				// guard below).
+				keepCurrent := msg.ParentId != nil && current.ParentID != nil && *msg.ParentId == *current.ParentID
+				explicitForTarget := msg.ParentId != nil && !keepCurrent
+				if !explicitForTarget {
+					carryOK := false
+					if keepCurrent {
+						ok, err := workItemInProject(ctx, ttx.Tx, tenantID, *current.ParentID, effectiveProject)
+						if err != nil {
+							return nil, connect.NewError(connect.CodeInternal, err)
+						}
+						carryOK = ok
+					}
+					if !carryOK {
+						return nil, connect.NewError(connect.CodeInvalidArgument,
+							errors.New("when switching kind and project together, choose the new parent explicitly"))
+					}
+				}
 			}
 			plan, err := ResolveKindSwitch(ctx, ttx.Tx, tenantID, current, newKind, msg.ParentId, effectiveProject)
 			if err != nil {
@@ -395,7 +415,7 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		if err := ValidateParent(ctx, ttx.Tx, tenantID, *msg.ParentId, current.Kind, effectiveProject); err != nil {
 			return nil, mapParentError(err)
 		}
-	} else if fields.ProjectID != nil && *fields.ProjectID != "" && *fields.ProjectID != current.ProjectID && current.ParentID != nil {
+	} else if msg.ParentId == nil && fields.ProjectID != nil && *fields.ProjectID != "" && *fields.ProjectID != current.ProjectID && current.ParentID != nil {
 		// The item is moving to another project WITHOUT an explicit
 		// reparent, so its current parent is carried over. That only
 		// stays consistent if the parent already lives in the target
@@ -430,6 +450,13 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, mapDBError(err)
 	}
+	// A kind switch to a non-schedulable kind clears the schedule itself
+	// (ADR-WIT-2) — the user re-typed the item, they did not ask to start
+	// it now. Without this guard the post-commit auto-start below would
+	// see the cleared schedule and start the run immediately. An explicit
+	// autoStartWorkflow=true in the same request still wins.
+	kindSwitchClearedSchedule := kindSwitchPlan != nil && kindSwitchPlan.ClearScheduledStartAt
+	userExplicitlyAutoStarts := msg.AutoStartWorkflow != nil && *msg.AutoStartWorkflow
 	// Kind switch events: work_item.kind_changed for the switched item
 	// (the authoritative record of the switch, carrying old_kind +
 	// new_kind), work_item.updated for the item itself (covers any other
@@ -464,7 +491,7 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	// time, and auto_start_workflow is true. If a previous run exists it
 	// must be terminal (completed/failed/aborted) — active runs are not
 	// duplicated.
-	if updated.WorkflowID != nil && *updated.WorkflowID != "" && updated.ScheduledStartAt == nil && updated.AutoStartWorkflow && s.startWorkflowFn != nil {
+	if updated.WorkflowID != nil && *updated.WorkflowID != "" && updated.ScheduledStartAt == nil && updated.AutoStartWorkflow && !(kindSwitchClearedSchedule && !userExplicitlyAutoStarts) && s.startWorkflowFn != nil {
 		shouldStart := true
 		if updated.WorkflowRunID != "" {
 			var runStatus string
@@ -904,6 +931,23 @@ func parentIDString(p *string) string {
 		return ""
 	}
 	return *p
+}
+
+// workItemInProject reports whether the work item lives in the given
+// project. Used by the kind-switch early guard: a keep-parent request
+// ("explicit parent == current parent") combined with a project move is
+// only safe when the current parent already lives in the target project,
+// so the auto-resolution walk-up cannot reach back into the old project.
+func workItemInProject(ctx context.Context, tx pgx.Tx, tenantID, id, projectID string) (bool, error) {
+	var p string
+	err := tx.QueryRow(ctx, `SELECT project_id FROM work_items WHERE id = $1 AND tenant_id = $2`, id, tenantID).Scan(&p)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("db: read work item project: %w", err)
+	}
+	return p == projectID, nil
 }
 
 func mapDBError(err error) error {

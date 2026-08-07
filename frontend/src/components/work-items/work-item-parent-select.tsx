@@ -80,12 +80,20 @@ export function WorkItemParentSelect({
   // Only items strictly shallower than the child are valid parents
   // (epic > feature > task > subtask). Self-exclusion is the caller's
   // concern via excludeId.
+  const childDepth = depthForKind(childKind);
   const candidates = useMemo(
     () => filterParentOptions(items, childKind, excludeId, query),
     [items, childKind, excludeId, query],
   );
 
-  const selected = value ? items.find((i) => i.id === value) : undefined;
+  // The selected item only displays when it is still a valid parent for
+  // the current child kind (depth rule). After the kind changes, a parent
+  // that is no longer shallower shows the placeholder instead of a stale
+  // badge — the server auto-resolves such a switch via the walk-up, so
+  // this is presentation only (invariant #1).
+  const selected = value
+    ? items.find((i) => i.id === value && depthForKind(i.kind) < childDepth)
+    : undefined;
 
   // Close on outside click.
   useEffect(() => {

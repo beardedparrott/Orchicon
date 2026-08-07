@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
@@ -228,6 +229,203 @@ func TestKindSwitchChildrenReparentDB(t *testing.T) {
 		t.Fatalf("explicit self-parent should be rejected, got %v", err)
 	}
 }
+
+// TestKindSwitchProjectMoveDB verifies the interaction between a kind
+// switch and a project move (ADR-WIT-1/2 + the carried-parent guard):
+// moving to another project with a kind switch requires a parent in the
+// target project, an explicit NEW parent is honored, a "keep the current
+// parent" request is rejected when the current parent does not live in
+// the target project, and the resolver's walk-up never crosses projects.
+func TestKindSwitchProjectMoveDB(t *testing.T) {
+	pool := validateParentTestPool(t)
+	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
+	s := New(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	projectA := validateParentProject(t, ctx, pool)
+	projectB := validateParentProject(t, ctx, pool)
+
+	epicA := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindEpic, nil)
+	featureA := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindFeature, &epicA.ID)
+	taskA := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &featureA.ID)
+	epicB := validateParentItem(t, ctx, pool, projectB, domain.WorkItemKindEpic, nil)
+
+	update := func(item db.WorkItemRow, mutate func(req *apiv1.UpdateWorkItemRequest)) error {
+		req := connect.NewRequest(&apiv1.UpdateWorkItemRequest{Id: item.ID})
+		mutate(req.Msg)
+		_, err := s.UpdateWorkItem(ctx, req)
+		return err
+	}
+	kind := func(k apiv1.WorkItemKind) *apiv1.WorkItemKind { return &k }
+
+	// 1. Kind switch + project move + explicit NEW parent in the target
+	// project succeeds and reparents to it. (Regression test: the
+	// carried-parent guard used to run after ResolveKindSwitch had
+	// already validated the explicit parent against the target project,
+	// falsely rejecting the request with "parent must be in the same
+	// project".)
+	err := update(taskA, func(m *apiv1.UpdateWorkItemRequest) {
+		m.Kind = kind(apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE)
+		m.ProjectId = strPtr(projectB)
+		m.ParentId = strPtr(epicB.ID)
+	})
+	if err != nil {
+		t.Fatalf("kind switch + project move + explicit parent: %v", err)
+	}
+	cur := readItem(t, pool, taskA.ID)
+	if cur.ProjectID != projectB || cur.Kind != domain.WorkItemKindFeature || cur.ParentID == nil || *cur.ParentID != epicB.ID {
+		t.Fatalf("after switch+move = project %s kind %s parent %v, want project %s kind feature parent %s",
+			cur.ProjectID, cur.Kind, cur.ParentID, projectB, epicB.ID)
+	}
+
+	// 2. Kind switch + project move + no explicit parent is rejected: the
+	// walk-up would resolve an ancestor from the old project.
+	taskNoParent := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &featureA.ID)
+	err = update(taskNoParent, func(m *apiv1.UpdateWorkItemRequest) {
+		m.Kind = kind(apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE)
+		m.ProjectId = strPtr(projectB)
+	})
+	if err == nil || connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("switch+move without a parent should be rejected, got %v", err)
+	}
+
+	// 3. Kind switch + project move + "keep the current parent" (explicit
+	// parent == current parent, which still lives in the OLD project) is
+	// rejected — treating it as a reparent would let the walk-up write a
+	// cross-project parent.
+	taskKeep := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &featureA.ID)
+	err = update(taskKeep, func(m *apiv1.UpdateWorkItemRequest) {
+		m.Kind = kind(apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE)
+		m.ProjectId = strPtr(projectB)
+		m.ParentId = strPtr(featureA.ID) // == current parent, still in project A
+	})
+	if err == nil || connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("switch+move keeping a parent from the old project should be rejected, got %v", err)
+	}
+
+	// 4. Kind switch + project move + keep the current parent when it
+	// ALREADY lives in the target project succeeds (the "parent moved
+	// first" pattern): the walk-up resolves within the target project.
+	epicC := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindEpic, nil)
+	featureC := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindFeature, &epicC.ID)
+	if err := update(epicC, func(m *apiv1.UpdateWorkItemRequest) { m.ProjectId = strPtr(projectB) }); err != nil {
+		t.Fatalf("move epicC to B first: %v", err)
+	}
+	err = update(featureC, func(m *apiv1.UpdateWorkItemRequest) {
+		m.Kind = kind(apiv1.WorkItemKind_WORK_ITEM_KIND_TASK)
+		m.ProjectId = strPtr(projectB)
+		m.ParentId = strPtr(epicC.ID) // == current parent, now in project B
+	})
+	if err != nil {
+		t.Fatalf("switch+move keeping a parent already in the target project: %v", err)
+	}
+	cur = readItem(t, pool, featureC.ID)
+	if cur.ProjectID != projectB || cur.Kind != domain.WorkItemKindTask || cur.ParentID == nil || *cur.ParentID != epicC.ID {
+		t.Fatalf("after keep-parent switch+move = project %s kind %s parent %v, want project %s kind task parent %s",
+			cur.ProjectID, cur.Kind, cur.ParentID, projectB, epicC.ID)
+	}
+
+	// 5. The resolver's walk-up backstop: a keep-parent resolution that
+	// would cross back into the old project is rejected even when this
+	// request does not move the project (the item already lives in B but
+	// its parent chain was left behind when the parent moved back to A).
+	epicD := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindEpic, nil)
+	featureD := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindFeature, &epicD.ID)
+	if err := update(epicD, func(m *apiv1.UpdateWorkItemRequest) { m.ProjectId = strPtr(projectB) }); err != nil {
+		t.Fatalf("move epicD to B: %v", err)
+	}
+	if err := update(featureD, func(m *apiv1.UpdateWorkItemRequest) {
+		m.ProjectId = strPtr(projectB)
+		m.ParentId = strPtr(epicD.ID)
+	}); err != nil {
+		t.Fatalf("move featureD to B keeping parent: %v", err)
+	}
+	if err := update(epicD, func(m *apiv1.UpdateWorkItemRequest) { m.ProjectId = strPtr(projectA) }); err != nil {
+		t.Fatalf("move epicD back to A: %v", err)
+	}
+	err = update(featureD, func(m *apiv1.UpdateWorkItemRequest) {
+		m.Kind = kind(apiv1.WorkItemKind_WORK_ITEM_KIND_TASK)
+		m.ParentId = strPtr(epicD.ID) // == current parent, but the chain now lives in A
+	})
+	if err == nil || connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("keep-parent walk-up crossing projects should be rejected, got %v", err)
+	}
+	cur = readItem(t, pool, featureD.ID)
+	if cur.Kind != domain.WorkItemKindFeature || cur.ProjectID != projectB {
+		t.Fatalf("item should be untouched after rejected switch, kind = %s project = %s", cur.Kind, cur.ProjectID)
+	}
+}
+
+// TestKindSwitchAutoStartDB verifies that a kind switch to a
+// non-schedulable kind (which clears the schedule per ADR-WIT-2) does not
+// trigger the post-commit auto-start — the user re-typed the item, they
+// did not ask to start it now. An explicit autoStartWorkflow=true in the
+// same request still wins.
+func TestKindSwitchAutoStartDB(t *testing.T) {
+	pool := validateParentTestPool(t)
+	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
+	s := New(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	projectA := validateParentProject(t, ctx, pool)
+	epic := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindEpic, nil)
+
+	future := time.Now().Add(24 * time.Hour)
+	mkScheduled := func() db.WorkItemRow {
+		t.Helper()
+		item := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
+		writeItem(t, pool, item.ID, item.Version, db.UpdateWorkItemFields{
+			WorkflowID:        strPtr("wf-kind-switch-test"),
+			ScheduledStartAt:  &future,
+			AutoStartWorkflow: boolPtr(true),
+			Status:            strPtr(domain.WorkItemScheduled),
+		})
+		return readItem(t, pool, item.ID)
+	}
+
+	var started []string
+	s.SetStartWorkflowStarter(func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
+		started = append(started, workItemID)
+		return nil
+	})
+
+	update := func(item db.WorkItemRow, mutate func(req *apiv1.UpdateWorkItemRequest)) error {
+		req := connect.NewRequest(&apiv1.UpdateWorkItemRequest{Id: item.ID})
+		mutate(req.Msg)
+		_, err := s.UpdateWorkItem(ctx, req)
+		return err
+	}
+	kind := func(k apiv1.WorkItemKind) *apiv1.WorkItemKind { return &k }
+
+	// 1. Scheduled, auto-start task switched to a feature: the switch
+	// clears the schedule, so the post-commit auto-start must NOT fire.
+	sched1 := mkScheduled()
+	if err := update(sched1, func(m *apiv1.UpdateWorkItemRequest) {
+		m.Kind = kind(apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE)
+	}); err != nil {
+		t.Fatalf("switch scheduled task → feature: %v", err)
+	}
+	cur := readItem(t, pool, sched1.ID)
+	if cur.ScheduledStartAt != nil {
+		t.Fatalf("scheduled_start_at should be cleared, got %v", cur.ScheduledStartAt)
+	}
+	if len(started) != 0 {
+		t.Fatalf("auto-start fired after kind switch cleared the schedule: %v", started)
+	}
+
+	// 2. Same setup but the request explicitly asks to auto-start: the
+	// explicit request wins and the run starts.
+	sched2 := mkScheduled()
+	if err := update(sched2, func(m *apiv1.UpdateWorkItemRequest) {
+		m.Kind = kind(apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE)
+		m.AutoStartWorkflow = boolPtr(true)
+	}); err != nil {
+		t.Fatalf("switch scheduled task → feature with explicit auto-start: %v", err)
+	}
+	if len(started) != 1 || started[0] != sched2.ID {
+		t.Fatalf("explicit auto-start should fire once for sched2, got %v", started)
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
 
 // TestUpdateWorkItemKindSwitchDB exercises the full UpdateWorkItem handler:
 // kind switching with parent walk-up, child reparenting, schedulability
