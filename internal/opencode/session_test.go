@@ -134,8 +134,8 @@ func TestSubscriptionCloseUnblocks(t *testing.T) {
 	pw.Close()
 }
 
-// TestSessionRunPendingAccounting verifies the per-turn accounting drives
-// completion exactly once.
+// TestSessionRunPendingAccounting verifies completion is driven by
+// session.idle (allTurnsDone), not by per-step signals.
 func TestSessionRunPendingAccounting(t *testing.T) {
 	r := &sessionRun{done: make(chan struct{}), stats: &execStreamState{}}
 
@@ -143,17 +143,17 @@ func TestSessionRunPendingAccounting(t *testing.T) {
 	if r.pendingTurns != 1 {
 		t.Fatalf("pending = %d, want 1", r.pendingTurns)
 	}
-	r.turnCompleted() // goal turn finishes
-	select {
-	case <-r.done:
-		t.Fatal("execution should not finish synchronously (settle window)")
-	case <-time.After(50 * time.Millisecond):
+	// A step-finish alone must NOT finish the execution (one user message
+	// can span many steps).
+	if r.isFinished() {
+		t.Fatal("execution finished before session.idle")
 	}
-	// Settle window is 1s; it should finish by then.
+	// session.idle (queue drained) triggers the settle-finish.
+	r.allTurnsDone()
 	select {
 	case <-r.done:
 	case <-time.After(3 * time.Second):
-		t.Fatal("execution did not finish after settle")
+		t.Fatal("execution did not finish after session.idle settle")
 	}
 	r.mu.Lock()
 	fin, o := r.finished, r.resultOk
@@ -164,7 +164,7 @@ func TestSessionRunPendingAccounting(t *testing.T) {
 }
 
 // TestSessionRunAllTurnsDone verifies session.idle force-settles even when
-// a step-finish was missed.
+// a message was missed.
 func TestSessionRunAllTurnsDone(t *testing.T) {
 	r := &sessionRun{done: make(chan struct{}), stats: &execStreamState{}}
 	r.bumpPending()

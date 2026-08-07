@@ -341,6 +341,15 @@ type ConfigOptions struct {
 	// executions that cannot reach the plane's Postgres — workflow runtime
 	// containers are isolated sandboxes with no DB route.
 	OrchiconMCP bool
+	// SkipUserMCP omits the operator's opencode-config MCP servers from the
+	// injected config. Required for the runtime-container serve: a SERVE
+	// eagerly connects to every configured MCP server at startup, and the
+	// operator's entries (e.g. an `orchicon` MCP that `docker exec`s into
+	// a container, or a local node-based Playwright MCP) cannot run inside
+	// the sandbox — an unresolvable MCP hangs the serve's event loop, so
+	// the published port never answers. The one-shot `opencode run` path
+	// tolerates MCP failures and keeps them.
+	SkipUserMCP bool
 }
 
 // BuildConfigContent builds the JSON string for the OPENCODE_CONFIG_CONTENT
@@ -370,12 +379,14 @@ func BuildConfigContent(o ConfigOptions) string {
 
 	// Merge MCP servers: the user's own opencode-config servers first,
 	// then the built-in Orchicon MCP (unless the user already defines one
-	// named `orchicon` — respect their explicit choice).
-	// We use a package-level logger since config is read at startup time.
+	// named `orchicon` — respect their explicit choice). SkipUserMCP
+	// omits the user's servers entirely (runtime-container serve).
 	mcp := map[string]any{}
-	if mcpServers := readMCPServers(slog.Default()); len(mcpServers) > 0 {
-		for k, v := range mcpServers {
-			mcp[k] = v
+	if !o.SkipUserMCP {
+		if mcpServers := readMCPServers(slog.Default()); len(mcpServers) > 0 {
+			for k, v := range mcpServers {
+				mcp[k] = v
+			}
 		}
 	}
 	if o.OrchiconMCP && o.TenantID != "" {

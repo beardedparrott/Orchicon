@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,7 +49,8 @@ type AgentEvent struct {
 	Error    string `json:"error,omitempty"`
 	Alive    bool   `json:"alive,omitempty"`
 	Pong     bool   `json:"pong,omitempty"`
-	Port     int    `json:"port,omitempty"` // serve cmd: the container-internal serve port
+	Port     int    `json:"port,omitempty"`     // serve cmd: the container-internal serve port
+	Password string `json:"password,omitempty"` // serve cmd: the container's serve password
 }
 
 // DefaultAgentSocket is the in-container path of the supervisor's unix
@@ -162,6 +165,11 @@ type childRegistry struct {
 	mu  sync.Mutex
 	log *slog.Logger
 	cmd map[string]*execSession
+	// servePw is the container's opencode serve password, generated once
+	// by the supervisor on first serve startup and reused for the
+	// container's lifetime so idempotent serve handshakes return a stable
+	// credential.
+	servePw string
 }
 
 func newChildRegistry(log *slog.Logger) *childRegistry {
@@ -301,15 +309,25 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 	const serveExecID = "__orchicon_serve__"
 	h.mu.Lock()
 	if existing, ok := h.cmd[serveExecID]; ok {
+		// Serve already up: return the stable port + password. Idempotent
+		// — the plane re-Creates the runtime on every dispatch, and the
+		// container (created earlier by the WorkflowReconciler without a
+		// serve) must converge to the same serve on the first dispatch.
+		pw := h.servePw
 		h.mu.Unlock()
-		_ = enc.Encode(AgentEvent{Event: "serve", Port: defaultServePort})
-		_ = existing  // serve already up; report the port
+		_ = existing
+		_ = enc.Encode(AgentEvent{Event: "serve", Port: defaultServePort, Password: pw})
 		return
+	}
+	pw := h.servePw
+	if pw == "" {
+		pw = randomServePassword()
+		h.servePw = pw
 	}
 	h.mu.Unlock()
 
 	if len(req.Argv) == 0 {
-		req.Argv = []string{"opencode", "serve", "--hostname", "127.0.0.1", "--port", fmt.Sprintf("%d", defaultServePort)}
+		req.Argv = []string{"opencode", "serve", "--hostname", "0.0.0.0", "--port", fmt.Sprintf("%d", defaultServePort)}
 	}
 	base := filepath.Base(req.Argv[0])
 	if !runtimeBinAllowlist[base] {
@@ -325,6 +343,7 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 		cmd.Dir = req.Cwd
 	}
 	env := agentEnv(req)
+	env = setEnv(env, "OPENCODE_SERVER_PASSWORD", pw)
 	env = isolateOpenCodeData(env)
 	// The serve runs the agent's tools, so the same safety guard applies:
 	// destructive commands are refused even from worker subprocesses.
@@ -353,14 +372,13 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 	s.cmd = cmd
 	go h.watchExec(s)
 
-	// Wait for the serve to answer /global/health with the request's
-	// password, so the plane never races a half-initialized serve.
-	password := servePassword(req.Env)
+	// Wait for the serve to answer /global/health with the password, so
+	// the plane never races a half-initialized serve.
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		if serveHealthy(defaultServePort, password) {
+		if serveHealthy(defaultServePort, pw) {
 			h.log.Info("runtime opencode serve ready", "port", defaultServePort, "pid", cmd.Process.Pid)
-			_ = enc.Encode(AgentEvent{Event: "serve", Port: defaultServePort})
+			_ = enc.Encode(AgentEvent{Event: "serve", Port: defaultServePort, Password: pw})
 			return
 		}
 		select {
@@ -374,20 +392,18 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 	_ = enc.Encode(AgentEvent{Event: "error", Error: "serve did not become ready within 30s"})
 }
 
+// randomServePassword returns a hex password for the container's serve.
+func randomServePassword() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "orchicon-serve"
+	}
+	return hex.EncodeToString(b)
+}
+
 // defaultServePort is the container-internal port the serve binds (and
 // the daemon publishes to a random host loopback port).
 const defaultServePort = 4096
-
-// servePassword extracts the OPENCODE_SERVER_PASSWORD value from a request
-// env (the daemon generates it and passes it in).
-func servePassword(env []string) string {
-	for _, kv := range env {
-		if strings.HasPrefix(kv, "OPENCODE_SERVER_PASSWORD=") {
-			return strings.TrimPrefix(kv, "OPENCODE_SERVER_PASSWORD=")
-		}
-	}
-	return ""
-}
 
 // serveHealthy reports whether the in-container serve answers
 // /global/health on the given port with basic auth.
@@ -745,6 +761,11 @@ func RunClient(socketPath string, in io.Reader, out io.Writer) (int, error) {
 		}
 		_ = outEnc.Encode(ev)
 		if ev.Pong {
+			return 0, nil
+		}
+		if ev.Event == "serve" {
+			// The supervisor answered the serve request with the port;
+			// relay the event and exit cleanly.
 			return 0, nil
 		}
 		if ev.Event == "status" {

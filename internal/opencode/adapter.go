@@ -154,7 +154,14 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 		if resp.ServePort == 0 || resp.ServePassword == "" {
 			return nil
 		}
-		return NewSessionClient(fmt.Sprintf("http://127.0.0.1:%d", resp.ServePort), resp.ServePassword, manifest.ProjectDir)
+		// The daemon returns the plane-reachable base URL (the docker
+		// bridge gateway, reachable from a containerized plane). Fall back
+		// to loopback for host-plane deployments.
+		baseURL := resp.ServeURL
+		if baseURL == "" {
+			baseURL = fmt.Sprintf("http://127.0.0.1:%d", resp.ServePort)
+		}
+		return NewSessionClient(baseURL, resp.ServePassword, manifest.ProjectDir)
 	}
 	if a.host != nil {
 		return a.host.Client()
@@ -163,16 +170,20 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 }
 
 // runtimeServeConfig builds the OPENCODE_CONFIG_CONTENT for a runtime
-// container's serve: the permission rules + the operator's MCP servers,
-// with the Orchicon MCP deliberately disabled (runtime containers are
-// isolated sandboxes with no route to the plane's Postgres). Worker
-// system prompts ride the per-message `system` field instead.
+// container's serve: the permission rules only, with the operator's MCP
+// servers omitted — a SERVE eagerly connects to every configured MCP
+// server at startup, and the operator's entries (an `orchicon` MCP that
+// docker execs, a local Playwright MCP) cannot run inside the sandbox,
+// which would hang the serve (the one-shot run path tolerates MCP
+// failures and keeps them). Worker system prompts ride the per-message
+// `system` field instead.
 func (a *Adapter) runtimeServeConfig(manifest scheduler.ExecutionManifest) string {
 	return BuildConfigContent(ConfigOptions{
 		AgentName:   workerAgent,
 		AgentPrompt: "",
 		ModelRef:    "",
 		OrchiconMCP: false,
+		SkipUserMCP: true,
 	})
 }
 
@@ -458,12 +469,29 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// available (degradation).
 	if a.sessionsEnabled(manifest) {
 		if client := a.sessionClientFor(ctx, manifest); client != nil {
-			err := a.startViaSession(ctx, procCtx, execRow, manifest, callbacks, client, modelRef)
-			if err == nil {
-				return nil
+			// The serve converges within a minute of its container
+			// starting (cold start: providers/MCP + the docker-proxy
+			// settling). Retry the session setup with backoff instead of
+			// falling back to a one-shot at the first hiccup.
+			var lastErr error
+			for attempt := 0; attempt < 4; attempt++ {
+				if attempt > 0 {
+					select {
+					case <-ctx.Done():
+						break
+					case <-time.After(time.Duration(attempt) * 2 * time.Second):
+					}
+				}
+				if err := a.startViaSession(ctx, procCtx, execRow, manifest, callbacks, client, modelRef); err == nil {
+					return nil
+				} else {
+					lastErr = err
+					a.log.Info("session transport setup attempt failed — retrying",
+						"execution", execRow.ID, "attempt", attempt+1, "max", 4, "error", err)
+				}
 			}
 			a.log.Warn("session transport setup failed — falling back to one-shot run",
-				"execution", execRow.ID, "error", err)
+				"execution", execRow.ID, "error", lastErr)
 		}
 	}
 

@@ -105,9 +105,11 @@ func (c *SessionClient) Healthy(ctx context.Context) bool {
 // CreateSession creates a session on the serve, scoped to the client's
 // directory. The permission ruleset mirrors `opencode run`'s non-interactive
 // mode: the agent may never ask for permission or enter/exit plan mode, so
-// an unattended execution can't block on a prompt.
+// an unattended execution can't block on a prompt. A generous timeout
+// absorbs the serve's cold-start window (providers/MCP load) on the first
+// dispatch after a runtime container starts.
 func (c *SessionClient) CreateSession(ctx context.Context, title string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	body := map[string]any{
 		"title": title,

@@ -104,9 +104,28 @@ const livenessProbeText = "Do NOT stop or restart your task. This is a liveness 
 // the legacy one-shot subprocess path.
 func (r *sessionRun) run() error {
 	client := r.client
-	sid, err := client.CreateSession(r.parentCtx, r.execRow.ID)
-	if err != nil {
-		return fmt.Errorf("create session: %w", err)
+	// The durable transcript writer must be set before any recordPart
+	// (the session_info entry is the first one).
+	r.store = r.a.sessionStore
+
+	// The serve's published port can be refused for a beat after the
+	// docker-proxy binds it; retry the session create briefly so a
+	// converging serve doesn't trip the one-shot fallback.
+	var sid string
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		sid, err = client.CreateSession(r.parentCtx, r.execRow.ID)
+		if err == nil {
+			break
+		}
+		if attempt == 2 {
+			return fmt.Errorf("create session: %w", err)
+		}
+		select {
+		case <-r.parentCtx.Done():
+			return fmt.Errorf("create session: %w", r.parentCtx.Err())
+		case <-time.After(time.Duration(attempt+1) * time.Second):
+		}
 	}
 	r.sessionID = sid
 	r.a.log.Info("opencode session created", "execution", r.execRow.ID, "session", sid, "serve", client.BaseURL())
@@ -143,7 +162,6 @@ func (r *sessionRun) run() error {
 
 	// Durable transcript: flush every few seconds so a crash loses at most
 	// the trailing batch, and once at finish.
-	r.store = r.a.sessionStore
 	if r.store != nil {
 		go r.flushLoop()
 	}
@@ -218,26 +236,29 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		}
 		return
 	case "session.idle":
-		// Fires when ALL queued prompts are answered (the server drains
-		// its per-session queue, then goes idle). Belt-and-suspenders to
-		// the per-turn step-finish accounting: force the outstanding
-		// counter to zero and settle so a missed step-finish can't strand
-		// an execution.
+		// The server emits idle only when its per-session queue has fully
+		// drained — EVERY message we sent (goal, nudges, human) has been
+		// answered. This is the completion signal (a single user message
+		// can span multiple steps/tool loops, so step-finish alone is not
+		// a turn boundary).
+		r.resolveProbe()
 		r.allTurnsDone()
 		return
 	case "session.status":
-		// Lifecycle signal; completion is tracked via step-finish + idle.
+		// Lifecycle signal; completion is tracked via session.idle.
 		return
 	case "session.error":
 		r.recordStreamError(evt)
 		return
 	}
 	if legacy, ok := legacyEventFromBus(evt); ok {
+		// ANY telemetry activity (text/tool/step/reasoning) after a probe
+		// is evidence the worker is alive — resolve the probe and revive
+		// without waiting for a full turn (the false-positive case: an
+		// analyst producing output but not touching files).
+		r.resolveProbe()
 		r.a.parseEvent(r.parentCtx, r.execRow, r.manifest, legacy, r.callbacks,
 			r.monitor, &r.output, &r.lastStreamErr, &r.textSeq, r.stats)
-		if t, _ := legacy["type"].(string); t == evtStepFinish {
-			r.turnCompleted()
-		}
 		// Record the raw part for the durable transcript.
 		if t, _ := legacy["type"].(string); t != "" {
 			r.recordPart(t, map[string]any{"part": legacy["part"], "error": legacy["error"]})
@@ -302,32 +323,26 @@ func (r *sessionRun) flushParts() {
 	}
 }
 
-// turnCompleted runs when a turn finishes (a step-finish event). It
-// decrements the outstanding-turn counter, resolves a pending liveness
-// probe, and — when every sent message has been answered — finishes the
-// execution after a short settle window (so a just-arrived human message
-// can still register).
-func (r *sessionRun) turnCompleted() {
+// resolveProbe clears a pending liveness probe and revives the execution
+// (the advisory stall notice clears and every stall window restarts). A
+// probe is resolved by the worker producing ANY activity after it was
+// sent, or by the whole queue draining (session.idle). This is the
+// active-prompt-bump semantics: the worker does not need to answer a full
+// turn to prove liveness — continued output is proof enough.
+func (r *sessionRun) resolveProbe() {
 	r.mu.Lock()
-	// Any turn completing after the probe was sent is evidence the worker
-	// is alive (the queued goal turn finishing IS progress). Resolve the
-	// probe and revive the execution even though the worker may still not
-	// have touched files — the probe reply is direct proof of liveness.
-	if r.probePending {
-		r.probePending = false
-		r.lastNudgeAt = time.Now()
-		if r.monitor.revive() {
-			r.callbacks.OnRecovered(r.parentCtx, r.execRow.ID, "recovered:liveness_probe")
-			r.a.log.Info("liveness probe answered — revived", "execution", r.execRow.ID)
-		}
+	if !r.probePending {
+		r.mu.Unlock()
+		return
 	}
-	if r.pendingTurns > 0 {
-		r.pendingTurns--
-	}
-	if r.pendingTurns == 0 && !r.finished {
-		r.settleFinish()
-	}
+	r.probePending = false
+	r.lastNudgeAt = time.Now()
+	revived := r.monitor.revive()
 	r.mu.Unlock()
+	if revived {
+		r.callbacks.OnRecovered(r.parentCtx, r.execRow.ID, "recovered:liveness_probe")
+		r.a.log.Info("liveness probe resolved — revived", "execution", r.execRow.ID)
+	}
 }
 
 // allTurnsDone forces the outstanding-turn counter to zero and settles —
