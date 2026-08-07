@@ -114,21 +114,31 @@ export function MultiSelect<T extends string | number>({
             </DropdownMenuPrimitive.CheckboxItem>
           ))}
           <DropdownMenuPrimitive.Separator className="my-1 h-px bg-border" />
-          <div className="flex items-center justify-between px-2 py-1">
-            <button
-              type="button"
-              onClick={() => onChange(new Set(options.map((o) => o.value)))}
-              className="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring rounded-sm px-1 py-0.5"
+          {/* Footer actions as Radix menu items (not plain buttons): the
+              menu's roving-tabindex arrow-key navigation only reaches
+              registered items, so plain <button>s in the content were
+              unreachable by keyboard. preventDefault keeps the menu open
+              for further multi-select changes, matching the checkbox
+              items above. */}
+          <div className="flex items-center justify-between px-1 py-0.5">
+            <DropdownMenuPrimitive.Item
+              onSelect={(event) => {
+                event.preventDefault();
+                onChange(new Set(options.map((o) => o.value)));
+              }}
+              className="flex cursor-pointer select-none items-center rounded-sm px-2 py-1.5 text-xs font-medium text-muted-foreground outline-none focus:bg-accent focus:text-accent-foreground data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground"
             >
               Select all
-            </button>
-            <button
-              type="button"
-              onClick={() => onChange(new Set())}
-              className="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring rounded-sm px-1 py-0.5"
+            </DropdownMenuPrimitive.Item>
+            <DropdownMenuPrimitive.Item
+              onSelect={(event) => {
+                event.preventDefault();
+                onChange(new Set());
+              }}
+              className="flex cursor-pointer select-none items-center rounded-sm px-2 py-1.5 text-xs font-medium text-muted-foreground outline-none focus:bg-accent focus:text-accent-foreground data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground"
             >
               Clear
-            </button>
+            </DropdownMenuPrimitive.Item>
           </div>
         </DropdownMenuPrimitive.Content>
       </DropdownMenuPrimitive.Portal>

@@ -163,19 +163,19 @@ export function WorkItemsBoard({
       switch (validation.code) {
         case "system-managed":
           toast.info(
-            `"${item.title}" cannot be moved to ${statusMeta(targetStatus).label} via drag. Open the work item to start a workflow.`,
+            `"${item.title}" cannot be moved to ${statusMeta(targetStatus).titleLabel} via drag. Open the work item to start a workflow.`,
             { title: "System-managed status" },
           );
           return;
         case "blocked":
           toast.error(
-            `Cannot move to ${statusMeta(targetStatus).label}: blocked by ${blockingTitles(blockState.blockedBy, item.id)}`,
+            `Cannot move to ${statusMeta(targetStatus).titleLabel}: blocked by ${blockingTitles(blockState.blockedBy, item.id)}`,
             { title: "Blocked" },
           );
           return;
         case "kind":
           toast.error(
-            `"${item.title}" cannot move to ${statusMeta(targetStatus).label}: ${kindMeta(item.kind).label}s only accept ${allowedStatusesForKind(item.kind).map((s) => statusMeta(s).label).join(", ")}.`,
+            `"${item.title}" cannot move to ${statusMeta(targetStatus).titleLabel}: ${kindMeta(item.kind).label}s only accept ${allowedStatusesForKind(item.kind).map((s) => statusMeta(s).titleLabel).join(", ")}.`,
             { title: "Transition not allowed" },
           );
           return;
@@ -185,8 +185,14 @@ export function WorkItemsBoard({
     // Optimistic cache update: immediately move the card to the target
     // column so it doesn't disappear during the mutation. The card will
     // snap back if the server rejects the move.
+    //
+    // `setQueriesData` (not `setQueryData`) with the trimmed prefix key —
+    // the page's live list query is the 4-element key ending in the
+    // `{search,sortBy,sortOrder}` opts object; a bare 3-element
+    // `setQueryData` wrote to a phantom cache entry and the card stayed
+    // in its origin column until the 5s poll refetched.
     const listKey = workItemKeys.list(projectId);
-    qc.setQueryData(listKey, (old: WorkItem[] | undefined) => {
+    qc.setQueriesData({ queryKey: listKey }, (old: WorkItem[] | undefined) => {
       if (!old) return old;
       return old.map((i) =>
         i.id === item.id ? { ...i, status: targetStatus } : i,
@@ -199,12 +205,12 @@ export function WorkItemsBoard({
       {
         onSuccess: (updated) => {
           // Server confirms — update with the real server data
-          qc.setQueryData(listKey, (old: WorkItem[] | undefined) => {
+          qc.setQueriesData({ queryKey: listKey }, (old: WorkItem[] | undefined) => {
             if (!old) return old;
             return old.map((i) => (i.id === updated.id ? updated : i));
           });
           toast.success(
-            `Moved "${updated.title}" to ${statusMeta(updated.status).label}`,
+            `Moved "${updated.title}" to ${statusMeta(updated.status).titleLabel}`,
           );
         },
         onError: () => {
@@ -676,7 +682,7 @@ function MoveToMenu({
       </option>
       {allowed.map((s) => (
         <option key={s} value={s}>
-          {statusMeta(s).label}
+          {statusMeta(s).titleLabel}
         </option>
       ))}
     </select>

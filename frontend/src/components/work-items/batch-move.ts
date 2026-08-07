@@ -68,7 +68,7 @@ export function validateMove(
       reason: `as a ${kindMeta(item.kind).label.toLowerCase()} only accepts ${allowedStatusesForKind(
         item.kind,
       )
-        .map((s) => statusMeta(s).label)
+        .map((s) => statusMeta(s).titleLabel)
         .join(", ")}`,
     };
   }
@@ -133,10 +133,10 @@ export function useBatchMoveWorkItems(projectId: string) {
       if (moveable.length === 0) {
         toast.error(
           skipped.length > 0
-            ? `Nothing moved to ${statusMeta(targetStatus).label}: ${skipped
+            ? `Nothing moved to ${statusMeta(targetStatus).titleLabel}: ${skipped
                 .map((s) => `"${s.title}" ${s.reason}`)
                 .join(", ")}`
-            : `Already in ${statusMeta(targetStatus).label}.`,
+            : `Already in ${statusMeta(targetStatus).titleLabel}.`,
           { title: "Nothing to move" },
         );
         return;
@@ -144,9 +144,17 @@ export function useBatchMoveWorkItems(projectId: string) {
 
       // Optimistic cache update: move the valid cards immediately so the
       // board doesn't flash them back to the origin column.
+      //
+      // `setQueriesData` (not `setQueryData`) with the trimmed prefix key:
+      // the page's live list query uses the 4-element key ending in the
+      // `{search,sortBy,sortOrder}` opts object, so a bare 3-element
+      // `setQueryData` would create a phantom cache entry the board never
+      // reads — cards stayed in the origin column until the 5s poll. The
+      // prefix filter matches the live query (and any other list query
+      // for the project), so the optimistic move actually renders.
       const listKey = workItemKeys.list(projectId);
       const movedIds = new Set(moveable.map((i) => i.id));
-      qc.setQueryData(listKey, (old: WorkItem[] | undefined) => {
+      qc.setQueriesData({ queryKey: listKey }, (old: WorkItem[] | undefined) => {
         if (!old) return old;
         return old.map((i) =>
           movedIds.has(i.id) ? { ...i, status: targetStatus } : i,
@@ -166,7 +174,7 @@ export function useBatchMoveWorkItems(projectId: string) {
           // Server rejected some moves — refetch so the cache shows truth.
           qc.invalidateQueries({ queryKey: listKey });
         }
-        const parts = [`Moved ${movedCount} to ${statusMeta(targetStatus).label}`];
+        const parts = [`Moved ${movedCount} to ${statusMeta(targetStatus).titleLabel}`];
         if (skipped.length > 0) {
           parts.push(
             `Skipped ${skipped.length}: ${skipped.map((s) => `"${s.title}" ${s.reason}`).join(", ")}`,
