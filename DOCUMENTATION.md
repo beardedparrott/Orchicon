@@ -694,6 +694,8 @@ An execution is only reported `succeeded` when the run completes with the final 
 3. Add description, acceptance criteria, and assign a worker
 4. Work items form a DAG with dependency edges (cycle detection enforced)
 
+**Parent / hierarchy editing:** the work item detail page (`/work-items/$id`) shows a **Parent** card for any child — the parent's kind pill + title (linked) in view mode, and a dropdown in edit mode listing candidate parents as `title (kind)` so you can reparent the item. Candidates are the same project's items at a strictly higher level (epic > feature > task > subtask); only epics are top-level, so a child cannot be un-parented and a cross-project move requires a parent in the target project. The same rules are enforced server-side on `CreateWorkItem`/`UpdateWorkItem` (shared `workitem.ValidateParent`) and by the Ask Orchicon `update_work_item` tool.
+
 #### Work Items page (tree + kanban board)
 The **Work Items** list page has two views sharing one filter bar, selection set, and auto-refresh loop:
 
