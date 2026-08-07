@@ -1862,6 +1862,276 @@ func (*CreateFollowUpExecutionResponse) Descriptor() ([]byte, []int) {
 	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{26}
 }
 
+// SendExecutionMessage injects a mid-run human message into a LIVE worker
+// session (Stage 3 session transport). It does NOT create a new
+// execution, work item, or workflow state — the message joins the
+// session's turn queue and the reply streams back through
+// StreamExecutionEvents. Fails when the execution is not running on the
+// session transport.
+type SendExecutionMessageRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ExecutionId   string                 `protobuf:"bytes,1,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SendExecutionMessageRequest) Reset() {
+	*x = SendExecutionMessageRequest{}
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SendExecutionMessageRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SendExecutionMessageRequest) ProtoMessage() {}
+
+func (x *SendExecutionMessageRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SendExecutionMessageRequest.ProtoReflect.Descriptor instead.
+func (*SendExecutionMessageRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *SendExecutionMessageRequest) GetExecutionId() string {
+	if x != nil {
+		return x.ExecutionId
+	}
+	return ""
+}
+
+func (x *SendExecutionMessageRequest) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+type SendExecutionMessageResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SendExecutionMessageResponse) Reset() {
+	*x = SendExecutionMessageResponse{}
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SendExecutionMessageResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SendExecutionMessageResponse) ProtoMessage() {}
+
+func (x *SendExecutionMessageResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SendExecutionMessageResponse.ProtoReflect.Descriptor instead.
+func (*SendExecutionMessageResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{28}
+}
+
+// ExecutionSessionPart is one entry of the durable per-execution session
+// transcript (execution_session_parts).
+type ExecutionSessionPart struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Seq           int64                  `protobuf:"varint,1,opt,name=seq,proto3" json:"seq,omitempty"`
+	Kind          string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`       // user_message | text | tool_use | reasoning | step_start | step_finish | error
+	Payload       []byte                 `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"` // raw opencode part/message JSON
+	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExecutionSessionPart) Reset() {
+	*x = ExecutionSessionPart{}
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecutionSessionPart) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecutionSessionPart) ProtoMessage() {}
+
+func (x *ExecutionSessionPart) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecutionSessionPart.ProtoReflect.Descriptor instead.
+func (*ExecutionSessionPart) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *ExecutionSessionPart) GetSeq() int64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
+func (x *ExecutionSessionPart) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *ExecutionSessionPart) GetPayload() []byte {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *ExecutionSessionPart) GetCreatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return nil
+}
+
+// GetExecutionSession returns the durable transcript for an execution,
+// paginated backwards (before_seq is exclusive).
+type GetExecutionSessionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ExecutionId   string                 `protobuf:"bytes,1,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
+	Limit         int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
+	BeforeSeq     int64                  `protobuf:"varint,3,opt,name=before_seq,json=beforeSeq,proto3" json:"before_seq,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetExecutionSessionRequest) Reset() {
+	*x = GetExecutionSessionRequest{}
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetExecutionSessionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetExecutionSessionRequest) ProtoMessage() {}
+
+func (x *GetExecutionSessionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetExecutionSessionRequest.ProtoReflect.Descriptor instead.
+func (*GetExecutionSessionRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *GetExecutionSessionRequest) GetExecutionId() string {
+	if x != nil {
+		return x.ExecutionId
+	}
+	return ""
+}
+
+func (x *GetExecutionSessionRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *GetExecutionSessionRequest) GetBeforeSeq() int64 {
+	if x != nil {
+		return x.BeforeSeq
+	}
+	return 0
+}
+
+type GetExecutionSessionResponse struct {
+	state         protoimpl.MessageState  `protogen:"open.v1"`
+	Parts         []*ExecutionSessionPart `protobuf:"bytes,1,rep,name=parts,proto3" json:"parts,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetExecutionSessionResponse) Reset() {
+	*x = GetExecutionSessionResponse{}
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetExecutionSessionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetExecutionSessionResponse) ProtoMessage() {}
+
+func (x *GetExecutionSessionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_execution_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetExecutionSessionResponse.ProtoReflect.Descriptor instead.
+func (*GetExecutionSessionResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_execution_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *GetExecutionSessionResponse) GetParts() []*ExecutionSessionPart {
+	if x != nil {
+		return x.Parts
+	}
+	return nil
+}
+
 var File_orchicon_api_v1_execution_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_execution_proto_rawDesc = "" +
@@ -1995,7 +2265,24 @@ const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"\x1eCreateFollowUpExecutionRequest\x12!\n" +
 	"\fexecution_id\x18\x01 \x01(\tR\vexecutionId\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\"!\n" +
-	"\x1fCreateFollowUpExecutionResponse*\xf5\x02\n" +
+	"\x1fCreateFollowUpExecutionResponse\"Z\n" +
+	"\x1bSendExecutionMessageRequest\x12!\n" +
+	"\fexecution_id\x18\x01 \x01(\tR\vexecutionId\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\x1e\n" +
+	"\x1cSendExecutionMessageResponse\"\x91\x01\n" +
+	"\x14ExecutionSessionPart\x12\x10\n" +
+	"\x03seq\x18\x01 \x01(\x03R\x03seq\x12\x12\n" +
+	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x18\n" +
+	"\apayload\x18\x03 \x01(\fR\apayload\x129\n" +
+	"\n" +
+	"created_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"t\n" +
+	"\x1aGetExecutionSessionRequest\x12!\n" +
+	"\fexecution_id\x18\x01 \x01(\tR\vexecutionId\x12\x14\n" +
+	"\x05limit\x18\x02 \x01(\x05R\x05limit\x12\x1d\n" +
+	"\n" +
+	"before_seq\x18\x03 \x01(\x03R\tbeforeSeq\"Z\n" +
+	"\x1bGetExecutionSessionResponse\x12;\n" +
+	"\x05parts\x18\x01 \x03(\v2%.orchicon.api.v1.ExecutionSessionPartR\x05parts*\xf5\x02\n" +
 	"\x0fExecutionStatus\x12 \n" +
 	"\x1cEXECUTION_STATUS_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cEXECUTION_STATUS_DISPATCHING\x10\x01\x12\x1c\n" +
@@ -2043,7 +2330,7 @@ func file_orchicon_api_v1_execution_proto_rawDescGZIP() []byte {
 }
 
 var file_orchicon_api_v1_execution_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_orchicon_api_v1_execution_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
+var file_orchicon_api_v1_execution_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
 var file_orchicon_api_v1_execution_proto_goTypes = []any{
 	(ExecutionStatus)(0),                    // 0: orchicon.api.v1.ExecutionStatus
 	(HealthState)(0),                        // 1: orchicon.api.v1.HealthState
@@ -2075,16 +2362,21 @@ var file_orchicon_api_v1_execution_proto_goTypes = []any{
 	(*ListPendingApprovalsResponse)(nil),    // 27: orchicon.api.v1.ListPendingApprovalsResponse
 	(*CreateFollowUpExecutionRequest)(nil),  // 28: orchicon.api.v1.CreateFollowUpExecutionRequest
 	(*CreateFollowUpExecutionResponse)(nil), // 29: orchicon.api.v1.CreateFollowUpExecutionResponse
-	(*timestamppb.Timestamp)(nil),           // 30: google.protobuf.Timestamp
+	(*SendExecutionMessageRequest)(nil),     // 30: orchicon.api.v1.SendExecutionMessageRequest
+	(*SendExecutionMessageResponse)(nil),    // 31: orchicon.api.v1.SendExecutionMessageResponse
+	(*ExecutionSessionPart)(nil),            // 32: orchicon.api.v1.ExecutionSessionPart
+	(*GetExecutionSessionRequest)(nil),      // 33: orchicon.api.v1.GetExecutionSessionRequest
+	(*GetExecutionSessionResponse)(nil),     // 34: orchicon.api.v1.GetExecutionSessionResponse
+	(*timestamppb.Timestamp)(nil),           // 35: google.protobuf.Timestamp
 }
 var file_orchicon_api_v1_execution_proto_depIdxs = []int32{
 	0,  // 0: orchicon.api.v1.WorkerExecution.status:type_name -> orchicon.api.v1.ExecutionStatus
 	1,  // 1: orchicon.api.v1.WorkerExecution.health_state:type_name -> orchicon.api.v1.HealthState
-	30, // 2: orchicon.api.v1.WorkerExecution.started_at:type_name -> google.protobuf.Timestamp
-	30, // 3: orchicon.api.v1.WorkerExecution.ended_at:type_name -> google.protobuf.Timestamp
+	35, // 2: orchicon.api.v1.WorkerExecution.started_at:type_name -> google.protobuf.Timestamp
+	35, // 3: orchicon.api.v1.WorkerExecution.ended_at:type_name -> google.protobuf.Timestamp
 	2,  // 4: orchicon.api.v1.ExecutionEvent.event_type:type_name -> orchicon.api.v1.ExecutionEventType
-	30, // 5: orchicon.api.v1.ExecutionEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	30, // 6: orchicon.api.v1.ApprovalRequest.requested_at:type_name -> google.protobuf.Timestamp
+	35, // 5: orchicon.api.v1.ExecutionEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	35, // 6: orchicon.api.v1.ApprovalRequest.requested_at:type_name -> google.protobuf.Timestamp
 	3,  // 7: orchicon.api.v1.GetExecutionResponse.execution:type_name -> orchicon.api.v1.WorkerExecution
 	0,  // 8: orchicon.api.v1.ListExecutionsRequest.status:type_name -> orchicon.api.v1.ExecutionStatus
 	3,  // 9: orchicon.api.v1.ListExecutionsResponse.executions:type_name -> orchicon.api.v1.WorkerExecution
@@ -2095,11 +2387,13 @@ var file_orchicon_api_v1_execution_proto_depIdxs = []int32{
 	3,  // 14: orchicon.api.v1.CheckpointNowResponse.execution:type_name -> orchicon.api.v1.WorkerExecution
 	5,  // 15: orchicon.api.v1.ApproveToolCallResponse.approval:type_name -> orchicon.api.v1.ApprovalRequest
 	5,  // 16: orchicon.api.v1.ListPendingApprovalsResponse.approvals:type_name -> orchicon.api.v1.ApprovalRequest
-	17, // [17:17] is the sub-list for method output_type
-	17, // [17:17] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	35, // 17: orchicon.api.v1.ExecutionSessionPart.created_at:type_name -> google.protobuf.Timestamp
+	32, // 18: orchicon.api.v1.GetExecutionSessionResponse.parts:type_name -> orchicon.api.v1.ExecutionSessionPart
+	19, // [19:19] is the sub-list for method output_type
+	19, // [19:19] is the sub-list for method input_type
+	19, // [19:19] is the sub-list for extension type_name
+	19, // [19:19] is the sub-list for extension extendee
+	0,  // [0:19] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_execution_proto_init() }
@@ -2116,7 +2410,7 @@ func file_orchicon_api_v1_execution_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_execution_proto_rawDesc), len(file_orchicon_api_v1_execution_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   27,
+			NumMessages:   32,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -45,6 +45,12 @@ type Service struct {
 	subscriber eventbus.Subscriber
 	apiv1connect.UnimplementedExecutionServiceHandler
 
+	// sendExecMessage routes a mid-run human message into a live session
+	// execution (Stage 3). Injected by the server (wired to the opencode
+	// adapter's SendExecutionMessage); nil when the session transport is
+	// unavailable → SendExecutionMessage returns Unimplemented.
+	sendExecMessage func(ctx context.Context, execID, message string) error
+
 	// In-memory approval registry: pending Tier 2 per-tool-call approval
 	// requests (docs/05 §7.1). Keyed by request_id. When the adapter
 	// emits an ApprovalRequest, the TaskReconciler registers it here;
@@ -52,6 +58,12 @@ type Service struct {
 	// signaled back to the adapter's Execute stream.
 	mu        sync.Mutex
 	approvals map[string]*pendingApproval
+}
+
+// SetSendExecutionMessage injects the live-session message router (the
+// opencode adapter's SendExecutionMessage). Nil = the RPC is unavailable.
+func (s *Service) SetSendExecutionMessage(fn func(ctx context.Context, execID, message string) error) {
+	s.sendExecMessage = fn
 }
 
 // pendingApproval tracks a Tier 2 approval request awaiting a human
@@ -922,6 +934,73 @@ func (s *Service) enrichSystemPrompt(ctx context.Context, tx pgx.Tx, tenantID st
 		return
 	}
 	p.SystemPrompt = meta.Prompt
+}
+
+// SendExecutionMessage injects a mid-run human message into a LIVE worker
+// session. It creates nothing — no execution, no work item, no workflow
+// state — the message joins the session's turn queue and the reply flows
+// back through StreamExecutionEvents. Fails (FailedPrecondition) when the
+// execution has no live session (finished, legacy one-shot path, or the
+// plane restarted).
+func (s *Service) SendExecutionMessage(ctx context.Context, req *connect.Request[apiv1.SendExecutionMessageRequest]) (*connect.Response[apiv1.SendExecutionMessageResponse], error) {
+	if _, err := requireTenant(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	msg := req.Msg
+	if msg.ExecutionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("execution_id must not be empty"))
+	}
+	if strings.TrimSpace(msg.Message) == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message must not be empty"))
+	}
+	if utf8.RuneCountInString(msg.Message) > 10000 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message too long (max 10000 characters)"))
+	}
+	if s.sendExecMessage == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session transport not available"))
+	}
+	if err := s.sendExecMessage(ctx, msg.ExecutionId, msg.Message); err != nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	return connect.NewResponse(&apiv1.SendExecutionMessageResponse{}), nil
+}
+
+// GetExecutionSession returns the durable session transcript for an
+// execution — the full conversation (goal, nudges, human messages,
+// assistant text, tool calls, reasoning, steps, errors) that survives the
+// serve/container lifecycle. It is the source for the post-completion
+// session view and the seed for one-shot follow-ups.
+func (s *Service) GetExecutionSession(ctx context.Context, req *connect.Request[apiv1.GetExecutionSessionRequest]) (*connect.Response[apiv1.GetExecutionSessionResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	msg := req.Msg
+	if msg.ExecutionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("execution_id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	parts, err := db.ListExecutionSessionParts(ctx, ttx.Tx, tenantID, msg.ExecutionId, int(msg.Limit), msg.BeforeSeq)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	resp := &apiv1.GetExecutionSessionResponse{}
+	for _, p := range parts {
+		resp.Parts = append(resp.Parts, &apiv1.ExecutionSessionPart{
+			Seq:       p.Seq,
+			Kind:      p.Kind,
+			Payload:   p.Payload,
+			CreatedAt: timestamppb.New(p.CreatedAt),
+		})
+	}
+	return connect.NewResponse(resp), nil
 }
 
 func strPtr(s string) *string { return &s }

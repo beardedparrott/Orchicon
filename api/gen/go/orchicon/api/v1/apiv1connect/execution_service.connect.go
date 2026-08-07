@@ -75,6 +75,12 @@ const (
 	// ExecutionServiceCreateFollowUpExecutionProcedure is the fully-qualified name of the
 	// ExecutionService's CreateFollowUpExecution RPC.
 	ExecutionServiceCreateFollowUpExecutionProcedure = "/orchicon.api.v1.ExecutionService/CreateFollowUpExecution"
+	// ExecutionServiceSendExecutionMessageProcedure is the fully-qualified name of the
+	// ExecutionService's SendExecutionMessage RPC.
+	ExecutionServiceSendExecutionMessageProcedure = "/orchicon.api.v1.ExecutionService/SendExecutionMessage"
+	// ExecutionServiceGetExecutionSessionProcedure is the fully-qualified name of the
+	// ExecutionService's GetExecutionSession RPC.
+	ExecutionServiceGetExecutionSessionProcedure = "/orchicon.api.v1.ExecutionService/GetExecutionSession"
 )
 
 // ExecutionServiceClient is a client for the orchicon.api.v1.ExecutionService service.
@@ -116,6 +122,15 @@ type ExecutionServiceClient interface {
 	// completed execution. The new execution includes the previous context
 	// (composite prompt + output) plus the user's follow-up message.
 	CreateFollowUpExecution(context.Context, *connect.Request[v1.CreateFollowUpExecutionRequest]) (*connect.Response[v1.CreateFollowUpExecutionResponse], error)
+	// SendExecutionMessage injects a mid-run human message into a LIVE
+	// worker session without creating any new execution/work item/workflow
+	// state (Stage 3). The reply streams back through the normal execution
+	// event stream.
+	SendExecutionMessage(context.Context, *connect.Request[v1.SendExecutionMessageRequest]) (*connect.Response[v1.SendExecutionMessageResponse], error)
+	// GetExecutionSession returns the durable session transcript for an
+	// execution — viewable after completion even when the serve/container
+	// is gone, and the seed for one-shot follow-ups.
+	GetExecutionSession(context.Context, *connect.Request[v1.GetExecutionSessionRequest]) (*connect.Response[v1.GetExecutionSessionResponse], error)
 }
 
 // NewExecutionServiceClient constructs a client for the orchicon.api.v1.ExecutionService service.
@@ -201,6 +216,18 @@ func NewExecutionServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(executionServiceMethods.ByName("CreateFollowUpExecution")),
 			connect.WithClientOptions(opts...),
 		),
+		sendExecutionMessage: connect.NewClient[v1.SendExecutionMessageRequest, v1.SendExecutionMessageResponse](
+			httpClient,
+			baseURL+ExecutionServiceSendExecutionMessageProcedure,
+			connect.WithSchema(executionServiceMethods.ByName("SendExecutionMessage")),
+			connect.WithClientOptions(opts...),
+		),
+		getExecutionSession: connect.NewClient[v1.GetExecutionSessionRequest, v1.GetExecutionSessionResponse](
+			httpClient,
+			baseURL+ExecutionServiceGetExecutionSessionProcedure,
+			connect.WithSchema(executionServiceMethods.ByName("GetExecutionSession")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -218,6 +245,8 @@ type executionServiceClient struct {
 	deleteExecution         *connect.Client[v1.DeleteExecutionRequest, v1.DeleteExecutionResponse]
 	batchDeleteExecutions   *connect.Client[v1.BatchDeleteExecutionsRequest, v1.BatchDeleteExecutionsResponse]
 	createFollowUpExecution *connect.Client[v1.CreateFollowUpExecutionRequest, v1.CreateFollowUpExecutionResponse]
+	sendExecutionMessage    *connect.Client[v1.SendExecutionMessageRequest, v1.SendExecutionMessageResponse]
+	getExecutionSession     *connect.Client[v1.GetExecutionSessionRequest, v1.GetExecutionSessionResponse]
 }
 
 // GetExecution calls orchicon.api.v1.ExecutionService.GetExecution.
@@ -280,6 +309,16 @@ func (c *executionServiceClient) CreateFollowUpExecution(ctx context.Context, re
 	return c.createFollowUpExecution.CallUnary(ctx, req)
 }
 
+// SendExecutionMessage calls orchicon.api.v1.ExecutionService.SendExecutionMessage.
+func (c *executionServiceClient) SendExecutionMessage(ctx context.Context, req *connect.Request[v1.SendExecutionMessageRequest]) (*connect.Response[v1.SendExecutionMessageResponse], error) {
+	return c.sendExecutionMessage.CallUnary(ctx, req)
+}
+
+// GetExecutionSession calls orchicon.api.v1.ExecutionService.GetExecutionSession.
+func (c *executionServiceClient) GetExecutionSession(ctx context.Context, req *connect.Request[v1.GetExecutionSessionRequest]) (*connect.Response[v1.GetExecutionSessionResponse], error) {
+	return c.getExecutionSession.CallUnary(ctx, req)
+}
+
 // ExecutionServiceHandler is an implementation of the orchicon.api.v1.ExecutionService service.
 type ExecutionServiceHandler interface {
 	// GetExecution returns a single execution by id.
@@ -319,6 +358,15 @@ type ExecutionServiceHandler interface {
 	// completed execution. The new execution includes the previous context
 	// (composite prompt + output) plus the user's follow-up message.
 	CreateFollowUpExecution(context.Context, *connect.Request[v1.CreateFollowUpExecutionRequest]) (*connect.Response[v1.CreateFollowUpExecutionResponse], error)
+	// SendExecutionMessage injects a mid-run human message into a LIVE
+	// worker session without creating any new execution/work item/workflow
+	// state (Stage 3). The reply streams back through the normal execution
+	// event stream.
+	SendExecutionMessage(context.Context, *connect.Request[v1.SendExecutionMessageRequest]) (*connect.Response[v1.SendExecutionMessageResponse], error)
+	// GetExecutionSession returns the durable session transcript for an
+	// execution — viewable after completion even when the serve/container
+	// is gone, and the seed for one-shot follow-ups.
+	GetExecutionSession(context.Context, *connect.Request[v1.GetExecutionSessionRequest]) (*connect.Response[v1.GetExecutionSessionResponse], error)
 }
 
 // NewExecutionServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -400,6 +448,18 @@ func NewExecutionServiceHandler(svc ExecutionServiceHandler, opts ...connect.Han
 		connect.WithSchema(executionServiceMethods.ByName("CreateFollowUpExecution")),
 		connect.WithHandlerOptions(opts...),
 	)
+	executionServiceSendExecutionMessageHandler := connect.NewUnaryHandler(
+		ExecutionServiceSendExecutionMessageProcedure,
+		svc.SendExecutionMessage,
+		connect.WithSchema(executionServiceMethods.ByName("SendExecutionMessage")),
+		connect.WithHandlerOptions(opts...),
+	)
+	executionServiceGetExecutionSessionHandler := connect.NewUnaryHandler(
+		ExecutionServiceGetExecutionSessionProcedure,
+		svc.GetExecutionSession,
+		connect.WithSchema(executionServiceMethods.ByName("GetExecutionSession")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/orchicon.api.v1.ExecutionService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ExecutionServiceGetExecutionProcedure:
@@ -426,6 +486,10 @@ func NewExecutionServiceHandler(svc ExecutionServiceHandler, opts ...connect.Han
 			executionServiceBatchDeleteExecutionsHandler.ServeHTTP(w, r)
 		case ExecutionServiceCreateFollowUpExecutionProcedure:
 			executionServiceCreateFollowUpExecutionHandler.ServeHTTP(w, r)
+		case ExecutionServiceSendExecutionMessageProcedure:
+			executionServiceSendExecutionMessageHandler.ServeHTTP(w, r)
+		case ExecutionServiceGetExecutionSessionProcedure:
+			executionServiceGetExecutionSessionHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -481,4 +545,12 @@ func (UnimplementedExecutionServiceHandler) BatchDeleteExecutions(context.Contex
 
 func (UnimplementedExecutionServiceHandler) CreateFollowUpExecution(context.Context, *connect.Request[v1.CreateFollowUpExecutionRequest]) (*connect.Response[v1.CreateFollowUpExecutionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.ExecutionService.CreateFollowUpExecution is not implemented"))
+}
+
+func (UnimplementedExecutionServiceHandler) SendExecutionMessage(context.Context, *connect.Request[v1.SendExecutionMessageRequest]) (*connect.Response[v1.SendExecutionMessageResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.ExecutionService.SendExecutionMessage is not implemented"))
+}
+
+func (UnimplementedExecutionServiceHandler) GetExecutionSession(context.Context, *connect.Request[v1.GetExecutionSessionRequest]) (*connect.Response[v1.GetExecutionSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.ExecutionService.GetExecutionSession is not implemented"))
 }

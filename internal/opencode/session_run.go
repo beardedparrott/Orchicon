@@ -51,6 +51,13 @@ type sessionRun struct {
 	lastNudgeAt   time.Time
 	probeDeadline time.Time
 	probePending  bool
+
+	// Durable transcript (execution_session_parts): recorded as events
+	// arrive, flushed in batches by a background goroutine and at finish.
+	store        SessionStoreFunc
+	muParts      sync.Mutex
+	seq          int64
+	pendingParts []db.SessionPart
 }
 
 // Nudge tuning (env-overridable; default matches the advisory no-file
@@ -128,6 +135,14 @@ func (r *sessionRun) run() error {
 	)
 	defer r.monitor.close()
 
+	// Durable transcript: flush every few seconds so a crash loses at most
+	// the trailing batch, and once at finish.
+	r.store = r.a.sessionStore
+	if r.store != nil {
+		go r.flushLoop()
+	}
+	defer r.flushParts()
+
 	// SSE event subscription (auto-reconnecting so a serve restart or
 	// transport blip doesn't lose the stream).
 	r.subCtx, r.subCancel = context.WithCancel(r.parentCtx)
@@ -157,6 +172,7 @@ func (r *sessionRun) run() error {
 		return fmt.Errorf("send goal: %w", err)
 	}
 	r.bumpPending()
+	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": r.manifest.Goal, "source": "goal"})
 	r.a.log.Info("opencode session goal sent", "execution", r.execRow.ID, "session", sid)
 
 	<-r.done
@@ -213,12 +229,70 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 	if legacy, ok := legacyEventFromBus(evt); ok {
 		r.a.parseEvent(r.parentCtx, r.execRow, r.manifest, legacy, r.callbacks,
 			r.monitor, &r.output, &r.lastStreamErr, &r.textSeq, r.stats)
-		// One step-finish per turn (verified against the opencode 1.18.13
-		// server: two queued prompts → two step-finishes, one session.idle
-		// at the end). Every completed turn answers one of our messages.
 		if t, _ := legacy["type"].(string); t == evtStepFinish {
 			r.turnCompleted()
 		}
+		// Record the raw part for the durable transcript.
+		if t, _ := legacy["type"].(string); t != "" {
+			r.recordPart(t, map[string]any{"part": legacy["part"], "error": legacy["error"]})
+		}
+	}
+}
+
+// recordPart appends one transcript entry to the pending batch.
+func (r *sessionRun) recordPart(kind string, payload any) {
+	if r.store == nil {
+		return
+	}
+	r.muParts.Lock()
+	defer r.muParts.Unlock()
+	r.seq++
+	r.pendingParts = append(r.pendingParts, db.SessionPart{
+		ExecutionID: r.execRow.ID,
+		TenantID:    r.execRow.TenantID,
+		Seq:         r.seq,
+		Kind:        kind,
+		Payload:     db.MarshalPartPayload(payload),
+	})
+}
+
+// recordHumanMessage records a mid-run human message (SendExecutionMessage).
+func (r *sessionRun) recordHumanMessage(text string) {
+	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": text, "source": "human"})
+}
+
+// flushLoop periodically flushes the pending transcript batch.
+func (r *sessionRun) flushLoop() {
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-r.parentCtx.Done():
+			return
+		case <-r.done:
+			return
+		case <-t.C:
+			r.flushParts()
+		}
+	}
+}
+
+// flushParts persists the pending transcript batch (best-effort — a write
+// failure loses at most the trailing batch and never blocks control flow).
+func (r *sessionRun) flushParts() {
+	if r.store == nil {
+		return
+	}
+	r.muParts.Lock()
+	if len(r.pendingParts) == 0 {
+		r.muParts.Unlock()
+		return
+	}
+	batch := r.pendingParts
+	r.pendingParts = nil
+	r.muParts.Unlock()
+	if err := r.store(r.parentCtx, r.execRow.ID, r.execRow.TenantID, batch); err != nil {
+		r.a.log.Warn("session transcript write failed", "execution", r.execRow.ID, "error", err)
 	}
 }
 
@@ -346,6 +420,7 @@ func (r *sessionRun) maybeNudge(reason string) {
 		return
 	}
 	r.bumpPending()
+	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": livenessProbeText, "source": "nudge"})
 
 	// Verdict: no reply within the window → the worker is not responding
 	// → fail + recover (the true-hang case).

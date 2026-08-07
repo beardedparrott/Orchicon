@@ -1573,3 +1573,235 @@ export class CreateFollowUpExecutionResponse extends Message<CreateFollowUpExecu
   }
 }
 
+/**
+ * SendExecutionMessage injects a mid-run human message into a LIVE worker
+ * session (Stage 3 session transport). It does NOT create a new
+ * execution, work item, or workflow state — the message joins the
+ * session's turn queue and the reply streams back through
+ * StreamExecutionEvents. Fails when the execution is not running on the
+ * session transport.
+ *
+ * @generated from message orchicon.api.v1.SendExecutionMessageRequest
+ */
+export class SendExecutionMessageRequest extends Message<SendExecutionMessageRequest> {
+  /**
+   * @generated from field: string execution_id = 1;
+   */
+  executionId = "";
+
+  /**
+   * @generated from field: string message = 2;
+   */
+  message = "";
+
+  constructor(data?: PartialMessage<SendExecutionMessageRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SendExecutionMessageRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "execution_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "message", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SendExecutionMessageRequest {
+    return new SendExecutionMessageRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SendExecutionMessageRequest {
+    return new SendExecutionMessageRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SendExecutionMessageRequest {
+    return new SendExecutionMessageRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SendExecutionMessageRequest | PlainMessage<SendExecutionMessageRequest> | undefined, b: SendExecutionMessageRequest | PlainMessage<SendExecutionMessageRequest> | undefined): boolean {
+    return proto3.util.equals(SendExecutionMessageRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.SendExecutionMessageResponse
+ */
+export class SendExecutionMessageResponse extends Message<SendExecutionMessageResponse> {
+  constructor(data?: PartialMessage<SendExecutionMessageResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SendExecutionMessageResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SendExecutionMessageResponse {
+    return new SendExecutionMessageResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SendExecutionMessageResponse {
+    return new SendExecutionMessageResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SendExecutionMessageResponse {
+    return new SendExecutionMessageResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SendExecutionMessageResponse | PlainMessage<SendExecutionMessageResponse> | undefined, b: SendExecutionMessageResponse | PlainMessage<SendExecutionMessageResponse> | undefined): boolean {
+    return proto3.util.equals(SendExecutionMessageResponse, a, b);
+  }
+}
+
+/**
+ * ExecutionSessionPart is one entry of the durable per-execution session
+ * transcript (execution_session_parts).
+ *
+ * @generated from message orchicon.api.v1.ExecutionSessionPart
+ */
+export class ExecutionSessionPart extends Message<ExecutionSessionPart> {
+  /**
+   * @generated from field: int64 seq = 1;
+   */
+  seq = protoInt64.zero;
+
+  /**
+   * user_message | text | tool_use | reasoning | step_start | step_finish | error
+   *
+   * @generated from field: string kind = 2;
+   */
+  kind = "";
+
+  /**
+   * raw opencode part/message JSON
+   *
+   * @generated from field: bytes payload = 3;
+   */
+  payload = new Uint8Array(0);
+
+  /**
+   * @generated from field: google.protobuf.Timestamp created_at = 4;
+   */
+  createdAt?: Timestamp;
+
+  constructor(data?: PartialMessage<ExecutionSessionPart>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ExecutionSessionPart";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "seq", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 2, name: "kind", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "payload", kind: "scalar", T: 12 /* ScalarType.BYTES */ },
+    { no: 4, name: "created_at", kind: "message", T: Timestamp },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ExecutionSessionPart {
+    return new ExecutionSessionPart().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ExecutionSessionPart {
+    return new ExecutionSessionPart().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ExecutionSessionPart {
+    return new ExecutionSessionPart().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ExecutionSessionPart | PlainMessage<ExecutionSessionPart> | undefined, b: ExecutionSessionPart | PlainMessage<ExecutionSessionPart> | undefined): boolean {
+    return proto3.util.equals(ExecutionSessionPart, a, b);
+  }
+}
+
+/**
+ * GetExecutionSession returns the durable transcript for an execution,
+ * paginated backwards (before_seq is exclusive).
+ *
+ * @generated from message orchicon.api.v1.GetExecutionSessionRequest
+ */
+export class GetExecutionSessionRequest extends Message<GetExecutionSessionRequest> {
+  /**
+   * @generated from field: string execution_id = 1;
+   */
+  executionId = "";
+
+  /**
+   * @generated from field: int32 limit = 2;
+   */
+  limit = 0;
+
+  /**
+   * @generated from field: int64 before_seq = 3;
+   */
+  beforeSeq = protoInt64.zero;
+
+  constructor(data?: PartialMessage<GetExecutionSessionRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GetExecutionSessionRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "execution_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "limit", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 3, name: "before_seq", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetExecutionSessionRequest {
+    return new GetExecutionSessionRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetExecutionSessionRequest {
+    return new GetExecutionSessionRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetExecutionSessionRequest {
+    return new GetExecutionSessionRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetExecutionSessionRequest | PlainMessage<GetExecutionSessionRequest> | undefined, b: GetExecutionSessionRequest | PlainMessage<GetExecutionSessionRequest> | undefined): boolean {
+    return proto3.util.equals(GetExecutionSessionRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.GetExecutionSessionResponse
+ */
+export class GetExecutionSessionResponse extends Message<GetExecutionSessionResponse> {
+  /**
+   * @generated from field: repeated orchicon.api.v1.ExecutionSessionPart parts = 1;
+   */
+  parts: ExecutionSessionPart[] = [];
+
+  constructor(data?: PartialMessage<GetExecutionSessionResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GetExecutionSessionResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "parts", kind: "message", T: ExecutionSessionPart, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetExecutionSessionResponse {
+    return new GetExecutionSessionResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetExecutionSessionResponse {
+    return new GetExecutionSessionResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetExecutionSessionResponse {
+    return new GetExecutionSessionResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetExecutionSessionResponse | PlainMessage<GetExecutionSessionResponse> | undefined, b: GetExecutionSessionResponse | PlainMessage<GetExecutionSessionResponse> | undefined): boolean {
+    return proto3.util.equals(GetExecutionSessionResponse, a, b);
+  }
+}
+

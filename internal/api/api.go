@@ -68,6 +68,10 @@ type Dependencies struct {
 	// socket (build/remove runtime images). Nil when the daemon is not
 	// configured (headless serve).
 	RuntimeClient *runtime.Client
+	// SendExecutionMessage routes a mid-run human message into a live
+	// session execution (Stage 3). Nil when the session transport is
+	// unavailable.
+	SendExecutionMessage func(ctx context.Context, execID, message string) error
 }
 
 // Mount returns an http.Handler serving the Orchicon API. Generated
@@ -131,6 +135,9 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 
 	// ExecutionService (docs/07 §3.8).
 	execSvc := execution.New(deps.Pool, deps.Log, deps.Subscriber)
+	if deps.SendExecutionMessage != nil {
+		execSvc.SetSendExecutionMessage(deps.SendExecutionMessage)
+	}
 	mux.Handle(apiv1connect.NewExecutionServiceHandler(execSvc, interceptorOpt))
 
 	// PolicyService (docs/07 §3.5).

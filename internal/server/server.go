@@ -251,6 +251,22 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		})
 		return err
 	})
+	// Durable session transcript (Stage 3): the adapter's session path
+	// records every side of the worker conversation into
+	// execution_session_parts via this writer (best-effort — a write
+	// failure loses the trailing batch, never control flow).
+	adapterBridge.SetSessionStore(func(ctx context.Context, execID, tenantID string, parts []db.SessionPart) error {
+		ttx, err := pool.BeginTenantTx(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		defer ttx.Rollback(ctx)
+		if err := db.AppendExecutionSessionParts(ctx, ttx.Tx, tenantID, parts); err != nil {
+			return err
+		}
+		return ttx.Commit(ctx)
+	})
+
 	taskRec := scheduler.NewTaskReconciler(pool, log, adapterBridge)
 	// Per-workflow runtime containers: the control plane talks to the
 	// host-side runtime daemon over a unix socket. When the socket is
@@ -285,6 +301,9 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		BlobStore:         blobs,
 		PostgresDSN:       cfg.PostgresDSN,
 		RuntimeClient:     rtClient,
+		SendExecutionMessage: func(ctx context.Context, execID, message string) error {
+			return adapterBridge.SendExecutionMessage(ctx, execID, message)
+		},
 	}
 	handler := api.Mount(mux, deps)
 

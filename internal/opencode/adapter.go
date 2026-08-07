@@ -80,7 +80,16 @@ type Adapter struct {
 	// usage is not recorded (telemetry loss never blocks control flow
 	// — docs/08 §8 invariant #5).
 	usageRecorder UsageRecorderFunc
+
+	// sessionStore persists the durable per-execution session transcript
+	// (execution_session_parts). Injected by the server; nil = the
+	// transcript is not recorded (e.g. tests).
+	sessionStore SessionStoreFunc
 }
+
+// SessionStoreFunc persists transcript entries for one execution. The
+// implementation owns the tenant transaction.
+type SessionStoreFunc func(ctx context.Context, execID, tenantID string, parts []db.SessionPart) error
 
 // SetRuntimeClient injects the workflow runtime daemon client. When set,
 // executions with a RuntimeWorkflowID dispatch into that workflow's
@@ -109,6 +118,7 @@ func (a *Adapter) SendExecutionMessage(ctx context.Context, execID, message stri
 		return fmt.Errorf("send execution message: %w", err)
 	}
 	r.bumpPending()
+	r.recordHumanMessage(message)
 	a.log.Info("mid-run execution message sent", "execution", execID, "session", r.sessionID)
 	return nil
 }
@@ -235,6 +245,11 @@ type UsageRecorderFunc func(ctx context.Context, in UsageRecord) error
 // SetUsageRecorder injects the usage recording callback. The server
 // constructs it from the aigateway.UsageRecorder.
 func (a *Adapter) SetUsageRecorder(fn UsageRecorderFunc) { a.usageRecorder = fn }
+
+// SetSessionStore injects the durable transcript writer. The server wraps
+// db.AppendExecutionSessionParts in a tenant transaction. Nil = the
+// session transcript is not persisted.
+func (a *Adapter) SetSessionStore(fn SessionStoreFunc) { a.sessionStore = fn }
 
 // recordStallReason remembers which stall signal terminated an execution so
 // the terminal error message preserves the real trigger (e.g.

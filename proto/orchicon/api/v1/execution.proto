@@ -231,3 +231,37 @@ message CreateFollowUpExecutionRequest {
 }
 
 message CreateFollowUpExecutionResponse {} // Follow-up appended to conversation; no new execution created
+
+// SendExecutionMessage injects a mid-run human message into a LIVE worker
+// session (Stage 3 session transport). It does NOT create a new
+// execution, work item, or workflow state — the message joins the
+// session's turn queue and the reply streams back through
+// StreamExecutionEvents. Fails when the execution is not running on the
+// session transport.
+message SendExecutionMessageRequest {
+  string execution_id = 1;
+  string message = 2;
+}
+
+message SendExecutionMessageResponse {}
+
+// ExecutionSessionPart is one entry of the durable per-execution session
+// transcript (execution_session_parts).
+message ExecutionSessionPart {
+  int64 seq = 1;
+  string kind = 2; // user_message | text | tool_use | reasoning | step_start | step_finish | error
+  bytes payload = 3; // raw opencode part/message JSON
+  google.protobuf.Timestamp created_at = 4;
+}
+
+// GetExecutionSession returns the durable transcript for an execution,
+// paginated backwards (before_seq is exclusive).
+message GetExecutionSessionRequest {
+  string execution_id = 1;
+  int32 limit = 2;
+  int64 before_seq = 3;
+}
+
+message GetExecutionSessionResponse {
+  repeated ExecutionSessionPart parts = 1;
+}
