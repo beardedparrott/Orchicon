@@ -135,7 +135,17 @@ export const KIND_FILTER_OPTIONS = [
   { value: WorkItemKind.FEATURE, label: "Feature" },
   { value: WorkItemKind.TASK, label: "Task" },
   { value: WorkItemKind.SUBTASK, label: "Subtask" },
+  { value: WorkItemKind.RECOVERY_STOP, label: "Recovery: Stop" },
+  { value: WorkItemKind.RECOVERY_SUMMARIZE_RESTART, label: "Recovery: Summarize & Restart" },
+  { value: WorkItemKind.RECOVERY_HUMAN_ESCALATION, label: "Recovery: Human Escalation" },
+  { value: WorkItemKind.RECOVERY_RETRY_N, label: "Recovery: Retry" },
 ];
+
+/** Every kind value offered by the type filter — the default selection
+ *  (all selected = "show everything"; an empty selection = show nothing,
+ *  ADR-WI-6). Recovery kinds are included so recovery work items stay
+ *  visible by default and are filterable. */
+export const ALL_KIND_VALUES = KIND_FILTER_OPTIONS.map((o) => o.value);
 
 // ---------------------------------------------------------------------------
 // Statuses (enum values from work_item.proto — do not re-invent)
@@ -246,12 +256,19 @@ export const STATUS_FILTER_OPTIONS = [
   { value: WorkItemStatus.READY, label: "Ready" },
   { value: WorkItemStatus.ASSIGNED, label: "Assigned" },
   { value: WorkItemStatus.RUNNING, label: "Running" },
+  { value: WorkItemStatus.CHECKPOINTING, label: "Checkpointing" },
   { value: WorkItemStatus.SUCCEEDED, label: "Succeeded" },
   { value: WorkItemStatus.FAILED, label: "Failed" },
   { value: WorkItemStatus.CANCELLED, label: "Cancelled" },
   { value: WorkItemStatus.RECOVERING, label: "Recovering" },
   { value: WorkItemStatus.SCHEDULED, label: "Scheduled" },
 ];
+
+/** Every status value offered by the status filter — the default
+ *  selection (all selected = "show everything"; an empty selection =
+ *  show nothing). Checkpointing is included so transient workflow items
+ *  stay visible by default and are filterable. */
+export const ALL_STATUS_VALUES = STATUS_FILTER_OPTIONS.map((o) => o.value);
 
 // ---------------------------------------------------------------------------
 // Terminal statuses — used to decide whether a dependency edge still blocks

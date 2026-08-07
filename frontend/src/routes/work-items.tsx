@@ -26,6 +26,10 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useBatchMoveWorkItems } from "@/components/work-items/batch-move";
 import { computeBlockState, buildTreeData, filterItemsByKindStatus } from "@/components/work-items/dependency-utils";
 import {
+  KIND_FILTER_OPTIONS,
+  STATUS_FILTER_OPTIONS,
+} from "@/components/work-items/work-item-meta";
+import {
   useWorkItemSelection,
   visibleSelectionState,
 } from "@/components/work-items/use-work-item-selection";
@@ -61,8 +65,10 @@ function WorkItemsPage() {
     setFilters,
     treeExpanded,
     toggleTreeExpanded,
-    boardExpanded,
-    toggleBoardExpanded,
+    treeCollapsed,
+    toggleTreeCollapsed,
+    boardCollapsed,
+    toggleBoardCollapsed,
   } = useWorkItemsPreferences(projectId);
 
   const debouncedSearch = useDebouncedValue(filters.search, 300);
@@ -151,7 +157,14 @@ function WorkItemsPage() {
     void moveItems(Array.from(selected), targetStatus, { itemsById, blockState });
   };
 
-  const hasQuery = statuses.length > 0 || kinds.length > 0 || debouncedSearch !== "";
+  // A filter is "active" only when the selection differs from the full
+  // option list (the default = show everything) or a search is typed. An
+  // all-selected type/status filter is NOT a query: it must not dim rows,
+  // auto-expand the tree, or say "No matching work items" (ADR-WI-6).
+  const hasQuery =
+    debouncedSearch !== "" ||
+    kinds.length !== KIND_FILTER_OPTIONS.length ||
+    statuses.length !== STATUS_FILTER_OPTIONS.length;
 
   return (
     <div className="flex flex-col gap-6" style={{ height: "calc(100vh - 64px)" }}>
@@ -228,6 +241,8 @@ function WorkItemsPage() {
                 filterActive={hasQuery}
                 expandedIds={treeExpanded}
                 onToggleExpand={toggleTreeExpanded}
+                collapsedIds={treeCollapsed}
+                onToggleCollapse={toggleTreeCollapsed}
                 blockState={blockState}
                 selected={selected}
                 onToggleSelect={toggle}
@@ -242,8 +257,8 @@ function WorkItemsPage() {
                 blockState={blockState}
                 selected={selected}
                 onToggleSelect={toggle}
-                expandedIds={boardExpanded}
-                onToggleExpand={toggleBoardExpanded}
+                collapsedIds={boardCollapsed}
+                onToggleCollapse={toggleBoardCollapsed}
                 isLoading={isLoading}
                 error={error}
                 hasQuery={hasQuery}

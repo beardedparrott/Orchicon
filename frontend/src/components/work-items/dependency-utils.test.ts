@@ -22,6 +22,10 @@ import {
   filterItemsByKindStatus,
   matchesSearch,
 } from "@/components/work-items/dependency-utils";
+import {
+  ALL_KIND_VALUES,
+  ALL_STATUS_VALUES,
+} from "@/components/work-items/work-item-meta";
 
 /** Minimal WorkItem shape — the helpers only read presentation fields. */
 function item(partial: Partial<WorkItem> & { id: string; title: string }): WorkItem {
@@ -107,25 +111,26 @@ describe("filterItemsByKindStatus", () => {
   const epic = item({ id: "e", title: "Platform Modernization", kind: WorkItemKind.EPIC });
   const task = item({ id: "t", title: "Design the migration runner", kind: WorkItemKind.TASK, status: WorkItemStatus.READY });
   const subtask = item({ id: "s", title: "Write DSL spec", kind: WorkItemKind.SUBTASK, status: WorkItemStatus.PENDING });
+  const all = [epic, task, subtask];
 
   it("filters by kind", () => {
-    const ids = filterItemsByKindStatus([epic, task, subtask], [WorkItemKind.TASK], []).map((i) => i.id);
+    const ids = filterItemsByKindStatus(all, [WorkItemKind.TASK], ALL_STATUS_VALUES).map((i) => i.id);
     expect(ids).toEqual(["t"]);
   });
 
   it("filters by status", () => {
-    const ids = filterItemsByKindStatus([epic, task, subtask], [], [WorkItemStatus.READY]).map((i) => i.id);
+    const ids = filterItemsByKindStatus(all, ALL_KIND_VALUES, [WorkItemStatus.READY]).map((i) => i.id);
     expect(ids).toEqual(["t"]);
   });
 
   it("filters by search", () => {
-    const ids = filterItemsByKindStatus([epic, task, subtask], [], [], "dsl").map((i) => i.id);
+    const ids = filterItemsByKindStatus(all, ALL_KIND_VALUES, ALL_STATUS_VALUES, "dsl").map((i) => i.id);
     expect(ids).toEqual(["s"]);
   });
 
   it("composes kind + status + search", () => {
     const ids = filterItemsByKindStatus(
-      [epic, task, subtask],
+      all,
       [WorkItemKind.TASK],
       [WorkItemStatus.READY],
       "migration",
@@ -135,25 +140,36 @@ describe("filterItemsByKindStatus", () => {
 
   it("OR-composes multiple kinds", () => {
     const ids = filterItemsByKindStatus(
-      [epic, task, subtask],
+      all,
       [WorkItemKind.EPIC, WorkItemKind.TASK],
-      [],
+      ALL_STATUS_VALUES,
     ).map((i) => i.id);
     expect(ids).toEqual(["e", "t"]);
   });
 
   it("OR-composes multiple statuses", () => {
     const ids = filterItemsByKindStatus(
-      [epic, task, subtask],
-      [],
+      all,
+      ALL_KIND_VALUES,
       [WorkItemStatus.PENDING, WorkItemStatus.READY],
     ).map((i) => i.id);
     expect(ids).toEqual(["e", "t", "s"]);
   });
 
-  it("empty selections filter nothing", () => {
-    const ids = filterItemsByKindStatus([epic, task, subtask], [], []).map((i) => i.id);
-    expect(ids).toEqual(["e", "t", "s"]);
+  it("an empty kind selection matches nothing (unchecking every type)", () => {
+    expect(filterItemsByKindStatus(all, [], ALL_STATUS_VALUES).length).toBe(0);
+  });
+
+  it("an empty status selection matches nothing (unchecking every status)", () => {
+    expect(filterItemsByKindStatus(all, ALL_KIND_VALUES, []).length).toBe(0);
+  });
+
+  it("empty selections match nothing", () => {
+    expect(filterItemsByKindStatus(all, [], []).length).toBe(0);
+  });
+
+  it("the full option lists match every item (default = show everything)", () => {
+    expect(filterItemsByKindStatus(all, ALL_KIND_VALUES, ALL_STATUS_VALUES).length).toBe(all.length);
   });
 });
 
@@ -166,7 +182,7 @@ describe("buildTreeData (regression: search must not orphan matches)", () => {
   const all = [epic, feature, task, subtask, otherEpic];
 
   it("deep search results keep their whole ancestor chain", () => {
-    const data = buildTreeData(all, [], [], "dsl");
+    const data = buildTreeData(all, ALL_KIND_VALUES, ALL_STATUS_VALUES, "dsl");
     expect(data.matches.map((i) => i.id)).toEqual(["s"]);
     // The searched subtask must be reachable under its epic — the
     // regression that previously rendered an empty tree.
@@ -179,16 +195,22 @@ describe("buildTreeData (regression: search must not orphan matches)", () => {
   });
 
   it("kind filter keeps ancestors as dimmed containers only", () => {
-    const data = buildTreeData(all, [WorkItemKind.TASK], []);
+    const data = buildTreeData(all, [WorkItemKind.TASK], ALL_STATUS_VALUES);
     expect(data.matches.map((i) => i.id)).toEqual(["t"]);
     expect(data.treeItems.map((i) => i.id).sort()).toEqual(["e", "f", "t"].sort());
     expect(data.ancestorIds.has("e")).toBe(true);
     expect(data.ancestorIds.has("t")).toBe(false); // t is a match, not just an ancestor
   });
 
-  it("no filters: every item is a match and no ancestor-only rows exist", () => {
-    const data = buildTreeData(all, [], []);
+  it("full selection (the default): every item is a match and no ancestor-only rows exist", () => {
+    const data = buildTreeData(all, ALL_KIND_VALUES, ALL_STATUS_VALUES);
     expect(data.matches.map((i) => i.id).sort()).toEqual(all.map((i) => i.id).sort());
     expect(data.treeItems.map((i) => i.id).sort()).toEqual(all.map((i) => i.id).sort());
+  });
+
+  it("cleared filters (empty selection) produce no matches at all", () => {
+    const data = buildTreeData(all, [], []);
+    expect(data.matches.length).toBe(0);
+    expect(data.treeItems.length).toBe(0);
   });
 });

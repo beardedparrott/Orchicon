@@ -133,7 +133,7 @@ export function WorkItemsFilterBar({
         options={STATUS_FILTER_OPTIONS}
         selected={new Set(statuses)}
         onChange={(next) => onStatusFilterChange(Array.from(next))}
-        emptyLabel="All statuses"
+        emptyLabel="No statuses"
       />
 
       <MultiSelect
@@ -141,7 +141,7 @@ export function WorkItemsFilterBar({
         options={KIND_FILTER_OPTIONS}
         selected={new Set(kinds)}
         onChange={(next) => onKindFilterChange(Array.from(next))}
-        emptyLabel="All types"
+        emptyLabel="No types"
       />
 
       <select

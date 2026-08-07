@@ -12,20 +12,36 @@
 // Keys (prefix `orchicon.workItems.`):
 //   view                         → {v:1, view:"tree"|"board"}          (global)
 //   filters.<projectId>          → {v:1, statuses:number[], kinds:number[], search, sortBy, sortOrder}
-//   treeExpanded.<projectId>     → {v:1, ids:string[]}                 (collapsed by default)
-//   boardExpanded.<projectId>    → {v:1, ids:string[]}                 (collapsed by default)
+//   treeExpanded.<projectId>     → {v:1, ids:string[]}   (tree, no filter: expanded by default = collapsed)
+//   treeCollapsed.<projectId>    → {v:1, ids:string[]}   (tree, filter active: collapsed by default = expanded)
+//   boardCollapsed.<projectId>   → {v:1, ids:string[]}   (board: collapsed by default = expanded)
+//
+// Filter semantics (ADR-WI-6): a selection is OR-composed within a group
+// and AND-composed across groups. The DEFAULTS are every option selected
+// ("show everything"); an EMPTY selection means "show nothing" — a user
+// who unchecks every type/status expects an empty page, not an unfiltered
+// one (regression fixed in v0.1.205).
+//
+// VERSION 2: v1 envelopes stored empty `statuses`/`kinds` with the old
+// "empty = all" meaning, so a v1 filter envelope would now render an
+// empty page. Bumping the version makes stale v1 state fall back to the
+// new defaults (everything visible) instead.
 
 import { useCallback, useEffect, useState } from "react";
 
 import type { WorkItemsView } from "@/components/work-items/work-items-filter-bar";
+import {
+  ALL_KIND_VALUES,
+  ALL_STATUS_VALUES,
+} from "@/components/work-items/work-item-meta";
 
 const PREFIX = "orchicon.workItems.";
-const VERSION = 1;
+const VERSION = 2;
 
 export interface WorkItemFilters {
-  /** OR-composed status filter; empty = all statuses */
+  /** OR-composed status filter; empty = nothing matches */
   statuses: number[];
-  /** OR-composed kind/type filter; empty = all types */
+  /** OR-composed kind/type filter; empty = nothing matches */
   kinds: number[];
   search: string;
   sortBy: string;
@@ -33,8 +49,8 @@ export interface WorkItemFilters {
 }
 
 export const DEFAULT_FILTERS: WorkItemFilters = {
-  statuses: [],
-  kinds: [],
+  statuses: ALL_STATUS_VALUES,
+  kinds: ALL_KIND_VALUES,
   search: "",
   sortBy: "created_at",
   sortOrder: "desc",
@@ -92,12 +108,13 @@ export function saveViewPreference(view: WorkItemsView): void {
 }
 
 function normalizeFilters(raw: Partial<WorkItemFilters> | undefined): WorkItemFilters {
-  const statuses = Array.isArray(raw?.statuses)
-    ? raw!.statuses.filter((s) => Number.isInteger(s))
-    : [];
-  const kinds = Array.isArray(raw?.kinds)
-    ? raw!.kinds.filter((k) => Number.isInteger(k))
-    : [];
+  // No stored envelope → the default "show everything" selection.
+  if (!raw) return DEFAULT_FILTERS;
+  // Malformed/corrupt envelopes fall back to the defaults too (the v
+  // field is the migration hook, so future versions land here).
+  if (!Array.isArray(raw.statuses) || !Array.isArray(raw.kinds)) return DEFAULT_FILTERS;
+  const statuses = raw.statuses.filter((s) => Number.isInteger(s));
+  const kinds = raw.kinds.filter((k) => Number.isInteger(k));
   return {
     statuses,
     kinds,
@@ -129,6 +146,25 @@ export function saveExpandedPreference(
   writeEnvelope(`${PREFIX}${kind}Expanded.${projectId}`, { ids: Array.from(ids) });
 }
 
+// Collapsed sets are the inverse of the expanded sets: an EMPTY set means
+// "nothing is collapsed" (everything expanded — the board's default and
+// the tree's default while a filter is active). The board stores
+// collapsed ids because its default state is expanded; the tree stores
+// collapsed ids for filter-mode so auto-expanded ancestors can still be
+// collapsed and that choice survives navigation (ADR-WI-3).
+export function loadCollapsedPreference(projectId: string, kind: "tree" | "board"): Set<string> {
+  const parsed = parseEnvelope<{ ids: string[] }>(`${PREFIX}${kind}Collapsed.${projectId}`);
+  return new Set(Array.isArray(parsed?.ids) ? parsed!.ids.filter((id) => typeof id === "string") : []);
+}
+
+export function saveCollapsedPreference(
+  projectId: string,
+  kind: "tree" | "board",
+  ids: Set<string>,
+): void {
+  writeEnvelope(`${PREFIX}${kind}Collapsed.${projectId}`, { ids: Array.from(ids) });
+}
+
 // ---------------------------------------------------------------------------
 // Hook — one call site in the route shell
 // ---------------------------------------------------------------------------
@@ -138,10 +174,15 @@ export interface WorkItemsPreferences {
   setView: (view: WorkItemsView) => void;
   filters: WorkItemFilters;
   setFilters: (patch: Partial<WorkItemFilters>) => void;
+  /** Tree rows explicitly expanded (normal mode; default collapsed). */
   treeExpanded: Set<string>;
   toggleTreeExpanded: (id: string) => void;
-  boardExpanded: Set<string>;
-  toggleBoardExpanded: (id: string) => void;
+  /** Tree rows explicitly collapsed while a filter is active (default expanded). */
+  treeCollapsed: Set<string>;
+  toggleTreeCollapsed: (id: string) => void;
+  /** Board rows explicitly collapsed (default expanded). */
+  boardCollapsed: Set<string>;
+  toggleBoardCollapsed: (id: string) => void;
 }
 
 export function useWorkItemsPreferences(projectId: string): WorkItemsPreferences {
@@ -152,15 +193,19 @@ export function useWorkItemsPreferences(projectId: string): WorkItemsPreferences
   const [treeExpanded, setTreeExpandedState] = useState<Set<string>>(() =>
     loadExpandedPreference(projectId, "tree"),
   );
-  const [boardExpanded, setBoardExpandedState] = useState<Set<string>>(() =>
-    loadExpandedPreference(projectId, "board"),
+  const [treeCollapsed, setTreeCollapsedState] = useState<Set<string>>(() =>
+    loadCollapsedPreference(projectId, "tree"),
+  );
+  const [boardCollapsed, setBoardCollapsedState] = useState<Set<string>>(() =>
+    loadCollapsedPreference(projectId, "board"),
   );
 
   // Per-project slices: re-read when the project selector changes.
   useEffect(() => {
     setFiltersState(loadFiltersPreference(projectId));
     setTreeExpandedState(loadExpandedPreference(projectId, "tree"));
-    setBoardExpandedState(loadExpandedPreference(projectId, "board"));
+    setTreeCollapsedState(loadCollapsedPreference(projectId, "tree"));
+    setBoardCollapsedState(loadCollapsedPreference(projectId, "board"));
   }, [projectId]);
 
   const setView = useCallback((next: WorkItemsView) => {
@@ -192,13 +237,26 @@ export function useWorkItemsPreferences(projectId: string): WorkItemsPreferences
     [projectId],
   );
 
-  const toggleBoardExpanded = useCallback(
+  const toggleTreeCollapsed = useCallback(
     (id: string) => {
-      setBoardExpandedState((prev) => {
+      setTreeCollapsedState((prev) => {
         const next = new Set(prev);
         if (next.has(id)) next.delete(id);
         else next.add(id);
-        saveExpandedPreference(projectId, "board", next);
+        saveCollapsedPreference(projectId, "tree", next);
+        return next;
+      });
+    },
+    [projectId],
+  );
+
+  const toggleBoardCollapsed = useCallback(
+    (id: string) => {
+      setBoardCollapsedState((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        saveCollapsedPreference(projectId, "board", next);
         return next;
       });
     },
@@ -212,7 +270,9 @@ export function useWorkItemsPreferences(projectId: string): WorkItemsPreferences
     setFilters,
     treeExpanded,
     toggleTreeExpanded,
-    boardExpanded,
-    toggleBoardExpanded,
+    treeCollapsed,
+    toggleTreeCollapsed,
+    boardCollapsed,
+    toggleBoardCollapsed,
   };
 }
