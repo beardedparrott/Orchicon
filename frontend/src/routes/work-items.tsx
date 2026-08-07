@@ -41,7 +41,7 @@ import {
 } from "@/components/work-items/work-items-filter-bar";
 import { useDebouncedValue } from "@/components/work-items/use-debounced-value";
 import { WorkItemsTree } from "@/components/work-items/work-items-tree";
-import { useWorkItemsPreferences } from "@/components/work-items/work-items-preferences";
+import { useWorkItemsPreferences, parentIds } from "@/components/work-items/work-items-preferences";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -69,6 +69,8 @@ function WorkItemsPage() {
     toggleTreeCollapsed,
     boardCollapsed,
     toggleBoardCollapsed,
+    expandAll,
+    collapseAll,
   } = useWorkItemsPreferences(projectId);
 
   const debouncedSearch = useDebouncedValue(filters.search, 300);
@@ -166,6 +168,29 @@ function WorkItemsPage() {
     kinds.length !== KIND_FILTER_OPTIONS.length ||
     statuses.length !== STATUS_FILTER_OPTIONS.length;
 
+  // Expand/Collapse all (ADR-WIT-4): the parent ids come from the FULL
+  // items list (not the filtered set) so collapsing a filtered-out
+  // ancestor is harmless. The buttons are disabled when the action is
+  // already the default state for the active view.
+  const parentIDs = useMemo(() => parentIds(items ?? []), [items]);
+  const hasParents = parentIDs.length > 0;
+  const expandAllDisabled =
+    !hasParents ||
+    (view === "board"
+      ? boardCollapsed.size === 0
+      : hasQuery
+        ? treeCollapsed.size === 0
+        : parentIDs.every((p) => treeExpanded.has(p)));
+  const collapseAllDisabled =
+    !hasParents ||
+    (view === "board"
+      ? false
+      : hasQuery
+        ? parentIDs.every((p) => treeCollapsed.has(p))
+        : treeExpanded.size === 0);
+  const handleExpandAll = () => expandAll(view, hasQuery, parentIDs);
+  const handleCollapseAll = () => collapseAll(view, hasQuery, parentIDs);
+
   return (
     <div className="flex flex-col gap-6" style={{ height: "calc(100vh - 64px)" }}>
       <div className="flex flex-wrap items-center justify-between gap-4 shrink-0">
@@ -202,6 +227,10 @@ function WorkItemsPage() {
         onSortOrderChange={(value) => setFilters({ sortOrder: value })}
         view={view}
         onViewChange={setView}
+        onExpandAll={handleExpandAll}
+        onCollapseAll={handleCollapseAll}
+        expandAllDisabled={expandAllDisabled}
+        collapseAllDisabled={collapseAllDisabled}
         visibleCount={visibleItems.length}
         selectedCount={selected.size}
         allChecked={allChecked}

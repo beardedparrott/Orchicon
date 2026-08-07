@@ -498,6 +498,19 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
    */
   parentId?: string;
 
+  /**
+   * Switch the work item to a different kind (epic/feature/task/subtask).
+   * The parent/child hierarchy is resolved automatically in the same
+   * transaction (ADR-WIT-2): the item's parent walks up to the nearest
+   * ancestor shallower than the new kind, direct children that can no
+   * longer sit under the item are reparented to its parent, and switching
+   * to a non-schedulable kind (epic/feature) clears the worker binding,
+   * scheduled start, and ready/assigned/scheduled status. Unset = unchanged.
+   *
+   * @generated from field: optional orchicon.api.v1.WorkItemKind kind = 21;
+   */
+  kind?: WorkItemKind;
+
   constructor(data?: PartialMessage<UpdateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -522,6 +535,7 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
     { no: 18, name: "workflow_run_id", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 19, name: "runtime_image", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 20, name: "parent_id", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 21, name: "kind", kind: "enum", T: proto3.getEnumType(WorkItemKind), opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkItemRequest {

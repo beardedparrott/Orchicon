@@ -174,7 +174,7 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 		},
 		{
 			Name:        "update_work_item",
-			Description: "Update a work item's fields (title, description, status, priority, parent_id, etc.).",
+			Description: "Update a work item's fields (title, description, status, priority, parent_id, kind, etc.). Switching kind (kind: epic|feature|task|subtask) automatically resolves the hierarchy: the parent walks up to the nearest ancestor shallower than the new kind, direct children that can no longer sit under the item move under its parent, and switching to a non-schedulable kind (epic/feature) clears the worker assignment and scheduled start and demotes ready/assigned/scheduled to pending. Switching an epic to another kind requires choosing a parent explicitly.",
 			Mutating:    true,
 			Fn:          toolUpdateWorkItem,
 			Properties: map[string]PropertySchema{
@@ -184,6 +184,7 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 				"status": {Type: "string", Description: "New status (draft, ready, assigned, running, done, failed, cancelled)"},
 				"priority": {Type: "number", Description: "New priority (1-5)"},
 				"parent_id": {Type: "string", Description: "New parent work item ID (reparent). Must be the same project and a strictly higher-level kind (epic > feature > task > subtask)."},
+				"kind": {Type: "string", Description: "New kind (epic, feature, task, subtask). The parent/child hierarchy is resolved automatically (see description)."},
 			},
 			Required: []string{"id"},
 		},

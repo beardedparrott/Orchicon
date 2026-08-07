@@ -342,6 +342,58 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, mapDBError(err)
 	}
+	// Kind switch (ADR-WIT-1/2): resolve parent/child + schedulability
+	// automatically inside the same transaction. The plan is applied after
+	// the shared parent validation below (an explicit parent in the same
+	// request is validated against the NEW kind here, not the old one).
+	var kindSwitchPlan *KindSwitchPlan
+	if msg.Kind != nil {
+		newKind, err := validateKind(*msg.Kind)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		if newKind != current.Kind {
+			effectiveProject := current.ProjectID
+			if fields.ProjectID != nil && *fields.ProjectID != "" {
+				effectiveProject = *fields.ProjectID
+			}
+			if effectiveProject != current.ProjectID {
+				// Switching kind AND moving to another project: the
+				// auto-resolution walk-up follows the current ancestor
+				// chain, which must not cross projects. Only a genuine
+				// explicit reparent (a parent different from the current
+				// one) is validated against the target project by
+				// ResolveKindSwitch. Naming no parent, or naming the
+				// current parent, leaves the resolution to walk the OLD
+				// project's chain — unless the current parent already
+				// lives in the target project, the request must choose
+				// the new parent explicitly (matches the carried-parent
+				// guard below).
+				keepCurrent := msg.ParentId != nil && current.ParentID != nil && *msg.ParentId == *current.ParentID
+				explicitForTarget := msg.ParentId != nil && !keepCurrent
+				if !explicitForTarget {
+					carryOK := false
+					if keepCurrent {
+						ok, err := workItemInProject(ctx, ttx.Tx, tenantID, *current.ParentID, effectiveProject)
+						if err != nil {
+							return nil, connect.NewError(connect.CodeInternal, err)
+						}
+						carryOK = ok
+					}
+					if !carryOK {
+						return nil, connect.NewError(connect.CodeInvalidArgument,
+							errors.New("when switching kind and project together, choose the new parent explicitly"))
+					}
+				}
+			}
+			plan, err := ResolveKindSwitch(ctx, ttx.Tx, tenantID, current, newKind, msg.ParentId, effectiveProject)
+			if err != nil {
+				return nil, mapKindSwitchError(err)
+			}
+			kindSwitchPlan = plan
+			fields.Kind = &newKind
+		}
+	}
 	// If reassigning to a different project, the target must be active.
 	if fields.ProjectID != nil && *fields.ProjectID != current.ProjectID {
 		if err := db.RequireProjectActive(ctx, ttx.Tx, tenantID, *fields.ProjectID); err != nil {
@@ -352,8 +404,10 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	// request's project_id if also being changed, otherwise the current
 	// one — using the same rules as Create (shared helper). Clearing the
 	// parent (empty string) is only valid for epics; a non-epic must keep
-	// a parent.
-	if msg.ParentId != nil {
+	// a parent. When a kind switch is in flight, the explicit parent was
+	// already validated against the NEW kind inside ResolveKindSwitch, so
+	// this block is skipped (the old kind's rules no longer apply).
+	if msg.ParentId != nil && kindSwitchPlan == nil {
 		effectiveProject := current.ProjectID
 		if fields.ProjectID != nil && *fields.ProjectID != "" {
 			effectiveProject = *fields.ProjectID
@@ -361,7 +415,7 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		if err := ValidateParent(ctx, ttx.Tx, tenantID, *msg.ParentId, current.Kind, effectiveProject); err != nil {
 			return nil, mapParentError(err)
 		}
-	} else if fields.ProjectID != nil && *fields.ProjectID != "" && *fields.ProjectID != current.ProjectID && current.ParentID != nil {
+	} else if msg.ParentId == nil && fields.ProjectID != nil && *fields.ProjectID != "" && *fields.ProjectID != current.ProjectID && current.ParentID != nil {
 		// The item is moving to another project WITHOUT an explicit
 		// reparent, so its current parent is carried over. That only
 		// stays consistent if the parent already lives in the target
@@ -372,14 +426,62 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 			return nil, mapParentError(err)
 		}
 	}
-	if err != nil {
-		return nil, mapDBError(err)
+	// Apply the kind-switch plan to the update fields (ADR-WIT-2): the
+	// resolved parent, the status demotion, and the schedulability clears.
+	if kindSwitchPlan != nil {
+		if kindSwitchPlan.NewParentID != nil && (current.ParentID == nil || *current.ParentID != *kindSwitchPlan.NewParentID) {
+			fields.ParentID = kindSwitchPlan.NewParentID
+		} else if kindSwitchPlan.NewParentID == nil && current.ParentID != nil {
+			// epic switch: a top-level item has no parent.
+			empty := ""
+			fields.ParentID = &empty
+		}
+		if kindSwitchPlan.NewStatus != nil {
+			fields.Status = kindSwitchPlan.NewStatus
+		}
+		if kindSwitchPlan.ClearWorkerRef {
+			fields.ClearAssignedWorkerRef = true
+		}
+		if kindSwitchPlan.ClearScheduledStartAt {
+			fields.ClearScheduledStartAt = true
+		}
 	}
 	updated, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, msg.Id, current.Version, fields)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.updated", updated); err != nil {
+	// A kind switch to a non-schedulable kind clears the schedule itself
+	// (ADR-WIT-2) — the user re-typed the item, they did not ask to start
+	// it now. Without this guard the post-commit auto-start below would
+	// see the cleared schedule and start the run immediately. An explicit
+	// autoStartWorkflow=true in the same request still wins.
+	kindSwitchClearedSchedule := kindSwitchPlan != nil && kindSwitchPlan.ClearScheduledStartAt
+	userExplicitlyAutoStarts := msg.AutoStartWorkflow != nil && *msg.AutoStartWorkflow
+	// Kind switch events: work_item.kind_changed for the switched item
+	// (the authoritative record of the switch, carrying old_kind +
+	// new_kind), work_item.updated for the item itself (covers any other
+	// fields changed in the same request — the kind_changed event is the
+	// authoritative switch record but consumers of work_item.updated
+	// still see the item), and work_item.updated for every reparented
+	// child — all in the same transaction (invariant #3).
+	if kindSwitchPlan != nil {
+		if err := enqueueKindChangedEvent(ctx, ttx.Tx, current, updated); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.updated", updated); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		for _, cr := range kindSwitchPlan.ReparentedChildren {
+			childFields := db.UpdateWorkItemFields{ParentID: cr.NewParentID}
+			child, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, cr.ChildID, cr.ChildVersion, childFields)
+			if err != nil {
+				return nil, mapDBError(err)
+			}
+			if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.updated", child); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
+		}
+	} else if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.updated", updated); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if err := ttx.Commit(ctx); err != nil {
@@ -389,7 +491,7 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	// time, and auto_start_workflow is true. If a previous run exists it
 	// must be terminal (completed/failed/aborted) — active runs are not
 	// duplicated.
-	if updated.WorkflowID != nil && *updated.WorkflowID != "" && updated.ScheduledStartAt == nil && updated.AutoStartWorkflow && s.startWorkflowFn != nil {
+	if updated.WorkflowID != nil && *updated.WorkflowID != "" && updated.ScheduledStartAt == nil && updated.AutoStartWorkflow && !(kindSwitchClearedSchedule && !userExplicitlyAutoStarts) && s.startWorkflowFn != nil {
 		shouldStart := true
 		if updated.WorkflowRunID != "" {
 			var runStatus string
@@ -727,6 +829,26 @@ func enqueueWorkItemEvent(ctx context.Context, tx pgx.Tx, eventType string, w db
 	return db.EnqueueOutbox(ctx, tx, row)
 }
 
+// enqueueKindChangedEvent emits work_item.kind_changed — the authoritative
+// record of a kind switch (ADR-WIT-2). The payload carries old_kind +
+// new_kind so webhooks/live views can react distinctly.
+func enqueueKindChangedEvent(ctx context.Context, tx pgx.Tx, before, after db.WorkItemRow) error {
+	payload, err := buildKindChangedEventPayload(before, after)
+	if err != nil {
+		return err
+	}
+	row := db.OutboxRow{
+		TenantID:      after.TenantID,
+		EventType:     "work_item.kind_changed",
+		AggregateType: "work_item",
+		AggregateID:   after.ID,
+		AggregateVer:  after.Version,
+		Payload:       payload,
+		OccurredAt:    time.Now().UTC(),
+	}
+	return db.EnqueueOutbox(ctx, tx, row)
+}
+
 func enqueueDependencyEvent(ctx context.Context, tx pgx.Tx, eventType string, d db.DependencyRow) error {
 	evt := map[string]any{
 		"event_type":      eventType,
@@ -777,12 +899,55 @@ func buildWorkItemEventPayload(eventType string, w db.WorkItemRow) ([]byte, erro
 	return b, nil
 }
 
+// buildKindChangedEventPayload builds the payload for work_item.kind_changed,
+// carrying old_kind + new_kind alongside the standard aggregate fields.
+func buildKindChangedEventPayload(before, after db.WorkItemRow) ([]byte, error) {
+	base := map[string]any{
+		"event_type":        "work_item.kind_changed",
+		"tenant_id":         after.TenantID,
+		"project_id":        after.ProjectID,
+		"work_item_id":      after.ID,
+		"aggregate_type":    "work_item",
+		"aggregate_id":      after.ID,
+		"aggregate_version": after.Version,
+		"kind":              after.Kind,
+		"old_kind":          before.Kind,
+		"new_kind":          after.Kind,
+		"title":             after.Title,
+		"status":            after.Status,
+		"parent_id":         parentIDString(after.ParentID),
+		"occurred_at":       time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	b, err := json.Marshal(base)
+	if err != nil {
+		return nil, fmt.Errorf("marshal kind-changed event payload: %w", err)
+	}
+	return b, nil
+}
+
 // parentIDString returns the parent id or "" when the item is top-level.
 func parentIDString(p *string) string {
 	if p == nil {
 		return ""
 	}
 	return *p
+}
+
+// workItemInProject reports whether the work item lives in the given
+// project. Used by the kind-switch early guard: a keep-parent request
+// ("explicit parent == current parent") combined with a project move is
+// only safe when the current parent already lives in the target project,
+// so the auto-resolution walk-up cannot reach back into the old project.
+func workItemInProject(ctx context.Context, tx pgx.Tx, tenantID, id, projectID string) (bool, error) {
+	var p string
+	err := tx.QueryRow(ctx, `SELECT project_id FROM work_items WHERE id = $1 AND tenant_id = $2`, id, tenantID).Scan(&p)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("db: read work item project: %w", err)
+	}
+	return p == projectID, nil
 }
 
 func mapDBError(err error) error {
@@ -800,6 +965,22 @@ func mapParentError(err error) error {
 		return connect.NewError(connect.CodeNotFound, errors.New("parent work item not found"))
 	}
 	return connect.NewError(connect.CodeInvalidArgument, err)
+}
+
+// mapKindSwitchError maps a ResolveKindSwitch error to a Connect error:
+// the system-managed preconditions (running item / active run) are
+// FailedPrecondition; a missing parent is NotFound; everything else
+// (hierarchy violations, missing parent for a non-epic) is
+// InvalidArgument.
+func mapKindSwitchError(err error) error {
+	switch {
+	case errors.Is(err, ErrKindSwitchRunning), errors.Is(err, ErrKindSwitchActiveRun):
+		return connect.NewError(connect.CodeFailedPrecondition, err)
+	case errors.Is(err, db.ErrNotFound):
+		return connect.NewError(connect.CodeNotFound, errors.New("parent work item not found"))
+	default:
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
 }
 
 func kindToProto(kind string) apiv1.WorkItemKind {

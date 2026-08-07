@@ -207,6 +207,40 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 	return out, rows.Err()
 }
 
+// ListDirectChildren returns the immediate children of a work item within
+// the tenant scope. Used by kind-switch resolution (ADR-WIT-2) to reparent
+// direct children that can no longer sit under a switched item.
+func ListDirectChildren(ctx context.Context, tx pgx.Tx, tenantID, parentID string) ([]WorkItemRow, error) {
+	const q = `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
+		acceptance_criteria, status, assigned_worker_ref, workflow_id,
+		workflow_run_id, workflow_step_id,
+		priority, budgets, context_window, results, prompt_context,
+		scheduled_start_at, auto_start_workflow, runtime_image, version, created_at, updated_at
+		FROM work_items WHERE tenant_id = $1 AND parent_id = $2 ORDER BY id`
+	rows, err := tx.Query(ctx, q, tenantID, parentID)
+	if err != nil {
+		return nil, fmt.Errorf("db: list direct children: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkItemRow
+	for rows.Next() {
+		var w WorkItemRow
+		if err := rows.Scan(
+			&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
+			&w.Description, &w.AcceptanceCriteria, &w.Status, &w.AssignedWorkerRef,
+			&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
+			&w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
+			&w.PromptContext,
+			&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage,
+			&w.Version, &w.CreatedAt, &w.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan direct child: %w", err)
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
 // UpdateWorkItemFields is a partial update applied with optimistic
 // concurrency (docs/09 §5). Only non-nil fields are written (field-mask
 // semantics — docs/07 §5.4).
@@ -220,6 +254,10 @@ type UpdateWorkItemFields struct {
 	ContextWindow      *int
 	AssignedWorkerRef  *[]byte
 	ProjectID          *string
+	// Kind switches the item's hierarchy kind (epic/feature/task/subtask).
+	// The CHECK constraint on kind is satisfied because the service
+	// normalizes via domain.NormalizeWorkItemKind before calling.
+	Kind *string
 	// PromptContext is set by the WorkflowReconciler before dispatch
 	// (PR B — context propagation). The opencode adapter reads it via
 	// the TaskReconciler → manifest Goal. JSONB payload (see
@@ -251,6 +289,10 @@ type UpdateWorkItemFields struct {
 	// to the base image. Stamped at create/update so the value carries
 	// forward to the workflow run.
 	RuntimeImage *string
+	// ClearAssignedWorkerRef, when true, sets assigned_worker_ref = NULL.
+	// Used when switching a work item to a non-schedulable kind
+	// (epic/feature), where a worker binding is meaningless.
+	ClearAssignedWorkerRef bool
 }
 
 // UpdateWorkItem applies a partial update with optimistic concurrency.
@@ -298,6 +340,17 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 	if f.AssignedWorkerRef != nil {
 		q += fmt.Sprintf(`, assigned_worker_ref = $%d`, setIdx)
 		args = append(args, *f.AssignedWorkerRef)
+		setIdx++
+	}
+	if f.ClearAssignedWorkerRef {
+		// A worker binding is meaningless for non-schedulable kinds; the
+		// bytea column cannot encode NULL through the *[]byte pointer, so
+		// clearing is a dedicated flag (mirrors ClearScheduledStartAt).
+		q += `, assigned_worker_ref = NULL`
+	}
+	if f.Kind != nil {
+		q += fmt.Sprintf(`, kind = $%d`, setIdx)
+		args = append(args, *f.Kind)
 		setIdx++
 	}
 	if f.ProjectID != nil {

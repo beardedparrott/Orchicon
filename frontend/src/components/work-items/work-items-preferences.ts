@@ -29,6 +29,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import type { WorkItemsView } from "@/components/work-items/work-items-filter-bar";
 import {
   ALL_KIND_VALUES,
@@ -165,6 +166,19 @@ export function saveCollapsedPreference(
   writeEnvelope(`${PREFIX}${kind}Collapsed.${projectId}`, { ids: Array.from(ids) });
 }
 
+// parentIds returns the ids of every item that is the parent of at least
+// one other item — the set of rows that can be expanded/collapsed. Used
+// by the Expand all / Collapse all controls (ADR-WIT-4). Computed from
+// the FULL items list (not the filtered set) so collapsing a filtered-out
+// ancestor is harmless and matches the persisted-set semantics.
+export function parentIds(items: WorkItem[]): string[] {
+  const ids = new Set<string>();
+  for (const item of items) {
+    if (item.parentId) ids.add(item.parentId);
+  }
+  return Array.from(ids);
+}
+
 // ---------------------------------------------------------------------------
 // Hook — one call site in the route shell
 // ---------------------------------------------------------------------------
@@ -183,6 +197,19 @@ export interface WorkItemsPreferences {
   /** Board rows explicitly collapsed (default expanded). */
   boardCollapsed: Set<string>;
   toggleBoardCollapsed: (id: string) => void;
+  /**
+   * Expand all rows that have children in the given view. "Expand all"
+   * always means *show the full tree*: board/tree-filter-active clear
+   * the collapsed set; tree-without-filter adds every parent id to the
+   * expanded set.
+   */
+  expandAll: (view: WorkItemsView, filterActive: boolean, parentIds: string[]) => void;
+  /**
+   * Collapse every row that has children in the given view: the inverse
+   * of expandAll (sets the collapsed/expanded sets to the parent ids /
+   * empty respectively).
+   */
+  collapseAll: (view: WorkItemsView, filterActive: boolean, parentIds: string[]) => void;
 }
 
 export function useWorkItemsPreferences(projectId: string): WorkItemsPreferences {
@@ -263,6 +290,50 @@ export function useWorkItemsPreferences(projectId: string): WorkItemsPreferences
     [projectId],
   );
 
+  // Bulk expand/collapse (ADR-WIT-4): each view stores its state in a
+  // different set, so a single pair of handlers works for both views.
+  const expandAll = useCallback(
+    (view: WorkItemsView, filterActive: boolean, parentIDs: string[]) => {
+      if (view === "board") {
+        const next = new Set<string>();
+        setBoardCollapsedState(next);
+        saveCollapsedPreference(projectId, "board", next);
+        return;
+      }
+      if (filterActive) {
+        const next = new Set<string>();
+        setTreeCollapsedState(next);
+        saveCollapsedPreference(projectId, "tree", next);
+      } else {
+        const next = new Set(parentIDs);
+        setTreeExpandedState(next);
+        saveExpandedPreference(projectId, "tree", next);
+      }
+    },
+    [projectId],
+  );
+
+  const collapseAll = useCallback(
+    (view: WorkItemsView, filterActive: boolean, parentIDs: string[]) => {
+      if (view === "board") {
+        const next = new Set(parentIDs);
+        setBoardCollapsedState(next);
+        saveCollapsedPreference(projectId, "board", next);
+        return;
+      }
+      if (filterActive) {
+        const next = new Set(parentIDs);
+        setTreeCollapsedState(next);
+        saveCollapsedPreference(projectId, "tree", next);
+      } else {
+        const next = new Set<string>();
+        setTreeExpandedState(next);
+        saveExpandedPreference(projectId, "tree", next);
+      }
+    },
+    [projectId],
+  );
+
   return {
     view,
     setView,
@@ -274,5 +345,7 @@ export function useWorkItemsPreferences(projectId: string): WorkItemsPreferences
     toggleTreeCollapsed,
     boardCollapsed,
     toggleBoardCollapsed,
+    expandAll,
+    collapseAll,
   };
 }
