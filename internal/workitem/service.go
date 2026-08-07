@@ -426,9 +426,6 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 			fields.ClearScheduledStartAt = true
 		}
 	}
-	if err != nil {
-		return nil, mapDBError(err)
-	}
 	updated, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, msg.Id, current.Version, fields)
 	if err != nil {
 		return nil, mapDBError(err)
