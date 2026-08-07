@@ -23,6 +23,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useBatchMoveWorkItems } from "@/components/work-items/batch-move";
 import { computeBlockState, buildTreeData, filterItemsByKindStatus } from "@/components/work-items/dependency-utils";
 import {
   useWorkItemSelection,
@@ -33,10 +34,10 @@ import {
 } from "@/components/work-items/work-items-board";
 import {
   WorkItemsFilterBar,
-  type WorkItemsView,
 } from "@/components/work-items/work-items-filter-bar";
 import { useDebouncedValue } from "@/components/work-items/use-debounced-value";
 import { WorkItemsTree } from "@/components/work-items/work-items-tree";
+import { useWorkItemsPreferences } from "@/components/work-items/work-items-preferences";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -49,16 +50,27 @@ export const Route = createRoute({
 function WorkItemsPage() {
   const { data: projects } = useListProjects();
   const [projectId, setProjectId] = useState<string>("");
-  const [view, setView] = useState<WorkItemsView>("board");
-  const [search, setSearch] = useState("");
-  const debouncedSearch = useDebouncedValue(search, 300);
-  const [statusFilter, setStatusFilter] = useState<string>("");
-  const [kindFilter, setKindFilter] = useState<string>("");
-  const [sortBy, setSortBy] = useState("created_at");
-  const [sortOrder, setSortOrder] = useState("desc");
+
+  // Persisted view preferences (ADR-WI-1/ADR-WI-3/ADR-WI-6): the last
+  // default view, per-project filters, and per-project expand sets all
+  // survive navigation and reload via localStorage.
+  const {
+    view,
+    setView,
+    filters,
+    setFilters,
+    treeExpanded,
+    toggleTreeExpanded,
+    boardExpanded,
+    toggleBoardExpanded,
+  } = useWorkItemsPreferences(projectId);
+
+  const debouncedSearch = useDebouncedValue(filters.search, 300);
+  const { statuses, kinds, sortBy, sortOrder } = filters;
 
   const hasProjects = projects && projects.length > 0;
   const batchDelete = useBatchDeleteWorkItems();
+  const { moveItems, isPending: movePending } = useBatchMoveWorkItems(projectId);
 
   // Server state (design §3): list + DAG, both auto-refreshed. The shell
   // owns the queries so the filter bar's select-all/count and the shared
@@ -87,14 +99,15 @@ function WorkItemsPage() {
   );
 
   // Client-side filtering (design §5.4): kind + status + search compose
-  // over the full fetched set so the tree hierarchy stays intact.
+  // over the full fetched set so the tree hierarchy stays intact. OR
+  // within kind/status groups, AND across groups, empty = all (ADR-WI-6).
   const filteredItems = useMemo(
-    () => filterItemsByKindStatus(items, kindFilter, statusFilter, debouncedSearch),
-    [items, kindFilter, statusFilter, debouncedSearch],
+    () => filterItemsByKindStatus(items, kinds, statuses, debouncedSearch),
+    [items, kinds, statuses, debouncedSearch],
   );
   const treeData = useMemo(
-    () => buildTreeData(items, kindFilter, statusFilter, debouncedSearch),
-    [items, kindFilter, statusFilter, debouncedSearch],
+    () => buildTreeData(items, kinds, statuses, debouncedSearch),
+    [items, kinds, statuses, debouncedSearch],
   );
 
   // Selection (design §5.1): cascade selection uses the FULL items list
@@ -103,7 +116,7 @@ function WorkItemsPage() {
   // the complete hierarchy (not just filtered treeItems) so that
   // cascade toggles reach descendants that may be hidden by the current
   // kind/status/search filter.
-  const resetKey = [projectId, statusFilter, kindFilter, debouncedSearch, sortBy, sortOrder].join("|");
+  const resetKey = [projectId, statuses.join(","), kinds.join(","), debouncedSearch, sortBy, sortOrder].join("|");
   const childrenOf = useCallback(
     (parentId: string) => (items ?? []).filter((i) => i.parentId === parentId),
     [items],
@@ -129,7 +142,16 @@ function WorkItemsPage() {
     });
   };
 
-  const hasQuery = statusFilter !== "" || kindFilter !== "" || debouncedSearch !== "";
+  // Bulk "Move to…" (ADR-WI-5): the selection toolbar's keyboard path for
+  // multi-move, sharing the exact gates + mutation path with board
+  // multi-drag.
+  const itemsById = useMemo(() => new Map((items ?? []).map((i) => [i.id, i])), [items]);
+  const handleMoveSelected = (targetStatus: number) => {
+    if (selected.size === 0) return;
+    void moveItems(Array.from(selected), targetStatus, { itemsById, blockState });
+  };
+
+  const hasQuery = statuses.length > 0 || kinds.length > 0 || debouncedSearch !== "";
 
   return (
     <div className="flex flex-col gap-6" style={{ height: "calc(100vh - 64px)" }}>
@@ -155,16 +177,16 @@ function WorkItemsPage() {
         projects={projects}
         projectId={projectId}
         onProjectChange={setProjectId}
-        search={search}
-        onSearchChange={setSearch}
-        statusFilter={statusFilter}
-        onStatusFilterChange={setStatusFilter}
-        kindFilter={kindFilter}
-        onKindFilterChange={setKindFilter}
+        search={filters.search}
+        onSearchChange={(value) => setFilters({ search: value })}
+        statuses={statuses}
+        onStatusFilterChange={(next) => setFilters({ statuses: next })}
+        kinds={kinds}
+        onKindFilterChange={(next) => setFilters({ kinds: next })}
         sortBy={sortBy}
-        onSortByChange={setSortBy}
+        onSortByChange={(value) => setFilters({ sortBy: value })}
         sortOrder={sortOrder}
-        onSortOrderChange={setSortOrder}
+        onSortOrderChange={(value) => setFilters({ sortOrder: value })}
         view={view}
         onViewChange={setView}
         visibleCount={visibleItems.length}
@@ -174,6 +196,8 @@ function WorkItemsPage() {
         onToggleAll={handleToggleAll}
         onDeleteSelected={handleBatchDelete}
         deletePending={batchDelete.isPending}
+        onMoveSelected={handleMoveSelected}
+        movePending={movePending}
       />
 
       {!hasProjects && (
@@ -202,6 +226,8 @@ function WorkItemsPage() {
                 matchIds={new Set(treeData.matches.map((i) => i.id))}
                 ancestorIds={treeData.ancestorIds}
                 filterActive={hasQuery}
+                expandedIds={treeExpanded}
+                onToggleExpand={toggleTreeExpanded}
                 blockState={blockState}
                 selected={selected}
                 onToggleSelect={toggle}
@@ -216,6 +242,8 @@ function WorkItemsPage() {
                 blockState={blockState}
                 selected={selected}
                 onToggleSelect={toggle}
+                expandedIds={boardExpanded}
+                onToggleExpand={toggleBoardExpanded}
                 isLoading={isLoading}
                 error={error}
                 hasQuery={hasQuery}

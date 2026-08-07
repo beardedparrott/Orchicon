@@ -131,10 +131,10 @@ export function kindLabel(kind: number): string {
 }
 
 export const KIND_FILTER_OPTIONS = [
-  { value: String(WorkItemKind.EPIC), label: "Epic" },
-  { value: String(WorkItemKind.FEATURE), label: "Feature" },
-  { value: String(WorkItemKind.TASK), label: "Task" },
-  { value: String(WorkItemKind.SUBTASK), label: "Subtask" },
+  { value: WorkItemKind.EPIC, label: "Epic" },
+  { value: WorkItemKind.FEATURE, label: "Feature" },
+  { value: WorkItemKind.TASK, label: "Task" },
+  { value: WorkItemKind.SUBTASK, label: "Subtask" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -226,15 +226,15 @@ export function statusMeta(status: number): StatusMeta {
 }
 
 export const STATUS_FILTER_OPTIONS = [
-  { value: String(WorkItemStatus.PENDING), label: "pending" },
-  { value: String(WorkItemStatus.READY), label: "ready" },
-  { value: String(WorkItemStatus.ASSIGNED), label: "assigned" },
-  { value: String(WorkItemStatus.RUNNING), label: "running" },
-  { value: String(WorkItemStatus.SUCCEEDED), label: "succeeded" },
-  { value: String(WorkItemStatus.FAILED), label: "failed" },
-  { value: String(WorkItemStatus.CANCELLED), label: "cancelled" },
-  { value: String(WorkItemStatus.RECOVERING), label: "recovering" },
-  { value: String(WorkItemStatus.SCHEDULED), label: "scheduled" },
+  { value: WorkItemStatus.PENDING, label: "pending" },
+  { value: WorkItemStatus.READY, label: "ready" },
+  { value: WorkItemStatus.ASSIGNED, label: "assigned" },
+  { value: WorkItemStatus.RUNNING, label: "running" },
+  { value: WorkItemStatus.SUCCEEDED, label: "succeeded" },
+  { value: WorkItemStatus.FAILED, label: "failed" },
+  { value: WorkItemStatus.CANCELLED, label: "cancelled" },
+  { value: WorkItemStatus.RECOVERING, label: "recovering" },
+  { value: WorkItemStatus.SCHEDULED, label: "scheduled" },
 ];
 
 // ---------------------------------------------------------------------------

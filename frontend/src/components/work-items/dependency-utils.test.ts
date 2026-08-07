@@ -109,28 +109,51 @@ describe("filterItemsByKindStatus", () => {
   const subtask = item({ id: "s", title: "Write DSL spec", kind: WorkItemKind.SUBTASK, status: WorkItemStatus.PENDING });
 
   it("filters by kind", () => {
-    const ids = filterItemsByKindStatus([epic, task, subtask], String(WorkItemKind.TASK), "").map((i) => i.id);
+    const ids = filterItemsByKindStatus([epic, task, subtask], [WorkItemKind.TASK], []).map((i) => i.id);
     expect(ids).toEqual(["t"]);
   });
 
   it("filters by status", () => {
-    const ids = filterItemsByKindStatus([epic, task, subtask], "", String(WorkItemStatus.READY)).map((i) => i.id);
+    const ids = filterItemsByKindStatus([epic, task, subtask], [], [WorkItemStatus.READY]).map((i) => i.id);
     expect(ids).toEqual(["t"]);
   });
 
   it("filters by search", () => {
-    const ids = filterItemsByKindStatus([epic, task, subtask], "", "", "dsl").map((i) => i.id);
+    const ids = filterItemsByKindStatus([epic, task, subtask], [], [], "dsl").map((i) => i.id);
     expect(ids).toEqual(["s"]);
   });
 
   it("composes kind + status + search", () => {
     const ids = filterItemsByKindStatus(
       [epic, task, subtask],
-      String(WorkItemKind.TASK),
-      String(WorkItemStatus.READY),
+      [WorkItemKind.TASK],
+      [WorkItemStatus.READY],
       "migration",
     ).map((i) => i.id);
     expect(ids).toEqual(["t"]);
+  });
+
+  it("OR-composes multiple kinds", () => {
+    const ids = filterItemsByKindStatus(
+      [epic, task, subtask],
+      [WorkItemKind.EPIC, WorkItemKind.TASK],
+      [],
+    ).map((i) => i.id);
+    expect(ids).toEqual(["e", "t"]);
+  });
+
+  it("OR-composes multiple statuses", () => {
+    const ids = filterItemsByKindStatus(
+      [epic, task, subtask],
+      [],
+      [WorkItemStatus.PENDING, WorkItemStatus.READY],
+    ).map((i) => i.id);
+    expect(ids).toEqual(["e", "t", "s"]);
+  });
+
+  it("empty selections filter nothing", () => {
+    const ids = filterItemsByKindStatus([epic, task, subtask], [], []).map((i) => i.id);
+    expect(ids).toEqual(["e", "t", "s"]);
   });
 });
 
@@ -143,7 +166,7 @@ describe("buildTreeData (regression: search must not orphan matches)", () => {
   const all = [epic, feature, task, subtask, otherEpic];
 
   it("deep search results keep their whole ancestor chain", () => {
-    const data = buildTreeData(all, "", "", "dsl");
+    const data = buildTreeData(all, [], [], "dsl");
     expect(data.matches.map((i) => i.id)).toEqual(["s"]);
     // The searched subtask must be reachable under its epic — the
     // regression that previously rendered an empty tree.
@@ -156,7 +179,7 @@ describe("buildTreeData (regression: search must not orphan matches)", () => {
   });
 
   it("kind filter keeps ancestors as dimmed containers only", () => {
-    const data = buildTreeData(all, String(WorkItemKind.TASK), "");
+    const data = buildTreeData(all, [WorkItemKind.TASK], []);
     expect(data.matches.map((i) => i.id)).toEqual(["t"]);
     expect(data.treeItems.map((i) => i.id).sort()).toEqual(["e", "f", "t"].sort());
     expect(data.ancestorIds.has("e")).toBe(true);
@@ -164,7 +187,7 @@ describe("buildTreeData (regression: search must not orphan matches)", () => {
   });
 
   it("no filters: every item is a match and no ancestor-only rows exist", () => {
-    const data = buildTreeData(all, "", "");
+    const data = buildTreeData(all, [], []);
     expect(data.matches.map((i) => i.id).sort()).toEqual(all.map((i) => i.id).sort());
     expect(data.treeItems.map((i) => i.id).sort()).toEqual(all.map((i) => i.id).sort());
   });

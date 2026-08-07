@@ -5,8 +5,13 @@
 // state, and the shared selection. This view renders the rows with
 // cascade-aware tri-state checkboxes, indent guides, blocked chips, and
 // file-explorer auto-expand when a filter is active.
+//
+// Expand/collapse is persisted per project (ADR-WI-3): the page shell
+// owns the expanded id set + toggle and passes them in; the view renders
+// `expanded = filterActive ? ancestorIds.has(id) : expandedIds.has(id)`.
+// While a filter is active the visual auto-expands ancestors, but the
+// chevron click still writes the persisted set.
 
-import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { ChevronRight, SearchX } from "lucide-react";
 
@@ -26,6 +31,9 @@ export interface WorkItemsTreeProps {
   /** ids of ancestor-only container rows (dimmed when filtering) */
   ancestorIds: Set<string>;
   filterActive: boolean;
+  /** persisted per-project expand state (ADR-WI-3) */
+  expandedIds: Set<string>;
+  onToggleExpand: (id: string) => void;
   blockState: BlockState;
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
@@ -39,6 +47,8 @@ export function WorkItemsTree({
   matchIds,
   ancestorIds,
   filterActive,
+  expandedIds,
+  onToggleExpand,
   blockState,
   selected,
   onToggleSelect,
@@ -99,6 +109,8 @@ export function WorkItemsTree({
             matchIds={matchIds}
             ancestorIds={ancestorIds}
             filterActive={filterActive}
+            expandedIds={expandedIds}
+            onToggleExpand={onToggleExpand}
           />
         ))}
       </div>
@@ -116,6 +128,8 @@ function TreeNode({
   matchIds,
   ancestorIds,
   filterActive,
+  expandedIds,
+  onToggleExpand,
 }: {
   item: WorkItem;
   childrenOf: (parentId: string) => WorkItem[];
@@ -126,13 +140,14 @@ function TreeNode({
   matchIds: Set<string>;
   ancestorIds: Set<string>;
   filterActive: boolean;
+  expandedIds: Set<string>;
+  onToggleExpand: (id: string) => void;
 }) {
-  const [userExpanded, setUserExpanded] = useState(false);
   const children = childrenOf(item.id);
   const hasChildren = children.length > 0;
   const isMatch = matchIds.has(item.id);
   const isAncestor = ancestorIds.has(item.id);
-  const expanded = filterActive ? ancestorIds.has(item.id) : userExpanded;
+  const expanded = filterActive ? ancestorIds.has(item.id) : expandedIds.has(item.id);
   // Dimmed ancestor container rows (kept so filtered results stay
   // reachable under their parents) are NOT selectable: checking one would
   // cascade-select the very epics/features the user filtered out, and
@@ -187,13 +202,13 @@ function TreeNode({
         {hasChildren ? (
           <button
             type="button"
-            onClick={() => setUserExpanded((v) => !v)}
+            onClick={() => onToggleExpand(item.id)}
             aria-expanded={expanded}
             aria-label={expanded ? `Collapse ${item.title}` : `Expand ${item.title}`}
             className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
           >
             <ChevronRight
-              className={cn("h-3.5 w-3.5 transition-transform", expanded && "rotate-90")}
+              className={cn("h-3.5 w-3.5 transition-transform motion-reduce:transition-none", expanded && "rotate-90")}
             />
           </button>
         ) : (
@@ -229,6 +244,8 @@ function TreeNode({
             matchIds={matchIds}
             ancestorIds={ancestorIds}
             filterActive={filterActive}
+            expandedIds={expandedIds}
+            onToggleExpand={onToggleExpand}
           />
         ))}
     </div>
