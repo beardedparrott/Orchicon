@@ -118,11 +118,12 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		t := msg.ScheduledStartAt.AsTime()
 		scheduledStartAt = &t
 	}
-	// auto_start_workflow defaults to true when unset (proto optional).
-	// Only false when explicitly set to false.
-	autoStart := true
-	if msg.AutoStartWorkflow != nil && !*msg.AutoStartWorkflow {
-		autoStart = false
+	// auto_start_workflow defaults to false when unset (proto optional) —
+	// "Start immediately on save" is opt-in, never the default (bug fix:
+	// the old true default kicked off runs on every create/save).
+	autoStart := false
+	if msg.AutoStartWorkflow != nil && *msg.AutoStartWorkflow {
+		autoStart = true
 	}
 	workflowID := msg.WorkflowId
 	if workflowID == "" {
@@ -450,12 +451,14 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	// A kind switch to a non-schedulable kind clears the schedule itself
-	// (ADR-WIT-2) — the user re-typed the item, they did not ask to start
-	// it now. Without this guard the post-commit auto-start below would
-	// see the cleared schedule and start the run immediately. An explicit
-	// autoStartWorkflow=true in the same request still wins.
-	kindSwitchClearedSchedule := kindSwitchPlan != nil && kindSwitchPlan.ClearScheduledStartAt
+	// A kind switch must never trigger the post-commit auto-start on its
+	// own — the user re-typed the item, they did not ask to start it now
+	// (ADR-WIT-2). This holds for every switch: to a non-schedulable kind
+	// (which clears the schedule) AND between schedulable kinds (e.g.
+	// Task → Subtask, where no schedule is cleared so the old guard missed
+	// it — the destructive bug). Only an explicit autoStartWorkflow=true in
+	// the same request still wins.
+	kindSwitchInFlight := kindSwitchPlan != nil
 	userExplicitlyAutoStarts := msg.AutoStartWorkflow != nil && *msg.AutoStartWorkflow
 	// Kind switch events: work_item.kind_changed for the switched item
 	// (the authoritative record of the switch, carrying old_kind +
@@ -491,7 +494,7 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	// time, and auto_start_workflow is true. If a previous run exists it
 	// must be terminal (completed/failed/aborted) — active runs are not
 	// duplicated.
-	if updated.WorkflowID != nil && *updated.WorkflowID != "" && updated.ScheduledStartAt == nil && updated.AutoStartWorkflow && !(kindSwitchClearedSchedule && !userExplicitlyAutoStarts) && s.startWorkflowFn != nil {
+	if updated.WorkflowID != nil && *updated.WorkflowID != "" && updated.ScheduledStartAt == nil && updated.AutoStartWorkflow && !(kindSwitchInFlight && !userExplicitlyAutoStarts) && s.startWorkflowFn != nil {
 		shouldStart := true
 		if updated.WorkflowRunID != "" {
 			var runStatus string

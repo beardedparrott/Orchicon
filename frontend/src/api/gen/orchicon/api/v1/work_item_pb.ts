@@ -298,7 +298,7 @@ export class WorkItem extends Message<WorkItem> {
   scheduledStartAt?: Timestamp;
 
   /**
-   * true = auto-start on save; false = manual start only; unset defaults to true
+   * true = auto-start on save; false = manual start only; unset defaults to false (opt-in)
    *
    * @generated from field: optional bool auto_start_workflow = 21;
    */

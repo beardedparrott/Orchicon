@@ -355,11 +355,14 @@ func TestKindSwitchProjectMoveDB(t *testing.T) {
 	}
 }
 
-// TestKindSwitchAutoStartDB verifies that a kind switch to a
-// non-schedulable kind (which clears the schedule per ADR-WIT-2) does not
-// trigger the post-commit auto-start — the user re-typed the item, they
-// did not ask to start it now. An explicit autoStartWorkflow=true in the
-// same request still wins.
+// TestKindSwitchAutoStartDB verifies that a kind switch never triggers the
+// post-commit auto-start on its own — the user re-typed the item, they did
+// not ask to start it now (ADR-WIT-2). This holds for switches to a
+// non-schedulable kind (which clears the schedule) AND between schedulable
+// kinds (Task → Subtask), where the destructive bug lived: nothing was
+// cleared, so the post-commit auto-start fired whenever the item had
+// auto_start_workflow=true stored (the old default) and no scheduled time.
+// An explicit autoStartWorkflow=true in the same request still wins.
 func TestKindSwitchAutoStartDB(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -369,6 +372,8 @@ func TestKindSwitchAutoStartDB(t *testing.T) {
 	epic := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindEpic, nil)
 
 	future := time.Now().Add(24 * time.Hour)
+	// mkScheduled: auto-start task with a future scheduled start (the
+	// switch to a non-schedulable kind clears the schedule).
 	mkScheduled := func() db.WorkItemRow {
 		t.Helper()
 		item := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
@@ -377,6 +382,18 @@ func TestKindSwitchAutoStartDB(t *testing.T) {
 			ScheduledStartAt:  &future,
 			AutoStartWorkflow: boolPtr(true),
 			Status:            strPtr(domain.WorkItemScheduled),
+		})
+		return readItem(t, pool, item.ID)
+	}
+	// mkImmediate: auto-start task with NO scheduled start — the setup
+	// where a plain kind switch used to kick off a run immediately.
+	mkImmediate := func() db.WorkItemRow {
+		t.Helper()
+		item := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
+		writeItem(t, pool, item.ID, item.Version, db.UpdateWorkItemFields{
+			WorkflowID:        strPtr("wf-kind-switch-test"),
+			AutoStartWorkflow: boolPtr(true),
+			Status:            strPtr(domain.WorkItemReady),
 		})
 		return readItem(t, pool, item.ID)
 	}
@@ -422,6 +439,39 @@ func TestKindSwitchAutoStartDB(t *testing.T) {
 	}
 	if len(started) != 1 || started[0] != sched2.ID {
 		t.Fatalf("explicit auto-start should fire once for sched2, got %v", started)
+	}
+
+	// 3. The reported bug: an IMMEDIATE auto-start task switched to a
+	// schedulable kind (Task → Subtask) with NO explicit autoStartWorkflow
+	// in the request must NOT auto-start. The old guard only suppressed
+	// when the switch cleared the schedule (non-schedulable kinds); here
+	// nothing is cleared and ScheduledStartAt is nil, so the post-commit
+	// auto-start fired and kicked off a run the user never asked for.
+	immediate1 := mkImmediate()
+	if err := update(immediate1, func(m *apiv1.UpdateWorkItemRequest) {
+		m.Kind = kind(apiv1.WorkItemKind_WORK_ITEM_KIND_SUBTASK)
+	}); err != nil {
+		t.Fatalf("switch immediate task → subtask: %v", err)
+	}
+	cur3 := readItem(t, pool, immediate1.ID)
+	if cur3.Kind != domain.WorkItemKindSubtask {
+		t.Fatalf("immediate1 kind = %s, want subtask", cur3.Kind)
+	}
+	if len(started) != 1 || started[0] != sched2.ID {
+		t.Fatalf("schedulable kind switch must not auto-start: %v", started)
+	}
+
+	// 4. An explicit autoStartWorkflow=true on a schedulable switch still
+	// wins (same contract as the non-schedulable case).
+	immediate2 := mkImmediate()
+	if err := update(immediate2, func(m *apiv1.UpdateWorkItemRequest) {
+		m.Kind = kind(apiv1.WorkItemKind_WORK_ITEM_KIND_SUBTASK)
+		m.AutoStartWorkflow = boolPtr(true)
+	}); err != nil {
+		t.Fatalf("switch immediate task → subtask with explicit auto-start: %v", err)
+	}
+	if len(started) != 2 || started[1] != immediate2.ID {
+		t.Fatalf("explicit auto-start should fire once for immediate2, got %v", started)
 	}
 }
 
@@ -552,5 +602,55 @@ func TestUpdateWorkItemKindSwitchDB(t *testing.T) {
 	cur = readItem(t, pool, epic2.ID)
 	if cur.Kind != domain.WorkItemKindFeature || cur.ParentID == nil || *cur.ParentID != epic.ID {
 		t.Fatalf("epic2 after switch = kind %s parent %v, want feature under %s", cur.Kind, cur.ParentID, epic.ID)
+	}
+}
+
+// TestCreateWorkItemAutoStartDefaultDB verifies the bug-fix default: a new
+// work item created without an explicit autoStartWorkflow must have
+// auto_start_workflow = false ("Start immediately on save" is opt-in, never
+// the default). An explicit true in the create request still wins.
+func TestCreateWorkItemAutoStartDefaultDB(t *testing.T) {
+	pool := validateParentTestPool(t)
+	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
+	s := New(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	projectA := validateParentProject(t, ctx, pool)
+
+	create := func(mutate func(m *apiv1.CreateWorkItemRequest)) db.WorkItemRow {
+		t.Helper()
+		req := connect.NewRequest(&apiv1.CreateWorkItemRequest{
+			ProjectId: projectA,
+			Kind:      apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC,
+			Title:     "Auto-start default " + strings.ToLower(db.NewID()),
+			Priority:  0,
+		})
+		mutate(req.Msg)
+		resp, err := s.CreateWorkItem(ctx, req)
+		if err != nil {
+			t.Fatalf("create work item: %v", err)
+		}
+		return readItem(t, pool, resp.Msg.WorkItem.Id)
+	}
+
+	// 1. Unset autoStartWorkflow → defaults to false (the fix).
+	item := create(func(m *apiv1.CreateWorkItemRequest) {})
+	if item.AutoStartWorkflow {
+		t.Fatalf("new work item without explicit auto-start should default to false, got true")
+	}
+
+	// 2. Explicit true → stays true (opt-in honored).
+	item2 := create(func(m *apiv1.CreateWorkItemRequest) {
+		m.AutoStartWorkflow = boolPtr(true)
+	})
+	if !item2.AutoStartWorkflow {
+		t.Fatalf("explicit auto-start true should be honored, got false")
+	}
+
+	// 3. Explicit false → false.
+	item3 := create(func(m *apiv1.CreateWorkItemRequest) {
+		m.AutoStartWorkflow = boolPtr(false)
+	})
+	if item3.AutoStartWorkflow {
+		t.Fatalf("explicit auto-start false should be honored, got true")
 	}
 }

@@ -100,7 +100,7 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
   scheduledStartAt?: Timestamp;
 
   /**
-   * default true when unset; set false to defer start
+   * default false when unset (opt-in); set true to start immediately on save
    *
    * @generated from field: optional bool auto_start_workflow = 14;
    */
