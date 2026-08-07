@@ -582,22 +582,11 @@ function WorkItemDetailPage() {
       {/* Dependencies (DAG edges — docs/02 §2.2, docs/09 §3.2) */}
       <Card>
         <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle>Dependencies</CardTitle>
-              <CardDescription>
-                Edges in the work DAG. Cycles are rejected at admission (recursive
-                CTE — docs/09 §11).
-              </CardDescription>
-            </div>
-            {item.projectId && (
-              <Button variant="outline" size="sm" asChild>
-                <Link to="/work-items/graph" search={{ projectId: item.projectId }}>
-                  View Graph
-                </Link>
-              </Button>
-            )}
-          </div>
+          <CardTitle>Dependencies</CardTitle>
+          <CardDescription>
+            Edges in the work DAG. Cycles are rejected at admission (recursive
+            CTE — docs/09 §11).
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {/* Add dependency form */}
