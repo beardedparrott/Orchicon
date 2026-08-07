@@ -26,8 +26,10 @@ import (
 	"unicode/utf8"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/tenant"
+	"github.com/jackc/pgx/v5"
 )
 
 // Input size bounds (AGENTS.md security standards).
@@ -46,6 +48,53 @@ var kindOrder = map[string]int{
 	domain.WorkItemKindFeature: 2,
 	domain.WorkItemKindTask:    3,
 	domain.WorkItemKindSubtask: 4,
+}
+
+// validateTopLevelKind rejects a top-level (parentless) work item that is
+// not an epic — the hierarchy invariant that only epics are top-level.
+func validateTopLevelKind(kind string) error {
+	if kind != domain.WorkItemKindEpic {
+		return fmt.Errorf("a %s must have a parent; only epics can be top-level", kind)
+	}
+	return nil
+}
+
+// validateKindDepth rejects a parent whose depth is not strictly smaller
+// than the child's (a child must be *deeper* than its parent). Because
+// depth increases monotonically down the tree, this check alone makes
+// reparenting cycle-safe: every ancestor has strictly smaller depth, so a
+// node can never be moved under itself or one of its descendants.
+func validateKindDepth(childKind, parentKind string) error {
+	parentDepth := kindOrder[parentKind]
+	childDepth := kindOrder[childKind]
+	if childDepth <= parentDepth {
+		return fmt.Errorf("a %s must be deeper than its parent (parent is %s)", childKind, parentKind)
+	}
+	return nil
+}
+
+// ValidateParent enforces the work-item hierarchy rules for a parent
+// assignment. It is shared by the Create/Update Connect handlers and the
+// Ask Orchicon update_work_item tool so the two paths cannot drift
+// (AGENTS.md). parentID "" means "no parent" (top-level), which is only
+// valid for epics. The parent is loaded inside the tenant transaction, so
+// a cross-tenant parent is a NotFound, not a leak. The parent must belong
+// to the given (effective) project.
+//
+// Errors: db.ErrNotFound when the parent id does not exist in the tenant;
+// any other error is a plain hierarchy violation (CodeInvalidArgument).
+func ValidateParent(ctx context.Context, tx pgx.Tx, tenantID, parentID, childKind, projectID string) error {
+	if parentID == "" {
+		return validateTopLevelKind(childKind)
+	}
+	parent, err := db.GetWorkItem(ctx, tx, tenantID, parentID)
+	if err != nil {
+		return err
+	}
+	if parent.ProjectID != projectID {
+		return errors.New("parent must be in the same project")
+	}
+	return validateKindDepth(childKind, parent.Kind)
 }
 
 // validateTitle trims and bounds-checks a work item title.

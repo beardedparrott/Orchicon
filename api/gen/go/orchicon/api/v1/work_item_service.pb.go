@@ -496,6 +496,7 @@ type UpdateWorkItemRequest struct {
 	AutoStartWorkflow  *bool                  `protobuf:"varint,17,opt,name=auto_start_workflow,json=autoStartWorkflow,proto3,oneof" json:"auto_start_workflow,omitempty"`
 	WorkflowRunId      *string                `protobuf:"bytes,18,opt,name=workflow_run_id,json=workflowRunId,proto3,oneof" json:"workflow_run_id,omitempty"` // set to empty string to allow re-schedule
 	RuntimeImage       *string                `protobuf:"bytes,19,opt,name=runtime_image,json=runtimeImage,proto3,oneof" json:"runtime_image,omitempty"`      // runtime container image tag; empty = base image
+	ParentId           *string                `protobuf:"bytes,20,opt,name=parent_id,json=parentId,proto3,oneof" json:"parent_id,omitempty"`                  // reparent: empty = clear parent (epic only); unset = unchanged
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -631,6 +632,13 @@ func (x *UpdateWorkItemRequest) GetWorkflowRunId() string {
 func (x *UpdateWorkItemRequest) GetRuntimeImage() string {
 	if x != nil && x.RuntimeImage != nil {
 		return *x.RuntimeImage
+	}
+	return ""
+}
+
+func (x *UpdateWorkItemRequest) GetParentId() string {
+	if x != nil && x.ParentId != nil {
+		return *x.ParentId
 	}
 	return ""
 }
@@ -1386,7 +1394,7 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\x15ListWorkItemsResponse\x128\n" +
 	"\n" +
 	"work_items\x18\x01 \x03(\v2\x19.orchicon.api.v1.WorkItemR\tworkItems\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xea\x06\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\x9a\a\n" +
 	"\x15UpdateWorkItemRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\x05title\x18\x02 \x01(\tH\x00R\x05title\x88\x01\x01\x12%\n" +
@@ -1407,7 +1415,8 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\x13auto_start_workflow\x18\x11 \x01(\bH\n" +
 	"R\x11autoStartWorkflow\x88\x01\x01\x12+\n" +
 	"\x0fworkflow_run_id\x18\x12 \x01(\tH\vR\rworkflowRunId\x88\x01\x01\x12(\n" +
-	"\rruntime_image\x18\x13 \x01(\tH\fR\fruntimeImage\x88\x01\x01B\b\n" +
+	"\rruntime_image\x18\x13 \x01(\tH\fR\fruntimeImage\x88\x01\x01\x12 \n" +
+	"\tparent_id\x18\x14 \x01(\tH\rR\bparentId\x88\x01\x01B\b\n" +
 	"\x06_titleB\x0e\n" +
 	"\f_descriptionB\x16\n" +
 	"\x14_acceptance_criteriaB\t\n" +
@@ -1421,7 +1430,9 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\x13_scheduled_start_atB\x16\n" +
 	"\x14_auto_start_workflowB\x12\n" +
 	"\x10_workflow_run_idB\x10\n" +
-	"\x0e_runtime_image\"P\n" +
+	"\x0e_runtime_imageB\f\n" +
+	"\n" +
+	"_parent_id\"P\n" +
 	"\x16UpdateWorkItemResponse\x126\n" +
 	"\twork_item\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkItemR\bworkItem\"'\n" +
 	"\x15DeleteWorkItemRequest\x12\x0e\n" +

@@ -228,6 +228,9 @@ type UpdateWorkItemFields struct {
 	// WorkflowID links a work item to the workflow it's part of (set
 	// when a TASK step dispatches it). Nullable; empty string clears.
 	WorkflowID *string
+	// ParentID reparents the item. Empty string clears (sets NULL);
+	// non-empty sets the new parent. nil = unchanged.
+	ParentID *string
 	// Results is the work item's output JSON. The TaskReconciler
 	// writes _output (raw worker text) and _summary (extracted
 	// summary) here on terminal state (PR B).
@@ -313,6 +316,15 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 		} else {
 			q += fmt.Sprintf(`, workflow_id = $%d`, setIdx)
 			args = append(args, *f.WorkflowID)
+			setIdx++
+		}
+	}
+	if f.ParentID != nil {
+		if *f.ParentID == "" {
+			q += fmt.Sprintf(`, parent_id = NULL`)
+		} else {
+			q += fmt.Sprintf(`, parent_id = $%d`, setIdx)
+			args = append(args, *f.ParentID)
 			setIdx++
 		}
 	}

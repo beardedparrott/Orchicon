@@ -120,6 +120,7 @@ message UpdateWorkItemRequest {
   optional bool auto_start_workflow = 17;
   optional string workflow_run_id = 18; // set to empty string to allow re-schedule
   optional string runtime_image = 19; // runtime container image tag; empty = base image
+  optional string parent_id = 20; // reparent: empty = clear parent (epic only); unset = unchanged
 }
 
 message UpdateWorkItemResponse {

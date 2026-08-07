@@ -13,6 +13,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/tenant"
+	"github.com/beardedparrott/orchicon/internal/workitem"
 )
 
 var numberRefRe = regexp.MustCompile(`(?i)(?:number|item|#)\s*(\d+)`)
@@ -135,6 +136,7 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		Status              string `json:"status"`
 		Priority            int    `json:"priority"`
 		AcceptanceCriteria  string `json:"acceptance_criteria"`
+		ParentID            string `json:"parent_id"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -167,6 +169,14 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	}
 	if params.Priority > 0 {
 		update.Priority = &params.Priority
+	}
+	// Reparenting uses the same shared validation as the Connect Update
+	// path (AGENTS.md: the tool and the service cannot drift).
+	if params.ParentID != "" {
+		if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, params.ParentID, current.Kind, current.ProjectID); err != nil {
+			return nil, err
+		}
+		update.ParentID = &params.ParentID
 	}
 	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, params.ID, current.Version, update); err != nil {
 		return nil, err

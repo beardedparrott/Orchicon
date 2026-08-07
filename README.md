@@ -30,17 +30,17 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
-### v0.1.205 (2026-08-07)
+### v0.1.208 (2026-08-07)
 
 | Type | Change |
 |---|---|
-| Bug fix | **Work Items page regressions from the #207 merge fixed.** Status/Type multi-select filters now treat an empty selection as "show nothing" (defaults are every option selected, including recovery kinds and Checkpointing) — unchecking every type or status shows an empty page on both Tree and Board instead of everything. Tree parents can be collapsed again while a filter/search is active (a persisted `treeCollapsed` set records the choice and restores it after navigation). Board parents default EXPANDED again so "Epic + Feature" actually shows features instead of only top-level epics, and the parent chevron collapses/expands children and survives reload. Storage envelopes bumped to v2 so stale pre-fix filter state resets to the new defaults. |
+| Feature | **View and change a work item's parent from the detail/edit page.** Child work items now show a Parent card on the detail page — the parent's kind pill + title (linked) in view mode, and a dropdown in edit mode listing candidate parents as `title (kind)` so you can reparent the item (candidates are same-project items at a strictly higher level). Reparenting is enforced server-side on both `CreateWorkItem` and `UpdateWorkItem` via a shared validator (only epics are top-level, parents must be in the same project, depth must increase strictly) and is mirrored in the Ask Orchicon `update_work_item` tool; the outbox payload now carries `parent_id`. A cross-project move that would leave a child with a parent in the old project is rejected until the item is reparented in the target project. |
 
-### v0.1.204 (2026-08-07)
+### v0.1.207 (2026-08-07)
 
 | Type | Change |
 |---|---|
-| Feature | **Work Items page: persisted views + multi-select filters + bulk moves.** Tree-view expand/collapse now auto-saves per project so the hierarchy looks the same when you come back; board parents gain expand/collapse controls (default collapsed). Status and Type filters became checkbox multi-select dropdowns (OR within a group, AND across groups, empty = all) that save immediately and restore on return, and the last-used Tree/Board view is remembered as the default. Selected work items can be bulk-moved — drag one selected card to move the whole selection, or use the "Move to…" select in the selection toolbar; both share one validation + partial-success toast path. Board drops no longer auto-scroll mid-drag (the drop always lands on the visible column under the pointer), the optimistic cache write targets the real list query key so cards don't flash back to their origin column, and status labels are title-cased in the filter dropdowns, move menus, and toasts to match the column headers. |
+| Bug fix | **Work Items page regressions from the #207 merge fixed.** Filter, tree-collapse, and board-collapse regressions from the previous merge corrected (see UPDATES.md #90 for the full list). |
 
 ## Installation
 

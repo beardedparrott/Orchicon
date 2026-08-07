@@ -11,6 +11,7 @@ import {
   useAddDependency,
   useRemoveDependency,
   useGetDependencyGraph,
+  useListWorkItems,
 } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
 import { useListWorkflows } from "@/api/workflows";
@@ -70,8 +71,17 @@ function WorkItemDetailPage() {
   const [editRuntimeImage, setEditRuntimeImage] = useState("");
   const [editScheduledStartAt, setEditScheduledStartAt] = useState("");
   const [editAutoStartWorkflow, setEditAutoStartWorkflow] = useState(true);
+  const [editParentId, setEditParentId] = useState("");
 
   const { data: workflows } = useListWorkflows({ status: 2, templatesOnly: true }); // published templates only
+
+  // Candidate parents while editing. Fetched from the *edit* project so
+  // the dropdown switches when the user also reassigns the item (the
+  // dependency graph above is keyed on the item's current project and
+  // would go stale). Only enabled in edit mode.
+  const { data: editProjectItems } = useListWorkItems(editing ? editProjectId : "", {
+    enabled: editing,
+  });
 
   const [depTarget, setDepTarget] = useState("");
   const [depType, setDepType] = useState(1); // BLOCKS
@@ -135,6 +145,20 @@ function WorkItemDetailPage() {
     (n) => n.id !== id && n.projectId === item.projectId,
   );
 
+  // The item's parent, resolved from the already-loaded project graph.
+  const parentItem = item.parentId ? itemsById.get(item.parentId) : undefined;
+
+  // Valid parent candidates while editing: same project (the list query
+  // is scoped to the edit project), strictly higher in the hierarchy
+  // (epic > feature > task > subtask), and never the item itself. The
+  // server re-checks all of this — this is UX only (invariant #1).
+  const parentCandidates = (editProjectItems ?? []).filter(
+    (i) =>
+      i.id !== id &&
+      depthForKind(i.kind) < depthForKind(item.kind) &&
+      depthForKind(i.kind) > 0,
+  );
+
   const projectName =
     projects?.find((p) => p.id === item.projectId)?.name ?? item.projectId;
 
@@ -186,6 +210,7 @@ function WorkItemDetailPage() {
                 setEditProjectId(item.projectId);
                 setEditWorkflowId(item.workflowId ?? "");
                 setEditRuntimeImage(item.runtimeImage ?? "");
+                setEditParentId(item.parentId ?? "");
                 setEditScheduledStartAt(
                   item.scheduledStartAt
                     ? localDatetimeString(
@@ -291,6 +316,12 @@ function WorkItemDetailPage() {
               projectId: str("project_id"),
               workflowId: str("workflow_id"),
               workflowRunId: str("workflow_run_id"),
+              // parent_id is only sent when the YAML actually carries it.
+              // Sending "" means "clear parent", which the server rejects
+              // for non-epics — so a child whose parent line is absent
+              // (orphan, or line removed) stays unchanged instead of
+              // erroring on every save.
+              parentId: str("parent_id") || undefined,
             });
           }}
           saveDisabled={updateWorkItem.isPending}
@@ -387,6 +418,47 @@ function WorkItemDetailPage() {
             </CardTitle>
           </CardHeader>
         </Card>
+        {/* Parent — shown for children (view) / all non-epics (edit). The
+            dropdown candidates come from the edit project's items so they
+            switch when the item is reassigned. Options display the kind
+            next to the title ("Checkout flow (Feature)"). */}
+        {item.parentId || (editing && item.kind !== 1) ? (
+          <Card>
+            <CardHeader>
+              <CardDescription>Parent</CardDescription>
+              <CardTitle className="text-base">
+                {editing && item.kind !== 1 ? (
+                  <select
+                    value={editParentId}
+                    onChange={(e) => setEditParentId(e.target.value)}
+                    className="w-full rounded-md border bg-background px-2 py-1 text-sm"
+                  >
+                    <option value="">
+                      — Select parent —
+                    </option>
+                    {parentCandidates.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.title} ({kindLabel(p.kind)})
+                      </option>
+                    ))}
+                  </select>
+                ) : parentItem ? (
+                  <Link
+                    to="/work-items/$id"
+                    params={{ id: item.parentId }}
+                    className="inline-flex items-center gap-2 font-medium hover:underline"
+                    title={parentItem.title}
+                  >
+                    <KindPill kind={parentItem.kind} />
+                    <span className="truncate">{parentItem.title}</span>
+                  </Link>
+                ) : (
+                  item.parentId
+                )}
+              </CardTitle>
+            </CardHeader>
+          </Card>
+        ) : null}
         {item.scheduledStartAt && (
           <Card>
             <CardHeader>
@@ -532,7 +604,13 @@ function WorkItemDetailPage() {
             <select
               className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
               value={editProjectId}
-              onChange={(e) => setEditProjectId(e.target.value)}
+              onChange={(e) => {
+                setEditProjectId(e.target.value);
+                // The parent dropdown is repopulated from the target
+                // project; reset the selection so a stale parent from the
+                // old project is never kept (server re-validates anyway).
+                setEditParentId("");
+              }}
             >
               {(projects ?? []).map((p) => (
                 <option key={p.id} value={p.id}>
@@ -565,6 +643,7 @@ function WorkItemDetailPage() {
                     ? Timestamp.fromDate(new Date(editScheduledStartAt))
                     : undefined,
                   autoStartWorkflow: editAutoStartWorkflow,
+                  parentId: editParentId || undefined,
                 },
                 { onSuccess: () => setEditing(false) },
               )
@@ -775,6 +854,13 @@ function depTypeLabel(type: number): string {
     3: "relates_to",
   };
   return labels[type] ?? "unknown";
+}
+
+// Hierarchy depth of a work item kind (epic=1 … subtask=4, matching the
+// proto enum values). Unknown/recovery kinds are not valid parents via
+// the API, so they map to 0 (never shallower than a real kind).
+function depthForKind(kind: number): number {
+  return kind >= 1 && kind <= 4 ? kind : 0;
 }
 
 function localDatetimeString(d: Date): string {
