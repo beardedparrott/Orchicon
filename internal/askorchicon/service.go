@@ -2,6 +2,7 @@ package askorchicon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -24,19 +25,66 @@ type Service struct {
 	blobStore     blobstore.Store
 	modelDisc     *aigateway.ModelDiscoverer
 	toolRegistry  *ToolRegistry
+	// sendMessage injects a mid-run message into a live worker session
+	// (Stage 3). Wired by the server to the opencode adapter; nil when
+	// the session transport is unavailable.
+	sendMessage func(ctx context.Context, execID, message string) error
 	apiv1connect.UnimplementedAskOrchiconServiceHandler
 }
 
 var _ apiv1connect.AskOrchiconServiceHandler = (*Service)(nil)
 
 func New(pool *db.Pool, log *slog.Logger, blobStore blobstore.Store, modelDisc *aigateway.ModelDiscoverer) *Service {
-	return &Service{
+	s := &Service{
 		pool:         pool,
 		log:          log.With("component", "ask_orchicon"),
 		blobStore:    blobStore,
 		modelDisc:    modelDisc,
 		toolRegistry: NewToolRegistry(pool, log),
 	}
+	s.registerSessionTools()
+	return s
+}
+
+// SetSendExecutionMessage wires the live-session message router (the
+// opencode adapter's SendExecutionMessage) into the send_execution_message
+// tool.
+func (s *Service) SetSendExecutionMessage(fn func(ctx context.Context, execID, message string) error) {
+	s.sendMessage = fn
+}
+
+// registerSessionTools adds tools that depend on service-injected
+// dependencies (beyond pool/log).
+func (s *Service) registerSessionTools() {
+	s.toolRegistry.Add(ToolDefinition{
+		Name:        "send_execution_message",
+		Description: "Send a mid-run message to a live worker execution's opencode session (e.g. a nudge or a clarifying question). This does NOT create a new execution or work item — the worker answers within its current session and the reply streams back to the execution. Fails when the execution is not running on the session transport.",
+		Mutating:    true,
+		Properties: map[string]PropertySchema{
+			"execution_id": {Type: "string", Description: "The id of the live worker execution"},
+			"message":      {Type: "string", Description: "The message to inject into the worker's session"},
+		},
+		Required: []string{"execution_id", "message"},
+		Fn: func(ctx context.Context, _ *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+			var p struct {
+				ExecutionID string `json:"execution_id"`
+				Message     string `json:"message"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("invalid args: %w", err)
+			}
+			if strings.TrimSpace(p.ExecutionID) == "" || strings.TrimSpace(p.Message) == "" {
+				return nil, errors.New("execution_id and message are required")
+			}
+			if s.sendMessage == nil {
+				return nil, errors.New("session transport not available — execution is not running on a live session")
+			}
+			if err := s.sendMessage(ctx, p.ExecutionID, p.Message); err != nil {
+				return nil, err
+			}
+			return json.RawMessage(`{"sent":true}`), nil
+		},
+	})
 }
 
 // --- Conversations ---

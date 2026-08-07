@@ -185,6 +185,9 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 
 	// AskOrchiconService — conversational agent.
 	askSvc := askorchicon.New(deps.Pool, deps.Log, deps.BlobStore, deps.ModelDiscoverer)
+	if deps.SendExecutionMessage != nil {
+		askSvc.SetSendExecutionMessage(deps.SendExecutionMessage)
+	}
 	mux.Handle(apiv1connect.NewAskOrchiconServiceHandler(askSvc, interceptorOpt))
 
 	// Grafana UI reverse proxy (docs/10 §11): serves Grafana same-origin
