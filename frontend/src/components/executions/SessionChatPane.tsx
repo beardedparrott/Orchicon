@@ -523,6 +523,16 @@ export function SessionChatPane({
     }, 2000);
     return () => window.clearInterval(t);
   }, [isRunning, refetchTranscript]);
+
+  // When the execution finishes, the runner does a final transcript flush —
+  // refetch so the last message appears without a manual refresh.
+  const wasRunning = useRef(isRunning);
+  useEffect(() => {
+    if (wasRunning.current && !isRunning) {
+      void refetchTranscript();
+    }
+    wasRunning.current = isRunning;
+  }, [isRunning, refetchTranscript]);
   // Poll while running so user messages (goal/nudges/human) appear even
   // before the terminal flush.
   const live = useMemo(() => liveItems(events), [events]);
@@ -557,24 +567,33 @@ export function SessionChatPane({
   }, [isRunning, history, live, storedOutput]);
 
   // Auto-stick scroll: track whether the user is near the bottom; if so,
-  // keep it pinned on new items.
+  // keep it pinned on new items. The stick flag must only clear on a REAL
+  // manual scroll — the auto-scroll's own scroll event (and the smooth
+  // "jump to latest" animation) would otherwise reset it mid-stream and
+  // stop the view from following the conversation.
+  const lastAutoScrollRef = useRef(0);
   const onScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
+    if (Date.now() - lastAutoScrollRef.current < 200) return; // our own scroll
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     stickRef.current = nearBottom;
     setShowJump(!nearBottom);
   }, []);
 
   useEffect(() => {
-    if (stickRef.current) {
-      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    if (stickRef.current && scrollRef.current) {
+      // Instant jump (not smooth) so rapid updates always land exactly at
+      // the bottom; mark the timestamp so onScroll ignores this event.
+      lastAutoScrollRef.current = Date.now();
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [items, live]);
 
   const jumpToBottom = useCallback(() => {
     stickRef.current = true;
     setShowJump(false);
+    lastAutoScrollRef.current = Date.now();
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, []);
 

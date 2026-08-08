@@ -57,11 +57,14 @@ function ExecutionDetailPage() {
   // Live event stream (docs/10 §4). Subscribes to
   // StreamExecutionEvents filtered to this execution. onEvent
   // invalidates the detail query so the sidebar's status/cost/duration
-  // refreshes as the adapter reports.
+  // refreshes as the adapter reports, AND the session transcript so the
+  // chat shows the newest recorded parts (including the final message once
+  // the execution completes and the runner flushes the transcript).
   const { events, status } = useStreamExecutionEvents({
     executionId: id,
     onEvent: () => {
       qc.invalidateQueries({ queryKey: executionKeys.detail(id) });
+      qc.invalidateQueries({ queryKey: executionKeys.session(id) });
     },
   });
 
