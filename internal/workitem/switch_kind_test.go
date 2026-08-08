@@ -15,6 +15,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/jackc/pgx/v5"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // readItem loads a work item in a short-lived transaction that is rolled
@@ -477,6 +478,8 @@ func TestKindSwitchAutoStartDB(t *testing.T) {
 
 func boolPtr(b bool) *bool { return &b }
 
+func statusPtr(s apiv1.WorkItemStatus) *apiv1.WorkItemStatus { return &s }
+
 // TestUpdateWorkItemKindSwitchDB exercises the full UpdateWorkItem handler:
 // kind switching with parent walk-up, child reparenting, schedulability
 // cleanup, events, and the system-managed preconditions.
@@ -652,5 +655,139 @@ func TestCreateWorkItemAutoStartDefaultDB(t *testing.T) {
 	})
 	if item3.AutoStartWorkflow {
 		t.Fatalf("explicit auto-start false should be honored, got true")
+	}
+}
+
+// TestUpdateWorkItemScheduleFlipsStatusDB verifies the bug-fix contract:
+// saving a scheduled_start_at in UpdateWorkItem flips the edited item's
+// status to "scheduled" (AC2), and ONLY the edited item — sibling
+// scheduled items are untouched (no bulk flip). Guarded against in-flight
+// runs (a running item keeps its run status so the reconciler cannot fire
+// a duplicate run) and against a kind switch that clears the schedule.
+// See architecture-notes/running-workflows-not-showing-in-schedules.md
+// (ADR-001).
+func TestUpdateWorkItemScheduleFlipsStatusDB(t *testing.T) {
+	pool := validateParentTestPool(t)
+	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
+	s := New(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	projectA := validateParentProject(t, ctx, pool)
+	epic := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindEpic, nil)
+
+	future := time.Now().Add(24 * time.Hour)
+	tspb := timestamppb.New(future)
+
+	update := func(item db.WorkItemRow, mutate func(req *apiv1.UpdateWorkItemRequest)) (*connect.Response[apiv1.UpdateWorkItemResponse], error) {
+		t.Helper()
+		req := connect.NewRequest(&apiv1.UpdateWorkItemRequest{Id: item.ID})
+		mutate(req.Msg)
+		return s.UpdateWorkItem(ctx, req)
+	}
+	kind := func(k apiv1.WorkItemKind) *apiv1.WorkItemKind { return &k }
+
+	// 1. Item in `ready` + schedule set → status becomes `scheduled`.
+	readyItem := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
+	writeItem(t, pool, readyItem.ID, readyItem.Version, db.UpdateWorkItemFields{
+		Status: strPtr(domain.WorkItemReady),
+	})
+	resp, err := update(readyItem, func(m *apiv1.UpdateWorkItemRequest) {
+		m.ScheduledStartAt = tspb
+	})
+	if err != nil {
+		t.Fatalf("schedule a ready item: %v", err)
+	}
+	if resp.Msg.WorkItem.Status != apiv1.WorkItemStatus_WORK_ITEM_STATUS_SCHEDULED {
+		t.Fatalf("status after scheduling = %v, want scheduled", resp.Msg.WorkItem.Status)
+	}
+	cur := readItem(t, pool, readyItem.ID)
+	if cur.Status != domain.WorkItemScheduled {
+		t.Fatalf("db status after scheduling = %s, want scheduled", cur.Status)
+	}
+	if cur.ScheduledStartAt == nil {
+		t.Fatalf("scheduled_start_at should be persisted")
+	}
+
+	// 2. A sibling item with its own schedule is untouched (no bulk flip).
+	sibling := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
+	writeItem(t, pool, sibling.ID, sibling.Version, db.UpdateWorkItemFields{
+		Status:            strPtr(domain.WorkItemScheduled),
+		ScheduledStartAt:  &future,
+	})
+	after := readItem(t, pool, sibling.ID)
+	if after.Status != domain.WorkItemScheduled {
+		t.Fatalf("sibling status changed to %s, want scheduled untouched", after.Status)
+	}
+
+	// 3. The form echoes the current status — the schedule flip must
+	// override it (the dropdown would otherwise fight the flip).
+	ready2 := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
+	writeItem(t, pool, ready2.ID, ready2.Version, db.UpdateWorkItemFields{
+		Status: strPtr(domain.WorkItemReady),
+	})
+	resp3, err := update(ready2, func(m *apiv1.UpdateWorkItemRequest) {
+		m.ScheduledStartAt = tspb
+		m.Status = statusPtr(apiv1.WorkItemStatus_WORK_ITEM_STATUS_READY)
+	})
+	if err != nil {
+		t.Fatalf("schedule a ready item with echoed status: %v", err)
+	}
+	if resp3.Msg.WorkItem.Status != apiv1.WorkItemStatus_WORK_ITEM_STATUS_SCHEDULED {
+		t.Fatalf("echoed status should lose to the schedule flip, got %v", resp3.Msg.WorkItem.Status)
+	}
+
+	// 4. Active-run guard: a `running` item keeps its status so
+	// ScheduledRunReconciler cannot re-arm an in-flight run.
+	runningItem := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
+	writeItem(t, pool, runningItem.ID, runningItem.Version, db.UpdateWorkItemFields{
+		Status: strPtr(domain.WorkItemRunning),
+	})
+	resp4, err := update(runningItem, func(m *apiv1.UpdateWorkItemRequest) {
+		m.ScheduledStartAt = tspb
+	})
+	if err != nil {
+		t.Fatalf("schedule a running item: %v", err)
+	}
+	if resp4.Msg.WorkItem.Status != apiv1.WorkItemStatus_WORK_ITEM_STATUS_RUNNING {
+		t.Fatalf("running item status = %v, want running preserved", resp4.Msg.WorkItem.Status)
+	}
+	cur4 := readItem(t, pool, runningItem.ID)
+	if cur4.Status != domain.WorkItemRunning {
+		t.Fatalf("db running item status = %s, want running preserved", cur4.Status)
+	}
+	if cur4.ScheduledStartAt == nil {
+		t.Fatalf("running item schedule should still be stored")
+	}
+
+	// 5. Kind-switch precedence: switching to a non-schedulable kind clears
+	// the schedule and demotes the status — the flip must not win.
+	switching := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
+	resp5, err := update(switching, func(m *apiv1.UpdateWorkItemRequest) {
+		m.Kind = kind(apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE)
+		m.ScheduledStartAt = tspb
+	})
+	if err != nil {
+		t.Fatalf("switch kind + schedule: %v", err)
+	}
+	if resp5.Msg.WorkItem.Status == apiv1.WorkItemStatus_WORK_ITEM_STATUS_SCHEDULED {
+		t.Fatalf("kind switch that clears the schedule must not leave status scheduled")
+	}
+	cur5 := readItem(t, pool, switching.ID)
+	if cur5.ScheduledStartAt != nil {
+		t.Fatalf("schedule should be cleared on non-schedulable kind switch, got %v", cur5.ScheduledStartAt)
+	}
+
+	// 6. Clear path: an update without scheduledStartAt leaves status alone.
+	clearItem := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
+	writeItem(t, pool, clearItem.ID, clearItem.Version, db.UpdateWorkItemFields{
+		Status: strPtr(domain.WorkItemReady),
+	})
+	resp6, err := update(clearItem, func(m *apiv1.UpdateWorkItemRequest) {
+		m.Title = strPtr("Renamed without schedule")
+	})
+	if err != nil {
+		t.Fatalf("update without schedule: %v", err)
+	}
+	if resp6.Msg.WorkItem.Status != apiv1.WorkItemStatus_WORK_ITEM_STATUS_READY {
+		t.Fatalf("status without schedule change = %v, want ready untouched", resp6.Msg.WorkItem.Status)
 	}
 }

@@ -172,6 +172,20 @@ func validateStatus(status apiv1.WorkItemStatus) string {
 	}
 }
 
+// isActiveRunStatus reports whether a work item is currently bound to an
+// in-flight workflow run (running / checkpointing / recovering). These are
+// the statuses ScheduledRunReconciler must never re-arm against, and the
+// statuses the Schedules "Running" view shows (ADR-001/002 in
+// architecture-notes/running-workflows-not-showing-in-schedules.md).
+func isActiveRunStatus(status string) bool {
+	switch status {
+	case domain.WorkItemRunning, domain.WorkItemCheckpointing, domain.WorkItemRecovering:
+		return true
+	default:
+		return false
+	}
+}
+
 // validateDependencyType returns the domain type for a proto enum.
 func validateDependencyType(t apiv1.DependencyType) (string, error) {
 	switch t {

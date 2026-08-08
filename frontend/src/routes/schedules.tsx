@@ -6,13 +6,13 @@
 // of items that already ran ("History"). All data comes from existing
 // Connect-ES clients (AGENTS.md invariants #1/#2): Upcoming is a
 // status = WORK_ITEM_STATUS_SCHEDULED query; Running and History are
-// broad fetches filtered client-side — Running to items that have a
-// scheduled_start_at and an active, non-terminal, non-scheduled status
-// (RUNNING / CHECKPOINTING / RECOVERING), History to items that have a
-// scheduled_start_at and a terminal status (the ListWorkItems API accepts
-// exactly one status filter, so those status unions cannot be fetched in
-// one call — the fetch is isolated behind useListWorkItems so a future
-// backend filter/RPC can swap in without touching this page's layout).
+// broad fetches filtered client-side — Running to items with an in-flight
+// workflow run (status RUNNING / CHECKPOINTING / RECOVERING, workflow
+// bound), History to items that have a scheduled_start_at and a terminal
+// status (the ListWorkItems API accepts exactly one status filter, so
+// those status unions cannot be fetched in one call — the fetch is
+// isolated behind useListWorkItems so a future backend filter/RPC can
+// swap in without touching this page's layout).
 //
 // Recurring scheduled tasks are a future backend feature (design §5).
 // Every card reserves a right-aligned frequency slot that today renders
@@ -72,8 +72,12 @@ export const Route = createRoute({
 const TERMINAL_STATUSES = new Set([6, 7, 8]);
 
 // Active statuses that count as "currently running" for the Running view:
-// the item was scheduled (scheduled_start_at set) and its bound workflow
-// run is in flight. Disjoint from TERMINAL_STATUSES and from SCHEDULED.
+// work items whose bound workflow run is in flight (RUNNING /
+// CHECKPOINTING / RECOVERING). These are only ever set for tickets bound
+// to an in-flight run (standalone dispatches use assigned), so the
+// predicate captures exactly "currently running workflows" — whether or
+// not the item carried a scheduled start. Disjoint from TERMINAL_STATUSES
+// and from SCHEDULED.
 const ACTIVE_RUNNING_STATUSES = new Set([4, 5, 9]);
 
 // Schedulable kinds: Task, Subtask, and the recovery kinds. Epics and
@@ -630,18 +634,23 @@ function RunningView({
     refetchInterval: 5_000,
   });
 
-  // Running = items that had a scheduled start and are in an active,
-  // non-terminal, non-scheduled status (the API accepts one status filter,
-  // so this union is derived client-side; see the header comment).
+  // Running = items with an in-flight workflow run. A run started without
+  // a schedule (manual start / "Start immediately on save") leaves the
+  // ticket running with workflow_run_id set but scheduled_start_at NULL,
+  // so the membership must not require a scheduled start (ADR-002 in
+  // architecture-notes/running-workflows-not-showing-in-schedules.md).
+  // The API accepts one status filter, so this union is derived
+  // client-side; see the header comment.
   const items = useMemo(() => {
     const base = (allItems ?? []).filter(
       (i) =>
-        i.scheduledStartAt &&
+        i.workflowRunId &&
         ACTIVE_RUNNING_STATUSES.has(i.status) &&
         (!kindFilter || i.kind === Number(kindFilter)),
     );
     const sorted = [...base].sort(
-      (a, b) => tsToMs(a.scheduledStartAt) - tsToMs(b.scheduledStartAt),
+      (a, b) =>
+        runningStartedAt(a) - runningStartedAt(b),
     );
     return sortOrder === "asc" ? sorted : sorted.reverse();
   }, [allItems, kindFilter, sortOrder]);
@@ -665,8 +674,8 @@ function RunningView({
             No schedules running
           </CardTitle>
           <CardDescription>
-            Scheduled work items that have started will appear here while
-            their workflow run is in flight.
+            Work items with a workflow run in flight will appear here while
+            they are running.
           </CardDescription>
         </CardHeader>
       </Card>
@@ -693,7 +702,7 @@ function RunningView({
         {items.map((item, ii) => (
           <li key={item.id} className="flex gap-3">
             <div className="hidden w-16 shrink-0 pt-4 text-right font-mono text-xs tabular-nums text-muted-foreground sm:block">
-              {formatTime(tsToMs(item.scheduledStartAt))}
+              {formatTime(runningStartedAt(item))}
             </div>
             <div className="relative flex flex-col items-center">
               <KindDot
@@ -734,7 +743,7 @@ function RunningCard({
   onToggleSelect: (id: string) => void;
 }) {
   const projectName = projects?.find((p) => p.id === item.projectId)?.name;
-  const startedAt = tsToMs(item.scheduledStartAt);
+  const startedAt = runningStartedAt(item);
   return (
     <div className="group flex items-center gap-2">
       <input
@@ -1148,6 +1157,18 @@ function recurrenceBadge(_item: WorkItemProto): string {
 function tsToMs(ts?: Timestamp): number {
   if (!ts) return 0;
   return Number(ts.seconds) * 1000;
+}
+
+// runningStartedAt is the effective start time for a Running-view item. A
+// running ticket started without a schedule has no scheduled_start_at, so
+// fall back to updatedAt (the reconciler bumps it while the run is in
+// flight) and then createdAt.
+function runningStartedAt(item: WorkItemProto): number {
+  return (
+    tsToMs(item.scheduledStartAt) ||
+    tsToMs(item.updatedAt) ||
+    tsToMs(item.createdAt)
+  );
 }
 
 function formatTime(ts: number): string {
