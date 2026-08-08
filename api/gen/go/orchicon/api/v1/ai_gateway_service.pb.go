@@ -919,8 +919,13 @@ type WorkflowRunCost struct {
 	ExecutionCount int32                  `protobuf:"varint,4,opt,name=execution_count,json=executionCount,proto3" json:"execution_count,omitempty"`
 	RunStatus      string                 `protobuf:"bytes,5,opt,name=run_status,json=runStatus,proto3" json:"run_status,omitempty"` // "completed" | "failed" | "aborted" | "running" | "pending"
 	Workers        []*WorkflowWorkerCost  `protobuf:"bytes,6,rep,name=workers,proto3" json:"workers,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Bound work item id, if any; empty for one-shot runs with no ticket.
+	WorkItemId string `protobuf:"bytes,7,opt,name=work_item_id,json=workItemId,proto3" json:"work_item_id,omitempty"`
+	// Current title of the bound work item (resolved server-side), used as the
+	// human-readable run label in the "By Workflow" cost breakdown.
+	WorkItemName  string `protobuf:"bytes,8,opt,name=work_item_name,json=workItemName,proto3" json:"work_item_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WorkflowRunCost) Reset() {
@@ -993,6 +998,20 @@ func (x *WorkflowRunCost) GetWorkers() []*WorkflowWorkerCost {
 		return x.Workers
 	}
 	return nil
+}
+
+func (x *WorkflowRunCost) GetWorkItemId() string {
+	if x != nil {
+		return x.WorkItemId
+	}
+	return ""
+}
+
+func (x *WorkflowRunCost) GetWorkItemName() string {
+	if x != nil {
+		return x.WorkItemName
+	}
+	return ""
 }
 
 // WorkflowWorkerCost is the aggregated cost for one worker type within
@@ -1158,7 +1177,7 @@ const file_orchicon_api_v1_ai_gateway_service_proto_rawDesc = "" +
 	"\ftotal_tokens\x18\x04 \x01(\x03R\vtotalTokens\x12\x1b\n" +
 	"\trun_count\x18\x05 \x01(\x05R\brunCount\x12'\n" +
 	"\x0fexecution_count\x18\x06 \x01(\x05R\x0eexecutionCount\x124\n" +
-	"\x04runs\x18\a \x03(\v2 .orchicon.api.v1.WorkflowRunCostR\x04runs\"\x89\x02\n" +
+	"\x04runs\x18\a \x03(\v2 .orchicon.api.v1.WorkflowRunCostR\x04runs\"\xd1\x02\n" +
 	"\x0fWorkflowRunCost\x12&\n" +
 	"\x0fworkflow_run_id\x18\x01 \x01(\tR\rworkflowRunId\x12$\n" +
 	"\x0etotal_cost_usd\x18\x02 \x01(\x01R\ftotalCostUsd\x12!\n" +
@@ -1166,7 +1185,10 @@ const file_orchicon_api_v1_ai_gateway_service_proto_rawDesc = "" +
 	"\x0fexecution_count\x18\x04 \x01(\x05R\x0eexecutionCount\x12\x1d\n" +
 	"\n" +
 	"run_status\x18\x05 \x01(\tR\trunStatus\x12=\n" +
-	"\aworkers\x18\x06 \x03(\v2#.orchicon.api.v1.WorkflowWorkerCostR\aworkers\"\x96\x02\n" +
+	"\aworkers\x18\x06 \x03(\v2#.orchicon.api.v1.WorkflowWorkerCostR\aworkers\x12 \n" +
+	"\fwork_item_id\x18\a \x01(\tR\n" +
+	"workItemId\x12$\n" +
+	"\x0ework_item_name\x18\b \x01(\tR\fworkItemName\"\x96\x02\n" +
 	"\x12WorkflowWorkerCost\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x1f\n" +
 	"\vworker_name\x18\x02 \x01(\tR\n" +

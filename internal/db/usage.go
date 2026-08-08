@@ -254,6 +254,12 @@ type WorkflowRunCostRow struct {
 	TotalTokens    int64
 	ExecutionCount int32
 	RunStatus      string
+	// WorkItemID is the run's bound work item id (workflow_runs.work_item_id),
+	// empty for one-shot runs with no bound ticket.
+	WorkItemID string
+	// WorkItemName is the current title of the bound work item (LEFT JOINed
+	// from work_items so the run row can display a human-readable name).
+	WorkItemName string
 }
 
 // WorkflowWorkerCostRow is a per-worker cost summary within one run.
@@ -317,16 +323,19 @@ func GetWorkflowRunCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowID st
 		COALESCE(SUM(ur.cost_usd), 0) AS total_cost,
 		COALESCE(SUM(ur.total_tokens), 0) AS total_tokens,
 		COUNT(DISTINCT ur.execution_id) AS execution_count,
-		wr.status AS run_status
+		wr.status AS run_status,
+		COALESCE(wr.work_item_id, '') AS work_item_id,
+		COALESCE(wrun.title, '') AS work_item_name
 		FROM usage_records ur
 		JOIN work_items wi ON ur.task_id = wi.id
 		LEFT JOIN worker_executions we ON we.id = ur.execution_id
 		JOIN workflow_runs wr ON COALESCE(NULLIF(ur.workflow_run_id, ''), NULLIF(we.workflow_run_id, ''), NULLIF(wi.workflow_run_id, ''), '') = wr.id
 		JOIN workflows w ON wr.workflow_id = w.id
+		LEFT JOIN work_items wrun ON wr.work_item_id = wrun.id
 		WHERE ur.tenant_id = $1 AND w.id = $2
 		  AND ($3::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at >= $3::timestamptz)
 		  AND ($4::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at <  $4::timestamptz)
-		GROUP BY wr.id, w.id, wr.status
+		GROUP BY wr.id, w.id, wr.status, wr.work_item_id, wrun.title
 		ORDER BY total_cost DESC`
 	rows, err := tx.Query(ctx, q, tenantID, workflowID, start, end)
 	if err != nil {
@@ -338,6 +347,7 @@ func GetWorkflowRunCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowID st
 		var r WorkflowRunCostRow
 		if err := rows.Scan(&r.WorkflowRunID, &r.WorkflowID,
 			&r.TotalCostUSD, &r.TotalTokens, &r.ExecutionCount, &r.RunStatus,
+			&r.WorkItemID, &r.WorkItemName,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan workflow run cost: %w", err)
 		}

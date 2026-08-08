@@ -797,7 +797,7 @@ Workers now receive full execution context including:
 1. Navigate to **Telemetry** for: traces, metrics, logs dashboard
 2. Embedded Grafana UI available at `/grafana` (Tempo / Loki / VictoriaMetrics)
 3. Cost Explorer: per-provider/model spend with drill-down (Project → Task → Execution → Model)
-4. **By Workflow** tab: cost broken down per workflow run with per-step detail
+4. **By Workflow** tab: cost broken down per workflow run with per-step detail. Each run row's primary label is the bound work item's name (when the run is bound to a ticket), with the raw run ID demoted to a muted secondary — one-shot runs with no bound work item fall back to the truncated run ID.
 5. Credits tab showing tenant-level usage
 
 #### Settings

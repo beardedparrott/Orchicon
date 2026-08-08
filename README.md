@@ -30,18 +30,17 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.215 (2026-08-08)
+
+| Type | Change |
+|---|---|
+| Bug fix | **Cost explorer "By Workflow" breakdown now shows the work item name.** Each workflow run breakdown under Telemetry → Cost → By Workflow displays the bound work item's title as the primary run label instead of the raw run ID; the run ID is demoted to a muted secondary. One-shot runs with no bound ticket fall back cleanly to the run ID. Server-side, `GetWorkflowRunCosts` LEFT JOINs `work_items` on `workflow_runs.work_item_id` so `WorkflowRunCost` carries `work_item_id` + `work_item_name` (proto fields 7/8, regenerated Go + TS clients). |
+
 ### v0.1.214 (2026-08-08)
 
 | Type | Change |
 |---|---|
 | Feature | **Every work item field is now settable via the MCP.** The Ask Orchicon / Orchicon MCP tools previously exposed only a subset of the fields the API can set. `orchicon_create_work_item` and `orchicon_update_work_item` now accept the full mutable set — `budgets`, `context_window`, `workflow_id`, `scheduled_start_at`, `auto_start_workflow`, `runtime_image` (create + update), plus `project_id` reassignment and `workflow_run_id` (update) — reusing the Connect service's shared validators so the two surfaces cannot drift. The tools mirror the service's downstream effects: setting a schedule flips the status to `scheduled`, `auto_start_workflow=true` starts the bound workflow immediately via `StartWorkflowDirect` (and clears any schedule), and outbox events (`work_item.created`/`updated`/`kind_changed`) are emitted in the same transaction. Two new tools — `orchicon_assign_worker` and `orchicon_unassign_worker` — mirror the `AssignWorker`/`UnassignWorker` RPCs so `assigned_worker_ref` is settable too. |
-
-### v0.1.213 (2026-08-08)
-
-| Type | Change |
-|---|---|
-| Bug fix | **Running workflows now show under Schedules → Running.** The Running view only listed scheduled items that had started — a workflow started manually or via "Start immediately on save" leaves the ticket `running` with `workflow_run_id` set but no `scheduled_start_at`, so an in-flight run was invisible. The view now shows **any** work item whose bound workflow run is in flight (RUNNING / CHECKPOINTING / RECOVERING, workflow-bound), and the card's start time falls back to `updated_at`/`created_at` when there is no schedule. |
-| Bug fix | **Saving a schedule on a work item now flips it to `scheduled`.** The edit form stored `scheduled_start_at` without changing status, so a scheduled item never appeared in Upcoming and never fired via `ScheduledRunReconciler`. Saving a scheduled start time in `UpdateWorkItem` now switches the edited item's status to `scheduled` regardless of its current status — scoped to that single item only (never a bulk flip). The flip is skipped while the item is running/checkpointing/recovering (an in-flight run must not be re-armed) and when the same edit switches to a non-schedulable kind (which clears the schedule). |
 
 ## Installation
 

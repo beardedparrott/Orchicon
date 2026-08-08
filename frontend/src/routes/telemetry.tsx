@@ -434,9 +434,14 @@ function WorkflowCostPanel() {
                           <span className={cn("inline-block rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase leading-none", badge.className)}>
                             {badge.label}
                           </span>
-                          <span className="text-xs font-mono text-muted-foreground">
-                            {run.workflowRunId?.slice(0, 12)}
+                          <span className="text-xs font-medium truncate">
+                            {run.workItemName || run.workflowRunId?.slice(0, 12)}
                           </span>
+                          {run.workItemName && (
+                            <span className="text-xs font-mono text-muted-foreground">
+                              {run.workflowRunId?.slice(0, 12)}
+                            </span>
+                          )}
                         </span>
                         <span className="text-xs text-muted-foreground">
                           ${(run.totalCostUsd ?? 0).toFixed(4)} · {fmtInt(run.totalTokens ?? 0)} tok · {run.executionCount ?? 0} execs

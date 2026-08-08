@@ -142,6 +142,11 @@ message WorkflowRunCost {
   int32 execution_count = 4;
   string run_status = 5; // "completed" | "failed" | "aborted" | "running" | "pending"
   repeated WorkflowWorkerCost workers = 6;
+  // Bound work item id, if any; empty for one-shot runs with no ticket.
+  string work_item_id = 7;
+  // Current title of the bound work item (resolved server-side), used as the
+  // human-readable run label in the "By Workflow" cost breakdown.
+  string work_item_name = 8;
 }
 
 // WorkflowWorkerCost is the aggregated cost for one worker type within
