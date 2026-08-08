@@ -135,6 +135,12 @@ func (r *sessionRun) run() error {
 		"session_id": sid,
 		"serve_url":  client.BaseURL(),
 	})
+	// Persist the full system prompt sent to the worker (the per-message
+	// `system` field) so the session chat can show exactly what the worker
+	// was told — the goal bubble alone (the task title) carries very little.
+	if r.system != "" {
+		r.recordPart(db.SessionPartSystemPrompt, map[string]any{"text": r.system})
+	}
 
 	// Register the live-session handle so SendExecutionMessage can route
 	// mid-run human messages into this session.

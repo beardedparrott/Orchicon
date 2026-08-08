@@ -473,6 +473,16 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 				args = append(args, "-v", filepath.Join(d.HostHome, f)+":"+filepath.Join(d.HostHome, f)+":ro")
 			}
 		}
+		// GitHub CLI auth + state (read-only — PR/merge workers run
+		// `gh pr create`/`gh repo create`). Without the hosts.yml mount
+		// gh reports "not authenticated" inside the container even though
+		// the operator is logged in on the host.
+		if st, err := os.Stat(filepath.Join(d.HostHome, ".config", "gh")); err == nil && st.IsDir() {
+			args = append(args, "-v", filepath.Join(d.HostHome, ".config", "gh")+":"+filepath.Join(d.HostHome, ".config", "gh")+":ro")
+		}
+		if st, err := os.Stat(filepath.Join(d.HostHome, ".local", "share", "gh")); err == nil && st.IsDir() {
+			args = append(args, "-v", filepath.Join(d.HostHome, ".local", "share", "gh")+":"+filepath.Join(d.HostHome, ".local", "share", "gh")+":ro")
+		}
 		args = append(args, "-e", "HOME="+d.HostHome)
 		// Put the mounted adapter CLI on PATH so the supervisor's
 		// `exec.Command("opencode", ...)` resolves it.

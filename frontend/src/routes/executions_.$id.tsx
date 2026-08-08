@@ -203,6 +203,7 @@ function ExecutionDetailPage() {
             streamStatus={status}
             storedOutput={exec.output}
             workerName={exec.workerId}
+            systemPrompt={exec.systemPrompt}
             isRunning={isRunning}
             isTerminal={isTerminal}
           />

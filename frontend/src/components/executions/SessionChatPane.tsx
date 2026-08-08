@@ -56,6 +56,10 @@ interface SessionChatPaneProps {
   streamStatus?: string;
   storedOutput?: string;
   workerName?: string;
+  /** The full composite system prompt sent to the worker (system field).
+   *  Rendered as the first, collapsible bubble so the operator can verify
+   *  exactly what the worker was told. */
+  systemPrompt?: string;
   isRunning: boolean;
   isTerminal: boolean;
 }
@@ -232,6 +236,40 @@ function CopyButton({ text }: { text: string }) {
         <Copy className="h-3 w-3" />
       )}
     </button>
+  );
+}
+
+function SystemBubble({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const long = text.length > 400;
+  return (
+    <div className="flex justify-start">
+      <div className="w-full max-w-[92%] overflow-hidden rounded-2xl rounded-tl-sm border border-amber-300/30 bg-amber-50/20 shadow-sm dark:border-amber-950/40 dark:bg-amber-950/10">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="flex w-full items-center gap-2 px-4 py-2 text-left"
+        >
+          <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
+          <span className="text-xs font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300">
+            system prompt
+          </span>
+          <span className="ml-auto shrink-0 text-xs text-muted-foreground/60">
+            {text.length.toLocaleString()} chars
+          </span>
+          <span className="shrink-0 text-xs text-muted-foreground/60">
+            {open ? "collapse" : long ? "expand" : "view"}
+          </span>
+        </button>
+        {open && (
+          <div className="border-t border-border/40 px-4 py-3">
+            <div className="break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
+              <Markdown>{text}</Markdown>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -466,6 +504,7 @@ export function SessionChatPane({
   streamStatus,
   storedOutput,
   workerName,
+  systemPrompt,
   isRunning,
   isTerminal,
 }: SessionChatPaneProps) {
@@ -485,6 +524,15 @@ export function SessionChatPane({
   // before the terminal flush.
   const live = useMemo(() => liveItems(events), [events]);
   const history = useMemo(() => transcriptItems(transcript), [transcript]);
+
+  // The full system prompt: prefer the page's enriched value, fall back to
+  // the transcript's recorded system_prompt part (reliable after reload).
+  const systemText = useMemo(() => {
+    if (systemPrompt) return systemPrompt;
+    const sp = transcript?.find((p) => p.kind === "system_prompt");
+    if (!sp) return undefined;
+    return decodePayload(sp.payload)?.text as string | undefined;
+  }, [systemPrompt, transcript]);
 
   // Merge: running → live items + user messages from the transcript;
   // terminal → the transcript alone (durable, includes both sides).
@@ -587,6 +635,8 @@ export function SessionChatPane({
         onScroll={onScroll}
         className="relative flex-1 space-y-3 overflow-y-auto px-4 py-4"
       >
+        {systemText && <SystemBubble text={systemText} />}
+
         {items.length === 0 && (
           <p className="py-10 text-center text-sm text-muted-foreground">
             {isStreaming

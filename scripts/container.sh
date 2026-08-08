@@ -325,6 +325,10 @@ up_instance() {
   # as the user. Read-only mounts.
   [ -f "$HOME/.gitconfig" ] && MOUNTS+=("-v" "$HOME/.gitconfig:$HOME/.gitconfig:ro")
   [ -f "$HOME/.git-credentials" ] && MOUNTS+=("-v" "$HOME/.git-credentials:$HOME/.git-credentials:ro")
+  # GitHub CLI auth + state (read-only) so in-process PR/merge workers and
+  # the host opencode serve can run `gh` authenticated.
+  [ -d "$HOME/.config/gh" ] && MOUNTS+=("-v" "$HOME/.config/gh:$HOME/.config/gh:ro")
+  [ -d "$HOME/.local/share/gh" ] && MOUNTS+=("-v" "$HOME/.local/share/gh:$HOME/.local/share/gh:ro")
 
   # Workflow runtime daemon socket directory (host-side process that owns
   # the Docker socket and spawns per-workflow runtime containers). Mounted
