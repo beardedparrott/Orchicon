@@ -239,33 +239,34 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-function SystemBubble({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
+function SystemPromptBubble({ text }: { text: string }) {
+  // The first bubble IS the full prompt sent to the worker — styled like a
+  // user message (we sent it), collapsible only when long.
+  const [open, setOpen] = useState(text.length <= 400);
   const long = text.length > 400;
   return (
-    <div className="flex justify-start">
-      <div className="w-full max-w-[92%] overflow-hidden rounded-2xl rounded-tl-sm border border-amber-300/30 bg-amber-50/20 shadow-sm dark:border-amber-950/40 dark:bg-amber-950/10">
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="flex w-full items-center gap-2 px-4 py-2 text-left"
-        >
-          <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
-          <span className="text-xs font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300">
+    <div className="flex justify-end">
+      <div className="max-w-[88%] overflow-hidden rounded-2xl rounded-br-sm bg-primary px-4 py-2.5 text-sm text-primary-foreground shadow-sm">
+        <div className="mb-1 flex items-center justify-end gap-2">
+          <span className="text-[10px] font-medium uppercase tracking-wide text-primary-foreground/70">
             system prompt
           </span>
-          <span className="ml-auto shrink-0 text-xs text-muted-foreground/60">
+          <span className="text-[10px] opacity-60">
             {text.length.toLocaleString()} chars
           </span>
-          <span className="shrink-0 text-xs text-muted-foreground/60">
-            {open ? "collapse" : long ? "expand" : "view"}
-          </span>
-        </button>
+          {long && (
+            <button
+              type="button"
+              onClick={() => setOpen((v) => !v)}
+              className="rounded px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground/80 hover:bg-primary-foreground/10"
+            >
+              {open ? "collapse" : "expand"}
+            </button>
+          )}
+        </div>
         {open && (
-          <div className="border-t border-border/40 px-4 py-3">
-            <div className="break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
-              <Markdown>{text}</Markdown>
-            </div>
+          <div className="break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
+            <Markdown>{text}</Markdown>
           </div>
         )}
       </div>
@@ -609,6 +610,17 @@ export function SessionChatPane({
   const followUpPending = !isRunning && continueSession.isPending;
   const busy = sendMsg.isPending || continueSession.isPending;
 
+  // The system-prompt bubble above already carries the full composite
+  // (which includes the goal); drop the redundant standalone goal bubble
+  // from the visible list when the prompt is shown.
+  const visibleItems = useMemo(
+    () =>
+      systemText
+        ? items.filter((i) => !(i.kind === "user" && i.source === "goal"))
+        : items,
+    [items, systemText],
+  );
+
   return (
     <div className="flex h-[calc(100vh-260px)] min-h-[420px] flex-col overflow-hidden rounded-2xl border border-border bg-card/50 shadow-sm">
       {/* header */}
@@ -625,7 +637,7 @@ export function SessionChatPane({
         </span>
         {transcriptLoading && isRunning && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
         <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
-          <span>{items.length} message{items.length === 1 ? "" : "s"}</span>
+          <span>{visibleItems.length + (systemText ? 1 : 0)} message{visibleItems.length + (systemText ? 1 : 0) === 1 ? "" : "s"}</span>
         </div>
       </div>
 
@@ -635,9 +647,9 @@ export function SessionChatPane({
         onScroll={onScroll}
         className="relative flex-1 space-y-3 overflow-y-auto px-4 py-4"
       >
-        {systemText && <SystemBubble text={systemText} />}
+        {systemText && <SystemPromptBubble text={systemText} />}
 
-        {items.length === 0 && (
+        {visibleItems.length === 0 && !systemText && (
           <p className="py-10 text-center text-sm text-muted-foreground">
             {isStreaming
               ? "Waiting for model output…"
@@ -647,7 +659,7 @@ export function SessionChatPane({
           </p>
         )}
 
-        {items.map((item) => {
+        {visibleItems.map((item) => {
           switch (item.kind) {
             case "user":
               return <UserBubble key={item.key} text={item.text} source={item.source} />;
@@ -674,7 +686,7 @@ export function SessionChatPane({
           }
         })}
 
-        {(isStreaming || followUpPending) && items.length > 0 && (
+        {(isStreaming || followUpPending) && visibleItems.length > 0 && (
           <div className="flex items-center gap-2 pl-2 text-xs text-muted-foreground">
             <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
             {isRunning ? "worker is thinking…" : "worker is responding…"}
