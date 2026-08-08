@@ -9,7 +9,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { ApproveToolCallRequest, ApproveToolCallResponse, BatchDeleteExecutionsRequest, BatchDeleteExecutionsResponse, CancelExecutionRequest, CancelExecutionResponse, CheckpointNowRequest, CheckpointNowResponse, CreateFollowUpExecutionRequest, CreateFollowUpExecutionResponse, DeleteExecutionRequest, DeleteExecutionResponse, GetExecutionRequest, GetExecutionResponse, GetExecutionSessionRequest, GetExecutionSessionResponse, ListExecutionsRequest, ListExecutionsResponse, ListPendingApprovalsRequest, ListPendingApprovalsResponse, PauseExecutionRequest, PauseExecutionResponse, ResumeExecutionRequest, ResumeExecutionResponse, SendExecutionMessageRequest, SendExecutionMessageResponse, StreamExecutionEventsRequest, StreamExecutionEventsResponse } from "./execution_pb.js";
+import { ApproveToolCallRequest, ApproveToolCallResponse, BatchDeleteExecutionsRequest, BatchDeleteExecutionsResponse, CancelExecutionRequest, CancelExecutionResponse, CheckpointNowRequest, CheckpointNowResponse, ContinueExecutionSessionRequest, ContinueExecutionSessionResponse, CreateFollowUpExecutionRequest, CreateFollowUpExecutionResponse, DeleteExecutionRequest, DeleteExecutionResponse, GetExecutionRequest, GetExecutionResponse, GetExecutionSessionRequest, GetExecutionSessionResponse, ListExecutionsRequest, ListExecutionsResponse, ListPendingApprovalsRequest, ListPendingApprovalsResponse, PauseExecutionRequest, PauseExecutionResponse, ResumeExecutionRequest, ResumeExecutionResponse, SendExecutionMessageRequest, SendExecutionMessageResponse, StreamExecutionEventsRequest, StreamExecutionEventsResponse } from "./execution_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -188,6 +188,19 @@ export const ExecutionService = {
       name: "GetExecutionSession",
       I: GetExecutionSessionRequest,
       O: GetExecutionSessionResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ContinueExecutionSession runs a one-shot follow-up question against a
+     * worker's session in place — no new execution, work item, or workflow
+     * state — and records the reply into the session transcript.
+     *
+     * @generated from rpc orchicon.api.v1.ExecutionService.ContinueExecutionSession
+     */
+    continueExecutionSession: {
+      name: "ContinueExecutionSession",
+      I: ContinueExecutionSessionRequest,
+      O: ContinueExecutionSessionResponse,
       kind: MethodKind.Unary,
     },
   }

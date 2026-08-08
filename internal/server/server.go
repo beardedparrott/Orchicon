@@ -304,6 +304,9 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		SendExecutionMessage: func(ctx context.Context, execID, message string) error {
 			return adapterBridge.SendExecutionMessage(ctx, execID, message)
 		},
+		ContinueSession: func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error) {
+			return adapterBridge.ContinueSession(ctx, opts)
+		},
 	}
 	handler := api.Mount(mux, deps)
 

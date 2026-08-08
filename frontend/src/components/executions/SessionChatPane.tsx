@@ -28,7 +28,7 @@ import {
   TerminalSquare,
 } from "lucide-react";
 import type { StreamExecutionEventsResponse } from "@/api/gen/orchicon/api/v1/execution_pb";
-import { useGetExecutionSession, useSendExecutionMessage } from "@/api/executions";
+import { useGetExecutionSession, useSendExecutionMessage, useContinueExecutionSession } from "@/api/executions";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -237,7 +237,11 @@ function CopyButton({ text }: { text: string }) {
 
 function UserBubble({ text, source }: { text: string; source: string }) {
   const label =
-    source === "nudge" ? "liveness check" : source === "human" ? "you" : "goal";
+    source === "nudge"
+      ? "liveness check"
+      : source === "human" || source === "follow_up"
+        ? "you"
+        : "goal";
   return (
     <div className="flex justify-end">
       <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-primary px-4 py-2.5 text-sm text-primary-foreground shadow-sm">
@@ -255,29 +259,62 @@ function UserBubble({ text, source }: { text: string; source: string }) {
 }
 
 function AssistantBubble({ text, at, workerName }: { text: string; at: number; workerName?: string }) {
+  const [open, setOpen] = useState(true);
   const [raw, setRaw] = useState(false);
+  const long = text.length > 900;
   return (
     <div className="flex justify-start">
-      <div className="max-w-[85%] rounded-2xl rounded-tl-sm border border-border bg-card px-4 py-2.5 text-sm leading-relaxed shadow-sm">
-        <div className="mb-1 flex items-center gap-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-          <span className="truncate">{workerName || "worker"}</span>
-          <span className="opacity-60">{new Date(at).toLocaleTimeString()}</span>
-          <button
-            type="button"
-            className="ml-auto rounded px-1.5 py-0.5 font-medium text-[10px] hover:bg-accent hover:text-accent-foreground"
-            onClick={() => setRaw((v) => !v)}
-          >
-            {raw ? "Render markdown" : "Raw text"}
-          </button>
-          <CopyButton text={text} />
-        </div>
-        <div className="break-words [overflow-wrap:anywhere]">
-          {raw ? (
-            <pre className="whitespace-pre-wrap font-mono text-xs leading-relaxed">{text}</pre>
-          ) : (
-            <Markdown>{text}</Markdown>
-          )}
-        </div>
+      <div
+        className={cn(
+          "max-w-[88%] overflow-hidden rounded-2xl rounded-tl-sm border shadow-sm",
+          "border-sky-300/30 bg-sky-50/20 dark:border-sky-950/40 dark:bg-sky-950/10",
+        )}
+      >
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="flex w-full items-center gap-2 px-4 py-2 text-left"
+        >
+          <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-sky-500" />
+          <span className="truncate text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            {workerName || "worker"}
+          </span>
+          <span className="shrink-0 text-xs text-muted-foreground/60">
+            {new Date(at).toLocaleTimeString()}
+          </span>
+          <span className="ml-auto shrink-0 text-xs text-muted-foreground/60">
+            {text.length.toLocaleString()} chars
+          </span>
+          <span className="shrink-0 text-xs text-muted-foreground/60">
+            {open ? "collapse" : "expand"}
+          </span>
+        </button>
+        {open && (
+          <div className="border-t border-border/40 px-4 py-3">
+            <div className="mb-1 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                className="rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                onClick={() => setRaw((v) => !v)}
+              >
+                {raw ? "Render markdown" : "Raw text"}
+              </button>
+              <CopyButton text={text} />
+            </div>
+            <div className="break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
+              {raw ? (
+                <pre className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed">{text}</pre>
+              ) : (
+                <Markdown>{text}</Markdown>
+              )}
+            </div>
+          </div>
+        )}
+        {long && !open && (
+          <div className="px-4 pb-2 text-xs text-muted-foreground/60">
+            {text.length.toLocaleString()} chars — click to expand
+          </div>
+        )}
       </div>
     </div>
   );
@@ -300,14 +337,14 @@ function ToolCard({ tool }: { tool: ParsedTool }) {
           onClick={() => setOpen((v) => !v)}
           className="flex w-full items-center gap-2 px-3 py-2 text-left"
         >
-          <TerminalSquare className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <span className="font-mono text-xs font-medium">{tool.toolName}</span>
+          <TerminalSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <span className="font-mono text-sm font-medium">{tool.toolName}</span>
           {hasOutput && (
-            <span className="ml-auto shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+            <span className="ml-auto shrink-0 rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
               {tool.output.length.toLocaleString()} bytes
             </span>
           )}
-          <span className="text-[10px] text-muted-foreground/60">
+          <span className="text-xs text-muted-foreground/60">
             {open ? "hide" : "view"}
           </span>
         </button>
@@ -315,32 +352,32 @@ function ToolCard({ tool }: { tool: ParsedTool }) {
           <div className="space-y-2 border-t border-border/50 p-3">
             <div>
               <div className="mb-1 flex items-center gap-2">
-                <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">input</span>
+                <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">input</span>
                 <button
                   type="button"
                   onClick={() => copy("input")}
-                  className="ml-auto text-[10px] text-muted-foreground hover:text-foreground"
+                  className="ml-auto text-xs text-muted-foreground hover:text-foreground"
                 >
                   {copyState === "input" ? "copied" : "copy"}
                 </button>
               </div>
-              <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-background/70 p-2 font-mono text-[11px] leading-relaxed">
+              <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-background/70 p-2 font-mono text-[13px] leading-relaxed">
                 {tool.input || "—"}
               </pre>
             </div>
             {hasOutput && (
               <div>
                 <div className="mb-1 flex items-center gap-2">
-                  <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">output</span>
+                  <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">output</span>
                   <button
                     type="button"
                     onClick={() => copy("output")}
-                    className="ml-auto text-[10px] text-muted-foreground hover:text-foreground"
+                    className="ml-auto text-xs text-muted-foreground hover:text-foreground"
                   >
                     {copyState === "output" ? "copied" : "copy"}
                   </button>
                 </div>
-                <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded bg-background/70 p-2 font-mono text-[11px] leading-relaxed">
+                <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded bg-background/70 p-2 font-mono text-[13px] leading-relaxed">
                   {tool.output}
                 </pre>
               </div>
@@ -359,7 +396,7 @@ function ReasoningBubble({ text }: { text: string }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="max-w-[92%] rounded-lg border border-violet-300/30 bg-violet-50/20 px-3 py-1.5 text-left text-[11px] italic leading-relaxed text-muted-foreground dark:bg-violet-950/10"
+        className="max-w-[92%] rounded-xl border border-violet-300/30 bg-violet-50/20 px-3 py-2 text-left text-[13px] italic leading-relaxed text-muted-foreground dark:bg-violet-950/10"
       >
         <span className="flex items-center gap-1.5 font-medium not-italic text-violet-700 dark:text-violet-300">
           <span className="inline-block h-1.5 w-1.5 rounded-full bg-violet-500" />
@@ -439,6 +476,7 @@ export function SessionChatPane({
   const [draft, setDraft] = useState("");
 
   const sendMsg = useSendExecutionMessage();
+  const continueSession = useContinueExecutionSession();
   const { data: transcript, isFetching: transcriptLoading } = useGetExecutionSession(
     executionId,
     true,
@@ -490,8 +528,23 @@ export function SessionChatPane({
   const handleSend = useCallback(
     (text: string) => {
       const msg = text.trim();
-      if (!msg || !isRunning) return;
-      sendMsg.mutate(
+      if (!msg) return;
+      if (isRunning) {
+        sendMsg.mutate(
+          { executionId, message: msg },
+          {
+            onSuccess: () => {
+              setDraft("");
+              setComposerOpen(false);
+            },
+          },
+        );
+        return;
+      }
+      // Completed execution: run the follow-up IN the session (no new
+      // execution/work item); the reply lands in the transcript and the
+      // session query refresh renders it inline in this chat.
+      continueSession.mutate(
         { executionId, message: msg },
         {
           onSuccess: () => {
@@ -501,10 +554,12 @@ export function SessionChatPane({
         },
       );
     },
-    [executionId, isRunning, sendMsg],
+    [executionId, isRunning, sendMsg, continueSession],
   );
 
   const isStreaming = streamStatus === "open" && isRunning;
+  const followUpPending = !isRunning && continueSession.isPending;
+  const busy = sendMsg.isPending || continueSession.isPending;
 
   return (
     <div className="flex h-[calc(100vh-260px)] min-h-[420px] flex-col overflow-hidden rounded-2xl border border-border bg-card/50 shadow-sm">
@@ -569,10 +624,10 @@ export function SessionChatPane({
           }
         })}
 
-        {isStreaming && items.length > 0 && (
+        {(isStreaming || followUpPending) && items.length > 0 && (
           <div className="flex items-center gap-2 pl-2 text-xs text-muted-foreground">
             <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
-            worker is thinking…
+            {isRunning ? "worker is thinking…" : "worker is responding…"}
           </div>
         )}
 
@@ -588,55 +643,61 @@ export function SessionChatPane({
         )}
       </div>
 
-      {/* composer (running only) */}
-      {isRunning && (
-        <div className="border-t border-border/60 p-3">
-          {composerOpen ? (
-            <div className="flex items-end gap-2">
-              <textarea
-                autoFocus
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSend(draft);
-                  }
-                }}
-                placeholder="Message the worker mid-run (no new work item is created)…"
-                className="max-h-32 min-h-[40px] flex-1 resize-none rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
-              />
-              <Button size="sm" onClick={() => handleSend(draft)} disabled={!draft.trim() || sendMsg.isPending}>
-                <SendHorizontal className="h-4 w-4" />
-              </Button>
-              <Button
-                size="sm"
-                variant="destructive"
-                onClick={() => {
-                  setComposerOpen(false);
-                  setDraft("");
-                }}
-                title="Discard"
-              >
-                <Square className="h-3 w-3" />
-              </Button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setComposerOpen(true)}
-              className="w-full rounded-xl border border-dashed border-border bg-background/60 px-3 py-2 text-left text-sm text-muted-foreground hover:border-primary/50 hover:text-foreground"
+      {/* composer — always available: nudge the live session mid-run, or
+          run a one-shot follow-up IN the session when the execution is
+          terminal (no new execution/work item). */}
+      <div className="border-t border-border/60 p-3">
+        {composerOpen ? (
+          <div className="flex items-end gap-2">
+            <textarea
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSend(draft);
+                }
+              }}
+              placeholder={
+                isRunning
+                  ? "Message the worker mid-run (no new work item is created)…"
+                  : "Ask a follow-up — it continues this conversation…"
+              }
+              className="max-h-32 min-h-[40px] flex-1 resize-none rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+            />
+            <Button size="sm" onClick={() => handleSend(draft)} disabled={!draft.trim() || busy}>
+              <SendHorizontal className="h-4 w-4" />
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => {
+                setComposerOpen(false);
+                setDraft("");
+              }}
+              title="Discard"
             >
-              Nudge the worker — send a message into the live session…
-            </button>
-          )}
-          {sendMsg.isError && (
-            <p className="mt-2 text-xs text-destructive">
-              Could not send: {String((sendMsg.error as Error)?.message ?? sendMsg.error)}
-            </p>
-          )}
-        </div>
-      )}
+              <Square className="h-3 w-3" />
+            </Button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setComposerOpen(true)}
+            className="w-full rounded-xl border border-dashed border-border bg-background/60 px-3 py-2 text-left text-sm text-muted-foreground hover:border-primary/50 hover:text-foreground"
+          >
+            {isRunning
+              ? "Nudge the worker — send a message into the live session…"
+              : "Continue the conversation — ask a follow-up…"}
+          </button>
+        )}
+        {(sendMsg.isError || continueSession.isError) && (
+          <p className="mt-2 text-xs text-destructive">
+            Could not send: {String((sendMsg.error ?? continueSession.error)?.message ?? sendMsg.error ?? continueSession.error)}
+          </p>
+        )}
+      </div>
     </div>
   );
 }

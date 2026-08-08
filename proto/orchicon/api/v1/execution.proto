@@ -265,3 +265,18 @@ message GetExecutionSessionRequest {
 message GetExecutionSessionResponse {
   repeated ExecutionSessionPart parts = 1;
 }
+
+// ContinueExecutionSession runs a one-shot follow-up question against a
+// worker's session WITHOUT creating a new execution or work item. The
+// question joins the session (re-attaching when the serve is still
+// reachable, else a fresh host-serve session seeded with the durable
+// transcript as context); the reply is recorded into the transcript and
+// returned.
+message ContinueExecutionSessionRequest {
+  string execution_id = 1;
+  string message = 2;
+}
+
+message ContinueExecutionSessionResponse {
+  string reply = 1;
+}

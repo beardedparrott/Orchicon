@@ -23,6 +23,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
+	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/execution"
 	"github.com/beardedparrott/orchicon/internal/middleware"
 	"github.com/beardedparrott/orchicon/internal/policy"
@@ -72,6 +73,10 @@ type Dependencies struct {
 	// session execution (Stage 3). Nil when the session transport is
 	// unavailable.
 	SendExecutionMessage func(ctx context.Context, execID, message string) error
+	// ContinueSession runs a one-shot follow-up question against a worker's
+	// session in place (no new execution/work item). Nil when the session
+	// transport is unavailable.
+	ContinueSession func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error)
 }
 
 // Mount returns an http.Handler serving the Orchicon API. Generated
@@ -137,6 +142,9 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	execSvc := execution.New(deps.Pool, deps.Log, deps.Subscriber)
 	if deps.SendExecutionMessage != nil {
 		execSvc.SetSendExecutionMessage(deps.SendExecutionMessage)
+	}
+	if deps.ContinueSession != nil {
+		execSvc.SetContinueSession(deps.ContinueSession)
 	}
 	mux.Handle(apiv1connect.NewExecutionServiceHandler(execSvc, interceptorOpt))
 

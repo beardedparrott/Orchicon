@@ -294,3 +294,21 @@ export function useGetExecutionSession(executionId: string, enabled = true) {
     enabled: Boolean(executionId) && enabled,
   });
 }
+
+// useContinueExecutionSession runs a one-shot follow-up question against a
+// worker's session IN PLACE (no new execution/work item) and records the
+// reply into the durable transcript.
+export function useContinueExecutionSession() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { executionId: string; message: string }) => {
+      const res = await executionClient.continueExecutionSession(input);
+      return res.reply;
+    },
+    onSuccess: (_reply, vars) => {
+      // The reply was written to the transcript — refresh the session view.
+      qc.invalidateQueries({ queryKey: executionKeys.session(vars.executionId) });
+      qc.invalidateQueries({ queryKey: executionKeys.detail(vars.executionId) });
+    },
+  });
+}

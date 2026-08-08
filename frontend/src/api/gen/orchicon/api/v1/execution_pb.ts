@@ -1805,3 +1805,90 @@ export class GetExecutionSessionResponse extends Message<GetExecutionSessionResp
   }
 }
 
+/**
+ * ContinueExecutionSession runs a one-shot follow-up question against a
+ * worker's session WITHOUT creating a new execution or work item. The
+ * question joins the session (re-attaching when the serve is still
+ * reachable, else a fresh host-serve session seeded with the durable
+ * transcript as context); the reply is recorded into the transcript and
+ * returned.
+ *
+ * @generated from message orchicon.api.v1.ContinueExecutionSessionRequest
+ */
+export class ContinueExecutionSessionRequest extends Message<ContinueExecutionSessionRequest> {
+  /**
+   * @generated from field: string execution_id = 1;
+   */
+  executionId = "";
+
+  /**
+   * @generated from field: string message = 2;
+   */
+  message = "";
+
+  constructor(data?: PartialMessage<ContinueExecutionSessionRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ContinueExecutionSessionRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "execution_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "message", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ContinueExecutionSessionRequest {
+    return new ContinueExecutionSessionRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ContinueExecutionSessionRequest {
+    return new ContinueExecutionSessionRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ContinueExecutionSessionRequest {
+    return new ContinueExecutionSessionRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ContinueExecutionSessionRequest | PlainMessage<ContinueExecutionSessionRequest> | undefined, b: ContinueExecutionSessionRequest | PlainMessage<ContinueExecutionSessionRequest> | undefined): boolean {
+    return proto3.util.equals(ContinueExecutionSessionRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ContinueExecutionSessionResponse
+ */
+export class ContinueExecutionSessionResponse extends Message<ContinueExecutionSessionResponse> {
+  /**
+   * @generated from field: string reply = 1;
+   */
+  reply = "";
+
+  constructor(data?: PartialMessage<ContinueExecutionSessionResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ContinueExecutionSessionResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "reply", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ContinueExecutionSessionResponse {
+    return new ContinueExecutionSessionResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ContinueExecutionSessionResponse {
+    return new ContinueExecutionSessionResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ContinueExecutionSessionResponse {
+    return new ContinueExecutionSessionResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ContinueExecutionSessionResponse | PlainMessage<ContinueExecutionSessionResponse> | undefined, b: ContinueExecutionSessionResponse | PlainMessage<ContinueExecutionSessionResponse> | undefined): boolean {
+    return proto3.util.equals(ContinueExecutionSessionResponse, a, b);
+  }
+}
+

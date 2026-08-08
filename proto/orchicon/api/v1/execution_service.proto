@@ -69,4 +69,9 @@ service ExecutionService {
   // execution — viewable after completion even when the serve/container
   // is gone, and the seed for one-shot follow-ups.
   rpc GetExecutionSession(GetExecutionSessionRequest) returns (GetExecutionSessionResponse);
+
+  // ContinueExecutionSession runs a one-shot follow-up question against a
+  // worker's session in place — no new execution, work item, or workflow
+  // state — and records the reply into the session transcript.
+  rpc ContinueExecutionSession(ContinueExecutionSessionRequest) returns (ContinueExecutionSessionResponse);
 }
