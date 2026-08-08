@@ -1549,36 +1549,27 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 //      content as the system prompt via OPENCODE_CONFIG_CONTENT
 //      (see the opencode adapter) so the worker identity lands on
 //      every conversation turn, not just the first.
-//   1. # Project — the project directory (working dir) + the
-//      contents of every file in `context_files` so the model
-//      doesn't have to guess at file paths.
-//   2. # Task — the work item itself: title, description, acceptance
+//   1. # Task — the work item itself: title, description, acceptance
 //      criteria. This is THE task; everything else is context.
-//   3. # Project context — the ancestor chain walked via
-//      work_items.parent_id (oldest first).
-//   4. # Workflow context — a chronological timeline of every step in
-//      this run, in DAG order, with each step's status and the
-//      execution results it produced. The current step is marked so
-//      the worker can see what has come before and what is expected
-//      next. Includes:
-//        - TASK steps: worker's full output (truncated if huge) and
-//          the extracted ORCHICON WORKER SUMMARY.
-//        - RECOVER steps: recovery execution summary, status, and
-//          strategy. Tells the next worker what went wrong on a
-//          prior failure and what was tried.
-//        - WORK_ITEM / PROJECT steps: linked work item title + short
-//          description (passive context markers).
-//        - DECISION / APPROVAL / PARALLEL steps: status only.
-//
-//   5. # Recovery context (this task) — if THIS work item was
-//      recovered from a previous execution failure, the recovery
-//      summary is included here verbatim (recovery engine writes it
-//      to the work item's results). Distinct from the per-step
-//      recovery timeline above: this is the recovery for the task
-//      the worker is about to execute, not for prior steps.
-//   6. # Instructions — the worker's contract: emit the
+//   2. # Project context — the project directory (working dir) + the
+//      project's `context_files`, rendered by the shared
+//      internal/contextfiles renderer. A context path may be a file
+//      (inlined, capped) or a directory (expanded into a bounded
+//      listing with explicit "read every file, do NOT open the
+//      directory as a file" instructions).
+//   3. # Work item context — the work item's own `context_files`,
+//      rendered exactly like the project's (same renderer, resolved
+//      against the same project_dir).
+//   4. # Instructions — the worker's contract: emit the
 //      ORCHICON WORKER SUMMARY marker at the end of the response so
-//      the next stage can read it as upstream context.
+//      the next stage can read it as upstream context. Also carries
+//      the workflow-aware role context, iteration/git-branch notes,
+//      the per-step recovery summary, the `.orchicon/` files to read,
+//      and the execution-history timeline.
+//
+// (The ancestor-chain and recovery sections historically described
+// below are now part of the workflow timeline rendered inside the
+// instructions block.)
 //
 // The composite is the opencode adapter's "message" (passed via the
 // manifest Goal). Sections in order:
@@ -1586,7 +1577,8 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 //  0. Role — the worker's purpose
 //  1. Task — the work item
 //  2. Project context — directory and file contents
-//  3. Instructions — read .orchicon/ for previous step results,
+//  3. Work item context — the item's own context files/directories
+//  4. Instructions — read .orchicon/ for previous step results,
 //     then output format including decision prefix
 func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, worker db.WorkerVersionRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, error) {
 	var sb strings.Builder
@@ -1657,7 +1649,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		}
 	}
 
-	// 3. Instructions.
+	// 4. Instructions.
 	sb.WriteString("# Instructions\n\n")
 
 	// The workflow decision comes from exactly ONE signal: the word after
