@@ -420,9 +420,9 @@ func ListRunningExecutions(ctx context.Context, tx pgx.Tx, tenantID string) ([]E
 // processes these for dispatch.
 func ListReadyTasks(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkItemRow, error) {
 	const q = `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
-		acceptance_criteria, status, assigned_worker_ref, workflow_id,
+		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
 		workflow_run_id, workflow_step_id,
-		priority, budgets, context_window, results, prompt_context, version, created_at, updated_at
+		priority, budgets, context_window, results, prompt_context, context_files, version, created_at, updated_at
 		FROM work_items
 		WHERE tenant_id = $1 AND status = 'ready' AND assigned_worker_ref IS NOT NULL
 		ORDER BY priority DESC, created_at ASC`
@@ -436,10 +436,10 @@ func ListReadyTasks(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkItem
 		var w WorkItemRow
 		if err := rows.Scan(
 			&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
-			&w.Description, &w.AcceptanceCriteria, &w.Status, &w.AssignedWorkerRef,
+			&w.Description, &w.AcceptanceCriteria, &w.AcceptanceReview, &w.Status, &w.AssignedWorkerRef,
 			&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
 			&w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
-			&w.PromptContext, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+			&w.PromptContext, &w.ContextFiles, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan work item: %w", err)
 		}

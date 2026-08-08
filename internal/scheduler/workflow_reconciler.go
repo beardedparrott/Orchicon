@@ -46,6 +46,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
@@ -235,9 +236,11 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 					narrative, _ := json.Marshal(map[string]any{"_run_narrative": map[string]any{
 						"run_id": run.ID, "status": domain.WorkflowRunFailed, "error": reason,
 					}})
+					review := fmt.Sprintf("## Acceptance Review\n\n**Run:** `%s` · **Status:** failed\n\nNo work was delivered — the run failed to start: %s", run.ID, reason)
 					_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, db.UpdateWorkItemFields{
-						Status:  &status,
-						Results: &narrative,
+						Status:           &status,
+						Results:          &narrative,
+						AcceptanceReview: &review,
 					})
 				}
 			}
@@ -689,6 +692,8 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				} else if narrative != nil {
 					fields.Results = narrative
 				}
+				review := r.buildAcceptanceReview(ctx, ttx.Tx, tenantID, run, stepRuns, domain.WorkflowRunCompleted)
+				fields.AcceptanceReview = &review
 				if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, fields); err != nil {
 					return fmt.Errorf("mark bound work item succeeded: %w", err)
 				}
@@ -720,6 +725,8 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				} else if narrative != nil {
 					fields.Results = narrative
 				}
+				review := r.buildAcceptanceReview(ctx, ttx.Tx, tenantID, run, stepRuns, domain.WorkflowRunFailed)
+				fields.AcceptanceReview = &review
 				_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, fields)
 			}
 		}
@@ -849,6 +856,142 @@ func (r *WorkflowReconciler) buildRunNarrative(ctx context.Context, tx pgx.Tx, t
 	mergedJSON, _ := json.Marshal(merged)
 	return &mergedJSON, nil
 }
+
+// buildAcceptanceReview assembles the deterministic, human-readable
+// acceptance review markdown for a terminal run — the faithful projection
+// of the step data buildRunNarrative reads (the per-step worker _summary /
+// _decision / _issues and any recovery episodes ARE the final work done).
+//
+// Rules (architecture note — add-acceptance-review-field-to-work-items):
+//   - Deterministic: step runs are sorted by step_id; no LLM call, no
+//     wall-clock-dependent ordering. A completed run lists "What was
+//     delivered"; a failed run additionally lists "Not delivered /
+//     needs attention" drawn from failed steps' _summary/_issues.
+//   - Only steps with a non-empty _summary (or, on failure, _issues) are
+//     listed — no empty noise. Skipped steps are omitted (a skip delivered
+//     nothing). Superseded iterations are omitted (superseded_by != "" —
+//     replaced by a later loop iteration).
+//   - Recovery episodes (when any) are listed once under "Recovery",
+//     deduplicated by recovery id.
+//   - The document is capped at maxDescLen (1 MiB) so a pathological run
+//     cannot bloat the column; the caller still validates via the API
+//     boundary when a human edits it later.
+func (r *WorkflowReconciler) buildAcceptanceReview(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, stepRuns []db.WorkflowStepRunRow, finalStatus string) string {
+	var recoveries []db.RecoveryExecutionRow
+	if recs, err := db.ListRecoveries(ctx, tx, db.ListRecoveriesFilter{TenantID: tenantID, TaskID: run.WorkItemID}); err == nil {
+		recoveries = recs
+	}
+	return formatAcceptanceReview(run, stepRuns, recoveries, finalStatus)
+}
+
+// formatAcceptanceReview is the pure, deterministic formatter behind
+// buildAcceptanceReview — split out so the aggregation rules are
+// unit-testable without a database.
+func formatAcceptanceReview(run db.WorkflowRunRow, stepRuns []db.WorkflowStepRunRow, recoveries []db.RecoveryExecutionRow, finalStatus string) string {
+	sorted := append([]db.WorkflowStepRunRow(nil), stepRuns...)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].StepID != sorted[j].StepID {
+			return sorted[i].StepID < sorted[j].StepID
+		}
+		return sorted[i].ID < sorted[j].ID
+	})
+
+	var b strings.Builder
+	statusLabel := "completed"
+	if finalStatus == domain.WorkflowRunFailed {
+		statusLabel = "failed"
+	}
+	fmt.Fprintf(&b, "## Acceptance Review\n\n**Run:** `%s` · **Status:** %s\n", run.ID, statusLabel)
+	if run.EndedAt != nil {
+		fmt.Fprintf(&b, "**Completed at:** %s\n", run.EndedAt.UTC().Format(time.RFC3339))
+	}
+	b.WriteString("\n")
+
+	var delivered []string
+	var notDelivered []string
+	for _, sr := range sorted {
+		if sr.SupersededBy != "" {
+			// Replaced by a later loop iteration — not final work.
+			continue
+		}
+		var meta map[string]any
+		_ = json.Unmarshal(sr.Result, &meta)
+		summary, _ := meta["_summary"].(string)
+		issues, _ := meta["_issues"].(string)
+		decision, _ := meta["_decision"].(string)
+		switch sr.Status {
+		case domain.StepRunSucceeded:
+			summary = strings.TrimSpace(summary)
+			if summary == "" {
+				continue
+			}
+			label := sr.StepName
+			if decision != "" {
+				label += " — " + decision
+			}
+			delivered = append(delivered, fmt.Sprintf("- **%s** (succeeded): %s", label, summary))
+		case domain.StepRunFailed, domain.StepRunBlocked:
+			text := strings.TrimSpace(summary)
+			if text == "" {
+				text = strings.TrimSpace(issues)
+			}
+			if text == "" {
+				text = "no summary recorded"
+			}
+			label := sr.StepName
+			if decision != "" {
+				label += " — " + decision
+			}
+			notDelivered = append(notDelivered, fmt.Sprintf("- **%s** (%s): %s", label, sr.Status, text))
+		}
+	}
+
+	if len(delivered) > 0 {
+		b.WriteString("### What was delivered\n\n")
+		for _, d := range delivered {
+			b.WriteString(d)
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+	if len(notDelivered) > 0 {
+		b.WriteString("### Not delivered / needs attention\n\n")
+		for _, d := range notDelivered {
+			b.WriteString(d)
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	if len(recoveries) > 0 {
+		b.WriteString("### Recovery\n\n")
+		for _, rec := range recoveries {
+			b.WriteString(fmt.Sprintf("- **%s** (%s): %s\n", rec.Status, rec.TriggerReason, strings.TrimSpace(rec.Summary)))
+		}
+		b.WriteString("\n")
+	}
+
+	if len(delivered) == 0 && len(notDelivered) == 0 && len(recoveries) == 0 {
+		// A run with no eligible step summaries still records the terminal
+		// outcome — an empty review field would be indistinguishable from
+		// "no run yet".
+		out := fmt.Sprintf("## Acceptance Review\n\n**Run:** `%s` · **Status:** %s\n\nNo step summaries were recorded.", run.ID, statusLabel)
+		if len(out) > maxWorkItemDescLen {
+			out = out[:maxWorkItemDescLen]
+		}
+		return out
+	}
+
+	out := strings.TrimSpace(b.String())
+	if len(out) > maxWorkItemDescLen {
+		out = out[:maxWorkItemDescLen]
+	}
+	return out
+}
+
+// maxWorkItemDescLen mirrors workitem's maxDescLen (1 MiB) so the
+// reconciler's auto-generated review shares the API boundary's cap.
+const maxWorkItemDescLen = 1 << 20
 
 // depsSatisfied returns true if all depends_on steps of `step` are in a
 // terminal-success state (succeeded or skipped). Loop decision steps
@@ -1548,36 +1691,27 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 //      content as the system prompt via OPENCODE_CONFIG_CONTENT
 //      (see the opencode adapter) so the worker identity lands on
 //      every conversation turn, not just the first.
-//   1. # Project — the project directory (working dir) + the
-//      contents of every file in `context_files` so the model
-//      doesn't have to guess at file paths.
-//   2. # Task — the work item itself: title, description, acceptance
+//   1. # Task — the work item itself: title, description, acceptance
 //      criteria. This is THE task; everything else is context.
-//   3. # Project context — the ancestor chain walked via
-//      work_items.parent_id (oldest first).
-//   4. # Workflow context — a chronological timeline of every step in
-//      this run, in DAG order, with each step's status and the
-//      execution results it produced. The current step is marked so
-//      the worker can see what has come before and what is expected
-//      next. Includes:
-//        - TASK steps: worker's full output (truncated if huge) and
-//          the extracted ORCHICON WORKER SUMMARY.
-//        - RECOVER steps: recovery execution summary, status, and
-//          strategy. Tells the next worker what went wrong on a
-//          prior failure and what was tried.
-//        - WORK_ITEM / PROJECT steps: linked work item title + short
-//          description (passive context markers).
-//        - DECISION / APPROVAL / PARALLEL steps: status only.
-//
-//   5. # Recovery context (this task) — if THIS work item was
-//      recovered from a previous execution failure, the recovery
-//      summary is included here verbatim (recovery engine writes it
-//      to the work item's results). Distinct from the per-step
-//      recovery timeline above: this is the recovery for the task
-//      the worker is about to execute, not for prior steps.
-//   6. # Instructions — the worker's contract: emit the
+//   2. # Project context — the project directory (working dir) + the
+//      project's `context_files`, rendered by the shared
+//      internal/contextfiles renderer. A context path may be a file
+//      (inlined, capped) or a directory (expanded into a bounded
+//      listing with explicit "read every file, do NOT open the
+//      directory as a file" instructions).
+//   3. # Work item context — the work item's own `context_files`,
+//      rendered exactly like the project's (same renderer, resolved
+//      against the same project_dir).
+//   4. # Instructions — the worker's contract: emit the
 //      ORCHICON WORKER SUMMARY marker at the end of the response so
-//      the next stage can read it as upstream context.
+//      the next stage can read it as upstream context. Also carries
+//      the workflow-aware role context, iteration/git-branch notes,
+//      the per-step recovery summary, the `.orchicon/` files to read,
+//      and the execution-history timeline.
+//
+// (The ancestor-chain and recovery sections historically described
+// below are now part of the workflow timeline rendered inside the
+// instructions block.)
 //
 // The composite is the opencode adapter's "message" (passed via the
 // manifest Goal). Sections in order:
@@ -1585,7 +1719,8 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 //  0. Role — the worker's purpose
 //  1. Task — the work item
 //  2. Project context — directory and file contents
-//  3. Instructions — read .orchicon/ for previous step results,
+//  3. Work item context — the item's own context files/directories
+//  4. Instructions — read .orchicon/ for previous step results,
 //     then output format including decision prefix
 func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, worker db.WorkerVersionRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, error) {
 	var sb strings.Builder
@@ -1614,37 +1749,49 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		fmt.Fprintf(&sb, "Acceptance criteria:\n%s\n\n", ac)
 	}
 
-	// 2. Project context — directory + context files.
+	// 2. Project context — directory + context files (files AND
+	//    directories; directories are expanded into a bounded listing
+	//    with explicit read instructions — internal/contextfiles).
 	if wi.ProjectID != "" {
 		var p db.ProjectRow
 		if err := tx.QueryRow(ctx,
 			`SELECT project_dir, context_files FROM projects WHERE id = $1 AND tenant_id = $2`,
 			wi.ProjectID, tenantID,
 		).Scan(&p.ProjectDir, &p.ContextFiles); err == nil {
+			var sb2 strings.Builder
 			if p.ProjectDir != "" {
-				fmt.Fprintf(&sb, "Working directory: `%s`\n\n", p.ProjectDir)
+				fmt.Fprintf(&sb2, "Working directory: `%s`\n\n", p.ProjectDir)
 			}
 			var files []string
 			_ = json.Unmarshal(p.ContextFiles, &files)
-			for _, f := range files {
-				resolved := f
-				if !filepath.IsAbs(resolved) && p.ProjectDir != "" {
-					resolved = filepath.Join(p.ProjectDir, resolved)
-				}
-				if !filepath.IsAbs(resolved) {
-					continue
-				}
-				data, err := os.ReadFile(resolved)
-				if err != nil {
-					fmt.Fprintf(&sb, "**Note:** failed to read `%s`: %v\n\n", resolved, err)
-					continue
-				}
-				fmt.Fprintf(&sb, "## %s\n\n```\n%s\n```\n\n", resolved, string(data))
+			sb2.WriteString(contextfiles.Render("# Project context", files, p.ProjectDir))
+			if sb2.Len() > 0 {
+				sb.WriteString(sb2.String())
 			}
 		}
 	}
 
-	// 3. Instructions.
+	// 3. Work item context — the item's own context_files (files AND
+	//    directories), rendered exactly like the project's, resolved
+	//    against the same project_dir (backward-compat rule).
+	if len(wi.ContextFiles) > 0 {
+		var files []string
+		_ = json.Unmarshal(wi.ContextFiles, &files)
+		projectDir := ""
+		if wi.ProjectID != "" {
+			var pd string
+			_ = tx.QueryRow(ctx,
+				`SELECT project_dir FROM projects WHERE id = $1 AND tenant_id = $2`,
+				wi.ProjectID, tenantID,
+			).Scan(&pd)
+			projectDir = pd
+		}
+		if r := contextfiles.Render("# Work item context", files, projectDir); r != "" {
+			sb.WriteString(r)
+		}
+	}
+
+	// 4. Instructions.
 	sb.WriteString("# Instructions\n\n")
 
 	// The workflow decision comes from exactly ONE signal: the word after
@@ -2207,13 +2354,13 @@ func stepKindLabel(kind string) string {
 	}
 }
 
-// readProjectContextFiles lists the project's context_files as absolute
-// paths so the worker can read them from disk. No file contents are sent
-// — only the paths. Directories are listed as-is; the worker is instructed
-// to read them.
-//
-// Paths are expected to be absolute. For backward compatibility, relative
-// paths are resolved against project_dir if it is set.
+// readProjectContextFiles renders the project's context_files (files AND
+// directories) as a "# Project context" prompt section via the shared
+// contextfiles.Render. Directories are expanded into a bounded listing
+// and the worker is instructed to read them rather than opening the
+// directory as a file ("not a file"). Retained for the standalone
+// dispatch path and as the canonical single place project context is
+// turned into prompt text.
 func (r *WorkflowReconciler) readProjectContextFiles(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (string, error) {
 	p, err := db.GetProject(ctx, tx, tenantID, projectID)
 	if err != nil {
@@ -2229,22 +2376,7 @@ func (r *WorkflowReconciler) readProjectContextFiles(ctx context.Context, tx pgx
 	if len(files) == 0 {
 		return "", nil
 	}
-	var sb strings.Builder
-	sb.WriteString("# File context\n\n")
-	sb.WriteString("The following files and directories are provided as project context. Please fully read the contents of each file, and for directories, read all files within them, before starting your work.\n\n")
-	for _, path := range files {
-		cleaned := filepath.Clean(path)
-		// Backward compat: resolve relative paths against project_dir.
-		if !filepath.IsAbs(cleaned) && p.ProjectDir != "" {
-			cleaned = filepath.Join(p.ProjectDir, cleaned)
-		}
-		if !filepath.IsAbs(cleaned) {
-			continue
-		}
-		fmt.Fprintf(&sb, "- `%s`\n", cleaned)
-	}
-	sb.WriteString("\n")
-	return sb.String(), nil
+	return contextfiles.Render("# Project context", files, p.ProjectDir), nil
 }
 
 // workItemKindLabel returns a human-readable label for a work item's

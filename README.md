@@ -30,17 +30,18 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.216 (2026-08-08)
+
+| Type | Change |
+|---|---|
+| Feature | **Directories can be used as worker context, and work items get their own context files.** `projects.context_files` and the new `work_items.context_files` accept absolute file **or directory** paths. In the worker's composite prompt a directory is expanded into a bounded listing (up to 1000 entries, skipping VCS/build noise) with an explicit instruction to read every file and NOT open the directory path as a file (kills the "not a file" error); files stay inlined (now capped at 256 KiB with a truncation note). One shared renderer + validator (`internal/contextfiles`) serves both entities so they behave identically. Work items carry their own `context_files` (proto `WorkItem.context_files = 26`, create field 16, update field 22 with empty-list-clears semantics) with a FileBrowser card on the new/edit pages and read-only listing on the detail page — wired into the composite prompt as a `# Work item context` section on both workflow and standalone dispatch. Context paths are also mounted into the single-container instance (mount manifest unions work-item `context_files`) and per-workflow runtime containers (individual paths outside `project_dir`). Ask Orchicon / MCP `create_work_item`/`update_work_item` expose the same field. |
+| Feature | **Work items get an Acceptance Review field.** A new first-class, human-readable `acceptance_review` column (migration `20260808120000_work_items_acceptance_review.sql`, proto `WorkItem.acceptance_review = 27`, update field 23) mirrors `acceptance_criteria`. When a bound workflow run reaches a terminal state, the `WorkflowReconciler` writes a deterministic markdown review in the same transaction as the status flip: "What was delivered" lists each succeeded step's worker `_summary` (with `_decision`), a failed run adds "Not delivered / needs attention" drawn from failed steps' `_issues`/`_summary`, and recovery episodes appear under "Recovery" — the same step data the `_run_narrative` JSON already aggregates (no LLM call on the reconciler hot path). The field is bounded (1 MiB), editable by humans via `UpdateWorkItem` (so reviewers can correct/extend), empty until a run completes, and exposed through the Ask Orchicon / MCP `update_work_item` tool plus the work item detail page (view + edit + YAML). Tests: `ValidateAcceptanceReview`, pure `formatAcceptanceReview` (completed/failed/recovery/empty), MCP update round-trip. |
+
 ### v0.1.215 (2026-08-08)
 
 | Type | Change |
 |---|---|
 | Bug fix | **Cost explorer "By Workflow" breakdown now shows the work item name.** Each workflow run breakdown under Telemetry → Cost → By Workflow displays the bound work item's title as the primary run label instead of the raw run ID; the run ID is demoted to a muted secondary. One-shot runs with no bound ticket fall back cleanly to the run ID. Server-side, `GetWorkflowRunCosts` LEFT JOINs `work_items` on `workflow_runs.work_item_id` so `WorkflowRunCost` carries `work_item_id` + `work_item_name` (proto fields 7/8, regenerated Go + TS clients). |
-
-### v0.1.214 (2026-08-08)
-
-| Type | Change |
-|---|---|
-| Feature | **Every work item field is now settable via the MCP.** The Ask Orchicon / Orchicon MCP tools previously exposed only a subset of the fields the API can set. `orchicon_create_work_item` and `orchicon_update_work_item` now accept the full mutable set — `budgets`, `context_window`, `workflow_id`, `scheduled_start_at`, `auto_start_workflow`, `runtime_image` (create + update), plus `project_id` reassignment and `workflow_run_id` (update) — reusing the Connect service's shared validators so the two surfaces cannot drift. The tools mirror the service's downstream effects: setting a schedule flips the status to `scheduled`, `auto_start_workflow=true` starts the bound workflow immediately via `StartWorkflowDirect` (and clears any schedule), and outbox events (`work_item.created`/`updated`/`kind_changed`) are emitted in the same transaction. Two new tools — `orchicon_assign_worker` and `orchicon_unassign_worker` — mirror the `AssignWorker`/`UnassignWorker` RPCs so `assigned_worker_ref` is settable too. |
 
 ## Installation
 

@@ -172,7 +172,7 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 		},
 		{
 			Name:        "create_work_item",
-			Description: "Create a new work item within a project. Requires title and project_id. Optionally accepts kind, parent_id, description, acceptance_criteria, priority, budgets, context_window, workflow_id, scheduled_start_at, auto_start_workflow, runtime_image.",
+			Description: "Create a new work item within a project. Requires title and project_id. Optionally accepts kind, parent_id, description, acceptance_criteria, priority, budgets, context_window, workflow_id, scheduled_start_at, auto_start_workflow, runtime_image, context_files.",
 			Mutating:    true,
 			Fn:          toolCreateWorkItem,
 			Properties: map[string]PropertySchema{
@@ -189,12 +189,13 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 				"scheduled_start_at": {Type: "string", Description: "Scheduled start time (ISO 8601 or 'N minutes from now'). Setting this marks the item scheduled."},
 				"auto_start_workflow": {Type: "boolean", Description: "Start the bound workflow immediately on save (opt-in, default false). Only applies when workflow_id is set and no scheduled_start_at is given; conflicts with a schedule."},
 				"runtime_image": {Type: "string", Description: "Runtime container image tag; empty = base image"},
+				"context_files": {Type: "array", Description: "Absolute file or directory paths to include as worker context (same model as project context files)"},
 			},
 			Required: []string{"title", "project_id"},
 		},
 		{
 			Name:        "update_work_item",
-			Description: "Update any mutable field on a work item by ID: title, description, acceptance_criteria, status, priority, budgets, context_window, project_id, workflow_id, parent_id, scheduled_start_at, auto_start_workflow, workflow_run_id, runtime_image, kind. Switching kind (kind: epic|feature|task|subtask) automatically resolves the hierarchy: the parent walks up to the nearest ancestor shallower than the new kind, direct children that can no longer sit under the item move under its parent, and switching to a non-schedulable kind (epic/feature) clears the worker assignment and scheduled start and demotes ready/assigned/scheduled to pending. Switching an epic to another kind requires choosing a parent explicitly.",
+			Description: "Update any mutable field on a work item by ID: title, description, acceptance_criteria, acceptance_review, status, priority, budgets, context_window, project_id, workflow_id, parent_id, scheduled_start_at, auto_start_workflow, workflow_run_id, runtime_image, context_files, kind. Switching kind (kind: epic|feature|task|subtask) automatically resolves the hierarchy: the parent walks up to the nearest ancestor shallower than the new kind, direct children that can no longer sit under the item move under its parent, and switching to a non-schedulable kind (epic/feature) clears the worker assignment and scheduled start and demotes ready/assigned/scheduled to pending. Switching an epic to another kind requires choosing a parent explicitly.",
 			Mutating:    true,
 			Fn:          toolUpdateWorkItem,
 			Properties: map[string]PropertySchema{
@@ -202,6 +203,7 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 				"title": {Type: "string", Description: "New title"},
 				"description": {Type: "string", Description: "New description (markdown)"},
 				"acceptance_criteria": {Type: "string", Description: "New acceptance criteria (markdown)"},
+				"acceptance_review": {Type: "string", Description: "New acceptance review (markdown); empty string clears it (auto-populated by the WorkflowReconciler when a bound run completes)"},
 				"status": {Type: "string", Description: "New status (pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering)"},
 				"priority": {Type: "number", Description: "New priority (1-5)"},
 				"budgets": {Type: "string", Description: "Budgets as a JSON object (e.g. {\"max_steps\": 10, \"max_cost_usd\": 5})"},
@@ -213,6 +215,7 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 				"auto_start_workflow": {Type: "boolean", Description: "Start the bound workflow immediately on save. true with no scheduled_start_at clears any existing schedule."},
 				"workflow_run_id": {Type: "string", Description: "The workflow run ID this item is bound to; empty string allows re-scheduling"},
 				"runtime_image": {Type: "string", Description: "Runtime container image tag; empty string resets to the base image"},
+				"context_files": {Type: "array", Description: "Absolute file or directory paths to include as worker context (same model as project context files); an empty list clears the selection"},
 				"kind": {Type: "string", Description: "New kind (epic, feature, task, subtask). The parent/child hierarchy is resolved automatically (see description)."},
 			},
 			Required: []string{"id"},

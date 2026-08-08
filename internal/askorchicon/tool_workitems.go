@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/tenant"
@@ -78,19 +79,20 @@ func toolGetWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (
 
 func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		ProjectID          string `json:"project_id"`
-		Title              string `json:"title"`
-		Kind               string `json:"kind"`
-		ParentID           string `json:"parent_id"`
-		Priority           int    `json:"priority"`
-		Description        string `json:"description"`
-		AcceptanceCriteria string `json:"acceptance_criteria"`
-		Budgets            string `json:"budgets"`
-		ContextWindow      int    `json:"context_window"`
-		WorkflowID         string `json:"workflow_id"`
-		ScheduledStartAt   string `json:"scheduled_start_at"`
-		AutoStartWorkflow  bool   `json:"auto_start_workflow"`
-		RuntimeImage       string `json:"runtime_image"`
+		ProjectID          string   `json:"project_id"`
+		Title              string   `json:"title"`
+		Kind               string   `json:"kind"`
+		ParentID           string   `json:"parent_id"`
+		Priority           int      `json:"priority"`
+		Description        string   `json:"description"`
+		AcceptanceCriteria string   `json:"acceptance_criteria"`
+		Budgets            string   `json:"budgets"`
+		ContextWindow      int      `json:"context_window"`
+		WorkflowID         string   `json:"workflow_id"`
+		ScheduledStartAt   string   `json:"scheduled_start_at"`
+		AutoStartWorkflow  bool     `json:"auto_start_workflow"`
+		RuntimeImage       string   `json:"runtime_image"`
+		ContextFiles       []string `json:"context_files"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -116,6 +118,13 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		return nil, err
 	}
 	budgets, err := workitem.ValidateBudgets(params.Budgets)
+	if err != nil {
+		return nil, err
+	}
+	if err := contextfiles.Validate(params.ContextFiles); err != nil {
+		return nil, err
+	}
+	contextFiles, err := contextfiles.ToJSON(params.ContextFiles)
 	if err != nil {
 		return nil, err
 	}
@@ -186,6 +195,7 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		ScheduledStartAt:   scheduledStartAt,
 		AutoStartWorkflow:  autoStart,
 		RuntimeImage:       runtimeImage,
+		ContextFiles:       contextFiles,
 	}
 	if workflowID == "" {
 		row.WorkflowID = nil
@@ -221,6 +231,7 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		Title              *string `json:"title"`
 		Description        *string `json:"description"`
 		AcceptanceCriteria *string `json:"acceptance_criteria"`
+		AcceptanceReview   *string `json:"acceptance_review"`
 		Status             *string `json:"status"`
 		Priority           *int    `json:"priority"`
 		Budgets            *string `json:"budgets"`
@@ -230,9 +241,10 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		ParentID           *string `json:"parent_id"`
 		ScheduledStartAt   *string `json:"scheduled_start_at"`
 		AutoStartWorkflow  *bool   `json:"auto_start_workflow"`
-		WorkflowRunID      *string `json:"workflow_run_id"`
-		RuntimeImage       *string `json:"runtime_image"`
-		Kind               *string `json:"kind"`
+		WorkflowRunID      *string   `json:"workflow_run_id"`
+		RuntimeImage       *string   `json:"runtime_image"`
+		Kind               *string   `json:"kind"`
+		ContextFiles       *[]string `json:"context_files"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -271,6 +283,13 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 			return nil, err
 		}
 		update.AcceptanceCriteria = &ac
+	}
+	if params.AcceptanceReview != nil {
+		ar, err := workitem.ValidateAcceptanceReview(*params.AcceptanceReview)
+		if err != nil {
+			return nil, err
+		}
+		update.AcceptanceReview = &ar
 	}
 	if params.Status != nil {
 		status, err := workitem.ValidateStatus(*params.Status)
@@ -327,6 +346,16 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if params.RuntimeImage != nil {
 		v := strings.TrimSpace(*params.RuntimeImage)
 		update.RuntimeImage = &v
+	}
+	if params.ContextFiles != nil {
+		if err := contextfiles.Validate(*params.ContextFiles); err != nil {
+			return nil, err
+		}
+		cfJSON, err := contextfiles.ToJSON(*params.ContextFiles)
+		if err != nil {
+			return nil, err
+		}
+		update.ContextFiles = &cfJSON
 	}
 	// Kind switch uses the SAME shared resolution as the Connect Update
 	// path (AGENTS.md: the tool and the service cannot drift) — parent
@@ -590,14 +619,14 @@ func toolUnassignWorker(ctx context.Context, pool *db.Pool, args json.RawMessage
 		SET assigned_worker_ref = NULL, updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
 		RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
-			acceptance_criteria, status, assigned_worker_ref, workflow_id,
-			priority, budgets, context_window, results, prompt_context, version, created_at, updated_at`
+			acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
+			priority, budgets, context_window, results, prompt_context, context_files, version, created_at, updated_at`
 	var updated db.WorkItemRow
 	err = ttx.Tx.QueryRow(ctx, q, tenantID, params.ID, current.Version).Scan(
 		&updated.ID, &updated.TenantID, &updated.ProjectID, &updated.ParentID, &updated.Kind, &updated.Title,
-		&updated.Description, &updated.AcceptanceCriteria, &updated.Status, &updated.AssignedWorkerRef,
+		&updated.Description, &updated.AcceptanceCriteria, &updated.AcceptanceReview, &updated.Status, &updated.AssignedWorkerRef,
 		&updated.WorkflowID, &updated.Priority, &updated.Budgets, &updated.ContextWindow, &updated.Results,
-		&updated.PromptContext, &updated.Version, &updated.CreatedAt, &updated.UpdatedAt,
+		&updated.PromptContext, &updated.ContextFiles, &updated.Version, &updated.CreatedAt, &updated.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("db: unassign worker: %w", err)

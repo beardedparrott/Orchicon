@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   File,
   Folder,
@@ -27,6 +27,17 @@ interface FileBrowserProps {
   projectDir: string;
   initialSelectedFiles: string[];
   readOnly?: boolean;
+  /** When provided, selection is reported back instead of persisting to
+   *  the project (used by the work item forms, which carry their own
+   *  context_files field). When absent, selection saves to the project
+   *  via useUpdateContextFiles (project page). */
+  onChange?: (next: string[]) => void;
+  /** Card title; defaults to "Project Context Files". */
+  title?: string;
+  /** Card description when editing. */
+  description?: string;
+  /** Read-only empty-state hint. */
+  emptyHint?: string;
 }
 
 export function FileBrowser({
@@ -34,20 +45,55 @@ export function FileBrowser({
   projectDir,
   initialSelectedFiles,
   readOnly = false,
+  onChange,
+  title = "Project Context Files",
+  description,
+  emptyHint,
 }: FileBrowserProps) {
   const [showDirPicker, setShowDirPicker] = useState(false);
   const [browsePath, setBrowsePath] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<string[]>(initialSelectedFiles);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
+  // dirPaths tracks which selected paths are directories, matched against
+  // the loaded tree (a persisted API string doesn't carry is_dir — the
+  // tree-match heuristic from the architecture note). Seeded from the
+  // project root listing so read-only views can still show a folder icon.
+  const [dirPaths, setDirPaths] = useState<Set<string>>(new Set());
+  const rootListing = useListProjectDir(projectId, "");
+  useEffect(() => {
+    if (readOnly && rootListing.data?.entries) {
+      setDirPaths((prev) => {
+        if (prev.size > 0) return prev;
+        const next = new Set(prev);
+        for (const e of rootListing.data?.entries ?? []) {
+          if (e.isDir && e.path) next.add(e.path);
+        }
+        return next;
+      });
+    }
+  }, [readOnly, rootListing.data]);
 
   const updateDir = useUpdateProjectDir();
   const updateFiles = useUpdateContextFiles();
 
   const persistSelection = (next: string[]) => {
     setSelectedFiles(next);
+    if (onChange) {
+      onChange(next);
+      return;
+    }
     updateFiles.mutate({ id: projectId, contextFiles: next });
   };
+
+  const registerDir = useCallback((path: string) => {
+    setDirPaths((prev) => {
+      if (prev.has(path)) return prev;
+      const next = new Set(prev);
+      next.add(path);
+      return next;
+    });
+  }, []);
 
   const toggleExpanded = (path: string) => {
     setExpandedPaths((prev) => {
@@ -69,7 +115,7 @@ export function FileBrowser({
   const selectAll = (entries: FileTreeEntry[]) => {
     const all: string[] = [];
     const walk = (e: FileTreeEntry) => {
-      if (!e.isDir && e.path) all.push(e.path);
+      if (e.path) all.push(e.path);
       if (e.children) for (const c of e.children) walk(c);
     };
     for (const e of entries) walk(e);
@@ -79,7 +125,7 @@ export function FileBrowser({
   const deselectAll = (entries: FileTreeEntry[]) => {
     const allSet = new Set<string>();
     const walk = (e: FileTreeEntry) => {
-      if (!e.isDir && e.path) allSet.add(e.path);
+      if (e.path) allSet.add(e.path);
       if (e.children) for (const c of e.children) walk(c);
     };
     for (const e of entries) walk(e);
@@ -87,6 +133,14 @@ export function FileBrowser({
   };
 
   const handleBrowseSelect = (path: string) => {
+    if (onChange) {
+      // Work-item mode: there's no project_dir to set — "Select this
+      // folder" just navigates into it so the checkbox tree can pick
+      // it (or files within it).
+      setBrowsePath(path);
+      setShowDirPicker(false);
+      return;
+    }
     updateDir.mutate(
       { id: projectId, projectDir: path },
       { onSuccess: () => setShowDirPicker(false) },
@@ -99,6 +153,11 @@ export function FileBrowser({
       ? selectedFiles
       : [...selectedFiles, fileRelPath];
     setSelectedFiles(nextFiles);
+    if (onChange) {
+      onChange(nextFiles);
+      setShowDirPicker(false);
+      return;
+    }
     updateDir.mutate(
       { id: projectId, projectDir: browseDir },
       {
@@ -116,13 +175,15 @@ export function FileBrowser({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Project Context Files</CardTitle>
+        <CardTitle>{title}</CardTitle>
         <CardDescription>
           {readOnly
-            ? "Context files selected for this project. Click Edit to modify."
-            : showDirPicker
-              ? "Navigate to a directory and click \"Select this folder\" to set it as the project root."
-              : "Expand folders and check files to include as context for AI workers."}
+            ? emptyHint ??
+              "Context files selected for this project. Click Edit to modify."
+            : description ??
+              (showDirPicker
+                ? "Navigate to a directory and click \"Select this folder\" to set it as the project root."
+                : "Expand folders and check files or directories to include as context for AI workers.")}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -137,12 +198,12 @@ export function FileBrowser({
             </div>
             {selectedFiles.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                No context files selected. Click Edit to configure.
+                No context paths selected. Click Edit to configure.
               </p>
             ) : (
               <div className="space-y-1">
                 <p className="text-xs text-muted-foreground">
-                  {selectedFiles.length} file{selectedFiles.length !== 1 ? "s" : ""} selected as context:
+                  {selectedFiles.length} path{selectedFiles.length !== 1 ? "s" : ""} selected as context:
                 </p>
                 <div className="rounded-md border divide-y max-h-[300px] overflow-y-auto">
                   {selectedFiles.map((f) => (
@@ -150,7 +211,11 @@ export function FileBrowser({
                       key={f}
                       className="flex items-center gap-2 px-3 py-2 text-xs font-mono"
                     >
-                      <File className="h-3 w-3 shrink-0 text-sky-500" />
+                      {dirPaths.has(f) ? (
+                        <Folder className="h-3 w-3 shrink-0 text-amber-500" />
+                      ) : (
+                        <File className="h-3 w-3 shrink-0 text-sky-500" />
+                      )}
                       <span className="truncate">{f}</span>
                     </div>
                   ))}
@@ -229,6 +294,7 @@ export function FileBrowser({
                   onToggleEntry={toggleEntry}
                   onSelectAll={selectAll}
                   onDeselectAll={deselectAll}
+                  onRegisterDir={registerDir}
                 />
 
                 {/* Selected files summary with remove buttons */}
@@ -243,7 +309,11 @@ export function FileBrowser({
                           key={f}
                           className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-xs font-mono"
                         >
-                          <File className="h-3 w-3 shrink-0" />
+                          {dirPaths.has(f) ? (
+                            <Folder className="h-3 w-3 shrink-0 text-amber-500" />
+                          ) : (
+                            <File className="h-3 w-3 shrink-0" />
+                          )}
                           <span className="truncate max-w-[300px]">{f}</span>
                           <button
                             type="button"
@@ -405,6 +475,7 @@ interface FileTreeContainerProps {
   onToggleEntry: (path: string) => void;
   onSelectAll: (entries: FileTreeEntry[]) => void;
   onDeselectAll: (entries: FileTreeEntry[]) => void;
+  onRegisterDir?: (path: string) => void;
   readOnly?: boolean;
 }
 
@@ -420,6 +491,7 @@ function FileTreeContainer({
   onToggleEntry,
   onSelectAll,
   onDeselectAll,
+  onRegisterDir,
   readOnly = false,
 }: FileTreeContainerProps) {
   const projectResult = useListProjectDir(projectId, subpath);
@@ -489,6 +561,7 @@ function FileTreeContainer({
           onToggleEntry={onToggleEntry}
           onSelectAll={onSelectAll}
           onDeselectAll={onDeselectAll}
+          onRegisterDir={onRegisterDir}
           readOnly={readOnly}
         />
       ))}
@@ -510,6 +583,7 @@ interface FileRowProps {
   onToggleEntry: (path: string) => void;
   onSelectAll: (entries: FileTreeEntry[]) => void;
   onDeselectAll: (entries: FileTreeEntry[]) => void;
+  onRegisterDir?: (path: string) => void;
   readOnly?: boolean;
 }
 
@@ -525,10 +599,14 @@ function FileRow({
   onToggleEntry,
   onSelectAll,
   onDeselectAll,
+  onRegisterDir,
   readOnly = false,
 }: FileRowProps) {
   const isExpanded = expandedPaths.has(entry.path);
   const isSelected = selectedSet.has(entry.path);
+  useEffect(() => {
+    if (entry.isDir && onRegisterDir) onRegisterDir(entry.path);
+  }, [entry.isDir, entry.path, onRegisterDir]);
 
   if (entry.isDir) {
     return (

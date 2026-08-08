@@ -25,6 +25,7 @@ import (
 	"unicode/utf8"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/tenant"
@@ -292,47 +293,21 @@ func validateProjectDir(dir string) (string, error) {
 
 // validateContextFiles validates a list of context file paths. Each path
 // must be non-empty, not exceed the max length, must be absolute, and
-// must not contain path-traversal components like "..".
+// must not contain path-traversal components like "..". Delegates to the
+// shared contextfiles.Validate so projects and work items use ONE
+// validator (AGENTS.md: fix the whole class, not just one instance).
 func validateContextFiles(files []string) error {
-	if len(files) > maxContextFiles {
-		return fmt.Errorf("context_files exceeds max of %d entries", maxContextFiles)
-	}
-	for i, f := range files {
-		f = strings.TrimSpace(f)
-		if f == "" {
-			return fmt.Errorf("context_files[%d] must not be empty", i)
-		}
-		if len(f) > maxFilePathLen {
-			return fmt.Errorf("context_files[%d] exceeds max length of %d characters", i, maxFilePathLen)
-		}
-		if !filepath.IsAbs(f) {
-			return fmt.Errorf("context_files[%d] must be an absolute path", i)
-		}
-		if strings.Contains(f, "..") {
-			return fmt.Errorf("context_files[%d] must not contain path-traversal components", i)
-		}
-	}
-	return nil
+	return contextfiles.Validate(files)
 }
 
 // contextFilesToJSON marshals a list of file paths to a JSON byte array.
 func contextFilesToJSON(files []string) ([]byte, error) {
-	if files == nil {
-		files = []string{}
-	}
-	return json.Marshal(files)
+	return contextfiles.ToJSON(files)
 }
 
 // contextFilesFromJSON unmarshals a JSON byte array to a list of file paths.
 func contextFilesFromJSON(data []byte) ([]string, error) {
-	if len(data) == 0 {
-		return nil, nil
-	}
-	var files []string
-	if err := json.Unmarshal(data, &files); err != nil {
-		return nil, fmt.Errorf("parse context_files: %w", err)
-	}
-	return files, nil
+	return contextfiles.FromJSON(data)
 }
 
 // listDirectory returns the immediate children of a directory path.

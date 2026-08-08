@@ -288,6 +288,7 @@ func TestCreateWorkItemAllFieldsDB(t *testing.T) {
 		"scheduled_start_at":  "2030-01-01T10:00:00Z",
 		"auto_start_workflow": true,
 		"runtime_image":       "base:latest ",
+		"context_files":       []string{"/abs/dir", "/abs/one.go"},
 	})
 	if err != nil {
 		t.Fatalf("create with all fields: %v", err)
@@ -317,6 +318,14 @@ func TestCreateWorkItemAllFieldsDB(t *testing.T) {
 	// Runtime image is trimmed.
 	if item.RuntimeImage != "base:latest" {
 		t.Errorf("runtime_image = %q, want base:latest (trimmed)", item.RuntimeImage)
+	}
+	// Context files (files + directories) round-trip through the DB.
+	var cf []string
+	if err := json.Unmarshal(item.ContextFiles, &cf); err != nil {
+		t.Fatalf("unmarshal context_files %q: %v", item.ContextFiles, err)
+	}
+	if len(cf) != 2 || cf[0] != "/abs/dir" || cf[1] != "/abs/one.go" {
+		t.Errorf("context_files = %v, want the directory + file persisted", cf)
 	}
 }
 
@@ -378,18 +387,23 @@ func TestUpdateWorkItemAllFieldsDB(t *testing.T) {
 		"title":               "Updated title",
 		"description":         "updated desc",
 		"acceptance_criteria": "updated ac",
+		"acceptance_review":   "Shipped the feature.",
 		"priority":            5,
 		"budgets":             `{"max_steps": 3}`,
 		"context_window":      50000,
 		"workflow_id":         "wf_test_2",
 		"scheduled_start_at":  "2030-02-01T10:00:00Z",
 		"runtime_image":       "dev:latest",
+		"context_files":       []string{"/new/dir", "/new/file.md"},
 	})
 	if err != nil {
 		t.Fatalf("update all fields: %v", err)
 	}
 	if updated.Title != "Updated title" {
 		t.Errorf("title = %q", updated.Title)
+	}
+	if updated.AcceptanceReview != "Shipped the feature." {
+		t.Errorf("acceptance_review = %q", updated.AcceptanceReview)
 	}
 	if string(updated.Budgets) != `{"max_steps": 3}` {
 		t.Errorf("budgets = %s", updated.Budgets)
@@ -403,9 +417,53 @@ func TestUpdateWorkItemAllFieldsDB(t *testing.T) {
 	if updated.RuntimeImage != "dev:latest" {
 		t.Errorf("runtime_image = %q", updated.RuntimeImage)
 	}
+	// Context files replace the previous selection.
+	var cf []string
+	if err := json.Unmarshal(updated.ContextFiles, &cf); err != nil {
+		t.Fatalf("unmarshal context_files %q: %v", updated.ContextFiles, err)
+	}
+	if len(cf) != 2 || cf[0] != "/new/dir" || cf[1] != "/new/file.md" {
+		t.Errorf("context_files = %v, want the replacement paths", cf)
+	}
 	// ADR-001: a supplied start time flips status to scheduled.
 	if updated.Status != domain.WorkItemScheduled {
 		t.Errorf("status = %q, want scheduled (ADR-001 flip)", updated.Status)
+	}
+}
+
+// TestUpdateWorkItemClearContextFilesDB verifies an empty context_files
+// list clears the selection (empty list = clear, unset = unchanged).
+func TestUpdateWorkItemClearContextFilesDB(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+	projectID := createProjectForTest(t, ctx, pool)
+
+	item, err := callToolCreate(t, ctx, pool, map[string]any{
+		"project_id":    projectID,
+		"title":         "Clear context",
+		"kind":          "task",
+		"parent_id":     createParentEpicForTest(t, ctx, pool, projectID),
+		"context_files": []string{"/some/dir"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if len(item.ContextFiles) == 0 {
+		t.Fatal("create did not persist context_files")
+	}
+	cleared, err := callToolUpdate(t, ctx, pool, map[string]any{
+		"id":            item.ID,
+		"context_files": []string{},
+	})
+	if err != nil {
+		t.Fatalf("clear context files: %v", err)
+	}
+	var clearedCF []string
+	if err := json.Unmarshal(cleared.ContextFiles, &clearedCF); err != nil {
+		t.Fatalf("unmarshal cleared context_files %q: %v", cleared.ContextFiles, err)
+	}
+	if len(clearedCF) != 0 {
+		t.Errorf("clear: context_files = %v, want empty", clearedCF)
 	}
 }
 

@@ -57,7 +57,9 @@ func writeProjectMountsManifest(ctx context.Context, pool *db.Pool, dataDir stri
 }
 
 // collectProjectMountPaths returns the sorted unique set of host paths
-// (project dirs + context files) across all projects.
+// (project dirs + context files) across all projects AND work items. Work
+// items carry their own context_files (files/directories) that must be
+// mounted into the single-container instance too.
 func collectProjectMountPaths(ctx context.Context, pool *db.Pool) ([]string, error) {
 	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {
@@ -98,6 +100,32 @@ func collectProjectMountPaths(ctx context.Context, pool *db.Pool) ([]string, err
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("project mounts: rows: %w", err)
 	}
+
+	// Union the work items' context_files (AGENTS.md: fix the whole
+	// class — a work item's context paths must be mounted just like a
+	// project's).
+	wrows, err := ttx.Tx.Query(ctx,
+		`SELECT DISTINCT context_files FROM work_items WHERE context_files IS NOT NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("project mounts: work items query: %w", err)
+	}
+	defer wrows.Close()
+	for wrows.Next() {
+		var ctxJSON string
+		if err := wrows.Scan(&ctxJSON); err != nil {
+			return nil, fmt.Errorf("project mounts: work items scan: %w", err)
+		}
+		var files []string
+		if json.Unmarshal([]byte(ctxJSON), &files) == nil {
+			for _, f := range files {
+				add(f)
+			}
+		}
+	}
+	if err := wrows.Err(); err != nil {
+		return nil, fmt.Errorf("project mounts: work items rows: %w", err)
+	}
+
 	sort.Strings(paths)
 	return paths, nil
 }

@@ -15,6 +15,7 @@
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3, Timestamp } from "@bufbuild/protobuf";
 import { DependencyGraph, DependencyType, WorkItem, WorkItemDependency, WorkItemKind, WorkItemStatus } from "./work_item_pb.js";
+import { ContextFiles } from "./project_pb.js";
 
 /**
  * @generated from message orchicon.api.v1.CreateWorkItemRequest
@@ -113,6 +114,14 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
    */
   runtimeImage = "";
 
+  /**
+   * context_files are absolute file OR directory paths selected as worker
+   * context for this item (same model as projects.context_files).
+   *
+   * @generated from field: repeated string context_files = 16;
+   */
+  contextFiles: string[] = [];
+
   constructor(data?: PartialMessage<CreateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -136,6 +145,7 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
     { no: 13, name: "scheduled_start_at", kind: "message", T: Timestamp },
     { no: 14, name: "auto_start_workflow", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
     { no: 15, name: "runtime_image", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 16, name: "context_files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkItemRequest {
@@ -511,6 +521,22 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
    */
   kind?: WorkItemKind;
 
+  /**
+   * context_files replaces the item's context_files selection: an empty
+   * files list clears it, an absent field leaves it unchanged.
+   *
+   * @generated from field: optional orchicon.api.v1.ContextFiles context_files = 22;
+   */
+  contextFiles?: ContextFiles;
+
+  /**
+   * acceptance_review sets the human-readable acceptance review. Empty
+   * string clears it; an absent field leaves it unchanged.
+   *
+   * @generated from field: optional string acceptance_review = 23;
+   */
+  acceptanceReview?: string;
+
   constructor(data?: PartialMessage<UpdateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -536,6 +562,8 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
     { no: 19, name: "runtime_image", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 20, name: "parent_id", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 21, name: "kind", kind: "enum", T: proto3.getEnumType(WorkItemKind), opt: true },
+    { no: 22, name: "context_files", kind: "message", T: ContextFiles, opt: true },
+    { no: 23, name: "acceptance_review", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkItemRequest {

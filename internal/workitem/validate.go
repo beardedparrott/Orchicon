@@ -129,6 +129,20 @@ func ValidateAcceptanceCriteria(s string) (string, error) {
 	return s, nil
 }
 
+// ValidateAcceptanceReview trims and bounds-checks the acceptance review
+// field (empty ok — a work item without a completed run has no review).
+// Mirrors ValidateAcceptanceCriteria exactly so the human-written field
+// and the reconciler-generated review share one boundary. Exported so the
+// Ask Orchicon MCP tools reuse it (AGENTS.md: the tool and the service
+// cannot drift).
+func ValidateAcceptanceReview(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if utf8.RuneCountInString(s) > maxDescLen {
+		return "", fmt.Errorf("acceptance_review must be at most %d characters", maxDescLen)
+	}
+	return s, nil
+}
+
 // validateKind returns the domain kind string for a proto enum value,
 // or an error if unspecified.
 func validateKind(kind apiv1.WorkItemKind) (string, error) {
