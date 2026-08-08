@@ -30,6 +30,12 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.212 (2026-08-08)
+
+| Type | Change |
+|---|---|
+| Feature | **Running view on the Schedules page.** The schedules page now has a third view — Running, between Upcoming and History — that shows scheduled work items whose bound workflow run is actively executing (status RUNNING / CHECKPOINTING / RECOVERING with `scheduled_start_at` set), so users can see what is in flight at a glance. Each running card shows the item's live execution status via the StatusPill plus a link to its workflow run; a Bulk Cancel action and an empty state mirror the Upcoming view. Upcoming and History are unchanged. |
+
 ### v0.1.211 (2026-08-07)
 
 | Type | Change |
@@ -47,15 +53,6 @@ deployment, troubleshooting, and every subsystem.
 |---|---|
 | Bug fix | **Changing a work item's kind no longer starts a workflow run.** The previous guard only suppressed the post-commit auto-start when the kind switch cleared the scheduled start (switch to a non-schedulable kind) — a switch between schedulable kinds (Task → Subtask) on an immediate auto-start item still kicked off a run the user never asked for. Any kind switch now suppresses auto-start unless `autoStartWorkflow=true` is explicitly sent in the same request. |
 | Feature | **"Start immediately on save" now defaults to OFF (opt-in).** New work items created without an explicit `auto_start_workflow` are created with it `false` (server default + DB column default flipped via migration), and the edit form's "Start immediately on save" checkbox always opens unchecked — including for legacy rows created before the default flipped — so saving an edit never starts a run by surprise. |
-
-### v0.1.209 (2026-08-07)
-
-| Type | Change |
-|---|---|
-| Feature | **Switch a work item's kind with automatic hierarchy resolution.** The work item detail/edit page gains a Type control that converts any item to any hierarchy kind (task → feature, feature → epic, …). The server resolves the parent/child tree in the same transaction: the parent walks up to the nearest ancestor shallower than the new kind, direct children that no longer fit move under the item's parent (they become siblings), and switching to an Epic/Feature clears the worker binding, scheduled start, and ready/assigned/scheduled status so a re-typed item is never dispatched. A running item or one with an active workflow run is rejected; the UI confirms the consequences before saving. Mirrored in the Ask Orchicon `update_work_item` tool (`kind` param); emits a `work_item.kind_changed` outbox event. |
-| Feature | **Expand all / Collapse all on the Work Items page.** The filter bar carries Expand all / Collapse all buttons that act on every row with children, in both the tree and board views, and persist like every other view preference. |
-| Feature | **Searchable, color-coded parent picker on the create/edit pages.** The plain parent dropdown is replaced by a searchable single-select popover that shows each candidate's kind as a color-coded badge; candidates follow the selected kind so switching a task to a subtask offers task-level parents. |
-| Bug fix | **Kind switch + project move interplay.** Switching kind while also moving an item to another project now correctly honors an explicit parent in the target project (was falsely rejected by the carried-parent guard), never lets the auto-resolution walk-up write a cross-project parent, and no longer auto-starts a bound workflow when the switch itself cleared the future schedule. Stale parents are cleared in the create form when the kind changes, and the parent picker stops displaying a parent that is no longer a valid candidate for the new kind. |
 
 ## Installation
 
