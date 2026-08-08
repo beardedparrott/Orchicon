@@ -54,6 +54,7 @@ export const executionKeys = {
   list: (projectId?: string, status?: number, sortOrder?: string) =>
     [...executionKeys.all, "list", projectId, status, sortOrder] as const,
   detail: (id: string) => [...executionKeys.all, "detail", id] as const,
+  session: (id: string) => [...executionKeys.all, "session", id] as const,
   pendingApprovals: (executionId?: string) =>
     [...executionKeys.all, "approvals", executionId] as const,
 };
@@ -261,6 +262,53 @@ export function useApproveToolCall() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: executionKeys.pendingApprovals() });
+    },
+  });
+}
+
+// useSendExecutionMessage injects a mid-run human message into a live
+// worker session (Stage 3). Returns a mutation; call .mutate({ executionId,
+// message }). The reply streams back through useStreamExecutionEvents.
+export function useSendExecutionMessage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { executionId: string; message: string }) => {
+      await executionClient.sendExecutionMessage(input);
+    },
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: executionKeys.detail(vars.executionId) });
+    },
+  });
+}
+
+// useGetExecutionSession fetches the durable session transcript for an
+// execution (viewable after completion even when the serve/container is
+// gone).
+export function useGetExecutionSession(executionId: string, enabled = true) {
+  return useQuery({
+    queryKey: executionKeys.session(executionId),
+    queryFn: async () => {
+      const res = await executionClient.getExecutionSession({ executionId });
+      return res.parts;
+    },
+    enabled: Boolean(executionId) && enabled,
+  });
+}
+
+// useContinueExecutionSession runs a one-shot follow-up question against a
+// worker's session IN PLACE (no new execution/work item) and records the
+// reply into the durable transcript.
+export function useContinueExecutionSession() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { executionId: string; message: string }) => {
+      const res = await executionClient.continueExecutionSession(input);
+      return res.reply;
+    },
+    onSuccess: (_reply, vars) => {
+      // The reply was written to the transcript — refresh the session view.
+      qc.invalidateQueries({ queryKey: executionKeys.session(vars.executionId) });
+      qc.invalidateQueries({ queryKey: executionKeys.detail(vars.executionId) });
     },
   });
 }

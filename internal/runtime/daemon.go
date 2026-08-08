@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -77,6 +78,15 @@ type CreateRequest struct {
 	// containers — two instances sharing one daemon must not fight over
 	// each other's orphans.
 	InstanceID string `json:"instance_id,omitempty"`
+	// ServeConfig, when non-empty, requests the opencode serve inside the
+	// container: the OPENCODE_CONFIG_CONTENT JSON the serve boots with
+	// (permission rules + MCP servers; the plane builds it). ProjectDir is
+	// the container-side project path the serve runs in (executions' bash/
+	// file tools resolve against each session's directory). When set, the
+	// daemon starts the serve, publishes its port on the host loopback,
+	// and returns ServePort/ServePassword in the response.
+	ServeConfig string `json:"serve_config,omitempty"`
+	ProjectDir  string `json:"project_dir,omitempty"`
 }
 
 // CreateResponse is returned by POST /v1/runtimes.
@@ -84,6 +94,18 @@ type CreateResponse struct {
 	ContainerID string `json:"container_id"`
 	Name        string `json:"name"`
 	Running     bool   `json:"running"`
+	// ServePort is the host-side loopback port published for the
+	// container's opencode serve (127.0.0.1:<ServePort>), and
+	// ServePassword its basic-auth password. ServeURL is the plane-
+	// reachable base URL (http://<gateway>:<port>) — the gateway is the
+	// docker bridge IP, reachable from BOTH a host-plane and a
+	// containerized plane (127.0.0.1 only works when the plane shares the
+	// host network namespace). Zero/empty when the daemon could not bring
+	// the serve up — the adapter degrades to one-shot execs inside the
+	// container.
+	ServePort     int    `json:"serve_port,omitempty"`
+	ServePassword string `json:"serve_password,omitempty"`
+	ServeURL      string `json:"serve_url,omitempty"`
 }
 
 // ExecRequest is the body of POST /v1/runtimes/{id}/exec.
@@ -370,7 +392,23 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 	d.createMu.Lock()
 	defer d.createMu.Unlock()
 	if running, _ := d.containerRunning(name); running {
-		return &CreateResponse{Name: name, Running: true}, nil
+		resp := &CreateResponse{Name: name, Running: true}
+		// Converge the opencode serve on an already-running container: the
+		// WorkflowReconciler creates the container at run start WITHOUT a
+		// serve config, and the first dispatch (this Create with
+		// ServeConfig) brings the serve up. Idempotent (the supervisor
+		// owns the password + answers the same port).
+		if req.ServeConfig != "" {
+			if port, pw, serr := d.startServe(name, req); serr != nil {
+				d.Log.Warn("runtime opencode serve unavailable — degrading to one-shot execs",
+					"runtime", name, "error", serr)
+			} else {
+				resp.ServePort = port
+				resp.ServePassword = pw
+				resp.ServeURL = fmt.Sprintf("http://%s:%d", d.containerIP(name), port)
+			}
+		}
+		return resp, nil
 	}
 	// A stopped/crashed container with this name blocks recreation
 	// ("name already in use"). Remove it first so an active run always
@@ -394,6 +432,15 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 		"--memory", d.Memory,
 		"--tmpfs", "/tmp:rw,size=" + d.TmpfsSize,
 	}
+	// NO port publish: the plane reaches the container's opencode serve
+	// DIRECTLY on the docker bridge via the container IP (the serve binds
+	// 0.0.0.0 inside, reachable from any bridge container AND the host,
+	// password-gated). This avoids docker-proxy entirely — published-port
+	// forwarding to a container whose serve starts lazily is a race mine
+	// (the proxy binds only when the container's port appears; a container-
+	// to-gateway connection can be dropped by the bridge NAT). Direct IP
+	// access has no such layering. Always works whether the plane is a
+	// container or the host itself.
 	for _, m := range req.Mounts {
 		mo := ""
 		if m.RO {
@@ -426,10 +473,28 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 				args = append(args, "-v", filepath.Join(d.HostHome, f)+":"+filepath.Join(d.HostHome, f)+":ro")
 			}
 		}
+		// GitHub CLI auth + state (read-only — PR/merge workers run
+		// `gh pr create`/`gh repo create`). Without the hosts.yml mount
+		// gh reports "not authenticated" inside the container even though
+		// the operator is logged in on the host.
+		if st, err := os.Stat(filepath.Join(d.HostHome, ".config", "gh")); err == nil && st.IsDir() {
+			args = append(args, "-v", filepath.Join(d.HostHome, ".config", "gh")+":"+filepath.Join(d.HostHome, ".config", "gh")+":ro")
+		}
+		if st, err := os.Stat(filepath.Join(d.HostHome, ".local", "share", "gh")); err == nil && st.IsDir() {
+			args = append(args, "-v", filepath.Join(d.HostHome, ".local", "share", "gh")+":"+filepath.Join(d.HostHome, ".local", "share", "gh")+":ro")
+		}
 		args = append(args, "-e", "HOME="+d.HostHome)
 		// Put the mounted adapter CLI on PATH so the supervisor's
 		// `exec.Command("opencode", ...)` resolves it.
 		args = append(args, "-e", "PATH="+filepath.Join(d.HostHome, ".opencode", "bin")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+		// The operator's gh token often lives in the OS keyring, which is
+		// NOT available inside containers — hosts.yml alone has no token,
+		// so `gh` reports "not authenticated". Resolve the host's effective
+		// token and pass it as GH_TOKEN so PR/merge workers can actually
+		// create PRs. Best-effort: no gh / no auth / keyring locked → skip.
+		if tok := hostGHToken(); tok != "" {
+			args = append(args, "-e", "GH_TOKEN="+tok)
+		}
 	}
 	// The daemon's own executable: bind-mounted read-only at
 	// /usr/local/bin/orchicon so the container can exec `orchicon
@@ -483,11 +548,157 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if d.pingRuntime(name) {
-			return &CreateResponse{Name: name, Running: true}, nil
+			resp := &CreateResponse{Name: name, Running: true}
+			if req.ServeConfig != "" {
+				// Start the opencode serve inside the container and publish
+				// its port on the host loopback. A serve that cannot come
+				// up is NOT fatal to the container — the adapter degrades
+				// to one-shot execs — but the password is generated fresh
+				// per container and the host port is reported back.
+				port, pw, serr := d.startServe(name, req)
+				if serr != nil {
+					d.Log.Warn("runtime opencode serve unavailable — degrading to one-shot execs",
+						"runtime", name, "error", serr)
+				} else {
+					resp.ServePort = port
+					resp.ServePassword = pw
+					resp.ServeURL = fmt.Sprintf("http://%s:%d", d.containerIP(name), port)
+				}
+			}
+			return resp, nil
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
 	return nil, fmt.Errorf("runtime %s started but supervisor socket not ready", name)
+}
+
+// hostGHToken resolves the operator's effective GitHub CLI token
+// (`gh auth token`), which may live in the OS keyring rather than
+// hosts.yml. Bounded + best-effort: returns "" when gh is absent, not
+// authenticated, or the keyring is locked.
+func hostGHToken() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "auth", "token")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// startServe asks the in-container supervisor to bring up `opencode
+// serve` (idempotent — the supervisor owns the password and reports it
+// back), then resolves the published host loopback port. Returns the
+// host port + the container's serve password.
+func (d *Daemon) startServe(name string, req CreateRequest) (int, string, error) {
+	reqJSON, err := json.Marshal(AgentRequest{
+		Cmd:  "serve",
+		Argv: []string{"opencode", "serve", "--hostname", "0.0.0.0", "--port", "4096"},
+		Env: []string{
+			"OPENCODE_CONFIG_CONTENT=" + req.ServeConfig,
+		},
+		Cwd:        req.ProjectDir,
+		ProjectDir: req.ProjectDir,
+	})
+	if err != nil {
+		return 0, "", err
+	}
+	cmd := exec.Command(d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
+	cmd.Stdin = bytes.NewReader(reqJSON)
+	out, perr := cmd.Output()
+	if perr != nil {
+		return 0, "", fmt.Errorf("serve handshake: %v", perr)
+	}
+	// The supervisor answers {event:"serve", port:4096, password:...} when
+	// ready.
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	port := 0
+	password := ""
+	for sc.Scan() {
+		var ev AgentEvent
+		if json.Unmarshal(sc.Bytes(), &ev) != nil {
+			continue
+		}
+		if ev.Event == "serve" {
+			port = ev.Port
+			password = ev.Password
+			break
+		}
+		if ev.Event == "error" {
+			return 0, "", fmt.Errorf("serve handshake error: %s", ev.Error)
+		}
+	}
+	if port == 0 || password == "" {
+		return 0, "", fmt.Errorf("serve handshake: incomplete serve event (port=%d)", port)
+	}
+
+	// Resolve the container's bridge IP — the plane reaches the serve
+	// DIRECTLY at http://<container-ip>:<port> (no docker-proxy).
+	cip := d.containerIP(name)
+	if cip == "" {
+		return 0, "", fmt.Errorf("resolve container IP for %s", name)
+	}
+
+	// The serve's cold start answers /global/health before it can handle
+	// sessions (providers/MCP load); gate on the serve being USABLE — a
+	// real session create round-trip — before handing it to the plane.
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if d.serveUsable(cip, port, password) {
+			// Give the accept path a beat after the first success.
+			time.Sleep(500 * time.Millisecond)
+			return port, password, nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return 0, "", fmt.Errorf("serve %s:%d did not become usable within 30s", cip, port)
+}
+
+// serveUsable verifies the container serve answers health AND can create a
+// session (a cold-starting serve answers health before it can handle real
+// requests). Returns true once usable.
+func (d *Daemon) serveUsable(cip string, port int, password string) bool {
+	client := &http.Client{Timeout: 3 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s:%d/global/health", cip, port), nil)
+	if err != nil {
+		return false
+	}
+	req.SetBasicAuth("opencode", password)
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	// The serve is healthy; confirm it can actually create a session (the
+	// cold-start window answers health before the session machinery is up).
+	body := `{"title":"orchicon-serve-probe"}`
+	cReq, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s:%d/session", cip, port), bytes.NewBufferString(body))
+	cReq.Header.Set("Content-Type", "application/json")
+	cReq.SetBasicAuth("opencode", password)
+	cResp, err := client.Do(cReq)
+	if err != nil {
+		return false
+	}
+	defer cResp.Body.Close()
+	if cResp.StatusCode != http.StatusOK {
+		return false
+	}
+	// Clean up the probe session.
+	io.Copy(io.Discard, cResp.Body)
+	return true
+}
+
+// containerIP resolves a container's bridge IP.
+func (d *Daemon) containerIP(name string) string {
+	out, err := d.docker("inspect", "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", name)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
 }
 
 func (d *Daemon) containerRunning(name string) (bool, error) {

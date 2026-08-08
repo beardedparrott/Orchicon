@@ -19,6 +19,7 @@ import { useMemo } from "react";
 import type { WorkerExecution } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { StreamExecutionEventsResponse } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { UsageRecord } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
+import { useGetExecutionSession } from "@/api/executions";
 import { cn } from "@/lib/utils";
 
 const EXEC_STATUS_LABELS: Record<number, string> = {
@@ -64,6 +65,10 @@ interface ExecutionContextSidebarProps {
    *  context_window from the model discovery endpoint. */
   contextWindow?: number;
   streamStatus?: string;
+  /** Execution id — used to backfill tool/message counts from the durable
+   *  session transcript when the live event stream is empty (a completed
+   *  session execution viewed after reload). */
+  executionId?: string;
 }
 
 interface EventStats {
@@ -83,7 +88,9 @@ export function ExecutionContextSidebar({
   usage,
   contextWindow = 200_000,
   streamStatus,
+  executionId,
 }: ExecutionContextSidebarProps) {
+  const { data: transcript } = useGetExecutionSession(executionId ?? "", Boolean(executionId));
   const stats = useMemo<EventStats>(() => {
     const s: EventStats = {
       assistantCount: 0,
@@ -122,13 +129,26 @@ export function ExecutionContextSidebar({
         CONTROL: 9,
       };
       switch (eventType) {
-        case ET.TELEMETRY:
-          if (payload.text) {
+        case ET.TELEMETRY: {
+          let text = payload.text as string | undefined;
+          if (text && text.startsWith("{")) {
+            try {
+              const parsed = JSON.parse(text);
+              if (parsed && parsed.kind === "reasoning" && typeof parsed.text === "string") {
+                // Streamed reasoning chunk — unwrap for display.
+                text = parsed.text;
+              }
+            } catch {
+              /* keep raw */
+            }
+          }
+          if (text) {
             s.assistantCount++;
-            s.lastAssistantText = payload.text as string;
+            s.lastAssistantText = text;
             s.lastAssistantAt = ts;
           }
           break;
+        }
         case ET.TOOL_CALL: {
           const toolName = (payload.tool_name as string) || "tool";
           const input = (payload.input as string) || "";
@@ -153,8 +173,21 @@ export function ExecutionContextSidebar({
       });
       if (s.recentTypes.length > 12) s.recentTypes.shift();
     }
+    // A completed session execution viewed after reload has no live event
+    // stream; backfill counts from the durable transcript so the sidebar
+    // still shows the worker's tool calls and messages.
+    if (s.toolCount === 0 && transcript?.length) {
+      for (const p of transcript) {
+        if (p.kind === "tool_use") {
+          s.toolCount++;
+          if (!s.lastToolName) s.lastToolName = "tool";
+        } else if (p.kind === "text") {
+          s.assistantCount++;
+        }
+      }
+    }
     return s;
-  }, [events]);
+  }, [events, transcript]);
 
   // Token usage breakdown from usage_records (AI Gateway dual-write).
   // We sum across all step_finish events for this execution.

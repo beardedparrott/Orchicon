@@ -312,6 +312,7 @@ up_instance() {
   #      is recreated with the new mount set.
   #   3. any extra paths in ORCHICON_PROJECT_MOUNTS (space-separated).
   local MOUNTS=()
+  local GH_TOKEN_ENV=""
   [ -d "$HOME/.config/opencode" ] && MOUNTS+=("-v" "$HOME/.config/opencode:$HOME/.config/opencode:ro")
   [ -d "$HOME/.local/share/opencode" ] && MOUNTS+=("-v" "$HOME/.local/share/opencode:$HOME/.local/share/opencode")
   # Runtime CLI adapter install (read-only) — opencode today. Orchicon never
@@ -325,6 +326,17 @@ up_instance() {
   # as the user. Read-only mounts.
   [ -f "$HOME/.gitconfig" ] && MOUNTS+=("-v" "$HOME/.gitconfig:$HOME/.gitconfig:ro")
   [ -f "$HOME/.git-credentials" ] && MOUNTS+=("-v" "$HOME/.git-credentials:$HOME/.git-credentials:ro")
+  # GitHub CLI auth + state (read-only) so in-process PR/merge workers and
+  # the host opencode serve can run `gh` authenticated.
+  [ -d "$HOME/.config/gh" ] && MOUNTS+=("-v" "$HOME/.config/gh:$HOME/.config/gh:ro")
+  [ -d "$HOME/.local/share/gh" ] && MOUNTS+=("-v" "$HOME/.local/share/gh:$HOME/.local/share/gh:ro")
+  # gh's token often lives in the OS keyring (invisible inside the
+  # container); inject the host's effective token so workers can create PRs.
+  if command -v gh >/dev/null 2>&1; then
+    local _gh_tok
+    _gh_tok=$(gh auth token 2>/dev/null || true)
+    [ -n "$_gh_tok" ] && GH_TOKEN_ENV="-e GH_TOKEN=$_gh_tok"
+  fi
 
   # Workflow runtime daemon socket directory (host-side process that owns
   # the Docker socket and spawns per-workflow runtime containers). Mounted
@@ -389,6 +401,7 @@ up_instance() {
     -e "ORCHICON_HOST_GID=$(id -g)" \
     -e "ORCHICON_HOST_HOME=$HOME" \
     -e "ORCHICON_INSTANCE=$inst" \
+    ${GH_TOKEN_ENV:-} \
     "${MOUNTS[@]}" \
     "$IMAGE" >/dev/null
   log_ok "$inst instance started:"

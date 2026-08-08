@@ -58,3 +58,4 @@ site/install
 site/install.ps1
 deploy/container/orchicon
 deploy/runtime/orchicon
+.playwright-mcp/

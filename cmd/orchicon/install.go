@@ -227,6 +227,14 @@ func ensureInstallContainer(instance, name, dataVolume, socketDir, image string)
 			args = append(args, "-v", filepath.Join(home, f)+":"+filepath.Join(home, f)+":ro")
 		}
 	}
+	// GitHub CLI auth + state (read-only) so in-process PR/merge workers
+	// and the host opencode serve can run `gh` authenticated.
+	if st, err := os.Stat(filepath.Join(home, ".config", "gh")); err == nil && st.IsDir() {
+		args = append(args, "-v", filepath.Join(home, ".config", "gh")+":"+filepath.Join(home, ".config", "gh")+":ro")
+	}
+	if st, err := os.Stat(filepath.Join(home, ".local", "share", "gh")); err == nil && st.IsDir() {
+		args = append(args, "-v", filepath.Join(home, ".local", "share", "gh")+":"+filepath.Join(home, ".local", "share", "gh")+":ro")
+	}
 	// Runtime daemon socket directory (directory mount survives daemon
 	// restarts).
 	args = append(args, "-v", socketDir+":/var/run/orchicon-runtime", image)

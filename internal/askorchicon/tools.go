@@ -63,6 +63,13 @@ func (r *ToolRegistry) Get(name string) (ToolDefinition, bool) {
 	return td, ok
 }
 
+// Add registers an additional tool definition (used for tools whose Fn
+// depends on service-injected dependencies not available to allTools).
+func (r *ToolRegistry) Add(td ToolDefinition) {
+	r.tools = append(r.tools, td)
+	r.byName[td.Name] = td
+}
+
 // IsMutating returns true if the tool performs mutations.
 func (r *ToolRegistry) IsMutating(name string) bool {
 	td, ok := r.byName[name]

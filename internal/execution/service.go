@@ -25,6 +25,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
+	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -45,6 +46,17 @@ type Service struct {
 	subscriber eventbus.Subscriber
 	apiv1connect.UnimplementedExecutionServiceHandler
 
+	// sendExecMessage routes a mid-run human message into a live session
+	// execution (Stage 3). Injected by the server (wired to the opencode
+	// adapter's SendExecutionMessage); nil when the session transport is
+	// unavailable → SendExecutionMessage returns Unimplemented.
+	sendExecMessage func(ctx context.Context, execID, message string) error
+
+	// continueSession runs a one-shot follow-up question against a worker's
+	// session in place (no new execution/work item), recording the reply
+	// into the durable transcript. Injected by the server.
+	continueSession func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error)
+
 	// In-memory approval registry: pending Tier 2 per-tool-call approval
 	// requests (docs/05 §7.1). Keyed by request_id. When the adapter
 	// emits an ApprovalRequest, the TaskReconciler registers it here;
@@ -52,6 +64,18 @@ type Service struct {
 	// signaled back to the adapter's Execute stream.
 	mu        sync.Mutex
 	approvals map[string]*pendingApproval
+}
+
+// SetSendExecutionMessage injects the live-session message router (the
+// opencode adapter's SendExecutionMessage). Nil = the RPC is unavailable.
+func (s *Service) SetSendExecutionMessage(fn func(ctx context.Context, execID, message string) error) {
+	s.sendExecMessage = fn
+}
+
+// SetContinueSession injects the in-place follow-up runner (the opencode
+// adapter's ContinueSession). Nil = the RPC is unavailable.
+func (s *Service) SetContinueSession(fn func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error)) {
+	s.continueSession = fn
 }
 
 // pendingApproval tracks a Tier 2 approval request awaiting a human
@@ -922,6 +946,235 @@ func (s *Service) enrichSystemPrompt(ctx context.Context, tx pgx.Tx, tenantID st
 		return
 	}
 	p.SystemPrompt = meta.Prompt
+}
+
+// SendExecutionMessage injects a mid-run human message into a LIVE worker
+// session. It creates nothing — no execution, no work item, no workflow
+// state — the message joins the session's turn queue and the reply flows
+// back through StreamExecutionEvents. Fails (FailedPrecondition) when the
+// execution has no live session (finished, legacy one-shot path, or the
+// plane restarted).
+func (s *Service) SendExecutionMessage(ctx context.Context, req *connect.Request[apiv1.SendExecutionMessageRequest]) (*connect.Response[apiv1.SendExecutionMessageResponse], error) {
+	if _, err := requireTenant(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	msg := req.Msg
+	if msg.ExecutionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("execution_id must not be empty"))
+	}
+	if strings.TrimSpace(msg.Message) == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message must not be empty"))
+	}
+	if utf8.RuneCountInString(msg.Message) > 10000 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message too long (max 10000 characters)"))
+	}
+	if s.sendExecMessage == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session transport not available"))
+	}
+	if err := s.sendExecMessage(ctx, msg.ExecutionId, msg.Message); err != nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	return connect.NewResponse(&apiv1.SendExecutionMessageResponse{}), nil
+}
+
+// GetExecutionSession returns the durable session transcript for an
+// execution — the full conversation (goal, nudges, human messages,
+// assistant text, tool calls, reasoning, steps, errors) that survives the
+// serve/container lifecycle. It is the source for the post-completion
+// session view and the seed for one-shot follow-ups.
+func (s *Service) GetExecutionSession(ctx context.Context, req *connect.Request[apiv1.GetExecutionSessionRequest]) (*connect.Response[apiv1.GetExecutionSessionResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	msg := req.Msg
+	if msg.ExecutionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("execution_id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	parts, err := db.ListExecutionSessionParts(ctx, ttx.Tx, tenantID, msg.ExecutionId, int(msg.Limit), msg.BeforeSeq)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	resp := &apiv1.GetExecutionSessionResponse{}
+	for _, p := range parts {
+		resp.Parts = append(resp.Parts, &apiv1.ExecutionSessionPart{
+			Seq:       p.Seq,
+			Kind:      p.Kind,
+			Payload:   p.Payload,
+			CreatedAt: timestamppb.New(p.CreatedAt),
+		})
+	}
+	return connect.NewResponse(resp), nil
+}
+
+// ContinueExecutionSession runs a one-shot follow-up question against a
+// worker's session IN PLACE — no new execution, work item, or workflow
+// state is created. The question joins the session (re-attaching when the
+// serve is still reachable, else a fresh host-serve session seeded with
+// the durable transcript), and the reply is recorded into the transcript
+// and returned.
+func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Request[apiv1.ContinueExecutionSessionRequest]) (*connect.Response[apiv1.ContinueExecutionSessionResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	msg := req.Msg
+	if msg.ExecutionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("execution_id must not be empty"))
+	}
+	if strings.TrimSpace(msg.Message) == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message must not be empty"))
+	}
+	if utf8.RuneCountInString(msg.Message) > 10000 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message too long (max 10000 characters)"))
+	}
+	if s.continueSession == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session transport not available"))
+	}
+
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	exec, err := db.GetExecution(ctx, ttx.Tx, tenantID, msg.ExecutionId)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	version, err := db.GetLatestWorkerVersion(ctx, ttx.Tx, tenantID, exec.WorkerID, true)
+	if err != nil {
+		s.log.Warn("follow-up: worker version", "worker", exec.WorkerID, "error", err)
+	}
+	projectDir := ""
+	if proj, perr := db.GetProject(ctx, ttx.Tx, tenantID, exec.ProjectID); perr == nil {
+		projectDir = proj.ProjectDir
+	}
+	parts, err := db.ListExecutionSessionParts(ctx, ttx.Tx, tenantID, msg.ExecutionId, 0, 0)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	context, sessionID, serveURL, servePassword := renderSessionContext(parts)
+	systemPrompt := composeFollowUpPrompt(version)
+	startSeq := int64(0)
+	for _, p := range parts {
+		if p.Seq > startSeq {
+			startSeq = p.Seq
+		}
+	}
+	startSeq++ // next seq after the original run
+
+	reply, err := s.continueSession(ctx, opencode.ContinueSessionOpts{
+		ExecutionID:   msg.ExecutionId,
+		TenantID:      tenantID,
+		SystemPrompt:  systemPrompt,
+		ModelRef:      version.ModelRef,
+		ProjectDir:    projectDir,
+		Message:       msg.Message,
+		Context:       context,
+		SessionID:     sessionID,
+		ServeURL:      serveURL,
+		ServePassword: servePassword,
+		StartSeq:      startSeq,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	return connect.NewResponse(&apiv1.ContinueExecutionSessionResponse{Reply: reply}), nil
+}
+
+// composeFollowUpPrompt rebuilds the worker's composed system prompt for a
+// follow-up session (mirrors the TaskReconciler's composeSystemPrompt).
+func composeFollowUpPrompt(v db.WorkerVersionRow) string {
+	if v.Role == "" && v.Skills == "" && v.Behavior == "" && v.AgentsMD == "" {
+		return v.SystemPrompt
+	}
+	var parts []string
+	add := func(heading, content string) {
+		c := strings.TrimSpace(content)
+		if c == "" {
+			return
+		}
+		parts = append(parts, "# "+heading+"\n\n"+c)
+	}
+	add("Role", v.Role)
+	add("Skills", v.Skills)
+	add("Behavior", v.Behavior)
+	add("AGENTS.md", v.AgentsMD)
+	return strings.Join(parts, "\n\n")
+}
+
+// renderSessionContext renders the durable transcript into a readable
+// chronological context for a follow-up seed and extracts the original
+// session identity (session_info part). The context is bounded so a long
+// session doesn't blow the model window.
+func renderSessionContext(parts []db.SessionPart) (context, sessionID, serveURL, servePassword string) {
+	const maxContext = 60000
+	var sb strings.Builder
+	trunc := func(text string) string {
+		if len(text) > 2000 {
+			return text[:2000] + "\n…(truncated)"
+		}
+		return text
+	}
+	for _, p := range parts {
+		var pl struct {
+			Text   string          `json:"text"`
+			Source string          `json:"source"`
+			Part   json.RawMessage `json:"part"`
+			SID    string          `json:"session_id"`
+			SURL   string          `json:"serve_url"`
+		}
+		_ = json.Unmarshal(p.Payload, &pl)
+		if pl.SID != "" {
+			sessionID = pl.SID
+		}
+		if pl.SURL != "" {
+			serveURL = pl.SURL
+		}
+		switch p.Kind {
+		case "user_message":
+			sb.WriteString("USER (" + pl.Source + "): " + trunc(pl.Text) + "\n\n")
+		case "text":
+			// The assistant text lives under part.text in the raw part JSON.
+			var part struct {
+				Text string `json:"text"`
+			}
+			_ = json.Unmarshal(pl.Part, &part)
+			if part.Text != "" {
+				sb.WriteString("ASSISTANT: " + trunc(part.Text) + "\n\n")
+			}
+		case "tool_use":
+			var part struct {
+				Tool string `json:"tool"`
+			}
+			_ = json.Unmarshal(pl.Part, &part)
+			if part.Tool != "" {
+				sb.WriteString("TOOL CALL: " + part.Tool + "\n\n")
+			}
+		case "reasoning":
+			// skip — verbose, and the assistant text carries the outcome.
+		case "error":
+			sb.WriteString("ERROR\n\n")
+		}
+		if sb.Len() >= maxContext {
+			sb.WriteString("\n…(conversation truncated)\n")
+			break
+		}
+	}
+	return sb.String(), sessionID, serveURL, servePassword
 }
 
 func strPtr(s string) *string { return &s }

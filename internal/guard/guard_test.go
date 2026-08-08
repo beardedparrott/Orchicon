@@ -114,6 +114,52 @@ func TestExecutionGuardAllowsInProject(t *testing.T) {
 	}
 }
 
+func TestExecutionGuardNoProjectMode(t *testing.T) {
+	// Empty PROJECT_DIR is the shared host-serve mode (a single serve
+	// process hosting sessions in many project dirs). EVERY absolute target
+	// is outside scope and blocked — including `rm /`, which an empty-dir
+	// guard would otherwise leak through the "$PROJECT_DIR"/* glob.
+	g, err := NewExecutionGuard("")
+	if err != nil {
+		t.Fatalf("NewExecutionGuard(''): %v", err)
+	}
+	defer g.Close()
+
+	blocked := []struct {
+		name string
+		args []string
+	}{
+		{"rm", []string{"-rf", "/"}},
+		{"rm", []string{"-rf", "/home"}},
+		{"rm", []string{"-rf", "/tmp/whatever"}},
+		{"rm", []string{"-rf", "~"}},
+		{"rm", []string{"-rf", "$HOME/x"}},
+		{"rm", []string{"-rf", ".."}},
+		{"cp", []string{"/etc/hostname", "/tmp/copy.txt"}},
+	}
+	for _, tc := range blocked {
+		exit, out := runGuard(t, g, tc.name, tc.args...)
+		if exit == 0 {
+			t.Errorf("%s %v: expected blocked in no-project mode, got exit 0: %s", tc.name, tc.args, out)
+		}
+		if !strings.Contains(out, "ORCHICON GUARD") {
+			t.Errorf("%s %v: expected guard message, got: %s", tc.name, tc.args, out)
+		}
+	}
+
+	// Relative paths remain allowed (they resolve inside the session's own
+	// directory, scoped by opencode per session).
+	dir := t.TempDir()
+	cmd := exec.Command(filepath.Join(g.dir, "rm"), "-rf", "junk")
+	cmd.Dir = dir
+	if err := os.MkdirAll(filepath.Join(dir, "junk"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Errorf("rm relative in no-project mode: expected success, got %v: %s", err, out)
+	}
+}
+
 func TestExecutionGuardAppliesToPATH(t *testing.T) {
 	proj := t.TempDir()
 	g, err := NewExecutionGuard(proj)

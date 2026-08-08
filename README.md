@@ -30,6 +30,17 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.211 (2026-08-07)
+
+| Type | Change |
+|---|---|
+| Feature | **Persistent worker sessions.** Worker executions run as live opencode sessions (one `opencode serve` on the host for in-process work, one per workflow-run runtime container) instead of one-shot `opencode run` subprocesses — the goal is the first message, and liveness nudges + mid-run human messages join the session's turn queue. Fatal stalls and the wall-clock backstop abort the session; the advisory no-file-progress stall now sends a real liveness probe and revives the execution on a response. |
+| Feature | **Live, durable session chat on the execution page.** The detail view is an Ask-Orchicon-grade chat: the full system prompt as the first bubble, complete history even when you join mid-run, grouped streaming text/reasoning blocks, collapsible tool cards, auto-stick scrolling, a composer that nudges the running worker mid-session (no new work item/execution), and Stop. The full conversation (goal, nudges, human messages, text, tool calls, reasoning) is stored in `execution_session_parts` and survives the serve/container, viewable after completion. |
+| Feature | **Follow-ups run in the session.** On a completed execution, the composer runs a one-shot follow-up against the worker's session in place (`ContinueExecutionSession`) — no new execution or work item — re-attaching when the serve is reachable, else re-seeding a host-serve session with the transcript as context; the exchange is recorded inline in the chat. |
+| Feature | **Mid-run worker chat RPCs.** `SendExecutionMessage` injects a message into a live session (reply streams back through the normal event stream); `GetExecutionSession` returns the durable transcript; the Ask Orchicon agent gains a `send_execution_message` tool. |
+| Bug fix | **gh now authenticates inside containers.** The operator's GitHub token lives in the OS keyring, which containers can't see — PR/merge workers reported "gh is not authenticated". The host's effective token is injected as `GH_TOKEN` into runtime and main containers, and `~/.config/gh` + `~/.local/share/gh` are mounted read-only. |
+| Chore | **Runtime-container serve reliability.** The plane reaches each workflow container's opencode serve directly on the docker bridge (no published-port/docker-proxy races); the container serve omits user MCP servers (`SkipUserMCP` — the `orchicon` docker-exec entries hang it); serve cold-start is gated with a session-create probe + setup retries. |
+
 ### v0.1.210 (2026-08-07)
 
 | Type | Change |

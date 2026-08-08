@@ -23,6 +23,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
+	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/execution"
 	"github.com/beardedparrott/orchicon/internal/middleware"
 	"github.com/beardedparrott/orchicon/internal/policy"
@@ -68,6 +69,14 @@ type Dependencies struct {
 	// socket (build/remove runtime images). Nil when the daemon is not
 	// configured (headless serve).
 	RuntimeClient *runtime.Client
+	// SendExecutionMessage routes a mid-run human message into a live
+	// session execution (Stage 3). Nil when the session transport is
+	// unavailable.
+	SendExecutionMessage func(ctx context.Context, execID, message string) error
+	// ContinueSession runs a one-shot follow-up question against a worker's
+	// session in place (no new execution/work item). Nil when the session
+	// transport is unavailable.
+	ContinueSession func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error)
 }
 
 // Mount returns an http.Handler serving the Orchicon API. Generated
@@ -131,6 +140,12 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 
 	// ExecutionService (docs/07 §3.8).
 	execSvc := execution.New(deps.Pool, deps.Log, deps.Subscriber)
+	if deps.SendExecutionMessage != nil {
+		execSvc.SetSendExecutionMessage(deps.SendExecutionMessage)
+	}
+	if deps.ContinueSession != nil {
+		execSvc.SetContinueSession(deps.ContinueSession)
+	}
 	mux.Handle(apiv1connect.NewExecutionServiceHandler(execSvc, interceptorOpt))
 
 	// PolicyService (docs/07 §3.5).
@@ -178,6 +193,9 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 
 	// AskOrchiconService — conversational agent.
 	askSvc := askorchicon.New(deps.Pool, deps.Log, deps.BlobStore, deps.ModelDiscoverer)
+	if deps.SendExecutionMessage != nil {
+		askSvc.SetSendExecutionMessage(deps.SendExecutionMessage)
+	}
 	mux.Handle(apiv1connect.NewAskOrchiconServiceHandler(askSvc, interceptorOpt))
 
 	// Grafana UI reverse proxy (docs/10 §11): serves Grafana same-origin

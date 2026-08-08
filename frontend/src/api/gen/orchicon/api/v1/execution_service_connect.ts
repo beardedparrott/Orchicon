@@ -9,7 +9,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { ApproveToolCallRequest, ApproveToolCallResponse, BatchDeleteExecutionsRequest, BatchDeleteExecutionsResponse, CancelExecutionRequest, CancelExecutionResponse, CheckpointNowRequest, CheckpointNowResponse, CreateFollowUpExecutionRequest, CreateFollowUpExecutionResponse, DeleteExecutionRequest, DeleteExecutionResponse, GetExecutionRequest, GetExecutionResponse, ListExecutionsRequest, ListExecutionsResponse, ListPendingApprovalsRequest, ListPendingApprovalsResponse, PauseExecutionRequest, PauseExecutionResponse, ResumeExecutionRequest, ResumeExecutionResponse, StreamExecutionEventsRequest, StreamExecutionEventsResponse } from "./execution_pb.js";
+import { ApproveToolCallRequest, ApproveToolCallResponse, BatchDeleteExecutionsRequest, BatchDeleteExecutionsResponse, CancelExecutionRequest, CancelExecutionResponse, CheckpointNowRequest, CheckpointNowResponse, ContinueExecutionSessionRequest, ContinueExecutionSessionResponse, CreateFollowUpExecutionRequest, CreateFollowUpExecutionResponse, DeleteExecutionRequest, DeleteExecutionResponse, GetExecutionRequest, GetExecutionResponse, GetExecutionSessionRequest, GetExecutionSessionResponse, ListExecutionsRequest, ListExecutionsResponse, ListPendingApprovalsRequest, ListPendingApprovalsResponse, PauseExecutionRequest, PauseExecutionResponse, ResumeExecutionRequest, ResumeExecutionResponse, SendExecutionMessageRequest, SendExecutionMessageResponse, StreamExecutionEventsRequest, StreamExecutionEventsResponse } from "./execution_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -161,6 +161,46 @@ export const ExecutionService = {
       name: "CreateFollowUpExecution",
       I: CreateFollowUpExecutionRequest,
       O: CreateFollowUpExecutionResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * SendExecutionMessage injects a mid-run human message into a LIVE
+     * worker session without creating any new execution/work item/workflow
+     * state (Stage 3). The reply streams back through the normal execution
+     * event stream.
+     *
+     * @generated from rpc orchicon.api.v1.ExecutionService.SendExecutionMessage
+     */
+    sendExecutionMessage: {
+      name: "SendExecutionMessage",
+      I: SendExecutionMessageRequest,
+      O: SendExecutionMessageResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * GetExecutionSession returns the durable session transcript for an
+     * execution — viewable after completion even when the serve/container
+     * is gone, and the seed for one-shot follow-ups.
+     *
+     * @generated from rpc orchicon.api.v1.ExecutionService.GetExecutionSession
+     */
+    getExecutionSession: {
+      name: "GetExecutionSession",
+      I: GetExecutionSessionRequest,
+      O: GetExecutionSessionResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ContinueExecutionSession runs a one-shot follow-up question against a
+     * worker's session in place — no new execution, work item, or workflow
+     * state — and records the reply into the session transcript.
+     *
+     * @generated from rpc orchicon.api.v1.ExecutionService.ContinueExecutionSession
+     */
+    continueExecutionSession: {
+      name: "ContinueExecutionSession",
+      I: ContinueExecutionSessionRequest,
+      O: ContinueExecutionSessionResponse,
       kind: MethodKind.Unary,
     },
   }
