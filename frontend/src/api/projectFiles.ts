@@ -28,6 +28,12 @@ export function useListProjectDir(
     },
     enabled: !!projectId || !!dirPath,
     staleTime: 30_000,
+    // Poll so the browse tree reflects the latest files/directories on the
+    // machine while the page is open — the control plane lists the host
+    // filesystem live (bind-mounted into the container), but nothing
+    // re-fetched without a poll. The project/work-item context section
+    // "should automatically have the most newest files".
+    refetchInterval: 5_000,
   });
 }
 
@@ -50,6 +56,7 @@ export function useListDirPath(dirPath: string) {
     },
     enabled: !!dirPath,
     staleTime: 30_000,
+    refetchInterval: 5_000,
   });
 }
 
@@ -88,6 +95,11 @@ export function useUpdateContextFiles() {
     onSuccess: (project) => {
       qc.invalidateQueries({ queryKey: projectKeys.list() });
       qc.invalidateQueries({ queryKey: projectKeys.detail(project.id) });
+      // A context-files save can change what the browse tree should show
+      // (the stored selection) — clear the file-tree cache too.
+      qc.invalidateQueries({
+        queryKey: [...projectKeys.all, "files", project.id],
+      });
     },
   });
 }

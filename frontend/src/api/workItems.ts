@@ -8,6 +8,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { workItemClient } from "@/api/clients";
+import { projectKeys } from "@/api/projects";
 import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import type { DependencyGraph } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import type { WorkItemStatus } from "@/api/gen/orchicon/api/v1/work_item_pb";
@@ -145,6 +146,12 @@ export function useUpdateWorkItem(projectId: string) {
       qc.invalidateQueries({ queryKey: workItemKeys.list(projectId) });
       qc.invalidateQueries({ queryKey: workItemKeys.detail(item.id) });
       qc.invalidateQueries({ queryKey: workItemKeys.graph(projectId) });
+      // Work-item context_files changes affect the FileBrowser tree cache
+      // (the same live-listing queries the project page uses) — clear it so
+      // the browse tree shows the saved selection's newest files.
+      qc.invalidateQueries({
+        queryKey: [...projectKeys.all, "files", item.projectId || projectId],
+      });
     },
   });
 }

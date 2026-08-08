@@ -11,6 +11,12 @@ var onProjectChanged func()
 // directory-bearing fields change.
 func SetOnProjectChanged(fn func()) { onProjectChanged = fn }
 
+// NotifyProjectChanged fires the registered callback, if any. Exported so
+// other services whose changes feed the same mount manifest (work item
+// context_files, which the single-container mount manifest also unions)
+// can trigger an immediate refresh without waiting for the periodic writer.
+func NotifyProjectChanged() { notifyProjectChanged() }
+
 // notifyProjectChanged fires the registered callback, if any.
 func notifyProjectChanged() {
 	if onProjectChanged != nil {

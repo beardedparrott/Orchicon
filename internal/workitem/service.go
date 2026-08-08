@@ -15,6 +15,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
+	"github.com/beardedparrott/orchicon/internal/project"
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -559,6 +560,12 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		}
 	}
 	s.log.Info("work item updated", "id", updated.ID, "version", updated.Version)
+	// Context files changed → refresh the container mount manifest now (the
+	// work_item.context_files paths are mounted into the single-container
+	// instance; waiting for the 30s periodic writer delays new mounts).
+	if msg.ContextFiles != nil {
+		project.NotifyProjectChanged()
+	}
 	return connect.NewResponse(&apiv1.UpdateWorkItemResponse{WorkItem: rowToProto(updated)}), nil
 }
 
