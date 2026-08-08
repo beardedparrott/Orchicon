@@ -815,6 +815,21 @@ export class WorkflowRunCost extends Message<WorkflowRunCost> {
    */
   workers: WorkflowWorkerCost[] = [];
 
+  /**
+   * Bound work item id, if any; empty for one-shot runs with no ticket.
+   *
+   * @generated from field: string work_item_id = 7;
+   */
+  workItemId = "";
+
+  /**
+   * Current title of the bound work item (resolved server-side), used as the
+   * human-readable run label in the "By Workflow" cost breakdown.
+   *
+   * @generated from field: string work_item_name = 8;
+   */
+  workItemName = "";
+
   constructor(data?: PartialMessage<WorkflowRunCost>) {
     super();
     proto3.util.initPartial(data, this);
@@ -829,6 +844,8 @@ export class WorkflowRunCost extends Message<WorkflowRunCost> {
     { no: 4, name: "execution_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 5, name: "run_status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 6, name: "workers", kind: "message", T: WorkflowWorkerCost, repeated: true },
+    { no: 7, name: "work_item_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 8, name: "work_item_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowRunCost {
