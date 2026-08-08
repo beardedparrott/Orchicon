@@ -487,6 +487,14 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 		// Put the mounted adapter CLI on PATH so the supervisor's
 		// `exec.Command("opencode", ...)` resolves it.
 		args = append(args, "-e", "PATH="+filepath.Join(d.HostHome, ".opencode", "bin")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+		// The operator's gh token often lives in the OS keyring, which is
+		// NOT available inside containers — hosts.yml alone has no token,
+		// so `gh` reports "not authenticated". Resolve the host's effective
+		// token and pass it as GH_TOKEN so PR/merge workers can actually
+		// create PRs. Best-effort: no gh / no auth / keyring locked → skip.
+		if tok := hostGHToken(); tok != "" {
+			args = append(args, "-e", "GH_TOKEN="+tok)
+		}
 	}
 	// The daemon's own executable: bind-mounted read-only at
 	// /usr/local/bin/orchicon so the container can exec `orchicon
@@ -562,6 +570,21 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 		time.Sleep(250 * time.Millisecond)
 	}
 	return nil, fmt.Errorf("runtime %s started but supervisor socket not ready", name)
+}
+
+// hostGHToken resolves the operator's effective GitHub CLI token
+// (`gh auth token`), which may live in the OS keyring rather than
+// hosts.yml. Bounded + best-effort: returns "" when gh is absent, not
+// authenticated, or the keyring is locked.
+func hostGHToken() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "auth", "token")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // startServe asks the in-container supervisor to bring up `opencode
