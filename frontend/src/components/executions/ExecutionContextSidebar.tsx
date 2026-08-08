@@ -129,13 +129,26 @@ export function ExecutionContextSidebar({
         CONTROL: 9,
       };
       switch (eventType) {
-        case ET.TELEMETRY:
-          if (payload.text) {
+        case ET.TELEMETRY: {
+          let text = payload.text as string | undefined;
+          if (text && text.startsWith("{")) {
+            try {
+              const parsed = JSON.parse(text);
+              if (parsed && parsed.kind === "reasoning" && typeof parsed.text === "string") {
+                // Streamed reasoning chunk — unwrap for display.
+                text = parsed.text;
+              }
+            } catch {
+              /* keep raw */
+            }
+          }
+          if (text) {
             s.assistantCount++;
-            s.lastAssistantText = payload.text as string;
+            s.lastAssistantText = text;
             s.lastAssistantAt = ts;
           }
           break;
+        }
         case ET.TOOL_CALL: {
           const toolName = (payload.tool_name as string) || "tool";
           const input = (payload.input as string) || "";

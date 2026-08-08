@@ -22,7 +22,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   Copy,
-  Loader2,
   SendHorizontal,
   Square,
   TerminalSquare,
@@ -33,22 +32,7 @@ import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-interface ParsedTool {
-  id: string;
-  toolName: string;
-  input: string;
-  output: string;
-  at: number;
-}
-
-type ChatItem =
-  | { kind: "user"; text: string; source: string; at: number; key: string }
-  | { kind: "text"; text: string; at: number; key: string }
-  | { kind: "tool"; tool: ParsedTool; key: string }
-  | { kind: "reasoning"; text: string; at: number; key: string }
-  | { kind: "error"; text: string; at: number; key: string }
-  | { kind: "artifact"; name: string; type: string; content: string; at: number; key: string }
-  | { kind: "session"; sessionId: string; serveUrl: string; at: number; key: string };
+import { mergeSessionItems, type ChatItem, type ParsedTool } from "./sessionItems";
 
 interface SessionChatPaneProps {
   executionId: string;
@@ -160,23 +144,29 @@ function liveItems(events: StreamExecutionEventsResponse[]): ChatItem[] {
     const payload = decodePayload(evt.payload);
     switch (evt.eventType) {
       case 2: {
-        // TELEMETRY — assistant text or reasoning chunk.
+        // TELEMETRY — assistant text or reasoning chunk. Reasoning chunks
+        // arrive wrapped as {"kind":"reasoning","text":"...","seq":N} (the
+        // adapter's emitReasoningChunked); detect by parsing the payload,
+        // not a top-level kind field.
         const raw = payload.text as string | undefined;
         if (typeof raw !== "string" || !raw.length) break;
-        const isReasoning = payload.kind === "reasoning" && raw.startsWith("{");
         let text = raw;
-        if (isReasoning) {
+        let isReasoning = false;
+        if (raw.startsWith("{")) {
           try {
             const parsed = JSON.parse(raw);
-            if (parsed && typeof parsed.text === "string") text = parsed.text;
+            if (parsed && parsed.kind === "reasoning" && typeof parsed.text === "string") {
+              isReasoning = true;
+              text = parsed.text;
+            }
           } catch {
-            /* fall through as plain text */
+            /* not JSON — treat as plain text */
           }
         }
         out.push(
           isReasoning
             ? { kind: "reasoning", text, at, key: `r-${id}` }
-            : { kind: "text", text, at, key: id },
+            : { kind: "text", text, at, key: id, live: true },
         );
         break;
       }
@@ -240,16 +230,15 @@ function CopyButton({ text }: { text: string }) {
 }
 
 function SystemPromptBubble({ text }: { text: string }) {
-  // The first bubble IS the full prompt sent to the worker. A NEUTRAL
-  // surface (like the assistant bubble) so every markdown element — code,
-  // links, blockquotes, headings — renders with normal foreground colors
-  // on BOTH light and dark themes; a primary-colored bubble would leave
-  // some of them unreadable. Collapsible when long.
+  // The first bubble IS the full prompt sent to the worker — right-aligned
+  // like our message to the worker. A NEUTRAL surface (not primary) so
+  // every markdown element renders with normal foreground colors on both
+  // themes. Collapsible when long.
   const [open, setOpen] = useState(text.length <= 600);
   const long = text.length > 600;
   return (
-    <div className="flex justify-start">
-      <div className="max-w-[92%] overflow-hidden rounded-2xl rounded-tl-sm border border-amber-300/40 bg-amber-50/30 shadow-sm dark:border-amber-500/30 dark:bg-amber-500/10">
+    <div className="flex justify-end">
+      <div className="max-w-[92%] overflow-hidden rounded-2xl rounded-br-sm border border-amber-300/40 bg-amber-50/30 shadow-sm dark:border-amber-500/30 dark:bg-amber-500/10">
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
@@ -523,10 +512,17 @@ export function SessionChatPane({
 
   const sendMsg = useSendExecutionMessage();
   const continueSession = useContinueExecutionSession();
-  const { data: transcript, isFetching: transcriptLoading } = useGetExecutionSession(
-    executionId,
-    true,
-  );
+  const { data: transcript, refetch: refetchTranscript } = useGetExecutionSession(executionId, true);
+  // Poll every 2s while running so the pane shows the full conversation as
+  // it grows (joining mid-run shows everything already said; the runner
+  // flushes the transcript every ~2s).
+  useEffect(() => {
+    if (!isRunning) return;
+    const t = window.setInterval(() => {
+      void refetchTranscript();
+    }, 2000);
+    return () => window.clearInterval(t);
+  }, [isRunning, refetchTranscript]);
   // Poll while running so user messages (goal/nudges/human) appear even
   // before the terminal flush.
   const live = useMemo(() => liveItems(events), [events]);
@@ -541,13 +537,15 @@ export function SessionChatPane({
     return decodePayload(sp.payload)?.text as string | undefined;
   }, [systemPrompt, transcript]);
 
-  // Merge: running → live items + user messages from the transcript;
-  // terminal → the transcript alone (durable, includes both sides).
+  // Merge: running → the FULL transcript history (so joining mid-run shows
+  // everything already said) plus only the live-stream events that are NEWER
+  // than the transcript's latest part (the runner flushes every ~2s, so the
+  // live stream fills the gap until the next flush) — consecutive live text
+  // chunks are grouped into one growing assistant bubble. Terminal → the
+  // transcript alone (durable, includes both sides).
   const items = useMemo<ChatItem[]>(() => {
-    const atOf = (i: ChatItem): number => (i.kind === "tool" ? i.tool.at : i.at);
     if (isRunning) {
-      const extras = history.filter((i) => i.kind === "user" || i.kind === "session");
-      return [...extras, ...live].sort((a, b) => atOf(a) - atOf(b));
+      return mergeSessionItems(history, live);
     }
     if (history.length > 0) return history;
     // No session transcript (legacy execution / one-shot fallback): show
@@ -641,7 +639,6 @@ export function SessionChatPane({
         <span className="text-xs text-muted-foreground">
           {isStreaming ? "live" : isTerminal ? "completed" : streamStatus || "idle"}
         </span>
-        {transcriptLoading && isRunning && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
         <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
           <span>{visibleItems.length + (systemText ? 1 : 0)} message{visibleItems.length + (systemText ? 1 : 0) === 1 ? "" : "s"}</span>
         </div>
