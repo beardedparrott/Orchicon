@@ -248,12 +248,12 @@ type WorkflowAggregateRow struct {
 
 // WorkflowRunCostRow is a cost roll-up grouped by workflow run.
 type WorkflowRunCostRow struct {
-	WorkflowRunID string
-	WorkflowID    string
-	TotalCostUSD  float64
-	TotalTokens   int64
+	WorkflowRunID  string
+	WorkflowID     string
+	TotalCostUSD   float64
+	TotalTokens    int64
 	ExecutionCount int32
-	RunStatus     string
+	RunStatus      string
 	// WorkItemID is the run's bound work item id (workflow_runs.work_item_id),
 	// empty for one-shot runs with no bound ticket.
 	WorkItemID string
