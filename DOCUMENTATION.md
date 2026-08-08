@@ -1324,13 +1324,21 @@ volume cannot grow unbounded:
 
 ### Branch Workflow
 
-1. Never commit to `main` — the pre-commit hook enforces this
-2. Create a branch: `feat/`, `fix/`, `chore/`, `refactor/`, `docs/`, or `test/` prefix
+`develop` is the integration branch; `main` is release-only. All workers
+branch off `develop`, PR into `develop`, and merge into `develop` — never
+`main`. The human tests the accumulated `develop` state and approves a
+`develop` → `main` merge to cut a release (per-PR releases do not happen).
+
+1. Never commit to `main` or `develop` — the pre-commit hook enforces this
+2. Branch off `develop`: `git switch -c <type>/<short-description> develop`
 3. Before starting work: `git tag -a v0.1.<next> -m "v0.1.<next>"` then bump version
 4. Commit early and often with clear present-tense messages
-5. Before PR: update `README.md` (Last Release Changes) and `UPDATES.md`
+5. Before PR: update `UPDATES.md` (leave README.md's "Last Release Changes"
+   section alone — it only changes when the human cuts a release)
 6. Ask for approval before creating a PR
-7. PRs must carry the `release` label for auto-release
+7. PRs target `develop` and must NOT carry the `release` label (that label
+   belongs only on the human's `develop` → `main` release PR; merging into
+   `develop` never creates a release)
 
 ### Local Pre-commit Hook
 
@@ -1338,7 +1346,7 @@ volume cannot grow unbounded:
 #!/bin/sh
 # .git/hooks/pre-commit
 branch="$(git symbolic-ref --short HEAD)"
-if [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
+if [ "$branch" = "main" ] || [ "$branch" = "master" ] || [ "$branch" = "develop" ]; then
   echo "ERROR: Direct commits to $branch are blocked!"
   exit 1
 fi

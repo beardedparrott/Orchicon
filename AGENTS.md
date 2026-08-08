@@ -11,8 +11,8 @@
 
 ## WARNING
 
-> **STOP!** Are you in a custom branch or are you on `main`? If you are on `main`. **DO NOT proceed.**
-> Instead, create a new branch and continue. Keep this in your memory context **AT ALL TIMES**.
+> **STOP!** Are you in a custom branch or are you on `main` or `develop`? If you are on `main` or `develop`. **DO NOT proceed.**
+> Instead, create a new branch off `develop` and continue. Keep this in your memory context **AT ALL TIMES**.
 > This is **RULE number 1**.
 >
 > Check your branch at the very start of every task, before reading files,
@@ -37,36 +37,34 @@ The project's model spend is rising. Be economical but **never at the expense of
 
 ## Git Workflow
 
-- ALWAYS create a new branch before starting work. NEVER commit to main.
-- A local pre-commit hook (`.git/hooks/pre-commit`) rejects any commit on `main` or `master`. If the hook is missing, re-create it:
+> **`develop` is the integration branch. `main` is release-only.** All workers
+> (AI agents, the canned Orchicon workers, you) branch off `develop`, PR into
+> `develop`, and merge into `develop` — **never `main`**. The human maintains
+> `main`: they test the accumulated `develop` state and then approve a
+> `develop` → `main` merge to cut a release. Per-PR releases do not happen.
+
+- ALWAYS create a new branch before starting work. NEVER commit to `main` or `develop`.
+- **Branch off `develop`**, never `main` (the repo default branch is `develop`). If you
+  find yourself on a branch created from `main`, rebase it onto `develop` before PRing.
+- A local pre-commit hook (`.git/hooks/pre-commit`) rejects any commit on `main`, `master`, or `develop`. If the hook is missing, re-create it:
 
   ```bash
   #!/bin/sh
   branch="$(git symbolic-ref --short HEAD)"
-  if [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
+  if [ "$branch" = "main" ] || [ "$branch" = "master" ] || [ "$branch" = "develop" ]; then
     echo "❌ ERROR: Direct commits to $branch are blocked!"
     exit 1
   fi
   ```
 - Branch naming: `<type>/<short-description>` (e.g. `feat/project-crud`, `fix/outbox-relay-dedup`, `chore/docker-compose-setup`). Types: `feat`, `fix`, `chore`, `refactor`, `docs`, `test`.
-- **Before starting work on a new branch**, bump the version tag: `git tag -a v0.1.<next> -m "v0.1.<next>"`. This ensures the binary reports the correct version during local development and `make container-build` (or `scripts/install-local.sh`) embeds the new tag. After a PR merges, the auto-release workflow creates the canonical release tag on GitHub — run `git fetch --tags` (the Makefile's `build`/`run` targets do this automatically) so a local rebuild embeds the merged release version instead of a stale one (`git pull` does not fetch tags).
+- **Before starting work on a new branch**, bump the version tag: `git tag -a v0.1.<next> -m "v0.1.<next>"`. This ensures the binary reports the correct version during local development and `make container-build` (or `scripts/install-local.sh`) embeds the new tag. When the human merges `develop` → `main`, the auto-release workflow creates the canonical release tag on GitHub — run `git fetch --tags` (the Makefile's `build`/`run` targets do this automatically) so a local rebuild embeds the merged release version instead of a stale one (`git pull` does not fetch tags).
 - Commit early and often on your branch. Write clear commit messages in present tense: `Add project CRUD service and data-access layer`. Stage only the files relevant to the commit.
 - **Never create a pull request without asking the user for approval first.** Ask, wait for a yes, then proceed.
 - Once work is complete and properly tested, ask the user to verify.
-- After the user verifies, ask again for approval to open the PR, then open it. PRs MUST carry the `release` label to kick off the release creation on GitHub.
-- **Before merging**, ALWAYS ASK THE USER AGAIN (PR-creation approval ≠ merge approval) and update the "Last Release Changes" section in `README.md` with a table listing each feature/bug fix in the release. Keep the release info for the most recent **TWO** versions — remove older entries. Table format:
-
-  ```
-  ### v0.1.NNN (date)
-
-  | Type | Change |
-  |---|---|
-  | Feature | Short description |
-  | Bug fix | Short description |
-  | Chore | Short description |
-  ```
-  After the merge, delete the branch.
-- Before starting work, always `git pull origin main` to get the latest. Before pushing, `git fetch origin && git rebase origin/main` if the branch has been open for a while.
+- After the user verifies, ask again for approval to open the PR, then open it. **PRs target `develop` and must NOT carry the `release` label** — that label only belongs on the human's `develop` → `main` release PR. Merging into `develop` never creates a release; releases are made exclusively by the human merging `develop` → `main` (the auto-release workflow fires only on `main`).
+- **Before merging**, ALWAYS ASK THE USER AGAIN (PR-creation approval ≠ merge approval). Update `UPDATES.md` with a new table row for this PR. **Do NOT touch README.md's "Last Release Changes" section** — that section only changes when the human cuts a release (the `develop` → `main` merge), so it can't be maintained by per-PR workers.
+- After the merge, delete the branch.
+- Before starting work, always `git pull origin develop` to get the latest. Before pushing, `git fetch origin && git rebase origin/develop` if the branch has been open for a while.
 
 ## Local development loop
 
@@ -91,7 +89,7 @@ Every task follows this sequence:
 2. Read UPDATES.md to understand the current state, and read any docs or code necessary — DOCUMENTATION.md covers every subsystem, so read its relevant sections before touching something unfamiliar.
 3. Create a branch and do the work, committing changes often.
 4. Fully test and verify.
-5. Before the final commit on your branch, update **both** `README.md` (Last Release Changes section — table format, most recent two versions only) and `UPDATES.md` (new table row) with a one-paragraph summary describing the changes in this PR. This is the commit that will be PR'd and merged.
+5. Before the final commit on your branch, update `UPDATES.md` (new table row) with a one-paragraph summary describing the changes in this PR. Do **not** touch README.md's "Last Release Changes" section (that is maintained only when the human cuts a release via the `develop` → `main` merge). This is the commit that will be PR'd and merged into `develop`.
 6. Follow the Git Workflow above.
 7. Inform the user every time UPDATES have been made. Show them in a tabled format what was changed and updated.
 
