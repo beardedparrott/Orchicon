@@ -30,13 +30,13 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
-### v0.1.217 (2026-08-08)
+### v0.1.214 (2026-08-08)
 
 | Type | Change |
 |---|---|
 | Feature | **Every work item field is now settable via the MCP.** The Ask Orchicon / Orchicon MCP tools previously exposed only a subset of the fields the API can set. `orchicon_create_work_item` and `orchicon_update_work_item` now accept the full mutable set — `budgets`, `context_window`, `workflow_id`, `scheduled_start_at`, `auto_start_workflow`, `runtime_image` (create + update), plus `project_id` reassignment and `workflow_run_id` (update) — reusing the Connect service's shared validators so the two surfaces cannot drift. The tools mirror the service's downstream effects: setting a schedule flips the status to `scheduled`, `auto_start_workflow=true` starts the bound workflow immediately via `StartWorkflowDirect` (and clears any schedule), and outbox events (`work_item.created`/`updated`/`kind_changed`) are emitted in the same transaction. Two new tools — `orchicon_assign_worker` and `orchicon_unassign_worker` — mirror the `AssignWorker`/`UnassignWorker` RPCs so `assigned_worker_ref` is settable too. |
 
-### v0.1.215 (2026-08-08)
+### v0.1.213 (2026-08-08)
 
 | Type | Change |
 |---|---|
