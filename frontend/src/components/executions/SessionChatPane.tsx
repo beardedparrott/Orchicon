@@ -240,33 +240,39 @@ function CopyButton({ text }: { text: string }) {
 }
 
 function SystemPromptBubble({ text }: { text: string }) {
-  // The first bubble IS the full prompt sent to the worker — styled like a
-  // user message (we sent it), collapsible only when long.
-  const [open, setOpen] = useState(text.length <= 400);
-  const long = text.length > 400;
+  // The first bubble IS the full prompt sent to the worker. A NEUTRAL
+  // surface (like the assistant bubble) so every markdown element — code,
+  // links, blockquotes, headings — renders with normal foreground colors
+  // on BOTH light and dark themes; a primary-colored bubble would leave
+  // some of them unreadable. Collapsible when long.
+  const [open, setOpen] = useState(text.length <= 600);
+  const long = text.length > 600;
   return (
-    <div className="flex justify-end">
-      <div className="max-w-[88%] overflow-hidden rounded-2xl rounded-br-sm bg-primary px-4 py-2.5 text-sm text-primary-foreground shadow-sm">
-        <div className="mb-1 flex items-center justify-end gap-2">
-          <span className="text-[10px] font-medium uppercase tracking-wide text-primary-foreground/70">
+    <div className="flex justify-start">
+      <div className="max-w-[92%] overflow-hidden rounded-2xl rounded-tl-sm border border-amber-300/40 bg-amber-50/30 shadow-sm dark:border-amber-500/30 dark:bg-amber-500/10">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="flex w-full items-center gap-2 px-4 py-2 text-left"
+        >
+          <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
+          <span className="text-xs font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300">
             system prompt
           </span>
-          <span className="text-[10px] opacity-60">
+          <span className="ml-auto shrink-0 text-xs text-muted-foreground/70">
             {text.length.toLocaleString()} chars
           </span>
           {long && (
-            <button
-              type="button"
-              onClick={() => setOpen((v) => !v)}
-              className="rounded px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground/80 hover:bg-primary-foreground/10"
-            >
+            <span className="shrink-0 text-xs text-muted-foreground/70">
               {open ? "collapse" : "expand"}
-            </button>
+            </span>
           )}
-        </div>
+        </button>
         {open && (
-          <div className="break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
-            <Markdown>{text}</Markdown>
+          <div className="border-t border-border/40 px-4 py-3">
+            <div className="break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
+              <Markdown>{text}</Markdown>
+            </div>
           </div>
         )}
       </div>
