@@ -1,15 +1,18 @@
 // Schedules page (design-notes/create-new-page-for-schedules.md).
 //
 // Shows all currently scheduled work items in chronological order with
-// their next runtimes ("Upcoming", the default view), plus a history of
-// items that already ran ("History"). All data comes from existing
+// their next runtimes ("Upcoming", the default view), a view of items
+// that have fired and are actively executing ("Running"), plus a history
+// of items that already ran ("History"). All data comes from existing
 // Connect-ES clients (AGENTS.md invariants #1/#2): Upcoming is a
-// status = WORK_ITEM_STATUS_SCHEDULED query; History is a broad fetch
-// filtered client-side to items that have a scheduled_start_at and a
-// terminal status (the ListWorkItems API accepts exactly one status
-// filter, so a terminal-status union cannot be fetched in one call —
-// the fetch is isolated behind useListWorkItems so a future backend
-// filter/RPC can swap in without touching this page's layout).
+// status = WORK_ITEM_STATUS_SCHEDULED query; Running and History are
+// broad fetches filtered client-side — Running to items that have a
+// scheduled_start_at and an active, non-terminal, non-scheduled status
+// (RUNNING / CHECKPOINTING / RECOVERING), History to items that have a
+// scheduled_start_at and a terminal status (the ListWorkItems API accepts
+// exactly one status filter, so those status unions cannot be fetched in
+// one call — the fetch is isolated behind useListWorkItems so a future
+// backend filter/RPC can swap in without touching this page's layout).
 //
 // Recurring scheduled tasks are a future backend feature (design §5).
 // Every card reserves a right-aligned frequency slot that today renders
@@ -53,7 +56,7 @@ import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 
 const schedulesSearchSchema = z.object({
-  view: z.enum(["upcoming", "history"]).optional(),
+  view: z.enum(["upcoming", "running", "history"]).optional(),
   projectId: z.string().optional(),
 });
 
@@ -67,6 +70,11 @@ export const Route = createRoute({
 // Terminal statuses that count as "previously ran" for History
 // (succeeded / failed / cancelled).
 const TERMINAL_STATUSES = new Set([6, 7, 8]);
+
+// Active statuses that count as "currently running" for the Running view:
+// the item was scheduled (scheduled_start_at set) and its bound workflow
+// run is in flight. Disjoint from TERMINAL_STATUSES and from SCHEDULED.
+const ACTIVE_RUNNING_STATUSES = new Set([4, 5, 9]);
 
 // Schedulable kinds: Task, Subtask, and the recovery kinds. Epics and
 // features cannot be scheduled, so they are not offered in the filter.
@@ -85,13 +93,13 @@ function SchedulesPage() {
   const { data: projects } = useListProjects();
   const [search, setSearch] = useState("");
   const [kindFilter, setKindFilter] = useState("");
-  const [sortOrder, setSortOrder] = useState(view === "upcoming" ? "asc" : "desc");
+  const [sortOrder, setSortOrder] = useState(view === "history" ? "desc" : "asc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const now = useNow();
 
   // Reset the sort direction to the view's default when the view changes.
   useEffect(() => {
-    setSortOrder(view === "upcoming" ? "asc" : "desc");
+    setSortOrder(view === "history" ? "desc" : "asc");
     setSelected(new Set());
   }, [view]);
 
@@ -99,7 +107,7 @@ function SchedulesPage() {
   const cancelScheduled = useDeleteWorkItem(projectId);
   const batchDelete = useBatchDeleteWorkItems();
 
-  const goView = (nextView: "upcoming" | "history") => {
+  const goView = (nextView: "upcoming" | "running" | "history") => {
     navigate({ search: (prev) => ({ ...prev, view: nextView }) });
   };
 
@@ -159,7 +167,7 @@ function SchedulesPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Schedules</h1>
           <p className="text-sm text-muted-foreground">
-            Upcoming runs of scheduled work items, in chronological order.
+            Scheduled work items — upcoming, running, and past runs.
           </p>
         </div>
         <LiveClock now={now} />
@@ -180,6 +188,19 @@ function SchedulesPage() {
             onClick={() => goView("upcoming")}
           >
             Upcoming
+          </button>
+          <button
+            type="button"
+            aria-pressed={view === "running"}
+            className={cn(
+              "px-3 py-1.5 text-sm font-medium transition-colors",
+              view === "running"
+                ? "bg-accent text-accent-foreground"
+                : "text-muted-foreground hover:bg-accent/50",
+            )}
+            onClick={() => goView("running")}
+          >
+            Running
           </button>
           <button
             type="button"
@@ -237,12 +258,16 @@ function SchedulesPage() {
         </select>
 
         <select
-          value={view === "upcoming" ? "next_run" : "last_run"}
+          value={view === "upcoming" ? "next_run" : view === "history" ? "last_run" : "start_time"}
           className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
           aria-label="Sort by"
         >
-          <option value={view === "upcoming" ? "next_run" : "last_run"}>
-            {view === "upcoming" ? "Sort: next run" : "Sort: last run"}
+          <option value={view === "upcoming" ? "next_run" : view === "history" ? "last_run" : "start_time"}>
+            {view === "upcoming"
+              ? "Sort: next run"
+              : view === "history"
+                ? "Sort: last run"
+                : "Sort: start time"}
           </option>
         </select>
 
@@ -257,17 +282,7 @@ function SchedulesPage() {
         </select>
 
         {selected.size > 0 &&
-          (view === "upcoming" ? (
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={handleCancelSelected}
-              disabled={cancelScheduled.isPending}
-            >
-              <Ban className="mr-1 h-3.5 w-3.5" />
-              Cancel {selected.size} selected
-            </Button>
-          ) : (
+          (view === "history" ? (
             <Button
               variant="destructive"
               size="sm"
@@ -276,6 +291,16 @@ function SchedulesPage() {
             >
               <Trash2 className="mr-1 h-3.5 w-3.5" />
               Delete {selected.size} selected
+            </Button>
+          ) : (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={handleCancelSelected}
+              disabled={cancelScheduled.isPending}
+            >
+              <Ban className="mr-1 h-3.5 w-3.5" />
+              Cancel {selected.size} selected
             </Button>
           ))}
       </div>
@@ -298,6 +323,19 @@ function SchedulesPage() {
           kindFilter={kindFilter}
           sortOrder={sortOrder}
           now={now}
+          projects={projects}
+          selected={selected}
+          onToggleSelect={toggleSelect}
+          onToggleSelectAll={toggleSelectAll}
+        />
+      )}
+
+      {hasProjects && view === "running" && (
+        <RunningView
+          projectId={projectId}
+          search={search}
+          kindFilter={kindFilter}
+          sortOrder={sortOrder}
           projects={projects}
           selected={selected}
           onToggleSelect={toggleSelect}
@@ -552,6 +590,194 @@ function ScheduleCard({
               <span className="rounded-full border border-input px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                 {recurrenceBadge(item)}
               </span>
+            </div>
+          </CardContent>
+        </Card>
+      </Link>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Running view
+// ---------------------------------------------------------------------------
+
+function RunningView({
+  projectId,
+  search,
+  kindFilter,
+  sortOrder,
+  projects,
+  selected,
+  onToggleSelect,
+  onToggleSelectAll,
+}: {
+  projectId: string;
+  search: string;
+  kindFilter: string;
+  sortOrder: string;
+  projects?: Project[];
+  selected: Set<string>;
+  onToggleSelect: (id: string) => void;
+  onToggleSelectAll: (items: WorkItemProto[]) => void;
+}) {
+  const {
+    data: allItems,
+    isLoading,
+    error,
+  } = useListWorkItems(projectId, {
+    search: search || undefined,
+    refetchInterval: 5_000,
+  });
+
+  // Running = items that had a scheduled start and are in an active,
+  // non-terminal, non-scheduled status (the API accepts one status filter,
+  // so this union is derived client-side; see the header comment).
+  const items = useMemo(() => {
+    const base = (allItems ?? []).filter(
+      (i) =>
+        i.scheduledStartAt &&
+        ACTIVE_RUNNING_STATUSES.has(i.status) &&
+        (!kindFilter || i.kind === Number(kindFilter)),
+    );
+    const sorted = [...base].sort(
+      (a, b) => tsToMs(a.scheduledStartAt) - tsToMs(b.scheduledStartAt),
+    );
+    return sortOrder === "asc" ? sorted : sorted.reverse();
+  }, [allItems, kindFilter, sortOrder]);
+
+  if (isLoading) {
+    return <p className="text-sm text-muted-foreground">Loading…</p>;
+  }
+  if (error) {
+    return (
+      <p className="text-sm text-destructive">
+        Failed to load running schedules: {String(error)}
+      </p>
+    );
+  }
+  if (items.length === 0) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <SearchX className="h-5 w-5 text-muted-foreground" />
+            No schedules running
+          </CardTitle>
+          <CardDescription>
+            Scheduled work items that have started will appear here while
+            their workflow run is in flight.
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2 px-2 py-1">
+        <input
+          type="checkbox"
+          checked={selected.size === items.length}
+          onChange={() => onToggleSelectAll(items)}
+          className="h-4 w-4 rounded border-input"
+          aria-label="Select all running schedules"
+        />
+        <span aria-live="polite" className="text-xs text-muted-foreground">
+          {selected.size > 0
+            ? `${selected.size} of ${items.length} selected`
+            : `${items.length} running schedule${items.length === 1 ? "" : "s"}`}
+        </span>
+      </div>
+      <ul className="space-y-3">
+        {items.map((item, ii) => (
+          <li key={item.id} className="flex gap-3">
+            <div className="hidden w-16 shrink-0 pt-4 text-right font-mono text-xs tabular-nums text-muted-foreground sm:block">
+              {formatTime(tsToMs(item.scheduledStartAt))}
+            </div>
+            <div className="relative flex flex-col items-center">
+              <KindDot
+                kind={item.kind}
+                className="mt-4 ring-2 ring-background"
+              />
+              {ii !== items.length - 1 && (
+                <span
+                  aria-hidden
+                  className="absolute left-1/2 top-6 h-[calc(100%+0.75rem)] w-px -translate-x-1/2 bg-border"
+                />
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <RunningCard
+                item={item}
+                projects={projects}
+                selected={selected.has(item.id)}
+                onToggleSelect={onToggleSelect}
+              />
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function RunningCard({
+  item,
+  projects,
+  selected,
+  onToggleSelect,
+}: {
+  item: WorkItemProto;
+  projects?: Project[];
+  selected: boolean;
+  onToggleSelect: (id: string) => void;
+}) {
+  const projectName = projects?.find((p) => p.id === item.projectId)?.name;
+  const startedAt = tsToMs(item.scheduledStartAt);
+  return (
+    <div className="group flex items-center gap-2">
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={() => onToggleSelect(item.id)}
+        className="h-4 w-4 shrink-0 rounded border-input"
+        aria-label={`Select ${item.title}`}
+      />
+      <Link
+        to="/work-items/$id"
+        params={{ id: item.id }}
+        className="min-w-0 flex-1"
+      >
+        <Card className="transition-colors hover:bg-accent">
+          <CardContent className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-center gap-3">
+              <KindDot kind={item.kind} />
+              <div className="min-w-0 flex-1 overflow-hidden">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-sm font-medium group-hover:underline">
+                    {item.title}
+                  </span>
+                  <KindBadge kind={item.kind} />
+                  <StatusPill status={item.status} />
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                  {projectName && <span>{projectName}</span>}
+                  <span className="inline-flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    Started {formatDate(startedAt)}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:shrink-0">
+              <WorkflowChip workflowId={item.workflowId} />
+              {item.workflowId && item.workflowRunId && (
+                <RunChip
+                  workflowId={item.workflowId}
+                  runId={item.workflowRunId}
+                />
+              )}
             </div>
           </CardContent>
         </Card>
