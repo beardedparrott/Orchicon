@@ -286,6 +286,25 @@ export function useForceProgressWorkflowRun() {
   });
 }
 
+// useRetryFailedWorkflowRun resumes a FAILED run in place: the run is reset
+// to pending, its failed/skipped/blocked step runs are re-armed for
+// re-dispatch, and the reconciler picks it up on its next cycle. Steps that
+// already succeeded stay succeeded — the DAG resumes where it left off.
+export function useRetryFailedWorkflowRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { runId: string }) => {
+      const res = await workflowClient.retryFailedWorkflowRun({ runId: input.runId });
+      return res.run as WorkflowRun;
+    },
+    onSuccess: (run) => {
+      qc.invalidateQueries({ queryKey: workflowKeys.run(run.id) });
+      qc.invalidateQueries({ queryKey: workflowKeys.stepRuns(run.id) });
+      qc.invalidateQueries({ queryKey: workflowKeys.runs(run.workflowId) });
+    },
+  });
+}
+
 // useGetWorkflowRun fetches a single workflow run by id.
 export function useGetWorkflowRun(id: string) {
   return useQuery({

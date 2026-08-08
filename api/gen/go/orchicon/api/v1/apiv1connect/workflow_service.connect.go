@@ -98,6 +98,9 @@ const (
 	// WorkflowServiceForceProgressWorkflowRunProcedure is the fully-qualified name of the
 	// WorkflowService's ForceProgressWorkflowRun RPC.
 	WorkflowServiceForceProgressWorkflowRunProcedure = "/orchicon.api.v1.WorkflowService/ForceProgressWorkflowRun"
+	// WorkflowServiceRetryFailedWorkflowRunProcedure is the fully-qualified name of the
+	// WorkflowService's RetryFailedWorkflowRun RPC.
+	WorkflowServiceRetryFailedWorkflowRunProcedure = "/orchicon.api.v1.WorkflowService/RetryFailedWorkflowRun"
 	// WorkflowServiceStreamWorkflowEventsProcedure is the fully-qualified name of the WorkflowService's
 	// StreamWorkflowEvents RPC.
 	WorkflowServiceStreamWorkflowEventsProcedure = "/orchicon.api.v1.WorkflowService/StreamWorkflowEvents"
@@ -181,6 +184,15 @@ type WorkflowServiceClient interface {
 	// and re-enqueues the run so the reconciler advances the DAG. Intended as
 	// a manual escape hatch, not a routine control.
 	ForceProgressWorkflowRun(context.Context, *connect.Request[v1.ForceProgressWorkflowRunRequest]) (*connect.Response[v1.ForceProgressWorkflowRunResponse], error)
+	// RetryFailedWorkflowRun resumes a FAILED WorkflowRun in place: it resets
+	// the run back to pending (clearing its ended timestamp), re-arms the
+	// failed / skipped / blocked step runs as pending (clearing their results,
+	// worker execution refs, attempts, and ended timestamps so the reconciler
+	// re-dispatches them), and flips the bound work item back to running. Steps
+	// that already succeeded stay succeeded — the DAG resumes from where it
+	// left off instead of restarting. The reconciler picks the run up on its
+	// next cycle and re-creates the runtime container.
+	RetryFailedWorkflowRun(context.Context, *connect.Request[v1.RetryFailedWorkflowRunRequest]) (*connect.Response[v1.RetryFailedWorkflowRunResponse], error)
 	// StreamWorkflowEvents is the server-stream RPC that fans out workflow
 	// run events from NATS to connected clients (docs/07 §4, docs/10 §4.1).
 	// The editor run view overlays live step transitions on the canvas
@@ -309,6 +321,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("ForceProgressWorkflowRun")),
 			connect.WithClientOptions(opts...),
 		),
+		retryFailedWorkflowRun: connect.NewClient[v1.RetryFailedWorkflowRunRequest, v1.RetryFailedWorkflowRunResponse](
+			httpClient,
+			baseURL+WorkflowServiceRetryFailedWorkflowRunProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("RetryFailedWorkflowRun")),
+			connect.WithClientOptions(opts...),
+		),
 		streamWorkflowEvents: connect.NewClient[v1.StreamWorkflowEventsRequest, v1.StreamWorkflowEventsResponse](
 			httpClient,
 			baseURL+WorkflowServiceStreamWorkflowEventsProcedure,
@@ -355,6 +373,7 @@ type workflowServiceClient struct {
 	getWorkflowStepRuns      *connect.Client[v1.GetWorkflowStepRunsRequest, v1.GetWorkflowStepRunsResponse]
 	retryStepRun             *connect.Client[v1.RetryStepRunRequest, v1.RetryStepRunResponse]
 	forceProgressWorkflowRun *connect.Client[v1.ForceProgressWorkflowRunRequest, v1.ForceProgressWorkflowRunResponse]
+	retryFailedWorkflowRun   *connect.Client[v1.RetryFailedWorkflowRunRequest, v1.RetryFailedWorkflowRunResponse]
 	streamWorkflowEvents     *connect.Client[v1.StreamWorkflowEventsRequest, v1.StreamWorkflowEventsResponse]
 	acquireEditLock          *connect.Client[v1.AcquireWorkflowEditLockRequest, v1.AcquireWorkflowEditLockResponse]
 	releaseEditLock          *connect.Client[v1.ReleaseWorkflowEditLockRequest, v1.ReleaseWorkflowEditLockResponse]
@@ -446,6 +465,11 @@ func (c *workflowServiceClient) ForceProgressWorkflowRun(ctx context.Context, re
 	return c.forceProgressWorkflowRun.CallUnary(ctx, req)
 }
 
+// RetryFailedWorkflowRun calls orchicon.api.v1.WorkflowService.RetryFailedWorkflowRun.
+func (c *workflowServiceClient) RetryFailedWorkflowRun(ctx context.Context, req *connect.Request[v1.RetryFailedWorkflowRunRequest]) (*connect.Response[v1.RetryFailedWorkflowRunResponse], error) {
+	return c.retryFailedWorkflowRun.CallUnary(ctx, req)
+}
+
 // StreamWorkflowEvents calls orchicon.api.v1.WorkflowService.StreamWorkflowEvents.
 func (c *workflowServiceClient) StreamWorkflowEvents(ctx context.Context, req *connect.Request[v1.StreamWorkflowEventsRequest]) (*connect.ServerStreamForClient[v1.StreamWorkflowEventsResponse], error) {
 	return c.streamWorkflowEvents.CallServerStream(ctx, req)
@@ -535,6 +559,15 @@ type WorkflowServiceHandler interface {
 	// and re-enqueues the run so the reconciler advances the DAG. Intended as
 	// a manual escape hatch, not a routine control.
 	ForceProgressWorkflowRun(context.Context, *connect.Request[v1.ForceProgressWorkflowRunRequest]) (*connect.Response[v1.ForceProgressWorkflowRunResponse], error)
+	// RetryFailedWorkflowRun resumes a FAILED WorkflowRun in place: it resets
+	// the run back to pending (clearing its ended timestamp), re-arms the
+	// failed / skipped / blocked step runs as pending (clearing their results,
+	// worker execution refs, attempts, and ended timestamps so the reconciler
+	// re-dispatches them), and flips the bound work item back to running. Steps
+	// that already succeeded stay succeeded — the DAG resumes from where it
+	// left off instead of restarting. The reconciler picks the run up on its
+	// next cycle and re-creates the runtime container.
+	RetryFailedWorkflowRun(context.Context, *connect.Request[v1.RetryFailedWorkflowRunRequest]) (*connect.Response[v1.RetryFailedWorkflowRunResponse], error)
 	// StreamWorkflowEvents is the server-stream RPC that fans out workflow
 	// run events from NATS to connected clients (docs/07 §4, docs/10 §4.1).
 	// The editor run view overlays live step transitions on the canvas
@@ -659,6 +692,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("ForceProgressWorkflowRun")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceRetryFailedWorkflowRunHandler := connect.NewUnaryHandler(
+		WorkflowServiceRetryFailedWorkflowRunProcedure,
+		svc.RetryFailedWorkflowRun,
+		connect.WithSchema(workflowServiceMethods.ByName("RetryFailedWorkflowRun")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workflowServiceStreamWorkflowEventsHandler := connect.NewServerStreamHandler(
 		WorkflowServiceStreamWorkflowEventsProcedure,
 		svc.StreamWorkflowEvents,
@@ -719,6 +758,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceRetryStepRunHandler.ServeHTTP(w, r)
 		case WorkflowServiceForceProgressWorkflowRunProcedure:
 			workflowServiceForceProgressWorkflowRunHandler.ServeHTTP(w, r)
+		case WorkflowServiceRetryFailedWorkflowRunProcedure:
+			workflowServiceRetryFailedWorkflowRunHandler.ServeHTTP(w, r)
 		case WorkflowServiceStreamWorkflowEventsProcedure:
 			workflowServiceStreamWorkflowEventsHandler.ServeHTTP(w, r)
 		case WorkflowServiceAcquireEditLockProcedure:
@@ -802,6 +843,10 @@ func (UnimplementedWorkflowServiceHandler) RetryStepRun(context.Context, *connec
 
 func (UnimplementedWorkflowServiceHandler) ForceProgressWorkflowRun(context.Context, *connect.Request[v1.ForceProgressWorkflowRunRequest]) (*connect.Response[v1.ForceProgressWorkflowRunResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.ForceProgressWorkflowRun is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) RetryFailedWorkflowRun(context.Context, *connect.Request[v1.RetryFailedWorkflowRunRequest]) (*connect.Response[v1.RetryFailedWorkflowRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.RetryFailedWorkflowRun is not implemented"))
 }
 
 func (UnimplementedWorkflowServiceHandler) StreamWorkflowEvents(context.Context, *connect.Request[v1.StreamWorkflowEventsRequest], *connect.ServerStream[v1.StreamWorkflowEventsResponse]) error {

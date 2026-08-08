@@ -615,6 +615,10 @@ type UpdateWorkflowRunFields struct {
 	// RuntimeImage is the resolved runtime container image tag captured
 	// at run start.
 	RuntimeImage *string
+	// ClearEndedAt clears ended_at to NULL regardless of the EndedAt
+	// pointer. Used when resuming a terminalized (failed) run — the ended
+	// timestamp must be cleared so the restarted run's lifecycle is honest.
+	ClearEndedAt bool
 }
 
 // UpdateWorkflowRun applies a partial update with optimistic concurrency.
@@ -646,6 +650,9 @@ func UpdateWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string, expe
 		q += fmt.Sprintf(`, ended_at = $%d`, setIdx)
 		args = append(args, *f.EndedAt)
 		setIdx++
+	}
+	if f.ClearEndedAt {
+		q += `, ended_at = NULL`
 	}
 	if f.ProjectID != nil {
 		q += fmt.Sprintf(`, project_id = $%d`, setIdx)
@@ -879,6 +886,10 @@ type UpdateWorkflowStepRunFields struct {
 	SupersededBy      *string
 	StartedAt         *time.Time
 	EndedAt           *time.Time
+	// ClearEndedAt clears ended_at to NULL regardless of the EndedAt
+	// pointer (used when retrying a failed/blocked step run so the
+	// re-dispatched run's lifecycle is honest).
+	ClearEndedAt bool
 }
 
 // UpdateWorkflowStepRun applies a partial update with optimistic
@@ -926,6 +937,9 @@ func UpdateWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string, 
 		q += fmt.Sprintf(`, ended_at = $%d`, setIdx)
 		args = append(args, *f.EndedAt)
 		setIdx++
+	}
+	if f.ClearEndedAt {
+		q += `, ended_at = NULL`
 	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, workflow_run_id, step_id, step_name, step_kind,

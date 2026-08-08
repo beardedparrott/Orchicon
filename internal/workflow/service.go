@@ -984,6 +984,114 @@ func (s *Service) ForceProgressWorkflowRun(ctx context.Context, req *connect.Req
 	}), nil
 }
 
+// RetryFailedWorkflowRun resumes a FAILED WorkflowRun in place: the run is
+// reset back to pending (clearing its ended timestamp), every ACTIVE
+// failed/skipped/blocked step run is reset to pending (clearing result,
+// worker execution ref, attempt, and ended timestamp so the reconciler
+// re-dispatches it), and the bound work item is flipped back to running so
+// the ticket reflects the resumed run. Succeeded step runs stay succeeded —
+// the DAG resumes from where it left off instead of restarting. The
+// reconciler's scan picks the run up within ~200ms and its pending→running
+// block re-resolves the runtime image and re-creates the (previously reaped)
+// runtime container.
+func (s *Service) RetryFailedWorkflowRun(ctx context.Context, req *connect.Request[apiv1.RetryFailedWorkflowRunRequest]) (*connect.Response[apiv1.RetryFailedWorkflowRunResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.RunId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("run_id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	run, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, req.Msg.RunId)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if run.Status != domain.WorkflowRunFailed {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("run is in status %s — only a failed run can be retried", run.Status))
+	}
+
+	stepRuns, err := db.ListWorkflowStepRuns(ctx, ttx.Tx, tenantID, req.Msg.RunId)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+
+	now := time.Now().UTC()
+	var reset []string
+	for _, sr := range stepRuns {
+		if sr.SupersededBy != "" {
+			continue // archived iteration — never mutate
+		}
+		switch sr.Status {
+		case domain.StepRunFailed, domain.StepRunSkipped, domain.StepRunBlocked:
+		default:
+			continue // succeeded/pending/ready/running/approval_pending/recovering stay
+		}
+		emptyResult := []byte("{}")
+		attempt := 0
+		updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+			Status:            strPtr(domain.StepRunPending),
+			Result:            &emptyResult,
+			WorkerExecutionID: strPtr(""),
+			Attempt:           &attempt,
+			StartedAt:         &now,
+			ClearEndedAt:      true,
+		})
+		if err != nil {
+			return nil, mapDBError(err)
+		}
+		reset = append(reset, sr.ID)
+		if err := enqueueWorkflowEvent(ctx, ttx.Tx, domain.WorkflowEventStepReady, db.WorkflowRow{}, db.WorkflowVersionRow{}, run, updated.StepID); err != nil {
+			s.log.Warn("retry-failed: enqueue step_ready failed", "run", run.ID, "step", updated.StepID, "error", err)
+		}
+	}
+	if len(reset) == 0 {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("no failed/skipped/blocked step runs to retry"))
+	}
+
+	// Flip the run back to pending so the reconciler's pending→running block
+	// re-resolves the runtime image and re-creates the (reaped) container.
+	updatedRun, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, run.ID, run.Version, db.UpdateWorkflowRunFields{
+		Status:       strPtr(domain.WorkflowRunPending),
+		ClearEndedAt: true,
+	})
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+
+	// The bound work item was failed at run end — flip it back to running so
+	// the ticket reflects the resumed run (per-step executions never mutate
+	// it; it reaches a terminal state only when the run re-terminalizes).
+	if run.WorkItemID != "" {
+		if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID); err == nil {
+			status := domain.WorkItemRunning
+			if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, db.UpdateWorkItemFields{Status: &status}); err != nil {
+				s.log.Warn("retry-failed: reset work item status failed", "work_item", run.WorkItemID, "error", err)
+			}
+		}
+	}
+
+	if err := enqueueWorkflowEvent(ctx, ttx.Tx, domain.WorkflowEventRunRetried, db.WorkflowRow{}, db.WorkflowVersionRow{}, updatedRun, ""); err != nil {
+		s.log.Warn("retry-failed: enqueue run_retried failed", "run", run.ID, "error", err)
+	}
+
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	s.log.Info("workflow run retried from failure", "run", run.ID, "reset_steps", len(reset))
+	return connect.NewResponse(&apiv1.RetryFailedWorkflowRunResponse{
+		Run:             runRowToProto(updatedRun),
+		ResetStepRunIds: reset,
+	}), nil
+}
+
 // StreamWorkflowEvents is the server-stream RPC that fans out workflow
 // run events from NATS to connected clients (docs/07 §4, docs/10 §4.1).
 func (s *Service) StreamWorkflowEvents(ctx context.Context, req *connect.Request[apiv1.StreamWorkflowEventsRequest], stream *connect.ServerStream[apiv1.StreamWorkflowEventsResponse]) error {
