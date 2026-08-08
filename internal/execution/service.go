@@ -1068,9 +1068,13 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 
 	context, sessionID, serveURL, servePassword := renderSessionContext(parts)
 	systemPrompt := composeFollowUpPrompt(version)
-	if modelRef := version.ModelRef; modelRef == "" {
-		// No worker model — leave empty and let the serve use its default.
+	startSeq := int64(0)
+	for _, p := range parts {
+		if p.Seq > startSeq {
+			startSeq = p.Seq
+		}
 	}
+	startSeq++ // next seq after the original run
 
 	reply, err := s.continueSession(ctx, opencode.ContinueSessionOpts{
 		ExecutionID:   msg.ExecutionId,
@@ -1083,6 +1087,7 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 		SessionID:     sessionID,
 		ServeURL:      serveURL,
 		ServePassword: servePassword,
+		StartSeq:      startSeq,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
@@ -1143,9 +1148,22 @@ func renderSessionContext(parts []db.SessionPart) (context, sessionID, serveURL,
 		case "user_message":
 			sb.WriteString("USER (" + pl.Source + "): " + trunc(pl.Text) + "\n\n")
 		case "text":
-			sb.WriteString("ASSISTANT: " + trunc(pl.Text) + "\n\n")
+			// The assistant text lives under part.text in the raw part JSON.
+			var part struct {
+				Text string `json:"text"`
+			}
+			_ = json.Unmarshal(pl.Part, &part)
+			if part.Text != "" {
+				sb.WriteString("ASSISTANT: " + trunc(part.Text) + "\n\n")
+			}
 		case "tool_use":
-			sb.WriteString("TOOL CALL\n\n")
+			var part struct {
+				Tool string `json:"tool"`
+			}
+			_ = json.Unmarshal(pl.Part, &part)
+			if part.Tool != "" {
+				sb.WriteString("TOOL CALL: " + part.Tool + "\n\n")
+			}
 		case "reasoning":
 			// skip — verbose, and the assistant text carries the outcome.
 		case "error":

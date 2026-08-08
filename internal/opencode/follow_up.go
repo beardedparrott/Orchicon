@@ -27,6 +27,9 @@ type ContinueSessionOpts struct {
 	SessionID     string
 	ServeURL      string
 	ServePassword string
+	// StartSeq is the next transcript seq to use (the last existing part's
+	// seq + 1), so the follow-up entries append after the original run.
+	StartSeq int64
 }
 
 // ContinueSession runs the follow-up. It returns the assistant's reply.
@@ -54,26 +57,35 @@ func (a *Adapter) ContinueSession(ctx context.Context, opts ContinueSessionOpts)
 
 	// Record both sides into the durable transcript.
 	if a.sessionStore != nil {
+		seq := opts.StartSeq
+		if seq <= 0 {
+			seq = 1
+		}
 		parts := []db.SessionPart{
 			{
 				ExecutionID: opts.ExecutionID,
 				TenantID:    opts.TenantID,
+				Seq:         seq,
 				Kind:        db.SessionPartUserMessage,
 				Payload:     db.MarshalPartPayload(map[string]any{"text": opts.Message, "source": "follow_up"}),
 			},
 		}
+		seq++
 		if !reuse {
 			parts = append(parts, db.SessionPart{
 				ExecutionID: opts.ExecutionID,
 				TenantID:    opts.TenantID,
+				Seq:         seq,
 				Kind:        db.SessionPartSessionInfo,
 				Payload:     db.MarshalPartPayload(map[string]any{"session_id": sessionID, "serve_url": client.BaseURL()}),
 			})
+			seq++
 		}
 		if reply != "" {
 			parts = append(parts, db.SessionPart{
 				ExecutionID: opts.ExecutionID,
 				TenantID:    opts.TenantID,
+				Seq:         seq,
 				Kind:        db.SessionPartText,
 				Payload:     db.MarshalPartPayload(map[string]any{"part": map[string]any{"type": "text", "text": reply}}),
 			})
