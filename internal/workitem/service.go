@@ -447,6 +447,19 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 			fields.ClearScheduledStartAt = true
 		}
 	}
+	// Saving a scheduled start flips the item to "scheduled" (ADR-001 in
+	// architecture-notes/running-workflows-not-showing-in-schedules.md).
+	// Applied AFTER the kind-switch plan so a switch to a non-schedulable
+	// kind (which clears the schedule and demotes status to pending) always
+	// wins. Guarded against in-flight runs: flipping a running item would
+	// let ScheduledRunReconciler fire a duplicate run and would misstate an
+	// in-flight run as waiting. Clearing a schedule (form omits the field)
+	// never triggers the flip.
+	if msg.ScheduledStartAt != nil &&
+		!isActiveRunStatus(current.Status) &&
+		!(kindSwitchPlan != nil && kindSwitchPlan.ClearScheduledStartAt) {
+		fields.Status = strPtr(domain.WorkItemScheduled)
+	}
 	updated, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, msg.Id, current.Version, fields)
 	if err != nil {
 		return nil, mapDBError(err)

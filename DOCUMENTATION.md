@@ -724,9 +724,12 @@ Shared presentation lives in `frontend/src/components/work-items/` (meta, badges
 1. Navigate to **Schedules** in the sidebar
 2. The **Upcoming** view (default) lists scheduled work items (`status = scheduled`) in chronological order with their next runtimes, grouped by local day (Today / Tomorrow / weekday date)
 3. Each card links to the work item (`/work-items/$id`) and its bound workflow (`/workflows/$id`); a right-aligned frequency slot shows **One-time** today and is the placeholder for future recurring schedules
-4. The **History** view (toggle or `?view=history`) shows items that had a scheduled start and reached a terminal status, most recent first, with links to the workflow run when one exists
-5. The standard filter bar applies: search, project, kind (schedulable kinds only), and run-time sort order; bulk actions cancel upcoming schedules or hard-delete history items
-6. A live clock and countdown chips are driven by a single page-level timer (paused while the tab is hidden)
+4. The **Running** view (toggle or `?view=running`) shows **any currently running workflow**: work items whose bound workflow run is in flight (status `RUNNING` / `CHECKPOINTING` / `RECOVERING` with a `workflow_run_id`), whether or not they carried a scheduled start — a workflow started manually, or via "Start immediately on save", shows here too. The shown start time falls back to the item's `updated_at`/`created_at` when there is no schedule
+5. The **History** view (toggle or `?view=history`) shows items that had a scheduled start and reached a terminal status, most recent first, with links to the workflow run when one exists
+6. The standard filter bar applies: search, project, kind (schedulable kinds only), and run-time sort order; bulk actions cancel running schedules, cancel upcoming schedules, or hard-delete history items
+7. A live clock and countdown chips are driven by a single page-level timer (paused while the tab is hidden)
+
+**Saving a schedule on a work item** flips that item's status to `scheduled` — setting `scheduled_start_at` in the work-item edit form switches it to `scheduled` no matter its current status (so it appears in Upcoming and fires via `ScheduledRunReconciler`). The flip is scoped to the edited item only, never a bulk change, and is skipped while the item is `running`/`checkpointing`/`recovering` (an in-flight run must not be re-armed) or when the same edit switches it to a non-schedulable kind (which clears the schedule).
 
 #### Building Workflows (Visual Editor)
 1. Navigate to **Workflows** → **New Workflow**
