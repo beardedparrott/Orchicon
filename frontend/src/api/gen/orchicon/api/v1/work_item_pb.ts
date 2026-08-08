@@ -363,6 +363,16 @@ export class WorkItem extends Message<WorkItem> {
    */
   runtimeImage = "";
 
+  /**
+   * context_files are absolute file OR directory paths selected as worker
+   * context, mirroring projects.context_files (docs/10 §3). When a worker
+   * is dispatched for this item, these paths are rendered into the
+   * composite prompt exactly like the project's context files.
+   *
+   * @generated from field: repeated string context_files = 26;
+   */
+  contextFiles: string[] = [];
+
   constructor(data?: PartialMessage<WorkItem>) {
     super();
     proto3.util.initPartial(data, this);
@@ -395,6 +405,7 @@ export class WorkItem extends Message<WorkItem> {
     { no: 17, name: "created_at", kind: "message", T: Timestamp },
     { no: 18, name: "updated_at", kind: "message", T: Timestamp },
     { no: 24, name: "runtime_image", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 26, name: "context_files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkItem {

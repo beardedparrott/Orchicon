@@ -277,6 +277,11 @@ type WorkItem struct {
 	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	RuntimeImage  string                 `protobuf:"bytes,24,opt,name=runtime_image,json=runtimeImage,proto3" json:"runtime_image,omitempty"` // runtime container image tag; empty = base image
+	// context_files are absolute file OR directory paths selected as worker
+	// context, mirroring projects.context_files (docs/10 §3). When a worker
+	// is dispatched for this item, these paths are rendered into the
+	// composite prompt exactly like the project's context files.
+	ContextFiles  []string `protobuf:"bytes,26,rep,name=context_files,json=contextFiles,proto3" json:"context_files,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -479,6 +484,13 @@ func (x *WorkItem) GetRuntimeImage() string {
 	return ""
 }
 
+func (x *WorkItem) GetContextFiles() []string {
+	if x != nil {
+		return x.ContextFiles
+	}
+	return nil
+}
+
 // WorkItemDependency is an edge in the work DAG. The scheduler treats
 // the union of edges as a DAG; cycles are rejected at admission
 // (docs/02_Domain_Model.md §2.2, docs/09 §3.2).
@@ -633,7 +645,7 @@ var File_orchicon_api_v1_work_item_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\n" +
-	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xd5\a\n" +
+	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xfa\a\n" +
 	"\bWorkItem\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -663,7 +675,8 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"created_at\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"updated_at\x18\x12 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12#\n" +
-	"\rruntime_image\x18\x18 \x01(\tR\fruntimeImageB\x16\n" +
+	"\rruntime_image\x18\x18 \x01(\tR\fruntimeImage\x12#\n" +
+	"\rcontext_files\x18\x1a \x03(\tR\fcontextFilesB\x16\n" +
 	"\x14_auto_start_workflow\"\xfe\x01\n" +
 	"\x12WorkItemDependency\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +

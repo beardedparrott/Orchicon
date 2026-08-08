@@ -73,6 +73,11 @@ message WorkItem {
   google.protobuf.Timestamp created_at = 17;
   google.protobuf.Timestamp updated_at = 18;
   string runtime_image = 24; // runtime container image tag; empty = base image
+  // context_files are absolute file OR directory paths selected as worker
+  // context, mirroring projects.context_files (docs/10 §3). When a worker
+  // is dispatched for this item, these paths are rendered into the
+  // composite prompt exactly like the project's context files.
+  repeated string context_files = 26;
 }
 
 // WorkItemStatus — schedulable kinds follow:

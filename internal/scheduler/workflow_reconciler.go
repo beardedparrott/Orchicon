@@ -46,6 +46,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
@@ -1614,33 +1615,45 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		fmt.Fprintf(&sb, "Acceptance criteria:\n%s\n\n", ac)
 	}
 
-	// 2. Project context — directory + context files.
+	// 2. Project context — directory + context files (files AND
+	//    directories; directories are expanded into a bounded listing
+	//    with explicit read instructions — internal/contextfiles).
 	if wi.ProjectID != "" {
 		var p db.ProjectRow
 		if err := tx.QueryRow(ctx,
 			`SELECT project_dir, context_files FROM projects WHERE id = $1 AND tenant_id = $2`,
 			wi.ProjectID, tenantID,
 		).Scan(&p.ProjectDir, &p.ContextFiles); err == nil {
+			var sb2 strings.Builder
 			if p.ProjectDir != "" {
-				fmt.Fprintf(&sb, "Working directory: `%s`\n\n", p.ProjectDir)
+				fmt.Fprintf(&sb2, "Working directory: `%s`\n\n", p.ProjectDir)
 			}
 			var files []string
 			_ = json.Unmarshal(p.ContextFiles, &files)
-			for _, f := range files {
-				resolved := f
-				if !filepath.IsAbs(resolved) && p.ProjectDir != "" {
-					resolved = filepath.Join(p.ProjectDir, resolved)
-				}
-				if !filepath.IsAbs(resolved) {
-					continue
-				}
-				data, err := os.ReadFile(resolved)
-				if err != nil {
-					fmt.Fprintf(&sb, "**Note:** failed to read `%s`: %v\n\n", resolved, err)
-					continue
-				}
-				fmt.Fprintf(&sb, "## %s\n\n```\n%s\n```\n\n", resolved, string(data))
+			sb2.WriteString(contextfiles.Render("# Project context", files, p.ProjectDir))
+			if sb2.Len() > 0 {
+				sb.WriteString(sb2.String())
 			}
+		}
+	}
+
+	// 3. Work item context — the item's own context_files (files AND
+	//    directories), rendered exactly like the project's, resolved
+	//    against the same project_dir (backward-compat rule).
+	if len(wi.ContextFiles) > 0 {
+		var files []string
+		_ = json.Unmarshal(wi.ContextFiles, &files)
+		projectDir := ""
+		if wi.ProjectID != "" {
+			var pd string
+			_ = tx.QueryRow(ctx,
+				`SELECT project_dir FROM projects WHERE id = $1 AND tenant_id = $2`,
+				wi.ProjectID, tenantID,
+			).Scan(&pd)
+			projectDir = pd
+		}
+		if r := contextfiles.Render("# Work item context", files, projectDir); r != "" {
+			sb.WriteString(r)
 		}
 	}
 
@@ -2207,13 +2220,13 @@ func stepKindLabel(kind string) string {
 	}
 }
 
-// readProjectContextFiles lists the project's context_files as absolute
-// paths so the worker can read them from disk. No file contents are sent
-// — only the paths. Directories are listed as-is; the worker is instructed
-// to read them.
-//
-// Paths are expected to be absolute. For backward compatibility, relative
-// paths are resolved against project_dir if it is set.
+// readProjectContextFiles renders the project's context_files (files AND
+// directories) as a "# Project context" prompt section via the shared
+// contextfiles.Render. Directories are expanded into a bounded listing
+// and the worker is instructed to read them rather than opening the
+// directory as a file ("not a file"). Retained for the standalone
+// dispatch path and as the canonical single place project context is
+// turned into prompt text.
 func (r *WorkflowReconciler) readProjectContextFiles(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (string, error) {
 	p, err := db.GetProject(ctx, tx, tenantID, projectID)
 	if err != nil {
@@ -2229,22 +2242,7 @@ func (r *WorkflowReconciler) readProjectContextFiles(ctx context.Context, tx pgx
 	if len(files) == 0 {
 		return "", nil
 	}
-	var sb strings.Builder
-	sb.WriteString("# File context\n\n")
-	sb.WriteString("The following files and directories are provided as project context. Please fully read the contents of each file, and for directories, read all files within them, before starting your work.\n\n")
-	for _, path := range files {
-		cleaned := filepath.Clean(path)
-		// Backward compat: resolve relative paths against project_dir.
-		if !filepath.IsAbs(cleaned) && p.ProjectDir != "" {
-			cleaned = filepath.Join(p.ProjectDir, cleaned)
-		}
-		if !filepath.IsAbs(cleaned) {
-			continue
-		}
-		fmt.Fprintf(&sb, "- `%s`\n", cleaned)
-	}
-	sb.WriteString("\n")
-	return sb.String(), nil
+	return contextfiles.Render("# Project context", files, p.ProjectDir), nil
 }
 
 // workItemKindLabel returns a human-readable label for a work item's

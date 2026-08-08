@@ -12,6 +12,7 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/jackc/pgx/v5"
@@ -58,6 +59,17 @@ func (s *Service) SetStartWorkflowStarter(fn StartWorkflowStarter) { s.startWork
 // runtime image tag, used to stamp the work item's runtime_image default.
 func (s *Service) SetRuntimeImageResolver(fn RuntimeImageResolver) { s.runtimeImageFn = fn }
 
+// validateContextFilesInput validates a request's context_files list and
+// marshals it to the JSONB column value. A nil/empty request list yields
+// the empty JSON array ("[]") so a work item created without context has
+// a defined value (mirrors the project service's contextFilesToJSON).
+func validateContextFilesInput(paths []string) ([]byte, error) {
+	if err := contextfiles.Validate(paths); err != nil {
+		return nil, err
+	}
+	return contextfiles.ToJSON(paths)
+}
+
 // CreateWorkItem creates a new work item within a project. Depth is
 // constrained to 4 levels (docs/02 §2.2).
 func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1.CreateWorkItemRequest]) (*connect.Response[apiv1.CreateWorkItemResponse], error) {
@@ -86,6 +98,10 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	budgets, err := ValidateBudgets(msg.Budgets)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	contextFiles, err := validateContextFilesInput(msg.ContextFiles)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -150,6 +166,7 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		WorkflowID:         &workflowID,
 		ScheduledStartAt:   scheduledStartAt,
 		AutoStartWorkflow:  autoStart,
+		ContextFiles:       contextFiles,
 	}
 	// Stamp the runtime image: the caller's choice wins; empty = the base
 	// image (resolved from the daemon). The value is stored concretely so
@@ -331,6 +348,17 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 			v = s.runtimeImageFn(ctx)
 		}
 		fields.RuntimeImage = &v
+	}
+	if msg.ContextFiles != nil {
+		paths := msg.ContextFiles.Files
+		if err := contextfiles.Validate(paths); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		filesJSON, err := contextfiles.ToJSON(paths)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		fields.ContextFiles = &filesJSON
 	}
 
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
@@ -802,13 +830,13 @@ func (s *Service) UnassignWorker(ctx context.Context, req *connect.Request[apiv1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
 		RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
 			acceptance_criteria, status, assigned_worker_ref, workflow_id,
-			priority, budgets, context_window, results, prompt_context, version, created_at, updated_at`
+			priority, budgets, context_window, results, prompt_context, context_files, version, created_at, updated_at`
 	var updated db.WorkItemRow
 	err = ttx.Tx.QueryRow(ctx, q, tenantID, req.Msg.Id, current.Version).Scan(
 		&updated.ID, &updated.TenantID, &updated.ProjectID, &updated.ParentID, &updated.Kind, &updated.Title,
 		&updated.Description, &updated.AcceptanceCriteria, &updated.Status, &updated.AssignedWorkerRef,
 		&updated.WorkflowID, &updated.Priority, &updated.Budgets, &updated.ContextWindow, &updated.Results,
-		&updated.PromptContext, &updated.Version, &updated.CreatedAt, &updated.UpdatedAt,
+		&updated.PromptContext, &updated.ContextFiles, &updated.Version, &updated.CreatedAt, &updated.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("work item not found"))
@@ -1105,6 +1133,7 @@ func rowToProto(w db.WorkItemRow) *apiv1.WorkItem {
 		Budgets:             string(w.Budgets),
 		ContextWindow:       int32(w.ContextWindow),
 		Results:             string(w.Results),
+		ContextFiles:        contextFilesFromJSONOrEmpty(w.ContextFiles),
 		// PR B (context propagation): carries the composite prompt.
 		// Stored as JSONB {"composite": "# Task\n..."} — extract the
 		// inner text so the frontend gets plain markdown.
@@ -1160,3 +1189,14 @@ func extractCompositePrompt(raw []byte) string {
 
 func strPtr(s string) *string { return &s }
 func intPtr(i int) *int       { return &i }
+
+// contextFilesFromJSONOrEmpty is a best-effort parser for the
+// context_files JSONB column. Returns an empty slice on any error so the
+// API never crashes on corrupt data (mirrors the project service).
+func contextFilesFromJSONOrEmpty(data []byte) []string {
+	paths, err := contextfiles.FromJSON(data)
+	if err != nil {
+		return nil
+	}
+	return paths
+}

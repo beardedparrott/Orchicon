@@ -16,6 +16,7 @@ import {
 import { useListProjects } from "@/api/projects";
 import { useListWorkflows } from "@/api/workflows";
 import { EntityYamlView } from "@/components/EntityYamlView";
+import { FileBrowser } from "@/components/FileBrowser";
 import { Markdown } from "@/components/markdown";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
 import { Button } from "@/components/ui/button";
@@ -74,6 +75,7 @@ function WorkItemDetailPage() {
   const [editAutoStartWorkflow, setEditAutoStartWorkflow] = useState(false);
   const [editParentId, setEditParentId] = useState("");
   const [editKind, setEditKind] = useState(0);
+  const [editContextFiles, setEditContextFiles] = useState<string[]>([]);
 
   const { data: workflows } = useListWorkflows({ status: 2, templatesOnly: true }); // published templates only
 
@@ -222,6 +224,7 @@ function WorkItemDetailPage() {
                 setEditAutoStartWorkflow(false);
                 setStatus(item.status);
                 setEditKind(item.kind);
+                setEditContextFiles(item.contextFiles ?? []);
                 setEditing(true);
               }}
             >
@@ -289,6 +292,10 @@ function WorkItemDetailPage() {
             workflow_run_id: item.workflowRunId || undefined,
             assigned_worker_ref: item.assignedWorkerRef || undefined,
             context_window: item.contextWindow || undefined,
+            context_files:
+              item.contextFiles && item.contextFiles.length > 0
+                ? item.contextFiles
+                : undefined,
             version: item.version,
             created_at: item.createdAt
               ? new Date(Number(item.createdAt.seconds) * 1000).toISOString()
@@ -318,6 +325,11 @@ function WorkItemDetailPage() {
               projectId: str("project_id"),
               workflowId: str("workflow_id"),
               workflowRunId: str("workflow_run_id"),
+              // context_files is sent when the YAML carries it as an
+              // array; an absent/empty array clears the selection.
+              contextFiles: Array.isArray(parsed.context_files)
+                ? { files: parsed.context_files.map(String) }
+                : undefined,
               // parent_id is only sent when the YAML actually carries it.
               // Sending "" means "clear parent", which the server rejects
               // for non-epics — so a child whose parent line is absent
@@ -627,6 +639,38 @@ function WorkItemDetailPage() {
         </CardContent>
       </Card>
 
+      {/* Context files — files AND directories, exactly like projects */}
+      {(() => {
+        const project = projects?.find((p) => p.id === (editing ? editProjectId : item.projectId));
+        if (!project?.projectDir) {
+          return (
+            <Card>
+              <CardHeader>
+                <CardTitle>Work Item Context Files</CardTitle>
+                <CardDescription>
+                  The project for this item has no project directory set —
+                  context files cannot be added until it does.
+                </CardDescription>
+              </CardHeader>
+            </Card>
+          );
+        }
+        return (
+          <FileBrowser
+            projectId={project.id}
+            projectDir={project.projectDir}
+            initialSelectedFiles={
+              editing ? editContextFiles : item.contextFiles ?? []
+            }
+            readOnly={!editing}
+            onChange={setEditContextFiles}
+            title="Work Item Context Files"
+            description="Expand folders and check files or directories to include as context for the worker, exactly like project context files."
+            emptyHint="Context files selected for this work item. Click Edit to modify."
+          />
+        );
+      })()}
+
       {/* Project (editable) */}
       {editing && (
         <Card>
@@ -714,6 +758,7 @@ function WorkItemDetailPage() {
                   autoStartWorkflow: editAutoStartWorkflow,
                   parentId: editParentId || undefined,
                   kind: kindChanging ? editKind : undefined,
+                  contextFiles: { files: editContextFiles },
                 },
                 { onSuccess: () => setEditing(false) },
               );

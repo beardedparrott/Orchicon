@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
@@ -454,8 +455,12 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	// Fall back to a minimal worker-prompt if no composite was set
 	// (legacy direct-dispatch path: work item dispatched outside a
 	// workflow, so the workflow reconciler never built a composite).
+	// The fallback now builds the SAME shared composite the workflow
+	// path produces (worker identity + task + project context +
+	// work-item context + instructions) so standalone dispatches see
+	// project/work-item context "just like projects" (F5).
 	if systemPrompt == "" {
-		systemPrompt = composeSystemPrompt(version)
+		systemPrompt = buildStandaloneComposite(r.pool, exec, task, version)
 		if strings.TrimSpace(systemPrompt) == "" {
 			systemPrompt = "You are a worker in the Orchicon orchestration system. " +
 				"Complete the work item described in the user message and report back."
@@ -1477,6 +1482,80 @@ func composeSystemPrompt(v db.WorkerVersionRow) string {
 	add("Behavior", v.Behavior)
 	add("AGENTS.md", v.AgentsMD)
 	return strings.Join(parts, "\n\n")
+}
+
+// buildStandaloneComposite assembles the full worker prompt for a work
+// item dispatched OUTSIDE a workflow (the TaskReconciler's direct
+// dispatch path, where the WorkflowReconciler never built a per-step
+// composite). It produces the same shape the workflow path renders —
+// worker identity, the task, the project directory + project
+// context_files (files AND directories, via the shared renderer), the
+// work item's own context_files, and the worker's contract — so
+// standalone tasks see project + work-item context "just like projects".
+//
+// Best-effort: any DB read failure degrades to the subset that succeeded
+// (the caller falls back to a bare worker prompt if the result is empty).
+func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow) string {
+	var sb strings.Builder
+	if worker := composeSystemPrompt(version); worker != "" {
+		fmt.Fprintf(&sb, "# Worker\n\n%s\n\n", worker)
+	}
+
+	// Task.
+	sb.WriteString("# Task\n\n")
+	fmt.Fprintf(&sb, "Original work item: \"%s\"\n\n", strings.TrimSpace(task.Title))
+	if d := strings.TrimSpace(task.Description); d != "" {
+		fmt.Fprintf(&sb, "Description:\n%s\n\n", d)
+	}
+	if ac := strings.TrimSpace(task.AcceptanceCriteria); ac != "" {
+		fmt.Fprintf(&sb, "Acceptance criteria:\n%s\n\n", ac)
+	}
+
+	// Project context — project_dir + project context_files.
+	projectDir := ""
+	if task.ProjectID != "" {
+		var p db.ProjectRow
+		ctx := context.Background()
+		if ttx, err := pool.BeginTenantTx(ctx, exec.TenantID); err == nil {
+			if proj, err := db.GetProject(ctx, ttx.Tx, exec.TenantID, task.ProjectID); err == nil {
+				p = proj
+			}
+			_ = ttx.Rollback(ctx)
+		}
+		projectDir = p.ProjectDir
+		if p.ProjectDir != "" || len(p.ContextFiles) > 0 {
+			var ctxSB strings.Builder
+			if p.ProjectDir != "" {
+				fmt.Fprintf(&ctxSB, "Working directory: `%s`\n\n", p.ProjectDir)
+			}
+			var files []string
+			_ = json.Unmarshal(p.ContextFiles, &files)
+			ctxSB.WriteString(contextfiles.Render("# Project context", files, p.ProjectDir))
+			if ctxSB.Len() > 0 {
+				sb.WriteString(ctxSB.String())
+			}
+		}
+	}
+
+	// Work item context — the item's own context_files (same renderer).
+	if len(task.ContextFiles) > 0 {
+		var files []string
+		_ = json.Unmarshal(task.ContextFiles, &files)
+		if r := contextfiles.Render("# Work item context", files, projectDir); r != "" {
+			sb.WriteString(r)
+		}
+	}
+
+	// Worker's contract.
+	sb.WriteString("# Instructions\n\n")
+	sb.WriteString("The workflow routes on exactly one signal: the word after `ORCHICON WORKER SUMMARY:` — `success` or `failure`. There is no `_issues:` failure channel. If work genuinely cannot be accepted, end with `ORCHICON WORKER SUMMARY: failure` and say what needs fixing in the summary text. Non-blocking observations belong in the summary text only and never affect the routing.\n\n")
+	sb.WriteString("Format:\n")
+	sb.WriteString("```\nORCHICON WORKER SUMMARY: success — Implemented the feature.\n```\n")
+	sb.WriteString("or\n")
+	sb.WriteString("```\nORCHICON WORKER SUMMARY: failure — Found 3 bugs in the implementation.\n```\n\n")
+	sb.WriteString("The first word (`success` or `failure`) is used to route the workflow. The text after `—` is passed to the next stage as the summary of your work.\n\n")
+
+	return sb.String()
 }
 
 // summaryMarker is the literal line the worker's prompt instructs it to

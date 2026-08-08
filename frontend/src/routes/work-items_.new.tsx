@@ -7,6 +7,7 @@ import { z } from "zod";
 import { useCreateWorkItem } from "@/api/workItems";
 import { useListWorkItems } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
+import { FileBrowser } from "@/components/FileBrowser";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
 import { WorkItemParentSelect, depthForKind } from "@/components/work-items/work-item-parent-select";
 import { Button } from "@/components/ui/button";
@@ -105,6 +106,8 @@ function NewWorkItemPage() {
   const selectedKind = watch("kind");
   const selectedParentId = watch("parentId");
   const [runtimeImage, setRuntimeImage] = useState("");
+  const [contextFiles, setContextFiles] = useState<string[]>([]);
+  const selectedProject = projects?.find((p) => p.id === selectedProjectId);
 
   // Changing the kind can invalidate the previously chosen parent: epics
   // have no parent, and a shallower kind cannot sit under a deeper one.
@@ -138,6 +141,7 @@ function NewWorkItemPage() {
       acceptanceCriteria: values.acceptanceCriteria || undefined,
       priority: values.priority,
       runtimeImage: runtimeImage || undefined,
+      contextFiles: contextFiles.length > 0 ? contextFiles : undefined,
     });
     navigate({
       to: "/work-items/$id",
@@ -266,6 +270,22 @@ function NewWorkItemPage() {
                 workflow. Defaults to the base image.
               </p>
             </div>
+
+            {selectedProject?.projectDir ? (
+              <FileBrowser
+                projectId={selectedProject.id}
+                projectDir={selectedProject.projectDir}
+                initialSelectedFiles={contextFiles}
+                onChange={setContextFiles}
+                title="Work Item Context Files"
+                description="Expand folders and check files or directories to include as context for the worker, exactly like project context files."
+              />
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Select a project with a project directory to add context
+                files or directories for this work item.
+              </p>
+            )}
 
             <div className="space-y-2">
               <Label htmlFor="description">Description (optional)</Label>

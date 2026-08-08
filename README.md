@@ -30,6 +30,12 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
+### v0.1.217 (2026-08-08)
+
+| Type | Change |
+|---|---|
+| Feature | **Directories can be used as worker context, and work items get their own context files.** `projects.context_files` and the new `work_items.context_files` accept absolute file **or directory** paths. In the worker's composite prompt a directory is expanded into a bounded listing (up to 1000 entries, skipping VCS/build noise) with an explicit instruction to read every file and NOT open the directory path as a file (kills the "not a file" error); files stay inlined (now capped at 256 KiB with a truncation note). One shared renderer + validator (`internal/contextfiles`) serves both entities so they behave identically. Work items carry their own `context_files` (proto `WorkItem.context_files = 26`, create field 16, update field 22 with empty-list-clears semantics) with a FileBrowser card on the new/edit pages and read-only listing on the detail page — wired into the composite prompt as a `# Work item context` section on both workflow and standalone dispatch. Context paths are also mounted into the single-container instance (mount manifest unions work-item `context_files`) and per-workflow runtime containers (individual paths outside `project_dir`). Ask Orchicon / MCP `create_work_item`/`update_work_item` expose the same field. |
+
 ### v0.1.215 (2026-08-08)
 
 | Type | Change |
