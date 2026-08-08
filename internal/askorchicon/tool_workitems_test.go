@@ -3,6 +3,7 @@ package askorchicon
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -46,6 +47,11 @@ func workItemKindTestPool(t *testing.T) *db.Pool {
 	if err := db.SeedDevWorkers(ctx, pool); err != nil {
 		t.Fatalf("seed dev workers: %v", err)
 	}
+	// Tools called directly (not via NewToolRegistry) need the package
+	// logger initialized for post-commit side effects.
+	if toolLogger == nil {
+		toolLogger = slog.Default()
+	}
 	return pool
 }
 
@@ -75,15 +81,32 @@ func createProjectForTest(t *testing.T, ctx context.Context, pool *db.Pool) stri
 }
 
 // createWorkItemViaTool invokes the real toolCreateWorkItem with the given
-// raw kind value and returns the created row's kind.
+// raw kind value and returns the created row's kind. The tool enforces the
+// same hierarchy rule as the API (only epics are top-level), so a parent
+// epic is created first when the requested kind is not epic.
 func createWorkItemViaTool(t *testing.T, ctx context.Context, pool *db.Pool, projectID, kind string) (db.WorkItemRow, error) {
 	t.Helper()
+	var parentID string
+	effectiveKind := kind
+	if kind == "" {
+		effectiveKind = domain.WorkItemKindTask // tool default
+	}
+	if normalized, err := domain.NormalizeWorkItemKind(effectiveKind); err == nil && normalized != domain.WorkItemKindEpic {
+		parent, err := createWorkItemViaTool(t, ctx, pool, projectID, domain.WorkItemKindEpic)
+		if err != nil {
+			return db.WorkItemRow{}, err
+		}
+		parentID = parent.ID
+	}
 	args := map[string]any{
 		"project_id": projectID,
 		"title":      "Kind normalization test " + strings.ToLower(db.NewID()),
 	}
 	if kind != "" {
 		args["kind"] = kind
+	}
+	if parentID != "" {
+		args["parent_id"] = parentID
 	}
 	raw, err := json.Marshal(args)
 	if err != nil {
@@ -187,5 +210,348 @@ func TestNormalizeWorkItemKindUnit(t *testing.T) {
 		if !tc.ok && err == nil {
 			t.Errorf("NormalizeWorkItemKind(%q) expected error, got %q", tc.input, got)
 		}
+	}
+}
+
+// callToolCreate invokes toolCreateWorkItem with arbitrary args and returns
+// the decoded row, so tests can exercise every field.
+func callToolCreate(t *testing.T, ctx context.Context, pool *db.Pool, args map[string]any) (db.WorkItemRow, error) {
+	t.Helper()
+	raw, err := json.Marshal(args)
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	res, err := toolCreateWorkItem(ctx, pool, raw)
+	if err != nil {
+		return db.WorkItemRow{}, err
+	}
+	var item db.WorkItemRow
+	if err := json.Unmarshal(res, &item); err != nil {
+		t.Fatalf("unmarshal tool result: %v", err)
+	}
+	return item, nil
+}
+
+// createParentEpicForTest creates a top-level epic under the given project
+// so tests can create task-kind items (only epics are top-level).
+func createParentEpicForTest(t *testing.T, ctx context.Context, pool *db.Pool, projectID string) string {
+	t.Helper()
+	item, err := callToolCreate(t, ctx, pool, map[string]any{
+		"project_id": projectID,
+		"title":      "Parent epic " + strings.ToLower(db.NewID()),
+		"kind":       domain.WorkItemKindEpic,
+	})
+	if err != nil {
+		t.Fatalf("create parent epic: %v", err)
+	}
+	return item.ID
+}
+
+// callToolUpdate invokes toolUpdateWorkItem with arbitrary args and returns
+// the decoded row.
+func callToolUpdate(t *testing.T, ctx context.Context, pool *db.Pool, args map[string]any) (db.WorkItemRow, error) {
+	t.Helper()
+	raw, err := json.Marshal(args)
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	res, err := toolUpdateWorkItem(ctx, pool, raw)
+	if err != nil {
+		return db.WorkItemRow{}, err
+	}
+	var item db.WorkItemRow
+	if err := json.Unmarshal(res, &item); err != nil {
+		t.Fatalf("unmarshal tool result: %v", err)
+	}
+	return item, nil
+}
+
+// TestCreateWorkItemAllFieldsDB verifies create exposes the full mutable
+// field set: budgets, context_window, workflow_id, scheduled_start_at
+// (status flips to scheduled), auto_start_workflow, runtime_image.
+func TestCreateWorkItemAllFieldsDB(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+	projectID := createProjectForTest(t, ctx, pool)
+
+	item, err := callToolCreate(t, ctx, pool, map[string]any{
+		"project_id":          projectID,
+		"title":               "Full field create",
+		"kind":                "task",
+		"parent_id":           createParentEpicForTest(t, ctx, pool, projectID),
+		"description":         "desc",
+		"acceptance_criteria": "ac",
+		"priority":            3,
+		"budgets":             `{"max_steps": 10}`,
+		"context_window":      20000,
+		"workflow_id":         "wf_test_1",
+		"scheduled_start_at":  "2030-01-01T10:00:00Z",
+		"auto_start_workflow": true,
+		"runtime_image":       "base:latest ",
+	})
+	if err != nil {
+		t.Fatalf("create with all fields: %v", err)
+	}
+	if item.Priority != 3 {
+		t.Errorf("priority = %d, want 3", item.Priority)
+	}
+	if string(item.Budgets) != `{"max_steps": 10}` {
+		t.Errorf("budgets = %s", item.Budgets)
+	}
+	if item.ContextWindow != 20000 {
+		t.Errorf("context_window = %d, want 20000", item.ContextWindow)
+	}
+	if item.WorkflowID == nil || *item.WorkflowID != "wf_test_1" {
+		t.Errorf("workflow_id = %v, want wf_test_1", item.WorkflowID)
+	}
+	if item.ScheduledStartAt == nil {
+		t.Error("scheduled_start_at not set")
+	}
+	// ADR-001: a supplied start time flips the status to scheduled.
+	if item.Status != domain.WorkItemScheduled {
+		t.Errorf("status = %q, want scheduled", item.Status)
+	}
+	if !item.AutoStartWorkflow {
+		t.Error("auto_start_workflow not stored true")
+	}
+	// Runtime image is trimmed.
+	if item.RuntimeImage != "base:latest" {
+		t.Errorf("runtime_image = %q, want base:latest (trimmed)", item.RuntimeImage)
+	}
+}
+
+// TestCreateWorkItemInvalidBudgetsRejectedDB verifies the create tool
+// enforces the API's JSON validation for budgets at the MCP boundary.
+func TestCreateWorkItemInvalidBudgetsRejectedDB(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+	projectID := createProjectForTest(t, ctx, pool)
+
+	item, err := callToolCreate(t, ctx, pool, map[string]any{
+		"project_id": projectID,
+		"title":      "Bad budgets",
+		"budgets":    `{not json`,
+	})
+	if err == nil {
+		t.Fatalf("create with invalid budgets should be rejected, got item %+v", item)
+	}
+	if !strings.Contains(err.Error(), "valid JSON") {
+		t.Errorf("error %q does not mention valid JSON", err.Error())
+	}
+}
+
+// TestCreateWorkItemOverlongTitleRejectedDB verifies the size bounds from
+// the API boundary apply at the MCP boundary too.
+func TestCreateWorkItemOverlongTitleRejectedDB(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+	projectID := createProjectForTest(t, ctx, pool)
+
+	if _, err := callToolCreate(t, ctx, pool, map[string]any{
+		"project_id": projectID,
+		"title":      strings.Repeat("x", 501),
+	}); err == nil {
+		t.Fatal("create with overlong title should be rejected")
+	}
+}
+
+// TestUpdateWorkItemAllFieldsDB verifies update exposes the full mutable
+// field set: budgets, context_window, workflow_id, scheduled_start_at
+// (status flips to scheduled), runtime_image, workflow_run_id, project_id.
+func TestUpdateWorkItemAllFieldsDB(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+	projectID := createProjectForTest(t, ctx, pool)
+
+	item, err := callToolCreate(t, ctx, pool, map[string]any{
+		"project_id": projectID,
+		"title":      "To update",
+		"kind":       "task",
+		"parent_id":  createParentEpicForTest(t, ctx, pool, projectID),
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	updated, err := callToolUpdate(t, ctx, pool, map[string]any{
+		"id":                  item.ID,
+		"title":               "Updated title",
+		"description":         "updated desc",
+		"acceptance_criteria": "updated ac",
+		"priority":            5,
+		"budgets":             `{"max_steps": 3}`,
+		"context_window":      50000,
+		"workflow_id":         "wf_test_2",
+		"scheduled_start_at":  "2030-02-01T10:00:00Z",
+		"runtime_image":       "dev:latest",
+	})
+	if err != nil {
+		t.Fatalf("update all fields: %v", err)
+	}
+	if updated.Title != "Updated title" {
+		t.Errorf("title = %q", updated.Title)
+	}
+	if string(updated.Budgets) != `{"max_steps": 3}` {
+		t.Errorf("budgets = %s", updated.Budgets)
+	}
+	if updated.ContextWindow != 50000 {
+		t.Errorf("context_window = %d", updated.ContextWindow)
+	}
+	if updated.WorkflowID == nil || *updated.WorkflowID != "wf_test_2" {
+		t.Errorf("workflow_id = %v", updated.WorkflowID)
+	}
+	if updated.RuntimeImage != "dev:latest" {
+		t.Errorf("runtime_image = %q", updated.RuntimeImage)
+	}
+	// ADR-001: a supplied start time flips status to scheduled.
+	if updated.Status != domain.WorkItemScheduled {
+		t.Errorf("status = %q, want scheduled (ADR-001 flip)", updated.Status)
+	}
+}
+
+// TestUpdateWorkItemAutoStartClearsScheduleDB verifies setting
+// auto_start_workflow=true without a scheduled time clears any prior
+// schedule and stores the flag (service.go behavior replicated).
+func TestUpdateWorkItemAutoStartClearsScheduleDB(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+	projectID := createProjectForTest(t, ctx, pool)
+
+	item, err := callToolCreate(t, ctx, pool, map[string]any{
+		"project_id":         projectID,
+		"title":              "Auto start",
+		"kind":               "task",
+		"parent_id":          createParentEpicForTest(t, ctx, pool, projectID),
+		"workflow_id":        "wf_test_3",
+		"scheduled_start_at": "2030-03-01T10:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	updated, err := callToolUpdate(t, ctx, pool, map[string]any{
+		"id":                  item.ID,
+		"auto_start_workflow": true,
+	})
+	if err != nil {
+		t.Fatalf("update auto-start: %v", err)
+	}
+	if !updated.AutoStartWorkflow {
+		t.Error("auto_start_workflow not stored true")
+	}
+	if updated.ScheduledStartAt != nil {
+		t.Errorf("scheduled_start_at should be cleared, got %v", updated.ScheduledStartAt)
+	}
+}
+
+// TestUpdateWorkItemProjectReassignDB verifies project_id reassignment is
+// settable via the MCP and the target must be active.
+func TestUpdateWorkItemProjectReassignDB(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+	projectID := createProjectForTest(t, ctx, pool)
+	targetID := createProjectForTest(t, ctx, pool)
+
+	item, err := callToolCreate(t, ctx, pool, map[string]any{
+		"project_id": projectID,
+		"title":      "Move me",
+		"kind":       "epic",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	updated, err := callToolUpdate(t, ctx, pool, map[string]any{
+		"id":         item.ID,
+		"project_id": targetID,
+	})
+	if err != nil {
+		t.Fatalf("reassign project: %v", err)
+	}
+	if updated.ProjectID != targetID {
+		t.Errorf("project_id = %q, want %q", updated.ProjectID, targetID)
+	}
+}
+
+// TestAssignUnassignWorkerDB verifies the assign_worker / unassign_worker
+// tools persist the worker ref and clear it, matching AssignWorker /
+// UnassignWorker.
+func TestAssignUnassignWorkerDB(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+	projectID := createProjectForTest(t, ctx, pool)
+
+	item, err := callToolCreate(t, ctx, pool, map[string]any{
+		"project_id": projectID,
+		"title":      "Worker assign",
+		"kind":       "task",
+		"parent_id":  createParentEpicForTest(t, ctx, pool, projectID),
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	assignArgs, _ := json.Marshal(map[string]any{"id": item.ID, "worker_id": "w_se_senior_software_engineer", "version": 1})
+	assignRes, err := toolAssignWorker(ctx, pool, assignArgs)
+	if err != nil {
+		t.Fatalf("assign worker: %v", err)
+	}
+	var assigned db.WorkItemRow
+	if err := json.Unmarshal(assignRes, &assigned); err != nil {
+		t.Fatalf("unmarshal assign result: %v", err)
+	}
+	if assigned.AssignedWorkerRef == nil {
+		t.Fatal("assigned_worker_ref not set")
+	}
+	var ref struct {
+		WorkerID string `json:"worker_id"`
+		Version  int    `json:"version"`
+	}
+	if err := json.Unmarshal(assigned.AssignedWorkerRef, &ref); err != nil {
+		t.Fatalf("unmarshal worker ref: %v", err)
+	}
+	if ref.WorkerID != "w_se_senior_software_engineer" || ref.Version != 1 {
+		t.Errorf("worker ref = %+v", ref)
+	}
+
+	unassignArgs, _ := json.Marshal(map[string]any{"id": item.ID})
+	unassignRes, err := toolUnassignWorker(ctx, pool, unassignArgs)
+	if err != nil {
+		t.Fatalf("unassign worker: %v", err)
+	}
+	var unassigned db.WorkItemRow
+	if err := json.Unmarshal(unassignRes, &unassigned); err != nil {
+		t.Fatalf("unmarshal unassign result: %v", err)
+	}
+	if unassigned.AssignedWorkerRef != nil {
+		t.Errorf("assigned_worker_ref should be nil after unassign, got %s", unassigned.AssignedWorkerRef)
+	}
+}
+
+// TestUpdateWorkItemWorkflowRunIDDB verifies workflow_run_id is settable.
+func TestUpdateWorkItemWorkflowRunIDDB(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+	projectID := createProjectForTest(t, ctx, pool)
+
+	item, err := callToolCreate(t, ctx, pool, map[string]any{
+		"project_id": projectID,
+		"title":      "Run id",
+		"kind":       "task",
+		"parent_id":  createParentEpicForTest(t, ctx, pool, projectID),
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	updated, err := callToolUpdate(t, ctx, pool, map[string]any{
+		"id":               item.ID,
+		"workflow_run_id":  "run_test_1",
+	})
+	if err != nil {
+		t.Fatalf("update workflow_run_id: %v", err)
+	}
+	if updated.WorkflowRunID != "run_test_1" {
+		t.Errorf("workflow_run_id = %q, want run_test_1", updated.WorkflowRunID)
 	}
 }

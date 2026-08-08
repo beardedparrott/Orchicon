@@ -73,19 +73,19 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	title, err := validateTitle(msg.Title)
+	title, err := ValidateTitle(msg.Title)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	description, err := validateDescription(msg.Description)
+	description, err := ValidateDescription(msg.Description)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	acceptanceCriteria, err := validateAcceptanceCriteria(msg.AcceptanceCriteria)
+	acceptanceCriteria, err := ValidateAcceptanceCriteria(msg.AcceptanceCriteria)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	budgets, err := validateBudgets(msg.Budgets)
+	budgets, err := ValidateBudgets(msg.Budgets)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -262,21 +262,21 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	}
 	var fields db.UpdateWorkItemFields
 	if msg.Title != nil {
-		title, err := validateTitle(*msg.Title)
+		title, err := ValidateTitle(*msg.Title)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 		fields.Title = &title
 	}
 	if msg.Description != nil {
-		desc, err := validateDescription(*msg.Description)
+		desc, err := ValidateDescription(*msg.Description)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 		fields.Description = &desc
 	}
 	if msg.AcceptanceCriteria != nil {
-		ac, err := validateAcceptanceCriteria(*msg.AcceptanceCriteria)
+		ac, err := ValidateAcceptanceCriteria(*msg.AcceptanceCriteria)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
@@ -289,7 +289,7 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		fields.Priority = intPtr(int(*msg.Priority))
 	}
 	if msg.Budgets != nil {
-		budgets, err := validateBudgets(*msg.Budgets)
+		budgets, err := ValidateBudgets(*msg.Budgets)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
@@ -456,7 +456,7 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	// in-flight run as waiting. Clearing a schedule (form omits the field)
 	// never triggers the flip.
 	if msg.ScheduledStartAt != nil &&
-		!isActiveRunStatus(current.Status) &&
+		!IsActiveRunStatus(current.Status) &&
 		!(kindSwitchPlan != nil && kindSwitchPlan.ClearScheduledStartAt) {
 		fields.Status = strPtr(domain.WorkItemScheduled)
 	}
@@ -744,7 +744,7 @@ func (s *Service) AssignWorker(ctx context.Context, req *connect.Request[apiv1.A
 	if req.Msg.Id == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
 	}
-	workerRef, err := validateWorkerRef(req.Msg.WorkerRef)
+	workerRef, err := ValidateWorkerRef(req.Msg.WorkerRef)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -827,6 +827,22 @@ func (s *Service) UnassignWorker(ctx context.Context, req *connect.Request[apiv1
 }
 
 // --- helpers ---------------------------------------------------------------
+
+// EnqueueWorkItemEvent emits a work item outbox row (work_item.created /
+// work_item.updated / work_item.worker_assigned / ...) in the caller's
+// transaction — the same atomic-unit guarantee as the Connect handlers
+// (invariant #3). Exported so the Ask Orchicon MCP tools honor the outbox
+// pattern for work item mutations instead of bypassing it.
+func EnqueueWorkItemEvent(ctx context.Context, tx pgx.Tx, eventType string, w db.WorkItemRow) error {
+	return enqueueWorkItemEvent(ctx, tx, eventType, w)
+}
+
+// EnqueueKindChangedEvent emits work_item.kind_changed — the authoritative
+// record of a kind switch. Exported for the Ask Orchicon MCP update tool so
+// a kind switch through the MCP emits the same events as the Connect path.
+func EnqueueKindChangedEvent(ctx context.Context, tx pgx.Tx, before, after db.WorkItemRow) error {
+	return enqueueKindChangedEvent(ctx, tx, before, after)
+}
 
 func enqueueWorkItemEvent(ctx context.Context, tx pgx.Tx, eventType string, w db.WorkItemRow) error {
 	payload, err := buildWorkItemEventPayload(eventType, w)
@@ -949,11 +965,17 @@ func parentIDString(p *string) string {
 	return *p
 }
 
-// workItemInProject reports whether the work item lives in the given
-// project. Used by the kind-switch early guard: a keep-parent request
+// WorkItemInProject reports whether the work item lives in the given
+// project. Exported so the Ask Orchicon MCP update tool can apply the same
+// kind-switch + project-move guard as the Connect handler. Used by the
+// kind-switch early guard: a keep-parent request
 // ("explicit parent == current parent") combined with a project move is
 // only safe when the current parent already lives in the target project,
 // so the auto-resolution walk-up cannot reach back into the old project.
+func WorkItemInProject(ctx context.Context, tx pgx.Tx, tenantID, id, projectID string) (bool, error) {
+	return workItemInProject(ctx, tx, tenantID, id, projectID)
+}
+
 func workItemInProject(ctx context.Context, tx pgx.Tx, tenantID, id, projectID string) (bool, error) {
 	var p string
 	err := tx.QueryRow(ctx, `SELECT project_id FROM work_items WHERE id = $1 AND tenant_id = $2`, id, tenantID).Scan(&p)

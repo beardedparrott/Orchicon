@@ -97,8 +97,10 @@ func ValidateParent(ctx context.Context, tx pgx.Tx, tenantID, parentID, childKin
 	return validateKindDepth(childKind, parent.Kind)
 }
 
-// validateTitle trims and bounds-checks a work item title.
-func validateTitle(title string) (string, error) {
+// ValidateTitle trims and bounds-checks a work item title. Exported so the
+// Ask Orchicon MCP tools share the API's boundary validation (AGENTS.md: the
+// tool and the service cannot drift).
+func ValidateTitle(title string) (string, error) {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		return "", errors.New("title must not be empty")
@@ -109,8 +111,8 @@ func validateTitle(title string) (string, error) {
 	return title, nil
 }
 
-// validateDescription trims and bounds-checks a description (empty ok).
-func validateDescription(s string) (string, error) {
+// ValidateDescription trims and bounds-checks a description (empty ok).
+func ValidateDescription(s string) (string, error) {
 	s = strings.TrimSpace(s)
 	if utf8.RuneCountInString(s) > maxDescLen {
 		return "", fmt.Errorf("description must be at most %d characters", maxDescLen)
@@ -118,8 +120,8 @@ func validateDescription(s string) (string, error) {
 	return s, nil
 }
 
-// validateAcceptanceCriteria trims and bounds-checks (empty ok).
-func validateAcceptanceCriteria(s string) (string, error) {
+// ValidateAcceptanceCriteria trims and bounds-checks (empty ok).
+func ValidateAcceptanceCriteria(s string) (string, error) {
 	s = strings.TrimSpace(s)
 	if utf8.RuneCountInString(s) > maxDescLen {
 		return "", fmt.Errorf("acceptance_criteria must be at most %d characters", maxDescLen)
@@ -172,12 +174,31 @@ func validateStatus(status apiv1.WorkItemStatus) string {
 	}
 }
 
-// isActiveRunStatus reports whether a work item is currently bound to an
+// ValidateStatus normalizes a domain status string (lowercased, trimmed)
+// against the canonical work item statuses. Exported so the Ask Orchicon
+// MCP tools validate status the way the Connect path validates its proto
+// enum (the tool's status arrives as a raw string, not a proto enum).
+func ValidateStatus(status string) (string, error) {
+	status = strings.ToLower(strings.TrimSpace(status))
+	switch status {
+	case domain.WorkItemPending, domain.WorkItemScheduled, domain.WorkItemReady,
+		domain.WorkItemAssigned, domain.WorkItemRunning, domain.WorkItemCheckpointing,
+		domain.WorkItemSucceeded, domain.WorkItemFailed, domain.WorkItemCancelled,
+		domain.WorkItemRecovering:
+		return status, nil
+	default:
+		return "", fmt.Errorf("status must be one of pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering")
+	}
+}
+
+// IsActiveRunStatus reports whether a work item is currently bound to an
 // in-flight workflow run (running / checkpointing / recovering). These are
 // the statuses ScheduledRunReconciler must never re-arm against, and the
 // statuses the Schedules "Running" view shows (ADR-001/002 in
 // architecture-notes/running-workflows-not-showing-in-schedules.md).
-func isActiveRunStatus(status string) bool {
+// Exported so the Ask Orchicon MCP tools apply the same scheduled-status
+// flip guard as the Connect Update handler.
+func IsActiveRunStatus(status string) bool {
 	switch status {
 	case domain.WorkItemRunning, domain.WorkItemCheckpointing, domain.WorkItemRecovering:
 		return true
@@ -200,8 +221,8 @@ func validateDependencyType(t apiv1.DependencyType) (string, error) {
 	}
 }
 
-// validateBudgets validates a JSON-encoded budgets field (empty → "{}").
-func validateBudgets(s string) ([]byte, error) {
+// ValidateBudgets validates a JSON-encoded budgets field (empty → "{}").
+func ValidateBudgets(s string) ([]byte, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return []byte("{}"), nil
@@ -215,8 +236,8 @@ func validateBudgets(s string) ([]byte, error) {
 	return []byte(s), nil
 }
 
-// validateWorkerRef validates a JSON-encoded worker ref (worker_id + version).
-func validateWorkerRef(s string) ([]byte, error) {
+// ValidateWorkerRef validates a JSON-encoded worker ref (worker_id + version).
+func ValidateWorkerRef(s string) ([]byte, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil, nil // nil = unassign
