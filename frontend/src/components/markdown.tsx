@@ -32,7 +32,7 @@ const COMPONENTS: Components = {
     if (isInline) {
       return (
         <code
-          className="rounded bg-muted px-1 py-0.5 font-mono text-xs"
+          className="rounded px-1 py-0.5 font-mono text-xs [background:color-mix(in_srgb,currentColor_12%,transparent)]"
           {...props}
         >
           {children}
@@ -40,7 +40,7 @@ const COMPONENTS: Components = {
       );
     }
     return (
-      <pre className="mb-2 overflow-x-auto rounded-md bg-muted p-3 last:mb-0">
+      <pre className="mb-2 overflow-x-auto rounded-md p-3 last:mb-0 [background:color-mix(in_srgb,currentColor_10%,transparent)]">
         <code className={cn("font-mono text-xs leading-relaxed", className)} {...props}>
           {children}
         </code>
