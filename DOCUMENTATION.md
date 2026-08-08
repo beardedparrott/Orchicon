@@ -834,6 +834,33 @@ The binary ships an **MCP server** subcommand (`orchicon mcp`) that exposes Orch
 - **Tenancy**: the server is scoped to one tenant per process via the `ORCHICON_MCP_TENANT_ID` env var, set by the control plane through the opencode config `environment` map of the injected MCP entry. Unset (e.g. a human wires `orchicon mcp` into Claude Desktop manually) → dev tenant with a warning.
 - **Default registration**: `BuildConfigContent` (the `OPENCODE_CONFIG_CONTENT` injected into every opencode run) now registers the built-in Orchicon MCP by default — for **in-process worker executions** and **Ask Orchicon chat** (both co-located with the plane's Postgres). It is deliberately **not** registered for **runtime-container executions**: the per-workflow runtime container is an isolated, root-free sandbox with no network route to the plane's Postgres, and handing it the DB DSN would break the security model. The user's own opencode-config MCP servers are still merged in everywhere.
 
+##### Work item field coverage in the MCP
+
+Every field the Connect API lets a client set on a work item is settable through the MCP tools. The tools reuse the Connect service's shared validators (`internal/workitem`) and mirror its downstream effects (status→scheduled flip, auto-start trigger, outbox events), so the two surfaces cannot drift:
+
+| Field | `create_work_item` | `update_work_item` | Notes |
+|---|---|---|---|
+| `project_id` | ✓ (required) | ✓ | update = reassign; target must be active |
+| `title` | ✓ (required) | ✓ | trimmed, max 500 chars |
+| `kind` | ✓ | ✓ | epic/feature/task/subtask; kind switch resolves the hierarchy |
+| `parent_id` | ✓ | ✓ | hierarchy rules enforced (only epics are top-level) |
+| `description` | ✓ | ✓ | markdown |
+| `acceptance_criteria` | ✓ | ✓ | markdown |
+| `priority` | ✓ | ✓ | 1–5 |
+| `budgets` | ✓ | ✓ | JSON object, validated |
+| `context_window` | ✓ | ✓ | int |
+| `workflow_id` | ✓ | ✓ | empty on update clears the binding |
+| `scheduled_start_at` | ✓ | ✓ | ISO 8601 or "N minutes from now"; setting it flips status → `scheduled` (ADR-001) |
+| `auto_start_workflow` | ✓ | ✓ | opt-in (default false); true + no schedule clears any existing schedule and starts the bound run immediately |
+| `runtime_image` | ✓ | ✓ | empty = base image |
+| `workflow_run_id` | ✗ | ✓ | update-only (create starts empty) |
+| `status` | ✗ (derived) | ✓ | `pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering` |
+| `assigned_worker_ref` | via `assign_worker`/`unassign_worker` tools | same | mirrors the `AssignWorker`/`UnassignWorker` RPCs (`worker_id` + `version`) |
+
+**Read-only (never settable via the API or the MCP):** `id`, `tenant_id`, `version`, `created_at`, `updated_at` (server-managed), `workflow_step_id`, `results`, `prompt_context` (reconciler-written JSONB).
+
+MCP work item mutations honor the transactional outbox pattern (invariant #3): `work_item.created` / `work_item.updated` / `work_item.kind_changed` / `work_item.worker_assigned` / `work_item.worker_unassigned` rows are enqueued in the same transaction as the write, exactly like the Connect handlers. After commit, `auto_start_workflow=true` calls `workflow.StartWorkflowDirect` — the same real service call the API path makes — so "start immediately on save" behaves identically whether triggered from the UI, the API, or the MCP.
+
 ### Authentication
 
 - **Local dev**: Built-in OIDC provider (HS256) — no external IdP needed
