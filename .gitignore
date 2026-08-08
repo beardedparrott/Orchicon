@@ -43,6 +43,10 @@ data/
 # Go build/test scratch (GOTMPDIR) — the container's /tmp is noexec, so
 # builds with a default GOTMPDIR fail to run test binaries.
 .gotmp/
+# Workflow-runner scratch caches (Go build/test + GOTMPDIR) — never committed.
+.cache-build/
+.qa-gocache/
+.qa-gotmp/
 # Per-project scratch dirs written by the control plane (run results,
 # safety lint). Never committed.
 /.orchicon/
