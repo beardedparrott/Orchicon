@@ -25,7 +25,12 @@ type WorkItemRow struct {
 	Title              string
 	Description        string
 	AcceptanceCriteria string
-	Status             string
+	// AcceptanceReview is the human-readable summary of the final work
+	// done, auto-populated by the WorkflowReconciler when a bound
+	// workflow run reaches a terminal state (docs/02 §2.2). Markdown;
+	// mirrors acceptance_criteria (bounded, empty until a run completes).
+	AcceptanceReview string
+	Status           string
 	AssignedWorkerRef  []byte // jsonb: {worker_id, version}
 	WorkflowID         *string
 	WorkflowRunID      string
@@ -79,7 +84,7 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		 scheduled_start_at, auto_start_workflow, runtime_image, context_files)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
 		RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
-			acceptance_criteria, status, assigned_worker_ref, workflow_id,
+			acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
 			workflow_run_id, workflow_step_id,
 			priority, budgets, context_window, results, prompt_context,
 			scheduled_start_at, auto_start_workflow, runtime_image, context_files, version, created_at, updated_at`
@@ -92,7 +97,7 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		w.ScheduledStartAt, w.AutoStartWorkflow, w.RuntimeImage, w.ContextFiles,
 	).Scan(
 		&row.ID, &row.TenantID, &row.ProjectID, &row.ParentID, &row.Kind, &row.Title,
-		&row.Description, &row.AcceptanceCriteria, &row.Status, &row.AssignedWorkerRef,
+		&row.Description, &row.AcceptanceCriteria, &row.AcceptanceReview, &row.Status, &row.AssignedWorkerRef,
 		&row.WorkflowID, &row.WorkflowRunID, &row.WorkflowStepID,
 		&row.Priority, &row.Budgets, &row.ContextWindow, &row.Results,
 		&row.PromptContext,
@@ -108,7 +113,7 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 // GetWorkItem fetches a single work item by id within the tenant scope.
 func GetWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkItemRow, error) {
 	const q = `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
-		acceptance_criteria, status, assigned_worker_ref, workflow_id,
+		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
 		workflow_run_id, workflow_step_id,
 		priority, budgets, context_window, results, prompt_context,
 		scheduled_start_at, auto_start_workflow, runtime_image, context_files, version, created_at, updated_at
@@ -116,7 +121,7 @@ func GetWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkItemR
 	var w WorkItemRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
-		&w.Description, &w.AcceptanceCriteria, &w.Status, &w.AssignedWorkerRef,
+		&w.Description, &w.AcceptanceCriteria, &w.AcceptanceReview, &w.Status, &w.AssignedWorkerRef,
 		&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
 		&w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
 		&w.PromptContext,
@@ -153,7 +158,7 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 		f.PageSize = 100
 	}
 	q := `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
-		acceptance_criteria, status, assigned_worker_ref, workflow_id,
+		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
 		workflow_run_id, workflow_step_id,
 		priority, budgets, context_window, results, prompt_context,
 		scheduled_start_at, auto_start_workflow, runtime_image, context_files, version, created_at, updated_at
@@ -201,7 +206,7 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 		var w WorkItemRow
 		if err := rows.Scan(
 			&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
-			&w.Description, &w.AcceptanceCriteria, &w.Status, &w.AssignedWorkerRef,
+			&w.Description, &w.AcceptanceCriteria, &w.AcceptanceReview, &w.Status, &w.AssignedWorkerRef,
 			&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
 			&w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
 			&w.PromptContext,
@@ -220,7 +225,7 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 // direct children that can no longer sit under a switched item.
 func ListDirectChildren(ctx context.Context, tx pgx.Tx, tenantID, parentID string) ([]WorkItemRow, error) {
 	const q = `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
-		acceptance_criteria, status, assigned_worker_ref, workflow_id,
+		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
 		workflow_run_id, workflow_step_id,
 		priority, budgets, context_window, results, prompt_context,
 		scheduled_start_at, auto_start_workflow, runtime_image, context_files, version, created_at, updated_at
@@ -235,7 +240,7 @@ func ListDirectChildren(ctx context.Context, tx pgx.Tx, tenantID, parentID strin
 		var w WorkItemRow
 		if err := rows.Scan(
 			&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
-			&w.Description, &w.AcceptanceCriteria, &w.Status, &w.AssignedWorkerRef,
+			&w.Description, &w.AcceptanceCriteria, &w.AcceptanceReview, &w.Status, &w.AssignedWorkerRef,
 			&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
 			&w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
 			&w.PromptContext,
@@ -256,7 +261,10 @@ type UpdateWorkItemFields struct {
 	Title              *string
 	Description        *string
 	AcceptanceCriteria *string
-	Status             *string
+	// AcceptanceReview sets the human-readable acceptance review. Empty
+	// string clears it; nil = unchanged (field-mask semantics).
+	AcceptanceReview *string
+	Status           *string
 	Priority           *int
 	Budgets            *[]byte
 	ContextWindow      *int
@@ -326,6 +334,11 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 	if f.AcceptanceCriteria != nil {
 		q += fmt.Sprintf(`, acceptance_criteria = $%d`, setIdx)
 		args = append(args, *f.AcceptanceCriteria)
+		setIdx++
+	}
+	if f.AcceptanceReview != nil {
+		q += fmt.Sprintf(`, acceptance_review = $%d`, setIdx)
+		args = append(args, *f.AcceptanceReview)
 		setIdx++
 	}
 	if f.Status != nil {
@@ -431,14 +444,14 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
-		acceptance_criteria, status, assigned_worker_ref, workflow_id,
+		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
 		workflow_run_id, workflow_step_id,
 		priority, budgets, context_window, results, prompt_context,
 		scheduled_start_at, auto_start_workflow, runtime_image, context_files, version, created_at, updated_at`
 	var w WorkItemRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
-		&w.Description, &w.AcceptanceCriteria, &w.Status, &w.AssignedWorkerRef,
+		&w.Description, &w.AcceptanceCriteria, &w.AcceptanceReview, &w.Status, &w.AssignedWorkerRef,
 		&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
 		&w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
 		&w.PromptContext,

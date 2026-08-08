@@ -387,6 +387,7 @@ func TestUpdateWorkItemAllFieldsDB(t *testing.T) {
 		"title":               "Updated title",
 		"description":         "updated desc",
 		"acceptance_criteria": "updated ac",
+		"acceptance_review":   "Shipped the feature.",
 		"priority":            5,
 		"budgets":             `{"max_steps": 3}`,
 		"context_window":      50000,
@@ -400,6 +401,9 @@ func TestUpdateWorkItemAllFieldsDB(t *testing.T) {
 	}
 	if updated.Title != "Updated title" {
 		t.Errorf("title = %q", updated.Title)
+	}
+	if updated.AcceptanceReview != "Shipped the feature." {
+		t.Errorf("acceptance_review = %q", updated.AcceptanceReview)
 	}
 	if string(updated.Budgets) != `{"max_steps": 3}` {
 		t.Errorf("budgets = %s", updated.Budgets)

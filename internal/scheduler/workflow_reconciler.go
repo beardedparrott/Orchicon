@@ -236,9 +236,11 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 					narrative, _ := json.Marshal(map[string]any{"_run_narrative": map[string]any{
 						"run_id": run.ID, "status": domain.WorkflowRunFailed, "error": reason,
 					}})
+					review := fmt.Sprintf("## Acceptance Review\n\n**Run:** `%s` · **Status:** failed\n\nNo work was delivered — the run failed to start: %s", run.ID, reason)
 					_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, db.UpdateWorkItemFields{
-						Status:  &status,
-						Results: &narrative,
+						Status:           &status,
+						Results:          &narrative,
+						AcceptanceReview: &review,
 					})
 				}
 			}
@@ -690,6 +692,8 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				} else if narrative != nil {
 					fields.Results = narrative
 				}
+				review := r.buildAcceptanceReview(ctx, ttx.Tx, tenantID, run, stepRuns, domain.WorkflowRunCompleted)
+				fields.AcceptanceReview = &review
 				if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, fields); err != nil {
 					return fmt.Errorf("mark bound work item succeeded: %w", err)
 				}
@@ -721,6 +725,8 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				} else if narrative != nil {
 					fields.Results = narrative
 				}
+				review := r.buildAcceptanceReview(ctx, ttx.Tx, tenantID, run, stepRuns, domain.WorkflowRunFailed)
+				fields.AcceptanceReview = &review
 				_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, fields)
 			}
 		}
@@ -850,6 +856,142 @@ func (r *WorkflowReconciler) buildRunNarrative(ctx context.Context, tx pgx.Tx, t
 	mergedJSON, _ := json.Marshal(merged)
 	return &mergedJSON, nil
 }
+
+// buildAcceptanceReview assembles the deterministic, human-readable
+// acceptance review markdown for a terminal run — the faithful projection
+// of the step data buildRunNarrative reads (the per-step worker _summary /
+// _decision / _issues and any recovery episodes ARE the final work done).
+//
+// Rules (architecture note — add-acceptance-review-field-to-work-items):
+//   - Deterministic: step runs are sorted by step_id; no LLM call, no
+//     wall-clock-dependent ordering. A completed run lists "What was
+//     delivered"; a failed run additionally lists "Not delivered /
+//     needs attention" drawn from failed steps' _summary/_issues.
+//   - Only steps with a non-empty _summary (or, on failure, _issues) are
+//     listed — no empty noise. Skipped steps are omitted (a skip delivered
+//     nothing). Superseded iterations are omitted (superseded_by != "" —
+//     replaced by a later loop iteration).
+//   - Recovery episodes (when any) are listed once under "Recovery",
+//     deduplicated by recovery id.
+//   - The document is capped at maxDescLen (1 MiB) so a pathological run
+//     cannot bloat the column; the caller still validates via the API
+//     boundary when a human edits it later.
+func (r *WorkflowReconciler) buildAcceptanceReview(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, stepRuns []db.WorkflowStepRunRow, finalStatus string) string {
+	var recoveries []db.RecoveryExecutionRow
+	if recs, err := db.ListRecoveries(ctx, tx, db.ListRecoveriesFilter{TenantID: tenantID, TaskID: run.WorkItemID}); err == nil {
+		recoveries = recs
+	}
+	return formatAcceptanceReview(run, stepRuns, recoveries, finalStatus)
+}
+
+// formatAcceptanceReview is the pure, deterministic formatter behind
+// buildAcceptanceReview — split out so the aggregation rules are
+// unit-testable without a database.
+func formatAcceptanceReview(run db.WorkflowRunRow, stepRuns []db.WorkflowStepRunRow, recoveries []db.RecoveryExecutionRow, finalStatus string) string {
+	sorted := append([]db.WorkflowStepRunRow(nil), stepRuns...)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].StepID != sorted[j].StepID {
+			return sorted[i].StepID < sorted[j].StepID
+		}
+		return sorted[i].ID < sorted[j].ID
+	})
+
+	var b strings.Builder
+	statusLabel := "completed"
+	if finalStatus == domain.WorkflowRunFailed {
+		statusLabel = "failed"
+	}
+	fmt.Fprintf(&b, "## Acceptance Review\n\n**Run:** `%s` · **Status:** %s\n", run.ID, statusLabel)
+	if run.EndedAt != nil {
+		fmt.Fprintf(&b, "**Completed at:** %s\n", run.EndedAt.UTC().Format(time.RFC3339))
+	}
+	b.WriteString("\n")
+
+	var delivered []string
+	var notDelivered []string
+	for _, sr := range sorted {
+		if sr.SupersededBy != "" {
+			// Replaced by a later loop iteration — not final work.
+			continue
+		}
+		var meta map[string]any
+		_ = json.Unmarshal(sr.Result, &meta)
+		summary, _ := meta["_summary"].(string)
+		issues, _ := meta["_issues"].(string)
+		decision, _ := meta["_decision"].(string)
+		switch sr.Status {
+		case domain.StepRunSucceeded:
+			summary = strings.TrimSpace(summary)
+			if summary == "" {
+				continue
+			}
+			label := sr.StepName
+			if decision != "" {
+				label += " — " + decision
+			}
+			delivered = append(delivered, fmt.Sprintf("- **%s** (succeeded): %s", label, summary))
+		case domain.StepRunFailed, domain.StepRunBlocked:
+			text := strings.TrimSpace(summary)
+			if text == "" {
+				text = strings.TrimSpace(issues)
+			}
+			if text == "" {
+				text = "no summary recorded"
+			}
+			label := sr.StepName
+			if decision != "" {
+				label += " — " + decision
+			}
+			notDelivered = append(notDelivered, fmt.Sprintf("- **%s** (%s): %s", label, sr.Status, text))
+		}
+	}
+
+	if len(delivered) > 0 {
+		b.WriteString("### What was delivered\n\n")
+		for _, d := range delivered {
+			b.WriteString(d)
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+	if len(notDelivered) > 0 {
+		b.WriteString("### Not delivered / needs attention\n\n")
+		for _, d := range notDelivered {
+			b.WriteString(d)
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	if len(recoveries) > 0 {
+		b.WriteString("### Recovery\n\n")
+		for _, rec := range recoveries {
+			b.WriteString(fmt.Sprintf("- **%s** (%s): %s\n", rec.Status, rec.TriggerReason, strings.TrimSpace(rec.Summary)))
+		}
+		b.WriteString("\n")
+	}
+
+	if len(delivered) == 0 && len(notDelivered) == 0 && len(recoveries) == 0 {
+		// A run with no eligible step summaries still records the terminal
+		// outcome — an empty review field would be indistinguishable from
+		// "no run yet".
+		out := fmt.Sprintf("## Acceptance Review\n\n**Run:** `%s` · **Status:** %s\n\nNo step summaries were recorded.", run.ID, statusLabel)
+		if len(out) > maxWorkItemDescLen {
+			out = out[:maxWorkItemDescLen]
+		}
+		return out
+	}
+
+	out := strings.TrimSpace(b.String())
+	if len(out) > maxWorkItemDescLen {
+		out = out[:maxWorkItemDescLen]
+	}
+	return out
+}
+
+// maxWorkItemDescLen mirrors workitem's maxDescLen (1 MiB) so the
+// reconciler's auto-generated review shares the API boundary's cap.
+const maxWorkItemDescLen = 1 << 20
 
 // depsSatisfied returns true if all depends_on steps of `step` are in a
 // terminal-success state (succeeded or skipped). Loop decision steps

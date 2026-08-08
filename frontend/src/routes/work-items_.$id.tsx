@@ -65,6 +65,7 @@ function WorkItemDetailPage() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [acceptanceCriteria, setAcceptanceCriteria] = useState("");
+  const [acceptanceReview, setAcceptanceReview] = useState("");
   const [priority, setPriority] = useState(0);
   const [contextWindow, setContextWindow] = useState(0);
   const [status, setStatus] = useState(0);
@@ -202,6 +203,7 @@ function WorkItemDetailPage() {
                 setTitle(item.title);
                 setDescription(item.description ?? "");
                 setAcceptanceCriteria(item.acceptanceCriteria ?? "");
+                setAcceptanceReview(item.acceptanceReview ?? "");
                 setPriority(item.priority);
                 setContextWindow(item.contextWindow ?? 0);
                 setEditProjectId(item.projectId);
@@ -288,6 +290,7 @@ function WorkItemDetailPage() {
             priority: item.priority,
             description: item.description || undefined,
             acceptance_criteria: item.acceptanceCriteria || undefined,
+            acceptance_review: item.acceptanceReview || undefined,
             workflow_id: item.workflowId || undefined,
             workflow_run_id: item.workflowRunId || undefined,
             assigned_worker_ref: item.assignedWorkerRef || undefined,
@@ -320,6 +323,7 @@ function WorkItemDetailPage() {
               title: str("title") || item.title,
               description: str("description"),
               acceptanceCriteria: str("acceptance_criteria"),
+              acceptanceReview: str("acceptance_review"),
               priority: num("priority"),
               status: typeof parsed.status === "string" ? statusMap[parsed.status] : undefined,
               projectId: str("project_id"),
@@ -639,6 +643,35 @@ function WorkItemDetailPage() {
         </CardContent>
       </Card>
 
+      {/* Acceptance review — auto-populated by the WorkflowReconciler
+          when a bound workflow run completes; editable by a reviewer */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Acceptance Review</CardTitle>
+          <CardDescription>
+            Summary of the final work done, generated automatically when a
+            bound workflow run completes.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {editing ? (
+            <Textarea
+              value={acceptanceReview}
+              onChange={(e) => setAcceptanceReview(e.target.value)}
+              className="min-h-[80px]"
+              placeholder="Auto-populated on workflow completion — extend or correct as needed."
+            />
+          ) : item.acceptanceReview ? (
+            <Markdown>{item.acceptanceReview}</Markdown>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No acceptance review yet — populated automatically when a
+              bound workflow run completes.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Context files — files AND directories, exactly like projects */}
       {(() => {
         const project = projects?.find((p) => p.id === (editing ? editProjectId : item.projectId));
@@ -746,6 +779,7 @@ function WorkItemDetailPage() {
                   title,
                   description,
                   acceptanceCriteria,
+                  acceptanceReview,
                   priority,
                   contextWindow,
                   status,

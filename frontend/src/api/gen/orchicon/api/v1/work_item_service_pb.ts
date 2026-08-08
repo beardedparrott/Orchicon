@@ -529,6 +529,14 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
    */
   contextFiles?: ContextFiles;
 
+  /**
+   * acceptance_review sets the human-readable acceptance review. Empty
+   * string clears it; an absent field leaves it unchanged.
+   *
+   * @generated from field: optional string acceptance_review = 23;
+   */
+  acceptanceReview?: string;
+
   constructor(data?: PartialMessage<UpdateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -555,6 +563,7 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
     { no: 20, name: "parent_id", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 21, name: "kind", kind: "enum", T: proto3.getEnumType(WorkItemKind), opt: true },
     { no: 22, name: "context_files", kind: "message", T: ContextFiles, opt: true },
+    { no: 23, name: "acceptance_review", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkItemRequest {

@@ -517,9 +517,12 @@ type UpdateWorkItemRequest struct {
 	Kind *WorkItemKind `protobuf:"varint,21,opt,name=kind,proto3,enum=orchicon.api.v1.WorkItemKind,oneof" json:"kind,omitempty"`
 	// context_files replaces the item's context_files selection: an empty
 	// files list clears it, an absent field leaves it unchanged.
-	ContextFiles  *ContextFiles `protobuf:"bytes,22,opt,name=context_files,json=contextFiles,proto3,oneof" json:"context_files,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ContextFiles *ContextFiles `protobuf:"bytes,22,opt,name=context_files,json=contextFiles,proto3,oneof" json:"context_files,omitempty"`
+	// acceptance_review sets the human-readable acceptance review. Empty
+	// string clears it; an absent field leaves it unchanged.
+	AcceptanceReview *string `protobuf:"bytes,23,opt,name=acceptance_review,json=acceptanceReview,proto3,oneof" json:"acceptance_review,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *UpdateWorkItemRequest) Reset() {
@@ -676,6 +679,13 @@ func (x *UpdateWorkItemRequest) GetContextFiles() *ContextFiles {
 		return x.ContextFiles
 	}
 	return nil
+}
+
+func (x *UpdateWorkItemRequest) GetAcceptanceReview() string {
+	if x != nil && x.AcceptanceReview != nil {
+		return *x.AcceptanceReview
+	}
+	return ""
 }
 
 type UpdateWorkItemResponse struct {
@@ -1430,7 +1440,7 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\x15ListWorkItemsResponse\x128\n" +
 	"\n" +
 	"work_items\x18\x01 \x03(\v2\x19.orchicon.api.v1.WorkItemR\tworkItems\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xb6\b\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xfe\b\n" +
 	"\x15UpdateWorkItemRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\x05title\x18\x02 \x01(\tH\x00R\x05title\x88\x01\x01\x12%\n" +
@@ -1454,7 +1464,8 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\rruntime_image\x18\x13 \x01(\tH\fR\fruntimeImage\x88\x01\x01\x12 \n" +
 	"\tparent_id\x18\x14 \x01(\tH\rR\bparentId\x88\x01\x01\x126\n" +
 	"\x04kind\x18\x15 \x01(\x0e2\x1d.orchicon.api.v1.WorkItemKindH\x0eR\x04kind\x88\x01\x01\x12G\n" +
-	"\rcontext_files\x18\x16 \x01(\v2\x1d.orchicon.api.v1.ContextFilesH\x0fR\fcontextFiles\x88\x01\x01B\b\n" +
+	"\rcontext_files\x18\x16 \x01(\v2\x1d.orchicon.api.v1.ContextFilesH\x0fR\fcontextFiles\x88\x01\x01\x120\n" +
+	"\x11acceptance_review\x18\x17 \x01(\tH\x10R\x10acceptanceReview\x88\x01\x01B\b\n" +
 	"\x06_titleB\x0e\n" +
 	"\f_descriptionB\x16\n" +
 	"\x14_acceptance_criteriaB\t\n" +
@@ -1472,7 +1483,8 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\n" +
 	"_parent_idB\a\n" +
 	"\x05_kindB\x10\n" +
-	"\x0e_context_files\"P\n" +
+	"\x0e_context_filesB\x14\n" +
+	"\x12_acceptance_review\"P\n" +
 	"\x16UpdateWorkItemResponse\x126\n" +
 	"\twork_item\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkItemR\bworkItem\"'\n" +
 	"\x15DeleteWorkItemRequest\x12\x0e\n" +

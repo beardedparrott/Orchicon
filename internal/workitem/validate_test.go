@@ -86,6 +86,32 @@ func TestValidateKindDepthSelfParent(t *testing.T) {
 	}
 }
 
+// TestValidateAcceptanceReview verifies the acceptance review validator
+// trims whitespace, accepts empty strings (a work item without a
+// completed run has no review), and bounds the length like the other
+// markdown fields (maxDescLen).
+func TestValidateAcceptanceReview(t *testing.T) {
+	if got, err := ValidateAcceptanceReview(""); err != nil {
+		t.Fatalf("empty should be allowed, got %v", err)
+	} else if got != "" {
+		t.Fatalf("empty should stay empty, got %q", got)
+	}
+	got, err := ValidateAcceptanceReview("  ## Done\n  finished the thing  ")
+	if err != nil {
+		t.Fatalf("valid markdown rejected: %v", err)
+	}
+	if got != "## Done\n  finished the thing" {
+		t.Fatalf("trim result = %q, want leading/trailing space trimmed", got)
+	}
+	over := strings.Repeat("x", maxDescLen+1)
+	if _, err := ValidateAcceptanceReview(over); err == nil {
+		t.Fatal("over-long review should be rejected")
+	}
+	if _, err := ValidateAcceptanceReview(strings.Repeat("x", maxDescLen)); err != nil {
+		t.Fatalf("max-length review should be accepted, got %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // DB-backed integration test for ValidateParent (skipped unless
 // ORCHICON_TEST_DSN points at a disposable database, same convention as

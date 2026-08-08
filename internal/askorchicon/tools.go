@@ -195,7 +195,7 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 		},
 		{
 			Name:        "update_work_item",
-			Description: "Update any mutable field on a work item by ID: title, description, acceptance_criteria, status, priority, budgets, context_window, project_id, workflow_id, parent_id, scheduled_start_at, auto_start_workflow, workflow_run_id, runtime_image, context_files, kind. Switching kind (kind: epic|feature|task|subtask) automatically resolves the hierarchy: the parent walks up to the nearest ancestor shallower than the new kind, direct children that can no longer sit under the item move under its parent, and switching to a non-schedulable kind (epic/feature) clears the worker assignment and scheduled start and demotes ready/assigned/scheduled to pending. Switching an epic to another kind requires choosing a parent explicitly.",
+			Description: "Update any mutable field on a work item by ID: title, description, acceptance_criteria, acceptance_review, status, priority, budgets, context_window, project_id, workflow_id, parent_id, scheduled_start_at, auto_start_workflow, workflow_run_id, runtime_image, context_files, kind. Switching kind (kind: epic|feature|task|subtask) automatically resolves the hierarchy: the parent walks up to the nearest ancestor shallower than the new kind, direct children that can no longer sit under the item move under its parent, and switching to a non-schedulable kind (epic/feature) clears the worker assignment and scheduled start and demotes ready/assigned/scheduled to pending. Switching an epic to another kind requires choosing a parent explicitly.",
 			Mutating:    true,
 			Fn:          toolUpdateWorkItem,
 			Properties: map[string]PropertySchema{
@@ -203,6 +203,7 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 				"title": {Type: "string", Description: "New title"},
 				"description": {Type: "string", Description: "New description (markdown)"},
 				"acceptance_criteria": {Type: "string", Description: "New acceptance criteria (markdown)"},
+				"acceptance_review": {Type: "string", Description: "New acceptance review (markdown); empty string clears it (auto-populated by the WorkflowReconciler when a bound run completes)"},
 				"status": {Type: "string", Description: "New status (pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering)"},
 				"priority": {Type: "number", Description: "New priority (1-5)"},
 				"budgets": {Type: "string", Description: "Budgets as a JSON object (e.g. {\"max_steps\": 10, \"max_cost_usd\": 5})"},

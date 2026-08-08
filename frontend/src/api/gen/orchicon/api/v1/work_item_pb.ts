@@ -373,6 +373,18 @@ export class WorkItem extends Message<WorkItem> {
    */
   contextFiles: string[] = [];
 
+  /**
+   * acceptance_review is a human-readable summary of the final work done,
+   * auto-populated by the WorkflowReconciler when a bound workflow run
+   * reaches a terminal state (docs/02 §2.2). Mirrors acceptance_criteria:
+   * markdown, bounded at the API boundary, empty until a run completes.
+   * Editable by humans via UpdateWorkItem so auto-generated reviews can be
+   * corrected/extended by a reviewer.
+   *
+   * @generated from field: string acceptance_review = 27;
+   */
+  acceptanceReview = "";
+
   constructor(data?: PartialMessage<WorkItem>) {
     super();
     proto3.util.initPartial(data, this);
@@ -406,6 +418,7 @@ export class WorkItem extends Message<WorkItem> {
     { no: 18, name: "updated_at", kind: "message", T: Timestamp },
     { no: 24, name: "runtime_image", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 26, name: "context_files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 27, name: "acceptance_review", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkItem {

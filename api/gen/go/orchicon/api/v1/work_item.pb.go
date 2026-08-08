@@ -281,9 +281,16 @@ type WorkItem struct {
 	// context, mirroring projects.context_files (docs/10 §3). When a worker
 	// is dispatched for this item, these paths are rendered into the
 	// composite prompt exactly like the project's context files.
-	ContextFiles  []string `protobuf:"bytes,26,rep,name=context_files,json=contextFiles,proto3" json:"context_files,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ContextFiles []string `protobuf:"bytes,26,rep,name=context_files,json=contextFiles,proto3" json:"context_files,omitempty"`
+	// acceptance_review is a human-readable summary of the final work done,
+	// auto-populated by the WorkflowReconciler when a bound workflow run
+	// reaches a terminal state (docs/02 §2.2). Mirrors acceptance_criteria:
+	// markdown, bounded at the API boundary, empty until a run completes.
+	// Editable by humans via UpdateWorkItem so auto-generated reviews can be
+	// corrected/extended by a reviewer.
+	AcceptanceReview string `protobuf:"bytes,27,opt,name=acceptance_review,json=acceptanceReview,proto3" json:"acceptance_review,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *WorkItem) Reset() {
@@ -491,6 +498,13 @@ func (x *WorkItem) GetContextFiles() []string {
 	return nil
 }
 
+func (x *WorkItem) GetAcceptanceReview() string {
+	if x != nil {
+		return x.AcceptanceReview
+	}
+	return ""
+}
+
 // WorkItemDependency is an edge in the work DAG. The scheduler treats
 // the union of edges as a DAG; cycles are rejected at admission
 // (docs/02_Domain_Model.md §2.2, docs/09 §3.2).
@@ -645,7 +659,7 @@ var File_orchicon_api_v1_work_item_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\n" +
-	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xfa\a\n" +
+	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa7\b\n" +
 	"\bWorkItem\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -676,7 +690,8 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\x12 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12#\n" +
 	"\rruntime_image\x18\x18 \x01(\tR\fruntimeImage\x12#\n" +
-	"\rcontext_files\x18\x1a \x03(\tR\fcontextFilesB\x16\n" +
+	"\rcontext_files\x18\x1a \x03(\tR\fcontextFiles\x12+\n" +
+	"\x11acceptance_review\x18\x1b \x01(\tR\x10acceptanceReviewB\x16\n" +
 	"\x14_auto_start_workflow\"\xfe\x01\n" +
 	"\x12WorkItemDependency\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +

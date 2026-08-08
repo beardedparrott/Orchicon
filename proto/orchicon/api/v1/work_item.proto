@@ -78,6 +78,13 @@ message WorkItem {
   // is dispatched for this item, these paths are rendered into the
   // composite prompt exactly like the project's context files.
   repeated string context_files = 26;
+  // acceptance_review is a human-readable summary of the final work done,
+  // auto-populated by the WorkflowReconciler when a bound workflow run
+  // reaches a terminal state (docs/02 §2.2). Mirrors acceptance_criteria:
+  // markdown, bounded at the API boundary, empty until a run completes.
+  // Editable by humans via UpdateWorkItem so auto-generated reviews can be
+  // corrected/extended by a reviewer.
+  string acceptance_review = 27;
 }
 
 // WorkItemStatus — schedulable kinds follow:

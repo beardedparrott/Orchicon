@@ -136,6 +136,9 @@ message UpdateWorkItemRequest {
   // context_files replaces the item's context_files selection: an empty
   // files list clears it, an absent field leaves it unchanged.
   optional ContextFiles context_files = 22;
+  // acceptance_review sets the human-readable acceptance review. Empty
+  // string clears it; an absent field leaves it unchanged.
+  optional string acceptance_review = 23;
 }
 
 message UpdateWorkItemResponse {

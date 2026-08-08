@@ -299,6 +299,13 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		}
 		fields.AcceptanceCriteria = &ac
 	}
+	if msg.AcceptanceReview != nil {
+		ar, err := ValidateAcceptanceReview(*msg.AcceptanceReview)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		fields.AcceptanceReview = &ar
+	}
 	if msg.Status != nil {
 		fields.Status = strPtr(validateStatus(*msg.Status))
 	}
@@ -829,12 +836,12 @@ func (s *Service) UnassignWorker(ctx context.Context, req *connect.Request[apiv1
 		SET assigned_worker_ref = NULL, updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
 		RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
-			acceptance_criteria, status, assigned_worker_ref, workflow_id,
+			acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
 			priority, budgets, context_window, results, prompt_context, context_files, version, created_at, updated_at`
 	var updated db.WorkItemRow
 	err = ttx.Tx.QueryRow(ctx, q, tenantID, req.Msg.Id, current.Version).Scan(
 		&updated.ID, &updated.TenantID, &updated.ProjectID, &updated.ParentID, &updated.Kind, &updated.Title,
-		&updated.Description, &updated.AcceptanceCriteria, &updated.Status, &updated.AssignedWorkerRef,
+		&updated.Description, &updated.AcceptanceCriteria, &updated.AcceptanceReview, &updated.Status, &updated.AssignedWorkerRef,
 		&updated.WorkflowID, &updated.Priority, &updated.Budgets, &updated.ContextWindow, &updated.Results,
 		&updated.PromptContext, &updated.ContextFiles, &updated.Version, &updated.CreatedAt, &updated.UpdatedAt,
 	)
@@ -1128,6 +1135,7 @@ func rowToProto(w db.WorkItemRow) *apiv1.WorkItem {
 		Title:               w.Title,
 		Description:         w.Description,
 		AcceptanceCriteria:  w.AcceptanceCriteria,
+		AcceptanceReview:    w.AcceptanceReview,
 		Status:              statusToProto(w.Status),
 		Priority:            int32(w.Priority),
 		Budgets:             string(w.Budgets),
