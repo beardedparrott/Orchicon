@@ -123,6 +123,17 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("project not active: %w", err))
 	}
 
+	// Context files must live inside the project's directory — the only path
+	// guaranteed to be mounted where workers run. A path outside it is
+	// invisible to the worker, so reject it.
+	if len(msg.ContextFiles) > 0 {
+		if proj, err := db.GetProject(ctx, ttx.Tx, tenantID, msg.ProjectId); err == nil {
+			if err := contextfiles.ValidateWithin(msg.ContextFiles, proj.ProjectDir); err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			}
+		}
+	}
+
 	// Enforce hierarchy depth: a subtask's parent must be a task, etc.
 	// Shared with the Update path so the two cannot drift.
 	if err := ValidateParent(ctx, ttx.Tx, tenantID, msg.ParentId, kind, msg.ProjectId); err != nil {
@@ -378,6 +389,21 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, msg.Id)
 	if err != nil {
 		return nil, mapDBError(err)
+	}
+	// Context files must live inside the effective project's directory — the
+	// only path guaranteed to be mounted where workers run. A path outside it
+	// is invisible to the worker, so reject it. Uses the NEW project when this
+	// request reassigns the item, else the current one.
+	if msg.ContextFiles != nil {
+		effProject := current.ProjectID
+		if fields.ProjectID != nil && *fields.ProjectID != "" {
+			effProject = *fields.ProjectID
+		}
+		if proj, err := db.GetProject(ctx, ttx.Tx, tenantID, effProject); err == nil {
+			if err := contextfiles.ValidateWithin(msg.ContextFiles.Files, proj.ProjectDir); err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			}
+		}
 	}
 	// Kind switch (ADR-WIT-1/2): resolve parent/child + schedulability
 	// automatically inside the same transaction. The plan is applied after

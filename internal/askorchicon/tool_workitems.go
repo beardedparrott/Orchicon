@@ -149,6 +149,16 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if err := db.RequireProjectActive(ctx, ttx.Tx, tenantID, params.ProjectID); err != nil {
 		return nil, fmt.Errorf("project not active: %w", err)
 	}
+	// Context files must live inside the project directory (the only path
+	// guaranteed mounted where workers run) — same rule as the Connect
+	// Create handler.
+	if len(params.ContextFiles) > 0 {
+		if proj, err := db.GetProject(ctx, ttx.Tx, tenantID, params.ProjectID); err == nil {
+			if err := contextfiles.ValidateWithin(params.ContextFiles, proj.ProjectDir); err != nil {
+				return nil, err
+			}
+		}
+	}
 	// Enforce hierarchy depth, shared with the Create path.
 	if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, params.ParentID, kind, params.ProjectID); err != nil {
 		return nil, err
@@ -261,6 +271,20 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, params.ID)
 	if err != nil {
 		return nil, err
+	}
+	// Context files must live inside the effective project's directory (the
+	// only path guaranteed mounted where workers run) — same rule as the
+	// Connect Update handler.
+	if params.ContextFiles != nil {
+		effProject := current.ProjectID
+		if params.ProjectID != nil && *params.ProjectID != "" {
+			effProject = *params.ProjectID
+		}
+		if proj, err := db.GetProject(ctx, ttx.Tx, tenantID, effProject); err == nil {
+			if err := contextfiles.ValidateWithin(*params.ContextFiles, proj.ProjectDir); err != nil {
+				return nil, err
+			}
+		}
 	}
 	update := db.UpdateWorkItemFields{}
 	if params.Title != nil {
