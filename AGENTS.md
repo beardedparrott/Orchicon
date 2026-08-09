@@ -43,6 +43,16 @@ The project's model spend is rising. Be economical but **never at the expense of
 > `main`: they test the accumulated `develop` state and then approve a
 > `develop` → `main` merge to cut a release. Per-PR releases do not happen.
 
+> **Two contexts, two approval flows.** A **worker running inside Orchicon**
+> (a canned DevOps Engineer / PR Reviewer execution) is configured to operate
+> autonomously: it PRs into `develop`, merges on approval, and deletes the
+> branch without asking — that is its designed, human-sanctioned loop. A
+> **session working directly with a human** (an AI agent session like this
+> one, driven by the operator in a chat) must ALWAYS ask the human before
+> creating a PR and again before merging — the human is present and owns the
+> review, so never act as if approval is implied. When in doubt about which
+> context you are in, treat yourself as a human-facing session and ask.
+
 - ALWAYS create a new branch before starting work. NEVER commit to `main` or `develop`.
 - **Branch off `develop`**, never `main` (the repo default branch is `develop`). If you
   find yourself on a branch created from `main`, rebase it onto `develop` before PRing.
@@ -93,7 +103,7 @@ Every task follows this sequence:
 6. Follow the Git Workflow above.
 7. Inform the user every time UPDATES have been made. Show them in a tabled format what was changed and updated.
 
-If architecture or anything referenced in AGENTS.md has changed, update this file for future agent runs.
+If architecture or anything referenced in AGENTS.md has changed, update the relevant `.md` documentation (DOCUMENTATION.md, README.md, site/, UPDATES.md) for future agent runs. **Do not edit AGENTS.md itself** — it is the human-maintained instruction file; flag any proposed AGENTS.md change to the human instead.
 
 ## Architecture Quick Reference
 
@@ -285,7 +295,7 @@ cat /tmp/orchicon-backup-*.sql | docker exec -i orchicon-postgres psql -U orchic
 The "Ask Orchicon" conversational agent (`internal/askorchicon/`) has a `ToolRegistry` in `tools.go` that defines every action the agent can perform. **The registry is the tool surface for the Orchicon MCP server** (`orchicon mcp`, `internal/mcp/`) — `BuildConfigContent` registers that server by default in every opencode run (Ask Orchicon chat + in-process worker executions; runtime-container executions skip it — no Postgres route). Tools are consumed natively by the model as `orchicon_<tool>` MCP tools, so the `Properties`/`Required` on each `ToolDefinition` must match what the tool's `Fn` actually parses. When you:
 
 - **Add a new entity** (table, proto, service) — add a tool for its CRUD in the appropriate `tool_*.go` file and register it in `allTools()` in `tools.go`
-- **Add a new RPC** — add a tool that calls the DB layer directly (same as existing tools)
+- **Add a new RPC** — add a tool that calls the DB layer directly (same as existing tools). The tool must reuse the RPC's existing validators and tenant-scoped DB functions — never bypass boundary validation or query outside the tenant transaction just because it's an agent-facing surface
 - **Change the data-access layer** — update any tools that call the affected `db.*` functions
 - **Change the agent's identity** — update `agent.go` (the hardcoded root system prompt) or the DB-stored config defaults in `service.go`'s `defaultAgentConfigProto()`
 - **Add a new interactive feature** — add a new `tool_*.go` file following the existing patterns and register it
