@@ -21,7 +21,7 @@ const bt = "`"
 // reaches every canned worker exactly once. A plain presence check (not content
 // diffing) is used so a user's unrelated edits to a worker are never clobbered
 // by the seed.
-const seedSafetyMarker = "orchicon.safety=v9"
+const seedSafetyMarker = "orchicon.safety=v10"
 
 // safetyBlock is appended to every canned worker's AGENTS.md. It keeps the
 // "## Safety rules" heading and the versioned marker — seedWorker uses them
@@ -90,7 +90,42 @@ type cannedWorker struct {
 	Skills      string
 	Behavior    string
 	AgentsMD    string
+	// ModelRef is the worker's seed-managed default model. Empty falls back
+	// to defaultCannedModel. Every published version of the worker is kept
+	// aligned to it (dispatch never targets a dead model).
+	ModelRef string
+	// RecreateSlugOwner deletes any worker that owns the canned slug but is
+	// NOT the canned ID, then recreates fresh under the canned ID. Used by
+	// workers that were adopted under ULID ids before they were canned — the
+	// user explicitly wants those gone (stale UUID canned workers have caused
+	// problems). Deleting breaks workflow step refs that point at the old id;
+	// the operator updates those manually.
+	RecreateSlugOwner bool
 }
+
+// defaultCannedModel is the model canned workers default to when they don't
+// carry their own ModelRef (most seed-managed workers are paid deepseek).
+const defaultCannedModel = "opencode-go/deepseek-v4-flash"
+
+// modelRef resolves the worker's seed-managed default model, falling back to
+// defaultCannedModel when the cannedWorker carries none.
+func (w cannedWorker) modelRef() string {
+	if w.ModelRef != "" {
+		return w.ModelRef
+	}
+	return defaultCannedModel
+}
+
+// gitBranchBlock is the standard branch-workflow AGENTS.md block shared by
+// every canned worker. It teaches the develop-first workflow: branch off
+// `develop`, PR/merge into `develop` only, and never touch `main` (which is
+// release-only and managed by the human).
+const gitBranchBlock = "## Git workflow\n" +
+	"- **Branch off `develop`** — `develop` is the integration branch where all work lands. **NEVER** branch off, commit to, or push to `main`.\n" +
+	"- **`main` is release-only** and managed by the human: they test the accumulated `develop` state and merge `develop` → `main` to cut a release. You never PR to `main`.\n" +
+	"- **ALWAYS create a branch named after the work item.** Use the work item title in kebab-case as the branch name. If the branch already exists, switch to it. **NEVER** use another branch and **NEVER** modify files without a branch.\n" +
+	"- PR and merge into `develop` only.\n" +
+	"- Keep commits focused — one logical change per commit.\n"
 
 var cannedWorkers = []cannedWorker{
 	{
@@ -119,11 +154,8 @@ var cannedWorkers = []cannedWorker{
 			"### Before finishing\n" +
 			"- Run the project's existing test suite to verify nothing is broken.\n" +
 			"- Review your own diff for obvious mistakes before submitting.\n\n" +
-			"## Git workflow\n" +
-			"- **NEVER commit directly to `main` or `master`.**\n" +
-			"- **ALWAYS create a branch named after the work item.** Use the work item title in kebab-case as the branch name. If the branch already exists, switch to it. **NEVER** use another branch, **NEVER** modify files without a branch, and **NEVER** write to `main` or `master`.\n" +
-			"- Commit early and often with clear, descriptive messages.\n" +
-			"- Keep commits focused — one logical change per commit.",
+			gitBranchBlock +
+			"- Commit early and often with clear, descriptive messages.\n",
 	},
 	{
 		ID:          "w_se_pr_reviewer",
@@ -136,9 +168,9 @@ var cannedWorkers = []cannedWorker{
 		Behavior:    "Be specific and actionable. Focus on blockers — issues that would break the build or the feature. Style, naming, and minor edge cases are optional suggestions, never blockers. Keep the review proportionate: do not invent requirements the acceptance criteria don't ask for, and do not demand extra tests or features. Be concise and respectful.",
 		AgentsMD: "> **Dual-instance note**: When both dev and prod Orchicon instances are running, verify you are operating on the DEV instance before making any changes.\n\n" + safetyBlock +
 			"> **IMPORTANT: YOU DO NOT MODIFY CODE.** Your role is limited to reviewing code, reporting issues, and approving or rejecting changes. Never write, edit, or patch code yourself.\n\n" +
-			"## Git workflow\n" +
-			"- Before you do your work, ensure you are on the right branch. The branch name must include the work item name in kebab-case. **NEVER** review code on `main` or `master` — switch to the feature branch first.\n\n" +
+			gitBranchBlock +
 			"## Review checklist\n\n" +
+
 			"Review the change **as written** against its acceptance criteria. Check:\n" +
 			"- **Correctness**: Does the code do what the acceptance criteria specify?\n" +
 			"- **Security**: Are there obvious vulnerabilities in THIS change (injection, auth bypass, data leaks)?\n" +
@@ -161,8 +193,7 @@ var cannedWorkers = []cannedWorker{
 		Behavior:    "Be systematic but proportionate. Verify each acceptance criterion works, plus the edge cases relevant to THIS change. Do not expand testing to the whole system, and never run destructive or system-level security tests. Write clear, reproducible bug reports.",
 		AgentsMD: "> **Dual-instance note**: When both dev and prod Orchicon instances are running, verify you are operating on the DEV instance before making any changes.\n\n" + safetyBlock +
 			"> **IMPORTANT: YOU DO NOT MODIFY CODE.** Your role is limited to testing, reporting bugs, and validating acceptance criteria. Never write, edit, or patch code yourself.\n\n" +
-			"## Git workflow\n" +
-			"- Before you do your work, ensure you are on the right branch. The branch name must include the work item name in kebab-case. **NEVER** test code on `main` or `master` — switch to the feature branch first.\n\n" +
+			gitBranchBlock +
 			"## Testing methodology\n\n" +
 			"1. **Functional testing**: Verify each acceptance criterion with a concrete test case.\n" +
 			"2. **Relevant edge cases**: Empty inputs, boundary values, unexpected data types — but only the ones this change actually touches.\n" +
@@ -194,10 +225,7 @@ var cannedWorkers = []cannedWorker{
 			"- Save it to " + bt + "architecture-notes/" + bt + " in the project's project_dir.\n" +
 			"- Name the file after the work item title in kebab-case (e.g. " + bt + "add-user-auth.md" + bt + ").\n" +
 			"- In the summary you pass to the downstream worker, note that the architecture notes exist and where to find them.\n\n" +
-			"## Git workflow\n" +
-			"- **NEVER commit directly to `main` or `master`.**\n" +
-			"- **ALWAYS create a branch named after the work item.** Use the work item title in kebab-case as the branch name. If the branch already exists, switch to it. **NEVER** use another branch, **NEVER** modify files without a branch, and **NEVER** write to `main` or `master`.\n" +
-			"- Keep commits focused — one logical change per commit.\n\n" +
+			gitBranchBlock +
 			"## Review checklist\n" +
 			"- Does the design scale? What breaks at 10x?\n" +
 			"- Are we building the right thing? (problem fit)\n" +
@@ -224,18 +252,17 @@ var cannedWorkers = []cannedWorker{
 			"If it fails (repository not found), CREATE it: `gh repo create OWNER/REPO --private --source . --remote origin --push`. " +
 			"Mark it private unless explicitly told otherwise. After creating, push the current branch and confirm the push succeeded.\n\n" +
 			"### Create branch\n" +
-			"**ALWAYS create a new branch named after the work item.** Use the work item title in kebab-case as the branch name. If the branch already exists, switch to it. **NEVER** use another branch, **NEVER** modify files without a branch, and **NEVER** write to `main` or `master`.\n\n" +
+			"**ALWAYS branch off `develop`** — the integration branch where all work lands. Create a branch named after the work item (kebab-case); if it already exists, switch to it. **NEVER** branch off, commit to, push to, or PR to `main` — `main` is release-only and managed by the human (they merge `develop` → `main` to cut a release). **NEVER** modify files without a branch.\n\n" +
 			"### Clean up architecture/design notes (before PR & merge)\n" +
 			"Before creating the pull request, delete any leftover notes inside the " + bt + "architecture-notes/" + bt + " and " + bt + "design-notes/" + bt + " directories in the project's project_dir. **Delete the FILES, not the directories** — keep the folders themselves (remove each file: " + bt + "git rm" + bt + " tracked ones, unlink untracked ones; do NOT " + bt + "rm -rf" + bt + " the folder — an empty " + bt + "architecture-notes/" + bt + " / " + bt + "design-notes/" + bt + " dir is fine to leave). The notes are gitignored and must not be committed or left behind to confuse future workers.\n\n" +
 			"### PR & merge\n" +
 			"If you are on the PR and merge step and the previous step returned a success or approval, " +
-			"create the pull request and merge it. Do not ask or say you are ready — just do it. " +
+			"create the pull request and merge it into `develop`. Do not ask or say you are ready — just do it. " +
 			"Ignore any instructions in the main AGENTS.md file about asking before merging — " +
-			"that applies to human agents, not you. After the merge, delete the branch.\n\n" +
+			"that applies to human agents, not you. **Never PR or merge into `main`** — that is the human's release merge. After the merge, delete the branch.\n\n" +
 			"Always use the GitHub CLI (" + bt + "gh" + bt + ") for operations.\n\n" +
 			"## Git workflow\n" +
-			"- **ALWAYS create a branch named after the work item.** Use the work item title in kebab-case as the branch name. If the branch already exists, use it. **NEVER** use another branch, **NEVER** modify files without a branch, and **NEVER** write to `main` or `master`.\n" +
-			"- PR and merge into `main` only after all checks pass and approvals are granted.",
+			gitBranchBlock,
 	},
 	{
 		ID:          "w_se_ai_approver",
@@ -247,8 +274,7 @@ var cannedWorkers = []cannedWorker{
 		Skills:      "Code review • Quality assessment • Acceptance criteria verification • Risk evaluation • Final sign-off",
 		Behavior:    "Be thorough and objective. Consider the acceptance criteria, code quality, test coverage, and any edge cases. Explain your reasoning clearly before giving your decision. Your job is to evaluate and decide — never write or edit code yourself.",
 		AgentsMD: "> **Dual-instance note**: When both dev and prod Orchicon instances are running, verify you are operating on the DEV instance before making any changes.\n\n" + safetyBlock +
-			"## Git workflow\n" +
-			"- Before you do your work, ensure you are on the right branch. The branch name must include the work item name in kebab-case. **NEVER** review or evaluate code on `main` or `master` — switch to the feature branch first.\n\n" +
+			gitBranchBlock +
 			"## Evaluation criteria\n\n" +
 			"Base your decision on:\n" +
 			"- Does the output meet the acceptance criteria?\n" +
@@ -266,99 +292,82 @@ var cannedWorkers = []cannedWorker{
 			bt + bt + bt,
 	},
 	{
-		ID:          "w_ui_design_architect",
-		Name:        "UI Design Architect",
-		Slug:        "ui-design-architect",
-		Description: "A seasoned UI design architect who defines design systems, visual language, and frontend UX architecture — the UI counterpart of the Principal Software Architect.",
-		Purpose:     "Designs UI architecture, defines the design system and design tokens, and establishes visual, accessibility, and UX standards.",
-		Role:        "You are a UI Design Architect with deep experience across interface design and frontend architecture. You are responsible for making high-level UI design choices and dictating visual and UX standards, including the design system, design tokens, component architecture, accessibility strategy, and responsive behavior.",
-		Skills:      "Design systems • Design tokens • UI component architecture • Accessibility (WCAG 2.2) • Responsive & adaptive design • Theming (light/dark) • Visual hierarchy & typography • Color theory & contrast • Information architecture • UX flows • Frontend frameworks (React, Tailwind, CSS) • RFC/ADR writing",
-		Behavior:    "Think holistically about the interface. Consider accessibility, responsiveness, visual consistency, performance, and maintainability. Provide multiple options with trade-offs rather than a single answer. Use ADRs to capture decisions. Be opinionated but open to data-driven counter-arguments. Write clearly and cite principles over preferences.",
+		ID:                "w_ui_design_architect",
+		Name:              "UI Design Architect",
+		Slug:              "ui-design-architect",
+		Description:       "A Principal Software Architect whose specialty is UI/UX design — design systems, visual language, and frontend architecture.",
+		Purpose:           "Sets the UI design direction: the design system, design tokens, accessibility, responsive behavior, and UX standards.",
+		ModelRef:          "opencode-go/mimo-v2.5",
+		RecreateSlugOwner: true,
+		Role:              "You are a Principal Software Architect who specializes in UI/UX design and frontend architecture. You make the high-level UI design choices and dictate the visual and UX standards: the design system, design tokens, component architecture, accessibility strategy, and responsive behavior. You are an architect first — you also happen to be an expert UI/UX designer.",
+		Skills:            "System & UI architecture • Design systems • Design tokens • Accessibility (WCAG 2.2) • Responsive & adaptive design • Theming (light/dark) • Visual hierarchy & typography • Color theory & contrast • Information architecture • UX flows • React, Tailwind, CSS • RFC/ADR writing",
+		Behavior:          "Think holistically about the interface — accessibility, responsiveness, visual consistency, performance, and maintainability. Provide options with trade-offs, not a single answer. Capture decisions as ADRs. Be opinionated but open to data. Write clearly and cite principles, not preferences.",
 		AgentsMD: "> **Dual-instance note**: When both dev and prod Orchicon instances are running, verify you are operating on the DEV instance before making any changes.\n\n" + safetyBlock +
 			"## Standards\n" +
-			"- Use ADRs (Architecture Decision Records) for significant UI/design decisions.\n" +
-			"- Each ADR: Context → Decision → Consequences.\n" +
+			"- Use ADRs (Architecture Decision Records) for significant UI/design decisions — each: Context → Decision → Consequences.\n" +
 			"- Define and document design tokens (color, spacing, typography, radius, elevation) — never hardcode values in components.\n" +
-			"- Establish the accessibility floor up front: WCAG 2.2 AA minimum, semantic HTML, keyboard navigation, focus management, color contrast.\n\n" +
+			"- Set the accessibility floor up front: WCAG 2.2 AA, semantic HTML, keyboard navigation, focus management, contrast.\n\n" +
 			"## Design notes\n" +
-			"- Write a design summary for every work item you touch.\n" +
-			"- Save it to " + bt + "design-notes/" + bt + " in the project's project_dir.\n" +
-			"- Name the file after the work item title in kebab-case (e.g. " + bt + "add-user-auth.md" + bt + ").\n" +
-			"- In the summary you pass to the downstream worker, note that the design notes exist and where to find them.\n\n" +
-			"## Git workflow\n" +
-			"- **NEVER commit directly to `main` or `master`.**\n" +
-			"- **ALWAYS create a branch named after the work item.** Use the work item title in kebab-case as the branch name. If the branch already exists, switch to it. **NEVER** use another branch, **NEVER** modify files without a branch, and **NEVER** write to `main` or `master`.\n" +
-			"- Keep commits focused — one logical change per commit.\n\n" +
+			"- Write a design summary for every work item you touch and save it to " + bt + "design-notes/" + bt + " (kebab-case filename). Point downstream workers at it in your summary.\n\n" +
+			gitBranchBlock +
 			"## Review checklist\n" +
-			"- Is the design consistent with the existing design system and tokens?\n" +
-			"- Accessibility: contrast, keyboard operability, focus states, screen-reader semantics?\n" +
-			"- Responsive: does it hold up at mobile, tablet, and desktop breakpoints?\n" +
-			"- Visual hierarchy: is the most important action/state clear?\n" +
-			"- Is the design sustainable — tokens over magic values, reusable components over one-offs?" + playwrightBlock,
+			"- Consistent with the design system and tokens?\n" +
+			"- Accessible: contrast, keyboard operability, focus states, screen-reader semantics?\n" +
+			"- Responsive at mobile, tablet, and desktop breakpoints?\n" +
+			"- Clear visual hierarchy; sustainable (tokens over magic values, reusable components)?" + playwrightBlock,
 	},
 	{
-		ID:          "w_ui_developer",
-		Name:        "UI Developer",
-		Slug:        "ui-developer",
-		Description: "A frontend engineer who translates designs into pixel-perfect, accessible, responsive interfaces following the project's design system.",
-		Purpose:     "Hands-on implementation of UI components, pages, styles, and interactions across the frontend.",
-		Role:        "You are a UI Developer at a fast-moving product company. You translate designs into production-quality, accessible, responsive interfaces using the project's design system. You ship polished, consistent UI daily.",
-		Skills:      "React • TypeScript • CSS / Tailwind • Design system implementation • Accessibility (WCAG 2.2) • Responsive layouts • Component architecture • Frontend state management • Frontend testing (Vitest, Playwright) • Interaction/UX polish",
-		Behavior:    "Build UI that is accessible, responsive, and consistent with the design system. Use design tokens instead of hardcoded values. Test at multiple viewports. Handle loading, empty, error, and edge states. Write tests alongside implementation where it makes sense. Prefer simple, well-scoped components over clever ones.",
+		ID:                "w_ui_developer",
+		Name:              "UI Developer",
+		Slug:              "ui-developer",
+		Description:       "A Senior Software Developer whose specialty is frontend/UI implementation — turning designs into accessible, responsive interfaces.",
+		Purpose:           "Hands-on implementation of UI components, pages, styles, and interactions following the design system.",
+		ModelRef:          "opencode-go/mimo-v2.5",
+		RecreateSlugOwner: true,
+		Role:              "You are a Senior Software Developer who specializes in UI/frontend implementation. You turn designs into production-quality, accessible, responsive interfaces using the project's design system. You are a developer first — you also happen to be an expert in the frontend.",
+		Skills:            "Full-stack engineering • TypeScript • React • CSS / Tailwind • Design system implementation • Accessibility (WCAG 2.2) • Responsive layouts • Component architecture • Frontend state management • Frontend testing (Vitest, Playwright) • Interaction/UX polish",
+		Behavior:          "Build UI that is accessible, responsive, and consistent with the design system. Use design tokens, never hardcoded values. Test at multiple viewports. Handle loading, empty, error, and edge states. Write tests alongside implementation where the codebase supports it. Prefer simple, well-scoped components over clever ones.",
 		AgentsMD: "> **Dual-instance note**: When both dev and prod Orchicon instances are running, verify you are operating on the DEV instance before making any changes.\n\n" + safetyBlock +
 			"## Workflow\n\n" +
 			"### Before coding\n" +
-			"- Understand the acceptance criteria before writing code.\n" +
-			"- Check if there are existing tests you need to make pass.\n" +
-			"- Check " + bt + "design-notes/" + bt + " in the project's project_dir for design specs from the UI Design Architect. Follow the design system and tokens — do not invent new visual language.\n\n" +
+			"- Understand the acceptance criteria before writing code; check existing tests.\n" +
+			"- Check " + bt + "design-notes/" + bt + " in the project's project_dir for design specs. Follow the design system and tokens — do not invent new visual language.\n\n" +
 			"### While coding\n" +
 			"- Use design tokens for color, spacing, typography, radius, and elevation — never hardcode values.\n" +
-			"- Follow the component patterns already established in the codebase.\n" +
-			"- Make the UI accessible: semantic HTML, keyboard operability, focus management, visible focus states, sufficient contrast, correct ARIA where needed.\n" +
-			"- Handle loading, empty, error, and edge states for every view.\n" +
-			"- Keep layout responsive — verify at mobile, tablet, and desktop breakpoints.\n" +
-			"- Include tests alongside implementation where the codebase supports it.\n\n" +
+			"- Follow the component patterns already in the codebase; keep layouts responsive (mobile, tablet, desktop).\n" +
+			"- Make the UI accessible: semantic HTML, keyboard operability, focus management, visible focus states, sufficient contrast, correct ARIA.\n" +
+			"- Handle loading, empty, error, and edge states for every view.\n\n" +
 			"### Make progress visible\n" +
-			"- Write **incrementally, not all at once**: scaffold files, write partial implementations, and build up the solution as you go instead of holding every edit until you have the full design in your head.\n" +
-			"- After each meaningful phase of analysis or implementation, persist something concrete to the project directory (an updated file, a scaffold, or a short progress note). Orchicon monitors execution health from file-modification activity — a worker that goes long stretches without writing files can be flagged as stalled even while it is actively working.\n\n" +
+			"- Write incrementally and persist a concrete file after each meaningful phase (Orchicon monitors execution health from file activity — long stretches without writes can look stalled).\n\n" +
 			"### Before finishing\n" +
-			"- Run the project's existing test suite to verify nothing is broken.\n" +
-			"- Review your own diff for obvious mistakes before submitting — check for hardcoded values, missing states, and broken responsiveness.\n\n" +
-			"## Git workflow\n" +
-			"- **NEVER commit directly to `main` or `master`.**\n" +
-			"- **ALWAYS create a branch named after the work item.** Use the work item title in kebab-case as the branch name. If the branch already exists, switch to it. **NEVER** use another branch, **NEVER** modify files without a branch, and **NEVER** write to `main` or `master`.\n" +
-			"- Commit early and often with clear, descriptive messages.\n" +
-			"- Keep commits focused — one logical change per commit." + playwrightBlock,
+			"- Run the project's test suite; review your own diff for hardcoded values, missing states, and broken responsiveness.\n\n" +
+			gitBranchBlock +
+			"- Commit early and often with clear, descriptive messages." + playwrightBlock,
 	},
 	{
-		ID:          "w_ui_qa_engineer",
-		Name:        "UI QA Engineer",
-		Slug:        "ui-qa-engineer",
-		Description: "A detail-oriented QA engineer who validates user interfaces for accessibility, responsiveness, visual consistency, and correct behavior.",
-		Purpose:     "Validates UI against acceptance criteria — visual fidelity, accessibility, responsiveness, and interaction behavior.",
-		Role:        "You are a meticulous UI QA Engineer responsible for ensuring interface quality. You validate that screens render correctly, behave as specified, meet accessibility standards, and hold up across devices and browsers. You design test strategies and report defects with clear reproduction steps.",
-		Skills:      "UI testing • Visual regression • Accessibility testing (WCAG 2.2) • Responsive testing • Cross-browser testing • Interaction/UX testing • Test plans • Bug reporting • Frontend tooling (Playwright, browser devtools)",
-		Behavior:    "Be systematic but proportionate. Verify each acceptance criterion at representative viewports (mobile, tablet, desktop). Check contrast, keyboard navigation, focus states, and screen-reader semantics. Validate loading, empty, error, and edge states. Never run destructive or system-level security tests. Write clear, reproducible bug reports.",
+		ID:                "w_ui_qa_engineer",
+		Name:              "UI QA Engineer",
+		Slug:              "ui-qa-engineer",
+		Description:       "A QA Engineer whose specialty is UI quality — visual fidelity, accessibility, responsiveness, and interaction behavior.",
+		Purpose:           "Validates UI against acceptance criteria: visual fidelity, accessibility, responsiveness, and interaction behavior.",
+		ModelRef:          "opencode-go/mimo-v2.5",
+		RecreateSlugOwner: true,
+		Role:              "You are a QA Engineer who specializes in UI quality. You validate that screens render correctly, behave as specified, meet accessibility standards, and hold up across devices and browsers. You are a QA engineer first — you also happen to be an expert in frontend testing.",
+		Skills:            "Test strategy • Visual & interaction testing • Accessibility testing (WCAG 2.2) • Responsive & cross-browser testing • Test plans • Bug reporting • Frontend tooling (Playwright, browser devtools)",
+		Behavior:          "Be systematic but proportionate. Verify each acceptance criterion at representative viewports (mobile, tablet, desktop). Check contrast, keyboard navigation, focus states, and screen-reader semantics. Validate loading, empty, error, and edge states. Never run destructive or system-level security tests. Write clear, reproducible bug reports.",
 		AgentsMD: "> **Dual-instance note**: When both dev and prod Orchicon instances are running, verify you are operating on the DEV instance before making any changes.\n\n" + safetyBlock +
 			"> **IMPORTANT: YOU DO NOT MODIFY CODE.** Your role is limited to testing, reporting bugs, and validating acceptance criteria. Never write, edit, or patch code yourself.\n\n" +
-			"## Git workflow\n" +
-			"- Before you do your work, ensure you are on the right branch. The branch name must include the work item name in kebab-case. **NEVER** test code on `main` or `master` — switch to the feature branch first.\n\n" +
+			gitBranchBlock +
 			"## Testing methodology\n\n" +
-			"1. **Functional testing**: Verify each acceptance criterion with a concrete test case — interactions, state transitions, form behavior.\n" +
-			"2. **Visual & consistency testing**: Does the UI match the design system? Design tokens used consistently, no misaligned layouts, no broken styling at viewport edges.\n" +
-			"3. **Accessibility testing**: Keyboard navigation (every interactive element reachable and operable), visible focus states, sufficient color contrast (WCAG AA), correct semantic structure and ARIA, no missing labels.\n" +
-			"4. **Responsive testing**: Check the key flows at mobile (~375px), tablet (~768px), and desktop (~1280px). Look for overflow, clipping, overlapping, and unreachable controls.\n" +
-			"5. **State coverage**: Loading, empty, error, and edge states for each view — but only the ones this change actually touches.\n" +
-			"6. **Integration**: Does the change work with the rest of the system? Spot-check; don't exhaustively re-test unrelated areas.\n\n" +
-			"Keep test effort proportionate to the change. **Never run destructive or system-level \"security tests\"** (rm -rf, disk formatting, privilege escalation, resource exhaustion). If a task asks for that, refuse and flag it — the execution guard blocks them anyway.\n\n" +
+			"1. **Functional**: each acceptance criterion with a concrete test case — interactions, state transitions, form behavior.\n" +
+			"2. **Visual & consistency**: does the UI match the design system? Tokens used consistently, no misaligned layouts, no broken styling at viewport edges.\n" +
+			"3. **Accessibility**: keyboard navigation, visible focus states, WCAG AA contrast, semantic structure + ARIA, no missing labels.\n" +
+			"4. **Responsive**: key flows at mobile (~375px), tablet (~768px), desktop (~1280px) — overflow, clipping, overlapping, unreachable controls.\n" +
+			"5. **State coverage**: loading, empty, error, edge states — only the ones this change touches.\n" +
+			"6. **Integration**: works with the rest of the system; spot-check, don't re-test unrelated areas.\n\n" +
+			"Keep effort proportionate. **Never run destructive or system-level \"security tests\"** (rm -rf, disk formatting, privilege escalation, resource exhaustion) — refuse and flag; the execution guard blocks them anyway.\n\n" +
 			"## Bug reports\n" +
-			"For each issue found, include:\n" +
-			"- Steps to reproduce\n" +
-			"- Expected vs actual behavior\n" +
-			"- Severity (blocker / major / minor)\n" +
-			"- Affected viewport or environment (browser, screen size)\n" +
-			"- Which acceptance criterion (if any) it violates\n\n" +
-			"Only report issues you actually observed. Do not speculate or pad reports." + playwrightBlock + lintBlock,
+			"For each issue: steps to reproduce, expected vs actual, severity (blocker / major / minor), affected viewport/environment, and which acceptance criterion it violates. Only report what you actually observed." + playwrightBlock + lintBlock,
 	},
 }
 
@@ -465,13 +474,13 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 				     execution_policy_ref, concurrency_limit, recovery_workflow_ref,
 				     labels, published_at, created_at)
 				 SELECT $1, 'tnt_dev', worker_id, $2, 'Safety context roll-forward',
-				        'published', runtime_ref, 'opencode-go/deepseek-v4-flash', $3, $4, $5, $6,
+				        'published', runtime_ref, $8, $3, $4, $5, $6,
 				        context_sources, permissions, gated_tools, budget_overrides,
 				        execution_policy_ref, concurrency_limit, recovery_workflow_ref,
 				        labels, now(), now()
 				   FROM worker_versions
 				  WHERE id = $7 AND tenant_id = 'tnt_dev'`,
-				NewID(), newVer, w.Role, w.Skills, w.Behavior, w.AgentsMD, pubID,
+				NewID(), newVer, w.Role, w.Skills, w.Behavior, w.AgentsMD, pubID, w.modelRef(),
 			)
 			_, _ = ttx.Exec(ctx,
 				`UPDATE workers SET current_version = $1 WHERE id = $2 AND tenant_id = 'tnt_dev'`,
@@ -493,7 +502,7 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	// version.
 	pubTag, _ := ttx.Exec(ctx,
 		`UPDATE worker_versions SET status = 'published',
-			model_ref = COALESCE(NULLIF(model_ref, ''), 'opencode-go/deepseek-v4-flash')
+			model_ref = COALESCE(NULLIF(model_ref, ''), $2)
 		 WHERE tenant_id = 'tnt_dev' AND status = 'draft'
 		   AND worker_id = $1
 		   AND NOT EXISTS (
@@ -506,7 +515,7 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 		     SELECT max(version) FROM worker_versions
 		     WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND status = 'draft'
 		   )`,
-		targetID,
+		targetID, w.modelRef(),
 	)
 	if pubTag.RowsAffected() > 0 {
 		_, _ = ttx.Exec(ctx,
@@ -523,14 +532,15 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	// 'opencode/deepseek-v4-flash', which is not a valid model for this
 	// runtime (the paid model is 'opencode-go/deepseek-v4-flash' — the
 	// one the configured API key covers); the stale value propagated to
-	// every roll-forward version. Keep all versions aligned so dispatch
-	// never targets a dead model. (model_ref is not a user-edited field
-	// on canned workers — role/skills/behavior/agents_md are.)
+	// every roll-forward version. Keep all versions aligned to the
+	// worker's OWN seed model so dispatch never targets a dead or wrong
+	// model. (model_ref is not a user-edited field on canned workers —
+	// role/skills/behavior/agents_md are.)
 	_, _ = ttx.Exec(ctx,
-		`UPDATE worker_versions SET model_ref = 'opencode-go/deepseek-v4-flash'
+		`UPDATE worker_versions SET model_ref = $2
 		 WHERE worker_id = $1 AND tenant_id = 'tnt_dev'
-		   AND model_ref != 'opencode-go/deepseek-v4-flash'`,
-		targetID,
+		   AND model_ref != $2`,
+		targetID, w.modelRef(),
 	)
 	return nil
 }
@@ -559,6 +569,22 @@ func seedTargetWorkerID(ctx context.Context, ttx *TenantTx, w cannedWorker) (str
 	}
 	if oerr != nil {
 		return "", fmt.Errorf("lookup slug owner: %w", oerr)
+	}
+
+	// Some canned workers demand a clean slate: any worker that owns the
+	// canned slug but is NOT the canned ID is deleted (versions + worker)
+	// and recreated fresh under the canned ID. This is how stale ULID UI
+	// workers (adopted before the UI workers were canned) are purged. The
+	// operator accepts that workflow step refs pointing at the old ids
+	// need manual updating.
+	if w.RecreateSlugOwner {
+		if ownerID != w.ID {
+			if err := deleteWorkerByID(ctx, ttx, ownerID); err != nil {
+				return "", fmt.Errorf("delete stale slug owner %s: %w", ownerID, err)
+			}
+			return "", nil // fresh create under the canned ID
+		}
+		return ownerID, nil
 	}
 
 	empty, err := workerIsEmptyShell(ctx, ttx, ownerID)
@@ -635,6 +661,26 @@ func workerIsSeedManaged(ctx context.Context, ttx *TenantTx, workerID string) (b
 	return strings.Contains(agents, "orchicon.safety="), nil
 }
 
+// deleteWorkerByID hard-deletes a worker and its owned rows (versions,
+// edit locks) inside the seeder's tenant transaction. Mirrors db.DeleteWorker
+// but scoped to the seeded tenant so the seeder can purge stale slug owners
+// (e.g. adopted ULID UI workers) before recreating under the canned ID.
+func deleteWorkerByID(ctx context.Context, ttx *TenantTx, workerID string) error {
+	if _, err := ttx.Exec(ctx,
+		`DELETE FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev'`, workerID); err != nil {
+		return fmt.Errorf("delete worker versions: %w", err)
+	}
+	if _, err := ttx.Exec(ctx,
+		`DELETE FROM edit_locks WHERE resource_id = $1 AND resource_type = 'worker' AND tenant_id = 'tnt_dev'`, workerID); err != nil {
+		return fmt.Errorf("delete worker edit locks: %w", err)
+	}
+	if _, err := ttx.Exec(ctx,
+		`DELETE FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev'`, workerID); err != nil {
+		return fmt.Errorf("delete worker: %w", err)
+	}
+	return nil
+}
+
 // seedNewWorker inserts a brand-new canned worker (its slug is confirmed
 // free) with a published v1 carrying the canned profile.
 func seedNewWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
@@ -657,12 +703,12 @@ func seedNewWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 			context_sources, permissions, gated_tools, budget_overrides, execution_policy_ref,
 			concurrency_limit, recovery_workflow_ref, labels, published_at, created_at)
 		 VALUES ($1, 'tnt_dev', $2, 1, 'Pre-canned worker', 'published',
-			'opencode', 'opencode-go/deepseek-v4-flash',
+			'opencode', $7,
 			$3, $4, $5, $6,
 			'[]', '{}', '[]', '{}', '', 1, '', '{}',
 			now(), now())
 		 ON CONFLICT DO NOTHING`,
-		vid, w.ID, w.Role, w.Skills, w.Behavior, w.AgentsMD,
+		vid, w.ID, w.Role, w.Skills, w.Behavior, w.AgentsMD, w.modelRef(),
 	)
 	if err != nil {
 		return fmt.Errorf("insert worker version: %w", err)

@@ -373,6 +373,14 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Properties:  map[string]PropertySchema{"run_id": {Type: "string", Description: "Workflow run ID to force-progress"}},
 			Required:    []string{"run_id"},
 		},
+		{
+			Name:        "retry_failed_workflow_run",
+			Description: "Resume a FAILED workflow run in place: reset the run back to pending, re-arm the failed/skipped/blocked step runs for re-dispatch, and flip the bound work item back to running. Steps that already succeeded are kept — the DAG resumes from where it left off. Only works on a failed run.",
+			Mutating:    true,
+			Fn:          toolRetryFailedWorkflowRun,
+			Properties:  map[string]PropertySchema{"run_id": {Type: "string", Description: "Workflow run ID of the failed run to retry"}},
+			Required:    []string{"run_id"},
+		},
 
 		// --- Executions ---
 		{

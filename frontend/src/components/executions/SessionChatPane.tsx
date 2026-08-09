@@ -509,6 +509,11 @@ export function SessionChatPane({
   const [showJump, setShowJump] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [draft, setDraft] = useState("");
+  // Optimistic follow-up bubbles: on a completed execution, the user's
+  // question is shown immediately while the model processes, before the
+  // server records it into the durable transcript.
+  const [pending, setPending] = useState<{ key: string; text: string; at: number }[]>([]);
+  const pendingSeq = useRef(0);
 
   const sendMsg = useSendExecutionMessage();
   const continueSession = useContinueExecutionSession();
@@ -546,6 +551,30 @@ export function SessionChatPane({
     if (!sp) return undefined;
     return decodePayload(sp.payload)?.text as string | undefined;
   }, [systemPrompt, transcript]);
+
+  // Optimistic follow-ups: any pending bubble whose text the durable
+  // transcript has already recorded as a follow_up user message is a
+  // duplicate — drop it (the transcript's own bubble takes over).
+  const sentFollowUpTexts = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of transcript ?? []) {
+      if (p.kind !== "user_message") continue;
+      const pl = decodePayload(p.payload);
+      if (typeof pl.text === "string" && pl.text) set.add(pl.text);
+    }
+    return set;
+  }, [transcript]);
+  useEffect(() => {
+    if (pending.length === 0) return;
+    setPending((prev) => {
+      const next = prev.filter((p) => !sentFollowUpTexts.has(p.text));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [pending, sentFollowUpTexts]);
+  const pendingItems = useMemo(
+    () => pending.filter((p) => !sentFollowUpTexts.has(p.text)),
+    [pending, sentFollowUpTexts],
+  );
 
   // Merge: running → the FULL transcript history (so joining mid-run shows
   // everything already said) plus only the live-stream events that are NEWER
@@ -588,7 +617,7 @@ export function SessionChatPane({
       lastAutoScrollRef.current = Date.now();
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [items, live]);
+  }, [items, live, pendingItems]);
 
   const jumpToBottom = useCallback(() => {
     stickRef.current = true;
@@ -614,19 +643,26 @@ export function SessionChatPane({
         return;
       }
       // Completed execution: run the follow-up IN the session (no new
-      // execution/work item); the reply lands in the transcript and the
-      // session query refresh renders it inline in this chat.
+      // execution/work item). Show the user's bubble immediately (the
+      // model can take minutes); the reply lands in the transcript and the
+      // refetch below renders the real exchange, replacing the optimistic
+      // bubble once the server has recorded the question.
+      const key = `pending-${pendingSeq.current++}`;
+      setPending((prev) => [...prev, { key, text: msg, at: Date.now() }]);
+      setDraft("");
       continueSession.mutate(
         { executionId, message: msg },
         {
           onSuccess: () => {
-            setDraft("");
             setComposerOpen(false);
+          },
+          onSettled: () => {
+            void refetchTranscript();
           },
         },
       );
     },
-    [executionId, isRunning, sendMsg, continueSession],
+    [executionId, isRunning, sendMsg, continueSession, refetchTranscript],
   );
 
   const isStreaming = streamStatus === "open" && isRunning;
@@ -635,13 +671,26 @@ export function SessionChatPane({
 
   // The system-prompt bubble above already carries the full composite
   // (which includes the goal); drop the redundant standalone goal bubble
-  // from the visible list when the prompt is shown.
+  // from the visible list when the prompt is shown. Optimistic follow-up
+  // bubbles append after the transcript so they show while the model works.
   const visibleItems = useMemo(
-    () =>
-      systemText
+    () => {
+      const base = systemText
         ? items.filter((i) => !(i.kind === "user" && i.source === "goal"))
-        : items,
-    [items, systemText],
+        : items;
+      if (pendingItems.length === 0) return base;
+      return [
+        ...base,
+        ...pendingItems.map((p) => ({
+          kind: "user" as const,
+          text: p.text,
+          source: "follow_up",
+          at: p.at,
+          key: p.key,
+        })),
+      ];
+    },
+    [items, systemText, pendingItems],
   );
 
   return (

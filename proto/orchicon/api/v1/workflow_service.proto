@@ -103,6 +103,16 @@ service WorkflowService {
   // a manual escape hatch, not a routine control.
   rpc ForceProgressWorkflowRun(ForceProgressWorkflowRunRequest) returns (ForceProgressWorkflowRunResponse);
 
+  // RetryFailedWorkflowRun resumes a FAILED WorkflowRun in place: it resets
+  // the run back to pending (clearing its ended timestamp), re-arms the
+  // failed / skipped / blocked step runs as pending (clearing their results,
+  // worker execution refs, attempts, and ended timestamps so the reconciler
+  // re-dispatches them), and flips the bound work item back to running. Steps
+  // that already succeeded stay succeeded — the DAG resumes from where it
+  // left off instead of restarting. The reconciler picks the run up on its
+  // next cycle and re-creates the runtime container.
+  rpc RetryFailedWorkflowRun(RetryFailedWorkflowRunRequest) returns (RetryFailedWorkflowRunResponse);
+
   // StreamWorkflowEvents is the server-stream RPC that fans out workflow
   // run events from NATS to connected clients (docs/07 §4, docs/10 §4.1).
   // The editor run view overlays live step transitions on the canvas
@@ -290,6 +300,16 @@ message ForceProgressWorkflowRunResponse {
   WorkflowRun run = 1;
   // The step run ids that were forced to succeeded.
   repeated string forced_step_run_ids = 2;
+}
+
+message RetryFailedWorkflowRunRequest {
+  string run_id = 1;
+}
+
+message RetryFailedWorkflowRunResponse {
+  WorkflowRun run = 1;
+  // The step run ids reset back to pending for re-dispatch.
+  repeated string reset_step_run_ids = 2;
 }
 
 message StreamWorkflowEventsRequest {

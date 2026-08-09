@@ -162,3 +162,92 @@ func toolForceProgressWorkflowRun(ctx context.Context, pool *db.Pool, args json.
 var succeededStatus = domain.StepRunSucceeded
 
 func strPtrTool(s string) *string { return &s }
+
+// toolRetryFailedWorkflowRun resumes a FAILED workflow run in place — the Ask
+// Orchicon counterpart to the RetryFailedWorkflowRun RPC. Resets the run back
+// to pending, re-arms every active failed/skipped/blocked step run as pending
+// (clearing result, worker execution ref, attempt, ended timestamp), flips the
+// bound work item back to running, and lets the reconciler re-drive the DAG
+// from where it left off (succeeded steps are kept).
+func toolRetryFailedWorkflowRun(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if params.RunID == "" {
+		return nil, fmt.Errorf("run_id is required")
+	}
+	tenantID := tenant.FromContext(ctx)
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer ttx.Rollback(ctx)
+
+	run, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, params.RunID)
+	if err != nil {
+		return nil, err
+	}
+	if run.Status != domain.WorkflowRunFailed {
+		return nil, fmt.Errorf("run is in status %s — only a failed run can be retried", run.Status)
+	}
+	stepRuns, err := db.ListWorkflowStepRuns(ctx, ttx.Tx, tenantID, params.RunID)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	var reset []string
+	for _, sr := range stepRuns {
+		if sr.SupersededBy != "" {
+			continue
+		}
+		switch sr.Status {
+		case domain.StepRunFailed, domain.StepRunSkipped, domain.StepRunBlocked:
+		default:
+			continue
+		}
+		emptyResult := []byte("{}")
+		attempt := 0
+		if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+			Status:            strPtrTool(domain.StepRunPending),
+			Result:            &emptyResult,
+			WorkerExecutionID: strPtrTool(""),
+			Attempt:           &attempt,
+			StartedAt:         &now,
+			ClearEndedAt:      true,
+		}); err != nil {
+			return nil, err
+		}
+		reset = append(reset, sr.ID)
+	}
+	if len(reset) == 0 {
+		return nil, fmt.Errorf("no failed/skipped/blocked step runs to retry")
+	}
+
+	updated, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, run.ID, run.Version, db.UpdateWorkflowRunFields{
+		Status:       strPtrTool(domain.WorkflowRunPending),
+		ClearEndedAt: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if run.WorkItemID != "" {
+		if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID); err == nil {
+			status := domain.WorkItemRunning
+			if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, db.UpdateWorkItemFields{Status: &status}); err != nil {
+				// non-fatal: the ticket self-heals once the run is running
+			}
+		}
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{
+		"run_id":              updated.ID,
+		"status":              updated.Status,
+		"reset_step_run_ids":  reset,
+	})
+}

@@ -137,6 +137,13 @@ irm https://orchicon.dev/install.ps1 -OutFile install.ps1; .\install.ps1 -DryRun
 | Custom domain stuck on "Pending" | DNS not on CloudFlare | Move `orchicon.dev` nameservers to CloudFlare if it isn't already; or add the domain to CloudFlare via *Add Site* and follow the onboarding |
 | `curl -fsSL https://orchicon.dev/install` downloads HTML, not the script | A `_redirects` or `_headers` file is intercepting | You don't have either in `site/`. If you add them later, make sure they don't blanket-rewrite the install paths |
 | Install serves an older version than the one in `scripts/install.sh` | A previous deploy is cached, or a Pages branch override is in effect | Trigger a fresh deploy from the dashboard; check **Settings → Builds → Branch control** is on `main` |
+
+> **Default branch note:** the repo's default branch is `develop` (workers
+> integrate there and the human cuts releases by merging `develop` → `main`).
+> CloudFlare Pages **must stay pinned to `main`** — if it follows the default
+> branch, every `develop` merge would deploy the landing page from unreleased
+> code. Check **Settings → Builds → Branch control / Production branch** says
+> `main` (not "Default branch").
 | GitHub App won't connect to a private repo | The App wasn't granted access to the repo | CloudFlare dashboard → Settings → Builds → "Manage GitHub access" → grant the Orchicon repo |
 
 ---

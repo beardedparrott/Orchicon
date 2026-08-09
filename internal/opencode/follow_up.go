@@ -50,17 +50,16 @@ func (a *Adapter) ContinueSession(ctx context.Context, opts ContinueSessionOpts)
 		msg = opts.Context + "\n\n# Follow-up question\n\n" + opts.Message
 	}
 
-	reply, err := collectReply(ctx, client, sessionID, opts.SystemPrompt, opts.ModelRef, msg)
-	if err != nil {
-		return "", err
+	// Record the user's question into the durable transcript UP FRONT so the
+	// session chat shows the bubble immediately while the model works — the
+	// reply is written separately once it lands. seq = StartSeq; a fresh
+	// session also records its session_info right after, so the reply still
+	// appends AFTER both.
+	seq := opts.StartSeq
+	if seq <= 0 {
+		seq = 1
 	}
-
-	// Record both sides into the durable transcript.
 	if a.sessionStore != nil {
-		seq := opts.StartSeq
-		if seq <= 0 {
-			seq = 1
-		}
 		parts := []db.SessionPart{
 			{
 				ExecutionID: opts.ExecutionID,
@@ -81,14 +80,27 @@ func (a *Adapter) ContinueSession(ctx context.Context, opts ContinueSessionOpts)
 			})
 			seq++
 		}
-		if reply != "" {
-			parts = append(parts, db.SessionPart{
+		if err := a.sessionStore(ctx, opts.ExecutionID, opts.TenantID, parts); err != nil {
+			a.log.Warn("follow-up transcript write failed", "execution", opts.ExecutionID, "error", err)
+		}
+	}
+
+	reply, err := collectReply(ctx, client, sessionID, opts.SystemPrompt, opts.ModelRef, msg)
+	if err != nil {
+		return "", err
+	}
+
+	// Record the assistant's reply into the durable transcript (append after
+	// the up-front user message / session_info).
+	if a.sessionStore != nil && reply != "" {
+		parts := []db.SessionPart{
+			{
 				ExecutionID: opts.ExecutionID,
 				TenantID:    opts.TenantID,
 				Seq:         seq,
 				Kind:        db.SessionPartText,
 				Payload:     db.MarshalPartPayload(map[string]any{"part": map[string]any{"type": "text", "text": reply}}),
-			})
+			},
 		}
 		if err := a.sessionStore(ctx, opts.ExecutionID, opts.TenantID, parts); err != nil {
 			a.log.Warn("follow-up transcript write failed", "execution", opts.ExecutionID, "error", err)

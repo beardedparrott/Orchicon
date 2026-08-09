@@ -1531,6 +1531,88 @@ export class ForceProgressWorkflowRunResponse extends Message<ForceProgressWorkf
 }
 
 /**
+ * @generated from message orchicon.api.v1.RetryFailedWorkflowRunRequest
+ */
+export class RetryFailedWorkflowRunRequest extends Message<RetryFailedWorkflowRunRequest> {
+  /**
+   * @generated from field: string run_id = 1;
+   */
+  runId = "";
+
+  constructor(data?: PartialMessage<RetryFailedWorkflowRunRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RetryFailedWorkflowRunRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RetryFailedWorkflowRunRequest {
+    return new RetryFailedWorkflowRunRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RetryFailedWorkflowRunRequest {
+    return new RetryFailedWorkflowRunRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RetryFailedWorkflowRunRequest {
+    return new RetryFailedWorkflowRunRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RetryFailedWorkflowRunRequest | PlainMessage<RetryFailedWorkflowRunRequest> | undefined, b: RetryFailedWorkflowRunRequest | PlainMessage<RetryFailedWorkflowRunRequest> | undefined): boolean {
+    return proto3.util.equals(RetryFailedWorkflowRunRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.RetryFailedWorkflowRunResponse
+ */
+export class RetryFailedWorkflowRunResponse extends Message<RetryFailedWorkflowRunResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.WorkflowRun run = 1;
+   */
+  run?: WorkflowRun;
+
+  /**
+   * The step run ids reset back to pending for re-dispatch.
+   *
+   * @generated from field: repeated string reset_step_run_ids = 2;
+   */
+  resetStepRunIds: string[] = [];
+
+  constructor(data?: PartialMessage<RetryFailedWorkflowRunResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RetryFailedWorkflowRunResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "run", kind: "message", T: WorkflowRun },
+    { no: 2, name: "reset_step_run_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RetryFailedWorkflowRunResponse {
+    return new RetryFailedWorkflowRunResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RetryFailedWorkflowRunResponse {
+    return new RetryFailedWorkflowRunResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RetryFailedWorkflowRunResponse {
+    return new RetryFailedWorkflowRunResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RetryFailedWorkflowRunResponse | PlainMessage<RetryFailedWorkflowRunResponse> | undefined, b: RetryFailedWorkflowRunResponse | PlainMessage<RetryFailedWorkflowRunResponse> | undefined): boolean {
+    return proto3.util.equals(RetryFailedWorkflowRunResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.StreamWorkflowEventsRequest
  */
 export class StreamWorkflowEventsRequest extends Message<StreamWorkflowEventsRequest> {

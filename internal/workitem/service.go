@@ -15,6 +15,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
+	"github.com/beardedparrott/orchicon/internal/project"
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -120,6 +121,17 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	// Only active projects may host work items (docs/02 §2.1).
 	if err := db.RequireProjectActive(ctx, ttx.Tx, tenantID, msg.ProjectId); err != nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("project not active: %w", err))
+	}
+
+	// Context files must live inside the project's directory — the only path
+	// guaranteed to be mounted where workers run. A path outside it is
+	// invisible to the worker, so reject it.
+	if len(msg.ContextFiles) > 0 {
+		if proj, err := db.GetProject(ctx, ttx.Tx, tenantID, msg.ProjectId); err == nil {
+			if err := contextfiles.ValidateWithin(msg.ContextFiles, proj.ProjectDir); err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			}
+		}
 	}
 
 	// Enforce hierarchy depth: a subtask's parent must be a task, etc.
@@ -378,6 +390,21 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, mapDBError(err)
 	}
+	// Context files must live inside the effective project's directory — the
+	// only path guaranteed to be mounted where workers run. A path outside it
+	// is invisible to the worker, so reject it. Uses the NEW project when this
+	// request reassigns the item, else the current one.
+	if msg.ContextFiles != nil {
+		effProject := current.ProjectID
+		if fields.ProjectID != nil && *fields.ProjectID != "" {
+			effProject = *fields.ProjectID
+		}
+		if proj, err := db.GetProject(ctx, ttx.Tx, tenantID, effProject); err == nil {
+			if err := contextfiles.ValidateWithin(msg.ContextFiles.Files, proj.ProjectDir); err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			}
+		}
+	}
 	// Kind switch (ADR-WIT-1/2): resolve parent/child + schedulability
 	// automatically inside the same transaction. The plan is applied after
 	// the shared parent validation below (an explicit parent in the same
@@ -559,6 +586,12 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		}
 	}
 	s.log.Info("work item updated", "id", updated.ID, "version", updated.Version)
+	// Context files changed → refresh the container mount manifest now (the
+	// work_item.context_files paths are mounted into the single-container
+	// instance; waiting for the 30s periodic writer delays new mounts).
+	if msg.ContextFiles != nil {
+		project.NotifyProjectChanged()
+	}
 	return connect.NewResponse(&apiv1.UpdateWorkItemResponse{WorkItem: rowToProto(updated)}), nil
 }
 

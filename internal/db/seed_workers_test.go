@@ -94,6 +94,7 @@ func resetWorker(t *testing.T, pool *db.Pool, workerID string) {
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)
 	}
+	defer ttx.Rollback(ctx)
 	if _, err := ttx.Exec(ctx,
 		`DELETE FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev'`, workerID); err != nil {
 		t.Fatalf("delete versions: %v", err)
@@ -189,13 +190,17 @@ func replaceCannedWorkerWithUserShell(t *testing.T, pool *db.Pool, cannedID, slu
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)
 	}
+	defer ttx.Rollback(ctx)
+	// Clear residue from a previous test that used the same generated ids
+	// (the adoption + skip tests share one canned worker) so tests are
+	// order-independent.
 	if _, err := ttx.Exec(ctx,
-		`DELETE FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev'`, cannedID); err != nil {
+		`DELETE FROM worker_versions WHERE worker_id IN ($1, $2) AND tenant_id = 'tnt_dev'`, cannedID, userID); err != nil {
 		t.Fatalf("delete versions: %v", err)
 	}
 	if _, err := ttx.Exec(ctx,
-		`DELETE FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev'`, cannedID); err != nil {
-		t.Fatalf("delete worker: %v", err)
+		`DELETE FROM workers WHERE id IN ($1, $2) AND tenant_id = 'tnt_dev'`, cannedID, userID); err != nil {
+		t.Fatalf("delete workers: %v", err)
 	}
 	role := ""
 	if withContent {
@@ -228,8 +233,8 @@ func replaceCannedWorkerWithUserShell(t *testing.T, pool *db.Pool, cannedID, slu
 func TestSeedAdoptsEmptySlugOwner(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
-	const cannedID = "w_ui_qa_engineer"
-	userID := replaceCannedWorkerWithUserShell(t, pool, cannedID, "ui-qa-engineer", false)
+	const cannedID = "w_se_qa_engineer"
+	userID := replaceCannedWorkerWithUserShell(t, pool, cannedID, "qa-engineer", false)
 
 	if err := db.SeedDevWorkers(ctx, pool); err != nil {
 		t.Fatalf("re-seed: %v", err)
@@ -259,8 +264,8 @@ func TestSeedAdoptsEmptySlugOwner(t *testing.T) {
 func TestSeedSkipsCustomizedSlugOwner(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
-	const cannedID = "w_ui_qa_engineer"
-	userID := replaceCannedWorkerWithUserShell(t, pool, cannedID, "ui-qa-engineer", true)
+	const cannedID = "w_se_qa_engineer"
+	userID := replaceCannedWorkerWithUserShell(t, pool, cannedID, "qa-engineer", true)
 
 	if err := db.SeedDevWorkers(ctx, pool); err != nil {
 		t.Fatalf("re-seed: %v", err)
@@ -283,8 +288,8 @@ func TestSeedSkipsCustomizedSlugOwner(t *testing.T) {
 func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
-	const cannedID = "w_ui_developer"
-	userID := replaceCannedWorkerWithUserShell(t, pool, cannedID, "ui-developer", false)
+	const cannedID = "w_se_qa_engineer"
+	userID := replaceCannedWorkerWithUserShell(t, pool, cannedID, "qa-engineer", false)
 
 	if err := db.SeedDevWorkers(ctx, pool); err != nil {
 		t.Fatalf("seed (adopt): %v", err)
@@ -297,7 +302,7 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 	}
 	if _, err := ttx.Exec(ctx,
 		`UPDATE worker_versions
-		    SET agents_md = replace(agents_md, 'orchicon.safety=v9', 'orchicon.safety=v0')
+		    SET agents_md = replace(agents_md, 'orchicon.safety=v10', 'orchicon.safety=v0')
 		  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`, userID); err != nil {
 		t.Fatalf("stale marker: %v", err)
 	}
@@ -314,7 +319,49 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 		userID).Scan(&agents); err != nil {
 		t.Fatalf("query adopted agents: %v", err)
 	}
-	if !strings.Contains(agents, "orchicon.safety=v9") {
+	if !strings.Contains(agents, "orchicon.safety=v10") {
 		t.Errorf("adopted worker should have been rolled forward to the current marker, got %q", agents[len(agents)-40:])
+	}
+}
+
+// TestSeedRecreatesUISlugOwner: a stale ULID worker owning a UI canned slug
+// (RecreateSlugOwner) is DELETED and recreated fresh under the canned ID —
+// the user explicitly wants leftover UUID canned workers gone. The recreated
+// worker also carries its own seed model (opencode-go/mimo-v2.5).
+func TestSeedRecreatesUISlugOwner(t *testing.T) {
+	pool := seedTestPool(t)
+	ctx := context.Background()
+	const cannedID = "w_ui_developer"
+	const slug = "ui-developer"
+	userID := replaceCannedWorkerWithUserShell(t, pool, cannedID, slug, true)
+
+	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+
+	// The stale slug owner is gone.
+	var exists string
+	if err := pool.QueryRow(ctx,
+		`SELECT id FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev'`, userID).Scan(&exists); err == nil {
+		t.Errorf("stale slug owner %s should have been deleted", userID)
+	}
+	// The canned worker exists fresh with the mimo model and the develop
+	// branch context.
+	var modelRef, agents string
+	if err := pool.QueryRow(ctx,
+		`SELECT model_ref FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+		cannedID).Scan(&modelRef); err != nil {
+		t.Fatalf("query canned model_ref: %v", err)
+	}
+	if modelRef != "opencode-go/mimo-v2.5" {
+		t.Errorf("UI worker should default to opencode-go/mimo-v2.5, got %q", modelRef)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT agents_md FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+		cannedID).Scan(&agents); err != nil {
+		t.Fatalf("query canned agents: %v", err)
+	}
+	if !strings.Contains(agents, "Branch off `develop`") {
+		t.Errorf("UI worker agents_md should carry the develop-first git workflow")
 	}
 }
