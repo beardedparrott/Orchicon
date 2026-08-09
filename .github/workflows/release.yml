@@ -284,3 +284,12 @@ jobs:
             --draft=false \
             $ASSETS
           echo "Release ${VERSION} created with $(echo "$ASSETS" | wc -l) assets"
+
+      - name: Dispatch release pruning
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # A release created here via GITHUB_TOKEN does not fire a
+          # `release: published` event (recursive-trigger limitation),
+          # so dispatch the prune workflow explicitly to enforce the cap.
+          gh workflow run prune-releases.yml --ref "${{ github.event.repository.default_branch }}"

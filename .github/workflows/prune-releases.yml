@@ -1,9 +1,15 @@
 # Orchicon release-pruning workflow.
 #
-# Keeps at most MAX_RELEASES published releases on the repo. Runs whenever a
-# release is published (release.yml's create step), deleting the oldest ones
-# beyond the cap. Tags are left intact — only the Release (and its assets)
-# is removed, so `git describe --tags` still reports the right version.
+# Keeps at most MAX_RELEASES published releases on the repo. Runs when a
+# release is published (release: published) OR when release.yml explicitly
+# dispatches it after creating a release (workflow_dispatch). The explicit
+# dispatch is required because a release created inside release.yml via
+# GITHUB_TOKEN does not fire a `release: published` event (the same
+# recursive-trigger limitation documented in auto-release.yml).
+#
+# Deleting the oldest ones beyond the cap. Tags are left intact — only the
+# Release (and its assets) is removed, so `git describe --tags` still
+# reports the right version.
 #
 # Cap is 5 (the operator's choice). To change it, update MAX_RELEASES below.
 
@@ -12,6 +18,7 @@ name: Prune Old Releases
 on:
   release:
     types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: write
