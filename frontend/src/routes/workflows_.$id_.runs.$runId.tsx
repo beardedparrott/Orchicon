@@ -24,6 +24,7 @@ import {
   useGetWorkflow,
   useGetWorkflowRun,
   useGetWorkflowStepRuns,
+  useRetryFailedWorkflowRun,
   useRetryStepRun,
 } from "@/api/workflows";
 import { useListExecutions } from "@/api/executions";
@@ -107,6 +108,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
   const { data: runExecs } = useListExecutions({ workflowRunId: runId, sortOrder: "asc" });
   const abortRun = useAbortWorkflow();
   const forceProgress = useForceProgressWorkflowRun();
+  const retryFailed = useRetryFailedWorkflowRun();
 
   // Live event stream (docs/10 §4). Subscribes to StreamWorkflowEvents
   // filtered to this run; invalidates the run + step-runs queries so the
@@ -322,6 +324,17 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
           </p>
         </div>
         <div className="flex gap-2">
+          {run.status === 4 && (
+            <Button
+              variant="outline"
+              onClick={() => retryFailed.mutateAsync({ runId })}
+              disabled={retryFailed.isPending}
+              title="Reset the run back to pending, re-arm the failed/skipped/blocked step runs, and re-dispatch from where it left off (steps that already succeeded are kept)."
+            >
+              <RefreshCw className="mr-1 h-4 w-4" />
+              {retryFailed.isPending ? "Retrying…" : "Retry failed step"}
+            </Button>
+          )}
           {!isTerminal && (
             <Button
               variant="outline"

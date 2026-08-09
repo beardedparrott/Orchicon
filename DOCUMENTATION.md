@@ -684,6 +684,8 @@ The UI workers also carry a **Browser automation (Playwright) — VISUAL verific
 
 The worker identity (Role, Skills, Behavior, AGENTS.md) is included in every dispatch prompt. Workers also receive workflow-aware context: step position, iteration count, execution history, and prior issues found.
 
+Every dispatch prompt is also prefixed with a fixed **worker identity preamble** (built by both composite builders, `internal/scheduler/reconciler.go`): *"You are an autonomous worker running inside the Orchicon orchestration platform. You are not a human operator and there is no human attached to this run. You execute one assigned work item per run, operate within your role and the project's acceptance criteria, and report your result via the `ORCHICON WORKER SUMMARY` contract. Work autonomously to completion; do not wait for interactive approval for work that is within your assigned scope."* The canned workers also carry the same identity sentence at the start of their seeded Role (`cannedWorkerIdentity` in `internal/db/seed_workers.go`), so the stored worker row and the dispatched prompt agree. This is the mechanism that distinguishes an **in-Orchicon worker** (autonomous: PRs into `develop`, merges on approval, reports via the summary contract) from a **human-facing session** (an agent in a chat that must ask before PRing/merging).
+
 Worker output is parsed for the standard `ORCHICON WORKER SUMMARY: success|failure — <summary>` marker, which routes the workflow to the next step or triggers a loop-back. **The summary word is the single decision signal** — there is deliberately no separate `_decision:` or `_issues:` channel that can override it. A standalone `_decision:` line in output is ignored; an `_issues:` block is captured for the run view and `.orchicon/<run_id>/issues` but never affects routing. This removes the class of false failures where a worker's prose (e.g. a "non-blocking, not `_issues:`" nitpick list) was misparsed as an issues block and forced a loop-back despite a `success` summary.
 
 An execution is only reported `succeeded` when the run completes with the final model step fully delivered (`step_finish` received). opencode's `--format json` emits the entire model response as ONE stdout line, and a scanner cap smaller than the response used to drop that line **and** every event after it (a `bufio.Scanner` is permanently broken after `ErrTooLong`) — so a large final answer made an otherwise-successful execution come back `succeeded` with **empty output**, and the loop_decision step saw no `_decision` signal and re-asked until it failed. Two fixes close this: the runtime path now uses the same 1MB line cap as the local path (was 64KB), and the adapter tracks `step_start` vs `step_finish` counts so a clean exit with an unpaired `step_start` is downgraded to a failure (`execution ended before the final model step completed (model response stream truncated or event dropped)`) instead of a silent success.
@@ -707,7 +709,7 @@ The UI confirms the consequences before saving ("N child items will move under t
 
 **Auto-start is opt-in:** the edit page's **Scheduled start** card (shown for workflow-bound items) has a "Start immediately on save" checkbox that always opens **unchecked** — including legacy items whose stored `auto_start_workflow` is `true` — so saving an edit (a kind switch or any other change) never starts a workflow run unless the user explicitly checks the box. New items default `auto_start_workflow = false` (server default + the `work_items` column default, migration `20260807120000_work_item_auto_start_default_false.sql`). The server also refuses to auto-start on any kind switch unless `autoStartWorkflow=true` is sent in the same request. Scheduled runs are unaffected: `ScheduledRunReconciler` fires on `scheduled_start_at IS NOT NULL`, independent of `auto_start_workflow`.
 
-**Work item context files:** a work item can carry its **own** `context_files` — absolute file **or directory** paths — exactly like a project. The new/create + edit pages show a FileBrowser card ("Work Item Context Files") bound to the item's project directory; check files and/or whole directories. When a worker is dispatched for the item, these paths are rendered into the composite prompt (`# Work item context` section) by the same shared renderer as project context: **files** are inlined (capped at 256 KiB, with a truncation note beyond that), **directories** are expanded into a bounded listing (up to 1000 entries, skipping VCS/build noise) with an explicit instruction to read every file and **not** open the directory path as a file ("not a file" error). Relative paths are resolved against the project directory (backward compat). The paths are read-only input — never mutated by the reconcilers — and are also mounted into the single-container instance (mount manifest) and per-workflow runtime containers (when outside `project_dir`). `UpdateWorkItem` clears the selection when sent an empty `context_files`; `CreateWorkItem`/`UpdateWorkItem` validate every path (absolute, no `..`, length caps) via the shared `internal/contextfiles` package. The Ask Orchicon `create_work_item`/`update_work_item` tools expose the same `context_files` field.
+**Work item context files:** a work item can carry its **own** `context_files` — absolute file **or directory** paths — exactly like a project. The new/create + edit pages show a FileBrowser card ("Work Item Context Files") bound to the item's project directory; check files and/or whole directories. When a worker is dispatched for the item, these paths are rendered into the composite prompt (`# Work item context` section) by the same shared renderer as project context: **files** are inlined (capped at 256 KiB, with a truncation note beyond that), **directories** are expanded into a bounded listing (up to 1000 entries, skipping VCS/build noise) with an explicit instruction to read every file and **not** open the directory path as a file ("not a file" error). Relative paths are resolved against the project directory (backward compat). The paths are read-only input — never mutated by the reconcilers — and are also mounted into the single-container instance (mount manifest) and per-workflow runtime containers (when outside `project_dir`). `UpdateWorkItem` clears the selection when sent an empty `context_files`; `CreateWorkItem`/`UpdateWorkItem` validate every path (absolute, no `..`, length caps) via the shared `internal/contextfiles` package. **Every context path (project and work item) must live inside the project's `project_dir`** — the only directory guaranteed to be mounted into the containers where workers run, so a path outside it would be invisible to the worker. `contextfiles.ValidateWithin` enforces this at the API boundary (both the Connect handlers and the Ask Orchicon tools), and the FileBrowser's checkbox tree is rooted at `project_dir` so the UI can't offer out-of-project paths in the first place. The Ask Orchicon `create_work_item`/`update_work_item` tools expose the same `context_files` field.
 
 #### Work Items page (tree + kanban board)
 The **Work Items** list page has two views sharing one filter bar, selection set, and auto-refresh loop:
@@ -1313,6 +1315,7 @@ volume cannot grow unbounded:
 | Execution page shows the wrong system prompt (e.g. every worker looks like the first step's role) | Page read the shared work item's `prompt_context` | The work item is a shared input reference whose `prompt_context` carries the FIRST step's composite and never changes. Since v0.1.187 the execution page shows `WorkerExecution.system_prompt`, resolved from the linked workflow step run's `_prompt` (the actual per-step composite the model received). |
 | Loop decision stuck | Superseded step run conflict | Workflow reconciler must skip `SupersededBy != ""` runs |
 | Workflow run stuck "running" though the execution succeeded | A reconcile pass errored on a LATER step and rolled back the whole transaction | The run's step shows `running` but its `worker_executions` row is `succeeded`. Since v0.1.186 a step-dispatch failure fails that step instead of rolling back the pass; for runs wedged before that (or any other stuck state) use the **Force next step** button on the run view (`ForceProgressWorkflowRun` RPC), which marks the in-flight step run(s) succeeded and lets the reconciler resume. Also check the indexes: a corrupted btree index hides rows from `=` lookups (see `ORCHICON_INDEX_CHECK_INTERVAL`); the control plane now sweeps + auto-rebuilds them. |
+| Workflow run failed and you want to resume it | A step hit its terminal failure | Use the **Retry failed step** button on the failed run's view (`RetryFailedWorkflowRun` RPC). It resets the run to `pending` (clearing its ended timestamp), re-arms every active failed/skipped/blocked step run as `pending` (clearing result, worker execution ref, attempt, and ended timestamp so the reconciler re-dispatches it), flips the bound work item back to `running`, and the reconciler re-creates the runtime container and resumes the DAG from where it left off. Steps that already succeeded are kept. |
 | Control plane CPU pegged (~150%) with no DB activity | Work-queue `dequeue` busy-loop | Fixed in v0.1.186 — dequeue is bounded to one rotation pass. Restart the control plane to clear a wedged reconcile goroutine (its advisory lock never renews while stuck). |
 | Stale decisions leaking across runs | Previous `_decision` file | Clear `.orchicon/<run_id>/` files between steps |
 | Worker cannot delete or run destructive commands | Sandbox layers | Workers are intentionally sandboxed (see Architectural Pattern 8). Direct bash is blocked by opencode permission deny rules; subprocess/TUI-issued commands (e.g. `rm -rf /` inside a python TUI) are blocked by the OS-level execution guard (`internal/guard/guard.go`, built inside the workflow runtime container); and all canned workers' prompts carry the "Safety rules" block. Review/QA workers run `semgrep scan --config .orchicon/semgrep_orchicon.yml --error .` (Semgrep + Orchicon ruleset) to catch dangerous patterns before merge. |
@@ -1324,13 +1327,21 @@ volume cannot grow unbounded:
 
 ### Branch Workflow
 
-1. Never commit to `main` — the pre-commit hook enforces this
-2. Create a branch: `feat/`, `fix/`, `chore/`, `refactor/`, `docs/`, or `test/` prefix
+`develop` is the integration branch; `main` is release-only. All workers
+branch off `develop`, PR into `develop`, and merge into `develop` — never
+`main`. The human tests the accumulated `develop` state and approves a
+`develop` → `main` merge to cut a release (per-PR releases do not happen).
+
+1. Never commit to `main` or `develop` — the pre-commit hook enforces this
+2. Branch off `develop`: `git switch -c <type>/<short-description> develop`
 3. Before starting work: `git tag -a v0.1.<next> -m "v0.1.<next>"` then bump version
 4. Commit early and often with clear present-tense messages
-5. Before PR: update `README.md` (Last Release Changes) and `UPDATES.md`
+5. Before PR: update `UPDATES.md` (leave README.md's "Last Release Changes"
+   section alone — it only changes when the human cuts a release)
 6. Ask for approval before creating a PR
-7. PRs must carry the `release` label for auto-release
+7. PRs target `develop` and must NOT carry the `release` label (that label
+   belongs only on the human's `develop` → `main` release PR; merging into
+   `develop` never creates a release)
 
 ### Local Pre-commit Hook
 
@@ -1338,7 +1349,7 @@ volume cannot grow unbounded:
 #!/bin/sh
 # .git/hooks/pre-commit
 branch="$(git symbolic-ref --short HEAD)"
-if [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
+if [ "$branch" = "main" ] || [ "$branch" = "master" ] || [ "$branch" = "develop" ]; then
   echo "ERROR: Direct commits to $branch are blocked!"
   exit 1
 fi

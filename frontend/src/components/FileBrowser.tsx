@@ -257,14 +257,21 @@ export function FileBrowser({
               <span className="flex-1 truncate rounded-md border bg-muted/30 px-2 py-1 font-mono text-xs text-muted-foreground">
                 {hasDir ? projectDir : "~ (not set)"}
               </span>
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-xs h-7 shrink-0"
-                onClick={() => { setShowDirPicker(!showDirPicker); setBrowsePath(projectDir || "~"); }}
-              >
-                {showDirPicker ? "Cancel" : hasDir ? "Change" : "Set directory"}
-              </Button>
+              {/* Only a project may change its root directory (and thereby
+                  the mount scope). Work-item context selection is confined
+                  to the project directory, so the arbitrary-filesystem
+                  browse is hidden there — the checkbox tree below is
+                  already rooted at projectDir. */}
+              {!onChange && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs h-7 shrink-0"
+                  onClick={() => { setShowDirPicker(!showDirPicker); setBrowsePath(projectDir || "~"); }}
+                >
+                  {showDirPicker ? "Cancel" : hasDir ? "Change" : "Set directory"}
+                </Button>
+              )}
             </div>
 
             {showDirPicker ? (

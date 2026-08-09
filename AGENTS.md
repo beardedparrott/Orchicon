@@ -11,8 +11,8 @@
 
 ## WARNING
 
-> **STOP!** Are you in a custom branch or are you on `main`? If you are on `main`. **DO NOT proceed.**
-> Instead, create a new branch and continue. Keep this in your memory context **AT ALL TIMES**.
+> **STOP!** Are you in a custom branch or are you on `main` or `develop`? If you are on `main` or `develop`. **DO NOT proceed.**
+> Instead, create a new branch off `develop` and continue. Keep this in your memory context **AT ALL TIMES**.
 > This is **RULE number 1**.
 >
 > Check your branch at the very start of every task, before reading files,
@@ -37,36 +37,44 @@ The project's model spend is rising. Be economical but **never at the expense of
 
 ## Git Workflow
 
-- ALWAYS create a new branch before starting work. NEVER commit to main.
-- A local pre-commit hook (`.git/hooks/pre-commit`) rejects any commit on `main` or `master`. If the hook is missing, re-create it:
+> **`develop` is the integration branch. `main` is release-only.** All workers
+> (AI agents, the canned Orchicon workers, you) branch off `develop`, PR into
+> `develop`, and merge into `develop` — **never `main`**. The human maintains
+> `main`: they test the accumulated `develop` state and then approve a
+> `develop` → `main` merge to cut a release. Per-PR releases do not happen.
+
+> **Two contexts, two approval flows.** A **worker running inside Orchicon**
+> (a canned DevOps Engineer / PR Reviewer execution) is configured to operate
+> autonomously: it PRs into `develop`, merges on approval, and deletes the
+> branch without asking — that is its designed, human-sanctioned loop. A
+> **session working directly with a human** (an AI agent session like this
+> one, driven by the operator in a chat) must ALWAYS ask the human before
+> creating a PR and again before merging — the human is present and owns the
+> review, so never act as if approval is implied. When in doubt about which
+> context you are in, treat yourself as a human-facing session and ask.
+
+- ALWAYS create a new branch before starting work. NEVER commit to `main` or `develop`.
+- **Branch off `develop`**, never `main` (the repo default branch is `develop`). If you
+  find yourself on a branch created from `main`, rebase it onto `develop` before PRing.
+- A local pre-commit hook (`.git/hooks/pre-commit`) rejects any commit on `main`, `master`, or `develop`. If the hook is missing, re-create it:
 
   ```bash
   #!/bin/sh
   branch="$(git symbolic-ref --short HEAD)"
-  if [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
+  if [ "$branch" = "main" ] || [ "$branch" = "master" ] || [ "$branch" = "develop" ]; then
     echo "❌ ERROR: Direct commits to $branch are blocked!"
     exit 1
   fi
   ```
 - Branch naming: `<type>/<short-description>` (e.g. `feat/project-crud`, `fix/outbox-relay-dedup`, `chore/docker-compose-setup`). Types: `feat`, `fix`, `chore`, `refactor`, `docs`, `test`.
-- **Before starting work on a new branch**, bump the version tag: `git tag -a v0.1.<next> -m "v0.1.<next>"`. This ensures the binary reports the correct version during local development and `make container-build` (or `scripts/install-local.sh`) embeds the new tag. After a PR merges, the auto-release workflow creates the canonical release tag on GitHub — run `git fetch --tags` (the Makefile's `build`/`run` targets do this automatically) so a local rebuild embeds the merged release version instead of a stale one (`git pull` does not fetch tags).
+- **Before starting work on a new branch**, bump the version tag: `git tag -a v0.1.<next> -m "v0.1.<next>"`. This ensures the binary reports the correct version during local development and `make container-build` (or `scripts/install-local.sh`) embeds the new tag. When the human merges `develop` → `main`, the auto-release workflow creates the canonical release tag on GitHub — run `git fetch --tags` (the Makefile's `build`/`run` targets do this automatically) so a local rebuild embeds the merged release version instead of a stale one (`git pull` does not fetch tags).
 - Commit early and often on your branch. Write clear commit messages in present tense: `Add project CRUD service and data-access layer`. Stage only the files relevant to the commit.
 - **Never create a pull request without asking the user for approval first.** Ask, wait for a yes, then proceed.
 - Once work is complete and properly tested, ask the user to verify.
-- After the user verifies, ask again for approval to open the PR, then open it. PRs MUST carry the `release` label to kick off the release creation on GitHub.
-- **Before merging**, ALWAYS ASK THE USER AGAIN (PR-creation approval ≠ merge approval) and update the "Last Release Changes" section in `README.md` with a table listing each feature/bug fix in the release. Keep the release info for the most recent **TWO** versions — remove older entries. Table format:
-
-  ```
-  ### v0.1.NNN (date)
-
-  | Type | Change |
-  |---|---|
-  | Feature | Short description |
-  | Bug fix | Short description |
-  | Chore | Short description |
-  ```
-  After the merge, delete the branch.
-- Before starting work, always `git pull origin main` to get the latest. Before pushing, `git fetch origin && git rebase origin/main` if the branch has been open for a while.
+- After the user verifies, ask again for approval to open the PR, then open it. **PRs target `develop` and must NOT carry the `release` label** — that label only belongs on the human's `develop` → `main` release PR. Merging into `develop` never creates a release; releases are made exclusively by the human merging `develop` → `main` (the auto-release workflow fires only on `main`).
+- **Before merging**, ALWAYS ASK THE USER AGAIN (PR-creation approval ≠ merge approval). Update `UPDATES.md` with a new table row for this PR. **Do NOT touch README.md's "Last Release Changes" section** — that section only changes when the human cuts a release (the `develop` → `main` merge), so it can't be maintained by per-PR workers.
+- After the merge, delete the branch.
+- Before starting work, always `git pull origin develop` to get the latest. Before pushing, `git fetch origin && git rebase origin/develop` if the branch has been open for a while.
 
 ## Local development loop
 
@@ -91,11 +99,11 @@ Every task follows this sequence:
 2. Read UPDATES.md to understand the current state, and read any docs or code necessary — DOCUMENTATION.md covers every subsystem, so read its relevant sections before touching something unfamiliar.
 3. Create a branch and do the work, committing changes often.
 4. Fully test and verify.
-5. Before the final commit on your branch, update **both** `README.md` (Last Release Changes section — table format, most recent two versions only) and `UPDATES.md` (new table row) with a one-paragraph summary describing the changes in this PR. This is the commit that will be PR'd and merged.
+5. Before the final commit on your branch, update `UPDATES.md` (new table row) with a one-paragraph summary describing the changes in this PR. Do **not** touch README.md's "Last Release Changes" section (that is maintained only when the human cuts a release via the `develop` → `main` merge). This is the commit that will be PR'd and merged into `develop`.
 6. Follow the Git Workflow above.
 7. Inform the user every time UPDATES have been made. Show them in a tabled format what was changed and updated.
 
-If architecture or anything referenced in AGENTS.md has changed, update this file for future agent runs.
+If architecture or anything referenced in AGENTS.md has changed, update the relevant `.md` documentation (DOCUMENTATION.md, README.md, site/, UPDATES.md) for future agent runs. **Do not edit AGENTS.md itself** — it is the human-maintained instruction file; flag any proposed AGENTS.md change to the human instead.
 
 ## Architecture Quick Reference
 
@@ -235,7 +243,7 @@ When a phase changes what ships in the binary — a new subcommand, a new depend
 
 - **`scripts/install.sh`** — update if the download asset name changes, new files need to be downloaded alongside the binary, or new post-install steps are required (e.g. a new `orchicon install` flow).
 - **`scripts/install.ps1`** — update if the WSL2 flow changes: distro provisioning (`wsl --install`, `--set-default-version 2`, `--list --verbose`), the Docker-in-WSL check (Docker Desktop WSL2 integration), the Linux asset it downloads (`orchicon_<ver>_linux_<arch>.tar.gz` — never the Windows binary), the in-distro install dir, or the `-NoSetup`/`-Uninstall`/`-Clean`/`-ForceClean` semantics. Keep it in sync with `install.sh` (the WSL bash snippets mirror the Linux script's logic).
-- **`.github/workflows/release.yml`** — update the build matrix if a new OS/arch is added, add build steps if the binary now needs the frontend embedded, verify the asset naming matches what the install scripts download, and when `deploy/runtime/Dockerfile` changes verify the runtime image (`ghcr.io/beardedparrott/orchicon-runtime`) still builds + pushes. The workflow also builds + pushes the single-container image to `ghcr.io/beardedparrott/orchicon` — when `deploy/container/` changes (Dockerfile, embedded configs, new runtime binaries), verify the image build still succeeds.
+- **`.github/workflows/release.yml`** — update the build matrix if a new OS/arch is added, add build steps if the binary now needs the frontend embedded, verify the asset naming matches what the install scripts download, and when `deploy/runtime/Dockerfile` changes verify the runtime image (`ghcr.io/beardedparrott/orchicon-runtime`) still builds + pushes. The workflow also builds + pushes the single-container image to `ghcr.io/beardedparrott/orchicon` — when `deploy/container/` changes (Dockerfile, embedded configs, new runtime binaries), verify the image build still succeeds. **The workflow is main-gated**: a `guard` job skips tag-push runs whose tag is not reachable from `main`, so the `v0.1.x` bump tags on `develop` (which keep local rebuilds reporting the current version) never publish a release — only the human's `develop` → `main` merge (auto-release.yml) or a `workflow_dispatch` does. When a release tag is created on `main`, run `git fetch --tags` before rebuilding locally so the binary embeds the canonical version. **Releases are capped at 5**: `prune-releases.yml` (triggers on `release: published`) deletes the oldest releases beyond the cap (tags are kept, only the Release + assets are removed) — so a full release history never accumulates.
 - **`deploy/container/Dockerfile` + `deploy/container/configs/`** — when the container runtime changes (new bundled process, changed ports, new config), update the Dockerfile / embedded configs and verify the image (see §Verification).
 - **README.md** — update the Installation section if the commands or prerequisites change.
 
@@ -287,7 +295,7 @@ cat /tmp/orchicon-backup-*.sql | docker exec -i orchicon-postgres psql -U orchic
 The "Ask Orchicon" conversational agent (`internal/askorchicon/`) has a `ToolRegistry` in `tools.go` that defines every action the agent can perform. **The registry is the tool surface for the Orchicon MCP server** (`orchicon mcp`, `internal/mcp/`) — `BuildConfigContent` registers that server by default in every opencode run (Ask Orchicon chat + in-process worker executions; runtime-container executions skip it — no Postgres route). Tools are consumed natively by the model as `orchicon_<tool>` MCP tools, so the `Properties`/`Required` on each `ToolDefinition` must match what the tool's `Fn` actually parses. When you:
 
 - **Add a new entity** (table, proto, service) — add a tool for its CRUD in the appropriate `tool_*.go` file and register it in `allTools()` in `tools.go`
-- **Add a new RPC** — add a tool that calls the DB layer directly (same as existing tools)
+- **Add a new RPC** — add a tool that calls the DB layer directly (same as existing tools). The tool must reuse the RPC's existing validators and tenant-scoped DB functions — never bypass boundary validation or query outside the tenant transaction just because it's an agent-facing surface
 - **Change the data-access layer** — update any tools that call the affected `db.*` functions
 - **Change the agent's identity** — update `agent.go` (the hardcoded root system prompt) or the DB-stored config defaults in `service.go`'s `defaultAgentConfigProto()`
 - **Add a new interactive feature** — add a new `tool_*.go` file following the existing patterns and register it

@@ -43,6 +43,48 @@ func makePaths(n int) []string {
 	return out
 }
 
+// TestValidateWithin verifies the project-directory confinement rule: a
+// context path must be the project dir itself or a descendant, and an
+// empty project dir (no directory configured yet) skips the confinement
+// while still applying the base Validate rules.
+func TestValidateWithin(t *testing.T) {
+	root := "/home/user/projects/MyApp"
+
+	ok := [][]string{
+		{root},                                    // the dir itself
+		{root + "/file.go"},                       // direct file
+		{root + "/src/lib"},                       // subdirectory
+		{root + "/src/lib/util.go"},               // nested file
+		{root + "/src", root + "/README.md"},      // mixed
+	}
+	for _, paths := range ok {
+		if err := ValidateWithin(paths, root); err != nil {
+			t.Errorf("ValidateWithin(%v, %q) unexpected error: %v", paths, root, err)
+		}
+	}
+
+	rejected := [][]string{
+		{"/home/user/projects/Other/file.go"},          // sibling project
+		{"/home/user/projects"},                        // parent dir
+		{"/home/user/projects/MyApp-sibling"},          // name-prefix sibling (not a child)
+		{root + "/file.go", "/etc/passwd"},             // one bad path among good
+	}
+	for _, paths := range rejected {
+		err := ValidateWithin(paths, root)
+		if err == nil || !strings.Contains(err.Error(), "inside the project directory") {
+			t.Errorf("ValidateWithin(%v, %q) = %v, want 'inside the project directory'", paths, root, err)
+		}
+	}
+
+	// Empty project dir: confinement skipped, base Validate still applies.
+	if err := ValidateWithin([]string{"/etc/passwd"}, ""); err != nil {
+		t.Errorf("ValidateWithin with empty project dir should skip confinement, got %v", err)
+	}
+	if err := ValidateWithin([]string{"relative/path"}, ""); err == nil {
+		t.Error("ValidateWithin with empty project dir must still reject relative paths")
+	}
+}
+
 func TestResolve(t *testing.T) {
 	cases := []struct {
 		name       string

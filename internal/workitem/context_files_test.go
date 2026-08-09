@@ -115,6 +115,66 @@ func TestWorkItemContextFilesDB(t *testing.T) {
 	}
 }
 
+// TestWorkItemContextFilesWithinProjectDirDB verifies the confinement rule:
+// when the project has a project_dir configured, context_files must live
+// inside it (the only path guaranteed mounted where workers run). Paths
+// outside are rejected at the API boundary with InvalidArgument, for both
+// Create and Update.
+func TestWorkItemContextFilesWithinProjectDirDB(t *testing.T) {
+	pool := validateParentTestPool(t)
+	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
+	s := New(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	const projDir = "/home/test/projects/MyApp"
+	ttx, err := pool.BeginTenantTx(ctx, validateParentTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	proj, err := db.CreateProject(ctx, ttx.Tx, db.ProjectRow{
+		ID: db.NewID(), TenantID: validateParentTestTenant,
+		Name: "Confined", Slug: "confined-" + strings.ToLower(db.NewID()),
+		Status: "active", Goals: []byte("[]"), ProjectDir: projDir,
+	})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit project: %v", err)
+	}
+
+	// Inside the project dir → accepted.
+	inside := []string{projDir + "/src", projDir + "/README.md"}
+	created, err := s.CreateWorkItem(ctx, connect.NewRequest(&apiv1.CreateWorkItemRequest{
+		ProjectId: proj.ID, Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC,
+		Title: "Inside " + strings.ToLower(db.NewID()), ContextFiles: inside,
+	}))
+	if err != nil {
+		t.Fatalf("create with inside-project context files: %v", err)
+	}
+	if len(created.Msg.WorkItem.ContextFiles) != 2 {
+		t.Fatalf("inside create: context_files = %v, want 2", created.Msg.WorkItem.ContextFiles)
+	}
+
+	// Outside the project dir → rejected on Create.
+	_, err = s.CreateWorkItem(ctx, connect.NewRequest(&apiv1.CreateWorkItemRequest{
+		ProjectId: proj.ID, Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC,
+		Title:        "Outside " + strings.ToLower(db.NewID()),
+		ContextFiles: []string{"/home/test/other/file.go"},
+	}))
+	if err == nil || connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("create outside project dir: got %v, want InvalidArgument", err)
+	}
+
+	// Outside the project dir → rejected on Update.
+	_, err = s.UpdateWorkItem(ctx, connect.NewRequest(&apiv1.UpdateWorkItemRequest{
+		Id:           created.Msg.WorkItem.Id,
+		ContextFiles: &apiv1.ContextFiles{Files: []string{"/etc/passwd"}},
+	}))
+	if err == nil || connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("update outside project dir: got %v, want InvalidArgument", err)
+	}
+}
+
 // TestContextFilesColumnExistsDB verifies the migration added the
 // context_files column and the RLS gate's tenant scoping still works
 // (the row is readable only under its tenant).

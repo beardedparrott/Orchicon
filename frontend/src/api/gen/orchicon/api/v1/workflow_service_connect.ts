@@ -17,7 +17,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortWorkflowRequest, AbortWorkflowResponse, AcquireWorkflowEditLockRequest, AcquireWorkflowEditLockResponse, CreateWorkflowRequest, CreateWorkflowResponse, CreateWorkflowVersionRequest, CreateWorkflowVersionResponse, DeleteWorkflowRequest, DeleteWorkflowResponse, DeleteWorkflowVersionRequest, DeleteWorkflowVersionResponse, DeprecateWorkflowRequest, DeprecateWorkflowResponse, ForceProgressWorkflowRunRequest, ForceProgressWorkflowRunResponse, GetWorkflowEditLockRequest, GetWorkflowEditLockResponse, GetWorkflowRequest, GetWorkflowResponse, GetWorkflowRunRequest, GetWorkflowRunResponse, GetWorkflowStepRunsRequest, GetWorkflowStepRunsResponse, ListWorkflowRunsRequest, ListWorkflowRunsResponse, ListWorkflowsRequest, ListWorkflowsResponse, ListWorkflowVersionsRequest, ListWorkflowVersionsResponse, PublishWorkflowRequest, PublishWorkflowResponse, ReleaseWorkflowEditLockRequest, ReleaseWorkflowEditLockResponse, RetryStepRunRequest, RetryStepRunResponse, StartWorkflowRequest, StartWorkflowResponse, StreamWorkflowEventsRequest, StreamWorkflowEventsResponse, UpdateWorkflowVersionRequest, UpdateWorkflowVersionResponse } from "./workflow_service_pb.js";
+import { AbortWorkflowRequest, AbortWorkflowResponse, AcquireWorkflowEditLockRequest, AcquireWorkflowEditLockResponse, CreateWorkflowRequest, CreateWorkflowResponse, CreateWorkflowVersionRequest, CreateWorkflowVersionResponse, DeleteWorkflowRequest, DeleteWorkflowResponse, DeleteWorkflowVersionRequest, DeleteWorkflowVersionResponse, DeprecateWorkflowRequest, DeprecateWorkflowResponse, ForceProgressWorkflowRunRequest, ForceProgressWorkflowRunResponse, GetWorkflowEditLockRequest, GetWorkflowEditLockResponse, GetWorkflowRequest, GetWorkflowResponse, GetWorkflowRunRequest, GetWorkflowRunResponse, GetWorkflowStepRunsRequest, GetWorkflowStepRunsResponse, ListWorkflowRunsRequest, ListWorkflowRunsResponse, ListWorkflowsRequest, ListWorkflowsResponse, ListWorkflowVersionsRequest, ListWorkflowVersionsResponse, PublishWorkflowRequest, PublishWorkflowResponse, ReleaseWorkflowEditLockRequest, ReleaseWorkflowEditLockResponse, RetryFailedWorkflowRunRequest, RetryFailedWorkflowRunResponse, RetryStepRunRequest, RetryStepRunResponse, StartWorkflowRequest, StartWorkflowResponse, StreamWorkflowEventsRequest, StreamWorkflowEventsResponse, UpdateWorkflowVersionRequest, UpdateWorkflowVersionResponse } from "./workflow_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -244,6 +244,24 @@ export const WorkflowService = {
       name: "ForceProgressWorkflowRun",
       I: ForceProgressWorkflowRunRequest,
       O: ForceProgressWorkflowRunResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * RetryFailedWorkflowRun resumes a FAILED WorkflowRun in place: it resets
+     * the run back to pending (clearing its ended timestamp), re-arms the
+     * failed / skipped / blocked step runs as pending (clearing their results,
+     * worker execution refs, attempts, and ended timestamps so the reconciler
+     * re-dispatches them), and flips the bound work item back to running. Steps
+     * that already succeeded stay succeeded — the DAG resumes from where it
+     * left off instead of restarting. The reconciler picks the run up on its
+     * next cycle and re-creates the runtime container.
+     *
+     * @generated from rpc orchicon.api.v1.WorkflowService.RetryFailedWorkflowRun
+     */
+    retryFailedWorkflowRun: {
+      name: "RetryFailedWorkflowRun",
+      I: RetryFailedWorkflowRunRequest,
+      O: RetryFailedWorkflowRunResponse,
       kind: MethodKind.Unary,
     },
     /**

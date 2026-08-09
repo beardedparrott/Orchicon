@@ -8,9 +8,10 @@
 # GITHUB_TOKEN blocks recursive workflow triggers — a tag push from one
 # workflow will not fire another workflow's push:tags trigger.
 #
-# In early development all PRs carry the "release" label so every merge
-# produces a release. Update the trigger condition if you want a more
-# selective release cadence later.
+# Release cadence: workers integrate into `develop` (their PRs NEVER carry
+# the release label and never touch `main`). The HUMAN merges `develop` →
+# `main` (that PR carries the release label) to cut a release from the
+# accumulated changes — releases are deliberate, not per-PR.
 
 name: Auto Release
 

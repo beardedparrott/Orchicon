@@ -632,7 +632,12 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	allSucceeded := true
 	anyFailed := false
 	hasSteps := false
-	var toSkip []string
+	// Collect every active non-terminal step run so that — once anyFailed is
+	// known — ALL of them are skipped, not just the ones that happened to be
+	// iterated after the first failed step (created_at order is not
+	// necessarily the DAG order; a failing step created last would otherwise
+	// leave the other steps "pending" on a failed run).
+	var nonTerminal []db.WorkflowStepRunRow
 	for _, sr := range stepRuns {
 		if sr.SupersededBy != "" {
 			continue
@@ -654,27 +659,23 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			allSucceeded = false
 		default:
 			allSucceeded = false
-			if anyFailed {
-				toSkip = append(toSkip, sr.StepID)
-			}
+			nonTerminal = append(nonTerminal, sr)
 		}
 	}
 	// If the run has failed, skip all remaining non-terminal steps so
 	// the UI accurately reflects the run state instead of showing them
 	// as "pending" forever.
 	if anyFailed {
-		for _, stepID := range toSkip {
-			if cur, ok := runByID[stepID]; ok {
-				now2 := time.Now().UTC()
-				updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, cur.ID, cur.Version, db.UpdateWorkflowStepRunFields{
-					Status:  strPtr(domain.StepRunSkipped),
-					EndedAt: &now2,
-				})
-				if err != nil {
-					return fmt.Errorf("skip pending step on failed run: %w", err)
-				}
-				runByID[stepID] = updated
+		for _, cur := range nonTerminal {
+			now2 := time.Now().UTC()
+			updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, cur.ID, cur.Version, db.UpdateWorkflowStepRunFields{
+				Status:  strPtr(domain.StepRunSkipped),
+				EndedAt: &now2,
+			})
+			if err != nil {
+				return fmt.Errorf("skip pending step on failed run: %w", err)
 			}
+			runByID[cur.StepID] = updated
 		}
 	}
 	if hasSteps && allSucceeded {
@@ -1724,6 +1725,7 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 //     then output format including decision prefix
 func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, worker db.WorkerVersionRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, error) {
 	var sb strings.Builder
+	sb.WriteString(workerIdentityPreamble)
 
 	// 0. Worker identity — role, skills, behavior, and AGENTS.md.
 	if r := strings.TrimSpace(worker.Role); r != "" {

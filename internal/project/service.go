@@ -11,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
@@ -214,6 +215,19 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 	current, err := db.GetProject(ctx, ttx.Tx, tenantID, msg.Id)
 	if err != nil {
 		return nil, mapDBError(err)
+	}
+	// Context files must live inside the (effective) project directory — the
+	// only path guaranteed to be mounted where workers run. A path outside it
+	// is invisible to the worker, so reject it. Uses the NEW project_dir when
+	// this request changes it, else the current one.
+	if msg.ContextFiles != nil {
+		effDir := current.ProjectDir
+		if fields.ProjectDir != nil {
+			effDir = *fields.ProjectDir
+		}
+		if err := contextfiles.ValidateWithin(msg.ContextFiles.Files, effDir); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
 	}
 	updated, err := db.UpdateProject(ctx, ttx.Tx, tenantID, msg.Id, current.Version, fields)
 	if err != nil {

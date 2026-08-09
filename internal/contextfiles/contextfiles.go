@@ -78,6 +78,31 @@ func Validate(paths []string) error {
 	return nil
 }
 
+// ValidateWithin runs Validate and additionally requires every path to be
+// the project directory itself or a descendant of it (lexical check). The
+// project directory is the only directory guaranteed to be mounted into the
+// container where workers run, so a context path outside it would be
+// invisible to the worker — selecting it is pointless. projectDir == ""
+// (no directory configured yet) skips the within-check; Validate still
+// applies.
+func ValidateWithin(paths []string, projectDir string) error {
+	if err := Validate(paths); err != nil {
+		return err
+	}
+	root := strings.TrimSpace(projectDir)
+	if root == "" {
+		return nil
+	}
+	root = filepath.Clean(root)
+	for i, p := range paths {
+		rel, err := filepath.Rel(root, filepath.Clean(strings.TrimSpace(p)))
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("context_files[%d] must be inside the project directory (%s)", i, root)
+		}
+	}
+	return nil
+}
+
 // ToJSON marshals a list of paths to the JSONB column value. A nil list
 // becomes an empty JSON array (never null).
 func ToJSON(paths []string) ([]byte, error) {

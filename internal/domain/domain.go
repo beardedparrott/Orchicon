@@ -244,6 +244,7 @@ const (
 	WorkflowEventRunCompleted     = "workflow.run_completed"
 	WorkflowEventRunFailed        = "workflow.run_failed"
 	WorkflowEventRunAborted       = "workflow.run_aborted"
+	WorkflowEventRunRetried       = "workflow.run_retried"
 	WorkflowEventStepReady        = "workflow.step_ready"
 	WorkflowEventStepStarted      = "workflow.step_started"
 	WorkflowEventStepSucceeded    = "workflow.step_succeeded"
@@ -439,10 +440,13 @@ const (
 	RecoveryEventBlocked        = "recovery.blocked"
 )
 
-// PolicyEventType — event kinds for the policy.evaluated event
-// (docs/08 §4.4).
+// PolicyEventType — event kinds for the policy lifecycle (docs/08 §4.4).
+// `PolicyEventCreated` is emitted when a draft policy is created; it is
+// distinct from `PolicyEventPublished`, which is emitted only when a
+// draft version is explicitly published.
 const (
 	PolicyEventEvaluated   = "policy.evaluated"
+	PolicyEventCreated     = "policy.created"
 	PolicyEventPublished   = "policy.published"
 	PolicyEventSuperseded  = "policy.superseded"
 )
