@@ -61,17 +61,17 @@ describe("computeSequencePositions", () => {
     expect(pos.get("P")).toBeUndefined();
   });
 
-  it("gives no position to children of a bound-workflow parent", () => {
-    // "BP" carries its own workflow (a normal bound-run ticket, not a
-    // sequence parent) — its children are standalone parented cards.
+  it("gives positions to children even when the parent carries a stale workflow binding", () => {
+    // "BP" has children, so it IS a sequence parent regardless of its own
+    // workflow binding — its children get chain positions.
     const items = [
       item("BP", "", 0, 0, "wf-1"),
       item("c1", "BP", 1),
       item("c2", "BP", 2),
     ];
     const pos = computeSequencePositions(items);
-    expect(pos.get("c1")).toBeUndefined();
-    expect(pos.get("c2")).toBeUndefined();
+    expect(pos.get("c1")).toBe(1);
+    expect(pos.get("c2")).toBe(2);
   });
 
   it("null sort_order (0) sorts LAST and falls back to created_at", () => {
@@ -89,7 +89,7 @@ describe("computeSequencePositions", () => {
 });
 
 describe("sequenceParentIds", () => {
-  it("collects every id that is someone's parent with no bound workflow", () => {
+  it("collects every id that is someone's parent", () => {
     const items = [item("P", "", 1), item("c", "P", 1), item("solo", "", 1)];
     const parents = sequenceParentIds(items);
     expect(parents.has("P")).toBe(true);
@@ -97,12 +97,12 @@ describe("sequenceParentIds", () => {
     expect(parents.has("c")).toBe(false);
   });
 
-  it("excludes parents that carry their own bound workflow", () => {
+  it("treats a parent with children as a sequence even with its own workflow binding", () => {
     const items = [
-      item("BP", "", 1, 0, "wf-1"), // bound-run parent, not a sequence
+      item("BP", "", 1, 0, "wf-1"), // parent carries a stale workflow, still a sequence
       item("c", "BP", 1),
     ];
     const parents = sequenceParentIds(items);
-    expect(parents.has("BP")).toBe(false);
+    expect(parents.has("BP")).toBe(true);
   });
 });

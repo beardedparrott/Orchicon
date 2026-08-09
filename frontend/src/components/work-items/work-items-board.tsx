@@ -24,7 +24,7 @@
 //   (Epic → Feature → Task → Subtask). Children are indented under their
 //   parent card within the same column.
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   DndContext,
@@ -138,8 +138,8 @@ export function WorkItemsBoard({
   const toast = useToast();
   const [movingId, setMovingId] = useState<string | null>(null);
   const [activeItem, setActiveItem] = useState<WorkItem | null>(null);
-  /** size of the selection being dragged together; 0/1 = plain single drag */
   const [dragCount, setDragCount] = useState(0);
+  const suppressClickRef = useRef(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -166,6 +166,10 @@ export function WorkItemsBoard({
         setActiveItem(item);
         setDragCount(selected.has(item.id) && selected.size > 1 ? selected.size : 0);
       }
+      // A drag ends with a click on the element under the pointer — the
+      // card's title is a <Link>, so without this the post-drag click
+      // navigates to the item's detail page instead of just moving it.
+      suppressClickRef.current = true;
     },
     [itemsById, selected],
   );
@@ -241,6 +245,10 @@ export function WorkItemsBoard({
   const handleDragEnd = (event: DragEndEvent) => {
     setActiveItem(null);
     setDragCount(0);
+    // Clear the click-suppression AFTER the post-drag click has fired.
+    window.setTimeout(() => {
+      suppressClickRef.current = false;
+    }, 0);
     const { active, over } = event;
     if (!over) return;
     const item = itemsById.get(String(active.id));
@@ -317,6 +325,13 @@ export function WorkItemsBoard({
       collisionDetection={pointerWithin}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
+      onDragCancel={() => {
+        setActiveItem(null);
+        setDragCount(0);
+        window.setTimeout(() => {
+          suppressClickRef.current = false;
+        }, 0);
+      }}
       // Disable dnd-kit auto-scroll: the board overflows horizontally
       // (flex-1 min-w-[280px] columns), so near the viewport edge the
       // auto-scroller shifts the board mid-drag and pointerWithin then
@@ -330,6 +345,17 @@ export function WorkItemsBoard({
       <div
         className="flex flex-1 gap-3 overflow-x-auto rounded-lg border bg-muted/20 p-3"
         style={{ minHeight: "calc(100vh - 280px)" }}
+        onClickCapture={(e) => {
+          // A drag ends with the browser dispatching a click on the element
+          // under the pointer — card titles are <Link>s, so without this the
+          // post-drag click navigates to the item's detail page instead of
+          // just moving the card. Suppress exactly that one click.
+          if (suppressClickRef.current) {
+            e.preventDefault();
+            e.stopPropagation();
+            suppressClickRef.current = false;
+          }
+        }}
       >
         {BOARD_COLUMNS.map((col) => {
           const colItems = items.filter((i) => columnForStatus(i.status) === col.status);

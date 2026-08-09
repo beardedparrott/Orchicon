@@ -23,6 +23,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useToast } from "@/components/ui/toast";
 import { useBatchMoveWorkItems } from "@/components/work-items/batch-move";
 import { computeBlockState, buildTreeData, filterItemsByKindStatus } from "@/components/work-items/dependency-utils";
 import {
@@ -79,9 +80,19 @@ function WorkItemsPage() {
   const hasProjects = projects && projects.length > 0;
   const batchDelete = useBatchDeleteWorkItems();
   const { moveItems, isPending: movePending } = useBatchMoveWorkItems(projectId);
-  const reorder = useReorderWorkItems(projectId);
+  const toast = useToast();
+  const reorder = useReorderWorkItems();
   const handleReorder = (parentId: string, childIds: string[]) => {
-    reorder.mutate({ parentId, childIds });
+    // The RPC requires the siblings' project — derive it from the items
+    // themselves so reorder works in the "All projects" view too (the
+    // page's projectId is empty there).
+    const sibling = (items ?? []).find((i) => i.id === childIds[0]);
+    const pid = sibling?.projectId ?? projectId;
+    if (!pid) {
+      toast.error("Cannot reorder: the work item has no project.");
+      return;
+    }
+    reorder.mutate({ projectId: pid, parentId, childIds });
   };
 
   // Server state (design §3): list + DAG, both auto-refreshed. The shell
@@ -274,6 +285,7 @@ function WorkItemsPage() {
             {view === "tree" ? (
               <WorkItemsTree
                 treeItems={treeData.treeItems}
+                allItems={items}
                 matchIds={new Set(treeData.matches.map((i) => i.id))}
                 ancestorIds={treeData.ancestorIds}
                 filterActive={hasQuery}

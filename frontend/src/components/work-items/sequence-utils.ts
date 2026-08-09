@@ -37,10 +37,9 @@ export function sortByChainOrder(items: WorkItem[]): WorkItem[] {
  * 1-based chain position of every SEQUENCE child, keyed by item id.
  * Derived from `sort_order` rank within (parent_id) — see
  * {@link byChainOrder}. The position is never derived from display order.
- * Only children of a true sequence parent (an item with children and no
- * bound workflow — see {@link sequenceParentIds}) get a position; a
- * standalone parented card (its parent carries its own workflow) is NOT a
- * sequence child and gets no badge.
+ * Every child of a sequence parent (any item with children — see
+ * {@link sequenceParentIds}) gets a position; a parented card whose parent
+ * is a leaf is not a sequence child and gets no badge.
  */
 export function computeSequencePositions(items: WorkItem[]): Map<string, number> {
   const seqParents = sequenceParentIds(items);
@@ -62,23 +61,20 @@ export function computeSequencePositions(items: WorkItem[]): Map<string, number>
 }
 
 /**
- * Sequence-parent ids: every item that has children AND no bound workflow
- * (a parent whose own run fans out to per-child workflows). A parent that
- * carries its own workflow is a normal bound-run ticket, NOT a sequence —
- * its children are standalone parented cards and must not get sequence
- * badges or chips. The Schedules Running membership predicate keys off
- * this derived set.
+ * Sequence-parent ids: every item that has children IS a sequence parent —
+ * its children run one-after-another, each in its own bound workflow. The
+ * parent's own `workflowId` is irrelevant: a parent-with-children is a
+ * sequence container (the "has children" model), so even a parent that
+ * carries a stale workflow binding gets a sequence badge/chip for its
+ * children and is routed to the sequence engine at fire time. A leaf with
+ * no children is never a sequence parent.
  */
 export function sequenceParentIds(items: WorkItem[]): Set<string> {
   const hasChildren = new Set<string>();
   for (const item of items) {
     if (item.parentId) hasChildren.add(item.parentId);
   }
-  const seq = new Set<string>();
-  for (const item of items) {
-    if (hasChildren.has(item.id) && item.workflowId === "") seq.add(item.id);
-  }
-  return seq;
+  return hasChildren;
 }
 
 function tsToMs(ts?: Timestamp): number {
