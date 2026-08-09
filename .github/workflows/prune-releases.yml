@@ -1,0 +1,43 @@
+# Orchicon release-pruning workflow.
+#
+# Keeps at most MAX_RELEASES published releases on the repo. Runs whenever a
+# release is published (release.yml's create step), deleting the oldest ones
+# beyond the cap. Tags are left intact — only the Release (and its assets)
+# is removed, so `git describe --tags` still reports the right version.
+#
+# Cap is 5 (the operator's choice). To change it, update MAX_RELEASES below.
+
+name: Prune Old Releases
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+env:
+  MAX_RELEASES: 5
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete releases beyond the cap
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          echo "Keeping the newest ${MAX_RELEASES} releases."
+          # `gh release list` sorts newest-first; keep the first MAX_RELEASES,
+          # delete the rest. --yes skips confirmation; no --cleanup-tag so the
+          # git tag (and the version `git describe` reports) survives.
+          gh release list --limit 100 \
+            | awk '{print $1}' \
+            | tail -n +$((MAX_RELEASES + 1)) \
+            | while read -r tag; do
+                if [ -n "$tag" ] && gh release view "$tag" >/dev/null 2>&1; then
+                  echo "Deleting old release $tag"
+                  gh release delete "$tag" --yes
+                fi
+              done
