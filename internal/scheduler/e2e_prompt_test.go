@@ -60,6 +60,7 @@ func TestE2EDirectoryInProjectContextPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
+		"You are an autonomous worker running inside the Orchicon orchestration platform.",
 		"srcdir (directory)",
 		"Do NOT attempt to open the directory path itself as a file",
 		"a.go",

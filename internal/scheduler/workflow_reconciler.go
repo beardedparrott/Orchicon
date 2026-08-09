@@ -1725,6 +1725,7 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 //     then output format including decision prefix
 func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, worker db.WorkerVersionRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, error) {
 	var sb strings.Builder
+	sb.WriteString(workerIdentityPreamble)
 
 	// 0. Worker identity — role, skills, behavior, and AGENTS.md.
 	if r := strings.TrimSpace(worker.Role); r != "" {
