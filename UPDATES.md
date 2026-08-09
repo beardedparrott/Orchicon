@@ -12,6 +12,7 @@
 
 | # | Type | Phase | Summary |
 |---|---|---|---|
+| 113 | Bug fix | Runtime lifecycle | Fixed leaked runtime containers from runs stuck "running" forever: fail empty-step-DAG / missing-version runs at start (container reaped, sequence chain halts), fail task steps whose work item or execution row was deleted instead of waiting forever, and reject empty-DAG child workflows at sequence schedule time. |
 | 112 | Bug fix | Session transport | Hardened the session transport against truncated final turns: async fire-and-forget follow-ups (no dropped browser connections, reply collected on a request-independent context), completion-signal probe at session settle, truncated-final-turn detection, and a loop-decision re-ask budget that counts real re-asks. |
 | 111 | Bug fix | Sequence engine | Fixed the scheduled-fire scan crash (SQL NULL into *string aborted every pass) and the mid-run reorder that armed a pending sibling ahead of an in-flight child. |
 | 110 | Bug fix | Sequence engine | Added the reconcileParent sequence-parent guard, the Ask Orchicon reorder tool, and sequence UI polish (chips, badges, filter-aware tree reorder). |
