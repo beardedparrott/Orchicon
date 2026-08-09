@@ -226,7 +226,12 @@ function WorkItemsPage() {
         kinds={kinds}
         onKindFilterChange={(next) => setFilters({ kinds: next })}
         sortBy={sortBy}
-        onSortByChange={(value) => setFilters({ sortBy: value })}
+        onSortByChange={(value) =>
+          // Chain order ("") is always ascending — reset a leftover desc
+          // direction so the server's `ORDER BY sort_order NULLS LAST,
+          // created_at ASC` (not a reversed chain) applies.
+          setFilters(value === "" ? { sortBy: value, sortOrder: "asc" } : { sortBy: value })
+        }
         sortOrder={sortOrder}
         onSortOrderChange={(value) => setFilters({ sortOrder: value })}
         view={view}

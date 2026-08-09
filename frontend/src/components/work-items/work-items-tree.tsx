@@ -9,11 +9,13 @@
 // Drag-to-reorder (architecture-notes/sequential-multi-workflow-runs.md
 // §1): siblings within a parent can be dragged into a new chain order.
 // The drop calls `onReorder(parentId, childIds)` → ReorderWorkItems RPC →
-// sort_order is renumbered in ONE server-side transaction. The user's
-// sort/filter dropdowns never call the RPC — they only change display
-// order (AGENTS.md invariant #1). A mid-sequence drag is safe: the
-// sequence cursor is derived from sort_order at reconcile time, so the
-// drag shifts only future arming.
+// sort_order is renumbered in ONE server-side transaction. The new order
+// is derived from the true sort_order rank (see handleDragEnd), never the
+// rendered display order, so a drag persists a coherent chain under any
+// active display sort. The user's sort/filter dropdowns never call the RPC
+// — they only change display order (AGENTS.md invariant #1). A mid-sequence
+// drag is safe: the sequence cursor is derived from sort_order at reconcile
+// time, so the drag shifts only future arming.
 //
 // Expand/collapse is persisted per project (ADR-WI-3):
 //   - No active filter: `expandedIds` (explicitly expanded; default
@@ -48,6 +50,7 @@ import { useState } from "react";
 import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { KindBadge, StatusPill } from "@/components/work-items/work-item-badges";
 import type { BlockState } from "@/components/work-items/dependency-utils";
+import { sortByChainOrder } from "@/components/work-items/sequence-utils";
 import { BlockedChip } from "@/components/work-items/work-item-card";
 import { subtreeSelectionState } from "@/components/work-items/use-work-item-selection";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -117,9 +120,19 @@ export function WorkItemsTree({
     const parentId = activeItem.parentId ?? "";
     // The drop must stay within the same sibling group.
     if ((overItem.parentId ?? "") !== parentId) return;
-    // The rendered sibling order IS the chain order by default (the list
-    // query returns sort_order order). Compute the new order from it.
-    const siblings = treeItems.filter((i) => (i.parentId ?? "") === parentId);
+    // Derive the new order from the TRUE chain order (sort_order rank, then
+    // created_at — the backend's `ORDER BY sort_order NULLS LAST, created_at`),
+    // never from the rendered display order. The page's list query honors the
+    // user's sort dropdown (chain order / created / title / priority), so the
+    // rendered sibling order only matches the chain when "Sort: chain order"
+    // is active — deriving from the display order would make drags no-ops in
+    // any other view and silently corrupt the chain (the sequence cursor is
+    // derived from sort_order at reconcile time, so a corrupted rank would
+    // reorder future arming). The RPC renumbers sort_order 1..N in one
+    // transaction, so the result is always a coherent chain.
+    const siblings = sortByChainOrder(
+      treeItems.filter((i) => (i.parentId ?? "") === parentId),
+    );
     const oldIndex = siblings.findIndex((i) => i.id === activeItem.id);
     const newIndex = siblings.findIndex((i) => i.id === overItem.id);
     if (oldIndex < 0 || newIndex < 0) return;

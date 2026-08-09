@@ -159,6 +159,7 @@ export function WorkItemsFilterBar({
         aria-label="Sort by"
         className={selectClass}
       >
+        <option value="">Sort: chain order</option>
         <option value="created_at">Sort: created</option>
         <option value="title">Sort: title</option>
         <option value="priority">Sort: priority</option>
@@ -168,7 +169,11 @@ export function WorkItemsFilterBar({
         value={sortOrder}
         onChange={(e) => onSortOrderChange(e.target.value)}
         aria-label="Sort order"
-        className={selectClass}
+        // Chain order has a fixed ascending direction (siblings run 1..N) —
+        // the direction select only applies to explicit display sorts.
+        disabled={sortBy === ""}
+        title={sortBy === "" ? "Chain order is always ascending" : undefined}
+        className={cn(selectClass, sortBy === "" && "opacity-50")}
       >
         <option value="desc">Desc</option>
         <option value="asc">Asc</option>

@@ -12,11 +12,31 @@ import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import type { Timestamp } from "@bufbuild/protobuf";
 
 /**
+ * Compare two work items by TRUE chain order: `sort_order` rank within
+ * (parent_id), then created_at. Items with a null sort_order (0 — not yet
+ * reordered) sort LAST, mirroring the backend's
+ * `ORDER BY sort_order NULLS LAST, created_at`. Never derived from display
+ * order, so it is safe to use regardless of the active display sort.
+ */
+export function byChainOrder(a: WorkItem, b: WorkItem): number {
+  const ao = a.sortOrder !== 0 ? a.sortOrder : Number.MAX_VALUE;
+  const bo = b.sortOrder !== 0 ? b.sortOrder : Number.MAX_VALUE;
+  if (ao !== bo) return ao - bo;
+  return tsToMs(a.createdAt) - tsToMs(b.createdAt);
+}
+
+/**
+ * Stable chain-order sort of an array of work items (see {@link byChainOrder}).
+ * Returns a new array — never mutates the input.
+ */
+export function sortByChainOrder(items: WorkItem[]): WorkItem[] {
+  return [...items].sort(byChainOrder);
+}
+
+/**
  * 1-based chain position of every item that has a parent, keyed by item id.
- * Derived from `sort_order` rank within (parent_id); items with a null
- * sort_order (not yet reordered) fall back to created_at and sort LAST,
- * mirroring the backend's `ORDER BY sort_order NULLS LAST, created_at`.
- * The position is never derived from display order.
+ * Derived from `sort_order` rank within (parent_id) — see
+ * {@link byChainOrder}. The position is never derived from display order.
  */
 export function computeSequencePositions(items: WorkItem[]): Map<string, number> {
   const byParent = new Map<string, WorkItem[]>();
@@ -28,13 +48,9 @@ export function computeSequencePositions(items: WorkItem[]): Map<string, number>
   }
   const positions = new Map<string, number>();
   for (const siblings of byParent.values()) {
-    const ordered = [...siblings].sort((a, b) => {
-      const ao = a.sortOrder !== 0 ? a.sortOrder : Number.MAX_VALUE;
-      const bo = b.sortOrder !== 0 ? b.sortOrder : Number.MAX_VALUE;
-      if (ao !== bo) return ao - bo;
-      return tsToMs(a.createdAt) - tsToMs(b.createdAt);
-    });
-    ordered.forEach((item, idx) => positions.set(item.id, idx + 1));
+    sortByChainOrder(siblings).forEach((item, idx) =>
+      positions.set(item.id, idx + 1),
+    );
   }
   return positions;
 }

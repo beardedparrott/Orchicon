@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
-import { computeSequencePositions, sequenceParentIds } from "@/components/work-items/sequence-utils";
+import {
+  byChainOrder,
+  computeSequencePositions,
+  sequenceParentIds,
+  sortByChainOrder,
+} from "@/components/work-items/sequence-utils";
 
 function item(id: string, parentId: string, sortOrder: number, createdAtSecs = 0): WorkItem {
   return {
@@ -11,6 +16,30 @@ function item(id: string, parentId: string, sortOrder: number, createdAtSecs = 0
     createdAt: { seconds: BigInt(createdAtSecs), nanos: 0 },
   } as unknown as WorkItem;
 }
+
+describe("byChainOrder / sortByChainOrder", () => {
+  it("orders by sort_order rank regardless of input order", () => {
+    const items = [item("b", "P", 2), item("a", "P", 1), item("c", "P", 3)];
+    expect(sortByChainOrder(items).map((i) => i.id)).toEqual(["a", "b", "c"]);
+    // The input array is never mutated.
+    expect(items.map((i) => i.id)).toEqual(["b", "a", "c"]);
+  });
+
+  it("null sort_order (0) sorts LAST and falls back to created_at", () => {
+    const items = [
+      item("new", "P", 0, 200),
+      item("first", "P", 1, 100),
+      item("second", "P", 2, 100),
+    ];
+    expect(sortByChainOrder(items).map((i) => i.id)).toEqual(["first", "second", "new"]);
+  });
+
+  it("is order-independent and transitive (stable chain derivation)", () => {
+    const shuffled = [item("a", "P", 2), item("b", "P", 1), item("c", "P", 3), item("d", "P", 4)];
+    const sorted = [...shuffled].sort(byChainOrder);
+    expect(sorted.map((i) => i.id)).toEqual(["b", "a", "c", "d"]);
+  });
+});
 
 describe("computeSequencePositions", () => {
   it("ranks siblings by sort_order within each parent", () => {
