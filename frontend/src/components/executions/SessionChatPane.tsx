@@ -518,6 +518,10 @@ export function SessionChatPane({
   const sendMsg = useSendExecutionMessage();
   const continueSession = useContinueExecutionSession();
   const { data: transcript, refetch: refetchTranscript } = useGetExecutionSession(executionId, true);
+  // A follow-up on a completed execution is fire-and-forget: the RPC returns
+  // immediately and the reply lands in the transcript asynchronously. Track
+  // that the reply is pending so the pane keeps polling until it arrives.
+  const [followUpReplyPending, setFollowUpReplyPending] = useState(false);
   // Poll every 2s while running so the pane shows the full conversation as
   // it grows (joining mid-run shows everything already said; the runner
   // flushes the transcript every ~2s).
@@ -538,6 +542,46 @@ export function SessionChatPane({
     }
     wasRunning.current = isRunning;
   }, [isRunning, refetchTranscript]);
+
+  // A completed-execution follow-up is fire-and-forget: the RPC returns at
+  // once and the reply is written to the transcript later. While a follow-up
+  // reply is pending, poll the transcript so the assistant's reply appears
+  // without a manual refresh (the model can take minutes).
+  const followUpReplySeq = useRef(0n);
+  useEffect(() => {
+    if (!followUpReplyPending) return;
+    const parts = transcript ?? [];
+    // The reply is the assistant text that lands AFTER the follow-up was
+    // sent. The boundary is fixed at send time (the max transcript seq then)
+    // so a previous follow-up's reply in an ongoing conversation can never be
+    // mistaken for this one's. If the transcript wasn't loaded at send time
+    // (boundary 0n), establish it lazily from the newest follow_up user
+    // message once it appears.
+    let boundary = followUpReplySeq.current;
+    if (boundary === 0n) {
+      let latestFollowUp = 0n;
+      for (const p of parts) {
+        if (p.kind !== "user_message") continue;
+        const pl = decodePayload(p.payload);
+        if (pl.source === "follow_up" && p.seq > latestFollowUp) {
+          latestFollowUp = p.seq;
+        }
+      }
+      if (latestFollowUp > 0n) {
+        followUpReplySeq.current = latestFollowUp;
+        boundary = latestFollowUp;
+      }
+    }
+    const replied =
+      boundary > 0n &&
+      parts.some((p) => p.kind === "text" && p.seq > boundary);
+    if (replied) {
+      setFollowUpReplyPending(false);
+      return;
+    }
+    const t = window.setInterval(() => void refetchTranscript(), 2000);
+    return () => window.clearInterval(t);
+  }, [followUpReplyPending, transcript, refetchTranscript]);
   // Poll while running so user messages (goal/nudges/human) appear even
   // before the terminal flush.
   const live = useMemo(() => liveItems(events), [events]);
@@ -643,18 +687,28 @@ export function SessionChatPane({
         return;
       }
       // Completed execution: run the follow-up IN the session (no new
-      // execution/work item). Show the user's bubble immediately (the
-      // model can take minutes); the reply lands in the transcript and the
-      // refetch below renders the real exchange, replacing the optimistic
-      // bubble once the server has recorded the question.
+      // execution/work item). The RPC returns immediately (fire-and-forget);
+      // the reply is recorded into the transcript asynchronously. Show the
+      // user's bubble immediately, mark the reply as pending, and poll until
+      // the durable transcript carries the assistant's reply. The boundary is
+      // the max transcript seq AT SEND TIME — the reply lands after it.
       const key = `pending-${pendingSeq.current++}`;
       setPending((prev) => [...prev, { key, text: msg, at: Date.now() }]);
       setDraft("");
+      let boundary = 0n;
+      for (const p of transcript ?? []) {
+        if (p.seq > boundary) boundary = p.seq;
+      }
+      followUpReplySeq.current = boundary;
+      setFollowUpReplyPending(true);
       continueSession.mutate(
         { executionId, message: msg },
         {
           onSuccess: () => {
             setComposerOpen(false);
+          },
+          onError: () => {
+            setFollowUpReplyPending(false);
           },
           onSettled: () => {
             void refetchTranscript();
@@ -662,11 +716,12 @@ export function SessionChatPane({
         },
       );
     },
-    [executionId, isRunning, sendMsg, continueSession, refetchTranscript],
+    [executionId, isRunning, sendMsg, continueSession, refetchTranscript, transcript],
   );
 
   const isStreaming = streamStatus === "open" && isRunning;
-  const followUpPending = !isRunning && continueSession.isPending;
+  const followUpPending =
+    !isRunning && (continueSession.isPending || followUpReplyPending);
   const busy = sendMsg.isPending || continueSession.isPending;
 
   // The system-prompt bubble above already carries the full composite

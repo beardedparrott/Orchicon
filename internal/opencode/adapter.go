@@ -714,7 +714,7 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// and ORCHICON WORKER SUMMARY / decision signal are missing. Downgrade
 	// the result to a failure so the run surfaces the real problem
 	// instead of routing an empty execution downstream as if it worked.
-	unfinishedStep := stats.stepStarts > stats.stepFinishes
+	unfinishedStep := stats.unfinished() && !strings.Contains(output.String(), decisionMarker)
 	if succeeded && unfinishedStep {
 		succeeded = false
 	}
@@ -760,6 +760,39 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 type execStreamState struct {
 	stepStarts   int
 	stepFinishes int
+
+	// truncatedFinish marks a FINAL step_finish that indicates the model
+	// turn was interrupted rather than completed: reason "unknown" with
+	// zero tokens (the signature of a truncated/aborted response — the
+	// failing run's last part was exactly `step_finish {reason:"unknown",
+	// tokens all 0}`). A run ending on such a step is not a clean success:
+	// the worker's final text / ORCHICON WORKER SUMMARY is missing even
+	// though the step counters are balanced (38/38 in the original bug).
+	truncatedFinish bool
+}
+
+// unfinished reports whether the stream ended mid-step OR on a truncated
+// final step — either way the final model response never completed.
+func (s *execStreamState) unfinished() bool {
+	if s == nil {
+		return false
+	}
+	return s.stepStarts > s.stepFinishes || s.truncatedFinish
+}
+
+// allTokensZero reports whether a step_finish's tokens map is empty or all
+// counts are zero. A real completion carries input/output/cache counts; an
+// interrupted turn (reason "unknown") is emitted with no usage at all.
+func allTokensZero(tokens map[string]any) bool {
+	if len(tokens) == 0 {
+		return true
+	}
+	for _, v := range tokens {
+		if n, ok := v.(float64); ok && n > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // parseStdoutLine decodes a JSON line from OpenCode's stdout into a
@@ -946,6 +979,15 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		cost, _ := part["cost"].(float64)
 		if stats != nil {
 			stats.stepFinishes++
+			// A step_finish with reason "unknown" and zero tokens is the
+			// signature of a truncated/interrupted model turn (the failing
+			// run's last part was exactly that). Flag it so the final
+			// result can be downgraded to a failure instead of a clean
+			// success with no decision signal.
+			reason, _ := part["reason"].(string)
+			if (reason == "unknown" || reason == "") && allTokensZero(tokens) {
+				stats.truncatedFinish = true
+			}
 		}
 		a.log.Info("opencode step finished", "execution", execID, "cost", cost, "tokens", tokens)
 		a.recordUsage(ctx, execRow, manifest, tokens, cost)
@@ -1424,7 +1466,7 @@ func (a *Adapter) startInRuntime(ctx context.Context, execRow db.ExecutionRow, m
 	err := execErr
 
 	succeeded := err == nil && exitCode == 0
-	unfinishedStep := stats.stepStarts > stats.stepFinishes
+	unfinishedStep := stats.unfinished() && !strings.Contains(output.String(), decisionMarker)
 	if succeeded && unfinishedStep {
 		succeeded = false
 	}

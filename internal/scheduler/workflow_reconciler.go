@@ -1444,7 +1444,21 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 					fmt.Errorf("loop_decision step %q: no upstream step to re-ask", step.Name))
 			}
 
-			reaskCount := currentLoopIteration(runs, reviewerStepID)
+			// Count REAL re-asks — step runs created by reaskDecisionStep
+			// (StepName "Reviewer (re-ask)"). NOT the reviewer's loop
+			// iteration count: a reviewer that legitimately looped back via
+			// explicit _decision: failure decisions (or was accepted) has
+			// never been RE-ASKED, so its iterations must not consume the
+			// re-ask budget. Otherwise a truncated final turn (missing
+			// signal) hits an already-exhausted budget and fails without
+			// ever getting a genuine re-ask — the observed bug. Superseded
+			// re-ask runs are included (they still happened).
+			reaskList, err := listStepRunsByStepID(ctx, tx, tenantID, run.ID, reviewerStepID)
+			if err != nil {
+				return r.failStep(ctx, tx, tenantID, run, sr, runs,
+					fmt.Errorf("loop_decision step %q: list reviewer runs: %w", step.Name, err))
+			}
+			reaskCount := countReaskRuns(reaskList)
 			if reaskCount >= cfg.MaxReask {
 				// Re-ask exhausted — fail the loop node even though the step
 				// run succeeded, because the reviewer never provided a decision.
@@ -3125,6 +3139,27 @@ func listStepRunsByStepID(ctx context.Context, tx pgx.Tx, tenantID, runID, stepI
 	return out, nil
 }
 
+// reaskRunName marks a step run created by reaskDecisionStep (a loop
+// decision re-asking its reviewer for a missing decision signal). It is
+// the DISCRIMINATOR for the re-ask budget: counting runs with this name
+// yields how many times the reviewer was genuinely re-asked, distinct from
+// ordinary loop iterations driven by explicit _decision: failure results.
+const reaskRunName = "Reviewer (re-ask)"
+
+// countReaskRuns returns how many step runs for a reviewer were created by
+// reaskDecisionStep (StepName == reaskRunName). Superseded runs are counted
+// too — each re-ask that happened is one attempt regardless of whether it
+// was later superseded by the next re-ask.
+func countReaskRuns(runs []db.WorkflowStepRunRow) int {
+	n := 0
+	for _, sr := range runs {
+		if sr.StepName == reaskRunName {
+			n++
+		}
+	}
+	return n
+}
+
 // reaskDecisionStep creates a new step run for the reviewer step (the
 // loop decision's upstream dependency) to re-ask for a decision signal.
 // Returns the work item id so callers can optionally amend the prompt.
@@ -3202,7 +3237,7 @@ func (r *WorkflowReconciler) reaskDecisionStep(ctx context.Context, tx pgx.Tx, t
 		TenantID:      tenantID,
 		WorkflowRunID: run.ID,
 		StepID:        reaskStepID,
-		StepName:      "Reviewer (re-ask)",
+		StepName:      reaskRunName,
 		StepKind:      domain.StepKindTask,
 		Status:        domain.StepRunPending,
 		Iteration:     nextIter,

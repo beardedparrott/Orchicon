@@ -32,9 +32,15 @@ type ContinueSessionOpts struct {
 	StartSeq int64
 }
 
-// ContinueSession runs the follow-up. It returns the assistant's reply.
-// The follow-up and the reply are recorded into the durable transcript so
-// the session chat shows the exchange. No new execution/work item is ever
+// ContinueSession runs the follow-up. The user's question is recorded into
+// the durable transcript synchronously (so the session chat shows it
+// immediately) and the message is handed to the serve; the reply is then
+// collected ASYNCHRONOUSLY on a request-independent context and appended to
+// the transcript when it lands. The RPC therefore returns immediately — a
+// long model turn can never block the browser connection (which caused
+// "NetworkError when attempting to fetch resource" on browsers with a
+// response timeout, e.g. Firefox's default ~115s) nor discard the reply
+// when the client disconnects mid-turn. No new execution/work item is ever
 // created.
 func (a *Adapter) ContinueSession(ctx context.Context, opts ContinueSessionOpts) (string, error) {
 	client, sessionID, reuse := a.followUpSession(ctx, opts)
@@ -85,14 +91,25 @@ func (a *Adapter) ContinueSession(ctx context.Context, opts ContinueSessionOpts)
 		}
 	}
 
-	reply, err := collectReply(ctx, client, sessionID, opts.SystemPrompt, opts.ModelRef, msg)
-	if err != nil {
-		return "", err
-	}
-
-	// Record the assistant's reply into the durable transcript (append after
-	// the up-front user message / session_info).
-	if a.sessionStore != nil && reply != "" {
+	// Fire-and-forget the reply collection. collectReply subscribes to the
+	// serve's event bus, sends the message, and waits for the reply — all on
+	// a context that is deliberately DETACHED from the HTTP request, so a
+	// browser disconnect or the RPC returning can neither cancel the
+	// collection nor lose the reply. The collected text is written to the
+	// durable transcript in the same goroutine.
+	go func() {
+		// WithoutCancel strips the request's cancellation/deadline while
+		// preserving its values; the reply wait itself is still bounded by
+		// collectReply's internal timeout.
+		detached := context.WithoutCancel(ctx)
+		reply, err := collectReply(detached, client, sessionID, opts.SystemPrompt, opts.ModelRef, msg)
+		if err != nil {
+			a.log.Warn("follow-up reply collection failed", "execution", opts.ExecutionID, "error", err)
+			return
+		}
+		if a.sessionStore == nil || reply == "" {
+			return
+		}
 		parts := []db.SessionPart{
 			{
 				ExecutionID: opts.ExecutionID,
@@ -102,11 +119,12 @@ func (a *Adapter) ContinueSession(ctx context.Context, opts ContinueSessionOpts)
 				Payload:     db.MarshalPartPayload(map[string]any{"part": map[string]any{"type": "text", "text": reply}}),
 			},
 		}
-		if err := a.sessionStore(ctx, opts.ExecutionID, opts.TenantID, parts); err != nil {
+		if err := a.sessionStore(detached, opts.ExecutionID, opts.TenantID, parts); err != nil {
 			a.log.Warn("follow-up transcript write failed", "execution", opts.ExecutionID, "error", err)
 		}
-	}
-	return reply, nil
+	}()
+
+	return "", nil
 }
 
 // followUpSession resolves the client + session for a follow-up: the
@@ -131,10 +149,20 @@ func (a *Adapter) followUpSession(ctx context.Context, opts ContinueSessionOpts)
 	return nil, "", false
 }
 
+// followUpReplyWindow bounds how long a follow-up waits for the model's
+// reply. The follow-up now runs asynchronously (the RPC returns at once, so
+// no browser connection is held open), which means the window can be
+// generous enough to cover a long multi-tool answer / E2E without ever
+// blocking the UI. Env-overridable via ORCHICON_FOLLOWUP_REPLY_WINDOW.
+func followUpReplyWindow() time.Duration {
+	return envDuration("ORCHICON_FOLLOWUP_REPLY_WINDOW", 30*time.Minute)
+}
+
 // collectReply subscribes to a session, sends a message, and waits for the
-// reply (bounded). It returns the assistant's accumulated text. Used by
-// the one-shot follow-up flow — the serve is warm, so a generous window
-// (5m) covers a multi-tool answer.
+// reply (bounded by followUpReplyWindow). It returns the assistant's
+// accumulated text. Used by the async follow-up flow — the serve is warm, so
+// the reply window covers even a long multi-tool answer without blocking the
+// browser (the RPC already returned).
 func collectReply(ctx context.Context, client *SessionClient, sessionID, system, modelRef, message string) (string, error) {
 	if client == nil {
 		return "", fmt.Errorf("no opencode serve available for the follow-up")
@@ -153,7 +181,7 @@ func collectReply(ctx context.Context, client *SessionClient, sessionID, system,
 	}
 
 	var reply strings.Builder
-	deadline := time.NewTimer(5 * time.Minute)
+	deadline := time.NewTimer(followUpReplyWindow())
 	defer deadline.Stop()
 	for {
 		select {

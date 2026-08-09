@@ -1019,8 +1019,12 @@ func (s *Service) GetExecutionSession(ctx context.Context, req *connect.Request[
 // worker's session IN PLACE — no new execution, work item, or workflow
 // state is created. The question joins the session (re-attaching when the
 // serve is still reachable, else a fresh host-serve session seeded with
-// the durable transcript), and the reply is recorded into the transcript
-// and returned.
+// the durable transcript). The RPC returns immediately (the follow-up is
+// fire-and-forget): the question is recorded into the transcript up front,
+// and the reply is collected asynchronously and appended once it lands —
+// so a long model turn can never block (or time out) the browser
+// connection. The returned reply field is empty; clients should watch the
+// session transcript for the assistant's text.
 func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Request[apiv1.ContinueExecutionSessionRequest]) (*connect.Response[apiv1.ContinueExecutionSessionResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
