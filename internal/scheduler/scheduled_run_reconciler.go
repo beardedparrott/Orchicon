@@ -78,13 +78,24 @@ func (r *ScheduledRunReconciler) scanAndFire(ctx context.Context) reconciler.Res
 	}
 	defer rows.Close()
 
+	// workflowID is *string, not string: a sequence parent's workflow_id
+	// is SQL NULL (the parent contributes ordering only — its children
+	// carry their own bound workflows), and pgx's strict scan rejects
+	// NULL into a plain string. A scan error also poisons rows.Err()
+	// (rows.fatal), which would abort the whole pass BEFORE any ref
+	// fires — a co-due bound-workflow item would never start. A nil
+	// pointer means "sequence parent"; a non-nil pointer means a bound
+	// run (the WHERE clause guarantees it is non-empty).
 	type wiRef struct {
-		id, tenantID, workflowID, projectID string
+		id, tenantID, projectID string
+		workflowID              *string
 	}
 	var refs []wiRef
 	for rows.Next() {
 		var ref wiRef
 		if err := rows.Scan(&ref.id, &ref.tenantID, &ref.workflowID, &ref.projectID); err != nil {
+			// Per-row scan failures are logged and skipped, never allowed
+			// to abort the pass for the remaining rows.
 			r.log.Error("scheduled_run: scan row", "error", err)
 			continue
 		}
@@ -101,7 +112,7 @@ func (r *ScheduledRunReconciler) scanAndFire(ctx context.Context) reconciler.Res
 	}
 
 	for _, ref := range refs {
-		if ref.workflowID == "" {
+		if ref.workflowID == nil {
 			// Sequence parent: the chain (parent running + reset +
 			// arm-first) runs through the sequence engine.
 			if r.sequence == nil {
@@ -118,12 +129,12 @@ func (r *ScheduledRunReconciler) scanAndFire(ctx context.Context) reconciler.Res
 			}
 			continue
 		}
-		if err := r.start(ctx, ref.tenantID, ref.workflowID, ref.projectID, ref.id); err != nil {
+		if err := r.start(ctx, ref.tenantID, *ref.workflowID, ref.projectID, ref.id); err != nil {
 			r.log.Error("scheduled_run: start workflow failed",
-				"work_item", ref.id, "workflow", ref.workflowID, "error", err)
+				"work_item", ref.id, "workflow", *ref.workflowID, "error", err)
 		} else {
 			r.log.Info("scheduled_run: workflow started",
-				"work_item", ref.id, "workflow", ref.workflowID)
+				"work_item", ref.id, "workflow", *ref.workflowID)
 		}
 	}
 

@@ -646,6 +646,68 @@ func TestStartSequenceFailedStartResetsChild(t *testing.T) {
 	}
 }
 
+// TestMidRunReorderNeverArmsAheadOfInFlightChild is the regression test
+// for QA MAJOR #2: a ReorderWorkItems call while a child is running drags
+// a pending sibling to the front, but the engine must NOT arm it while the
+// earlier child is still in flight — two sequence children would run
+// concurrently (sequential execution is strict). The chain only advances
+// after the in-flight child reaches a terminal state; the reorder shifts
+// only FUTURE arming.
+func TestMidRunReorderNeverArmsAheadOfInFlightChild(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf1 := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	wf2 := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	wf3 := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "One", &parent.ID, &wf1)
+	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Two", &parent.ID, &wf2)
+	c3 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Three", &parent.ID, &wf3)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID, c3.ID})
+
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatal(err)
+	}
+	// Child one is armed and in flight; two and three are pending.
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemRunning {
+		t.Fatalf("precondition: child one should be running, got %q", got.Status)
+	}
+
+	// Mid-run drag: move Three to the front (QA repro: [Three, One, Two]).
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c3.ID, c1.ID, c2.ID})
+
+	rec := NewSequenceReconciler(env.pool, nil, env.startFn())
+	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Three must NOT be armed while One is still running.
+	if got := mustGet(t, env.pool, c3.ID); got.Status != domain.WorkItemPending {
+		t.Fatalf("child three status = %q, want pending (must not arm ahead of in-flight One)", got.Status)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemRunning {
+		t.Fatalf("child one status = %q, want running (untouched)", got.Status)
+	}
+	if got := env.armedWorkItems(); len(got) != 1 {
+		t.Fatalf("armed work items = %v, want exactly [c1] while One is in flight", got)
+	}
+
+	// One reaches a terminal success → the chain advances to the NEW
+	// first child (Three) — the reorder shifts future arming.
+	setStatus(t, env.pool, c1.ID, domain.WorkItemSucceeded)
+	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, env.pool, c3.ID); got.Status != domain.WorkItemRunning {
+		t.Errorf("child three status = %q, want running after One succeeded", got.Status)
+	}
+	if got := mustGet(t, env.pool, c2.ID); got.Status != domain.WorkItemPending {
+		t.Errorf("child two status = %q, want pending (not yet)", got.Status)
+	}
+	if got := env.armedWorkItems(); len(got) != 2 || got[1] != c3.ID {
+		t.Errorf("armed work items = %v, want [c1 c3]", got)
+	}
+}
+
 // reorder sets sort_order on the given sibling ids in order, mirroring
 // ReorderWorkItems' 1..N numbering (test helper).
 func reorder(t *testing.T, pool *db.Pool, projectID, parentID string, ordered []string) {

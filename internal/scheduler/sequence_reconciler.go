@@ -216,7 +216,16 @@ func reconcileParent(ctx context.Context, tx pgx.Tx, tenantID, parentID string, 
 		// In flight (or human-managed): wait for the current child.
 		return nil, nil
 	case domain.WorkItemPending:
-		// On deck. The dependency gate composes as a gate, not a halt: an
+		// On deck. Strict one-at-a-time: a mid-run drag (ReorderWorkItems)
+		// may have sorted this pending sibling ahead of an in-flight child.
+		// Never arm while any sibling is in flight — that would run two
+		// sequence children concurrently (sequential execution is strict).
+		// The derived cursor keeps waiting until the in-flight child
+		// reaches a terminal state, then re-derives who's next.
+		if anySiblingBlocksArming(children) {
+			return nil, nil
+		}
+		// The dependency gate composes as a gate, not a halt: an
 		// unsatisfied external blocker parks the chain on this child
 		// (parent stays running, child stays pending) until the blockers
 		// succeed — then the next pass arms automatically.
@@ -283,6 +292,35 @@ func deriveNextChild(children []db.WorkItemRow) int {
 		}
 	}
 	return -1
+}
+
+// anySiblingBlocksArming reports whether any child is in a state that
+// must resolve before the on-deck pending child may arm: still executing
+// (running/checkpointing/recovering), awaiting dispatch (assigned/ready),
+// or halted (failed/cancelled). Guards two invariants:
+//
+//  1. Strict sequential execution: a mid-run ReorderWorkItems can sort a
+//     pending sibling ahead of an in-flight child; arming it would start
+//     two sequence children concurrently.
+//  2. Failure halts the chain: a failed/cancelled child anywhere in the
+//     sequence parks it — nothing after the failure ever arms on its own,
+//     and the only way forward is fixing + retrying that child to success
+//     (the derived cursor then re-derives who's next). A reorder that puts
+//     a pending child before a failed sibling must not skip the unfixed
+//     failure.
+//
+// Only terminal-success siblings are "past"; anything else still in flight
+// or halted is waited on regardless of sort_order.
+func anySiblingBlocksArming(children []db.WorkItemRow) bool {
+	for _, c := range children {
+		switch c.Status {
+		case domain.WorkItemRunning, domain.WorkItemCheckpointing,
+			domain.WorkItemRecovering, domain.WorkItemAssigned, domain.WorkItemReady,
+			domain.WorkItemFailed, domain.WorkItemCancelled:
+			return true
+		}
+	}
+	return false
 }
 
 // failSequenceChain marks the failed child's parent — and every ancestor
