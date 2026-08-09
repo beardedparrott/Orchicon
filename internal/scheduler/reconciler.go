@@ -1465,6 +1465,20 @@ func extractComposite(pc []byte) (string, error) {
 // direct path). The full system prompt the model sees on every turn
 // is the composite — which itself contains composeSystemPrompt's
 // output prepended under a "# Worker" section.
+// workerIdentityPreamble is prepended to every worker system prompt so
+// the model knows it is an autonomous Orchicon worker, not a human
+// operator or an interactive session. It is the identity statement that
+// distinguishes an in-Orchicon worker (operates autonomously, reports
+// via the ORCHICON WORKER SUMMARY contract) from a human-facing session
+// (must ask before PRing/merging). Both composite builders
+// (buildStandaloneComposite and the workflow buildCompositePrompt) emit
+// it so every dispatch carries the same self-definition.
+const workerIdentityPreamble = "You are an autonomous worker running inside the Orchicon orchestration platform. " +
+	"You are not a human operator and there is no human attached to this run. " +
+	"You execute one assigned work item per run, operate within your role and the project's acceptance criteria, " +
+	"and report your result via the ORCHICON WORKER SUMMARY contract at the end of your output. " +
+	"Work autonomously to completion; do not wait for interactive approval for work that is within your assigned scope.\n\n"
+
 func composeSystemPrompt(v db.WorkerVersionRow) string {
 	if v.Role == "" && v.Skills == "" && v.Behavior == "" && v.AgentsMD == "" {
 		return v.SystemPrompt
@@ -1497,6 +1511,7 @@ func composeSystemPrompt(v db.WorkerVersionRow) string {
 // (the caller falls back to a bare worker prompt if the result is empty).
 func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow) string {
 	var sb strings.Builder
+	sb.WriteString(workerIdentityPreamble)
 	if worker := composeSystemPrompt(version); worker != "" {
 		fmt.Fprintf(&sb, "# Worker\n\n%s\n\n", worker)
 	}

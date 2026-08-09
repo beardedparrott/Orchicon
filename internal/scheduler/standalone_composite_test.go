@@ -39,6 +39,7 @@ func TestBuildStandaloneComposite(t *testing.T) {
 	})
 
 	for _, want := range []string{
+		"You are an autonomous worker running inside the Orchicon orchestration platform.",
 		"# Worker",
 		"Senior Engineer",
 		"# Task",
