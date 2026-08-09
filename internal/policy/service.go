@@ -127,7 +127,7 @@ func (s *Service) CreatePolicy(ctx context.Context, req *connect.Request[apiv1.C
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	if err := enqueuePolicyLifecycleEvent(ctx, ttx.Tx, domain.PolicyEventPublished, created, createdVersion); err != nil {
+	if err := enqueuePolicyLifecycleEvent(ctx, ttx.Tx, domain.PolicyEventCreated, created, createdVersion); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if err := ttx.Commit(ctx); err != nil {
