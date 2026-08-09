@@ -385,6 +385,18 @@ export class WorkItem extends Message<WorkItem> {
    */
   acceptanceReview = "";
 
+  /**
+   * sort_order is the sibling order within (parent_id): the sequence
+   * engine's derived cursor (architecture-notes/
+   * sequential-multi-workflow-runs.md §1). Nullable — only meaningful
+   * within a parent (top-level = the parent_id IS NULL group). Changed
+   * ONLY by ReorderWorkItems (explicit drag); display sort (ListWorkItems
+   * sort_by) never mutates it. NULL sorts last.
+   *
+   * @generated from field: double sort_order = 28;
+   */
+  sortOrder = 0;
+
   constructor(data?: PartialMessage<WorkItem>) {
     super();
     proto3.util.initPartial(data, this);
@@ -419,6 +431,7 @@ export class WorkItem extends Message<WorkItem> {
     { no: 24, name: "runtime_image", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 26, name: "context_files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
     { no: 27, name: "acceptance_review", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 28, name: "sort_order", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkItem {

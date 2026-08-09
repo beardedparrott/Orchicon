@@ -383,11 +383,31 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
 			return workflow.StartWorkflowDirect(ctx, pool, log, tenantID, workflowID, projectID, workItemID)
 		})
+	// Sequence engine: a scheduled parent with children and no workflow is
+	// fired through StartSequence (flip running + reset descendants + arm
+	// first child). The sequence reconciler advances the chain on child
+	// terminal transitions.
+	startWorkflowFn := func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
+		return workflow.StartWorkflowDirect(ctx, pool, log, tenantID, workflowID, projectID, workItemID)
+	}
+	sequenceRec := scheduler.NewSequenceReconciler(pool, log, startWorkflowFn)
+	scheduledRunRec.SetSequenceStarter(func(ctx context.Context, tenantID, parentID string) error {
+		return scheduler.StartSequence(ctx, pool, log, tenantID, parentID, startWorkflowFn)
+	})
 	s.rcmgr = reconciler.NewManager(pool, log)
 	s.rcmgr.Register(taskRec)
 	s.rcmgr.Register(workflowRec)
 	s.rcmgr.Register(recoveryRec)
 	s.rcmgr.Register(scheduledRunRec)
+	s.rcmgr.Register(sequenceRec)
+	// Wire the sequence notifier: when a bound child work item reaches a
+	// terminal state, advance its parent's chain immediately (the scan
+	// pass every 200ms is the safety net).
+	workflowRec.SetSequenceNotifier(func(ctx context.Context, parentID string) {
+		if s.rcmgr != nil {
+			s.rcmgr.Enqueue("sequence", parentID)
+		}
+	})
 
 	// Seed an in-process OpenCode adapter registration so the
 	// TaskReconciler can find a ready adapter for dispatch (docs/04 §6.3:

@@ -1178,3 +1178,95 @@ export class UnassignWorkerResponse extends Message<UnassignWorkerResponse> {
   }
 }
 
+/**
+ * @generated from message orchicon.api.v1.ReorderWorkItemsRequest
+ */
+export class ReorderWorkItemsRequest extends Message<ReorderWorkItemsRequest> {
+  /**
+   * @generated from field: string project_id = 1;
+   */
+  projectId = "";
+
+  /**
+   * empty = top-level siblings
+   *
+   * @generated from field: string parent_id = 2;
+   */
+  parentId = "";
+
+  /**
+   * the desired sibling order
+   *
+   * @generated from field: repeated string child_ids = 3;
+   */
+  childIds: string[] = [];
+
+  constructor(data?: PartialMessage<ReorderWorkItemsRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ReorderWorkItemsRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "parent_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "child_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ReorderWorkItemsRequest {
+    return new ReorderWorkItemsRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ReorderWorkItemsRequest {
+    return new ReorderWorkItemsRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ReorderWorkItemsRequest {
+    return new ReorderWorkItemsRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ReorderWorkItemsRequest | PlainMessage<ReorderWorkItemsRequest> | undefined, b: ReorderWorkItemsRequest | PlainMessage<ReorderWorkItemsRequest> | undefined): boolean {
+    return proto3.util.equals(ReorderWorkItemsRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ReorderWorkItemsResponse
+ */
+export class ReorderWorkItemsResponse extends Message<ReorderWorkItemsResponse> {
+  /**
+   * the reordered children, server-confirmed
+   *
+   * @generated from field: repeated orchicon.api.v1.WorkItem work_items = 1;
+   */
+  workItems: WorkItem[] = [];
+
+  constructor(data?: PartialMessage<ReorderWorkItemsResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ReorderWorkItemsResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "work_items", kind: "message", T: WorkItem, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ReorderWorkItemsResponse {
+    return new ReorderWorkItemsResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ReorderWorkItemsResponse {
+    return new ReorderWorkItemsResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ReorderWorkItemsResponse {
+    return new ReorderWorkItemsResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ReorderWorkItemsResponse | PlainMessage<ReorderWorkItemsResponse> | undefined, b: ReorderWorkItemsResponse | PlainMessage<ReorderWorkItemsResponse> | undefined): boolean {
+    return proto3.util.equals(ReorderWorkItemsResponse, a, b);
+  }
+}
+

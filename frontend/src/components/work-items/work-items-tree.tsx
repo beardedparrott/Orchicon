@@ -6,6 +6,15 @@
 // cascade-aware tri-state checkboxes, indent guides, blocked chips, and
 // file-explorer auto-expand when a filter is active.
 //
+// Drag-to-reorder (architecture-notes/sequential-multi-workflow-runs.md
+// §1): siblings within a parent can be dragged into a new chain order.
+// The drop calls `onReorder(parentId, childIds)` → ReorderWorkItems RPC →
+// sort_order is renumbered in ONE server-side transaction. The user's
+// sort/filter dropdowns never call the RPC — they only change display
+// order (AGENTS.md invariant #1). A mid-sequence drag is safe: the
+// sequence cursor is derived from sort_order at reconcile time, so the
+// drag shifts only future arming.
+//
 // Expand/collapse is persisted per project (ADR-WI-3):
 //   - No active filter: `expandedIds` (explicitly expanded; default
 //     collapsed) drives the rows.
@@ -16,7 +25,25 @@
 //     while a filter was active).
 
 import { Link } from "@tanstack/react-router";
-import { ChevronRight, SearchX } from "lucide-react";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { ChevronRight, GripVertical, SearchX } from "lucide-react";
+import { useState } from "react";
 
 import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { KindBadge, StatusPill } from "@/components/work-items/work-item-badges";
@@ -43,6 +70,8 @@ export interface WorkItemsTreeProps {
   blockState: BlockState;
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
+  /** reorders siblings under parentId ("" = top level) via the RPC */
+  onReorder: (parentId: string, childIds: string[]) => void;
   isLoading: boolean;
   error: unknown;
   hasQuery: boolean;
@@ -60,10 +89,44 @@ export function WorkItemsTree({
   blockState,
   selected,
   onToggleSelect,
+  onReorder,
   isLoading,
   error,
   hasQuery,
 }: WorkItemsTreeProps) {
+  const [activeId, setActiveId] = useState<string | null>(null);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 3 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  const itemById = new Map(treeItems.map((i) => [i.id, i]));
+
+  const handleDragStart = (event: DragStartEvent) => {
+    setActiveId(String(event.active.id));
+  };
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    setActiveId(null);
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const activeItem = itemById.get(String(active.id));
+    const overItem = itemById.get(String(over.id));
+    if (!activeItem || !overItem) return;
+    const parentId = activeItem.parentId ?? "";
+    // The drop must stay within the same sibling group.
+    if ((overItem.parentId ?? "") !== parentId) return;
+    // The rendered sibling order IS the chain order by default (the list
+    // query returns sort_order order). Compute the new order from it.
+    const siblings = treeItems.filter((i) => (i.parentId ?? "") === parentId);
+    const oldIndex = siblings.findIndex((i) => i.id === activeItem.id);
+    const newIndex = siblings.findIndex((i) => i.id === overItem.id);
+    if (oldIndex < 0 || newIndex < 0) return;
+    const next = arrayMove(siblings, oldIndex, newIndex);
+    onReorder(parentId, next.map((i) => i.id));
+  };
+
   if (isLoading) {
     return (
       <div className="space-y-2" aria-busy="true">
@@ -103,28 +166,41 @@ export function WorkItemsTree({
   const roots = treeItems.filter((i) => !i.parentId);
 
   return (
-    <div className="overflow-x-auto">
-      <div className="min-w-[640px] space-y-0.5">
-        {roots.map((item) => (
-          <TreeNode
-            key={item.id}
-            item={item}
-            childrenOf={childrenOf}
-            depth={0}
-            selected={selected}
-            onToggleSelect={onToggleSelect}
-            blockState={blockState}
-            matchIds={matchIds}
-            ancestorIds={ancestorIds}
-            filterActive={filterActive}
-            expandedIds={expandedIds}
-            onToggleExpand={onToggleExpand}
-            collapsedIds={collapsedIds}
-            onToggleCollapse={onToggleCollapse}
-          />
-        ))}
+    <DndContext
+      sensors={sensors}
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
+      onDragCancel={() => setActiveId(null)}
+    >
+      <div className="overflow-x-auto">
+        <div className="min-w-[640px] space-y-0.5">
+          <SortableContext
+            items={roots.map((i) => i.id)}
+            strategy={verticalListSortingStrategy}
+          >
+            {roots.map((item) => (
+              <TreeNode
+                key={item.id}
+                item={item}
+                childrenOf={childrenOf}
+                depth={0}
+                selected={selected}
+                onToggleSelect={onToggleSelect}
+                blockState={blockState}
+                matchIds={matchIds}
+                ancestorIds={ancestorIds}
+                filterActive={filterActive}
+                expandedIds={expandedIds}
+                onToggleExpand={onToggleExpand}
+                collapsedIds={collapsedIds}
+                onToggleCollapse={onToggleCollapse}
+                activeId={activeId}
+              />
+            ))}
+          </SortableContext>
+        </div>
       </div>
-    </div>
+    </DndContext>
   );
 }
 
@@ -142,6 +218,7 @@ function TreeNode({
   onToggleExpand,
   collapsedIds,
   onToggleCollapse,
+  activeId,
 }: {
   item: WorkItem;
   childrenOf: (parentId: string) => WorkItem[];
@@ -156,11 +233,10 @@ function TreeNode({
   onToggleExpand: (id: string) => void;
   collapsedIds: Set<string>;
   onToggleCollapse: (id: string) => void;
+  activeId: string | null;
 }) {
   const children = childrenOf(item.id);
   const hasChildren = children.length > 0;
-  const isMatch = matchIds.has(item.id);
-  const isAncestor = ancestorIds.has(item.id);
   // No active filter: the persisted expanded set drives rows (default
   // collapsed). Active filter: rows default expanded (file-explorer
   // auto-expand so matches stay reachable), but the user can collapse a
@@ -172,7 +248,7 @@ function TreeNode({
   // "Delete N selected" would hard-delete them. The header select-all
   // also only covers matches (the page shell computes it over
   // `treeData.matches`).
-  const selectable = !(filterActive && isAncestor && !isMatch);
+  const selectable = !(filterActive && ancestorIds.has(item.id) && !matchIds.has(item.id));
 
   const subtreeState = subtreeSelectionState(
     [item.id, ...collectSubtreeIds(item.id, childrenOf)],
@@ -183,93 +259,176 @@ function TreeNode({
 
   return (
     <div>
-      <div
-        className={cn(
-          "flex items-center gap-1.5 rounded-md border border-transparent px-1.5 py-1.5 transition-colors hover:border-border hover:bg-accent/50",
-          selected.has(item.id) && "bg-accent/60",
-          filterActive && isAncestor && !isMatch && "opacity-70",
-          filterActive && isMatch && "border-border/60 bg-primary/5",
-        )}
-      >
-        {/* indent guides */}
-        {Array.from({ length: depth }, (_, i) => (
-          <span
-            key={i}
-            aria-hidden
-            className="h-6 w-[18px] shrink-0 border-l border-dashed border-border/60"
-          />
-        ))}
-        <input
-          type="checkbox"
-          checked={checked}
-          disabled={!selectable}
-          ref={(el) => {
-            if (el) el.indeterminate = triState;
-          }}
-          onChange={() => onToggleSelect(item.id)}
-          className={cn(
-            "h-4 w-4 shrink-0 rounded border-input",
-            selectable ? "cursor-pointer" : "cursor-not-allowed opacity-50",
-          )}
-          aria-label={
-            selectable
-              ? `Select ${item.title}${hasChildren ? " and its descendants" : ""}`
-              : `Select ${item.title} (filtered out — not selectable)`
-          }
-        />
-        {hasChildren ? (
-          <button
-            type="button"
-            onClick={() =>
-              filterActive ? onToggleCollapse(item.id) : onToggleExpand(item.id)
-            }
-            aria-expanded={expanded}
-            aria-label={expanded ? `Collapse ${item.title}` : `Expand ${item.title}`}
-            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <ChevronRight
-              className={cn("h-3.5 w-3.5 transition-transform motion-reduce:transition-none", expanded && "rotate-90")}
-            />
-          </button>
-        ) : (
-          <span className="w-5 shrink-0" />
-        )}
-        <KindBadge kind={item.kind} className="hidden sm:inline-flex" />
-        <Link
-          to="/work-items/$id"
-          params={{ id: item.id }}
-          className="min-w-0 flex-1 truncate text-sm font-medium text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+      <SortableTreeRow
+        item={item}
+        depth={depth}
+        selected={selected.has(item.id)}
+        onToggleSelect={onToggleSelect}
+        selectable={selectable}
+        checked={checked}
+        triState={triState}
+        blockState={blockState}
+        matchIds={matchIds}
+        ancestorIds={ancestorIds}
+        filterActive={filterActive}
+        hasChildren={hasChildren}
+        expanded={expanded}
+        onToggleExpand={() =>
+          filterActive ? onToggleCollapse(item.id) : onToggleExpand(item.id)
+        }
+        isActive={activeId === item.id}
+      />
+      {expanded && (
+        <SortableContext
+          items={children.map((c) => c.id)}
+          strategy={verticalListSortingStrategy}
         >
-          {item.title}
-        </Link>
-        <span className="flex shrink-0 items-center gap-1.5">
-          <BlockedChip
-            blockedBy={blockState.blockedBy}
-            id={item.id}
-            depsCount={depsCountOf(item.id, blockState)}
+          {children.map((child) => (
+            <TreeNode
+              key={child.id}
+              item={child}
+              childrenOf={childrenOf}
+              depth={depth + 1}
+              selected={selected}
+              onToggleSelect={onToggleSelect}
+              blockState={blockState}
+              matchIds={matchIds}
+              ancestorIds={ancestorIds}
+              filterActive={filterActive}
+              expandedIds={expandedIds}
+              onToggleExpand={onToggleExpand}
+              collapsedIds={collapsedIds}
+              onToggleCollapse={onToggleCollapse}
+              activeId={activeId}
+            />
+          ))}
+        </SortableContext>
+      )}
+    </div>
+  );
+}
+
+// The sortable row: wraps the row chrome with dnd-kit so siblings can be
+// dragged into a new chain order (the RPC call lives in the page shell).
+function SortableTreeRow({
+  item,
+  depth,
+  selected,
+  onToggleSelect,
+  selectable,
+  checked,
+  triState,
+  blockState,
+  matchIds,
+  ancestorIds,
+  filterActive,
+  hasChildren,
+  expanded,
+  onToggleExpand,
+  isActive,
+}: {
+  item: WorkItem;
+  depth: number;
+  selected: boolean;
+  onToggleSelect: (id: string) => void;
+  selectable: boolean;
+  checked: boolean;
+  triState: boolean;
+  blockState: BlockState;
+  matchIds: Set<string>;
+  ancestorIds: Set<string>;
+  filterActive: boolean;
+  hasChildren: boolean;
+  expanded: boolean;
+  onToggleExpand: () => void;
+  isActive: boolean;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: item.id, data: { parentId: item.parentId ?? "" } });
+
+  const isMatch = matchIds.has(item.id);
+  const isAncestor = ancestorIds.has(item.id);
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      {...attributes}
+      {...listeners}
+      className={cn(
+        "flex cursor-grab items-center gap-1.5 rounded-md border border-transparent px-1.5 py-1.5 transition-colors hover:border-border hover:bg-accent/50 active:cursor-grabbing",
+        selected && "bg-accent/60",
+        filterActive && isAncestor && !isMatch && "opacity-70",
+        filterActive && isMatch && "border-border/60 bg-primary/5",
+        isDragging && "z-10 opacity-50",
+        isActive && "ring-2 ring-ring",
+      )}
+      aria-roledescription="draggable"
+      aria-label={hasChildren ? `${item.title} (draggable, has children)` : `${item.title} (draggable)`}
+    >
+      {/* indent guides */}
+      {Array.from({ length: depth }, (_, i) => (
+        <span
+          key={i}
+          aria-hidden
+          className="h-6 w-[18px] shrink-0 border-l border-dashed border-border/60"
+        />
+      ))}
+      <GripVertical aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={!selectable}
+        ref={(el) => {
+          if (el) el.indeterminate = triState;
+        }}
+        onChange={() => onToggleSelect(item.id)}
+        // Stop the sortable drag listeners from hijacking the checkbox.
+        onPointerDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+        className={cn(
+          "h-4 w-4 shrink-0 rounded border-input",
+          selectable ? "cursor-pointer" : "cursor-not-allowed opacity-50",
+        )}
+        aria-label={
+          selectable
+            ? `Select ${item.title}${hasChildren ? " and its descendants" : ""}`
+            : `Select ${item.title} (filtered out — not selectable)`
+        }
+      />
+      {hasChildren ? (
+        <button
+          type="button"
+          onClick={onToggleExpand}
+          aria-expanded={expanded}
+          aria-label={expanded ? `Collapse ${item.title}` : `Expand ${item.title}`}
+          onPointerDown={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <ChevronRight
+            className={cn("h-3.5 w-3.5 transition-transform motion-reduce:transition-none", expanded && "rotate-90")}
           />
-          <StatusPill status={item.status} className="hidden sm:inline-flex" />
-        </span>
-      </div>
-      {expanded &&
-        children.map((child) => (
-          <TreeNode
-            key={child.id}
-            item={child}
-            childrenOf={childrenOf}
-            depth={depth + 1}
-            selected={selected}
-            onToggleSelect={onToggleSelect}
-            blockState={blockState}
-            matchIds={matchIds}
-            ancestorIds={ancestorIds}
-            filterActive={filterActive}
-            expandedIds={expandedIds}
-            onToggleExpand={onToggleExpand}
-            collapsedIds={collapsedIds}
-            onToggleCollapse={onToggleCollapse}
-          />
-        ))}
+        </button>
+      ) : (
+        <span className="w-5 shrink-0" />
+      )}
+      <KindBadge kind={item.kind} className="hidden sm:inline-flex" />
+      <Link
+        to="/work-items/$id"
+        params={{ id: item.id }}
+        className="min-w-0 flex-1 truncate text-sm font-medium text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {item.title}
+      </Link>
+      <span className="flex shrink-0 items-center gap-1.5">
+        <BlockedChip
+          blockedBy={blockState.blockedBy}
+          id={item.id}
+          depsCount={depsCountOf(item.id, blockState)}
+        />
+        <StatusPill status={item.status} className="hidden sm:inline-flex" />
+      </span>
     </div>
   );
 }

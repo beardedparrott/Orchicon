@@ -55,6 +55,8 @@ import {
 } from "@/components/work-items/work-item-meta";
 import type { BlockState } from "@/components/work-items/dependency-utils";
 import { blockingTitles } from "@/components/work-items/dependency-utils";
+import { computeSequencePositions } from "@/components/work-items/sequence-utils";
+import { PositionBadge } from "@/components/work-items/work-item-badges";
 import { WorkItemCard } from "@/components/work-items/work-item-card";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -142,6 +144,9 @@ export function WorkItemsBoard({
   );
 
   const itemsById = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
+  // Chain positions (sort_order rank within parent) so every card with a
+  // parent shows its true sequence position regardless of display sort.
+  const positions = useMemo(() => computeSequencePositions(items), [items]);
 
   const handleDragStart = useCallback(
     (event: DragStartEvent) => {
@@ -332,6 +337,7 @@ export function WorkItemsBoard({
               collapsedIds={collapsedIds}
               onToggleCollapse={onToggleCollapse}
               dragCount={dragCount}
+              positions={positions}
             />
           );
         })}
@@ -380,6 +386,7 @@ function BoardColumn({
   collapsedIds,
   onToggleCollapse,
   dragCount,
+  positions,
 }: {
   column: { status: number; label: string };
   items: WorkItem[];
@@ -392,6 +399,7 @@ function BoardColumn({
   collapsedIds: Set<string>;
   onToggleCollapse: (id: string) => void;
   dragCount: number;
+  positions: Map<string, number>;
 }) {
   const isReadOnly = MANUALLY_UNMOVABLE_STATUSES.has(column.status);
 
@@ -462,6 +470,7 @@ function BoardColumn({
               collapsedIds={collapsedIds}
               onToggleCollapse={onToggleCollapse}
               dragCount={dragCount}
+              positions={positions}
             />
           ))}
         </SortableContext>
@@ -492,6 +501,7 @@ function HierarchyNodeComponent({
   collapsedIds,
   onToggleCollapse,
   dragCount,
+  positions,
   depth = 0,
 }: {
   node: HierarchyNode;
@@ -504,6 +514,7 @@ function HierarchyNodeComponent({
   collapsedIds: Set<string>;
   onToggleCollapse: (id: string) => void;
   dragCount: number;
+  positions: Map<string, number>;
   depth?: number;
 }) {
   // Persisted per-project collapse state; default EXPANDED (ADR-WI-3) so
@@ -525,6 +536,7 @@ function HierarchyNodeComponent({
           expanded={expanded}
           onToggleExpand={() => onToggleCollapse(node.item.id)}
           multiDragCount={dragCount}
+          position={positions.get(node.item.id)}
         />
       </div>
       {expanded &&
@@ -542,6 +554,7 @@ function HierarchyNodeComponent({
             collapsedIds={collapsedIds}
             onToggleCollapse={onToggleCollapse}
             dragCount={dragCount}
+            positions={positions}
             depth={depth + 1}
           />
         ))}
@@ -564,6 +577,7 @@ function SortableCard({
   expanded = true,
   onToggleExpand,
   multiDragCount = 0,
+  position,
 }: {
   item: WorkItem;
   selected: Set<string>;
@@ -576,6 +590,8 @@ function SortableCard({
   onToggleExpand?: () => void;
   /** >1 when the drag carries the whole selection (ADR-WI-4) */
   multiDragCount?: number;
+  /** chain position badge (#1, #2, …) — true sequence order */
+  position?: number;
 }) {
   const {
     attributes,
@@ -612,6 +628,7 @@ function SortableCard({
         selected={selected.has(item.id)}
         onToggleSelect={onToggleSelect}
         blockedBy={blockState.blockedBy}
+        badge={position ? <PositionBadge position={position} /> : undefined}
         depsCount={
           (blockState.blocks.get(item.id)?.length ?? 0) +
           (blockState.blockedBy.get(item.id)?.length ?? 0)

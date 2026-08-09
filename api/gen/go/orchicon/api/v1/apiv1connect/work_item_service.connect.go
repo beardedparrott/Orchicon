@@ -75,6 +75,9 @@ const (
 	// WorkItemServiceUnassignWorkerProcedure is the fully-qualified name of the WorkItemService's
 	// UnassignWorker RPC.
 	WorkItemServiceUnassignWorkerProcedure = "/orchicon.api.v1.WorkItemService/UnassignWorker"
+	// WorkItemServiceReorderWorkItemsProcedure is the fully-qualified name of the WorkItemService's
+	// ReorderWorkItems RPC.
+	WorkItemServiceReorderWorkItemsProcedure = "/orchicon.api.v1.WorkItemService/ReorderWorkItems"
 )
 
 // WorkItemServiceClient is a client for the orchicon.api.v1.WorkItemService service.
@@ -110,6 +113,13 @@ type WorkItemServiceClient interface {
 	AssignWorker(context.Context, *connect.Request[v1.AssignWorkerRequest]) (*connect.Response[v1.AssignWorkerResponse], error)
 	// UnassignWorker removes the worker binding from a Task/Subtask.
 	UnassignWorker(context.Context, *connect.Request[v1.UnassignWorkerRequest]) (*connect.Response[v1.UnassignWorkerResponse], error)
+	// ReorderWorkItems renumbers sort_order for the siblings under parent_id
+	// (empty = top level) to the given order, in one transaction. Display
+	// sort (ListWorkItems sort_by) never mutates sort_order — only this RPC
+	// does. Safe to call while a sequence is running: the sequence cursor is
+	// derived from sort_order at reconcile time, so a mid-run drag shifts
+	// only future arming.
+	ReorderWorkItems(context.Context, *connect.Request[v1.ReorderWorkItemsRequest]) (*connect.Response[v1.ReorderWorkItemsResponse], error)
 }
 
 // NewWorkItemServiceClient constructs a client for the orchicon.api.v1.WorkItemService service. By
@@ -189,6 +199,12 @@ func NewWorkItemServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workItemServiceMethods.ByName("UnassignWorker")),
 			connect.WithClientOptions(opts...),
 		),
+		reorderWorkItems: connect.NewClient[v1.ReorderWorkItemsRequest, v1.ReorderWorkItemsResponse](
+			httpClient,
+			baseURL+WorkItemServiceReorderWorkItemsProcedure,
+			connect.WithSchema(workItemServiceMethods.ByName("ReorderWorkItems")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -205,6 +221,7 @@ type workItemServiceClient struct {
 	getDependencyGraph *connect.Client[v1.GetDependencyGraphRequest, v1.GetDependencyGraphResponse]
 	assignWorker       *connect.Client[v1.AssignWorkerRequest, v1.AssignWorkerResponse]
 	unassignWorker     *connect.Client[v1.UnassignWorkerRequest, v1.UnassignWorkerResponse]
+	reorderWorkItems   *connect.Client[v1.ReorderWorkItemsRequest, v1.ReorderWorkItemsResponse]
 }
 
 // CreateWorkItem calls orchicon.api.v1.WorkItemService.CreateWorkItem.
@@ -262,6 +279,11 @@ func (c *workItemServiceClient) UnassignWorker(ctx context.Context, req *connect
 	return c.unassignWorker.CallUnary(ctx, req)
 }
 
+// ReorderWorkItems calls orchicon.api.v1.WorkItemService.ReorderWorkItems.
+func (c *workItemServiceClient) ReorderWorkItems(ctx context.Context, req *connect.Request[v1.ReorderWorkItemsRequest]) (*connect.Response[v1.ReorderWorkItemsResponse], error) {
+	return c.reorderWorkItems.CallUnary(ctx, req)
+}
+
 // WorkItemServiceHandler is an implementation of the orchicon.api.v1.WorkItemService service.
 type WorkItemServiceHandler interface {
 	// CreateWorkItem creates a new work item (epic/feature/task/subtask)
@@ -295,6 +317,13 @@ type WorkItemServiceHandler interface {
 	AssignWorker(context.Context, *connect.Request[v1.AssignWorkerRequest]) (*connect.Response[v1.AssignWorkerResponse], error)
 	// UnassignWorker removes the worker binding from a Task/Subtask.
 	UnassignWorker(context.Context, *connect.Request[v1.UnassignWorkerRequest]) (*connect.Response[v1.UnassignWorkerResponse], error)
+	// ReorderWorkItems renumbers sort_order for the siblings under parent_id
+	// (empty = top level) to the given order, in one transaction. Display
+	// sort (ListWorkItems sort_by) never mutates sort_order — only this RPC
+	// does. Safe to call while a sequence is running: the sequence cursor is
+	// derived from sort_order at reconcile time, so a mid-run drag shifts
+	// only future arming.
+	ReorderWorkItems(context.Context, *connect.Request[v1.ReorderWorkItemsRequest]) (*connect.Response[v1.ReorderWorkItemsResponse], error)
 }
 
 // NewWorkItemServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -370,6 +399,12 @@ func NewWorkItemServiceHandler(svc WorkItemServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workItemServiceMethods.ByName("UnassignWorker")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workItemServiceReorderWorkItemsHandler := connect.NewUnaryHandler(
+		WorkItemServiceReorderWorkItemsProcedure,
+		svc.ReorderWorkItems,
+		connect.WithSchema(workItemServiceMethods.ByName("ReorderWorkItems")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/orchicon.api.v1.WorkItemService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case WorkItemServiceCreateWorkItemProcedure:
@@ -394,6 +429,8 @@ func NewWorkItemServiceHandler(svc WorkItemServiceHandler, opts ...connect.Handl
 			workItemServiceAssignWorkerHandler.ServeHTTP(w, r)
 		case WorkItemServiceUnassignWorkerProcedure:
 			workItemServiceUnassignWorkerHandler.ServeHTTP(w, r)
+		case WorkItemServiceReorderWorkItemsProcedure:
+			workItemServiceReorderWorkItemsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -445,4 +482,8 @@ func (UnimplementedWorkItemServiceHandler) AssignWorker(context.Context, *connec
 
 func (UnimplementedWorkItemServiceHandler) UnassignWorker(context.Context, *connect.Request[v1.UnassignWorkerRequest]) (*connect.Response[v1.UnassignWorkerResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkItemService.UnassignWorker is not implemented"))
+}
+
+func (UnimplementedWorkItemServiceHandler) ReorderWorkItems(context.Context, *connect.Request[v1.ReorderWorkItemsRequest]) (*connect.Response[v1.ReorderWorkItemsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkItemService.ReorderWorkItems is not implemented"))
 }

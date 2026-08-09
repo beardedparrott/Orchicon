@@ -498,6 +498,29 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		status := domain.WorkItemScheduled
 		update.Status = &status
 	}
+	// Schedule-time validation (architecture-notes §3): scheduling or
+	// auto-starting a workflow-less parent WITH children runs a sequence —
+	// the full subtree must be executable (every leaf bound to a runnable
+	// workflow, no worker-assigned one-shots). Runs before commit so a
+	// rejection leaves nothing scheduled or started. Shared with the
+	// Connect path so the two surfaces cannot drift.
+	effWorkflow := ""
+	if current.WorkflowID != nil {
+		effWorkflow = *current.WorkflowID
+	}
+	if update.WorkflowID != nil {
+		effWorkflow = *update.WorkflowID
+	}
+	if effWorkflow == "" && (scheduledStartAt != nil || (params.AutoStartWorkflow != nil && *params.AutoStartWorkflow)) {
+		// Validate against the POST-update workflow binding: an update that
+		// unbinds a previously-bound workflow turns a parent-with-children
+		// into a sequence, which must be validated too.
+		effItem := current
+		effItem.WorkflowID = nil
+		if err := workitem.ValidateSequenceSchedule(ctx, ttx.Tx, tenantID, effItem); err != nil {
+			return nil, err
+		}
+	}
 	updated, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, params.ID, current.Version, update)
 	if err != nil {
 		return nil, err
@@ -722,6 +745,14 @@ func toolScheduleWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessa
 	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, params.ID)
 	if err != nil {
 		return nil, err
+	}
+	// A workflow-less parent with children is a sequence — validate the
+	// subtree before scheduling it (architecture-notes §3). Shared with
+	// the Connect path so the two surfaces cannot drift.
+	if current.WorkflowID == nil || *current.WorkflowID == "" {
+		if err := workitem.ValidateSequenceSchedule(ctx, ttx.Tx, tenantID, current); err != nil {
+			return nil, err
+		}
 	}
 	update := db.UpdateWorkItemFields{}
 	status := params.Status

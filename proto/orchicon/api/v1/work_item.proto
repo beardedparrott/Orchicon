@@ -85,6 +85,13 @@ message WorkItem {
   // Editable by humans via UpdateWorkItem so auto-generated reviews can be
   // corrected/extended by a reviewer.
   string acceptance_review = 27;
+  // sort_order is the sibling order within (parent_id): the sequence
+  // engine's derived cursor (architecture-notes/
+  // sequential-multi-workflow-runs.md §1). Nullable — only meaningful
+  // within a parent (top-level = the parent_id IS NULL group). Changed
+  // ONLY by ReorderWorkItems (explicit drag); display sort (ListWorkItems
+  // sort_by) never mutates it. NULL sorts last.
+  double sort_order = 28;
 }
 
 // WorkItemStatus — schedulable kinds follow:

@@ -13,7 +13,7 @@
 import { createRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { useBatchDeleteWorkItems, useGetDependencyGraph, useListWorkItems } from "@/api/workItems";
+import { useBatchDeleteWorkItems, useGetDependencyGraph, useListWorkItems, useReorderWorkItems } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
 import { Button } from "@/components/ui/button";
 import {
@@ -79,6 +79,10 @@ function WorkItemsPage() {
   const hasProjects = projects && projects.length > 0;
   const batchDelete = useBatchDeleteWorkItems();
   const { moveItems, isPending: movePending } = useBatchMoveWorkItems(projectId);
+  const reorder = useReorderWorkItems(projectId);
+  const handleReorder = (parentId: string, childIds: string[]) => {
+    reorder.mutate({ parentId, childIds });
+  };
 
   // Server state (design §3): list + DAG, both auto-refreshed. The shell
   // owns the queries so the filter bar's select-all/count and the shared
@@ -275,6 +279,7 @@ function WorkItemsPage() {
                 blockState={blockState}
                 selected={selected}
                 onToggleSelect={toggle}
+                onReorder={handleReorder}
                 isLoading={isLoading}
                 error={error}
                 hasQuery={hasQuery}

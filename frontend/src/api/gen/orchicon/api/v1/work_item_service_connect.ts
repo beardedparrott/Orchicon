@@ -12,7 +12,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AddDependencyRequest, AddDependencyResponse, AssignWorkerRequest, AssignWorkerResponse, CreateWorkItemRequest, CreateWorkItemResponse, DeleteWorkItemRequest, DeleteWorkItemResponse, GetDependencyGraphRequest, GetDependencyGraphResponse, GetWorkItemRequest, GetWorkItemResponse, HardDeleteWorkItemRequest, HardDeleteWorkItemResponse, ListWorkItemsRequest, ListWorkItemsResponse, RemoveDependencyRequest, RemoveDependencyResponse, UnassignWorkerRequest, UnassignWorkerResponse, UpdateWorkItemRequest, UpdateWorkItemResponse } from "./work_item_service_pb.js";
+import { AddDependencyRequest, AddDependencyResponse, AssignWorkerRequest, AssignWorkerResponse, CreateWorkItemRequest, CreateWorkItemResponse, DeleteWorkItemRequest, DeleteWorkItemResponse, GetDependencyGraphRequest, GetDependencyGraphResponse, GetWorkItemRequest, GetWorkItemResponse, HardDeleteWorkItemRequest, HardDeleteWorkItemResponse, ListWorkItemsRequest, ListWorkItemsResponse, RemoveDependencyRequest, RemoveDependencyResponse, ReorderWorkItemsRequest, ReorderWorkItemsResponse, UnassignWorkerRequest, UnassignWorkerResponse, UpdateWorkItemRequest, UpdateWorkItemResponse } from "./work_item_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -149,6 +149,22 @@ export const WorkItemService = {
       name: "UnassignWorker",
       I: UnassignWorkerRequest,
       O: UnassignWorkerResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ReorderWorkItems renumbers sort_order for the siblings under parent_id
+     * (empty = top level) to the given order, in one transaction. Display
+     * sort (ListWorkItems sort_by) never mutates sort_order — only this RPC
+     * does. Safe to call while a sequence is running: the sequence cursor is
+     * derived from sort_order at reconcile time, so a mid-run drag shifts
+     * only future arming.
+     *
+     * @generated from rpc orchicon.api.v1.WorkItemService.ReorderWorkItems
+     */
+    reorderWorkItems: {
+      name: "ReorderWorkItems",
+      I: ReorderWorkItemsRequest,
+      O: ReorderWorkItemsResponse,
       kind: MethodKind.Unary,
     },
   }

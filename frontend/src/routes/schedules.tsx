@@ -51,7 +51,11 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { KindBadge, KindDot, StatusPill } from "@/components/work-items/work-item-badges";
+import { KindBadge, KindDot, StatusPill, MultiWorkflowChip, PositionBadge } from "@/components/work-items/work-item-badges";
+import {
+  computeSequencePositions,
+  sequenceParentIds,
+} from "@/components/work-items/sequence-utils";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -77,7 +81,9 @@ const TERMINAL_STATUSES = new Set([6, 7, 8]);
 // to an in-flight run (standalone dispatches use assigned), so the
 // predicate captures exactly "currently running workflows" — whether or
 // not the item carried a scheduled start. Disjoint from TERMINAL_STATUSES
-// and from SCHEDULED.
+// and from SCHEDULED. A SEQUENCE parent (children + no bound workflow)
+// has no workflow_run_id, so the Running predicate is extended separately
+// (isSequenceRunningParent).
 const ACTIVE_RUNNING_STATUSES = new Set([4, 5, 9]);
 
 // Schedulable kinds: Task, Subtask, and the recovery kinds. Epics and
@@ -411,6 +417,10 @@ function UpcomingView({
     return sortOrder === "asc" ? sorted : sorted.reverse();
   }, [scheduled, kindFilter, sortOrder]);
 
+  // A scheduled item is a sequence parent when it has children and no
+  // bound workflow — its own run fans out to per-child workflows.
+  const parentIds = useMemo(() => sequenceParentIds(scheduled ?? []), [scheduled]);
+
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
   }
@@ -466,6 +476,7 @@ function UpcomingView({
           projects={projects}
           selected={selected}
           onToggleSelect={onToggleSelect}
+          parentIds={parentIds}
         />
       ))}
     </div>
@@ -479,6 +490,7 @@ function AgendaGroup({
   projects,
   selected,
   onToggleSelect,
+  parentIds,
 }: {
   group: { key: string; label: string; items: WorkItemProto[] };
   isLastGroup: boolean;
@@ -486,6 +498,7 @@ function AgendaGroup({
   projects?: Project[];
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
+  parentIds: Set<string>;
 }) {
   return (
     <section aria-labelledby={group.key}>
@@ -528,6 +541,7 @@ function AgendaGroup({
                   projects={projects}
                   selected={selected.has(item.id)}
                   onToggleSelect={onToggleSelect}
+                  isSequenceParent={parentIds.has(item.id) && !item.workflowId}
                 />
               </div>
             </li>
@@ -544,12 +558,14 @@ function ScheduleCard({
   projects,
   selected,
   onToggleSelect,
+  isSequenceParent,
 }: {
   item: WorkItemProto;
   now: number;
   projects?: Project[];
   selected: boolean;
   onToggleSelect: (id: string) => void;
+  isSequenceParent: boolean;
 }) {
   const projectName = projects?.find((p) => p.id === item.projectId)?.name;
   const scheduledAt = tsToMs(item.scheduledStartAt);
@@ -577,6 +593,7 @@ function ScheduleCard({
                     {item.title}
                   </span>
                   <KindBadge kind={item.kind} />
+                  {isSequenceParent && <MultiWorkflowChip />}
                   <StatusPill status={item.status} />
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -639,21 +656,25 @@ function RunningView({
   // ticket running with workflow_run_id set but scheduled_start_at NULL,
   // so the membership must not require a scheduled start (ADR-002 in
   // architecture-notes/running-workflows-not-showing-in-schedules.md).
-  // The API accepts one status filter, so this union is derived
-  // client-side; see the header comment.
+  // SEQUENCE parents (children + no bound workflow) have no
+  // workflow_run_id, so the predicate is extended: an item in an active
+  // status that is someone's parent counts too. The API accepts one
+  // status filter, so this union is derived client-side.
+  const parentIds = useMemo(() => sequenceParentIds(allItems ?? []), [allItems]);
+  const positions = useMemo(() => computeSequencePositions(allItems ?? []), [allItems]);
   const items = useMemo(() => {
-    const base = (allItems ?? []).filter(
-      (i) =>
-        i.workflowRunId &&
-        ACTIVE_RUNNING_STATUSES.has(i.status) &&
-        (!kindFilter || i.kind === Number(kindFilter)),
-    );
+    const base = (allItems ?? []).filter((i) => {
+      const boundRun = i.workflowRunId && ACTIVE_RUNNING_STATUSES.has(i.status);
+      const sequenceParent =
+        !i.workflowRunId && ACTIVE_RUNNING_STATUSES.has(i.status) && parentIds.has(i.id);
+      return (boundRun || sequenceParent) && (!kindFilter || i.kind === Number(kindFilter));
+    });
     const sorted = [...base].sort(
       (a, b) =>
         runningStartedAt(a) - runningStartedAt(b),
     );
     return sortOrder === "asc" ? sorted : sorted.reverse();
-  }, [allItems, kindFilter, sortOrder]);
+  }, [allItems, kindFilter, sortOrder, parentIds]);
 
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
@@ -722,6 +743,9 @@ function RunningView({
                 projects={projects}
                 selected={selected.has(item.id)}
                 onToggleSelect={onToggleSelect}
+                isSequenceParent={parentIds.has(item.id) && !item.workflowId}
+                position={positions.get(item.id)}
+                isSequenceChild={!!item.parentId}
               />
             </div>
           </li>
@@ -736,11 +760,17 @@ function RunningCard({
   projects,
   selected,
   onToggleSelect,
+  isSequenceParent,
+  position,
+  isSequenceChild,
 }: {
   item: WorkItemProto;
   projects?: Project[];
   selected: boolean;
   onToggleSelect: (id: string) => void;
+  isSequenceParent: boolean;
+  position?: number;
+  isSequenceChild: boolean;
 }) {
   const projectName = projects?.find((p) => p.id === item.projectId)?.name;
   const startedAt = runningStartedAt(item);
@@ -768,6 +798,8 @@ function RunningCard({
                     {item.title}
                   </span>
                   <KindBadge kind={item.kind} />
+                  {(isSequenceParent || isSequenceChild) && <MultiWorkflowChip />}
+                  {isSequenceChild && position ? <PositionBadge position={position} /> : null}
                   <StatusPill status={item.status} />
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -780,7 +812,7 @@ function RunningCard({
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:shrink-0">
-              <WorkflowChip workflowId={item.workflowId} />
+              {!isSequenceParent && <WorkflowChip workflowId={item.workflowId} />}
               {item.workflowId && item.workflowRunId && (
                 <RunChip
                   workflowId={item.workflowId}
