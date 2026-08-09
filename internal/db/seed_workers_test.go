@@ -302,7 +302,7 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 	}
 	if _, err := ttx.Exec(ctx,
 		`UPDATE worker_versions
-		    SET agents_md = replace(agents_md, 'orchicon.safety=v11', 'orchicon.safety=v0')
+		    SET agents_md = replace(agents_md, 'orchicon.safety=v12', 'orchicon.safety=v0')
 		  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`, userID); err != nil {
 		t.Fatalf("stale marker: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 		userID).Scan(&agents); err != nil {
 		t.Fatalf("query adopted agents: %v", err)
 	}
-	if !strings.Contains(agents, "orchicon.safety=v11") {
+	if !strings.Contains(agents, "orchicon.safety=v12") {
 		t.Errorf("adopted worker should have been rolled forward to the current marker, got %q", agents[len(agents)-40:])
 	}
 }
@@ -363,5 +363,33 @@ func TestSeedRecreatesUISlugOwner(t *testing.T) {
 	}
 	if !strings.Contains(agents, "Branch off `develop`") {
 		t.Errorf("UI worker agents_md should carry the develop-first git workflow")
+	}
+}
+
+// TestSeedCannedWorkersCarryDevOnlyGuard: every canned worker's agents_md
+// must carry the DEV-ONLY instruction (never touch the PROD instance), the
+// safety marker at the current version, and the develop-first git workflow.
+func TestSeedCannedWorkersCarryDevOnlyGuard(t *testing.T) {
+	pool := seedTestPool(t)
+	ctx := context.Background()
+	const cannedID = "w_se_senior_software_engineer"
+
+	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	var agents string
+	if err := pool.QueryRow(ctx,
+		`SELECT agents_md FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+		cannedID).Scan(&agents); err != nil {
+		t.Fatalf("query canned agents: %v", err)
+	}
+	if !strings.Contains(agents, "DEV-ONLY") {
+		t.Errorf("canned worker must carry the DEV-ONLY prod guard")
+	}
+	if !strings.Contains(agents, "orchicon-cnt-prod") || !strings.Contains(agents, "orchicon-cnt-dev") {
+		t.Errorf("DEV-ONLY guard must name both instances so the rule is unambiguous")
+	}
+	if !strings.Contains(agents, "orchicon.safety=v12") {
+		t.Errorf("canned worker must carry the current safety marker (orchicon.safety=v12)")
 	}
 }
