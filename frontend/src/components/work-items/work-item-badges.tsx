@@ -87,3 +87,49 @@ export function KindDot({ kind, className }: { kind: number; className?: string 
     />
   );
 }
+
+/**
+ * "multi-workflow" chip — the color-coded label shown on a sequence parent
+ * (a work item with children running sequentially, each with its own
+ * workflow) and its children (architecture-notes/
+ * sequential-multi-workflow-runs.md §4). Indigo so it reads distinct from
+ * the status pills / kind badges.
+ */
+export function MultiWorkflowChip({
+  label = "multi-workflow",
+  className,
+}: {
+  label?: string;
+  className?: string;
+}) {
+  const isDark = useDarkPalette();
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+        isDark ? "bg-indigo-500/20 text-indigo-300" : "bg-indigo-500/15 text-indigo-800",
+        className,
+      )}
+    >
+      {label}
+    </span>
+  );
+}
+
+/** #N chain-order badge for a sequence child, derived from sort_order rank
+ *  within its parent — never from display order. Shows the true chain
+ *  position even when the board/tree display sort reorders the cards. */
+export function PositionBadge({ position, className }: { position: number; className?: string }) {
+  return (
+    <span
+      aria-label={`Chain position ${position}`}
+      title={`Chain position ${position}`}
+      className={cn(
+        "inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full border border-indigo-500/40 px-1 text-[10px] font-bold tabular-nums text-indigo-600",
+        className,
+      )}
+    >
+      #{position}
+    </span>
+  );
+}

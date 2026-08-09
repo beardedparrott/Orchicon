@@ -97,6 +97,7 @@ export function WorkItemCard({
   depsCount = 0,
   moving = false,
   actions,
+  badge,
 }: {
   item: WorkItem;
   selected: boolean;
@@ -107,6 +108,8 @@ export function WorkItemCard({
   moving?: boolean;
   /** optional trailing controls (e.g. the board's "Move to…" menu) */
   actions?: ReactNode;
+  /** optional leading chip next to the kind badge (e.g. chain position) */
+  badge?: ReactNode;
 }) {
   const meta = kindMeta(item.kind);
   const priority = priorityLabel(item.priority);
@@ -136,6 +139,7 @@ export function WorkItemCard({
           aria-label={`Select ${item.title}`}
         />
         <KindBadge kind={item.kind} />
+        {badge}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           <BlockedChip blockedBy={blockedBy} id={item.id} depsCount={depsCount} />
           {moving ? (

@@ -31,6 +31,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/recovery"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/runtimeimage"
+	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/settings"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
@@ -122,6 +123,15 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	workItemSvc := workitem.New(deps.Pool, deps.Log)
 	workItemSvc.SetStartWorkflowStarter(func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
 		return workflow.StartWorkflowDirect(ctx, deps.Pool, deps.Log, tenantID, workflowID, projectID, workItemID)
+	})
+	// Sequence auto-start (run-instant on a parent with children): fire
+	// the chain through the sequence engine. Validation of the subtree
+	// runs in the handler before this is invoked.
+	workItemSvc.SetStartSequenceStarter(func(ctx context.Context, tenantID, parentID string) error {
+		return scheduler.StartSequence(ctx, deps.Pool, deps.Log, tenantID, parentID,
+			func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
+				return workflow.StartWorkflowDirect(ctx, deps.Pool, deps.Log, tenantID, workflowID, projectID, workItemID)
+			})
 	})
 	if deps.RuntimeClient != nil {
 		workItemSvc.SetRuntimeImageResolver(func(ctx context.Context) string {

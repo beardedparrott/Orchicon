@@ -262,3 +262,27 @@ export function useUnassignWorker(projectId: string) {
     },
   });
 }
+
+// useReorderWorkItems renumbers sort_order for the siblings under a parent
+// (empty parentId = top level) to the given order, in one server-side
+// transaction. Only the tree drag calls it — display sort/filter controls
+// never touch sort_order (AGENTS.md invariant #1).
+export function useReorderWorkItems(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { parentId: string; childIds: string[] }) => {
+      const res = await workItemClient.reorderWorkItems({
+        projectId,
+        parentId: input.parentId,
+        childIds: input.childIds,
+      });
+      return res.workItems as WorkItem[];
+    },
+    onSuccess: (items) => {
+      qc.invalidateQueries({ queryKey: workItemKeys.list(projectId) });
+      if (items.length > 0) {
+        qc.invalidateQueries({ queryKey: workItemKeys.detail(items[0].id) });
+      }
+    },
+  });
+}

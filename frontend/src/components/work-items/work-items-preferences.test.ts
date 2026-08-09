@@ -53,7 +53,7 @@ describe("work-items preferences (localStorage envelopes)", () => {
     expect(loadViewPreference()).toBe("board");
   });
 
-  it("filters default to every status/kind selected with created_at desc sort", () => {
+  it("filters default to every status/kind selected with chain-order sort", () => {
     const f = loadFiltersPreference("proj-1");
     expect(f).toEqual(DEFAULT_FILTERS);
     // Default = "show everything": every filterable kind/status selected.
@@ -61,6 +61,11 @@ describe("work-items preferences (localStorage envelopes)", () => {
     expect(f.kinds).toContain(WorkItemKind.RECOVERY_STOP);
     expect(f.statuses).toContain(WorkItemStatus.PENDING);
     expect(f.statuses).toContain(WorkItemStatus.CHECKPOINTING);
+    // Default display sort is CHAIN ORDER (empty sort_by + ascending) so
+    // the tree/board default to sort_order, never an explicit created_at
+    // sort that would disable the server's chain-order default.
+    expect(f.sortBy).toBe("");
+    expect(f.sortOrder).toBe("asc");
   });
 
   it("filters round-trip per project without cross-talk", () => {
@@ -135,6 +140,24 @@ describe("work-items preferences (localStorage envelopes)", () => {
       JSON.stringify({ v: 0, view: "tree" }),
     );
     expect(loadViewPreference()).toBe("board");
+  });
+
+  it("v2 envelopes (created_at desc) migrate to the chain-order default", () => {
+    // VERSION 3: a stored v2 filter with an explicit created_at desc sort
+    // (which silently disabled the server's sort_order default) must fall
+    // back to the new chain-order default rather than pin the stale sort.
+    localStorage.setItem(
+      "orchicon.workItems.filters.proj-1",
+      JSON.stringify({
+        v: 2,
+        statuses: [2],
+        kinds: [3],
+        search: "stale",
+        sortBy: "created_at",
+        sortOrder: "desc",
+      }),
+    );
+    expect(loadFiltersPreference("proj-1")).toEqual(DEFAULT_FILTERS);
   });
 
   it("invalid sort values normalize to defaults", () => {

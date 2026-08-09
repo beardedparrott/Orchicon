@@ -64,6 +64,12 @@ type WorkflowReconciler struct {
 	taskDispatcher TaskDispatcher  // inline dispatch so executions appear immediately
 	recovery       RecoveryTrigger // triggers recovery on explicit `recover` steps
 	runtime        RuntimeLifecycle // per-workflow runtime container lifecycle (may be nil)
+	// sequenceNotifier is called after a bound work item reaches a terminal
+	// state AND it has a parent: the sequence engine advances the parent's
+	// chain immediately instead of waiting for its next scan tick
+	// (architecture-notes/sequential-multi-workflow-runs.md §2.2).
+	// Optional — the scan pass is the safety net.
+	sequenceNotifier func(ctx context.Context, parentID string)
 }
 
 // RuntimeLifecycle creates/reaps the per-workflow runtime container.
@@ -99,6 +105,12 @@ func (r *WorkflowReconciler) runtimeEnabled() bool {
 // runtime containers.
 func NewWorkflowReconciler(pool *db.Pool, log *slog.Logger, pe PolicyEvaluator, td TaskDispatcher, rt RecoveryTrigger, rl RuntimeLifecycle) *WorkflowReconciler {
 	return &WorkflowReconciler{pool: pool, log: log, policy: pe, taskDispatcher: td, recovery: rt, runtime: rl}
+}
+
+// SetSequenceNotifier injects the callback that advances a sequence parent
+// when one of its bound children reaches a terminal state. Optional.
+func (r *WorkflowReconciler) SetSequenceNotifier(fn func(ctx context.Context, parentID string)) {
+	r.sequenceNotifier = fn
 }
 
 // Kind returns the reconciler kind (docs/03 §2.1).
@@ -632,6 +644,10 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	allSucceeded := true
 	anyFailed := false
 	hasSteps := false
+	// terminalParent, when set, is the parent of a bound work item that
+	// reached a terminal state in this pass — the sequence engine is
+	// notified after commit so the chain advances immediately.
+	var terminalParent string
 	// Collect every active non-terminal step run so that — once anyFailed is
 	// known — ALL of them are skipped, not just the ones that happened to be
 	// iterated after the first failed step (created_at order is not
@@ -698,6 +714,11 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, fields); err != nil {
 					return fmt.Errorf("mark bound work item succeeded: %w", err)
 				}
+				// Sequence wiring: a bound child reaching terminal-success
+				// must advance its parent's chain.
+				if wi.ParentID != nil {
+					terminalParent = *wi.ParentID
+				}
 			}
 		}
 		updated, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
@@ -729,6 +750,11 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				review := r.buildAcceptanceReview(ctx, ttx.Tx, tenantID, run, stepRuns, domain.WorkflowRunFailed)
 				fields.AcceptanceReview = &review
 				_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, fields)
+				// Sequence wiring: a bound child failing halts its
+				// parent's chain.
+				if wi.ParentID != nil {
+					terminalParent = *wi.ParentID
+				}
 			}
 		}
 		// Terminate any running worker executions linked to this run.
@@ -767,6 +793,16 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 
 	if err := ttx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit: %w", err)
+	}
+	// Sequence advance: a bound child reached a terminal state and has a
+	// parent — notify the sequence engine so the parent's chain advances
+	// (or halts) immediately rather than on the next scan tick. Post-commit
+	// so the child's terminal status is visible. The notifier fires for the
+	// parent of ANY terminal bound work item; reconcileParent re-applies
+	// the sequence-parent guard (status running/failed + no bound workflow
+	// run + has children), so a non-sequence parent is a no-op there.
+	if terminalParent != "" && r.sequenceNotifier != nil {
+		r.sequenceNotifier(context.Background(), terminalParent)
 	}
 	// Recovery triggers run AFTER the transaction commits: TriggerOnFailure
 	// opens its own transaction on a separate connection, and calling it

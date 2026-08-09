@@ -1,4 +1,4 @@
-h1:7qfWbeva5XWkXdmkoyhNCpbiGf6OhPiv17ZRRTRr5Go=
+h1:FWNmrRnyiDZgjPNZ1xAsU++xnUIMqDn4qwL84ikpDCQ=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712192105_initial_schema_down.sql h1:RDSZVdJtR8DJx9HvT6WrBdEOEoJpM/46JutUdlPs5wU=
 20260712223028_add_outbox.sql h1:+idZYfVIjOHjGIluT5JM5M0dMF6L1+VmeHeGy66DLEI=
@@ -81,3 +81,4 @@ h1:7qfWbeva5XWkXdmkoyhNCpbiGf6OhPiv17ZRRTRr5Go=
 20260808104050_work_items_context_files.sql h1:L5Lcka/204JZnKw0X8/QvON/X2o3OiGYQotDhZRi4sU=
 20260808120000_work_items_acceptance_review.sql h1:9RtPmv9hqQPtZf2YItABmlMN0HCfEQTQ+T6F/HmPBk4=
 20260808120000_work_items_acceptance_review_down.sql h1:n+kdZvQIeC56EWgfmE6pITl8Ckx/OKBOFfgBh2ifA0M=
+20260809000000_work_items_sort_order.sql h1:PhteiCamgdOWK4788rg0q28SP/Fk/p6693tvOx3VNJI=

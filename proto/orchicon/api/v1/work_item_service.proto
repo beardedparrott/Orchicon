@@ -56,6 +56,14 @@ service WorkItemService {
 
   // UnassignWorker removes the worker binding from a Task/Subtask.
   rpc UnassignWorker(UnassignWorkerRequest) returns (UnassignWorkerResponse);
+
+  // ReorderWorkItems renumbers sort_order for the siblings under parent_id
+  // (empty = top level) to the given order, in one transaction. Display
+  // sort (ListWorkItems sort_by) never mutates sort_order — only this RPC
+  // does. Safe to call while a sequence is running: the sequence cursor is
+  // derived from sort_order at reconcile time, so a mid-run drag shifts
+  // only future arming.
+  rpc ReorderWorkItems(ReorderWorkItemsRequest) returns (ReorderWorkItemsResponse);
 }
 
 message CreateWorkItemRequest {
@@ -202,4 +210,14 @@ message UnassignWorkerRequest {
 
 message UnassignWorkerResponse {
   WorkItem work_item = 1;
+}
+
+message ReorderWorkItemsRequest {
+  string project_id = 1;
+  string parent_id = 2; // empty = top-level siblings
+  repeated string child_ids = 3; // the desired sibling order
+}
+
+message ReorderWorkItemsResponse {
+  repeated WorkItem work_items = 1; // the reordered children, server-confirmed
 }

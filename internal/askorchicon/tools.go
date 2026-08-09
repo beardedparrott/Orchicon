@@ -245,6 +245,18 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Required:    []string{"id"},
 		},
 		{
+			Name:        "reorder_work_items",
+			Description: "Reorder the direct children of a work item (or top-level items when parent_id is empty) within a project — the sequence chain order. Provide project_id, an optional parent_id, and child_ids in the new order. Only this reorders a sequence; display sort never mutates it.",
+			Mutating:    true,
+			Fn:          toolReorderWorkItems,
+			Properties: map[string]PropertySchema{
+				"project_id": {Type: "string", Description: "Project ID"},
+				"parent_id":  {Type: "string", Description: "Parent work item ID (empty = top level)"},
+				"child_ids":  {Type: "array", Description: "Direct child work item IDs in the new order"},
+			},
+			Required: []string{"project_id", "child_ids"},
+		},
+		{
 			Name:        "delete_work_item",
 			Description: "Soft-delete a work item by ID (status → cancelled). This is reversible via update_work_item.",
 			Mutating:    true,

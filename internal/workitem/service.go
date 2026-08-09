@@ -24,6 +24,13 @@ import (
 // Injected by the server wired to the workflow service.
 type StartWorkflowStarter func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error
 
+// StartSequenceStarter starts a sequence run for a parent work item with
+// children (architecture-notes/sequential-multi-workflow-runs.md §2.3):
+// flips the parent to running, resets every descendant to pending, and
+// arms the first child in sort_order. Injected by the server wired to the
+// sequence engine; validation of the subtree runs BEFORE it is called.
+type StartSequenceStarter func(ctx context.Context, tenantID, parentID string) error
+
 // RuntimeImageResolver resolves the base runtime image tag (or "" when no
 // daemon is configured). Injected by the server so the backend can stamp
 // the work item's runtime_image default (AGENTS.md: the default is a
@@ -40,6 +47,7 @@ type Service struct {
 	pool            *db.Pool
 	log             *slog.Logger
 	startWorkflowFn StartWorkflowStarter
+	sequenceStartFn StartSequenceStarter
 	runtimeImageFn  RuntimeImageResolver
 	apiv1connect.UnimplementedWorkItemServiceHandler
 }
@@ -55,6 +63,11 @@ func New(pool *db.Pool, log *slog.Logger) *Service {
 // SetStartWorkflowStarter injects the function to start a bound workflow run.
 // Called by the server before the reconciler starts (docs/11 §5.2).
 func (s *Service) SetStartWorkflowStarter(fn StartWorkflowStarter) { s.startWorkflowFn = fn }
+
+// SetStartSequenceStarter injects the function that starts a sequence run
+// for a parent work item with children (auto-start / run-instant path).
+// Called by the server before the reconciler starts.
+func (s *Service) SetStartSequenceStarter(fn StartSequenceStarter) { s.sequenceStartFn = fn }
 
 // SetRuntimeImageResolver injects the function that resolves the base
 // runtime image tag, used to stamp the work item's runtime_image default.
@@ -195,6 +208,15 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, mapDBError(err)
 	}
+	// Schedule-time validation (run-instant on create): if the item has
+	// children and no workflow, it is a sequence — validate the subtree
+	// before anything starts. A freshly created item has no children, so
+	// this is normally a no-op (defensive for batch parents).
+	if autoStart && scheduledStartAt == nil && workflowID == "" {
+		if err := s.validateSequenceSchedule(ctx, ttx.Tx, tenantID, created); err != nil {
+			return nil, err
+		}
+	}
 	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.created", created); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -208,6 +230,11 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		if err := s.startWorkflowFn(ctx, tenantID, workflowID, msg.ProjectId, created.ID); err != nil {
 			s.log.Warn("auto-start workflow failed", "work_item", created.ID, "workflow", workflowID, "error", err)
 		}
+	}
+	// A workflow-less parent with children is a sequence: auto-start it
+	// through the sequence engine (children keep their own workflows).
+	if workflowID == "" && scheduledStartAt == nil && autoStart {
+		s.maybeStartSequence(ctx, tenantID, created)
 	}
 
 	s.log.Info("work item created", "id", created.ID, "kind", kind, "project", msg.ProjectId)
@@ -522,6 +549,29 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		!(kindSwitchPlan != nil && kindSwitchPlan.ClearScheduledStartAt) {
 		fields.Status = strPtr(domain.WorkItemScheduled)
 	}
+	// Schedule-time validation (architecture-notes §3): scheduling or
+	// auto-starting a workflow-less parent WITH children runs a sequence —
+	// the full subtree must be executable (every leaf bound to a runnable
+	// workflow, no worker-assigned one-shots). Runs before commit so a
+	// rejection leaves nothing scheduled or started. The effective
+	// workflow is the post-update binding.
+	effWorkflow := ""
+	if current.WorkflowID != nil {
+		effWorkflow = *current.WorkflowID
+	}
+	if msg.WorkflowId != nil {
+		effWorkflow = *msg.WorkflowId
+	}
+	if effWorkflow == "" && (msg.ScheduledStartAt != nil || (msg.AutoStartWorkflow != nil && *msg.AutoStartWorkflow)) {
+		// Validate against the POST-update workflow binding: an update that
+		// unbinds a previously-bound workflow turns a parent-with-children
+		// into a sequence, which must be validated too.
+		effItem := current
+		effItem.WorkflowID = nil
+		if err := s.validateSequenceSchedule(ctx, ttx.Tx, tenantID, effItem); err != nil {
+			return nil, err
+		}
+	}
 	updated, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, msg.Id, current.Version, fields)
 	if err != nil {
 		return nil, mapDBError(err)
@@ -584,6 +634,13 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 				s.log.Warn("auto-start workflow after update failed", "work_item", updated.ID, "error", err)
 			}
 		}
+	} else if (updated.WorkflowID == nil || *updated.WorkflowID == "") &&
+		updated.ScheduledStartAt == nil && updated.AutoStartWorkflow &&
+		!(kindSwitchInFlight && !userExplicitlyAutoStarts) {
+		// A workflow-less parent with children is a sequence — auto-start
+		// it through the sequence engine (validation ran in-tx). A
+		// workflow-less leaf has nothing to run.
+		s.maybeStartSequence(ctx, tenantID, updated)
 	}
 	s.log.Info("work item updated", "id", updated.ID, "version", updated.Version)
 	// Context files changed → refresh the container mount manifest now (the
@@ -870,12 +927,12 @@ func (s *Service) UnassignWorker(ctx context.Context, req *connect.Request[apiv1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
 		RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
 			acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
-			priority, budgets, context_window, results, prompt_context, context_files, version, created_at, updated_at`
+			priority, budgets, context_window, sort_order, results, prompt_context, context_files, version, created_at, updated_at`
 	var updated db.WorkItemRow
 	err = ttx.Tx.QueryRow(ctx, q, tenantID, req.Msg.Id, current.Version).Scan(
 		&updated.ID, &updated.TenantID, &updated.ProjectID, &updated.ParentID, &updated.Kind, &updated.Title,
 		&updated.Description, &updated.AcceptanceCriteria, &updated.AcceptanceReview, &updated.Status, &updated.AssignedWorkerRef,
-		&updated.WorkflowID, &updated.Priority, &updated.Budgets, &updated.ContextWindow, &updated.Results,
+		&updated.WorkflowID, &updated.Priority, &updated.Budgets, &updated.ContextWindow, &updated.SortOrder, &updated.Results,
 		&updated.PromptContext, &updated.ContextFiles, &updated.Version, &updated.CreatedAt, &updated.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -892,6 +949,107 @@ func (s *Service) UnassignWorker(ctx context.Context, req *connect.Request[apiv1
 	}
 	s.log.Info("worker unassigned from work item", "id", updated.ID)
 	return connect.NewResponse(&apiv1.UnassignWorkerResponse{WorkItem: rowToProto(updated)}), nil
+}
+
+// ReorderWorkItems renumbers sort_order for the siblings under parent_id
+// (empty = top level) to the given order, in one transaction. Display sort
+// (ListWorkItems sort_by) never mutates sort_order — only this RPC does
+// (architecture-notes/sequential-multi-workflow-runs.md §1). Safe to call
+// while a sequence is running: the sequence cursor is derived from
+// sort_order at reconcile time, so a mid-run drag shifts only future
+// arming.
+func (s *Service) ReorderWorkItems(ctx context.Context, req *connect.Request[apiv1.ReorderWorkItemsRequest]) (*connect.Response[apiv1.ReorderWorkItemsResponse], error) {
+	msg := req.Msg
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if msg.ProjectId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id must not be empty"))
+	}
+	if len(msg.ChildIds) == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("child_ids must not be empty"))
+	}
+	seen := make(map[string]bool, len(msg.ChildIds))
+	for _, id := range msg.ChildIds {
+		if id == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("child_ids must not contain empty ids"))
+		}
+		if seen[id] {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("duplicate child id %q", id))
+		}
+		seen[id] = true
+	}
+
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	// The parent must exist (or be top level) and live in the project.
+	if msg.ParentId != "" {
+		parent, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, msg.ParentId)
+		if err != nil {
+			return nil, mapDBError(err)
+		}
+		if parent.ProjectID != msg.ProjectId {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("parent_id work item is not in the specified project"))
+		}
+	}
+	// Load the current sibling set (sort_order NULLS LAST, created_at).
+	siblings, err := db.ListSiblingsForReorder(ctx, ttx.Tx, tenantID, msg.ProjectId, msg.ParentId)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if len(siblings) == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("no siblings under the given parent"))
+	}
+	byID := make(map[string]db.WorkItemRow, len(siblings))
+	for _, sib := range siblings {
+		byID[sib.ID] = sib
+	}
+	// Every requested child must be a direct child in the same project.
+	for _, id := range msg.ChildIds {
+		if _, ok := byID[id]; !ok {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("child %q is not a direct child of the given parent in this project", id))
+		}
+	}
+	// New order = requested order first, then any unlisted siblings keep
+	// their relative position (a partial drag appends the rest).
+	ordered := make([]db.WorkItemRow, 0, len(siblings))
+	placed := make(map[string]bool, len(siblings))
+	for _, id := range msg.ChildIds {
+		ordered = append(ordered, byID[id])
+		placed[id] = true
+	}
+	for _, sib := range siblings {
+		if !placed[sib.ID] {
+			ordered = append(ordered, sib)
+		}
+	}
+	// Renumber 1..N in one transaction, emitting an outbox event per child.
+	for i, sib := range ordered {
+		order := float64(i + 1)
+		updated, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, sib.ID, sib.Version, db.UpdateWorkItemFields{
+			SortOrder: &order,
+		})
+		if err != nil {
+			return nil, mapDBError(err)
+		}
+		if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.updated", updated); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		ordered[i] = updated
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	resp := &apiv1.ReorderWorkItemsResponse{}
+	for _, sib := range ordered {
+		resp.WorkItems = append(resp.WorkItems, rowToProto(sib))
+	}
+	return connect.NewResponse(resp), nil
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -1089,6 +1247,65 @@ func mapKindSwitchError(err error) error {
 	}
 }
 
+// validateSequenceSchedule runs the schedule-time subtree validation when
+// the request schedules or auto-starts a parent work item that has
+// children and no bound workflow (a sequence). Returns nil when the item
+// is not a sequence (has a workflow, or no children) or the subtree is
+// valid; returns a rejection error otherwise (nothing starts). Runs inside
+// the caller's transaction BEFORE the mutation commits.
+func (s *Service) validateSequenceSchedule(ctx context.Context, tx pgx.Tx, tenantID string, item db.WorkItemRow) error {
+	return ValidateSequenceSchedule(ctx, tx, tenantID, item)
+}
+
+// ValidateSequenceSchedule is the shared schedule-time validation used by
+// the Connect Update path and the Ask Orchicon schedule/update tools so
+// the two surfaces cannot drift (AGENTS.md Ask-Orchicon-sync rule). It
+// returns a Connect InvalidArgument error listing the offending children,
+// or nil when the subtree is schedulable.
+func ValidateSequenceSchedule(ctx context.Context, tx pgx.Tx, tenantID string, item db.WorkItemRow) error {
+	if item.WorkflowID != nil && *item.WorkflowID != "" {
+		return nil // a workflow-bound parent is a bound run, not a sequence
+	}
+	children, err := db.ListDirectChildren(ctx, tx, tenantID, item.ID)
+	if err != nil {
+		return mapDBError(err)
+	}
+	if len(children) == 0 {
+		return nil // no children → not a sequence
+	}
+	noWorkflow, oneShot, badWorkflow, err := ValidateSequenceSubtree(ctx, tx, tenantID, item)
+	if err != nil {
+		return mapDBError(err)
+	}
+	if len(noWorkflow) == 0 && len(oneShot) == 0 && len(badWorkflow) == 0 {
+		return nil
+	}
+	return connect.NewError(connect.CodeInvalidArgument,
+		BuildSequenceValidationError(item.Title, noWorkflow, oneShot, badWorkflow))
+}
+
+// maybeStartSequence starts a sequence run for a parent with children and
+// no bound workflow after the mutation commits (auto-start / run-instant
+// path). A workflow-less leaf has nothing to run. Validation of the
+// subtree ran in-transaction before the commit.
+func (s *Service) maybeStartSequence(ctx context.Context, tenantID string, item db.WorkItemRow) {
+	if s.sequenceStartFn == nil || (item.WorkflowID != nil && *item.WorkflowID != "") {
+		return
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return
+	}
+	children, err := db.ListDirectChildren(ctx, ttx.Tx, tenantID, item.ID)
+	ttx.Rollback(ctx)
+	if err != nil || len(children) == 0 {
+		return
+	}
+	if err := s.sequenceStartFn(ctx, tenantID, item.ID); err != nil {
+		s.log.Warn("auto-start sequence failed", "parent", item.ID, "error", err)
+	}
+}
+
 func kindToProto(kind string) apiv1.WorkItemKind {
 	switch kind {
 	case domain.WorkItemKindEpic:
@@ -1200,6 +1417,9 @@ func rowToProto(w db.WorkItemRow) *apiv1.WorkItem {
 	av := w.AutoStartWorkflow
 	p.AutoStartWorkflow = &av
 	p.RuntimeImage = w.RuntimeImage
+	if w.SortOrder != nil {
+		p.SortOrder = *w.SortOrder
+	}
 	return p
 }
 

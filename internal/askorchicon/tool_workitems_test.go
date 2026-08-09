@@ -613,3 +613,107 @@ func TestUpdateWorkItemWorkflowRunIDDB(t *testing.T) {
 		t.Errorf("workflow_run_id = %q, want run_test_1", updated.WorkflowRunID)
 	}
 }
+
+// TestReorderWorkItemsToolDB verifies the reorder_work_items tool renumbers
+// sort_order for the siblings under a parent in one transaction — mirroring
+// the ReorderWorkItems RPC (architecture-notes §1). Only explicit drags
+// change sort_order; display sort never does.
+func TestReorderWorkItemsToolDB(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+	projectID := createProjectForTest(t, ctx, pool)
+	parent := createParentEpicForTest(t, ctx, pool, projectID)
+
+	a, err := callToolCreate(t, ctx, pool, map[string]any{
+		"project_id": projectID, "title": "A", "kind": "task", "parent_id": parent,
+	})
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	b, err := callToolCreate(t, ctx, pool, map[string]any{
+		"project_id": projectID, "title": "B", "kind": "task", "parent_id": parent,
+	})
+	if err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+	c, err := callToolCreate(t, ctx, pool, map[string]any{
+		"project_id": projectID, "title": "C", "kind": "task", "parent_id": parent,
+	})
+	if err != nil {
+		t.Fatalf("create C: %v", err)
+	}
+
+	// Reorder to C, A, B.
+	raw, err := json.Marshal(map[string]any{
+		"project_id": projectID,
+		"parent_id":  parent,
+		"child_ids":  []string{c.ID, a.ID, b.ID},
+	})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	if _, err := toolReorderWorkItems(ctx, pool, raw); err != nil {
+		t.Fatalf("reorder: %v", err)
+	}
+
+	ttx, err := pool.BeginTenantTx(ctx, workItemKindTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ttx.Rollback(ctx)
+	sibs, err := db.ListSiblingsForReorder(ctx, ttx.Tx, workItemKindTestTenant, projectID, parent)
+	if err != nil {
+		t.Fatalf("list siblings: %v", err)
+	}
+	got := make([]string, 0, len(sibs))
+	for _, s := range sibs {
+		got = append(got, s.ID)
+	}
+	want := []string{c.ID, a.ID, b.ID}
+	if len(got) != len(want) {
+		t.Fatalf("sibling order = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("sibling order = %v, want %v", got, want)
+		}
+	}
+}
+
+// TestReorderWorkItemsToolValidation verifies the tool rejects malformed
+// input (duplicate / unknown children) without mutating sort_order.
+func TestReorderWorkItemsToolValidation(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+	projectID := createProjectForTest(t, ctx, pool)
+	parent := createParentEpicForTest(t, ctx, pool, projectID)
+	a, err := callToolCreate(t, ctx, pool, map[string]any{
+		"project_id": projectID, "title": "A", "kind": "task", "parent_id": parent,
+	})
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		args   map[string]any
+		errMsg string
+	}{
+		{"duplicate", map[string]any{"project_id": projectID, "parent_id": parent, "child_ids": []string{a.ID, a.ID}}, "duplicate"},
+		{"unknown child", map[string]any{"project_id": projectID, "parent_id": parent, "child_ids": []string{"nope"}}, "not a direct child"},
+		{"empty", map[string]any{"project_id": projectID, "parent_id": parent, "child_ids": []string{}}, "must not be empty"},
+		{"no project", map[string]any{"parent_id": parent, "child_ids": []string{a.ID}}, "project_id is required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(tc.args)
+			if err != nil {
+				t.Fatalf("marshal args: %v", err)
+			}
+			if _, err := toolReorderWorkItems(ctx, pool, raw); err == nil {
+				t.Fatalf("reorder should have been rejected")
+			} else if !strings.Contains(err.Error(), tc.errMsg) {
+				t.Fatalf("reorder error %q does not contain %q", err.Error(), tc.errMsg)
+			}
+		})
+	}
+}
