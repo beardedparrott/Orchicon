@@ -296,8 +296,9 @@ func deriveNextChild(children []db.WorkItemRow) int {
 
 // anySiblingBlocksArming reports whether any child is in a state that
 // must resolve before the on-deck pending child may arm: still executing
-// (running/checkpointing/recovering), awaiting dispatch (assigned/ready),
-// or halted (failed/cancelled). Guards two invariants:
+// (running/checkpointing/recovering), awaiting dispatch or a scheduled
+// start (assigned/ready/scheduled), or halted (failed/cancelled). Guards
+// two invariants:
 //
 //  1. Strict sequential execution: a mid-run ReorderWorkItems can sort a
 //     pending sibling ahead of an in-flight child; arming it would start
@@ -309,13 +310,16 @@ func deriveNextChild(children []db.WorkItemRow) int {
 //     a pending child before a failed sibling must not skip the unfixed
 //     failure.
 //
-// Only terminal-success siblings are "past"; anything else still in flight
-// or halted is waited on regardless of sort_order.
+// The set mirrors the engine's in-flight/wait statuses (the on-deck
+// switch treats scheduled as "wait for the current child"). Only
+// terminal-success siblings are "past"; anything else still in flight or
+// halted is waited on regardless of sort_order.
 func anySiblingBlocksArming(children []db.WorkItemRow) bool {
 	for _, c := range children {
 		switch c.Status {
 		case domain.WorkItemRunning, domain.WorkItemCheckpointing,
 			domain.WorkItemRecovering, domain.WorkItemAssigned, domain.WorkItemReady,
+			domain.WorkItemScheduled,
 			domain.WorkItemFailed, domain.WorkItemCancelled:
 			return true
 		}
