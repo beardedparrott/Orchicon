@@ -28,7 +28,41 @@ permissions:
   packages: write
 
 jobs:
+  guard:
+    name: Guard — release only for main tags
+    runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.check.outputs.proceed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check tag is a release (reachable from main)
+        id: check
+        run: |
+          set -e
+          # Manual dispatches (from auto-release.yml, which runs with
+          # --ref main) are always legitimate releases.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Tag-push runs: only tags reachable from `main` are releases.
+          # develop carries its own bump tags (v0.1.x) so local rebuilds
+          # report the current version — those must NOT publish a release.
+          TAG="${{ github.ref_name }}"
+          if git merge-base --is-ancestor "$TAG" "refs/remotes/origin/main" 2>/dev/null; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${TAG} is reachable from main — proceeding with release."
+          else
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Tag ${TAG} is not reachable from main — this is a develop bump tag, not a release. Skipping."
+          fi
+
   build:
+    needs: guard
+    if: needs.guard.outputs.proceed == 'true'
     name: Build ${{ matrix.os }}/${{ matrix.arch }}
     runs-on: ubuntu-latest
     strategy:
@@ -110,6 +144,8 @@ jobs:
   # collector, grafana, opencode) with the orchicon binary as PID-1
   # supervisor (`orchicon container`). Tagged with the version + latest.
   container:
+    needs: guard
+    if: needs.guard.outputs.proceed == 'true'
     name: Container image
     runs-on: ubuntu-latest
     steps:
@@ -185,7 +221,8 @@ jobs:
 
   release:
     name: Create Release
-    needs: build
+    needs: [build, guard]
+    if: needs.guard.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
