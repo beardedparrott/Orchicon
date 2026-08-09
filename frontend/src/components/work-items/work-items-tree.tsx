@@ -107,11 +107,19 @@ export function WorkItemsTree({
   const itemById = new Map(treeItems.map((i) => [i.id, i]));
 
   const handleDragStart = (event: DragStartEvent) => {
+    if (hasQuery) return; // reorder only without an active filter (see below)
     setActiveId(String(event.active.id));
   };
 
   const handleDragEnd = (event: DragEndEvent) => {
     setActiveId(null);
+    // Drag-to-reorder is disabled under an active filter: treeItems then
+    // holds only the matching rows + ancestors, so the sibling set is a
+    // PARTIAL view of the true chain — dropping would reorder just the
+    // visible subset and the RPC would silently append the hidden
+    // siblings after it, corrupting the chain. Reorder requires the full
+    // sibling set, which is only visible with no filter.
+    if (hasQuery) return;
     const { active, over } = event;
     if (!over || active.id === over.id) return;
     const activeItem = itemById.get(String(active.id));
@@ -208,6 +216,7 @@ export function WorkItemsTree({
                 collapsedIds={collapsedIds}
                 onToggleCollapse={onToggleCollapse}
                 activeId={activeId}
+                dragDisabled={filterActive}
               />
             ))}
           </SortableContext>
@@ -232,6 +241,7 @@ function TreeNode({
   collapsedIds,
   onToggleCollapse,
   activeId,
+  dragDisabled,
 }: {
   item: WorkItem;
   childrenOf: (parentId: string) => WorkItem[];
@@ -247,6 +257,7 @@ function TreeNode({
   collapsedIds: Set<string>;
   onToggleCollapse: (id: string) => void;
   activeId: string | null;
+  dragDisabled: boolean;
 }) {
   const children = childrenOf(item.id);
   const hasChildren = children.length > 0;
@@ -290,6 +301,7 @@ function TreeNode({
           filterActive ? onToggleCollapse(item.id) : onToggleExpand(item.id)
         }
         isActive={activeId === item.id}
+        dragDisabled={filterActive}
       />
       {expanded && (
         <SortableContext
@@ -313,6 +325,7 @@ function TreeNode({
               collapsedIds={collapsedIds}
               onToggleCollapse={onToggleCollapse}
               activeId={activeId}
+              dragDisabled={dragDisabled}
             />
           ))}
         </SortableContext>
@@ -339,6 +352,7 @@ function SortableTreeRow({
   expanded,
   onToggleExpand,
   isActive,
+  dragDisabled,
 }: {
   item: WorkItem;
   depth: number;
@@ -355,9 +369,18 @@ function SortableTreeRow({
   expanded: boolean;
   onToggleExpand: () => void;
   isActive: boolean;
+  dragDisabled: boolean;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: item.id, data: { parentId: item.parentId ?? "" } });
+    useSortable({
+      id: item.id,
+      data: { parentId: item.parentId ?? "" },
+      // Reorder only without an active filter: under a filter treeItems is
+      // a partial sibling view, so a drag would reorder just the visible
+      // subset (see handleDragEnd). Disabling the sortable also hides the
+      // drag affordance entirely.
+      disabled: dragDisabled,
+    });
 
   const isMatch = matchIds.has(item.id);
   const isAncestor = ancestorIds.has(item.id);
@@ -367,7 +390,7 @@ function SortableTreeRow({
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
       {...attributes}
-      {...listeners}
+      {...(dragDisabled ? {} : listeners)}
       className={cn(
         "flex cursor-grab items-center gap-1.5 rounded-md border border-transparent px-1.5 py-1.5 transition-colors hover:border-border hover:bg-accent/50 active:cursor-grabbing",
         selected && "bg-accent/60",
@@ -375,9 +398,16 @@ function SortableTreeRow({
         filterActive && isMatch && "border-border/60 bg-primary/5",
         isDragging && "z-10 opacity-50",
         isActive && "ring-2 ring-ring",
+        dragDisabled && "cursor-default",
       )}
       aria-roledescription="draggable"
-      aria-label={hasChildren ? `${item.title} (draggable, has children)` : `${item.title} (draggable)`}
+      aria-label={
+        dragDisabled
+          ? `${item.title}${hasChildren ? " (has children)" : ""}`
+          : hasChildren
+            ? `${item.title} (draggable, has children)`
+            : `${item.title} (draggable)`
+      }
     >
       {/* indent guides */}
       {Array.from({ length: depth }, (_, i) => (
@@ -387,7 +417,13 @@ function SortableTreeRow({
           className="h-6 w-[18px] shrink-0 border-l border-dashed border-border/60"
         />
       ))}
-      <GripVertical aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
+      <GripVertical
+        aria-hidden
+        className={cn(
+          "h-3.5 w-3.5 shrink-0 text-muted-foreground/60",
+          dragDisabled && "opacity-0",
+        )}
+      />
       <input
         type="checkbox"
         checked={checked}

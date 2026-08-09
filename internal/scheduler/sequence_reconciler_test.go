@@ -513,6 +513,115 @@ func TestStartSequenceStartsRealRun(t *testing.T) {
 	}
 }
 
+// setField applies a partial update via a field-mask callback (test
+// helper mirroring setStatus for non-status fields).
+func setField(t *testing.T, pool *db.Pool, id string, apply func(f *db.UpdateWorkItemFields)) {
+	t.Helper()
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ttx.Rollback(ctx)
+	w := mustGet(t, pool, id)
+	f := db.UpdateWorkItemFields{}
+	apply(&f)
+	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, approvalTestTenant, id, w.Version, f); err != nil {
+		t.Fatal(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestReconcileParentNoOpForNonSequenceParents is the regression test for
+// the notifier-path guard: reconcileParent must only advance a work item
+// that IS a sequence run (status running/failed, no bound workflow run,
+// has children). The WorkflowReconciler notifier fires for the parent of
+// ANY terminal bound work item — a parent that is a bound-run ticket, a
+// never-fired pending parent, or a terminal parent must be a no-op. Before
+// the guard, a never-scheduled parent's pending child flipped to running
+// and its workflow started, and a bound-run parent with all children
+// succeeded was spuriously marked succeeded.
+func TestReconcileParentNoOpForNonSequenceParents(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	_ = wf
+
+	t.Run("never-fired pending parent is a no-op", func(t *testing.T) {
+		parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Pending Parent", nil, nil)
+		c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+		reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID})
+
+		rec := NewSequenceReconciler(env.pool, nil, env.startFn())
+		if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+			t.Fatalf("reconcileOne: %v", err)
+		}
+		// Nothing armed, child untouched, parent untouched.
+		if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemPending {
+			t.Errorf("child status = %q, want pending (never-scheduled parent must not arm)", got.Status)
+		}
+		if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemPending {
+			t.Errorf("parent status = %q, want pending", got.Status)
+		}
+		if got := env.armedWorkItems(); len(got) != 0 {
+			t.Errorf("armed work items = %v, want none", got)
+		}
+	})
+
+	t.Run("bound-run parent with all children succeeded is not marked succeeded", func(t *testing.T) {
+		// A normal bound-run ticket that happens to have children.
+		parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Bound Parent", nil, nil)
+		c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+		reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID})
+
+		// Stamp a bound run on the parent (it is a bound ticket, not a
+		// sequence parent) and mark every child succeeded.
+		setField(t, env.pool, parent.ID, func(f *db.UpdateWorkItemFields) {
+			rid := "run-" + db.NewID()
+			f.WorkflowRunID = &rid
+			s := domain.WorkItemRunning
+			f.Status = &s
+		})
+		setStatus(t, env.pool, c1.ID, domain.WorkItemSucceeded)
+
+		rec := NewSequenceReconciler(env.pool, nil, env.startFn())
+		if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+			t.Fatalf("reconcileOne: %v", err)
+		}
+		// The bound ticket must NOT be flipped to succeeded by the
+		// sequence engine, and its children must not be force-armed.
+		if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemRunning {
+			t.Errorf("bound-run parent status = %q, want running (sequence engine must not touch it)", got.Status)
+		}
+		if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemSucceeded {
+			t.Errorf("child status = %q, want succeeded (untouched)", got.Status)
+		}
+		if got := env.armedWorkItems(); len(got) != 0 {
+			t.Errorf("armed work items = %v, want none", got)
+		}
+	})
+
+	t.Run("terminal succeeded parent is a no-op", func(t *testing.T) {
+		parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Done Parent", nil, nil)
+		c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+		reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID})
+		setStatus(t, env.pool, parent.ID, domain.WorkItemSucceeded)
+
+		rec := NewSequenceReconciler(env.pool, nil, env.startFn())
+		if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+			t.Fatalf("reconcileOne: %v", err)
+		}
+		if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemPending {
+			t.Errorf("child status = %q, want pending (succeeded parent must not arm)", got.Status)
+		}
+		if got := env.armedWorkItems(); len(got) != 0 {
+			t.Errorf("armed work items = %v, want none", got)
+		}
+	})
+}
+
 // TestStartSequenceFailedStartResetsChild: a leaf whose workflow start
 // fails must not be stranded running-with-no-run — it resets to pending
 // so the next pass re-arms.

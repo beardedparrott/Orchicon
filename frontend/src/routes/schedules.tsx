@@ -403,6 +403,16 @@ function UpcomingView({
     search: search || undefined,
     refetchInterval: 5_000,
   });
+  // A scheduled item is a sequence parent when it has children and no
+  // bound workflow — its own run fans out to per-child workflows. The
+  // parent derivation needs the FULL project list: a scheduled sequence
+  // parent's children are pending (not scheduled), so they never appear
+  // in the SCHEDULED query above.
+  const { data: allItems } = useListWorkItems(projectId, {
+    search: search || undefined,
+    refetchInterval: 5_000,
+  });
+  const parentIds = useMemo(() => sequenceParentIds(allItems ?? []), [allItems]);
 
   // Kind filter + chronological sort are client-side (the server sort_by
   // only supports title/priority/created_at; scheduled_start_at is not
@@ -416,10 +426,6 @@ function UpcomingView({
     );
     return sortOrder === "asc" ? sorted : sorted.reverse();
   }, [scheduled, kindFilter, sortOrder]);
-
-  // A scheduled item is a sequence parent when it has children and no
-  // bound workflow — its own run fans out to per-child workflows.
-  const parentIds = useMemo(() => sequenceParentIds(scheduled ?? []), [scheduled]);
 
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
@@ -541,7 +547,7 @@ function AgendaGroup({
                   projects={projects}
                   selected={selected.has(item.id)}
                   onToggleSelect={onToggleSelect}
-                  isSequenceParent={parentIds.has(item.id) && !item.workflowId}
+                  isSequenceParent={parentIds.has(item.id)}
                 />
               </div>
             </li>
@@ -743,9 +749,9 @@ function RunningView({
                 projects={projects}
                 selected={selected.has(item.id)}
                 onToggleSelect={onToggleSelect}
-                isSequenceParent={parentIds.has(item.id) && !item.workflowId}
+                isSequenceParent={parentIds.has(item.id)}
                 position={positions.get(item.id)}
-                isSequenceChild={!!item.parentId}
+                isSequenceChild={!!item.parentId && parentIds.has(item.parentId)}
               />
             </div>
           </li>

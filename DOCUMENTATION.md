@@ -879,6 +879,7 @@ Every field the Connect API lets a client set on a work item is settable through
 | `workflow_run_id` | ✗ | ✓ | update-only (create starts empty) |
 | `status` | ✗ (derived) | ✓ | `pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering` |
 | `assigned_worker_ref` | via `assign_worker`/`unassign_worker` tools | same | mirrors the `AssignWorker`/`UnassignWorker` RPCs (`worker_id` + `version`) |
+| `sort_order` | via `reorder_work_items` tool | same | reorders a sibling group (sequence chain order) in ONE transaction; mirrors the `ReorderWorkItems` RPC — display sort never mutates it |
 
 **Read-only (never settable via the API or the MCP):** `id`, `tenant_id`, `version`, `created_at`, `updated_at` (server-managed), `workflow_step_id`, `results`, `prompt_context` (reconciler-written JSONB).
 

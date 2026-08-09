@@ -156,9 +156,26 @@ func reconcileParent(ctx context.Context, tx pgx.Tx, tenantID, parentID string, 
 	if err != nil {
 		return nil, err // ErrNotFound → parent deleted; nothing to advance
 	}
+	// Sequence-parent guard: reconcileParent must only advance a work item
+	// that IS a sequence run — status running (or failed, for retry-resume)
+	// with NO bound workflow run and at least one child. This mirrors the
+	// ListSequenceActiveParents scan predicate. The notifier path
+	// (workflow_reconciler.go) fires for the parent of ANY terminal bound
+	// work item; a non-sequence parent — a bound-run ticket, a never-fired
+	// parent, or a terminal parent — must be a no-op, never force-arm its
+	// children or spuriously mark it succeeded.
+	if parent.WorkflowRunID != "" ||
+		(parent.Status != domain.WorkItemRunning && parent.Status != domain.WorkItemFailed) {
+		return nil, nil
+	}
 	children, err := db.ListDirectChildren(ctx, tx, tenantID, parentID)
 	if err != nil {
 		return nil, fmt.Errorf("list children: %w", err)
+	}
+	if len(children) == 0 {
+		// No children → not a sequence parent (a running leaf). A scan
+		// would never pick it up; the notifier must not either.
+		return nil, nil
 	}
 	idx := deriveNextChild(children)
 	if idx < 0 {

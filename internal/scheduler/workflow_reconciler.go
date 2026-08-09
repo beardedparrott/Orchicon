@@ -797,8 +797,10 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// Sequence advance: a bound child reached a terminal state and has a
 	// parent — notify the sequence engine so the parent's chain advances
 	// (or halts) immediately rather than on the next scan tick. Post-commit
-	// so the child's terminal status is visible. The notifier is tolerant:
-	// a parent that is not a sequence-running parent is a no-op.
+	// so the child's terminal status is visible. The notifier fires for the
+	// parent of ANY terminal bound work item; reconcileParent re-applies
+	// the sequence-parent guard (status running/failed + no bound workflow
+	// run + has children), so a non-sequence parent is a no-op there.
 	if terminalParent != "" && r.sequenceNotifier != nil {
 		r.sequenceNotifier(context.Background(), terminalParent)
 	}

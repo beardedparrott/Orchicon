@@ -784,6 +784,102 @@ func toolScheduleWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessa
 	})
 }
 
+// toolReorderWorkItems renumbers sort_order for the siblings under a
+// parent (empty = top level) to the given order, in one transaction —
+// mirrors the ReorderWorkItems RPC (architecture-notes/
+// sequential-multi-workflow-runs.md §1). Only explicit drags change
+// sort_order; display sort never does. Safe while a sequence is running:
+// the derived cursor reads sort_order at arm time.
+func toolReorderWorkItems(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ProjectID string   `json:"project_id"`
+		ParentID  string   `json:"parent_id"`
+		ChildIDs  []string `json:"child_ids"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if params.ProjectID == "" {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	if len(params.ChildIDs) == 0 {
+		return nil, fmt.Errorf("child_ids must not be empty")
+	}
+	seen := make(map[string]bool, len(params.ChildIDs))
+	for _, id := range params.ChildIDs {
+		if id == "" {
+			return nil, fmt.Errorf("child_ids must not contain empty ids")
+		}
+		if seen[id] {
+			return nil, fmt.Errorf("duplicate child id %q", id)
+		}
+		seen[id] = true
+	}
+	tenantID := tenant.FromContext(ctx)
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer ttx.Rollback(ctx)
+	if params.ParentID != "" {
+		parent, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, params.ParentID)
+		if err != nil {
+			return nil, err
+		}
+		if parent.ProjectID != params.ProjectID {
+			return nil, fmt.Errorf("parent_id work item is not in the specified project")
+		}
+	}
+	siblings, err := db.ListSiblingsForReorder(ctx, ttx.Tx, tenantID, params.ProjectID, params.ParentID)
+	if err != nil {
+		return nil, err
+	}
+	if len(siblings) == 0 {
+		return nil, fmt.Errorf("no siblings under the given parent")
+	}
+	byID := make(map[string]db.WorkItemRow, len(siblings))
+	for _, sib := range siblings {
+		byID[sib.ID] = sib
+	}
+	for _, id := range params.ChildIDs {
+		if _, ok := byID[id]; !ok {
+			return nil, fmt.Errorf("child %q is not a direct child of the given parent in this project", id)
+		}
+	}
+	ordered := make([]db.WorkItemRow, 0, len(siblings))
+	placed := make(map[string]bool, len(siblings))
+	for _, id := range params.ChildIDs {
+		ordered = append(ordered, byID[id])
+		placed[id] = true
+	}
+	for _, sib := range siblings {
+		if !placed[sib.ID] {
+			ordered = append(ordered, sib)
+		}
+	}
+	for i, sib := range ordered {
+		order := float64(i + 1)
+		if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, sib.ID, sib.Version, db.UpdateWorkItemFields{
+			SortOrder: &order,
+		}); err != nil {
+			return nil, err
+		}
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	type reorderedItem struct {
+		ID    string  `json:"id"`
+		Title string  `json:"title"`
+		Order float64 `json:"sort_order"`
+	}
+	out := make([]reorderedItem, 0, len(ordered))
+	for i, sib := range ordered {
+		out = append(out, reorderedItem{ID: sib.ID, Title: sib.Title, Order: float64(i + 1)})
+	}
+	return json.Marshal(map[string]any{"reordered": out, "parent_id": params.ParentID})
+}
+
 func parseScheduledTime(s string) (time.Time, error) {
 	// Try ISO 8601 first.
 	if t, err := time.Parse(time.RFC3339, s); err == nil {

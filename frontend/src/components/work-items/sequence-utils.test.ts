@@ -8,11 +8,12 @@ import {
   sortByChainOrder,
 } from "@/components/work-items/sequence-utils";
 
-function item(id: string, parentId: string, sortOrder: number, createdAtSecs = 0): WorkItem {
+function item(id: string, parentId: string, sortOrder: number, createdAtSecs = 0, workflowId = ""): WorkItem {
   return {
     id,
     parentId,
     sortOrder,
+    workflowId,
     createdAt: { seconds: BigInt(createdAtSecs), nanos: 0 },
   } as unknown as WorkItem;
 }
@@ -42,11 +43,13 @@ describe("byChainOrder / sortByChainOrder", () => {
 });
 
 describe("computeSequencePositions", () => {
-  it("ranks siblings by sort_order within each parent", () => {
+  it("ranks siblings by sort_order within each sequence parent", () => {
     const items = [
+      item("P", "", 0), // sequence parent (has children, no workflow)
       item("a1", "P", 2),
       item("a2", "P", 1),
       item("a3", "P", 3),
+      item("Q", "", 0), // sequence parent
       item("b1", "Q", 1),
     ];
     const pos = computeSequencePositions(items);
@@ -58,8 +61,22 @@ describe("computeSequencePositions", () => {
     expect(pos.get("P")).toBeUndefined();
   });
 
+  it("gives no position to children of a bound-workflow parent", () => {
+    // "BP" carries its own workflow (a normal bound-run ticket, not a
+    // sequence parent) — its children are standalone parented cards.
+    const items = [
+      item("BP", "", 0, 0, "wf-1"),
+      item("c1", "BP", 1),
+      item("c2", "BP", 2),
+    ];
+    const pos = computeSequencePositions(items);
+    expect(pos.get("c1")).toBeUndefined();
+    expect(pos.get("c2")).toBeUndefined();
+  });
+
   it("null sort_order (0) sorts LAST and falls back to created_at", () => {
     const items = [
+      item("P", "", 0),
       item("new", "P", 0, 200),
       item("first", "P", 1, 100),
       item("second", "P", 2, 100),
@@ -72,11 +89,20 @@ describe("computeSequencePositions", () => {
 });
 
 describe("sequenceParentIds", () => {
-  it("collects every id that is someone's parent", () => {
+  it("collects every id that is someone's parent with no bound workflow", () => {
     const items = [item("P", "", 1), item("c", "P", 1), item("solo", "", 1)];
     const parents = sequenceParentIds(items);
     expect(parents.has("P")).toBe(true);
     expect(parents.has("solo")).toBe(false);
     expect(parents.has("c")).toBe(false);
+  });
+
+  it("excludes parents that carry their own bound workflow", () => {
+    const items = [
+      item("BP", "", 1, 0, "wf-1"), // bound-run parent, not a sequence
+      item("c", "BP", 1),
+    ];
+    const parents = sequenceParentIds(items);
+    expect(parents.has("BP")).toBe(false);
   });
 });

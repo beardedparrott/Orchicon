@@ -293,6 +293,7 @@ function WorkItemsPage() {
               <WorkItemsBoard
                 projectId={projectId}
                 items={filteredItems}
+                allItems={items}
                 blockState={blockState}
                 selected={selected}
                 onToggleSelect={toggle}

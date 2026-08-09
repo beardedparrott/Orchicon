@@ -67,6 +67,10 @@ export interface WorkItemsBoardProps {
   projectId: string;
   /** items that pass the active kind/status filters (all columns) */
   items: WorkItem[];
+  /** the FULL project item list (unfiltered) — source for sequence chain
+   *  positions so a filter that hides a parent/sibling never distorts the
+   *  #N badge or drops it entirely */
+  allItems?: WorkItem[];
   blockState: BlockState;
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
@@ -118,6 +122,7 @@ function buildHierarchy(items: WorkItem[]): HierarchyNode[] {
 export function WorkItemsBoard({
   projectId,
   items,
+  allItems,
   blockState,
   selected,
   onToggleSelect,
@@ -144,9 +149,14 @@ export function WorkItemsBoard({
   );
 
   const itemsById = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
-  // Chain positions (sort_order rank within parent) so every card with a
-  // parent shows its true sequence position regardless of display sort.
-  const positions = useMemo(() => computeSequencePositions(items), [items]);
+  // Chain positions (sort_order rank within parent) so every SEQUENCE
+  // child card shows its true sequence position regardless of display
+  // sort. Derived from the FULL project list (allItems) so a filter that
+  // hides a parent or sibling never distorts the badge.
+  const positions = useMemo(
+    () => computeSequencePositions(allItems ?? items),
+    [allItems, items],
+  );
 
   const handleDragStart = useCallback(
     (event: DragStartEvent) => {
