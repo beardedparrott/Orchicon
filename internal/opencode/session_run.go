@@ -98,6 +98,25 @@ const livenessProbeText = "Do NOT stop or restart your task. This is a liveness 
 	"If your task is complete, end your output with: ORCHICON WORKER SUMMARY: success — <summary>. " +
 	"If you are genuinely blocked and cannot proceed, end your output with: ORCHICON WORKER SUMMARY: failure — <reason>."
 
+// decisionMarker is the single routing signal every worker execution ends
+// with (docs: the first word after it is success|failure). The completion
+// probe and the settle-time success guard check for its presence so a
+// session that ended without delivering the signal is never recorded as a
+// clean success.
+const decisionMarker = "ORCHICON WORKER SUMMARY:"
+
+// completionProbeText is sent on session.idle when the worker's turn ended
+// WITHOUT the decision marker — e.g. the final model response was truncated
+// mid-stream (a step_finish with reason "unknown"/0 tokens), so the worker
+// never delivered its ORCHICON WORKER SUMMARY. Interjecting a prompt asks
+// the (still-live) session to finish the signal instead of recording a
+// hollow success; a session that still cannot produce the marker fails.
+const completionProbeText = "Your response appears to have been cut off before your final ORCHICON WORKER SUMMARY was captured. " +
+	"Please do not restart your work. " +
+	"If you have finished your task, reply with your final summary exactly in this form: " +
+	"ORCHICON WORKER SUMMARY: success — <summary>  (or  failure — <reason>). " +
+	"If you are still working, report your current status and then continue, and be sure to end with your ORCHICON WORKER SUMMARY when done."
+
 // run executes the whole session lifecycle. It returns nil once the
 // execution has completed (OnResult fired). A non-nil error means the
 // session transport could not be set up at all — the caller falls back to
@@ -217,7 +236,12 @@ func (r *sessionRun) run() error {
 	if r.lastStreamErr != "" {
 		parts = append(parts, r.lastStreamErr)
 	}
-	if r.stats.stepStarts > r.stats.stepFinishes {
+	// A stream that ended mid-step or on a truncated final step is NOT a
+	// success — unless the output still carries the decision signal (the
+	// completion probe may have salvaged it, or the summary was delivered
+	// before the trailing step event was lost). A missing signal means the
+	// worker's final response never completed.
+	if r.stats.unfinished() && !strings.Contains(r.output.String(), decisionMarker) {
 		ok = false
 		parts = append(parts, "execution ended before the final model step completed (model response stream truncated or event dropped)")
 	}
@@ -248,6 +272,9 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		// can span multiple steps/tool loops, so step-finish alone is not
 		// a turn boundary).
 		r.resolveProbe()
+		if r.maybeProbeCompletion() {
+			return
+		}
 		r.allTurnsDone()
 		return
 	case "session.status":
@@ -465,6 +492,97 @@ func (r *sessionRun) maybeNudge(reason string) {
 			r.finish(false, "stalled:no_file_progress:liveness_probe_no_response")
 		}
 	}()
+}
+
+// completionProbeDecision is the pure decision core of the completion-probe
+// logic (testable without a live session):
+//
+//   - output has the decision marker  → (false, false): settle normally.
+//   - marker missing, budget left     → (true,  false): send a probe.
+//   - marker missing, budget spent    → (false, true): fail — the worker
+//     never delivered its decision signal.
+func completionProbeDecision(output string, nudgesSent int, lastNudgeAt, now time.Time) (probe bool, fail bool) {
+	if strings.Contains(output, decisionMarker) {
+		return false, false
+	}
+	if nudgesSent >= nudgeMax() || now.Sub(lastNudgeAt) < nudgeCooldown() {
+		return false, true
+	}
+	return true, false
+}
+
+// maybeProbeCompletion decides whether a session that went idle WITHOUT the
+// ORCHICON WORKER SUMMARY decision signal can still be completed. The most
+// common cause is the final model turn being truncated mid-stream (a
+// step_finish with reason "unknown"/0 tokens), so the worker never delivered
+// its summary. The session is still live at idle, so a completion probe
+// (a fresh prompt_async turn) asks it to finish the signal — the reply either
+// carries the marker (the next idle settles normally) or counts as the
+// liveness evidence that clears the probe. When the probe budget is
+// exhausted and the marker is still absent, the run FAILS instead of being
+// recorded as a hollow success (the workflow's loop decision / re-ask / fail
+// path is the correct owner of a missing signal).
+//
+// Returns true when the caller must NOT settle: either a probe was sent and
+// is being awaited, or the run was already failed for the missing signal.
+func (r *sessionRun) maybeProbeCompletion() bool {
+	r.mu.Lock()
+	if r.finished || r.probePending {
+		r.mu.Unlock()
+		return false
+	}
+	probe, fail := completionProbeDecision(r.output.String(), r.nudgesSent, r.lastNudgeAt, time.Now())
+	if fail {
+		// Probe budget exhausted and still no signal — this is NOT a success.
+		// The final turn was truncated / the summary was lost.
+		r.mu.Unlock()
+		r.a.log.Warn("session idle without decision signal — failing",
+			"execution", r.execRow.ID, "nudges", r.nudgesSent)
+		r.finish(false, "stalled:missing_decision_signal:completion_probe_no_response")
+		return true
+	}
+	if !probe {
+		r.mu.Unlock()
+		return false
+	}
+	now := time.Now()
+	r.nudgesSent++
+	r.probePending = true
+	r.probeDeadline = now.Add(nudgeReplyWindow())
+	r.mu.Unlock()
+
+	r.a.log.Info("session idle without decision signal — sending completion probe",
+		"execution", r.execRow.ID, "nudge", r.nudgesSent, "max", nudgeMax())
+	if err := r.client.SendMessage(r.parentCtx, r.sessionID, r.system, r.modelRef, completionProbeText); err != nil {
+		r.mu.Lock()
+		r.probePending = false
+		r.mu.Unlock()
+		r.a.log.Warn("completion probe send failed — failing", "execution", r.execRow.ID, "error", err)
+		r.finish(false, "stalled:missing_decision_signal:completion_probe_no_response")
+		return true
+	}
+	r.bumpPending()
+	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": completionProbeText, "source": "nudge"})
+
+	// Verdict: no reply within the window → fail. Any reply resolves the
+	// probe (resolveProbe fires on telemetry activity) and the next
+	// session.idle re-enters maybeProbeCompletion with the accumulated
+	// output — so a successful summary probe settles normally.
+	go func() {
+		select {
+		case <-r.done:
+			return
+		case <-time.After(nudgeReplyWindow()):
+		}
+		r.mu.Lock()
+		still := r.probePending && !r.finished
+		r.mu.Unlock()
+		if still {
+			r.a.log.Warn("completion probe timed out — failing", "execution", r.execRow.ID)
+			r.finish(false, "stalled:missing_decision_signal:completion_probe_no_response")
+		}
+	}()
+	return true
 }
 
 // runSSE maintains the /event subscription with reconnects, routing every

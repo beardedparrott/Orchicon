@@ -3,6 +3,8 @@ package scheduler
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/beardedparrott/orchicon/internal/db"
 )
 
 // TestSummaryWordIsSingleDecisionSignal verifies the core contract: the
@@ -124,5 +126,28 @@ func TestMergeBudgets(t *testing.T) {
 	// Empty inputs → empty JSON, not nil/error.
 	if got := mergeBudgets(nil, nil); string(got) != "{}" {
 		t.Errorf("empty merge = %s, want {}", got)
+	}
+}
+
+// TestCountReaskRuns verifies the re-ask budget counts ACTUAL reviewer
+// re-asks (step runs created by reaskDecisionStep with StepName
+// "Reviewer (re-ask)") — NOT the reviewer's loop iteration count. A
+// reviewer that looped back via explicit _decision: failure decisions was
+// never re-asked and must not consume the budget; otherwise a truncated
+// final turn (missing signal) fails on a pre-spent budget without ever
+// getting a genuine re-ask.
+func TestCountReaskRuns(t *testing.T) {
+	ordinary := db.WorkflowStepRunRow{StepName: "PR Reviewer"}
+	loop := db.WorkflowStepRunRow{StepName: "PR Reviewer (loop)"}
+	reask1 := db.WorkflowStepRunRow{StepName: reaskRunName}
+	reask2 := db.WorkflowStepRunRow{StepName: reaskRunName, SupersededBy: "some-other-id"}
+
+	// Only genuine re-ask runs count, including superseded ones.
+	if got := countReaskRuns([]db.WorkflowStepRunRow{ordinary, loop, reask1, reask2}); got != 2 {
+		t.Fatalf("countReaskRuns = %d, want 2 (only re-ask runs)", got)
+	}
+	// No re-asks despite many loop iterations → budget untouched.
+	if got := countReaskRuns([]db.WorkflowStepRunRow{ordinary, ordinary, loop, loop}); got != 0 {
+		t.Fatalf("countReaskRuns = %d, want 0 (loop-backs are not re-asks)", got)
 	}
 }
