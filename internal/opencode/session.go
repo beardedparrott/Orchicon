@@ -67,6 +67,12 @@ type SessionClient struct {
 	hc        *http.Client
 }
 
+// ErrSessionNotFound marks a 404 from the serve for a session-scoped
+// request: the session id is no longer valid on that serve (its data dir
+// was wiped or the serve restarted against a fresh store). Callers
+// re-create the session and re-seed context rather than failing the turn.
+var ErrSessionNotFound = errors.New("opencode serve: session not found")
+
 // NewSessionClient builds a client for serve at baseURL (e.g.
 // http://127.0.0.1:PORT). password may be empty (unauthenticated serve).
 // directory is the project path every session created through this client
@@ -184,10 +190,10 @@ func (c *SessionClient) ReplyPermission(ctx context.Context, sessionID, permissi
 	return nil
 }
 
-// Subscribe opens the serve's /event SSE stream and returns a Subscription
-// that yields bus events (for ALL sessions — callers filter by session id).
+// Subscribe opens the serve's /event SSE stream and returns a BusSub that
+// yields bus events (for ALL sessions — callers filter by session id).
 // The stream blocks until ctx is cancelled or the connection drops.
-func (c *SessionClient) Subscribe(ctx context.Context) (*Subscription, error) {
+func (c *SessionClient) Subscribe(ctx context.Context) (BusSub, error) {
 	req, err := c.newRequest(ctx, http.MethodGet, "/event", nil, nil)
 	if err != nil {
 		return nil, err
@@ -203,6 +209,17 @@ func (c *SessionClient) Subscribe(ctx context.Context) (*Subscription, error) {
 	sub := &Subscription{events: make(chan BusEvent, 256), done: make(chan struct{}), once: make(chan struct{}), body: resp.Body}
 	go sub.read(ctx, resp.Body)
 	return sub, nil
+}
+
+// BusSub is the consumed surface of a /event SSE subscription: a stream of
+// bus events for ALL sessions (callers filter by session id) that closes
+// when the underlying connection ends or Close is called. Returned as an
+// interface (not the concrete *Subscription) so consumers and tests can
+// feed their own event stream without constructing the concrete type.
+type BusSub interface {
+	Events() <-chan BusEvent
+	Done() <-chan struct{}
+	Close()
 }
 
 // Subscription is a parsed SSE event stream from an opencode serve.
@@ -279,12 +296,14 @@ func (s *Subscription) read(ctx context.Context, body io.ReadCloser) {
 	}
 }
 
-// legacyEventFromBus maps a bus event to the legacy {type, part} event
+// LegacyEventFromBus maps a bus event to the legacy {type, part} event
 // object the adapter's parseEvent pipeline consumes — the exact mapping
 // `opencode run --format json` applies in run.ts (text only at part end,
 // tool only when completed/errored, step-start/step-finish, reasoning at
 // part end, and session errors). ok=false means "not a telemetry event".
-func legacyEventFromBus(evt BusEvent) (map[string]any, bool) {
+// Exported so the Ask Orchicon chat turn consumes the SAME mapping
+// execution sessions use — one source of truth.
+func LegacyEventFromBus(evt BusEvent) (map[string]any, bool) {
 	props := evt.Properties
 	switch evt.Type {
 	case "message.part.updated":
@@ -367,6 +386,9 @@ func (c *SessionClient) do(ctx context.Context, method, path string, body any) e
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
+		if resp.StatusCode == http.StatusNotFound {
+			return ErrSessionNotFound
+		}
 		return fmt.Errorf("opencode serve %s %s: http %d", method, path, resp.StatusCode)
 	}
 	return nil

@@ -20,6 +20,10 @@ message Conversation {
   string last_message_preview = 6;
   google.protobuf.Timestamp created_at = 7;
   google.protobuf.Timestamp updated_at = 8;
+  // session_id is the persistent opencode serve session this conversation's
+  // turns run on (Task 1 session transport). Empty when the conversation has
+  // never chatted, the transport is disabled, or it predates this field.
+  string session_id = 9;
 }
 
 // ChatMessage is a single message within a conversation.

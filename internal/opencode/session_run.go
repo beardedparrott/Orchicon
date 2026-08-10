@@ -284,7 +284,7 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		r.recordStreamError(evt)
 		return
 	}
-	if legacy, ok := legacyEventFromBus(evt); ok {
+	if legacy, ok := LegacyEventFromBus(evt); ok {
 		// ANY telemetry activity (text/tool/step/reasoning) after a probe
 		// is evidence the worker is alive — resolve the probe and revive
 		// without waiting for a full turn (the false-positive case: an

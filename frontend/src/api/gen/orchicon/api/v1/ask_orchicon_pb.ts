@@ -59,6 +59,15 @@ export class Conversation extends Message<Conversation> {
    */
   updatedAt?: Timestamp;
 
+  /**
+   * session_id is the persistent opencode serve session this conversation's
+   * turns run on (Task 1 session transport). Empty when the conversation has
+   * never chatted, the transport is disabled, or it predates this field.
+   *
+   * @generated from field: string session_id = 9;
+   */
+  sessionId = "";
+
   constructor(data?: PartialMessage<Conversation>) {
     super();
     proto3.util.initPartial(data, this);
@@ -75,6 +84,7 @@ export class Conversation extends Message<Conversation> {
     { no: 6, name: "last_message_preview", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 7, name: "created_at", kind: "message", T: Timestamp },
     { no: 8, name: "updated_at", kind: "message", T: Timestamp },
+    { no: 9, name: "session_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Conversation {

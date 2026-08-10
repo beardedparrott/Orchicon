@@ -307,6 +307,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		ContinueSession: func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error) {
 			return adapterBridge.ContinueSession(ctx, opts)
 		},
+		HostServe: hostServe,
 	}
 	handler := api.Mount(mux, deps)
 

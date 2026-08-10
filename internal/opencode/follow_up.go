@@ -204,7 +204,7 @@ func collectReply(ctx context.Context, client *SessionClient, sessionID, system,
 					go func() { _ = client.ReplyPermission(subCtx, sessionID, pid) }()
 				}
 			default:
-				if legacy, ok := legacyEventFromBus(evt); ok {
+				if legacy, ok := LegacyEventFromBus(evt); ok {
 					if t, _ := legacy["type"].(string); t == "text" {
 						if part, ok2 := legacy["part"].(map[string]any); ok2 {
 							if text, ok3 := part["text"].(string); ok3 && text != "" {
