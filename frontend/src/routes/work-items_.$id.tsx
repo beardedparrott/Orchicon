@@ -30,8 +30,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { KindPill } from "@/components/work-items/work-item-badges";
+import { KindPill, PositionBadge } from "@/components/work-items/work-item-badges";
 import { WorkItemParentSelect } from "@/components/work-items/work-item-parent-select";
+import { computeSequencePositions } from "@/components/work-items/sequence-utils";
 import { kindLabel, kindMeta, statusMeta, isTerminal, MANUALLY_UNMOVABLE_STATUSES } from "@/components/work-items/work-item-meta";
 import { cn } from "@/lib/utils";
 import { Timestamp } from "@bufbuild/protobuf";
@@ -106,6 +107,14 @@ function WorkItemDetailPage() {
   const itemsById = useMemo(
     () => new Map((graph?.nodes ?? []).map((n) => [n.id, n])),
     [graph],
+  );
+
+  // Chain position within its parent's siblings (sequence-child rank),
+  // derived from the already-loaded project graph — shows the item's order
+  // in its sequence chain on the detail page.
+  const chainPosition = useMemo(
+    () => computeSequencePositions(graph?.nodes ?? []).get(id),
+    [graph, id],
   );
 
   if (isLoading) {
@@ -520,6 +529,16 @@ function WorkItemDetailPage() {
                 ) : (
                   item.parentId
                 )}
+              </CardTitle>
+            </CardHeader>
+          </Card>
+        ) : null}
+        {chainPosition ? (
+          <Card>
+            <CardHeader>
+              <CardDescription>Chain position</CardDescription>
+              <CardTitle className="text-base">
+                <PositionBadge position={chainPosition} />
               </CardTitle>
             </CardHeader>
           </Card>
