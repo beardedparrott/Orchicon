@@ -75,12 +75,12 @@ type fakeSessionClient struct {
 	// sendGate, when non-nil, makes SendMessage block until the channel is
 	// closed. Lets a test hold the send in flight so it can replay events
 	// that must be observed while sent == false (the stale-idle guard).
-	sendGate     chan struct{}
+	sendGate chan struct{}
 	// sentCh, when non-nil, is closed once a gated SendMessage returns nil —
 	// a deterministic "the send was accepted" signal for guard tests.
-	sentCh   chan struct{}
-	sentOnce sync.Once
-	aborted  []string
+	sentCh       chan struct{}
+	sentOnce     sync.Once
+	aborted      []string
 	replies      []string
 	sub          *fakeBusSub
 	subscribeErr error

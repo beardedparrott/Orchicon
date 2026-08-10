@@ -4,9 +4,10 @@ import { MessageSquare, Plus, Trash2, Paperclip, Mic, Square, Copy, Check, Refre
 
 import { Route as rootRoute } from "@/routes/__root";
 
+import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { useListConversations, useCreateConversation, useDeleteConversation, useListMessages, useGetConversation, useAbortConversationTurn } from "@/api/askOrchicon";
+import { useListConversations, useCreateConversation, useDeleteConversation, useListMessages, useGetConversation, useAbortConversationTurn, askKeys } from "@/api/askOrchicon";
 import { askOrchiconClient } from "@/api/clients";
 import { useToast, useToastStore } from "@/components/ui/toast";
 import type { ChatMessage } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
@@ -38,6 +39,7 @@ export const Route = createRoute({
   const createConv = useCreateConversation();
   const deleteConv = useDeleteConversation();
   const abortTurn = useAbortConversationTurn();
+  const qc = useQueryClient();
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -63,8 +65,12 @@ export const Route = createRoute({
       setIsStreaming(false);
       setIsThinking(false);
       setOptimisticUserMsg(null);
+      // The reply landed: refresh the sidebar so the conversation's preview,
+      // ordering and message_count reflect the new message (the messages
+      // pane already updates via its own poll).
+      qc.invalidateQueries({ queryKey: askKeys.conversations });
     }
-  }, [messages, isStreaming, pendingReplyId]);
+  }, [messages, isStreaming, pendingReplyId, qc]);
 
   const handleNewChat = useCallback(async () => {
     try {

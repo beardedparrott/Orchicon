@@ -21,11 +21,12 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	assets "github.com/beardedparrott/orchicon"
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/migrate"
 	"github.com/beardedparrott/orchicon/internal/opencode"
+	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
 func chatDBTestPool(t *testing.T) *db.Pool {
@@ -237,7 +238,8 @@ func TestAbortConversationTurn(t *testing.T) {
 	cancelled := make(chan struct{})
 	go func() { <-turnCtx.Done(); close(cancelled) }()
 
-	_, err := s.AbortConversationTurn(context.Background(), connect.NewRequest(
+	ctx := tenant.WithID(context.Background(), "tnt_dev")
+	_, err := s.AbortConversationTurn(ctx, connect.NewRequest(
 		&apiv1.AbortConversationTurnRequest{ConversationId: convID},
 	))
 	if err != nil {
@@ -315,23 +317,29 @@ func TestStartConversationTurnServeLossFreshSessionFallback(t *testing.T) {
 
 	// 1. First dispatch accepted on the original session, then the bus dies.
 	waitForSend(t, client, 1)
-	if got := client.sendCalls[0]; got.sessionID != "ses_orig" || got.system != "REUSE_SYSTEM" {
-		t.Fatalf("first send = %+v, want ses_orig with reuse system", got)
+	// The steady-state follow-up system carries NO DB history block; the
+	// original session already holds the conversation (buildSystemPrompt
+	// includeHistory=false). Assert on prompt content, not literals — the
+	// handler passes real buildSystemPrompt output.
+	if got := client.sendCalls[0]; got.sessionID != "ses_orig" || strings.Contains(got.system, "## Conversation history") {
+		t.Fatalf("first send = session %q, want ses_orig with reuse system (no history block); system len %d", got.sessionID, len(got.system))
 	}
 	client.sub.Close()
 
 	// 2. Re-attach: the re-dispatched send 404s (data dir wiped) → fresh
-	// seeded session ses_2.
+	// seeded session ses_1 (the fake's first CreateSession).
 	waitForSend(t, client, 2)
 	if got := client.sendCalls[1]; got.sessionID != "ses_orig" {
 		t.Fatalf("re-attach send session = %q, want ses_orig (re-attach, not recreate yet)", got.sessionID)
 	}
 	waitForSend(t, client, 3)
-	if got := client.sendCalls[2]; got.sessionID != "ses_2" || got.system != "SEED_SYSTEM" {
-		t.Fatalf("fallback send = %+v, want fresh ses_2 with SEED_SYSTEM", got)
+	// The fallback dispatch runs on the FRESH session with the SEED system:
+	// the DB transcript is injected, so the history block MUST be present.
+	if got := client.sendCalls[2]; got.sessionID != "ses_1" || !strings.Contains(got.system, "## Conversation history") {
+		t.Fatalf("fallback send = session %q, want fresh ses_1 with seed system (history block present)", got.sessionID)
 	}
-	client.sub.feed(busText("ses_2", "recovered"))
-	client.sub.feed(busIdle("ses_2"))
+	client.sub.feed(busText("ses_1", "recovered"))
+	client.sub.feed(busIdle("ses_1"))
 
 	// 3. The reply is persisted in the SAME conversation (fresh session
 	// seeded from the DB transcript).
@@ -341,7 +349,7 @@ func TestStartConversationTurnServeLossFreshSessionFallback(t *testing.T) {
 	}
 	var meta map[string]any
 	_ = json.Unmarshal(msg.Metadata, &meta)
-	if sid, _ := meta["session_id"].(string); sid != "ses_2" {
-		t.Errorf("metadata.session_id = %q, want ses_2", sid)
+	if sid, _ := meta["session_id"].(string); sid != "ses_1" {
+		t.Errorf("metadata.session_id = %q, want ses_1", sid)
 	}
 }
