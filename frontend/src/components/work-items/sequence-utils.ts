@@ -17,6 +17,11 @@ import type { Timestamp } from "@bufbuild/protobuf";
  * reordered) sort LAST, mirroring the backend's
  * `ORDER BY sort_order NULLS LAST, created_at`. Never derived from display
  * order, so it is safe to use regardless of the active display sort.
+ *
+ * sort_order is 1-BASED: the first child is 1 (ReorderWorkItems writes
+ * i+1). 0/NULL means "unset" (sorts last) — it is indistinguishable from
+ * unset on the wire (proto `double sort_order` defaults to 0), so a real
+ * position of 0 must never be written. See internal/db/work_item.go.
  */
 export function byChainOrder(a: WorkItem, b: WorkItem): number {
   const ao = a.sortOrder !== 0 ? a.sortOrder : Number.MAX_VALUE;

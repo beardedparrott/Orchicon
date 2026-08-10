@@ -43,6 +43,12 @@ type WorkItemRow struct {
 	// sequential-multi-workflow-runs.md §1). Nullable; backfilled by
 	// created_at at migration time, changed only by ReorderWorkItems
 	// (explicit drag), never by display sort. NULL sorts last.
+	//
+	// CONVENTION: 1-based — the first child is 1 (ReorderWorkItems writes
+	// i+1), and 0/NULL means "unset" (sorts last; the frontend's
+	// byChainOrder treats sortOrder===0 as unset). NEVER write 0 as a real
+	// position: it is indistinguishable from unset on the wire (proto
+	// `double sort_order` defaults to 0) and will silently sort last.
 	SortOrder *float64
 	Results   []byte // jsonb
 	// PromptContext is the composite prompt the worker should see when
