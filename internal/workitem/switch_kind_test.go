@@ -686,9 +686,13 @@ func TestUpdateWorkItemScheduleFlipsStatusDB(t *testing.T) {
 	kind := func(k apiv1.WorkItemKind) *apiv1.WorkItemKind { return &k }
 
 	// 1. Item in `ready` + schedule set → status becomes `scheduled`.
+	// A leaf needs a workflow bound to be schedulable (a workflow-less leaf
+	// is rejected below).
+	wfID := seedPublishedWorkflowForTest(t, pool, projectA, true)
 	readyItem := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
 	writeItem(t, pool, readyItem.ID, readyItem.Version, db.UpdateWorkItemFields{
-		Status: strPtr(domain.WorkItemReady),
+		Status:     strPtr(domain.WorkItemReady),
+		WorkflowID: strPtr(wfID),
 	})
 	resp, err := update(readyItem, func(m *apiv1.UpdateWorkItemRequest) {
 		m.ScheduledStartAt = tspb
@@ -707,6 +711,16 @@ func TestUpdateWorkItemScheduleFlipsStatusDB(t *testing.T) {
 		t.Fatalf("scheduled_start_at should be persisted")
 	}
 
+	// 1b. A workflow-less LEAF cannot be scheduled — reject with a clear
+	// error instead of silently storing a schedule that would never fire.
+	noWF := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
+	_, err = update(noWF, func(m *apiv1.UpdateWorkItemRequest) {
+		m.ScheduledStartAt = tspb
+	})
+	if err == nil || !strings.Contains(err.Error(), "no workflow is set") {
+		t.Fatalf("scheduling a workflow-less leaf should be rejected with 'no workflow is set', got %v", err)
+	}
+
 	// 2. A sibling item with its own schedule is untouched (no bulk flip).
 	sibling := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
 	writeItem(t, pool, sibling.ID, sibling.Version, db.UpdateWorkItemFields{
@@ -722,7 +736,8 @@ func TestUpdateWorkItemScheduleFlipsStatusDB(t *testing.T) {
 	// override it (the dropdown would otherwise fight the flip).
 	ready2 := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
 	writeItem(t, pool, ready2.ID, ready2.Version, db.UpdateWorkItemFields{
-		Status: strPtr(domain.WorkItemReady),
+		Status:     strPtr(domain.WorkItemReady),
+		WorkflowID: strPtr(wfID),
 	})
 	resp3, err := update(ready2, func(m *apiv1.UpdateWorkItemRequest) {
 		m.ScheduledStartAt = tspb
@@ -739,7 +754,8 @@ func TestUpdateWorkItemScheduleFlipsStatusDB(t *testing.T) {
 	// ScheduledRunReconciler cannot re-arm an in-flight run.
 	runningItem := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
 	writeItem(t, pool, runningItem.ID, runningItem.Version, db.UpdateWorkItemFields{
-		Status: strPtr(domain.WorkItemRunning),
+		Status:     strPtr(domain.WorkItemRunning),
+		WorkflowID: strPtr(wfID),
 	})
 	resp4, err := update(runningItem, func(m *apiv1.UpdateWorkItemRequest) {
 		m.ScheduledStartAt = tspb
@@ -761,6 +777,9 @@ func TestUpdateWorkItemScheduleFlipsStatusDB(t *testing.T) {
 	// 5. Kind-switch precedence: switching to a non-schedulable kind clears
 	// the schedule and demotes the status — the flip must not win.
 	switching := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
+	writeItem(t, pool, switching.ID, switching.Version, db.UpdateWorkItemFields{
+		WorkflowID: strPtr(wfID),
+	})
 	resp5, err := update(switching, func(m *apiv1.UpdateWorkItemRequest) {
 		m.Kind = kind(apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE)
 		m.ScheduledStartAt = tspb
@@ -789,5 +808,51 @@ func TestUpdateWorkItemScheduleFlipsStatusDB(t *testing.T) {
 	}
 	if resp6.Msg.WorkItem.Status != apiv1.WorkItemStatus_WORK_ITEM_STATUS_READY {
 		t.Fatalf("status without schedule change = %v, want ready untouched", resp6.Msg.WorkItem.Status)
+	}
+}
+
+// TestBindingWorkflowClearsOneShotWorkerRef verifies the one-shot stale-data
+// self-heal + the post-update validation:
+//   - a leaf carrying a stale assigned_worker_ref (leftover from the one-shot
+//     standalone path) that the user binds to a workflow in the SAME request
+//     must have that worker ref cleared (it would otherwise flag the item as
+//     a worker-assigned one-shot in sequence validation and make its parent
+//     unschedulable), and
+//   - scheduling with the workflow selected in this request must NOT be
+//     rejected as "no workflow is set" (the validation uses the post-update
+//     binding, not the stale pre-update row).
+func TestBindingWorkflowClearsOneShotWorkerRef(t *testing.T) {
+	pool := validateParentTestPool(t)
+	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
+	projectA := validateParentProject(t, ctx, pool)
+	s := New(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	wfID := seedPublishedWorkflowForTest(t, pool, projectA, true)
+
+	// A leaf with a stale one-shot worker assignment (the standalone path).
+	leaf := createSequenceItem(t, pool, projectA, domain.WorkItemKindTask, "One-shot Leaf",
+		nil, nil, []byte(`{"worker_id":"w_se_devops_engineer","version":0}`))
+	got := readItem(t, pool, leaf.ID)
+	if len(got.AssignedWorkerRef) == 0 {
+		t.Fatalf("fixture should start one-shot (assigned_worker_ref set)")
+	}
+
+	// Bind a workflow AND start immediately in the same request.
+	req := connect.NewRequest(&apiv1.UpdateWorkItemRequest{Id: leaf.ID})
+	auto := true
+	req.Msg.WorkflowId = strPtr(wfID)
+	req.Msg.AutoStartWorkflow = &auto
+	resp, err := s.UpdateWorkItem(ctx, req)
+	if err != nil {
+		t.Fatalf("update with workflow + auto-start should succeed, got %v", err)
+	}
+	if resp.Msg.WorkItem.WorkflowId != wfID {
+		t.Fatalf("workflow_id = %q, want %q", resp.Msg.WorkItem.WorkflowId, wfID)
+	}
+	if resp.Msg.WorkItem.AssignedWorkerRef != "" {
+		t.Fatalf("assigned_worker_ref should be cleared on workflow bind, got %q", resp.Msg.WorkItem.AssignedWorkerRef)
+	}
+	cur := readItem(t, pool, leaf.ID)
+	if len(cur.AssignedWorkerRef) != 0 {
+		t.Fatalf("db assigned_worker_ref should be cleared on workflow bind, got %q", cur.AssignedWorkerRef)
 	}
 }

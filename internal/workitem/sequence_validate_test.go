@@ -203,7 +203,8 @@ func seedPublishedWorkflowForTest(t *testing.T, pool *db.Pool, projID string, pu
 	}
 	if _, err := db.CreateWorkflowVersion(ctx, ttx.Tx, db.WorkflowVersionRow{
 		ID: db.NewID(), TenantID: validateParentTestTenant, WorkflowID: wf.ID,
-		Version: 1, Status: domain.WorkflowVersionDraft, Steps: []byte("[]"),
+		Version: 1, Status: domain.WorkflowVersionDraft,
+		Steps: []byte(`[{"id":"step-1","name":"Task","kind":"task","ref":"w_se_devops_engineer","worker_version":0,"depends_on":[],"config":""}]`),
 		Inputs: []byte("{}"), Outputs: []byte("{}"),
 	}); err != nil {
 		t.Fatal(err)
@@ -222,6 +223,75 @@ func seedPublishedWorkflowForTest(t *testing.T, pool *db.Pool, projID string, pu
 		t.Fatal(err)
 	}
 	return wf.ID
+}
+
+// seedEmptyDagPublishedWorkflowForTest publishes a workflow whose current
+// version has an EMPTY step DAG — a run started on it can never progress
+// (the reconciler fails it at start), so a sequence leaf bound to one must
+// be rejected at schedule time.
+func seedEmptyDagPublishedWorkflowForTest(t *testing.T, pool *db.Pool, projID string) string {
+	t.Helper()
+	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
+	ttx, err := pool.BeginTenantTx(ctx, validateParentTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ttx.Rollback(ctx)
+	wf, err := db.CreateWorkflow(ctx, ttx.Tx, db.WorkflowRow{
+		ID: db.NewID(), TenantID: validateParentTestTenant, ProjectID: projID,
+		Name: "empty-" + db.NewID()[:8], CurrentVersion: 0, Status: domain.WorkflowDraft,
+		Type: domain.WorkflowTypeTemplate,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateWorkflowVersion(ctx, ttx.Tx, db.WorkflowVersionRow{
+		ID: db.NewID(), TenantID: validateParentTestTenant, WorkflowID: wf.ID,
+		Version: 1, Status: domain.WorkflowVersionDraft, Steps: []byte("[]"),
+		Inputs: []byte("{}"), Outputs: []byte("{}"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.PublishWorkflowVersion(ctx, ttx.Tx, validateParentTestTenant, wf.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UpdateWorkflowCurrentVersion(ctx, ttx.Tx, validateParentTestTenant, wf.ID, wf.Version, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return wf.ID
+}
+
+// TestValidateSequenceRejectsEmptyStepDag verifies a sequence leaf bound to
+// a published workflow with an EMPTY step DAG is rejected at schedule time
+// (arming it would create a run that can never progress, stranding the
+// chain and leaking a runtime container).
+func TestValidateSequenceRejectsEmptyStepDag(t *testing.T) {
+	pool := validateParentTestPool(t)
+	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
+	projID := validateParentProject(t, ctx, pool)
+	emptyWF := seedEmptyDagPublishedWorkflowForTest(t, pool, projID)
+
+	parent := createSequenceItem(t, pool, projID, domain.WorkItemKindEpic, "Parent", nil, nil, nil)
+	_ = createSequenceItem(t, pool, projID, domain.WorkItemKindTask, "Empty Bound", &parent.ID, &emptyWF, nil)
+
+	ttx, err := pool.BeginTenantTx(ctx, validateParentTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ttx.Rollback(ctx)
+	noWorkflow, oneShot, badWorkflow, err := ValidateSequenceSubtree(ctx, ttx.Tx, validateParentTestTenant, mustGetSequenceItem(t, pool, parent.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(noWorkflow) != 0 || len(oneShot) != 0 {
+		t.Errorf("unexpected offenders: noWorkflow=%v oneShot=%v", noWorkflow, oneShot)
+	}
+	if len(badWorkflow) != 1 || badWorkflow[0] != "Empty Bound" {
+		t.Errorf("badWorkflow = %v, want [\"Empty Bound\"] (empty step DAG must be rejected)", badWorkflow)
+	}
 }
 
 func createSequenceItem(t *testing.T, pool *db.Pool, projID, kind, title string, parent *string, workflowID *string, workerRef []byte) db.WorkItemRow {

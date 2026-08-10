@@ -60,13 +60,17 @@ func (r *ScheduledRunReconciler) scanAndFire(ctx context.Context) reconciler.Res
 
 	// The old query required workflow_id IS NOT NULL, which made a parent
 	// with children (no workflow of its own) unfireable. The EXISTS clause
-	// admits sequence parents; the fire path branches on an empty
-	// workflow_id (architecture-notes §2.2).
-	q := `SELECT id, tenant_id, workflow_id, project_id FROM work_items w
-		 WHERE scheduled_start_at IS NOT NULL
-		   AND scheduled_start_at BETWEEN now() - interval '5 minutes' AND now()
-		   AND status = 'scheduled'
-		   AND ( workflow_id IS NOT NULL
+	// admits sequence parents; the fire path branches on HAS CHILDREN (a
+	// parent with children IS a sequence — even one that still carries a
+	// stale workflow binding — so the branch can't use workflow_id alone).
+	q := `SELECT w.id, w.tenant_id, w.workflow_id, w.project_id,
+	        EXISTS (SELECT 1 FROM work_items c
+	                WHERE c.tenant_id = w.tenant_id AND c.parent_id = w.id) AS has_children
+	       FROM work_items w
+		 WHERE w.scheduled_start_at IS NOT NULL
+		   AND w.scheduled_start_at BETWEEN now() - interval '5 minutes' AND now()
+		   AND w.status = 'scheduled'
+		   AND ( w.workflow_id IS NOT NULL
 		         OR EXISTS (SELECT 1 FROM work_items c
 		                    WHERE c.tenant_id = w.tenant_id AND c.parent_id = w.id) )
 		 LIMIT 100`
@@ -89,11 +93,12 @@ func (r *ScheduledRunReconciler) scanAndFire(ctx context.Context) reconciler.Res
 	type wiRef struct {
 		id, tenantID, projectID string
 		workflowID              *string
+		hasChildren             bool
 	}
 	var refs []wiRef
 	for rows.Next() {
 		var ref wiRef
-		if err := rows.Scan(&ref.id, &ref.tenantID, &ref.workflowID, &ref.projectID); err != nil {
+		if err := rows.Scan(&ref.id, &ref.tenantID, &ref.workflowID, &ref.projectID, &ref.hasChildren); err != nil {
 			// Per-row scan failures are logged and skipped, never allowed
 			// to abort the pass for the remaining rows.
 			r.log.Error("scheduled_run: scan row", "error", err)
@@ -112,9 +117,11 @@ func (r *ScheduledRunReconciler) scanAndFire(ctx context.Context) reconciler.Res
 	}
 
 	for _, ref := range refs {
-		if ref.workflowID == nil {
-			// Sequence parent: the chain (parent running + reset +
-			// arm-first) runs through the sequence engine.
+		if ref.hasChildren {
+			// A parent with children is a sequence — its children each run
+			// their own bound workflows in chain order. Route through the
+			// sequence engine even if the parent still carries a workflow
+			// binding (children win over the parent's stale binding).
 			if r.sequence == nil {
 				r.log.Warn("scheduled_run: sequence parent fired but no sequence starter wired",
 					"work_item", ref.id)
@@ -127,6 +134,11 @@ func (r *ScheduledRunReconciler) scanAndFire(ctx context.Context) reconciler.Res
 				r.log.Info("scheduled_run: sequence started",
 					"work_item", ref.id)
 			}
+			continue
+		}
+		if ref.workflowID == nil {
+			r.log.Warn("scheduled_run: scheduled leaf with no workflow skipped",
+				"work_item", ref.id)
 			continue
 		}
 		if err := r.start(ctx, ref.tenantID, *ref.workflowID, ref.projectID, ref.id); err != nil {

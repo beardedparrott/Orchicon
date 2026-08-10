@@ -289,7 +289,10 @@ func requireTenant(ctx context.Context) (string, error) {
 //     path and remain available for standalone tasks only.
 //   - badWorkflow: a leaf's bound workflow must resolve to a published or
 //     deprecated workflow (the StartWorkflow precondition) so a fire-time
-//     failure can't occur — reject at schedule time instead.
+//     failure can't occur — reject at schedule time instead. A bound
+//     workflow whose current version has an EMPTY step DAG is rejected too:
+//     a run started on it can never progress (the reconciler fails it at
+//     start), so arming the child would strand the chain at fire time.
 //
 // The walk is tenant-scoped and depth-bounded (max 4 levels). Shared by
 // the Connect UpdateWorkItem paths and the Ask Orchicon tools so the two
@@ -316,6 +319,8 @@ func ValidateSequenceSubtree(ctx context.Context, tx pgx.Tx, tenantID string, pa
 				} else {
 					wf, werr := db.GetWorkflow(ctx, tx, tenantID, *c.WorkflowID)
 					if werr != nil || (wf.Status != domain.WorkflowPublished && wf.Status != domain.WorkflowDeprecated) {
+						badWorkflow = append(badWorkflow, c.Title)
+					} else if !workflowHasSteps(ctx, tx, tenantID, wf) {
 						badWorkflow = append(badWorkflow, c.Title)
 					}
 				}
@@ -371,4 +376,23 @@ func quoteTitles(titles []string) string {
 		quoted = append(quoted, fmt.Sprintf("%q", t))
 	}
 	return strings.Join(quoted, ", ")
+}
+
+// workflowHasSteps reports whether the workflow's current version carries
+// at least one step. A workflow whose published version has an EMPTY step
+// DAG produces a run that can never progress — the reconciler fails such a
+// run at start — so a sequence leaf bound to one would strand its parent's
+// chain at fire time. Schedule-time validation rejects it up front.
+func workflowHasSteps(ctx context.Context, tx pgx.Tx, tenantID string, wf db.WorkflowRow) bool {
+	version, err := db.GetWorkflowVersion(ctx, tx, tenantID, wf.ID, wf.CurrentVersion)
+	if err != nil {
+		return false
+	}
+	var steps []json.RawMessage
+	if len(version.Steps) > 0 {
+		if err := json.Unmarshal(version.Steps, &steps); err != nil {
+			return false
+		}
+	}
+	return len(steps) > 0
 }

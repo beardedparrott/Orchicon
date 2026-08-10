@@ -211,6 +211,23 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// Load the published version's steps to drive DAG progression.
 	version, err := db.GetWorkflowVersion(ctx, ttx.Tx, tenantID, run.WorkflowID, run.WorkflowVersion)
 	if err != nil {
+		if err == db.ErrNotFound {
+			// The workflow version the run references is gone (workflow
+			// deleted, or a raw-seeded run never had one). The run can
+			// never progress — fail it so it terminalizes instead of
+			// sitting "running" forever and leaking its runtime container.
+			if ferr := r.failRunAtStart(ctx, ttx.Tx, tenantID, run,
+				fmt.Sprintf("workflow version v%d not found", run.WorkflowVersion)); ferr != nil {
+				return ferr
+			}
+			// Commit the failure — the deferred rollback would otherwise
+			// undo it on the early return.
+			if cerr := ttx.Commit(ctx); cerr != nil {
+				return fmt.Errorf("commit fail-at-start: %w", cerr)
+			}
+			reapRuntime = true
+			return nil
+		}
 		return fmt.Errorf("get workflow version: %w", err)
 	}
 	steps, err := workflow.ParseSteps(version.Steps)
@@ -220,6 +237,26 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	stepByID := make(map[string]workflow.StepWire, len(steps))
 	for _, s := range steps {
 		stepByID[s.ID] = s
+	}
+	// A run whose published version has an EMPTY step DAG can never
+	// progress: the terminal-state check requires hasSteps && allSucceeded,
+	// so a zero-step run would sit "running" forever and leak its runtime
+	// container (the 30s adopt sweep treats any running run as active and
+	// keeps its container alive). As a sequence child it would also park its
+	// parent's chain indefinitely. Fail it at start — same structural-config
+	// treatment as an unresolvable runtime image.
+	if len(steps) == 0 {
+		if ferr := r.failRunAtStart(ctx, ttx.Tx, tenantID, run,
+			"workflow has no steps (empty step DAG)"); ferr != nil {
+			return ferr
+		}
+		// Commit the failure — the deferred rollback would otherwise undo
+		// it on the early return (the run would stay "running" forever).
+		if cerr := ttx.Commit(ctx); cerr != nil {
+			return fmt.Errorf("commit fail-at-start: %w", cerr)
+		}
+		reapRuntime = true
+		return nil
 	}
 
 	// Transition pending → running (docs/02 §2.4). Resolve the runtime
@@ -233,31 +270,16 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		if rerr != nil {
 			// Fail the run at start: an unresolvable image is a config
 			// error, not a recoverable execution failure.
-			now := time.Now().UTC()
-			reason := fmt.Sprintf("runtime image: %v", rerr)
-			if _, uerr := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
-				Status:  strPtr(domain.WorkflowRunFailed),
-				EndedAt: &now,
-			}); uerr != nil {
-				return fmt.Errorf("fail run on image resolution: %w", uerr)
+			if ferr := r.failRunAtStart(ctx, ttx.Tx, tenantID, run,
+				fmt.Sprintf("runtime image: %v", rerr)); ferr != nil {
+				return ferr
 			}
-			// Mark the bound work item failed too.
-			if run.WorkItemID != "" {
-				if wi, gerr := db.GetWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID); gerr == nil {
-					status := domain.WorkItemFailed
-					narrative, _ := json.Marshal(map[string]any{"_run_narrative": map[string]any{
-						"run_id": run.ID, "status": domain.WorkflowRunFailed, "error": reason,
-					}})
-					review := fmt.Sprintf("## Acceptance Review\n\n**Run:** `%s` · **Status:** failed\n\nNo work was delivered — the run failed to start: %s", run.ID, reason)
-					_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, db.UpdateWorkItemFields{
-						Status:           &status,
-						Results:          &narrative,
-						AcceptanceReview: &review,
-					})
-				}
+			// Commit the failure — the deferred rollback would otherwise
+			// undo it on the early return (the run would stay "pending"
+			// forever, re-attempting the image resolve every pass).
+			if cerr := ttx.Commit(ctx); cerr != nil {
+				return fmt.Errorf("commit fail-at-start: %w", cerr)
 			}
-			_ = r.enqueueRunEvent(ctx, ttx.Tx, domain.WorkflowEventRunFailed, run, reason)
-			run, _ = db.GetWorkflowRun(ctx, ttx.Tx, tenantID, runID)
 			reapRuntime = true
 			return nil
 		}
@@ -836,6 +858,42 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	if progressed {
 		r.log.Info("workflow run progressed", "run", runID, "status", run.Status)
 	}
+	return nil
+}
+
+// failRunAtStart fails a workflow run before it can execute — a structural
+// or configuration error (unresolvable runtime image, empty step DAG,
+// missing workflow version). The run can never progress, and without this
+// failure it would sit "running" forever, leaking its runtime container
+// (the 30s adopt sweep treats any running run as active and keeps the
+// container alive) and, for a sequence child, parking its parent's chain.
+// The bound work item is marked failed so the sequence engine halts the
+// chain. Callers set reapRuntime afterwards so the container (if any) is
+// killed.
+func (r *WorkflowReconciler) failRunAtStart(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, reason string) error {
+	now := time.Now().UTC()
+	if _, err := db.UpdateWorkflowRun(ctx, tx, tenantID, run.ID, run.Version, db.UpdateWorkflowRunFields{
+		Status:  strPtr(domain.WorkflowRunFailed),
+		EndedAt: &now,
+	}); err != nil {
+		return fmt.Errorf("fail run at start: %w", err)
+	}
+	// Mark the bound work item failed too.
+	if run.WorkItemID != "" {
+		if wi, err := db.GetWorkItem(ctx, tx, tenantID, run.WorkItemID); err == nil {
+			status := domain.WorkItemFailed
+			narrative, _ := json.Marshal(map[string]any{"_run_narrative": map[string]any{
+				"run_id": run.ID, "status": domain.WorkflowRunFailed, "error": reason,
+			}})
+			review := fmt.Sprintf("## Acceptance Review\n\n**Run:** `%s` · **Status:** failed\n\nNo work was delivered — the run failed to start: %s", run.ID, reason)
+			_, _ = db.UpdateWorkItem(ctx, tx, tenantID, run.WorkItemID, wi.Version, db.UpdateWorkItemFields{
+				Status:           &status,
+				Results:          &narrative,
+				AcceptanceReview: &review,
+			})
+		}
+	}
+	_ = r.enqueueRunEvent(ctx, tx, domain.WorkflowEventRunFailed, run, reason)
 	return nil
 }
 
@@ -2777,7 +2835,18 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 	wi, err := db.GetWorkItem(ctx, tx, tenantID, parsed.WorkItemID)
 	if err != nil {
 		if err == db.ErrNotFound {
-			return false, false, nil
+			// The work item this step reads (its shared ticket, a work-item
+			// marker's item, or a retry artifact) was hard-deleted mid-run —
+			// project cleanup or a manual delete. The step can never produce
+			// output: waiting forever would wedge the run "running" and leak
+			// its runtime container (observed field symptom). Fail the step
+			// terminal — the run then terminalizes and the container is
+			// reaped. NOT an error return: bubbling an error would roll back
+			// the whole reconcile transaction, including steps that already
+			// completed this pass (the wedge anti-pattern).
+			r.log.Warn("task step work item deleted — failing step",
+				"run", run.ID, "step", sr.StepID, "work_item", parsed.WorkItemID)
+			return true, true, nil
 		}
 		return false, false, fmt.Errorf("get work item: %w", err)
 	}
@@ -2810,16 +2879,31 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 	} else {
 		exec, err := db.GetExecution(ctx, tx, tenantID, sr.WorkerExecutionID)
 		if err != nil {
-			// Lookup failed — don't guess; wait for the next pass.
-			return false, false, nil
-		}
-		switch exec.Status {
-		case domain.ExecutionSucceeded:
-			return true, false, nil
-		case domain.ExecutionFailed, domain.ExecutionFailedToStart, domain.ExecutionTerminated:
-			// fall through to the recovery block below.
-		default:
-			return false, false, nil
+			if err == db.ErrNotFound {
+				// The execution this step references was hard-deleted (or
+				// never persisted) — e.g. a project cleanup that removed the
+				// execution, or a lost inline-dispatch link. Waiting forever
+				// would wedge the run "running" and leak its runtime
+				// container. After the dispatch-link grace, fall through to
+				// the recovery block so the step is retried (bounded by
+				// max_attempts) rather than stuck "running" indefinitely.
+				if sr.StartedAt != nil && time.Since(*sr.StartedAt) < dispatchLinkGrace {
+					return false, false, nil
+				}
+				// fall through to the recovery block below.
+			} else {
+				// Transient DB error — not an orphan; retry next pass.
+				return false, false, nil
+			}
+		} else {
+			switch exec.Status {
+			case domain.ExecutionSucceeded:
+				return true, false, nil
+			case domain.ExecutionFailed, domain.ExecutionFailedToStart, domain.ExecutionTerminated:
+				// fall through to the recovery block below.
+			default:
+				return false, false, nil
+			}
 		}
 	}
 

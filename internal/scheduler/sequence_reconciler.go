@@ -412,10 +412,15 @@ func StartSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantI
 		return errors.New("cannot start a sequence on a work item with no children")
 	}
 
-	// Parent → running; every descendant resets to pending.
+	// Parent → running; every descendant resets to pending. Also clear a
+	// stale workflow binding on the parent: a parent with children IS a
+	// sequence container (its own workflow_id is ignored — children each
+	// run their own workflows), and leaving the stale binding would keep
+	// the row contradicting the mode (a bound-run ticket vs a sequence).
 	status := domain.WorkItemRunning
 	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, parentID, parent.Version, db.UpdateWorkItemFields{
-		Status: &status,
+		Status:     &status,
+		WorkflowID: strPtr(""),
 	}); err != nil {
 		return fmt.Errorf("fire sequence parent: %w", err)
 	}

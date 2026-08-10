@@ -266,20 +266,23 @@ export function useUnassignWorker(projectId: string) {
 // useReorderWorkItems renumbers sort_order for the siblings under a parent
 // (empty parentId = top level) to the given order, in one server-side
 // transaction. Only the tree drag calls it — display sort/filter controls
-// never touch sort_order (AGENTS.md invariant #1).
-export function useReorderWorkItems(projectId: string) {
+// never touch sort_order (AGENTS.md invariant #1). The projectId comes
+// from the ITEMS being reordered (all siblings share a project), not the
+// page's project selector — the tree is also usable in the "All projects"
+// view, where the page's projectId is empty and would fail the RPC.
+export function useReorderWorkItems() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { parentId: string; childIds: string[] }) => {
+    mutationFn: async (input: { projectId: string; parentId: string; childIds: string[] }) => {
       const res = await workItemClient.reorderWorkItems({
-        projectId,
+        projectId: input.projectId,
         parentId: input.parentId,
         childIds: input.childIds,
       });
       return res.workItems as WorkItem[];
     },
     onSuccess: (items) => {
-      qc.invalidateQueries({ queryKey: workItemKeys.list(projectId) });
+      qc.invalidateQueries({ queryKey: workItemKeys.list(items[0]?.projectId ?? "") });
       if (items.length > 0) {
         qc.invalidateQueries({ queryKey: workItemKeys.detail(items[0].id) });
       }

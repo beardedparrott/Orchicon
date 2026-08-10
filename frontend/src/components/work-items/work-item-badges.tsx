@@ -116,20 +116,33 @@ export function MultiWorkflowChip({
   );
 }
 
-/** #N chain-order badge for a sequence child, derived from sort_order rank
- *  within its parent — never from display order. Shows the true chain
- *  position even when the board/tree display sort reorders the cards. */
-export function PositionBadge({ position, className }: { position: number; className?: string }) {
+/** Sequential-order badge for a sequence child, derived from sort_order rank
+ *  within its parent — never from display order. Styled to match the status
+ *  pill (pending's gray), so it reads consistently on the tree/board. The
+ *  label defaults to "#N"; the tree passes a fuller "Sequential Order #N". */
+export function PositionBadge({
+  position,
+  className,
+  label,
+}: {
+  position: number;
+  className?: string;
+  /** display text; defaults to "#N" */
+  label?: string;
+}) {
+  const isDark = useDarkPalette();
+  const text = label ?? `#${position}`;
   return (
     <span
-      aria-label={`Chain position ${position}`}
-      title={`Chain position ${position}`}
+      aria-label={text}
+      title={text}
       className={cn(
-        "inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full border border-indigo-500/40 px-1 text-[10px] font-bold tabular-nums text-indigo-600",
+        "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
+        isDark ? "bg-gray-500/15 text-gray-300" : "bg-gray-500/15 text-gray-700",
         className,
       )}
     >
-      #{position}
+      {text}
     </span>
   );
 }

@@ -45,12 +45,12 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronRight, GripVertical, SearchX } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
-import { KindBadge, StatusPill } from "@/components/work-items/work-item-badges";
+import { KindBadge, PositionBadge, StatusPill } from "@/components/work-items/work-item-badges";
 import type { BlockState } from "@/components/work-items/dependency-utils";
-import { sortByChainOrder } from "@/components/work-items/sequence-utils";
+import { computeSequencePositions, sortByChainOrder } from "@/components/work-items/sequence-utils";
 import { BlockedChip } from "@/components/work-items/work-item-card";
 import { subtreeSelectionState } from "@/components/work-items/use-work-item-selection";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -59,6 +59,8 @@ import { cn } from "@/lib/utils";
 export interface WorkItemsTreeProps {
   /** matches + ancestors (the rendered tree rows) */
   treeItems: WorkItem[];
+  /** the FULL unfiltered items list (for chain-position badges) */
+  allItems?: WorkItem[];
   /** ids that pass the active filters (highlighted rows) */
   matchIds: Set<string>;
   /** ids of ancestor-only container rows (dimmed when filtering) */
@@ -82,6 +84,7 @@ export interface WorkItemsTreeProps {
 
 export function WorkItemsTree({
   treeItems,
+  allItems,
   matchIds,
   ancestorIds,
   filterActive,
@@ -98,6 +101,32 @@ export function WorkItemsTree({
   hasQuery,
 }: WorkItemsTreeProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
+  // A drag ends with the browser dispatching a click on the element under
+  // the pointer — the row's title is a <Link>, so an unguarded click after
+  // a drop navigates to the item's detail page, undoing the reorder UX.
+  // Set on drag start (only fires once the pointer sensor activates, so a
+  // plain click never sets it); the click handler consumes + clears it,
+  // and the timeout clears it when the pointer was released outside.
+  const suppressClickRef = useRef(false);
+  // A drag ends with the browser dispatching a click on the element under
+  // the pointer — the row titles are <Link>s, so without this the post-drag
+  // click navigates to the item's detail page, undoing the reorder UX. The
+  // suppression MUST be a DOCUMENT-level native capture listener: after a
+  // dnd-kit drag the click is dispatched against the dragged row's node and
+  // its propagation path is just [target → document] — listeners on the
+  // container div or the row itself are NOT reached (verified empirically:
+  // a document capture listener fires, container/row listeners never do).
+  useEffect(() => {
+    const onCaptureClick = (e: MouseEvent) => {
+      if (suppressClickRef.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        suppressClickRef.current = false;
+      }
+    };
+    document.addEventListener("click", onCaptureClick, true);
+    return () => document.removeEventListener("click", onCaptureClick, true);
+  }, []);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 3 } }),
@@ -105,14 +134,30 @@ export function WorkItemsTree({
   );
 
   const itemById = new Map(treeItems.map((i) => [i.id, i]));
+  // Chain positions from the FULL list so a filter never distorts badges.
+  const positions = useMemo(
+    () => computeSequencePositions(allItems ?? treeItems),
+    [allItems, treeItems],
+  );
 
   const handleDragStart = (event: DragStartEvent) => {
     if (hasQuery) return; // reorder only without an active filter (see below)
     setActiveId(String(event.active.id));
+    suppressClickRef.current = true;
   };
 
   const handleDragEnd = (event: DragEndEvent) => {
     setActiveId(null);
+    // Keep the click-suppression flag SET long enough that the drag's
+    // post-mouseup click is guaranteed to land inside it (the click is
+    // dispatched immediately after pointerup, so a setTimeout(0) could
+    // clear the flag BEFORE the click — that race let the title <Link>
+    // navigate after a real drag). The onClickCapture handler consumes the
+    // flag when it suppresses the click; this timer is only the backstop
+    // for a release outside the list where no click ever fires.
+    window.setTimeout(() => {
+      suppressClickRef.current = false;
+    }, 300);
     // Drag-to-reorder is disabled under an active filter: treeItems then
     // holds only the matching rows + ancestors, so the sibling set is a
     // PARTIAL view of the true chain — dropping would reorder just the
@@ -191,7 +236,12 @@ export function WorkItemsTree({
       sensors={sensors}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
-      onDragCancel={() => setActiveId(null)}
+      onDragCancel={() => {
+        setActiveId(null);
+        window.setTimeout(() => {
+          suppressClickRef.current = false;
+        }, 300);
+      }}
     >
       <div className="overflow-x-auto">
         <div className="min-w-[640px] space-y-0.5">
@@ -205,6 +255,7 @@ export function WorkItemsTree({
                 item={item}
                 childrenOf={childrenOf}
                 depth={0}
+                positions={positions}
                 selected={selected}
                 onToggleSelect={onToggleSelect}
                 blockState={blockState}
@@ -230,6 +281,7 @@ function TreeNode({
   item,
   childrenOf,
   depth,
+  positions,
   selected,
   onToggleSelect,
   blockState,
@@ -246,6 +298,7 @@ function TreeNode({
   item: WorkItem;
   childrenOf: (parentId: string) => WorkItem[];
   depth: number;
+  positions: Map<string, number>;
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
   blockState: BlockState;
@@ -286,6 +339,7 @@ function TreeNode({
       <SortableTreeRow
         item={item}
         depth={depth}
+        position={positions.get(item.id)}
         selected={selected.has(item.id)}
         onToggleSelect={onToggleSelect}
         selectable={selectable}
@@ -314,6 +368,7 @@ function TreeNode({
               item={child}
               childrenOf={childrenOf}
               depth={depth + 1}
+              positions={positions}
               selected={selected}
               onToggleSelect={onToggleSelect}
               blockState={blockState}
@@ -339,6 +394,7 @@ function TreeNode({
 function SortableTreeRow({
   item,
   depth,
+  position,
   selected,
   onToggleSelect,
   selectable,
@@ -356,6 +412,8 @@ function SortableTreeRow({
 }: {
   item: WorkItem;
   depth: number;
+  /** chain-order position (#N) — set only for sequence children */
+  position?: number;
   selected: boolean;
   onToggleSelect: (id: string) => void;
   selectable: boolean;
@@ -471,6 +529,13 @@ function SortableTreeRow({
         {item.title}
       </Link>
       <span className="flex shrink-0 items-center gap-1.5">
+        {position ? (
+          <PositionBadge
+            position={position}
+            label={`Sequential Order #${position}`}
+            className="hidden sm:inline-flex"
+          />
+        ) : null}
         <BlockedChip
           blockedBy={blockState.blockedBy}
           id={item.id}
