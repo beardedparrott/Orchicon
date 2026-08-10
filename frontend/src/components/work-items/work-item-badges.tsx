@@ -116,20 +116,20 @@ export function MultiWorkflowChip({
   );
 }
 
-/** #N chain-order badge for a sequence child, derived from sort_order rank
+/** Sequential-order badge for a sequence child, derived from sort_order rank
  *  within its parent — never from display order. Shows the true chain
  *  position even when the board/tree display sort reorders the cards. */
 export function PositionBadge({ position, className }: { position: number; className?: string }) {
   return (
     <span
-      aria-label={`Chain position ${position}`}
-      title={`Chain position ${position}`}
+      aria-label={`Sequential Order #${position}`}
+      title={`Sequential Order #${position}`}
       className={cn(
-        "inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full border border-indigo-500/40 px-1 text-[10px] font-bold tabular-nums text-indigo-600",
+        "inline-flex h-4 shrink-0 items-center justify-center rounded-full border border-amber-500/70 bg-amber-500/15 px-1.5 text-[10px] font-bold tabular-nums text-amber-700",
         className,
       )}
     >
-      #{position}
+      Sequential Order #{position}
     </span>
   );
 }

@@ -521,9 +521,6 @@ function SortableTreeRow({
         <span className="w-5 shrink-0" />
       )}
       <KindBadge kind={item.kind} className="hidden sm:inline-flex" />
-      {position ? (
-        <PositionBadge position={position} className="hidden sm:inline-flex" />
-      ) : null}
       <Link
         to="/work-items/$id"
         params={{ id: item.id }}
@@ -532,6 +529,9 @@ function SortableTreeRow({
         {item.title}
       </Link>
       <span className="flex shrink-0 items-center gap-1.5">
+        {position ? (
+          <PositionBadge position={position} className="hidden sm:inline-flex" />
+        ) : null}
         <BlockedChip
           blockedBy={blockState.blockedBy}
           id={item.id}
