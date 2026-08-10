@@ -1,14 +1,14 @@
 import { createRoute } from "@tanstack/react-router";
 import { useState, useCallback, useRef, useEffect } from "react";
-import { MessageSquare, Plus, Trash2, Paperclip, Mic, Square, Copy, Check } from "lucide-react";
+import { MessageSquare, Plus, Trash2, Paperclip, Mic, Square, Copy, Check, RefreshCw } from "lucide-react";
 
 import { Route as rootRoute } from "@/routes/__root";
 
+import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { useListConversations, useCreateConversation, useDeleteConversation, useListMessages, useGetConversation, askKeys } from "@/api/askOrchicon";
+import { useListConversations, useCreateConversation, useDeleteConversation, useListMessages, useGetConversation, useAbortConversationTurn, askKeys } from "@/api/askOrchicon";
 import { askOrchiconClient } from "@/api/clients";
-import { useQueryClient } from "@tanstack/react-query";
 import { useToast, useToastStore } from "@/components/ui/toast";
 import type { ChatMessage } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 import { AttachmentInput } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
@@ -22,38 +22,55 @@ export const Route = createRoute({
 
 	function AskOrchiconPage() {
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
-  const [streamingContent, setStreamingContent] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
   const [optimisticUserMsg, setOptimisticUserMsg] = useState<string | null>(null);
+  // pendingReplyId is the assistant message id from the TurnStarted ack. It
+  // stays set (and the messages query keeps polling) until the detached
+  // collector persists the reply — or an error — under that id.
+  const [pendingReplyId, setPendingReplyId] = useState<string | null>(null);
   const toast = useToast();
-  const qc = useQueryClient();
 
   const { data: conversations, isLoading: convsLoading } = useListConversations();
-  const { data: messages, isLoading: msgsLoading } = useListMessages(activeConvId ?? "");
+  const { data: messages, isLoading: msgsLoading } = useListMessages(activeConvId ?? "", {
+    refetchInterval: isStreaming ? 2000 : false,
+  });
   const { data: activeConv } = useGetConversation(activeConvId ?? "");
   const createConv = useCreateConversation();
   const deleteConv = useDeleteConversation();
+  const abortTurn = useAbortConversationTurn();
+  const qc = useQueryClient();
 
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const streamAbortRef = useRef<AbortController | null>(null);
-  const doneContentRef = useRef(""); // holds streaming content after done signal, cleared when persisted messages arrive
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingContent, isThinking, optimisticUserMsg]);
+  }, [messages, isThinking, optimisticUserMsg]);
 
-  // When persisted messages arrive after streaming finishes, clear the
-  // streaming bubble to avoid duplicates. This eliminates the flicker
-  // where streamingContent is cleared before persisted data renders.
+  // Switching conversations resets the local pending state.
   useEffect(() => {
-    if (!doneContentRef.current) return;
-    const lastAssistant = messages?.filter(m => m.role === "assistant").at(-1);
-    if (lastAssistant && lastAssistant.content === doneContentRef.current) {
-      doneContentRef.current = "";
-      setStreamingContent("");
+    setPendingReplyId(null);
+    setIsStreaming(false);
+    setIsThinking(false);
+    setOptimisticUserMsg(null);
+  }, [activeConvId]);
+
+  // The reply (or error) is persisted under the acked assistant message id.
+  // When it appears via polling, the turn is over — clear the pending state
+  // so polling stops and the input re-enables.
+  useEffect(() => {
+    if (!isStreaming || !pendingReplyId || !messages) return;
+    if (messages.some(m => m.id === pendingReplyId)) {
+      setPendingReplyId(null);
+      setIsStreaming(false);
+      setIsThinking(false);
+      setOptimisticUserMsg(null);
+      // The reply landed: refresh the sidebar so the conversation's preview,
+      // ordering and message_count reflect the new message (the messages
+      // pane already updates via its own poll).
+      qc.invalidateQueries({ queryKey: askKeys.conversations });
     }
-  }, [messages]);
+  }, [messages, isStreaming, pendingReplyId, qc]);
 
   const handleNewChat = useCallback(async () => {
     try {
@@ -78,70 +95,72 @@ export const Route = createRoute({
     }
   }, [deleteConv, activeConvId, toast]);
 
-	const handleStopStreaming = useCallback(() => {
-		if (streamAbortRef.current) {
-			streamAbortRef.current.abort();
-			streamAbortRef.current = null;
+	// Stop: an explicit server-side abort. The collector cancels promptly and
+	// persists a "Turn stopped by the user." error message; the poll picks it
+	// up and re-enables the input. The conversation's session stays alive for
+	// the next message.
+	const handleStopStreaming = useCallback(async () => {
+		if (!activeConvId) return;
+		try {
+			await abortTurn.mutateAsync(activeConvId);
+		} catch {
+			toast.error("Failed to stop the reply", { title: "Error" });
 		}
-	}, []);
+	}, [activeConvId, abortTurn, toast]);
 
 	const handleSendMessage = useCallback(async (text: string, attachments?: AttachmentInput[]) => {
 		if (!text.trim() || !activeConvId || isStreaming) return;
 
-		// Show the user's message immediately.
+		// Show the user's message immediately; the reply arrives by polling
+		// (Send returns right after the ack).
 		setOptimisticUserMsg(text);
 		setIsStreaming(true);
-		setStreamingContent("");
 		setIsThinking(true);
-
-		const abortController = new AbortController();
-		streamAbortRef.current = abortController;
+		setPendingReplyId(null);
 
 		try {
 			const stream = askOrchiconClient.chatStream(
-				{ conversationId: activeConvId, message: text, attachments: attachments ?? [] },
-				{ signal: abortController.signal }
+				{ conversationId: activeConvId, message: text, attachments: attachments ?? [] }
 			);
-
-			let fullContent = "";
+			let acked = false;
 			for await (const chunk of stream) {
-				switch (chunk.event.case) {
-					case "textChunk":
-						fullContent += chunk.event.value.content;
-						setStreamingContent(fullContent);
-						setIsThinking(false);
-						break;
-					case "error":
-						toast.error(chunk.event.value.message);
-						setIsThinking(false);
-						break;
-					case "done":
-						// Keep streaming content visible until persisted messages arrive.
-						// doneContentRef holds the final text; it's cleared when refetch completes.
-						doneContentRef.current = fullContent;
-						setIsThinking(false);
-						break;
+				if (chunk.event.case === "turnStarted") {
+					setPendingReplyId(chunk.event.value.assistantMessageId);
+					acked = true;
+				} else if (chunk.event.case === "error") {
+					toast.error(chunk.event.value.message);
+					setIsStreaming(false);
+					setIsThinking(false);
+					setOptimisticUserMsg(null);
 				}
 			}
-			// Refresh messages to show the persisted user + assistant messages.
-			qc.invalidateQueries({ queryKey: askKeys.messages(activeConvId) });
-			qc.invalidateQueries({ queryKey: askKeys.conversations });
+			if (!acked) {
+				// No ack received: the turn may still be running server-side,
+				// but with no message id to poll for, don't hang the UI.
+				setIsStreaming(false);
+				setIsThinking(false);
+				setOptimisticUserMsg(null);
+			}
 		} catch (err: any) {
-			if (err?.name !== "AbortError") {
-				toast.error(String(err?.message ?? err), { title: "Chat error" });
-			}
-		} finally {
+			// Synchronous RPC failure (e.g. a reply already in progress) —
+			// the message was not dispatched.
 			setIsStreaming(false);
-			// Only clear streaming content if done didn't save it (e.g. error/abort).
-			// On done, doneContentRef holds it until persisted messages arrive.
-			if (!doneContentRef.current) {
-				setStreamingContent("");
-			}
 			setIsThinking(false);
 			setOptimisticUserMsg(null);
-			streamAbortRef.current = null;
+			toast.error(String(err?.message ?? err), { title: "Chat error" });
 		}
-	}, [activeConvId, isStreaming, toast, qc]);
+	}, [activeConvId, isStreaming, toast]);
+
+	// Retry re-sends the most recent user message in the same conversation
+	// (the error message it follows was persisted by a failed turn).
+	// messages is chronological (oldest-first), so `find` would return the
+	// FIRST user message — iterate from the end for the LAST (most recent).
+	const handleRetry = useCallback(() => {
+		const lastUser = messages?.slice().reverse().find(m => m.role === "user");
+		if (lastUser?.content) {
+			handleSendMessage(lastUser.content);
+		}
+	}, [messages, handleSendMessage]);
 
   return (
     <div className="-m-6 lg:-m-8 flex h-[calc(100vh-3.5rem)] gap-0">
@@ -187,7 +206,7 @@ export const Route = createRoute({
 
               {/* Persisted messages from the server */}
               {messages?.map((msg) => (
-                <ChatBubble key={msg.id} message={msg} />
+                <ChatBubble key={msg.id} message={msg} onRetry={handleRetry} />
               ))}
 
               {/* Optimistic user message (shown immediately) */}
@@ -200,7 +219,7 @@ export const Route = createRoute({
               )}
 
 		{/* Thinking indicator */}
-				{isThinking && !streamingContent && (
+				{isThinking && (
 					<div className="flex justify-start">
 						<div className="rounded-lg bg-card border px-4 py-2.5 min-w-[280px] max-w-[80%]">
 							<p className="text-xs font-medium text-muted-foreground mb-1">Orchicon</p>
@@ -218,17 +237,6 @@ export const Route = createRoute({
 					</div>
 				)}
 
-              {/* Streaming response */}
-              {streamingContent && (
-                <div className="flex justify-start">
-                  <div className="rounded-lg bg-card border px-4 py-2.5 min-w-[280px] max-w-[80%]">
-                    <p className="text-xs font-medium text-muted-foreground mb-1">Orchicon</p>
-                    <div className="text-sm">
-                      <Markdown>{streamingContent}</Markdown>
-                    </div>
-                  </div>
-                </div>
-              )}
               <div ref={chatEndRef} />
             </div>
 
@@ -309,8 +317,9 @@ function CopyButton({ text }: { text: string }) {
 	);
 }
 
-function ChatBubble({ message }: { message: ChatMessage }) {
+function ChatBubble({ message, onRetry }: { message: ChatMessage; onRetry?: () => void }) {
 	const isUser = message.role === "user";
+	const isError = !!message.metadata?.error;
 	return (
 		<div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
 			<div
@@ -318,16 +327,39 @@ function ChatBubble({ message }: { message: ChatMessage }) {
 					"rounded-lg px-4 py-2.5 min-w-[280px] max-w-[80%] group relative",
 					isUser
 						? "bg-primary text-primary-foreground"
-						: "bg-card border",
+						: isError
+							? "bg-destructive/10 border border-destructive/40"
+							: "bg-card border",
 				)}
 			>
 				{!isUser && (
-					<p className="text-xs font-medium text-muted-foreground mb-1">Orchicon</p>
+					<p className={cn("text-xs font-medium mb-1", isError ? "text-destructive" : "text-muted-foreground")}>
+						Orchicon
+					</p>
 				)}
-				<CopyButton text={message.content} />
-				<div className="text-sm">
-					<Markdown>{message.content}</Markdown>
-				</div>
+				{isError ? (
+					<div className="text-sm">
+						<p className="text-destructive">{message.metadata?.error}</p>
+						{onRetry && (
+							<Button
+								variant="outline"
+								size="sm"
+								className="mt-2"
+								onClick={onRetry}
+							>
+								<RefreshCw className="h-3.5 w-3.5 mr-1" />
+								Retry
+							</Button>
+						)}
+					</div>
+				) : (
+					<>
+						<CopyButton text={message.content} />
+						<div className="text-sm">
+							<Markdown>{message.content}</Markdown>
+						</div>
+					</>
+				)}
 			</div>
 		</div>
 	);

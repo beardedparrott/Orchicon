@@ -457,7 +457,8 @@ func (x *Attachment) GetAttachmentType() string {
 	return ""
 }
 
-// MessageMetadata captures token usage, cost, and latency for a message.
+// MessageMetadata captures token usage, cost, latency, and error state for
+// a message.
 type MessageMetadata struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	ModelRef         string                 `protobuf:"bytes,1,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`
@@ -465,8 +466,12 @@ type MessageMetadata struct {
 	CompletionTokens int64                  `protobuf:"varint,3,opt,name=completion_tokens,json=completionTokens,proto3" json:"completion_tokens,omitempty"`
 	CostUsd          float64                `protobuf:"fixed64,4,opt,name=cost_usd,json=costUsd,proto3" json:"cost_usd,omitempty"`
 	LatencyMs        int64                  `protobuf:"varint,5,opt,name=latency_ms,json=latencyMs,proto3" json:"latency_ms,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// error is set when the turn failed (timeout, session error, user stop,
+	// or serve loss). The message content is empty in that case; the
+	// frontend renders an error bubble with a retry affordance.
+	Error         string `protobuf:"bytes,6,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *MessageMetadata) Reset() {
@@ -532,6 +537,13 @@ func (x *MessageMetadata) GetLatencyMs() int64 {
 		return x.LatencyMs
 	}
 	return 0
+}
+
+func (x *MessageMetadata) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
 }
 
 // AgentConfig defines Orchicon's agent identity, skills, tools, and
@@ -1051,14 +1063,15 @@ const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\tmime_type\x18\x02 \x01(\tR\bmimeType\x12\x12\n" +
 	"\x04size\x18\x03 \x01(\x03R\x04size\x12\x10\n" +
 	"\x03url\x18\x04 \x01(\tR\x03url\x12'\n" +
-	"\x0fattachment_type\x18\x05 \x01(\tR\x0eattachmentType\"\xba\x01\n" +
+	"\x0fattachment_type\x18\x05 \x01(\tR\x0eattachmentType\"\xd0\x01\n" +
 	"\x0fMessageMetadata\x12\x1b\n" +
 	"\tmodel_ref\x18\x01 \x01(\tR\bmodelRef\x12#\n" +
 	"\rprompt_tokens\x18\x02 \x01(\x03R\fpromptTokens\x12+\n" +
 	"\x11completion_tokens\x18\x03 \x01(\x03R\x10completionTokens\x12\x19\n" +
 	"\bcost_usd\x18\x04 \x01(\x01R\acostUsd\x12\x1d\n" +
 	"\n" +
-	"latency_ms\x18\x05 \x01(\x03R\tlatencyMs\"\x89\x03\n" +
+	"latency_ms\x18\x05 \x01(\x03R\tlatencyMs\x12\x14\n" +
+	"\x05error\x18\x06 \x01(\tR\x05error\"\x89\x03\n" +
 	"\vAgentConfig\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12#\n" +
 	"\rsystem_prompt\x18\x02 \x01(\tR\fsystemPrompt\x12\x12\n" +

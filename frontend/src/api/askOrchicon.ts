@@ -72,7 +72,7 @@ export function useUpdateConversationTitle() {
   });
 }
 
-export function useListMessages(conversationId: string) {
+export function useListMessages(conversationId: string, opts?: { refetchInterval?: number | false }) {
   return useQuery({
     queryKey: askKeys.messages(conversationId),
     queryFn: async () => {
@@ -80,6 +80,17 @@ export function useListMessages(conversationId: string) {
       return (res.messages ?? []).reverse() as ChatMessage[];
     },
     enabled: !!conversationId,
+    // Poll while a turn is pending so the detached collector's persisted
+    // reply (or error) appears without a manual refresh.
+    refetchInterval: opts?.refetchInterval ?? false,
+  });
+}
+
+export function useAbortConversationTurn() {
+  return useMutation({
+    mutationFn: async (conversationId: string) => {
+      await askOrchiconClient.abortConversationTurn({ conversationId });
+    },
   });
 }
 

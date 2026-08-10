@@ -373,7 +373,8 @@ export class Attachment extends Message<Attachment> {
 }
 
 /**
- * MessageMetadata captures token usage, cost, and latency for a message.
+ * MessageMetadata captures token usage, cost, latency, and error state for
+ * a message.
  *
  * @generated from message orchicon.api.v1.MessageMetadata
  */
@@ -403,6 +404,15 @@ export class MessageMetadata extends Message<MessageMetadata> {
    */
   latencyMs = protoInt64.zero;
 
+  /**
+   * error is set when the turn failed (timeout, session error, user stop,
+   * or serve loss). The message content is empty in that case; the
+   * frontend renders an error bubble with a retry affordance.
+   *
+   * @generated from field: string error = 6;
+   */
+  error = "";
+
   constructor(data?: PartialMessage<MessageMetadata>) {
     super();
     proto3.util.initPartial(data, this);
@@ -416,6 +426,7 @@ export class MessageMetadata extends Message<MessageMetadata> {
     { no: 3, name: "completion_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 4, name: "cost_usd", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
     { no: 5, name: "latency_ms", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 6, name: "error", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): MessageMetadata {

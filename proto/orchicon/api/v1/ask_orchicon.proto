@@ -63,13 +63,18 @@ message Attachment {
   string attachment_type = 5; // "file" | "image" | "audio" | "pdf"
 }
 
-// MessageMetadata captures token usage, cost, and latency for a message.
+// MessageMetadata captures token usage, cost, latency, and error state for
+// a message.
 message MessageMetadata {
   string model_ref = 1;
   int64 prompt_tokens = 2;
   int64 completion_tokens = 3;
   double cost_usd = 4;
   int64 latency_ms = 5;
+  // error is set when the turn failed (timeout, session error, user stop,
+  // or serve loss). The message content is empty in that case; the
+  // frontend renders an error bubble with a retry affordance.
+  string error = 6;
 }
 
 // AgentConfig defines Orchicon's agent identity, skills, tools, and
