@@ -139,6 +139,7 @@ export function WorkItemCard({
           aria-label={`Select ${item.title}`}
         />
         <KindBadge kind={item.kind} />
+        {badge}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           <BlockedChip blockedBy={blockedBy} id={item.id} depsCount={depsCount} />
           {moving ? (
@@ -146,7 +147,6 @@ export function WorkItemCard({
           ) : (
             <StatusPill status={item.status} />
           )}
-          {badge}
         </span>
       </div>
       <Link

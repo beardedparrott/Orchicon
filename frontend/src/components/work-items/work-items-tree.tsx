@@ -530,7 +530,11 @@ function SortableTreeRow({
       </Link>
       <span className="flex shrink-0 items-center gap-1.5">
         {position ? (
-          <PositionBadge position={position} className="hidden sm:inline-flex" />
+          <PositionBadge
+            position={position}
+            label={`Sequential Order #${position}`}
+            className="hidden sm:inline-flex"
+          />
         ) : null}
         <BlockedChip
           blockedBy={blockState.blockedBy}
