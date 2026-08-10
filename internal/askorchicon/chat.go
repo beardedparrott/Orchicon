@@ -17,11 +17,14 @@ import (
 	"github.com/beardedparrott/orchicon/internal/opencode"
 )
 
-// defaultHandshakeTimeout bounds the dispatch handshake of a chat turn:
-// subscribe to the serve bus + get the user message accepted + observe the
-// first event. A serve that accepts a connection but never responds (wedged)
-// fails fast after this instead of silently queuing the message. Override
-// via ORCHICON_ASK_TIMEOUT.
+// defaultHandshakeTimeout bounds how long a chat turn's attempt waits for
+// the serve to ACCEPT the sent message (send-accept). The timer starts after
+// Subscribe succeeds and only fails the attempt while the message is still
+// un-accepted, so a serve that accepts a connection but never acknowledges
+// the send fails fast instead of silently queuing. It does NOT bound
+// subscribe (a never-reachable serve is bounded by the serve-down grace) nor
+// the reply itself (the reply window bounds the whole turn). Override via
+// ORCHICON_ASK_TIMEOUT.
 const defaultHandshakeTimeout = 600 * time.Second
 
 func askTimeout() time.Duration {
@@ -61,6 +64,24 @@ func askReattachBackoff() time.Duration {
 		}
 	}
 	return defaultReattachBackoff
+}
+
+// defaultServeDownGrace bounds how long a turn's collector keeps retrying a
+// serve that has NEVER accepted a connection this turn (serve down at send
+// time). Once a serve has been reachable during the turn, a later loss is a
+// restart and gets the full reply window to recover. The grace fails fast so
+// a send issued while the serve is down surfaces a clean, retryable error
+// message instead of looping silently up to the reply window. Env override
+// ORCHICON_ASK_SERVE_DOWN_GRACE is a dev/test knob.
+const defaultServeDownGrace = 15 * time.Second
+
+func askServeDownGrace() time.Duration {
+	if v := os.Getenv("ORCHICON_ASK_SERVE_DOWN_GRACE"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultServeDownGrace
 }
 
 // opencodeEvent is a single JSON event from opencode's stdout.
@@ -501,7 +522,8 @@ const (
 	turnCollected turnAttemptKind = iota // reply complete; text is final
 	turnFailed                            // terminal error; err is set
 	turnRecreated                         // session 404'd — a fresh seeded session was created
-	turnReattach                          // serve bus lost — retry after a backoff
+	turnReattach                          // bus lost after a live connection — retry after a backoff
+	turnServeDown                         // the serve never accepted a connection this attempt
 )
 
 type turnAttemptResult struct {
@@ -554,6 +576,20 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 	window := time.NewTimer(askReplyWindow())
 	defer window.Stop()
 
+	// serveDownDeadline bounds how long a turn whose serve has NEVER accepted
+	// a connection keeps retrying: a serve down at send time fails fast with
+	// a clean, retryable error instead of looping silently up to the reply
+	// window. Once the serve has been live during the turn (everLive), a
+	// later loss is a restart and the full reply window applies.
+	serveDownDeadline := time.Now().Add(askServeDownGrace())
+
+	// everLive reports whether the serve accepted a connection at least once
+	// during this turn. It flips true on any attempt that reached the bus
+	// (turnReattach = bus died after a live connection; turnRecreated = the
+	// serve answered a send with 404), so only the never-live case is bounded
+	// by the short serve-down grace.
+	everLive := false
+
 	for {
 		res := s.runOneTurnAttempt(ctx, window, c, sid, system, recreated)
 		switch res.kind {
@@ -565,14 +601,43 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 			sid = res.newSid
 			system = c.seedSystem
 			recreated = true
+			everLive = true
 			s.persistConversationSessionID(ctx, c.tenantID, c.convID, sid)
 		case turnReattach:
+			// Bus closed after a live connection — the serve died mid-reply.
+			// Keep retrying inside the reply window (the watchdog brings the
+			// serve back and the session id survives).
+			everLive = true
 			select {
 			case <-ctx.Done():
 				return res.text, sid, ctx.Err()
 			case <-window.C:
 				return res.text, sid, errors.New("the opencode serve did not recover within the reply window — please retry")
 			case <-time.After(askReattachBackoff()):
+			}
+		case turnServeDown:
+			// The serve never accepted a connection this attempt. If the turn
+			// was never live, this is a serve-down at send time: bounded by
+			// the short grace so a clean error surfaces quickly. A serve that
+			// WAS live earlier is presumably restarting — keep the full
+			// window like turnReattach.
+			if !everLive {
+				if time.Now().After(serveDownDeadline) {
+					return res.text, sid, errors.New("the opencode serve is unavailable — please try again in a moment")
+				}
+				select {
+				case <-ctx.Done():
+					return res.text, sid, ctx.Err()
+				case <-time.After(askReattachBackoff()):
+				}
+			} else {
+				select {
+				case <-ctx.Done():
+					return res.text, sid, ctx.Err()
+				case <-window.C:
+					return res.text, sid, errors.New("the opencode serve did not recover within the reply window — please retry")
+				case <-time.After(askReattachBackoff()):
+				}
 			}
 		}
 	}
@@ -590,7 +655,12 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 
 	sub, err := c.client.Subscribe(subCtx)
 	if err != nil {
-		return turnAttemptResult{kind: turnReattach}
+		// The serve never accepted a connection this attempt. When this is
+		// the turn's FIRST connection (serve down at send time) the caller
+		// fails fast after a short grace instead of looping to the reply
+		// window; when the turn has already been live, a transient subscribe
+		// failure during a serve restart keeps the full-window retry.
+		return turnAttemptResult{kind: turnServeDown}
 	}
 	defer sub.Close()
 
@@ -609,9 +679,10 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 
 	var reply strings.Builder
 	sent := false
-	// The handshake bound (ORCHICON_ASK_TIMEOUT) applies to this attempt's
-	// subscribe + send-accept + first event so a wedged serve fails fast
-	// instead of silently queuing; the reply window bounds the whole turn.
+	// The handshake bound (ORCHICON_ASK_TIMEOUT) starts after subscribe and
+	// only fires while the message is still un-accepted, so a wedged serve
+	// that never acknowledges the send fails fast; the reply window bounds
+	// the whole turn (and a serve that accepts but never replies).
 	handshake := time.NewTimer(askTimeout())
 	defer handshake.Stop()
 

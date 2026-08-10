@@ -84,9 +84,24 @@ type fakeSessionClient struct {
 	replies      []string
 	sub          *fakeBusSub
 	subscribeErr error
+	// serveDownFails is the number of Subscribe calls to fail before the
+	// serve "recovers" (a serve that dropped and is restarting). Each failed
+	// Subscribe decrements it; 0 means always reachable.
+	serveDownFails int
 }
 
 func (f *fakeSessionClient) Subscribe(ctx context.Context) (opencode.BusSub, error) {
+	// serveDownFails lets a test make the serve "go down": fail the next N
+	// Subscribe calls (a serve that never accepts a connection), then
+	// recover. Each failure decrements the counter, so a test can drop the
+	// serve mid-turn and bring it back.
+	f.mu.Lock()
+	if f.serveDownFails > 0 {
+		f.serveDownFails--
+		f.mu.Unlock()
+		return nil, errors.New("serve not reachable")
+	}
+	f.mu.Unlock()
 	if f.subscribeErr != nil {
 		return nil, f.subscribeErr
 	}
@@ -97,6 +112,14 @@ func (f *fakeSessionClient) Subscribe(ctx context.Context) (opencode.BusSub, err
 		f.sub = newFakeBusSub()
 	}
 	return f.sub, nil
+}
+
+// failNextSubscribes makes the next n Subscribe calls fail (serve down), then
+// recovers. Mutex-guarded so a test can drop the serve mid-turn.
+func (f *fakeSessionClient) failNextSubscribes(n int) {
+	f.mu.Lock()
+	f.serveDownFails = n
+	f.mu.Unlock()
 }
 
 // isClosed reports whether a channel has been closed (non-blocking).
@@ -981,6 +1004,90 @@ func TestCollectConversationReplyStopCancels(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+// TestCollectConversationReplyServeDownFailsFast verifies a serve that never
+// accepts a connection at send time fails fast with a clean, retryable error
+// (bounded by the short serve-down grace) instead of looping silently up to
+// the full reply window.
+func TestCollectConversationReplyServeDownFailsFast(t *testing.T) {
+	t.Setenv("ORCHICON_ASK_SERVE_DOWN_GRACE", "100ms")
+	// The reply window stays at its default (30m) — a correct fast-fail must
+	// return on the grace, not the window.
+	client := &fakeSessionClient{serveDownFails: 1 << 30}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
+	}
+	start := time.Now()
+	_, _, err := collectTurn(t, client, opts)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("serve-down turn took %v to fail, want fast-fail well under the 30m window", elapsed)
+	}
+	if err == nil || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("error = %v, want serve-unavailable error", err)
+	}
+}
+
+// TestCollectConversationReplyServeDownRecovers verifies the serve-down grace
+// is not a hard failure: a serve that drops before a connection and comes back
+// within the grace completes the turn normally.
+func TestCollectConversationReplyServeDownRecovers(t *testing.T) {
+	t.Setenv("ORCHICON_ASK_SERVE_DOWN_GRACE", "5s")
+	client := &fakeSessionClient{serveDownFails: 2}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
+	}
+	go func() {
+		waitForSend(t, client, 1)
+		client.sub.feed(busText("ses_live", "back after drop"))
+		client.sub.feed(busIdle("ses_live"))
+	}()
+	reply, sid, err := collectTurn(t, client, opts)
+	if err != nil {
+		t.Fatalf("collect error: %v", err)
+	}
+	if reply != "back after drop" {
+		t.Errorf("reply = %q, want %q", reply, "back after drop")
+	}
+	if sid != "ses_live" {
+		t.Errorf("final session = %q, want ses_live", sid)
+	}
+}
+
+// TestCollectConversationReplyDropAfterLiveKeepsWindow verifies a serve that
+// WAS live during the turn (a reply attempt connected) then drops again on a
+// later subscribe is NOT bounded by the short serve-down grace — it keeps the
+// full reply window (a restart after a live connection). The re-attach
+// succeeds and the turn completes.
+func TestCollectConversationReplyDropAfterLiveKeepsWindow(t *testing.T) {
+	t.Setenv("ORCHICON_ASK_SERVE_DOWN_GRACE", "10ms")
+	client := &fakeSessionClient{}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
+	}
+	go func() {
+		// First attempt: live, send accepted, then the bus dies.
+		waitForSend(t, client, 1)
+		client.sub.Close()
+		// The serve is "restarting": the next subscribe (the re-attach)
+		// fails once — the serve-down grace (10ms) must NOT fast-fail a turn
+		// that was already live.
+		client.failNextSubscribes(1)
+		// Then it recovers and completes the turn on the re-dispatch.
+		waitForSend(t, client, 2)
+		client.sub.feed(busText("ses_live", "recovered after restart"))
+		client.sub.feed(busIdle("ses_live"))
+	}()
+	reply, _, err := collectTurn(t, client, opts)
+	if err != nil {
+		t.Fatalf("collect error: %v", err)
+	}
+	if reply != "recovered after restart" {
+		t.Errorf("reply = %q, want %q", reply, "recovered after restart")
 	}
 }
 

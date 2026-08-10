@@ -147,8 +147,10 @@ export const Route = createRoute({
 
 	// Retry re-sends the most recent user message in the same conversation
 	// (the error message it follows was persisted by a failed turn).
+	// messages is chronological (oldest-first), so `find` would return the
+	// FIRST user message — iterate from the end for the LAST (most recent).
 	const handleRetry = useCallback(() => {
-		const lastUser = messages?.find(m => m.role === "user");
+		const lastUser = messages?.slice().reverse().find(m => m.role === "user");
 		if (lastUser?.content) {
 			handleSendMessage(lastUser.content);
 		}
