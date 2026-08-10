@@ -9,8 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// ContinueSessionOpts carries everything needed to run a one-shot
-// follow-up question against a worker's session WITHOUT creating a new
+// ContinueSessionOpts carries everything needed to run a follow-up
+// question against a worker's session WITHOUT creating a new
 // execution or work item.
 type ContinueSessionOpts struct {
 	ExecutionID  string

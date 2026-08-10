@@ -1,7 +1,8 @@
 // Session transport for the opencode adapter (Stage 3).
 //
-// The adapter drives worker executions through a persistent opencode
-// server/session instead of a one-shot `opencode run` subprocess. A serve
+// The adapter drives worker executions through persistent opencode
+// server/session — the ONE execution transport (the legacy `opencode
+// run` subprocess path was removed). A serve
 // instance (one always-on host serve for the in-process population, one
 // per workflow-run container for containerized executions) owns each
 // execution's session and its agent loop. This package is the HTTP+SSE

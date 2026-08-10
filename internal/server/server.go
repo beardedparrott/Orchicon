@@ -201,8 +201,9 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// follow-ups, and any execution not bound to a workflow-run container
 	// run as persistent sessions on it. The plane supervises the serve
 	// (spawn on boot + health watchdog with restart), so the session host
-	// is never down; a serve failure degrades that population to the
-	// legacy one-shot subprocess path.
+	// is never down. With the one-shot subprocess path removed, a serve
+	// failure now means those executions fail fast (failed_to_start)
+	// rather than degrading to a second transport.
 	var hostServe *opencode.HostServe
 	var serveCancel context.CancelFunc
 	if os.Getenv("ORCHICON_OPCODE_SESSION_TRANSPORT") != "0" {
@@ -216,7 +217,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			serveCancel = cancel
 			go func() {
 				if err := hostServe.Start(serveCtx); err != nil {
-					log.Warn("host opencode serve unavailable — sessions disabled, falling back to one-shot runs", "error", err)
+					log.Warn("host opencode serve unavailable — session-dependent executions will fail fast", "error", err)
 					return
 				}
 				hostServe.Watch(serveCtx)

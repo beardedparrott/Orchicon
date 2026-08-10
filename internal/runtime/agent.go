@@ -107,6 +107,15 @@ func RunSupervisor(socketPath string, log *slog.Logger) error {
 	handle := newChildRegistry(log)
 	defer handle.killAll(syscall.SIGKILL)
 
+	// Serve watchdog: poll the container's opencode serve and restart it
+	// when it stops answering /global/health (wedged OR exited). A serve
+	// that wedges is otherwise invisible — watchExec only fires on process
+	// exit — and the daemon's idempotent handshake would keep reporting it
+	// as up while every dispatch burned its 30s readiness probe. The
+	// watchdog restarts the serve in place (same port + password, stable
+	// XDG data dir), so sessions survive and the SSE client re-attaches.
+	go handle.watchServe()
+
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -165,11 +174,24 @@ type childRegistry struct {
 	mu  sync.Mutex
 	log *slog.Logger
 	cmd map[string]*execSession
+	// serveMu serializes serve lifecycle operations (bring-up + watchdog
+	// restart). A concurrent runServe handshake and watchServe restart must
+	// never both spawn a serve on the same port — the second Start fails
+	// ("address already in use") and would corrupt the registry.
+	serveMu sync.Mutex
 	// servePw is the container's opencode serve password, generated once
 	// by the supervisor on first serve startup and reused for the
 	// container's lifetime so idempotent serve handshakes return a stable
 	// credential.
 	servePw string
+	// serveReq is the AgentRequest the serve was last started with. The
+	// watchdog reuses it to restart the serve (same argv/env/cwd) after a
+	// wedge. Guarded by mu.
+	serveReq AgentRequest
+	// serveStarted marks that the serve has been brought up at least once,
+	// so the watchdog only acts on a serve the plane actually requested.
+	// Guarded by mu.
+	serveStarted bool
 }
 
 func newChildRegistry(log *slog.Logger) *childRegistry {
@@ -296,6 +318,23 @@ func (h *childRegistry) runExec(conn net.Conn, enc *json.Encoder, req AgentReque
 	s.attach(conn, enc)
 }
 
+// serveExecID is the reserved exec id for the container's opencode serve.
+const serveExecID = "__orchicon_serve__"
+
+// defaultServePort is the container-internal port the serve binds (and
+// the daemon publishes to a random host loopback port).
+const defaultServePort = 4096
+
+// serveDataDir is the stable per-container XDG_DATA_HOME for the serve.
+// It is deliberately NOT a fresh MkdirTemp per serve start (that is what
+// isolateOpenCodeData does for one-shot execs): a stable dir means a
+// watchdog restart of the serve preserves the container's sessions, and
+// the SSE client re-attaches by session id (same contract as the host
+// serve, which keeps its data dir across restarts). /tmp is a tmpfs in
+// runtime containers, so this is still ephemeral — wiped with the
+// container, never reaching the host's opencode data.
+const serveDataDir = "/tmp/orchicon-serve-data"
+
 // runServe starts the container's opencode serve as a DETACHED child and
 // answers with the port once it is healthy. The serve owns the agent
 // loops for every session in this container (one per execution); the
@@ -306,25 +345,45 @@ func (h *childRegistry) runExec(conn net.Conn, enc *json.Encoder, req AgentReque
 // argv defaults to `opencode serve --hostname 127.0.0.1 --port 4096` (the
 // port the daemon publishes); a request may override the argv.
 func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
-	const serveExecID = "__orchicon_serve__"
+	// Serialize serve lifecycle against the watchdog: a concurrent
+	// runServe handshake and watchServe restart must never both spawn a
+	// serve on the same port.
+	h.serveMu.Lock()
+	defer h.serveMu.Unlock()
+
 	h.mu.Lock()
 	if existing, ok := h.cmd[serveExecID]; ok {
-		// Serve already up: return the stable port + password. Idempotent
-		// — the plane re-Creates the runtime on every dispatch, and the
-		// container (created earlier by the WorkflowReconciler without a
-		// serve) must converge to the same serve on the first dispatch.
 		pw := h.servePw
 		h.mu.Unlock()
-		_ = existing
-		_ = enc.Encode(AgentEvent{Event: "serve", Port: defaultServePort, Password: pw})
-		return
+		// Serve already registered. Liveness-gate the idempotent path: a
+		// WEDGED serve (process alive but not answering health) must NOT be
+		// reported as up — that was the failure mode where every dispatch
+		// retry burned its 30s probe against a dead serve and then degraded.
+		// If the registered serve no longer answers, kill it, let it be
+		// removed from the registry, and start a fresh one below.
+		if pw != "" && serveHealthy(defaultServePort, pw) {
+			_ = existing
+			_ = enc.Encode(AgentEvent{Event: "serve", Port: defaultServePort, Password: pw})
+			return
+		}
+		h.log.Warn("serve registered but not healthy — restarting", "pid", existing.pidOrZero())
+		existing.kill()
+		// Fall through: h.cmd[serveExecID] is removed by watchExec once the
+		// killed process exits, so the fresh-start path below can register a
+		// new session without racing the stale entry. To make that immediate
+		// (not waiting on the reap), remove it now.
+		h.mu.Lock()
+		delete(h.cmd, serveExecID)
+		h.mu.Unlock()
+	} else {
+		h.mu.Unlock()
 	}
+
 	pw := h.servePw
 	if pw == "" {
 		pw = randomServePassword()
 		h.servePw = pw
 	}
-	h.mu.Unlock()
 
 	if len(req.Argv) == 0 {
 		req.Argv = []string{"opencode", "serve", "--hostname", "0.0.0.0", "--port", fmt.Sprintf("%d", defaultServePort)}
@@ -344,7 +403,9 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 	}
 	env := agentEnv(req)
 	env = setEnv(env, "OPENCODE_SERVER_PASSWORD", pw)
-	env = isolateOpenCodeData(env)
+	// The serve uses a STABLE XDG data dir (not a fresh temp dir) so a
+	// watchdog restart preserves sessions across the restart.
+	env = isolateOpenCodeDataInto(env, serveDataDir)
 	// The serve runs the agent's tools, so the same safety guard applies:
 	// destructive commands are refused even from worker subprocesses.
 	guardDir, guardErr := guard.MakeGuard("/tmp", req.ProjectDir)
@@ -368,6 +429,8 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 
 	h.mu.Lock()
 	h.cmd[serveExecID] = s
+	h.serveReq = req
+	h.serveStarted = true
 	h.mu.Unlock()
 	s.cmd = cmd
 	go h.watchExec(s)
@@ -392,6 +455,161 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 	_ = enc.Encode(AgentEvent{Event: "error", Error: "serve did not become ready within 30s"})
 }
 
+// pidOrZero returns the child's process id (0 when not started).
+func (s *execSession) pidOrZero() int {
+	if s != nil && s.cmd != nil && s.cmd.Process != nil {
+		return s.cmd.Process.Pid
+	}
+	return 0
+}
+
+// watchServe is the serve health watchdog. It polls the container's
+// opencode serve every few seconds and, when it stops answering
+// /global/health (wedged — alive but hung — or exited), restarts it in
+// place: same port, same password, same stable XDG data dir, so sessions
+// survive and the SSE client re-attaches by id (the same contract as the
+// host serve's Watch loop). A wedged serve is otherwise invisible to
+// watchExec (which only fires on process exit) and would make every
+// dispatch burn its 30s readiness probe then fail.
+func (h *childRegistry) watchServe() {
+	backoff := serveWatchInterval
+	for {
+		time.Sleep(serveWatchInterval)
+		h.mu.Lock()
+		s, ok := h.cmd[serveExecID]
+		req := h.serveReq
+		started := h.serveStarted
+		pw := h.servePw
+		h.mu.Unlock()
+		if !ok || !started || s == nil || s.cmd == nil || s.cmd.Process == nil {
+			backoff = serveWatchInterval
+			continue
+		}
+		if serveHealthy(defaultServePort, pw) {
+			backoff = serveWatchInterval
+			continue
+		}
+		// Unhealthy. Restart with backoff: kill the wedged process, let
+		// watchExec unregister it, then bring the serve back up with the
+		// same request. If the serve has genuinely gone away (crashed), a
+		// fresh one takes its place.
+		h.log.Warn("serve unhealthy — restarting", "pid", s.pidOrZero(), "backoff", backoff.String())
+		time.Sleep(backoff)
+		h.serveMu.Lock()
+		// Re-check under serveMu: a runServe handshake may have already
+		// replaced the serve while we slept. Only restart if the registered
+		// session is still this (wedged) one and still unhealthy.
+		h.mu.Lock()
+		cur, ok := h.cmd[serveExecID]
+		if !ok || cur != s {
+			h.mu.Unlock()
+			h.serveMu.Unlock()
+			backoff = serveWatchInterval
+			continue
+		}
+		if serveHealthy(defaultServePort, h.servePw) {
+			h.mu.Unlock()
+			h.serveMu.Unlock()
+			backoff = serveWatchInterval
+			continue
+		}
+		s.kill()
+		delete(h.cmd, serveExecID)
+		req = h.serveReq
+		h.mu.Unlock()
+		if err := h.startServeAgain(req); err != nil {
+			h.serveMu.Unlock()
+			h.log.Error("serve restart failed", "error", err)
+			if backoff < serveWatchMaxBackoff {
+				backoff *= 2
+			}
+			continue
+		}
+		h.serveMu.Unlock()
+		backoff = serveWatchInterval
+		h.log.Info("serve restarted by watchdog", "port", defaultServePort)
+	}
+}
+
+// startServeAgain restarts the container's opencode serve after a wedge,
+// using the stored AgentRequest. It shares the fresh-start path of
+// runServe but encodes nothing (the requesting plane's conn is long
+// gone) — the daemon's next Create handshake converges to it.
+func (h *childRegistry) startServeAgain(req AgentRequest) error {
+	if len(req.Argv) == 0 {
+		req.Argv = []string{"opencode", "serve", "--hostname", "0.0.0.0", "--port", fmt.Sprintf("%d", defaultServePort)}
+	}
+	base := filepath.Base(req.Argv[0])
+	if !runtimeBinAllowlist[base] {
+		return fmt.Errorf("argv[0] not allowlisted: %s", base)
+	}
+
+	h.mu.Lock()
+	pw := h.servePw
+	if pw == "" {
+		pw = randomServePassword()
+		h.servePw = pw
+	}
+	h.mu.Unlock()
+
+	s := newExecSession(serveExecID, 0)
+	s.detached = true
+
+	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
+	if req.Cwd != "" {
+		cmd.Dir = req.Cwd
+	}
+	env := agentEnv(req)
+	env = setEnv(env, "OPENCODE_SERVER_PASSWORD", pw)
+	env = isolateOpenCodeDataInto(env, serveDataDir)
+	guardDir, guardErr := guard.MakeGuard("/tmp", req.ProjectDir)
+	if guardErr != nil {
+		h.log.Warn("supervisor: guard not applied to serve restart", "error", guardErr)
+	} else {
+		env = prependGuard(env, guardDir)
+		s.guardDir = guardDir
+	}
+	cmd.Env = env
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		if s.guardDir != "" {
+			os.RemoveAll(s.guardDir)
+		}
+		return err
+	}
+
+	h.mu.Lock()
+	h.cmd[serveExecID] = s
+	h.serveReq = req
+	h.mu.Unlock()
+	s.cmd = cmd
+	go h.watchExec(s)
+
+	// Wait for the restarted serve to answer health so the next dispatch
+	// converges to a usable serve rather than racing a half-initialized one.
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if serveHealthy(defaultServePort, pw) {
+			return nil
+		}
+		select {
+		case <-time.After(250 * time.Millisecond):
+		case <-s.done:
+			return fmt.Errorf("serve restart exited before becoming ready")
+		}
+	}
+	_ = cmd.Process.Kill()
+	return fmt.Errorf("serve restart did not become ready within 30s")
+}
+
+// serveWatchInterval and serveWatchMaxBackoff tune the serve watchdog.
+const (
+	serveWatchInterval    = 10 * time.Second
+	serveWatchMaxBackoff  = 60 * time.Second
+)
+
 // randomServePassword returns a hex password for the container's serve.
 func randomServePassword() string {
 	b := make([]byte, 16)
@@ -400,10 +618,6 @@ func randomServePassword() string {
 	}
 	return hex.EncodeToString(b)
 }
-
-// defaultServePort is the container-internal port the serve binds (and
-// the daemon publishes to a random host loopback port).
-const defaultServePort = 4096
 
 // serveHealthy reports whether the in-container serve answers
 // /global/health on the given port with basic auth.
@@ -449,8 +663,14 @@ func (h *childRegistry) watchExec(s *execSession) {
 	s.writeMu.Unlock()
 	s.mu.Unlock()
 	close(s.done)
+	// Only unregister if this session is STILL the registered one. A wedged
+	// serve that was killed and replaced by the watchdog / a liveness-gated
+	// runServe has a new session under the same serveExecID — its stale
+	// watchExec must not remove the replacement from the registry.
 	h.mu.Lock()
-	delete(h.cmd, s.id)
+	if cur, ok := h.cmd[s.id]; ok && cur == s {
+		delete(h.cmd, s.id)
+	}
 	h.mu.Unlock()
 	h.cleanupSession(s)
 }
@@ -545,6 +765,14 @@ func (s *execSession) cancelGrace() {
 	if s.grace != nil {
 		s.grace.Stop()
 		s.grace = nil
+	}
+}
+
+// kill terminates the child process (SIGKILL) without waiting. Used to
+// tear down a wedged serve so a fresh one can take its place.
+func (s *execSession) kill() {
+	if s != nil && s.cmd != nil && s.cmd.Process != nil {
+		_ = s.cmd.Process.Kill()
 	}
 }
 
@@ -681,14 +909,26 @@ func isolateOpenCodeData(env []string) []string {
 	if err != nil {
 		return env
 	}
+	return isolateOpenCodeDataInto(env, xdg)
+}
+
+// isolateOpenCodeDataInto redirects opencode state into a caller-chosen
+// directory (seeded with the model auth) and returns the env with
+// XDG_DATA_HOME set. The serve uses a STABLE dir (serveDataDir) so a
+// watchdog restart preserves sessions; one-shot execs use a fresh temp
+// dir via isolateOpenCodeData.
+func isolateOpenCodeDataInto(env []string, xdg string) []string {
+	if xdg == "" {
+		return env
+	}
 	home := os.Getenv("HOME")
 	src := filepath.Join(home, ".local", "share", "opencode", "auth.json")
 	if b, err := os.ReadFile(src); err == nil {
 		dir := filepath.Join(xdg, "opencode")
-		_ = os.MkdirAll(dir, 0o755)
-		if werr := os.WriteFile(filepath.Join(dir, "auth.json"), b, 0o600); werr != nil {
-			os.RemoveAll(xdg)
-			return env
+		if err := os.MkdirAll(dir, 0o755); err == nil {
+			if werr := os.WriteFile(filepath.Join(dir, "auth.json"), b, 0o600); werr != nil {
+				return env
+			}
 		}
 	}
 	return setEnv(env, "XDG_DATA_HOME", xdg)

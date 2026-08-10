@@ -1,14 +1,11 @@
 package askorchicon
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -115,12 +112,11 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 	// up-to-date context about what it operates on (fresh per message).
 	projectContext := s.fetchProjectContext(ctx, tenantID)
 
-	// System prompt variants for the session transport (Task 1): the seed
+	// System prompt variants for the session transport: the seed
 	// variant (DB history included) is used when a fresh session is created
 	// (first message, or a lost session recreated); the reuse variant (no
 	// history — it already lives in the session) is the steady-state system
-	// for follow-up turns. The legacy one-shot path uses the seed variant
-	// with the user's request appended (buildLLMPrompt).
+	// for follow-up turns.
 	seedSystem := buildSystemPrompt(cfg, s.toolRegistry, prevMessages, true, req.Msg.Attachments, projectContext)
 	reuseSystem := buildSystemPrompt(cfg, s.toolRegistry, prevMessages, false, req.Msg.Attachments, projectContext)
 
@@ -197,21 +193,26 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 		}
 	}
 
-	// Task 1 session transport: when the host serve is available, the turn
-	// runs as a persistent opencode session (first message creates it and
-	// persists the id; follow-ups reuse it); otherwise we degrade to the
-	// legacy per-message `opencode run` subprocess (existing behavior).
+	// Session transport: the turn runs as a persistent opencode session on
+	// the host serve (first message creates it and persists the id;
+	// follow-ups reuse it). The legacy per-message `opencode run`
+	// subprocess path was REMOVED — when the host serve is unavailable the
+	// turn fails fast with a clean, human-readable message instead of
+	// silently degrading to a second transport.
 	var msgID string
 	var elapsed time.Duration
 	var streamErr error
 	var turnSessionID string
-	if client := s.hostServeClient(); client != nil {
-		msgID, turnSessionID, elapsed, streamErr = s.runOpenCodeTurn(ctx, client, tenantID,
-			req.Msg.ConversationId, conv.SessionID, modelRef, seedSystem, reuseSystem, msg, cb)
-	} else {
-		fullPrompt := buildLLMPrompt(cfg, s.toolRegistry, prevMessages, msg, req.Msg.Attachments, projectContext)
-		msgID, elapsed, streamErr = s.runOpenCodeStream(ctx, tenantID, modelRef, fullPrompt, msg, cb)
+	client := s.hostServeClient()
+	if client == nil {
+		return stream.Send(&apiv1.ChatStreamResponse{
+			Event: &apiv1.ChatStreamResponse_Error{
+				Error: &apiv1.ErrorChunk{Message: "Ask Orchicon is temporarily unavailable — the opencode serve is starting. Please try again in a moment."},
+			},
+		})
 	}
+	msgID, turnSessionID, elapsed, streamErr = s.runOpenCodeTurn(ctx, client, tenantID,
+		req.Msg.ConversationId, conv.SessionID, modelRef, seedSystem, reuseSystem, msg, cb)
 
 	elapsedMS := elapsed.Milliseconds()
 	metaJSON, _ := json.Marshal(map[string]any{
@@ -282,17 +283,6 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 			},
 		},
 	})
-}
-
-// buildLLMPrompt assembles the full text prompt sent to the LLM on the
-// legacy one-shot `opencode run` path: the seeded system prompt (identity
-// + DB history + attachments + projects + tools) followed by the user's
-// request. The tools are exposed to the model natively through the Orchicon
-// MCP server (registered in the opencode config), so this prompt only
-// orients the model — it does not emulate a text tool-call protocol.
-func buildLLMPrompt(cfg db.AgentConfigRow, registry *ToolRegistry, history []db.MessageRow, userMsg string, attachments []*apiv1.AttachmentInput, projectContext string) string {
-	return buildSystemPrompt(cfg, registry, history, true, attachments, projectContext) +
-		"## User's request\n" + userMsg + "\n\n"
 }
 
 // buildSystemPrompt assembles the per-message `system` prompt for the Ask
@@ -372,99 +362,8 @@ func buildSystemPrompt(cfg db.AgentConfigRow, registry *ToolRegistry, history []
 	return b.String()
 }
 
-// runOpenCodeStream spawns the opencode CLI subprocess and calls the callback
-// for each JSON event as it arrives on stdout. A configurable hard timeout
-// prevents hangs when the model or provider stalls. The Orchicon MCP server is
-// registered in the injected config (tenant-scoped) so the model drives
-// Orchicon tools natively through opencode's MCP integration.
-func (s *Service) runOpenCodeStream(ctx context.Context, tenantID, modelRef, prompt, userMessage string, cb streamCallback) (msgID string, elapsed time.Duration, err error) {
-	start := time.Now()
-	msgID = db.NewID()
-
-	cfgJSON := opencode.BuildConfigContent(opencode.ConfigOptions{
-		AgentName:   "orchicon-assistant",
-		AgentPrompt: prompt,
-		ModelRef:    modelRef,
-		TenantID:    tenantID,
-		OrchiconMCP: true,
-	})
-
-	args := []string{
-		"run",
-		"--format", "json",
-		"--model", modelRef,
-		"--agent", "orchicon-assistant",
-		"--auto",
-		userMessage,
-	}
-
-	// Use a configurable timeout so a hanging model never blocks the
-	// conversation indefinitely. Default 300s, override via ORCHICON_ASK_TIMEOUT.
-	runCtx, cancel := context.WithTimeout(ctx, askTimeout())
-	defer cancel()
-
-	cmd := exec.CommandContext(runCtx, "opencode", args...)
-	cmd.Env = append(cmd.Environ(),
-		"OPENCODE_CONFIG_CONTENT="+cfgJSON,
-	)
-	// Place the opencode subprocess in its own process group so that when
-	// the parent server dies unexpectedly (e.g. SIGKILL during binary
-	// replacement), the orphaned opencode and its MCP sidecar can be
-	// found and cleaned up by the startup routine. The group leader PID
-	// is the subprocess PID; we can kill the whole group with
-	// syscall.Kill(-pgid, sig). Unix-only (Setpgid does not exist on
-	// Windows) — see procattr_{unix,windows}.go.
-	setChildProcessGroup(cmd)
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return msgID, 0, fmt.Errorf("opencode stdout pipe: %w", err)
-	}
-	var stderrBuf bytes.Buffer
-	cmd.Stderr = &stderrBuf
-
-	if err := cmd.Start(); err != nil {
-		return msgID, 0, fmt.Errorf("opencode start: %w", err)
-	}
-
-	scanner := bufio.NewScanner(stdout)
-	const maxScannerToken = 512 * 1024 // 512KB — opencode JSON events can be large
-	scanner.Buffer(make([]byte, maxScannerToken), maxScannerToken)
-	for scanner.Scan() {
-		line := scanner.Text()
-		var evt opencodeEvent
-		if err := json.Unmarshal([]byte(line), &evt); err != nil {
-			continue
-		}
-		if err := cb(evt); err != nil {
-			cmd.Process.Kill()
-			return msgID, time.Since(start), nil
-		}
-	}
-
-	scanErr := scanner.Err()
-	waitErr := cmd.Wait()
-	elapsed = time.Since(start)
-
-	if waitErr != nil {
-		if errors.Is(waitErr, context.DeadlineExceeded) || errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-			return msgID, elapsed, fmt.Errorf("request timed out after %s — the model may be overloaded or unavailable", askTimeout())
-		}
-		stderrText := strings.TrimSpace(stderrBuf.String())
-		if stderrText != "" {
-			return msgID, elapsed, fmt.Errorf("opencode: %s", stderrText)
-		}
-		return msgID, elapsed, fmt.Errorf("opencode exited: %w", waitErr)
-	}
-	if scanErr != nil {
-		return msgID, elapsed, fmt.Errorf("opencode stdout scan: %w", scanErr)
-	}
-
-	return msgID, elapsed, nil
-}
-
 // sessionTurnClient is the session surface the chat turn loop drives
-// (Task 1 session transport). *opencode.SessionClient satisfies it; tests
+// (the session transport). *opencode.SessionClient satisfies it; tests
 // inject a fake to replay bus events without a live serve or a model.
 type sessionTurnClient interface {
 	Subscribe(ctx context.Context) (opencode.BusSub, error)
@@ -476,7 +375,8 @@ type sessionTurnClient interface {
 
 // hostServeClient returns the host serve's session client, or nil when the
 // session transport is unavailable (serve disabled, not started, or failed)
-// — the caller degrades to the legacy one-shot subprocess path.
+// — the caller fails the turn fast with a clean message (no one-shot
+// fallback).
 func (s *Service) hostServeClient() sessionTurnClient {
 	if s.hostServe == nil {
 		return nil
@@ -508,8 +408,7 @@ func (s *Service) persistConversationSessionID(ctx context.Context, tenantID, co
 }
 
 // runOpenCodeTurn drives one chat turn over a persistent opencode session
-// on the host serve (Task 1 session transport), replacing the per-message
-// `opencode run` subprocess:
+// on the host serve (the session transport):
 //
 //   - first message (or a pre-migration conversation that never chatted):
 //     CreateSession (directory-less) + persist the id immediately;
@@ -548,8 +447,7 @@ func (s *Service) runOpenCodeTurn(ctx context.Context, client sessionTurnClient,
 		s.persistConversationSessionID(ctx, tenantID, convID, sid)
 	}
 
-	// Subscribe BEFORE send so early text chunks aren't missed (mirrors the
-	// one-shot path establishing the stdout pipe before start).
+	// Subscribe BEFORE send so early text chunks aren't missed.
 	subCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	sub, err := client.Subscribe(subCtx)
@@ -635,9 +533,8 @@ func (s *Service) runOpenCodeTurn(ctx context.Context, client sessionTurnClient,
 					return msgID, sid, time.Since(start), nil
 				}
 			case "permission.asked":
-				// Auto-approve once (the --auto equivalent the one-shot
-				// path ran with). Session-level deny rules mean this should
-				// rarely fire — defensive only.
+				// Auto-approve (the --auto equivalent). Session-level deny
+				// rules mean this should rarely fire — defensive only.
 				if pid, _ := evt.Properties["id"].(string); pid != "" {
 					go func() { _ = client.ReplyPermission(context.WithoutCancel(ctx), sid, pid) }()
 				}

@@ -31,9 +31,9 @@ type Service struct {
 	// the session transport is unavailable.
 	sendMessage func(ctx context.Context, execID, message string) error
 	// hostServe is the always-on host opencode serve. Chat turns run as
-	// persistent sessions on it (Task 1); nil when the transport is
-	// disabled or the serve could not start — ChatStream degrades to the
-	// legacy per-message `opencode run` subprocess path.
+	// persistent sessions on it; nil when the transport is disabled or the
+	// serve could not start — ChatStream fails the turn fast with a clean
+	// message (the one-shot `opencode run` path was removed).
 	hostServe *opencode.HostServe
 	apiv1connect.UnimplementedAskOrchiconServiceHandler
 }
@@ -62,7 +62,7 @@ func (s *Service) SetSendExecutionMessage(fn func(ctx context.Context, execID, m
 // SetHostServe wires the always-on host opencode serve into the chat so
 // conversation turns run as persistent sessions on it (first message
 // CreateSession, follow-ups prompt_async on the same session). The service
-// treats a nil serve as "use the legacy one-shot subprocess path".
+// treats a nil serve as "fail the turn fast" (no one-shot fallback).
 func (s *Service) SetHostServe(hs *opencode.HostServe) {
 	s.hostServe = hs
 }

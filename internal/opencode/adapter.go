@@ -1,13 +1,16 @@
-// Package opencode implements the OpenCode adapter bridge — a CLI
-// subprocess wrapper that translates OpenCode's stdout JSON into
-// execution telemetry events (docs/04_Runtime_Adapter_SDK.md §6).
+// Package opencode implements the OpenCode adapter bridge — the single
+// session-transport bridge that drives worker executions as persistent
+// opencode sessions on a serve instance (docs/04_Runtime_Adapter_SDK.md
+// §6).
 //
-// v0.1 transport strategy (docs/04 §6.0): the adapter spawns OpenCode
-// as a subprocess, drives it via CLI flags, and parses JSON from stdout.
-// This is the only stable surface available today and is sufficient to
-// validate the orchestration model end-to-end. When OpenCode ships a
-// stable IPC API, the adapter swaps its internals to an IPC client; the
-// gRPC contract and control plane are unaffected.
+// Transport strategy (docs/04 §6.0): every execution runs as a persistent
+// opencode session created + driven over the serve HTTP+SSE API
+// (session_run.go). The legacy one-shot `opencode run` subprocess path
+// was REMOVED: a run that cannot get a session fails loudly
+// (failed_to_start → workflow recovery) instead of silently degrading to
+// a second, inferior transport. When OpenCode ships a stable IPC API, the
+// adapter swaps its internals to an IPC client; the gRPC contract and
+// control plane are unaffected.
 //
 // The adapter MUST NOT advertise capabilities the CLI surface cannot
 // honestly deliver (docs/04 §6.2). v0.1 advertises a reduced
@@ -15,13 +18,9 @@
 package opencode
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -30,8 +29,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/beardedparrott/orchicon/internal/telemetry"
-	"go.opentelemetry.io/otel/attribute"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -40,15 +37,13 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// Adapter is the OpenCode CLI adapter bridge. It implements
-// scheduler.AdapterBridge. v0.1 transports: the legacy one-shot
-// `opencode run` subprocess (stdout JSON parsed into telemetry events)
-// and, when sessions are enabled, a persistent opencode session per
-// execution driven through the serve HTTP+SSE API (session_run.go).
+// Adapter is the OpenCode adapter bridge. It implements
+// scheduler.AdapterBridge. Every execution runs as a persistent opencode
+// session driven through a serve's HTTP+SSE API (session_run.go); the
+// legacy one-shot `opencode run` subprocess transport was removed.
 type Adapter struct {
-	log    *slog.Logger
-	mu     sync.Mutex
-	active map[string]*exec.Cmd // execution_id → running one-shot subprocess
+	log *slog.Logger
+	mu  sync.Mutex
 
 	// sessions tracks live session-transport executions (execution_id →
 	// runner). It is the routing table for SendExecutionMessage and makes
@@ -58,20 +53,13 @@ type Adapter struct {
 	sessions map[string]*sessionRun
 
 	// host is the always-on host opencode serve for the in-process
-	// (local) execution population. Nil or disabled = legacy one-shot path.
+	// (local) execution population. Session-transport only.
 	host *HostServe
 
-	// stallReason records the stall reason that terminated an execution,
-	// so the OnResult(false) error message keeps the actual trigger
-	// (e.g. "stalled:no_progress") instead of a generic "signal: killed".
-	// Keyed by execution id; set by the monitor's onStall closure before
-	// the kill, read+cleared by the terminal error builder.
-	stallReason map[string]string
-
 	// rt is the workflow runtime daemon client. When non-nil AND an
-	// execution carries a RuntimeWorkflowID, the adapter dispatches into
-	// that workflow's runtime container instead of spawning a local
-	// subprocess. Nil keeps everything in-process (headless serve).
+	// execution carries a RuntimeWorkflowID, the adapter reaches that
+	// workflow's runtime container serve for the session. Nil keeps
+	// everything in-process (headless serve).
 	rt *runtime.Client
 
 	// usageRecorder records LLM usage (Postgres dual-write + OTel
@@ -98,15 +86,16 @@ func (a *Adapter) SetRuntimeClient(rt *runtime.Client) { a.rt = rt }
 
 // SetHostServe injects the always-on host opencode serve manager. When
 // set AND sessions are enabled, local (in-process) executions run as
-// persistent sessions on it. Nil = legacy one-shot subprocess path.
+// persistent sessions on it. Nil means no host serve is available — such
+// executions fail fast (the one-shot subprocess path was removed).
 func (a *Adapter) SetHostServe(hs *HostServe) { a.host = hs }
 
 // SendExecutionMessage routes a mid-run human message into a live session
 // execution. It does NOT create a new execution, work item, or workflow
 // state — the message joins the session's existing turn queue and the
 // reply streams back through the normal execution event stream. Returns
-// an error when the execution has no live session (already finished,
-// legacy one-shot path, or unknown execution).
+// an error when the execution has no live session (already finished or
+// unknown execution).
 func (a *Adapter) SendExecutionMessage(ctx context.Context, execID, message string) error {
 	a.mu.Lock()
 	r := a.sessions[execID]
@@ -125,9 +114,8 @@ func (a *Adapter) SendExecutionMessage(ctx context.Context, execID, message stri
 
 // sessionsEnabled reports whether the session transport is enabled for an
 // execution. The global kill-switch ORCHICON_OPCODE_SESSION_TRANSPORT=0
-// disables it everywhere (legacy one-shot path); otherwise sessions are
-// the default. A per-worker/tenant flag rides the manifest once the flag
-// plumbing lands (Stage 3 config).
+// disables it everywhere — with the one-shot path removed, a disabled
+// transport means executions FAIL (fail-fast) rather than degrading.
 func (a *Adapter) sessionsEnabled(manifest scheduler.ExecutionManifest) bool {
 	return os.Getenv("ORCHICON_OPCODE_SESSION_TRANSPORT") != "0"
 }
@@ -135,8 +123,8 @@ func (a *Adapter) sessionsEnabled(manifest scheduler.ExecutionManifest) bool {
 // sessionClientFor resolves the SessionClient for an execution: the
 // per-container serve for workflow-run executions (ensuring the container
 // exists + is serving), or the host serve for the in-process population.
-// Returns nil when no serve is available — the caller falls back to the
-// legacy one-shot path.
+// Returns nil when no serve is available — the caller fails the execution
+// (the legacy one-shot fallback was removed).
 func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.ExecutionManifest) *SessionClient {
 	if a.rt != nil && manifest.RuntimeWorkflowID != "" {
 		resp, err := a.rt.Create(ctx, runtime.CreateRequest{
@@ -190,7 +178,7 @@ func (a *Adapter) runtimeServeConfig(manifest scheduler.ExecutionManifest) strin
 // startViaSession runs an execution through a persistent opencode session
 // on the given serve. Returns nil once the execution completes (OnResult
 // fired); a non-nil error means the session transport could not be set up
-// and the caller should fall back to the one-shot subprocess path.
+// — the caller surfaces it as a failed execution (no one-shot fallback).
 func (a *Adapter) startViaSession(ctx context.Context, procCtx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, callbacks scheduler.ExecutionCallbacks, client *SessionClient, modelRef string) error {
 	if client == nil {
 		return fmt.Errorf("no opencode serve available")
@@ -214,20 +202,14 @@ func (a *Adapter) startViaSession(ctx context.Context, procCtx context.Context, 
 // IsExecutionActive reports whether an in-process execution subprocess is
 // still tracked as running. Used by the execution-liveness reaper to
 // detect executions orphaned by a control-plane restart (a fresh boot has
-// an empty active map, so every previously-running in-process execution
-// is correctly reported dead). Session-transport executions are tracked
-// in the sessions registry and report active while their runner lives.
+// an empty sessions registry, so every previously-running execution is
+// correctly reported dead). Session-transport executions are tracked in
+// the sessions registry and report active while their runner lives.
 func (a *Adapter) IsExecutionActive(execID string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if _, ok := a.sessions[execID]; ok {
-		return true
-	}
-	cmd, ok := a.active[execID]
-	if !ok || cmd == nil || cmd.Process == nil {
-		return false
-	}
-	return cmd.ProcessState == nil
+	_, ok := a.sessions[execID]
+	return ok
 }
 
 // UsageRecord is the usage sample the adapter emits on step_finish
@@ -262,73 +244,23 @@ func (a *Adapter) SetUsageRecorder(fn UsageRecorderFunc) { a.usageRecorder = fn 
 // session transcript is not persisted.
 func (a *Adapter) SetSessionStore(fn SessionStoreFunc) { a.sessionStore = fn }
 
-// recordStallReason remembers which stall signal terminated an execution so
-// the terminal error message preserves the real trigger (e.g.
-// "stalled:no_progress") instead of a generic "signal: killed". Read+cleared
-// by the terminal error builders in Start and startInRuntime.
-func (a *Adapter) recordStallReason(execID, reason string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.stallReason[execID] = reason
-}
-
-// takeStallReason returns and clears the recorded stall reason for an
-// execution ("" if none — normal completion or non-stall failure).
-func (a *Adapter) takeStallReason(execID string) string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	r := a.stallReason[execID]
-	delete(a.stallReason, execID)
-	return r
-}
-
-// terminateOnStall kills the subprocess for a fatal stall so the execution
-// lands in `failed` via the normal OnResult(false) → pollTaskStep recovery
-// path. workflowID is the runtime container the exec runs in ("" for a local
-// in-process subprocess). For the runtime path it signals the supervisor to
-// SIGKILL the opencode child; for the local path it kills the tracked
-// subprocess directly. The stall reason is recorded first so the terminal
-// error message preserves why the execution was terminated.
-func (a *Adapter) terminateOnStall(ctx context.Context, execID, reason, workflowID string) {
-	a.recordStallReason(execID, reason)
-	if workflowID != "" && a.rt != nil {
-		_ = a.rt.Signal(ctx, workflowID, runtime.SignalRequest{ExecID: execID, Signal: "SIGKILL"})
-		return
-	}
-	a.mu.Lock()
-	cmd := a.active[execID]
-	a.mu.Unlock()
-	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
-	}
-}
-
 // workerAgent is the opencode agent name the adapter injects the worker's
 // composed system prompt under (selected with --agent).
 const workerAgent = "orchicon-worker"
 
-// Default reconnect tuning (overridable via tenant settings). Reconnect
-// attempts bounds how many times a broken exec stream is retried; the
-// reconnect grace is how long the runtime supervisor keeps an orphaned
-// child alive waiting for a re-attach.
-const (
-	defaultReconnectAttempts     = 3
-	defaultReconnectGraceSeconds = 60
-)
-
 // New creates an OpenCode adapter bridge.
 func New(log *slog.Logger) *Adapter {
 	return &Adapter{
-		log:         log,
-		active:      make(map[string]*exec.Cmd),
-		sessions:    make(map[string]*sessionRun),
-		stallReason: make(map[string]string),
+		log:      log,
+		sessions: make(map[string]*sessionRun),
 	}
 }
 
-// Start spawns an OpenCode subprocess for the given execution and
-// streams telemetry back via the callbacks (docs/03 §4, docs/04 §6).
-// The subprocess runs until completion or context cancellation.
+// Start runs the given execution as a persistent opencode session on a
+// serve instance (the host serve for the in-process population, the
+// workflow's runtime container serve for workflow runs) and streams
+// telemetry back via the callbacks (docs/03 §4, docs/04 §6). The session
+// runs until completion or context cancellation.
 //
 // Per AGENTS.md verification standards: this adapter calls the REAL
 // `opencode` runtime. Simulation mode is an explicit opt-in via the
@@ -339,6 +271,12 @@ func New(log *slog.Logger) *Adapter {
 // works). Verification workers/executions must pin a free model in
 // model_ref (e.g. opencode/deepseek-v4-flash-free).
 //
+// The legacy one-shot `opencode run` subprocess path was REMOVED: when
+// no serve is available (or the session transport is disabled via
+// ORCHICON_OPCODE_SESSION_TRANSPORT=0), Start returns an error and the
+// execution fails (failed_to_start → workflow recovery) instead of
+// degrading to a second, inferior transport.
+//
 // Two recovery-relevant guardrails (docs/06 §2 triggers):
 //   - Stall detection: a progress monitor detects stuck-looping (no
 //     progress, no file changes, repeated tool calls) and raises
@@ -346,7 +284,7 @@ func New(log *slog.Logger) *Adapter {
 //     can't (a worker making "progress" but spinning).
 //   - Wall-clock timeout: the worker's budget_overrides.wall_clock_seconds
 //     (default 3600) is enforced as a per-execution context deadline.
-//     When it hits, the subprocess is killed (exec.CommandContext) →
+//     When it hits, the session turn is aborted →
 //     OnResult(false) → recovery triggered with reason
 //     "wall_clock_timeout". This is the runaway-spend backstop.
 func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, callbacks scheduler.ExecutionCallbacks) error {
@@ -395,26 +333,8 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		defer cancel()
 	}
 
-	// Build the command. opencode v1.x uses `opencode run [message]`
-	// with --format json for machine-readable stdout events
-	// (docs/04 §6.0: CLI subprocess is the v0.1 transport). The goal
-	// (task title) is the positional message; the model ref maps to
-	// --model.
-	//
-	// System prompts are configured via opencode's agent config
-	// (the `prompt` field on an agent), not a CLI flag. We pass the
-	// composed worker system prompt through OPENCODE_CONFIG_CONTENT
-	// (a JSON document consumed by opencode v1.x at startup) and
-	// select it with --agent. This ensures the worker's Role, Skills,
-	// Behavior, and AGENTS.md context are actually delivered to the
-	// model on every interaction — see worker prompt fields refactor
-	// (v0.1.139). Earlier code set OPENCODE_SYSTEM_PROMPT as an env
-	// var, but opencode does not read that var, so the prompt was
-	// silently dropped.
-	args := []string{
-		"run",
-		"--format", "json",
-	}
+	// Resolve the model reference. This is the ONLY dispatch gate here —
+	// the session transport sends it per message (docs/04 §6.0).
 	modelRef := manifest.ModelRef
 	if modelRef == "" {
 		modelRef = manifest.DefaultModelRef
@@ -423,330 +343,52 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		}
 		a.log.Info("no model_ref on worker, using tenant default", "model", modelRef, "execution", execRow.ID)
 	}
-	args = append(args, "--model", modelRef)
-	// Inject the worker's composed system prompt via a custom agent
-	// (orchicon-worker) so the prompt reaches the model on every
-	// turn. Auto-approve permissions so the non-interactive run
-	// doesn't block on prompts (docs/04 §6.1: non-interactive mode).
-	// --dir alone does NOT prevent out-of-project access (agents can
-	// still run commands against paths outside the project root); the
-	// actual sandbox is enforced by the permission rules injected into
-	// OPENCODE_CONFIG_CONTENT in BuildConfigContent — external_directory
-	// is denied except for the single ScratchDir carve-out (/tmp/orchicon)
-	// and destructive bash commands are hard-denied, both of which hold
-	// even under --auto (docs/05 §10: workers must operate within their
-	// assigned project directory).
-	if manifest.SystemPrompt != "" {
-		args = append(args, "--agent", workerAgent)
-	}
-	args = append(args, "--auto", manifest.Goal)
-
-	// Resolve the working directory FIRST, before creating the
-	// command, so --dir is baked into the arg slice. Go's
-	// exec.CommandContext captures args at creation time, so any
-	// append after that line is silently ignored — which is why
-	// earlier code that appended --dir after CommandContext failed
-	// to scope opencode to the project directory, causing workers
-	// to operate on Orchicon's own repo instead.
-	var tmpDir string
-	runDir := manifest.ProjectDir
-	if runDir == "" {
-		tmpDir, _ = os.MkdirTemp("", "orchicon-exec-*")
-		if tmpDir != "" {
-			runDir = tmpDir
-		}
-	}
-	if runDir != "" {
-		args = append(args, "--dir", runDir)
-	}
-
-	// Session transport (Stage 3): drive the execution through a
-	// persistent opencode session on a serve instance (the always-on host
-	// serve for the in-process population, or the workflow's runtime
-	// container serve). This is the preferred path — it enables the
-	// liveness nudge and mid-run human messages — and falls back to the
-	// one-shot subprocess path when sessions are disabled or no serve is
-	// available (degradation).
-	if a.sessionsEnabled(manifest) {
-		if client := a.sessionClientFor(ctx, manifest); client != nil {
-			// The serve converges within a minute of its container
-			// starting (cold start: providers/MCP + the docker-proxy
-			// settling). Retry the session setup with backoff instead of
-			// falling back to a one-shot at the first hiccup.
-			var lastErr error
-			for attempt := 0; attempt < 4; attempt++ {
-				if attempt > 0 {
-					select {
-					case <-ctx.Done():
-						break
-					case <-time.After(time.Duration(attempt) * 2 * time.Second):
-					}
-				}
-				if err := a.startViaSession(ctx, procCtx, execRow, manifest, callbacks, client, modelRef); err == nil {
-					return nil
-				} else {
-					lastErr = err
-					a.log.Info("session transport setup attempt failed — retrying",
-						"execution", execRow.ID, "attempt", attempt+1, "max", 4, "error", err)
-				}
-			}
-			a.log.Warn("session transport setup failed — falling back to one-shot run",
-				"execution", execRow.ID, "error", lastErr)
-		}
-	}
-
-	// Runtime-container dispatch (pure per-workflow execution): when the
-	// execution belongs to a workflow run AND a runtime daemon is
-	// configured, run opencode inside that workflow's runtime container
-	// (created + mounted by the daemon at run start). The in-container
-	// supervisor builds the same safety guard, applies the same
-	// OPENCODE_CONFIG_CONTENT env, and streams stdout/stderr back; the
-	// guard dir lives in the container's /tmp, not the plane's.
-	if a.rt != nil && manifest.RuntimeWorkflowID != "" {
-		env := a.opencodeEnv(execRow, manifest, modelRef)
-		return a.startInRuntime(ctx, execRow, manifest, callbacks, args, env, runDir)
-	}
-
-	// Safety guard: shim dangerous binaries ahead of the worker's PATH so
-	// destructive commands (rm -rf /, sudo, dd of=/dev/*, mkfs, ...) are
-	// refused at the OS level — even when they are issued from inside a
-	// subprocess (a python TUI, os.system, subprocess.run) where opencode's
-	// permission rules never see the real command. Applied to EVERY worker
-	// execution; file operations are scoped to the project directory.
-	// See internal/opencode/guard.go.
-	g, gErr := newExecutionGuard(runDir)
-	if gErr != nil {
-		a.log.Warn("opencode: safety guard NOT applied", "execution", execRow.ID, "error", gErr)
-	}
-	if g != nil {
-		defer g.Close()
-	}
 
 	// Best-effort: drop the safety lint script into .orchicon/ so review
 	// and QA workers can run it (their bash tool is scoped to the project
 	// directory). See internal/opencode/lint.go.
-	writeSafetyLint(runDir)
+	writeSafetyLint(manifest.ProjectDir)
 
-	cmd := exec.CommandContext(procCtx, binary, args...)
-	if runDir != "" {
-		cmd.Dir = runDir
+	// Session transport is the ONLY execution transport. Drive the
+	// execution through a persistent opencode session on a serve instance
+	// (the always-on host serve for the in-process population, or the
+	// workflow's runtime container serve). It enables the liveness nudge,
+	// mid-run human messages, and SSE-streamed progress.
+	//
+	// The legacy one-shot `opencode run` subprocess path is REMOVED: when
+	// no serve is available the execution FAILS (failed_to_start →
+	// workflow recovery) instead of silently degrading to a second,
+	// inferior transport that Orchicon deliberately moved away from.
+	if !a.sessionsEnabled(manifest) {
+		return fmt.Errorf("opencode session transport disabled (ORCHICON_OPCODE_SESSION_TRANSPORT=0) — no execution transport available for execution %s", execRow.ID)
 	}
-	// Build the OPENCODE_CONFIG_CONTENT with the agent config, the user's
-	// MCP servers, AND the built-in Orchicon MCP (tenant-scoped) so every
-	// worker execution gets Orchicon's tools natively via MCP. The MCP
-	// sidecar runs in the same namespace as the plane and reaches the
-	// plane's Postgres through the inherited DSN.
-	cfgJSON := BuildConfigContent(ConfigOptions{
-		AgentName:   workerAgent,
-		AgentPrompt: manifest.SystemPrompt,
-		ModelRef:    modelRef,
-		TenantID:    execRow.TenantID,
-		OrchiconMCP: true,
-	})
-	env := append(os.Environ(),
-		"OPENCODE_EXECUTION_ID="+execRow.ID,
-		"OPENCODE_TASK_ID="+manifest.TaskID,
-		"OPENCODE_PROJECT_ID="+manifest.ProjectID,
-		"OPENCODE_CONFIG_CONTENT="+cfgJSON,
-	)
-	if g != nil {
-		env = g.Apply(env)
+	client := a.sessionClientFor(ctx, manifest)
+	if client == nil {
+		return fmt.Errorf("no opencode serve available for execution %s (host serve down or runtime container serve unavailable) — execution failed to start", execRow.ID)
 	}
-	cmd.Env = env
 
-	// Capture stdout + stderr. Stderr is logged to the control plane's
-	// stderr, captured into a buffer for error reporting, AND emitted
-	// as OTel log records into Loki so execution stderr appears
-	// in the telemetry logs tab (docs/08 §5.3).
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("opencode: stdout pipe: %w", err)
-	}
-	var stderrBuf bytes.Buffer
-	stderrReader, stderrWriter := io.Pipe()
-	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf, stderrWriter)
-
-	// Goroutine: read stderr lines and emit as OTel log records.
-	// Each line carries the execution context (execution_id, project_id,
-	// task_id, worker_id, trace_id) so it correlates with the execution
-	// span in the Grafana UI. The severity is smart-parsed from the line:
-	// a leading "[ERROR]" / "[WARN]" / "[INFO]" / "[DEBUG]" tag is
-	// honoured; anything else defaults to INFO so the telemetry logs
-	// tab reflects the worker's actual progress (tool calls, step
-	// boundaries, model responses) rather than only hard errors.
-	go func() {
-		defer stderrReader.Close()
-		sc := bufio.NewScanner(stderrReader)
-		sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
-		baseAttrs := []attribute.KeyValue{
-			attribute.String("execution_id", execRow.ID),
-			attribute.String("project_id", manifest.ProjectID),
-			attribute.String("task_id", manifest.TaskID),
-		}
-		for sc.Scan() {
-			line := strings.TrimRight(sc.Text(), "\n\r")
-			if line == "" {
-				continue
+	// The serve converges within a minute of its container starting (cold
+	// start: providers/MCP + the docker-proxy settling). Retry the session
+	// setup with backoff before failing the execution — but never fall
+	// back to a one-shot subprocess.
+	var lastErr error
+	for attempt := 0; attempt < 4; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt) * 2 * time.Second):
 			}
-			severity := "INFO"
-			upper := strings.ToUpper(line)
-			switch {
-			case strings.HasPrefix(upper, "[ERROR]"), strings.HasPrefix(upper, "ERROR:"), strings.HasPrefix(upper, "ERROR "):
-				severity = "ERROR"
-			case strings.HasPrefix(upper, "[WARN]"), strings.HasPrefix(upper, "WARN:"), strings.HasPrefix(upper, "WARN "):
-				severity = "WARN"
-			case strings.HasPrefix(upper, "[DEBUG]"), strings.HasPrefix(upper, "DEBUG:"), strings.HasPrefix(upper, "DEBUG "):
-				severity = "DEBUG"
-			}
-			telemetry.EmitLog(ctx, severity, line, baseAttrs...)
 		}
-	}()
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("opencode: start: %w", err)
-	}
-
-	a.mu.Lock()
-	a.active[execRow.ID] = cmd
-	a.mu.Unlock()
-	defer func() {
-		a.mu.Lock()
-		delete(a.active, execRow.ID)
-		a.mu.Unlock()
-		if tmpDir != "" {
-			os.RemoveAll(tmpDir)
+		if err := a.startViaSession(ctx, procCtx, execRow, manifest, callbacks, client, modelRef); err == nil {
+			return nil
+		} else {
+			lastErr = err
+			a.log.Info("session transport setup attempt failed — retrying",
+				"execution", execRow.ID, "attempt", attempt+1, "max", 4, "error", err)
 		}
-	}()
-
-	// Signal execution started (docs/03 §6: assigned → running).
-	callbacks.OnStarted(ctx, execRow.ID)
-
-	// Per-execution streaming state. textSeq is a monotonically
-	// increasing per-execution counter so the frontend can order chunks
-	// even if NATS delivers them out of order. The text accumulator
-	// (`output`) is closed-over by parseStdoutLine so the ORCHICON
-	// WORKER SUMMARY block can still be extracted at OnResult time
-	// (PR B — context propagation), independent of how the chunks were
-	// fanned out for the live UI.
-	textSeq := 0
-
-	// Accumulated JSON error message. opencode's `--format json`
-	// stream emits {"type":"error","error":{"data":{"message":"..."}}}
-	// when the model/API reports a failure. PR #64 wired error_message
-	// through every failure path except this one — without it, a failed
-	// stream shows up as just "exit status 1" (cmd.Wait()'s generic
-	// error) and the operator can't tell *why* the run failed. We
-	// stash the most recent JSON error message and fold it into the
-	// OnResult error so the execution detail page shows the real reason.
-	var lastStreamErr string
-
-	// Stream-structure counters (step_start vs step_finish) so a clean
-	// exit that never delivered the final model step can be flagged as
-	// failed instead of reported as a successful empty run.
-	stats := &execStreamState{}
-
-	// PR B (context propagation): accumulate the worker's text output
-	// across `text` events. The accumulator is closed over by
-	// parseStdoutLine; the value is passed to OnResult so the
-	// TaskReconciler can extract the ORCHICON WORKER SUMMARY block
-	// and propagate it as upstream context for the next stage.
-	var output strings.Builder
-
-	// Progress monitor: detects stuck-looping (no progress, no file
-	// changes, repeated tool calls) and raises OnStall → triggers
-	// recovery (docs/06 §2 stalled trigger; docs/03 §5). One monitor
-	// per execution; closed when the subprocess exits.
-	// Stall thresholds come from tenant settings (ExecutionManifest)
-	// with env-var fallback for dev debugging overrides.
-	monitor := newProgressMonitor(execRow.ID, stallWindowsFromManifest(manifest))
-	go monitor.run(ctx,
-		func(execID, reason string) {
-			// Fatal: hard-kill so the execution lands in `failed` via the
-			// normal OnResult(false) → pollTaskStep recovery path. Without
-			// this a stalled execution sits `unhealthy` and is ignored by the
-			// workflow reconciler (observed: a PR Reviewer `no_progress` stall
-			// never recovered and the subprocess leaked in the runtime
-			// container for 48+ minutes).
-			//
-			// Advisory (no_file_progress): NOT fatal — the subprocess keeps
-			// running, the execution gets a non-terminal `stalled` health
-			// notice, and OnRecovered revives it to healthy once file progress
-			// resumes (a reviewer may legitimately go long stretches without
-			// writing files while still producing output).
-			fatal := isFatalStall(reason)
-			callbacks.OnStall(ctx, execID, reason, fatal)
-			if fatal {
-				a.terminateOnStall(ctx, execID, reason, manifest.RuntimeWorkflowID)
-			}
-		},
-		func(execID, recovered string) {
-			callbacks.OnRecovered(ctx, execID, recovered)
-		},
-	)
-	defer monitor.close()
-
-	// Parse stdout JSON lines into telemetry events
-	// (docs/04 §6.1: line-buffered stdout parsing). Each event is also
-	// fed to the progress monitor for stall detection.
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		a.parseStdoutLine(ctx, execRow, manifest, line, callbacks, monitor, &output, &lastStreamErr, &textSeq, stats)
 	}
-
-	// Check for scanner error (e.g. truncated output).
-	scanErr := scanner.Err()
-	if scanErr != nil {
-		a.log.Warn("opencode stdout scan error", "execution", execRow.ID, "error", scanErr)
-	}
-
-	// Wait for the process to exit.
-	err = cmd.Wait()
-	succeeded := err == nil
-
-	// A clean exit with a step still in flight means the final model
-	// response never reached us (line-cap drop, stream truncation,
-	// runtime disconnect). That is NOT a success — the worker's output
-	// and ORCHICON WORKER SUMMARY / decision signal are missing. Downgrade
-	// the result to a failure so the run surfaces the real problem
-	// instead of routing an empty execution downstream as if it worked.
-	unfinishedStep := stats.unfinished() && !strings.Contains(output.String(), decisionMarker)
-	if succeeded && unfinishedStep {
-		succeeded = false
-	}
-
-	// Build the error message from most specific to least. The
-	// JSON-stream error (extracted from opencode's structured error
-	// event) is the real cause — e.g. a provider 401 or rate-limit.
-	// Stderr has surrounding context. Exit status is the fallback.
-	// A stall-triggered kill surfaces the stall signal FIRST so the
-	// recovery/UI reason matches what actually happened.
-	var parts []string
-	if reason := a.takeStallReason(execRow.ID); reason != "" {
-		parts = append(parts, reason)
-	}
-	if unfinishedStep {
-		parts = append(parts, "execution ended before the final model step completed (model response stream truncated or event dropped)")
-	}
-	if lastStreamErr != "" {
-		parts = append(parts, lastStreamErr)
-	}
-	if stderrBuf.Len() > 0 {
-		parts = append(parts, strings.TrimSpace(stderrBuf.String()))
-	}
-	if err != nil {
-		parts = append(parts, err.Error())
-	}
-	if scanErr != nil {
-		parts = append(parts, "stdout scan: "+scanErr.Error())
-	}
-	errorMsg := strings.Join(parts, "; ")
-	callbacks.OnResult(ctx, execRow.ID, succeeded, output.String(), errorMsg)
-	return nil
+	return fmt.Errorf("session transport setup failed after 4 attempts: %w", lastErr)
 }
 
 // execStreamState tracks per-execution opencode stream structure so a
@@ -823,13 +465,12 @@ func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, 
 }
 
 // parseEvent dispatches a decoded opencode event into the telemetry
-// pipeline. It is the shared dispatch used by BOTH the legacy one-shot
-// subprocess path (parseStdoutLine unmarshals a line then calls this) and
-// the session transport (legacyEventFromBus builds the same {type, part}
-// object from the server SSE bus). Keeping one dispatch guarantees the
-// two transports behave identically downstream: progress monitor, usage
-// recording, artifact capture, summary accumulation, and the streaming
-// callbacks.
+// pipeline. It is the single dispatch used by the session transport
+// (legacyEventFromBus builds the {type, part} object from the server SSE
+// bus; parseStdoutLine unmarshals a JSON line into the same shape). One
+// dispatch guarantees consistent downstream behavior: progress monitor,
+// usage recording, artifact capture, summary accumulation, and the
+// streaming callbacks.
 func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, evt map[string]any, callbacks scheduler.ExecutionCallbacks, monitor *progressMonitor, output *strings.Builder, lastStreamErr *string, textSeq *int, stats *execStreamState) {
 	eventType, _ := evt["type"].(string)
 	part, _ := evt["part"].(map[string]any)
@@ -1311,197 +952,6 @@ const (
 	evtFileDiff     = "file_diff"
 )
 
-// opencodeEnv builds the execution environment shared by the in-process
-// and runtime dispatch paths: the plane's environment plus the opencode
-// overrides (execution/task/project ids + the merged agent/MCP config).
-func (a *Adapter) opencodeEnv(execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, modelRef string) []string {
-	// Runtime-container executions deliberately do NOT register the
-	// built-in Orchicon MCP: the runtime container is an isolated, root-free
-	// execution sandbox with no network route to the plane's Postgres, and
-	// handing it the plane's DB DSN would break the security model. The
-	// user's own opencode-config MCP servers (which need no Orchicon DB)
-	// are still merged in.
-	cfgJSON := BuildConfigContent(ConfigOptions{
-		AgentName:   workerAgent,
-		AgentPrompt: manifest.SystemPrompt,
-		ModelRef:    modelRef,
-		OrchiconMCP: false,
-	})
-	return append(os.Environ(),
-		"OPENCODE_EXECUTION_ID="+execRow.ID,
-		"OPENCODE_TASK_ID="+manifest.TaskID,
-		"OPENCODE_PROJECT_ID="+manifest.ProjectID,
-		"OPENCODE_CONFIG_CONTENT="+cfgJSON,
-	)
-}
-
-// startInRuntime dispatches opencode into the workflow's runtime
-// container via the daemon. The in-container supervisor applies the
-// safety guard, sets the working directory, and streams stdout/stderr
-// back as AgentEvents; this method decodes them through the same
-// parseStdoutLine/handleStderrLine pipeline as the in-process path.
-func (a *Adapter) startInRuntime(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, callbacks scheduler.ExecutionCallbacks, args, env []string, runDir string) error {
-	callbacks.OnStarted(ctx, execRow.ID)
-
-	var stderrBuf bytes.Buffer
-	textSeq := 0
-	var lastStreamErr string
-	var output strings.Builder
-	stats := &execStreamState{}
-	monitor := newProgressMonitor(execRow.ID, stallWindowsFromManifest(manifest))
-	go monitor.run(ctx,
-		func(execID, reason string) {
-			fatal := isFatalStall(reason)
-			callbacks.OnStall(ctx, execID, reason, fatal)
-			// Hard-kill on a genuine hang/loop so the execution lands in
-			// `failed` via the normal OnResult(false) → pollTaskStep recovery
-			// path (same rationale as the local path; see Start). For the
-			// runtime container this signals the supervisor to SIGKILL the
-			// opencode child. no_file_progress is advisory-only — the
-			// subprocess keeps running and OnRecovered revives the execution.
-			if fatal {
-				a.terminateOnStall(ctx, execID, reason, manifest.RuntimeWorkflowID)
-			}
-		},
-		func(execID, recovered string) {
-			callbacks.OnRecovered(ctx, execID, recovered)
-		},
-	)
-	defer monitor.close()
-
-	// execCtx is the exec session's context. It carries the wall-clock
-	// deadline (applied HERE, not on the parent ctx) so that when the
-	// deadline fires the Exec call is cancelled and the explicit-kill
-	// goroutine SIGKILLs the child — while the parent ctx stays clean for
-	// the OnResult/OnStall DB writebacks (passing the exhausted ctx into
-	// BeginTenantTx fails with "context deadline exceeded" and the
-	// execution never transitions).
-	execCtx, execCancel := context.WithCancel(ctx)
-	defer execCancel()
-	if deadline, ok := wallClockDeadline(ctx, manifest.Budgets); ok {
-		var dcancel context.CancelFunc
-		execCtx, dcancel = context.WithDeadline(execCtx, deadline)
-		defer dcancel()
-	}
-
-	// Explicit termination: if the exec context is cancelled while the run
-	// is in flight (wall-clock deadline, abort, plane shutdown), tell the
-	// supervisor to kill the child PROMPTLY rather than leaving it to the
-	// reconnect grace. A pure transport blip does NOT cancel the context,
-	// so this does not fire on a broken stream (the retry loop below
-	// re-attaches instead).
-	go func() {
-		<-execCtx.Done()
-		// Normal completion: execCtx was cancelled by the defer, the parent
-		// ctx is alive, and no deadline fired. Explicit termination: parent
-		// cancelled OR the wall-clock deadline fired (execCtx.Err() is
-		// DeadlineExceeded).
-		if ctx.Err() == nil && !errors.Is(execCtx.Err(), context.DeadlineExceeded) {
-			return
-		}
-		_ = a.rt.Signal(ctx, manifest.RuntimeWorkflowID, runtime.SignalRequest{ExecID: execRow.ID, Signal: "SIGKILL"})
-	}()
-
-	req := runtime.ExecRequest{
-		ExecID:                execRow.ID,
-		Argv:                  append([]string{"opencode"}, args...),
-		Env:                   env,
-		Cwd:                   runDir,
-		ProjectDir:            manifest.ProjectDir,
-		ReconnectGraceSeconds: reconnectGraceSeconds(manifest.ReconnectGraceSeconds),
-	}
-	// Self-healing: ensure the runtime container exists before dispatching.
-	// A recovery re-dispatch can otherwise race ahead of the adopt sweep
-	// after a rebuild/container loss and fail by exec-ing into a missing
-	// container. Create is idempotent (returns the running container if
-	// present); the daemon appends the standard home mounts and validates
-	// the project mount against the allowed roots.
-	if _, cerr := a.rt.Create(ctx, runtime.CreateRequest{
-		WorkflowID: manifest.RuntimeWorkflowID,
-		Image:      manifest.RuntimeImage,
-		Mounts:     projectMount(manifest.ProjectDir),
-	}); cerr != nil {
-		a.log.Warn("ensure runtime container on dispatch failed", "run", manifest.RuntimeWorkflowID, "execution", execRow.ID, "error", cerr)
-	}
-
-	handleEvent := func(ev runtime.AgentEvent) error {
-		if ev.Stream == "stderr" {
-			a.handleStderrLine(ctx, execRow, manifest, ev.Data)
-			stderrBuf.WriteString(ev.Data + "\n")
-			return nil
-		}
-		line := strings.TrimSpace(ev.Data)
-		if line == "" {
-			return nil
-		}
-		a.parseStdoutLine(ctx, execRow, manifest, line, callbacks, monitor, &output, &lastStreamErr, &textSeq, stats)
-		return nil
-	}
-
-	// The exec stream can break on a transient transport blip (socket /
-	// docker hiccup). That must NOT fail the execution: retry with backoff
-	// for the same exec_id — the supervisor keeps the child running during
-	// the reconnect grace and re-attaches the stream. Only give up (and let
-	// recovery handle it) once the retries are exhausted or the context was
-	// cancelled (explicit termination).
-	attempts := int(manifest.ReconnectAttempts)
-	if attempts <= 0 {
-		attempts = defaultReconnectAttempts
-	}
-	exitCode := 1
-	var execErr error
-	for attempt := 0; ; attempt++ {
-		exitCode, execErr = a.rt.Exec(execCtx, manifest.RuntimeWorkflowID, req, handleEvent)
-		if execErr == nil || execCtx.Err() != nil || attempt+1 >= attempts {
-			break
-		}
-		backoff := time.Duration(1<<uint(attempt)) * time.Second
-		a.log.Info("runtime exec stream broke — re-attaching",
-			"execution", execRow.ID, "attempt", attempt+1, "max", attempts, "error", execErr, "backoff", backoff.String())
-		select {
-		case <-time.After(backoff):
-		case <-execCtx.Done():
-		}
-	}
-	err := execErr
-
-	succeeded := err == nil && exitCode == 0
-	unfinishedStep := stats.unfinished() && !strings.Contains(output.String(), decisionMarker)
-	if succeeded && unfinishedStep {
-		succeeded = false
-	}
-	var parts []string
-	if reason := a.takeStallReason(execRow.ID); reason != "" {
-		parts = append(parts, reason)
-	}
-	if unfinishedStep {
-		parts = append(parts, "execution ended before the final model step completed (model response stream truncated or event dropped)")
-	}
-	if lastStreamErr != "" {
-		parts = append(parts, lastStreamErr)
-	}
-	if stderrBuf.Len() > 0 {
-		parts = append(parts, strings.TrimSpace(stderrBuf.String()))
-	}
-	if err != nil {
-		parts = append(parts, err.Error())
-	}
-	if exitCode != 0 && err == nil {
-		parts = append(parts, fmt.Sprintf("exit status %d", exitCode))
-	}
-	callbacks.OnResult(ctx, execRow.ID, succeeded, output.String(), strings.Join(parts, "; "))
-	return err
-}
-
-// reconnectGraceSeconds resolves the supervisor reconnect-grace duration,
-// falling back to the built-in default when the manifest value is unset.
-func reconnectGraceSeconds(v int64) int64 {
-	if v <= 0 {
-		return defaultReconnectGraceSeconds
-	}
-	return v
-}
-
 // projectMount returns the project-dir mount spec for a runtime container
 // (empty when no project dir — the daemon still adds the standard home
 // mounts).
@@ -1510,28 +960,4 @@ func projectMount(projectDir string) []runtime.MountSpec {
 		return nil
 	}
 	return []runtime.MountSpec{{Source: projectDir, Dest: projectDir}}
-}
-
-// handleStderrLine emits one worker stderr line as an OTel log record so
-// execution stderr appears in the telemetry logs tab (docs/08 §5.3).
-func (a *Adapter) handleStderrLine(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, line string) {
-	line = strings.TrimRight(line, "\n\r")
-	if line == "" {
-		return
-	}
-	severity := "INFO"
-	upper := strings.ToUpper(line)
-	switch {
-	case strings.HasPrefix(upper, "[ERROR]"), strings.HasPrefix(upper, "ERROR:"), strings.HasPrefix(upper, "ERROR "):
-		severity = "ERROR"
-	case strings.HasPrefix(upper, "[WARN]"), strings.HasPrefix(upper, "WARN:"), strings.HasPrefix(upper, "WARN "):
-		severity = "WARN"
-	case strings.HasPrefix(upper, "[DEBUG]"), strings.HasPrefix(upper, "DEBUG:"), strings.HasPrefix(upper, "DEBUG "):
-		severity = "DEBUG"
-	}
-	telemetry.EmitLog(ctx, severity, line,
-		attribute.String("execution_id", execRow.ID),
-		attribute.String("project_id", manifest.ProjectID),
-		attribute.String("task_id", manifest.TaskID),
-	)
 }
