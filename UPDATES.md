@@ -12,6 +12,7 @@
 
 | # | Type | Phase | Summary |
 |---|---|---|---|
+| 117 | Bug fix | Sequence engine | Self-healed stale one-shot worker refs (binding a workflow now clears them), fixed schedule-time validation to use the post-update workflow, fixed drag-to-reorder navigation with document-level click suppression, added a chain-position card to the work-item detail page, and restyled the order badge to match the status pills. |
 | 116 | Feature | Sequence engine | Closed the workflow-less scheduling gap: the edit form shows the schedule/start card for parents with children even without a workflow (labeled as a sequence, with the parent's own workflow annotated as ignored), and scheduling a workflow-less leaf is rejected at schedule time instead of silently never firing. |
 | 115 | Bug fix | Sequence engine | "Has children" is now the sequence determinant: a parent with children routes to the sequence engine (validating its subtree) even with a stale workflow binding — no more silent individualized runs; the stale binding is cleared on fire. |
 | 114 | Bug fix | UI | Fixed drag-to-reorder: the post-drag click no longer navigates into the item (tree + board), reorder works in the All-projects view (project_id derived from the items), and sequence children now show #N chain badges in both views. |
