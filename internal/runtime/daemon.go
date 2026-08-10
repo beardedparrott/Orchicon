@@ -399,14 +399,18 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 		// ServeConfig) brings the serve up. Idempotent (the supervisor
 		// owns the password + answers the same port).
 		if req.ServeConfig != "" {
-			if port, pw, serr := d.startServe(name, req); serr != nil {
-				d.Log.Warn("runtime opencode serve unavailable — degrading to one-shot execs",
-					"runtime", name, "error", serr)
-			} else {
-				resp.ServePort = port
-				resp.ServePassword = pw
-				resp.ServeURL = fmt.Sprintf("http://%s:%d", d.containerIP(name), port)
+			port, pw, serr := d.startServe(name, req)
+			if serr != nil {
+				// Fail fast: the one-shot degradation was removed. A serve
+				// that cannot come up is a hard dispatch error — the adapter
+				// surfaces it as failed_to_start → workflow recovery. The
+				// container stays up so the watchdog / a later retry can
+				// converge the serve.
+				return nil, fmt.Errorf("start serve in runtime %s: %w", name, serr)
 			}
+			resp.ServePort = port
+			resp.ServePassword = pw
+			resp.ServeURL = fmt.Sprintf("http://%s:%d", d.containerIP(name), port)
 		}
 		return resp, nil
 	}
@@ -552,18 +556,17 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 			if req.ServeConfig != "" {
 				// Start the opencode serve inside the container and publish
 				// its port on the host loopback. A serve that cannot come
-				// up is NOT fatal to the container — the adapter degrades
-				// to one-shot execs — but the password is generated fresh
-				// per container and the host port is reported back.
+				// up is a hard dispatch error — the one-shot degradation
+				// was removed, so the adapter surfaces this as
+				// failed_to_start → workflow recovery. The container stays
+				// up so the watchdog / a later retry can converge it.
 				port, pw, serr := d.startServe(name, req)
 				if serr != nil {
-					d.Log.Warn("runtime opencode serve unavailable — degrading to one-shot execs",
-						"runtime", name, "error", serr)
-				} else {
-					resp.ServePort = port
-					resp.ServePassword = pw
-					resp.ServeURL = fmt.Sprintf("http://%s:%d", d.containerIP(name), port)
+					return nil, fmt.Errorf("start serve in runtime %s: %w", name, serr)
 				}
+				resp.ServePort = port
+				resp.ServePassword = pw
+				resp.ServeURL = fmt.Sprintf("http://%s:%d", d.containerIP(name), port)
 			}
 			return resp, nil
 		}

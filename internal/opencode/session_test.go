@@ -74,7 +74,7 @@ func TestLegacyEventFromBus(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := legacyEventFromBus(tc.evt)
+			got, ok := LegacyEventFromBus(tc.evt)
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
 			}

@@ -14,6 +14,7 @@ type ConversationRow struct {
 	TenantID  string
 	Title     string
 	ModelRef  string
+	SessionID string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -54,10 +55,10 @@ type AgentConfigRow struct {
 func CreateConversation(ctx context.Context, tx pgx.Tx, c ConversationRow) (ConversationRow, error) {
 	const q = `INSERT INTO ask_orchicon_conversations (id, tenant_id, title, model_ref)
 		VALUES ($1, $2, $3, $4)
-		RETURNING id, tenant_id, title, model_ref, created_at, updated_at`
+		RETURNING id, tenant_id, title, model_ref, session_id, created_at, updated_at`
 	row := c
 	err := tx.QueryRow(ctx, q, c.ID, c.TenantID, c.Title, c.ModelRef).Scan(
-		&row.ID, &row.TenantID, &row.Title, &row.ModelRef, &row.CreatedAt, &row.UpdatedAt,
+		&row.ID, &row.TenantID, &row.Title, &row.ModelRef, &row.SessionID, &row.CreatedAt, &row.UpdatedAt,
 	)
 	if err != nil {
 		return ConversationRow{}, fmt.Errorf("db: create conversation: %w", err)
@@ -66,7 +67,7 @@ func CreateConversation(ctx context.Context, tx pgx.Tx, c ConversationRow) (Conv
 }
 
 func GetConversation(ctx context.Context, tx pgx.Tx, tenantID, id string) (ConversationRow, error) {
-	const q = `SELECT id, tenant_id, title, model_ref, created_at, updated_at
+	const q = `SELECT id, tenant_id, title, model_ref, session_id, created_at, updated_at
 		FROM ask_orchicon_conversations WHERE tenant_id = $1 AND id = $2`
 	row, err := tx.Query(ctx, q, tenantID, id)
 	if err != nil {
@@ -84,13 +85,13 @@ func ListConversations(ctx context.Context, tx pgx.Tx, tenantID string, limit in
 	var q string
 	var args []any
 	if afterID != "" {
-		q = `SELECT id, tenant_id, title, model_ref, created_at, updated_at
+		q = `SELECT id, tenant_id, title, model_ref, session_id, created_at, updated_at
 			FROM ask_orchicon_conversations
 			WHERE tenant_id = $1 AND updated_at < (SELECT updated_at FROM ask_orchicon_conversations WHERE tenant_id = $1 AND id = $2)
 			ORDER BY updated_at DESC LIMIT $3`
 		args = []any{tenantID, afterID, limit}
 	} else {
-		q = `SELECT id, tenant_id, title, model_ref, created_at, updated_at
+		q = `SELECT id, tenant_id, title, model_ref, session_id, created_at, updated_at
 			FROM ask_orchicon_conversations
 			WHERE tenant_id = $1
 			ORDER BY updated_at DESC LIMIT $2`
@@ -117,7 +118,7 @@ func ListConversations(ctx context.Context, tx pgx.Tx, tenantID string, limit in
 func UpdateConversationTitle(ctx context.Context, tx pgx.Tx, tenantID, id, title string) (ConversationRow, error) {
 	const q = `UPDATE ask_orchicon_conversations SET title = $3, updated_at = now()
 		WHERE tenant_id = $1 AND id = $2
-		RETURNING id, tenant_id, title, model_ref, created_at, updated_at`
+		RETURNING id, tenant_id, title, model_ref, session_id, created_at, updated_at`
 	row, err := tx.Query(ctx, q, tenantID, id, title)
 	if err != nil {
 		return ConversationRow{}, fmt.Errorf("db: update conversation title: %w", err)
@@ -127,6 +128,21 @@ func UpdateConversationTitle(ctx context.Context, tx pgx.Tx, tenantID, id, title
 		return scanConversation(row)
 	}
 	return ConversationRow{}, ErrNotFound
+}
+
+// UpdateConversationSessionID persists the opencode serve session id on the
+// conversation (Task 1 session transport). It is called as soon as a fresh
+// session is created (best-effort, its own tiny tenant tx) so a crash
+// mid-turn cannot orphan a session the next message would have to rediscover,
+// and again when a lost session is recreated.
+func UpdateConversationSessionID(ctx context.Context, tx pgx.Tx, tenantID, id, sessionID string) error {
+	const q = `UPDATE ask_orchicon_conversations SET session_id = $3, updated_at = now()
+		WHERE tenant_id = $1 AND id = $2`
+	_, err := tx.Exec(ctx, q, tenantID, id, sessionID)
+	if err != nil {
+		return fmt.Errorf("db: update conversation session id: %w", err)
+	}
+	return nil
 }
 
 func UpdateConversationTimestamp(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
@@ -301,7 +317,7 @@ func UpsertAgentConfig(ctx context.Context, tx pgx.Tx, tenantID string, c AgentC
 
 func scanConversation(row pgx.Rows) (ConversationRow, error) {
 	var r ConversationRow
-	if err := row.Scan(&r.ID, &r.TenantID, &r.Title, &r.ModelRef, &r.CreatedAt, &r.UpdatedAt); err != nil {
+	if err := row.Scan(&r.ID, &r.TenantID, &r.Title, &r.ModelRef, &r.SessionID, &r.CreatedAt, &r.UpdatedAt); err != nil {
 		return ConversationRow{}, fmt.Errorf("db: scan conversation: %w", err)
 	}
 	return r, nil

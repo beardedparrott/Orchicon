@@ -14,14 +14,15 @@ import (
 	"github.com/beardedparrott/orchicon/internal/aigateway"
 	"github.com/beardedparrott/orchicon/internal/blobstore"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Service implements the AskOrchiconService Connect handler.
 type Service struct {
-	pool          *db.Pool
-	log           *slog.Logger
+	pool         *db.Pool
+	log          *slog.Logger
 	blobStore     blobstore.Store
 	modelDisc     *aigateway.ModelDiscoverer
 	toolRegistry  *ToolRegistry
@@ -29,6 +30,11 @@ type Service struct {
 	// (Stage 3). Wired by the server to the opencode adapter; nil when
 	// the session transport is unavailable.
 	sendMessage func(ctx context.Context, execID, message string) error
+	// hostServe is the always-on host opencode serve. Chat turns run as
+	// persistent sessions on it; nil when the transport is disabled or the
+	// serve could not start — ChatStream fails the turn fast with a clean
+	// message (the one-shot `opencode run` path was removed).
+	hostServe *opencode.HostServe
 	apiv1connect.UnimplementedAskOrchiconServiceHandler
 }
 
@@ -51,6 +57,14 @@ func New(pool *db.Pool, log *slog.Logger, blobStore blobstore.Store, modelDisc *
 // tool.
 func (s *Service) SetSendExecutionMessage(fn func(ctx context.Context, execID, message string) error) {
 	s.sendMessage = fn
+}
+
+// SetHostServe wires the always-on host opencode serve into the chat so
+// conversation turns run as persistent sessions on it (first message
+// CreateSession, follow-ups prompt_async on the same session). The service
+// treats a nil serve as "fail the turn fast" (no one-shot fallback).
+func (s *Service) SetHostServe(hs *opencode.HostServe) {
+	s.hostServe = hs
 }
 
 // registerSessionTools adds tools that depend on service-injected
@@ -214,6 +228,10 @@ func (s *Service) DeleteConversation(ctx context.Context, req *connect.Request[a
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
+	conv, err := db.GetConversation(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil && !errors.Is(err, db.ErrNotFound) {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	if err := db.DeleteConversationMessages(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -222,6 +240,17 @@ func (s *Service) DeleteConversation(ctx context.Context, req *connect.Request[a
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	// Best-effort abort of the conversation's opencode session. There is no
+	// delete-session API on the serve; abort cancels any running turn while
+	// keeping the session, and is safe to ignore on error (the durable
+	// record is already gone; the serve will reclaim the session eventually).
+	if conv.SessionID != "" {
+		if hs := s.hostServe; hs != nil {
+			if client := hs.Client(); client != nil {
+				_ = client.Abort(ctx, conv.SessionID)
+			}
+		}
 	}
 	return connect.NewResponse(&apiv1.DeleteConversationResponse{}), nil
 }
@@ -399,6 +428,7 @@ func conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview 
 		TenantId:           r.TenantID,
 		Title:              r.Title,
 		ModelRef:           r.ModelRef,
+		SessionId:          r.SessionID,
 		MessageCount:       int32(messageCount),
 		LastMessagePreview: lastPreview,
 		CreatedAt:          timestamppb.New(r.CreatedAt),

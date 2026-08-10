@@ -1,14 +1,11 @@
 package askorchicon
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -115,7 +112,13 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 	// up-to-date context about what it operates on (fresh per message).
 	projectContext := s.fetchProjectContext(ctx, tenantID)
 
-	fullPrompt := buildLLMPrompt(cfg, s.toolRegistry, prevMessages, msg, req.Msg.Attachments, projectContext)
+	// System prompt variants for the session transport: the seed
+	// variant (DB history included) is used when a fresh session is created
+	// (first message, or a lost session recreated); the reuse variant (no
+	// history — it already lives in the session) is the steady-state system
+	// for follow-up turns.
+	seedSystem := buildSystemPrompt(cfg, s.toolRegistry, prevMessages, true, req.Msg.Attachments, projectContext)
+	reuseSystem := buildSystemPrompt(cfg, s.toolRegistry, prevMessages, false, req.Msg.Attachments, projectContext)
 
 	// --- 4. Stream from opencode, stripping tool call markers.
 	// The frontend shows its own thinking indicator during the initial
@@ -123,7 +126,6 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 	// messages are needed — they would render as markdown blockquotes in
 	// the streaming content and cause visual artifacts.
 	var fullResponse strings.Builder
-
 	cb := func(evt opencodeEvent) error {
 		switch evt.Type {
 		case "text":
@@ -191,12 +193,32 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 		}
 	}
 
-	msgID, elapsed, streamErr := s.runOpenCodeStream(ctx, tenantID, modelRef, fullPrompt, msg, cb)
+	// Session transport: the turn runs as a persistent opencode session on
+	// the host serve (first message creates it and persists the id;
+	// follow-ups reuse it). The legacy per-message `opencode run`
+	// subprocess path was REMOVED — when the host serve is unavailable the
+	// turn fails fast with a clean, human-readable message instead of
+	// silently degrading to a second transport.
+	var msgID string
+	var elapsed time.Duration
+	var streamErr error
+	var turnSessionID string
+	client := s.hostServeClient()
+	if client == nil {
+		return stream.Send(&apiv1.ChatStreamResponse{
+			Event: &apiv1.ChatStreamResponse_Error{
+				Error: &apiv1.ErrorChunk{Message: "Ask Orchicon is temporarily unavailable — the opencode serve is starting. Please try again in a moment."},
+			},
+		})
+	}
+	msgID, turnSessionID, elapsed, streamErr = s.runOpenCodeTurn(ctx, client, tenantID,
+		req.Msg.ConversationId, conv.SessionID, modelRef, seedSystem, reuseSystem, msg, cb)
 
 	elapsedMS := elapsed.Milliseconds()
 	metaJSON, _ := json.Marshal(map[string]any{
 		"model_ref":  modelRef,
 		"latency_ms": elapsedMS,
+		"session_id": turnSessionID,
 	})
 
 	// --- 5. Persist assistant response. ---
@@ -263,38 +285,48 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 	})
 }
 
-// buildLLMPrompt assembles the full text prompt sent to the LLM. The tools
-// are exposed to the model natively through the Orchicon MCP server (registered
-// in the opencode config), so this prompt only orients the model — it does not
-// emulate a text tool-call protocol.
-func buildLLMPrompt(cfg db.AgentConfigRow, registry *ToolRegistry, history []db.MessageRow, userMsg string, attachments []*apiv1.AttachmentInput, projectContext string) string {
+// buildSystemPrompt assembles the per-message `system` prompt for the Ask
+// Orchicon agent. It carries the identity block (BuildSystemPrompt), the
+// enabled-projects context, the tools list, and this message's attachments.
+//
+// When includeHistory is true the DB conversation history is ALSO injected
+// (last 10 messages, chronological) plus the "refer to earlier" hint — this
+// is the SEED variant used when a fresh opencode session is created (first
+// message, or a lost session recreated), where the session has no memory of
+// prior turns. When false (the steady-state follow-up on a live session) no
+// history block is emitted: the history already lives in the session, and
+// re-injecting it would double tokens and can confuse the model.
+func buildSystemPrompt(cfg db.AgentConfigRow, registry *ToolRegistry, history []db.MessageRow, includeHistory bool, attachments []*apiv1.AttachmentInput, projectContext string) string {
 	var b strings.Builder
 
 	b.WriteString(BuildSystemPrompt(cfg, registry))
 	b.WriteString("\n\n")
 
-	b.WriteString("## Conversation history\n")
-	// history is in DESC (newest-first) order from the DB. Reverse it so
-	// we can take the LAST N items (which are the most recent in a
-	// chronologically-ordered slice).
-	for i, j := 0, len(history)-1; i < j; i, j = i+1, j-1 {
-		history[i], history[j] = history[j], history[i]
-	}
-	start := 0
-	if len(history) > 10 {
-		start = len(history) - 10
-	}
-	for _, h := range history[start:] {
-		if h.Content == "" {
-			continue
+	if includeHistory {
+		b.WriteString("## Conversation history\n")
+		// history is in DESC (newest-first) order from the DB. Reverse it so
+		// we can take the LAST N items (which are the most recent in a
+		// chronologically-ordered slice).
+		for i, j := 0, len(history)-1; i < j; i, j = i+1, j-1 {
+			history[i], history[j] = history[j], history[i]
 		}
-		roleLabel := "User"
-		if h.Role == "assistant" {
-			roleLabel = "Orchicon"
+		start := 0
+		if len(history) > 10 {
+			start = len(history) - 10
 		}
-		b.WriteString(fmt.Sprintf("%s: %s\n", roleLabel, h.Content))
+		for _, h := range history[start:] {
+			if h.Content == "" {
+				continue
+			}
+			roleLabel := "User"
+			if h.Role == "assistant" {
+				roleLabel = "Orchicon"
+			}
+			b.WriteString(fmt.Sprintf("%s: %s\n", roleLabel, h.Content))
+		}
+		b.WriteString("\n")
+		b.WriteString("Note: If the user refers to something mentioned earlier in this conversation (like a work item, project, or result), the details are in the conversation history above — use them directly.\n\n")
 	}
-	b.WriteString("\n")
 
 	if len(attachments) > 0 {
 		b.WriteString("## Attachments\n")
@@ -327,102 +359,220 @@ func buildLLMPrompt(cfg db.AgentConfigRow, registry *ToolRegistry, history []db.
 	}
 	b.WriteString("\n")
 
-	b.WriteString("## User's request\n")
-	b.WriteString(userMsg + "\n\n")
-	b.WriteString("Note: If the user refers to something mentioned earlier in this conversation (like a work item, project, or result), the details are in the conversation history above — use them directly.\n\n")
-
 	return b.String()
 }
 
-// runOpenCodeStream spawns the opencode CLI subprocess and calls the callback
-// for each JSON event as it arrives on stdout. A configurable hard timeout
-// prevents hangs when the model or provider stalls. The Orchicon MCP server is
-// registered in the injected config (tenant-scoped) so the model drives
-// Orchicon tools natively through opencode's MCP integration.
-func (s *Service) runOpenCodeStream(ctx context.Context, tenantID, modelRef, prompt, userMessage string, cb streamCallback) (msgID string, elapsed time.Duration, err error) {
+// sessionTurnClient is the session surface the chat turn loop drives
+// (the session transport). *opencode.SessionClient satisfies it; tests
+// inject a fake to replay bus events without a live serve or a model.
+type sessionTurnClient interface {
+	Subscribe(ctx context.Context) (opencode.BusSub, error)
+	CreateSession(ctx context.Context, title string) (string, error)
+	SendMessage(ctx context.Context, sessionID, system, modelRef, text string) error
+	Abort(ctx context.Context, sessionID string) error
+	ReplyPermission(ctx context.Context, sessionID, permissionID string) error
+}
+
+// hostServeClient returns the host serve's session client, or nil when the
+// session transport is unavailable (serve disabled, not started, or failed)
+// — the caller fails the turn fast with a clean message (no one-shot
+// fallback).
+func (s *Service) hostServeClient() sessionTurnClient {
+	if s.hostServe == nil {
+		return nil
+	}
+	return s.hostServe.Client()
+}
+
+// persistConversationSessionID saves the opencode session id on the
+// conversation row (best-effort, its own tiny tenant tx). Called as soon as
+// a fresh session is created so a crash mid-turn cannot orphan a session
+// the next message would have to rediscover.
+func (s *Service) persistConversationSessionID(ctx context.Context, tenantID, convID, sessionID string) {
+	if s.pool == nil {
+		return
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		s.log.Warn("persist conversation session id: begin tx", "conversation", convID, "error", err)
+		return
+	}
+	if err := db.UpdateConversationSessionID(ctx, ttx.Tx, tenantID, convID, sessionID); err != nil {
+		ttx.Rollback(ctx)
+		s.log.Warn("persist conversation session id", "conversation", convID, "error", err)
+		return
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		s.log.Warn("persist conversation session id: commit", "conversation", convID, "error", err)
+	}
+}
+
+// runOpenCodeTurn drives one chat turn over a persistent opencode session
+// on the host serve (the session transport):
+//
+//   - first message (or a pre-migration conversation that never chatted):
+//     CreateSession (directory-less) + persist the id immediately;
+//   - follow-ups: prompt_async (SendMessage) on the SAME session — the goal
+//     is NOT reset, history lives in the session;
+//   - the send runs concurrently with the SSE drain so events arriving
+//     between subscribe and the serve accepting our message are observed
+//     while sent == false and ignored;
+//   - turn complete = the first session.idle AFTER our message was accepted
+//     (the `sent` guard ignores stale idle events from a prior turn);
+//   - a follow-up send that 404s (serve data dir wiped / session gone)
+//     recreates a fresh session, persists the new id, and re-seeds the DB
+//     history so the durable record saves the conversation;
+//   - timeout (askTimeout) and client disconnect both Abort the turn while
+//     keeping the session for the next message.
+//
+// seedSystem is the system prompt for a freshly created session (includes
+// the DB history block); reuseSystem is the steady-state follow-up system
+// (no history — it already lives in the session). Returns the assistant
+// message id, the (possibly recreated) session id, and the elapsed time.
+func (s *Service) runOpenCodeTurn(ctx context.Context, client sessionTurnClient, tenantID, convID, sessionID, modelRef, seedSystem, reuseSystem, userMsg string, cb streamCallback) (msgID, newSessionID string, elapsed time.Duration, err error) {
 	start := time.Now()
 	msgID = db.NewID()
 
-	cfgJSON := opencode.BuildConfigContent(opencode.ConfigOptions{
-		AgentName:   "orchicon-assistant",
-		AgentPrompt: prompt,
-		ModelRef:    modelRef,
-		TenantID:    tenantID,
-		OrchiconMCP: true,
-	})
-
-	args := []string{
-		"run",
-		"--format", "json",
-		"--model", modelRef,
-		"--agent", "orchicon-assistant",
-		"--auto",
-		userMessage,
+	// Resolve the session: reuse the persisted id, or create a fresh one
+	// (first message). A fresh session gets the seeded system prompt (DB
+	// history included); a live session gets the reuse variant.
+	sid := sessionID
+	system := reuseSystem
+	if sid == "" {
+		sid, err = client.CreateSession(ctx, "ask-orchicon:"+convID)
+		if err != nil {
+			return msgID, "", time.Since(start), fmt.Errorf("create conversation session: %w", err)
+		}
+		system = seedSystem
+		s.persistConversationSessionID(ctx, tenantID, convID, sid)
 	}
 
-	// Use a configurable timeout so a hanging model never blocks the
-	// conversation indefinitely. Default 300s, override via ORCHICON_ASK_TIMEOUT.
-	runCtx, cancel := context.WithTimeout(ctx, askTimeout())
+	// Subscribe BEFORE send so early text chunks aren't missed.
+	subCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-
-	cmd := exec.CommandContext(runCtx, "opencode", args...)
-	cmd.Env = append(cmd.Environ(),
-		"OPENCODE_CONFIG_CONTENT="+cfgJSON,
-	)
-	// Place the opencode subprocess in its own process group so that when
-	// the parent server dies unexpectedly (e.g. SIGKILL during binary
-	// replacement), the orphaned opencode and its MCP sidecar can be
-	// found and cleaned up by the startup routine. The group leader PID
-	// is the subprocess PID; we can kill the whole group with
-	// syscall.Kill(-pgid, sig). Unix-only (Setpgid does not exist on
-	// Windows) — see procattr_{unix,windows}.go.
-	setChildProcessGroup(cmd)
-
-	stdout, err := cmd.StdoutPipe()
+	sub, err := client.Subscribe(subCtx)
 	if err != nil {
-		return msgID, 0, fmt.Errorf("opencode stdout pipe: %w", err)
+		return msgID, sid, time.Since(start), fmt.Errorf("conversation session subscribe: %w", err)
 	}
-	var stderrBuf bytes.Buffer
-	cmd.Stderr = &stderrBuf
+	defer sub.Close()
 
-	if err := cmd.Start(); err != nil {
-		return msgID, 0, fmt.Errorf("opencode start: %w", err)
+	// Send the user message while the drain loop below is already live. The
+	// send runs on its own goroutine so events that arrive between subscribe
+	// and the serve accepting our message (e.g. a stale session.idle from a
+	// prior turn still draining from the bus) are observed by the drain loop
+	// with sent == false and ignored. A 404 on a REUSED session means the
+	// serve no longer knows it (data dir wiped / restarted against a fresh
+	// store): recreate + persist + seed history, then retry once on the
+	// fresh session (the subscription streams ALL sessions, so it needs no
+	// reset).
+	recreated := false
+	type sendResult struct {
+		err error
 	}
-
-	scanner := bufio.NewScanner(stdout)
-	const maxScannerToken = 512 * 1024 // 512KB — opencode JSON events can be large
-	scanner.Buffer(make([]byte, maxScannerToken), maxScannerToken)
-	for scanner.Scan() {
-		line := scanner.Text()
-		var evt opencodeEvent
-		if err := json.Unmarshal([]byte(line), &evt); err != nil {
-			continue
+	sendCh := make(chan sendResult, 1)
+	go func() {
+		for {
+			if err := client.SendMessage(subCtx, sid, system, modelRef, userMsg); err != nil {
+				if errors.Is(err, opencode.ErrSessionNotFound) && sessionID != "" && !recreated {
+					s.log.Info("conversation session lost on serve — recreating", "conversation", convID, "session", sid)
+					fresh, cerr := client.CreateSession(ctx, "ask-orchicon:"+convID)
+					if cerr != nil {
+						sendCh <- sendResult{err: fmt.Errorf("recreate conversation session: %w", cerr)}
+						return
+					}
+					sid = fresh
+					system = seedSystem
+					recreated = true
+					s.persistConversationSessionID(ctx, tenantID, convID, sid)
+					continue
+				}
+				sendCh <- sendResult{err: err}
+				return
+			}
+			sendCh <- sendResult{}
+			return
 		}
-		if err := cb(evt); err != nil {
-			cmd.Process.Kill()
-			return msgID, time.Since(start), nil
+	}()
+
+	sent := false
+	timeout := time.NewTimer(askTimeout())
+	defer timeout.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Client disconnected (Stop button / browser close): abort the
+			// turn so the model stops burning tokens answering a gone
+			// client; the session is preserved for the next message.
+			_ = client.Abort(context.WithoutCancel(ctx), sid)
+			return msgID, sid, time.Since(start), ctx.Err()
+		case <-timeout.C:
+			_ = client.Abort(context.WithoutCancel(ctx), sid)
+			return msgID, sid, time.Since(start), fmt.Errorf("request timed out after %s — the model may be overloaded or unavailable", askTimeout())
+		case res := <-sendCh:
+			// Our message was accepted (or rejected). A rejected send is
+			// terminal — no turn is running, so nothing further can arrive
+			// for this request.
+			if res.err != nil {
+				return msgID, sid, time.Since(start), fmt.Errorf("conversation session send: %w", res.err)
+			}
+			sent = true
+		case evt, ok := <-sub.Events():
+			if !ok {
+				return msgID, sid, time.Since(start), fmt.Errorf("opencode session stream ended")
+			}
+			if esid, _ := evt.Properties["sessionID"].(string); esid != "" && esid != sid {
+				continue
+			}
+			switch evt.Type {
+			case "session.idle":
+				// Turn complete — but only once OUR message was accepted
+				// (sent). A stale idle from a prior turn (sent == false)
+				// must never complete a new turn.
+				if sent {
+					return msgID, sid, time.Since(start), nil
+				}
+			case "permission.asked":
+				// Auto-approve (the --auto equivalent). Session-level deny
+				// rules mean this should rarely fire — defensive only.
+				if pid, _ := evt.Properties["id"].(string); pid != "" {
+					go func() { _ = client.ReplyPermission(context.WithoutCancel(ctx), sid, pid) }()
+				}
+			case "session.error":
+				// The turn failed at the model/API level: record it and end
+				// the turn with an error chunk (the session is kept).
+				msg := "opencode session error"
+				if errObj, ok := evt.Properties["error"].(map[string]any); ok {
+					if m, ok2 := errObj["message"].(string); ok2 && m != "" {
+						msg = m
+					}
+				}
+				s.log.Warn("opencode session error", "conversation", convID, "message", msg)
+				return msgID, sid, time.Since(start), errors.New(msg)
+			default:
+				// Telemetry (text / tool_use / step / reasoning): feed the
+				// SAME mapping executions use (LegacyEventFromBus) into the
+				// chat's callback.
+				if legacy, ok := opencode.LegacyEventFromBus(evt); ok {
+					var part map[string]any
+					if p, ok2 := legacy["part"].(map[string]any); ok2 {
+						part = p
+					}
+					etype, _ := legacy["type"].(string)
+					if etype == "" {
+						continue
+					}
+					if err := cb(opencodeEvent{Type: etype, Part: part}); err != nil {
+						// stream.Send failed — the client is gone. Abort the
+						// turn and stop streaming (the partial response is
+						// still persisted).
+						_ = client.Abort(context.WithoutCancel(ctx), sid)
+						return msgID, sid, time.Since(start), nil
+					}
+				}
+			}
 		}
 	}
-
-	scanErr := scanner.Err()
-	waitErr := cmd.Wait()
-	elapsed = time.Since(start)
-
-	if waitErr != nil {
-		if errors.Is(waitErr, context.DeadlineExceeded) || errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-			return msgID, elapsed, fmt.Errorf("request timed out after %s — the model may be overloaded or unavailable", askTimeout())
-		}
-		stderrText := strings.TrimSpace(stderrBuf.String())
-		if stderrText != "" {
-			return msgID, elapsed, fmt.Errorf("opencode: %s", stderrText)
-		}
-		return msgID, elapsed, fmt.Errorf("opencode exited: %w", waitErr)
-	}
-	if scanErr != nil {
-		return msgID, elapsed, fmt.Errorf("opencode stdout scan: %w", scanErr)
-	}
-
-	return msgID, elapsed, nil
 }
 
 // fetchProjectContext returns a compact, current list of the tenant's

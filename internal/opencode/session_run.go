@@ -119,8 +119,8 @@ const completionProbeText = "Your response appears to have been cut off before y
 
 // run executes the whole session lifecycle. It returns nil once the
 // execution has completed (OnResult fired). A non-nil error means the
-// session transport could not be set up at all — the caller falls back to
-// the legacy one-shot subprocess path.
+// session transport could not be set up — with the one-shot path removed,
+// the caller surfaces it as a failed execution.
 func (r *sessionRun) run() error {
 	client := r.client
 	// The durable transcript writer must be set before any recordPart
@@ -129,7 +129,7 @@ func (r *sessionRun) run() error {
 
 	// The serve's published port can be refused for a beat after the
 	// docker-proxy binds it; retry the session create briefly so a
-	// converging serve doesn't trip the one-shot fallback.
+	// converging serve doesn't fail the execution.
 	var sid string
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
@@ -175,7 +175,8 @@ func (r *sessionRun) run() error {
 		r.a.mu.Unlock()
 	}()
 
-	// Progress monitor: same stall signals as the one-shot path. Advisory
+	// Progress monitor: same stall signals as the one-shot path (which
+	// shares the guardrails). Advisory
 	// (no_file_progress) trips a liveness probe; fatal signals abort the
 	// session and fail the execution.
 	r.monitor = newProgressMonitor(r.execRow.ID, stallWindowsFromManifest(r.manifest))
@@ -227,7 +228,7 @@ func (r *sessionRun) run() error {
 	<-r.done
 
 	// Finalize: fold the terminal reason, stream error, and the
-	// step-balance check into OnResult (mirrors the one-shot path).
+	// step-balance check into OnResult.
 	ok := r.resultOk
 	var parts []string
 	if r.resultErr != "" {
@@ -284,7 +285,7 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		r.recordStreamError(evt)
 		return
 	}
-	if legacy, ok := legacyEventFromBus(evt); ok {
+	if legacy, ok := LegacyEventFromBus(evt); ok {
 		// ANY telemetry activity (text/tool/step/reasoning) after a probe
 		// is evidence the worker is alive — resolve the probe and revive
 		// without waiting for a full turn (the false-positive case: an
@@ -408,8 +409,7 @@ func (r *sessionRun) settleFinish() {
 }
 
 // recordStreamError handles a session.error bus event: the turn failed at
-// the model/API level, which mirrors the one-shot path failing the run on
-// a JSON error event.
+// the model/API level.
 func (r *sessionRun) recordStreamError(evt BusEvent) {
 	msg := ""
 	if errObj, ok := evt.Properties["error"].(map[string]any); ok {

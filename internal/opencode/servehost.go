@@ -57,8 +57,8 @@ func NewHostServe(log *slog.Logger, dataDir, home string) *HostServe {
 
 // Enabled reports whether the host serve is configured for this plane.
 // It is disabled when the operator set ORCHICON_OPCODE_SESSION_TRANSPORT=0
-// (global kill-switch) — in that case every execution uses the legacy
-// one-shot subprocess path.
+// (global kill-switch) — with the one-shot path removed, a disabled
+// transport means local executions FAIL fast rather than degrading.
 func (h *HostServe) Enabled() bool {
 	return os.Getenv("ORCHICON_OPCODE_SESSION_TRANSPORT") != "0"
 }
@@ -86,8 +86,8 @@ func (h *HostServe) Client() *SessionClient {
 
 // Start spawns the serve, waits for it to answer /global/health, and
 // builds the session client. If the `opencode` binary is absent or the
-// serve cannot come up, it returns an error — the caller logs it and
-// keeps running on the one-shot subprocess path (degradation).
+// serve cannot come up, it returns an error — with the one-shot path
+// removed, executions that need this serve fail fast instead.
 func (h *HostServe) Start(ctx context.Context) error {
 	if !h.Enabled() {
 		return fmt.Errorf("host opencode serve disabled (ORCHICON_OPCODE_SESSION_TRANSPORT=0)")
@@ -237,7 +237,7 @@ func (h *HostServe) startOnce(ctx context.Context) error {
 	}
 	if binary == "" {
 		g.Close()
-		return fmt.Errorf("opencode binary not found (host serve disabled; falling back to one-shot runs)")
+		return fmt.Errorf("opencode binary not found (host serve disabled; executions fail fast — no one-shot fallback)")
 	}
 
 	env := append(os.Environ(),

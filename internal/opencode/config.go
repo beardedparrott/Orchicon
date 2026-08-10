@@ -347,8 +347,8 @@ type ConfigOptions struct {
 	// operator's entries (e.g. an `orchicon` MCP that `docker exec`s into
 	// a container, or a local node-based Playwright MCP) cannot run inside
 	// the sandbox — an unresolvable MCP hangs the serve's event loop, so
-	// the published port never answers. The one-shot `opencode run` path
-	// tolerates MCP failures and keeps them.
+	// the published port never answers. (The removed one-shot `opencode
+	// run` path tolerated MCP failures; a serve cannot.)
 	SkipUserMCP bool
 }
 
