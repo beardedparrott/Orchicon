@@ -73,6 +73,16 @@ type Adapter struct {
 	// (execution_session_parts). Injected by the server; nil = the
 	// transcript is not recorded (e.g. tests).
 	sessionStore SessionStoreFunc
+
+	// consecutiveSessionErrors counts back-to-back model-layer session
+	// failures across executions (guarded by mu). When it reaches
+	// sessionErrorRecycleThreshold, the adapter recycles the affected
+	// workflow's runtime container so the next dispatch gets a FRESH
+	// serve — the observed wedge was a serve that kept answering health
+	// (so the health watchdog never fired) but whose model turns failed
+	// instantly, poisoning every auto-retry. Reset to zero on any
+	// non-error progress (a successful step / tool call / message).
+	consecutiveSessionErrors int
 }
 
 // SessionStoreFunc persists transcript entries for one execution. The
@@ -951,6 +961,22 @@ const (
 	evtToolResult   = "tool_result"
 	evtFileDiff     = "file_diff"
 )
+
+// sessionErrorRecycleThreshold is the number of CONSECUTIVE model-layer
+// session errors (a serve whose /global/health answers but whose model
+// turns fail instantly — invisible to the health watchdog) after which the
+// adapter recycles the affected workflow's runtime container so the next
+// dispatch builds a fresh serve. Overridable via
+// ORCHICON_SESSION_ERROR_RECYCLE_THRESHOLD. A value < 1 disables the
+// recycle.
+func sessionErrorRecycleThreshold() int {
+	if v := os.Getenv("ORCHICON_SESSION_ERROR_RECYCLE_THRESHOLD"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return 3
+}
 
 // projectMount returns the project-dir mount spec for a runtime container
 // (empty when no project dir — the daemon still adds the standard home
