@@ -24,7 +24,7 @@
 //   (Epic → Feature → Task → Subtask). Children are indented under their
 //   parent card within the same column.
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   DndContext,
@@ -140,6 +140,23 @@ export function WorkItemsBoard({
   const [activeItem, setActiveItem] = useState<WorkItem | null>(null);
   const [dragCount, setDragCount] = useState(0);
   const suppressClickRef = useRef(false);
+  // A drag ends with the browser dispatching a click on the element under
+  // the pointer — the card titles are <Link>s, so without this the post-drag
+  // click navigates to the item's detail page instead of just moving the
+  // card. The suppression MUST be a DOCUMENT-level native capture listener:
+  // after a dnd-kit drag the click's propagation path is [target → document]
+  // and listeners on the container div or the card itself are never reached.
+  useEffect(() => {
+    const onCaptureClick = (e: MouseEvent) => {
+      if (suppressClickRef.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        suppressClickRef.current = false;
+      }
+    };
+    document.addEventListener("click", onCaptureClick, true);
+    return () => document.removeEventListener("click", onCaptureClick, true);
+  }, []);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -245,10 +262,14 @@ export function WorkItemsBoard({
   const handleDragEnd = (event: DragEndEvent) => {
     setActiveItem(null);
     setDragCount(0);
-    // Clear the click-suppression AFTER the post-drag click has fired.
+    // Keep the suppression flag set long enough that the post-mouseup click
+    // lands inside it (setTimeout(0) could clear it BEFORE the click fires,
+    // letting the card title <Link> navigate after a drag — the observed
+    // bug). The container's onClickCapture consumes the flag; this timer is
+    // only the backstop for a release with no subsequent click.
     window.setTimeout(() => {
       suppressClickRef.current = false;
-    }, 0);
+    }, 300);
     const { active, over } = event;
     if (!over) return;
     const item = itemsById.get(String(active.id));
@@ -330,7 +351,7 @@ export function WorkItemsBoard({
         setDragCount(0);
         window.setTimeout(() => {
           suppressClickRef.current = false;
-        }, 0);
+        }, 300);
       }}
       // Disable dnd-kit auto-scroll: the board overflows horizontally
       // (flex-1 min-w-[280px] columns), so near the viewport edge the
@@ -345,17 +366,6 @@ export function WorkItemsBoard({
       <div
         className="flex flex-1 gap-3 overflow-x-auto rounded-lg border bg-muted/20 p-3"
         style={{ minHeight: "calc(100vh - 280px)" }}
-        onClickCapture={(e) => {
-          // A drag ends with the browser dispatching a click on the element
-          // under the pointer — card titles are <Link>s, so without this the
-          // post-drag click navigates to the item's detail page instead of
-          // just moving the card. Suppress exactly that one click.
-          if (suppressClickRef.current) {
-            e.preventDefault();
-            e.stopPropagation();
-            suppressClickRef.current = false;
-          }
-        }}
       >
         {BOARD_COLUMNS.map((col) => {
           const colItems = items.filter((i) => columnForStatus(i.status) === col.status);

@@ -45,7 +45,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronRight, GripVertical, SearchX } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { KindBadge, PositionBadge, StatusPill } from "@/components/work-items/work-item-badges";
@@ -108,6 +108,25 @@ export function WorkItemsTree({
   // plain click never sets it); the click handler consumes + clears it,
   // and the timeout clears it when the pointer was released outside.
   const suppressClickRef = useRef(false);
+  // A drag ends with the browser dispatching a click on the element under
+  // the pointer — the row titles are <Link>s, so without this the post-drag
+  // click navigates to the item's detail page, undoing the reorder UX. The
+  // suppression MUST be a DOCUMENT-level native capture listener: after a
+  // dnd-kit drag the click is dispatched against the dragged row's node and
+  // its propagation path is just [target → document] — listeners on the
+  // container div or the row itself are NOT reached (verified empirically:
+  // a document capture listener fires, container/row listeners never do).
+  useEffect(() => {
+    const onCaptureClick = (e: MouseEvent) => {
+      if (suppressClickRef.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        suppressClickRef.current = false;
+      }
+    };
+    document.addEventListener("click", onCaptureClick, true);
+    return () => document.removeEventListener("click", onCaptureClick, true);
+  }, []);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 3 } }),
@@ -129,11 +148,16 @@ export function WorkItemsTree({
 
   const handleDragEnd = (event: DragEndEvent) => {
     setActiveId(null);
-    // Clear the click-suppression AFTER the drag's post-mouseup click has
-    // had a chance to fire (it is synchronous; a setTimeout(0) runs after).
+    // Keep the click-suppression flag SET long enough that the drag's
+    // post-mouseup click is guaranteed to land inside it (the click is
+    // dispatched immediately after pointerup, so a setTimeout(0) could
+    // clear the flag BEFORE the click — that race let the title <Link>
+    // navigate after a real drag). The onClickCapture handler consumes the
+    // flag when it suppresses the click; this timer is only the backstop
+    // for a release outside the list where no click ever fires.
     window.setTimeout(() => {
       suppressClickRef.current = false;
-    }, 0);
+    }, 300);
     // Drag-to-reorder is disabled under an active filter: treeItems then
     // holds only the matching rows + ancestors, so the sibling set is a
     // PARTIAL view of the true chain — dropping would reorder just the
@@ -216,23 +240,10 @@ export function WorkItemsTree({
         setActiveId(null);
         window.setTimeout(() => {
           suppressClickRef.current = false;
-        }, 0);
+        }, 300);
       }}
     >
-      <div
-        className="overflow-x-auto"
-        onClickCapture={(e) => {
-          // A drag ends with the browser dispatching a click on the element
-          // under the pointer — the row titles are <Link>s, so without this
-          // the post-drag click navigates to the item's detail page, undoing
-          // the reorder UX. Suppress exactly that one click.
-          if (suppressClickRef.current) {
-            e.preventDefault();
-            e.stopPropagation();
-            suppressClickRef.current = false;
-          }
-        }}
-      >
+      <div className="overflow-x-auto">
         <div className="min-w-[640px] space-y-0.5">
           <SortableContext
             items={roots.map((i) => i.id)}
