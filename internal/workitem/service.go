@@ -415,6 +415,15 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, mapDBError(err)
 	}
+	// Binding a workflow switches the item from one-shot (assigned worker,
+	// standalone dispatch) to template-bound: a stale worker assignment from
+	// the standalone path would flag the item as a worker-assigned one-shot
+	// in sequence validation ("cannot run in a sequence"). Clear it so the
+	// two execution modes never coexist (a parent whose child was once
+	// one-shot would otherwise be unschedulable).
+	if msg.WorkflowId != nil && *msg.WorkflowId != "" && len(current.AssignedWorkerRef) > 0 {
+		fields.ClearAssignedWorkerRef = true
+	}
 	// Context files must live inside the effective project's directory — the
 	// only path guaranteed to be mounted where workers run. A path outside it
 	// is invisible to the worker, so reject it. Uses the NEW project when this
@@ -548,17 +557,19 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		fields.Status = strPtr(domain.WorkItemScheduled)
 	}
 	// Schedule-time validation (architecture-notes §3): scheduling or
-	// Schedule-time validation (architecture-notes §3): scheduling or
-	// auto-starting a parent WITH children runs a sequence — the full
-	// subtree must be executable (every leaf bound to a runnable workflow,
-	// no worker-assigned one-shots). Runs before commit so a rejection
-	// leaves nothing scheduled or started. The validation itself decides
-	// sequence-ness by HAS CHILDREN (a parent with children is a sequence
-	// regardless of a stale workflow binding on the parent), so it runs
-	// whenever the user schedules or starts immediately — a leaf with no
-	// children is a no-op inside the validator.
+	// auto-starting runs the subtree validation — a parent WITH children is
+	// a sequence (the subtree must be executable: every leaf bound to a
+	// runnable workflow, no worker-assigned one-shots), and a workflow-less
+	// LEAF has nothing to run. The validation runs against the POST-update
+	// binding (the workflow the form selected in this request, falling back
+	// to the current row), so picking a workflow and starting it in the
+	// same save isn't wrongly rejected as "no workflow set".
+	effItem := current
+	if msg.WorkflowId != nil {
+		effItem.WorkflowID = msg.WorkflowId
+	}
 	if msg.ScheduledStartAt != nil || (msg.AutoStartWorkflow != nil && *msg.AutoStartWorkflow) {
-		if err := s.validateSequenceSchedule(ctx, ttx.Tx, tenantID, current); err != nil {
+		if err := s.validateSequenceSchedule(ctx, ttx.Tx, tenantID, effItem); err != nil {
 			return nil, err
 		}
 	}

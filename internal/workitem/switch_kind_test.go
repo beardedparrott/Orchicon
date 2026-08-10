@@ -810,3 +810,49 @@ func TestUpdateWorkItemScheduleFlipsStatusDB(t *testing.T) {
 		t.Fatalf("status without schedule change = %v, want ready untouched", resp6.Msg.WorkItem.Status)
 	}
 }
+
+// TestBindingWorkflowClearsOneShotWorkerRef verifies the one-shot stale-data
+// self-heal + the post-update validation:
+//   - a leaf carrying a stale assigned_worker_ref (leftover from the one-shot
+//     standalone path) that the user binds to a workflow in the SAME request
+//     must have that worker ref cleared (it would otherwise flag the item as
+//     a worker-assigned one-shot in sequence validation and make its parent
+//     unschedulable), and
+//   - scheduling with the workflow selected in this request must NOT be
+//     rejected as "no workflow is set" (the validation uses the post-update
+//     binding, not the stale pre-update row).
+func TestBindingWorkflowClearsOneShotWorkerRef(t *testing.T) {
+	pool := validateParentTestPool(t)
+	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
+	projectA := validateParentProject(t, ctx, pool)
+	s := New(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	wfID := seedPublishedWorkflowForTest(t, pool, projectA, true)
+
+	// A leaf with a stale one-shot worker assignment (the standalone path).
+	leaf := createSequenceItem(t, pool, projectA, domain.WorkItemKindTask, "One-shot Leaf",
+		nil, nil, []byte(`{"worker_id":"w_se_devops_engineer","version":0}`))
+	got := readItem(t, pool, leaf.ID)
+	if len(got.AssignedWorkerRef) == 0 {
+		t.Fatalf("fixture should start one-shot (assigned_worker_ref set)")
+	}
+
+	// Bind a workflow AND start immediately in the same request.
+	req := connect.NewRequest(&apiv1.UpdateWorkItemRequest{Id: leaf.ID})
+	auto := true
+	req.Msg.WorkflowId = strPtr(wfID)
+	req.Msg.AutoStartWorkflow = &auto
+	resp, err := s.UpdateWorkItem(ctx, req)
+	if err != nil {
+		t.Fatalf("update with workflow + auto-start should succeed, got %v", err)
+	}
+	if resp.Msg.WorkItem.WorkflowId != wfID {
+		t.Fatalf("workflow_id = %q, want %q", resp.Msg.WorkItem.WorkflowId, wfID)
+	}
+	if resp.Msg.WorkItem.AssignedWorkerRef != "" {
+		t.Fatalf("assigned_worker_ref should be cleared on workflow bind, got %q", resp.Msg.WorkItem.AssignedWorkerRef)
+	}
+	cur := readItem(t, pool, leaf.ID)
+	if len(cur.AssignedWorkerRef) != 0 {
+		t.Fatalf("db assigned_worker_ref should be cleared on workflow bind, got %q", cur.AssignedWorkerRef)
+	}
+}
