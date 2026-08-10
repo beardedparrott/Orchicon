@@ -38,11 +38,23 @@ service AskOrchiconService {
   // created_at ascending (oldest first).
   rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
 
-  // ChatStream is the server-streaming RPC for the conversational
-  // interface. The client sends a message (with optional attachments)
-  // and receives a stream of TextChunk, ToolCallChunk, ToolCallResult,
-  // ErrorChunk, and finally DoneSignal events.
+  // ChatStream sends a message (with optional attachments) to a
+  // conversation and returns immediately with a TurnStarted ack carrying
+  // the assistant message id under which the reply will be persisted. The
+  // reply is collected on a request-independent context (bounded by the
+  // reply window) and delivered by polling ListMessages — a browser
+  // disconnect or tab close never cancels or loses it. The TextChunk /
+  // ToolCallResult / ErrorChunk / DoneSignal events are retained for a
+  // future SSE surface but are not emitted by the current implementation.
   rpc ChatStream(ChatStreamRequest) returns (stream ChatStreamResponse);
+
+  // AbortConversationTurn aborts the in-flight turn on a conversation's
+  // opencode session (the Stop button). The session itself is kept alive
+  // for the next message — only the running turn is cancelled, and the
+  // collector persists a user-initiated-stop error message under the acked
+  // assistant message id. Idempotent: aborting a conversation with no
+  // running turn is a no-op.
+  rpc AbortConversationTurn(AbortConversationTurnRequest) returns (AbortConversationTurnResponse);
 
   // Attachments.
 
@@ -138,8 +150,24 @@ message ChatStreamResponse {
     ToolCallResult tool_call_result = 3;
     ErrorChunk error = 4;
     DoneSignal done = 5;
+    TurnStarted turn_started = 6;
   }
 }
+
+// TurnStarted is the immediate ack for a ChatStream send: the message was
+// persisted and the turn is in flight. The reply is persisted under
+// assistant_message_id and delivered by polling ListMessages.
+message TurnStarted {
+  string assistant_message_id = 1;
+}
+
+// AbortConversationTurnRequest identifies the conversation whose running
+// turn should be aborted.
+message AbortConversationTurnRequest {
+  string conversation_id = 1;
+}
+
+message AbortConversationTurnResponse {}
 
 // --- Attachments ---
 

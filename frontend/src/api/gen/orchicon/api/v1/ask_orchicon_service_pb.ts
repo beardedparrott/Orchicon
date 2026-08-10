@@ -582,6 +582,12 @@ export class ChatStreamResponse extends Message<ChatStreamResponse> {
      */
     value: DoneSignal;
     case: "done";
+  } | {
+    /**
+     * @generated from field: orchicon.api.v1.TurnStarted turn_started = 6;
+     */
+    value: TurnStarted;
+    case: "turnStarted";
   } | { case: undefined; value?: undefined } = { case: undefined };
 
   constructor(data?: PartialMessage<ChatStreamResponse>) {
@@ -597,6 +603,7 @@ export class ChatStreamResponse extends Message<ChatStreamResponse> {
     { no: 3, name: "tool_call_result", kind: "message", T: ToolCallResult, oneof: "event" },
     { no: 4, name: "error", kind: "message", T: ErrorChunk, oneof: "event" },
     { no: 5, name: "done", kind: "message", T: DoneSignal, oneof: "event" },
+    { no: 6, name: "turn_started", kind: "message", T: TurnStarted, oneof: "event" },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ChatStreamResponse {
@@ -613,6 +620,118 @@ export class ChatStreamResponse extends Message<ChatStreamResponse> {
 
   static equals(a: ChatStreamResponse | PlainMessage<ChatStreamResponse> | undefined, b: ChatStreamResponse | PlainMessage<ChatStreamResponse> | undefined): boolean {
     return proto3.util.equals(ChatStreamResponse, a, b);
+  }
+}
+
+/**
+ * TurnStarted is the immediate ack for a ChatStream send: the message was
+ * persisted and the turn is in flight. The reply is persisted under
+ * assistant_message_id and delivered by polling ListMessages.
+ *
+ * @generated from message orchicon.api.v1.TurnStarted
+ */
+export class TurnStarted extends Message<TurnStarted> {
+  /**
+   * @generated from field: string assistant_message_id = 1;
+   */
+  assistantMessageId = "";
+
+  constructor(data?: PartialMessage<TurnStarted>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.TurnStarted";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "assistant_message_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): TurnStarted {
+    return new TurnStarted().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): TurnStarted {
+    return new TurnStarted().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): TurnStarted {
+    return new TurnStarted().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: TurnStarted | PlainMessage<TurnStarted> | undefined, b: TurnStarted | PlainMessage<TurnStarted> | undefined): boolean {
+    return proto3.util.equals(TurnStarted, a, b);
+  }
+}
+
+/**
+ * AbortConversationTurnRequest identifies the conversation whose running
+ * turn should be aborted.
+ *
+ * @generated from message orchicon.api.v1.AbortConversationTurnRequest
+ */
+export class AbortConversationTurnRequest extends Message<AbortConversationTurnRequest> {
+  /**
+   * @generated from field: string conversation_id = 1;
+   */
+  conversationId = "";
+
+  constructor(data?: PartialMessage<AbortConversationTurnRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.AbortConversationTurnRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): AbortConversationTurnRequest {
+    return new AbortConversationTurnRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): AbortConversationTurnRequest {
+    return new AbortConversationTurnRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): AbortConversationTurnRequest {
+    return new AbortConversationTurnRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: AbortConversationTurnRequest | PlainMessage<AbortConversationTurnRequest> | undefined, b: AbortConversationTurnRequest | PlainMessage<AbortConversationTurnRequest> | undefined): boolean {
+    return proto3.util.equals(AbortConversationTurnRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.AbortConversationTurnResponse
+ */
+export class AbortConversationTurnResponse extends Message<AbortConversationTurnResponse> {
+  constructor(data?: PartialMessage<AbortConversationTurnResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.AbortConversationTurnResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): AbortConversationTurnResponse {
+    return new AbortConversationTurnResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): AbortConversationTurnResponse {
+    return new AbortConversationTurnResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): AbortConversationTurnResponse {
+    return new AbortConversationTurnResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: AbortConversationTurnResponse | PlainMessage<AbortConversationTurnResponse> | undefined, b: AbortConversationTurnResponse | PlainMessage<AbortConversationTurnResponse> | undefined): boolean {
+    return proto3.util.equals(AbortConversationTurnResponse, a, b);
   }
 }
 

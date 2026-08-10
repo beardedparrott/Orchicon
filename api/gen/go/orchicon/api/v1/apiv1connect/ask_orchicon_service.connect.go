@@ -62,6 +62,9 @@ const (
 	// AskOrchiconServiceChatStreamProcedure is the fully-qualified name of the AskOrchiconService's
 	// ChatStream RPC.
 	AskOrchiconServiceChatStreamProcedure = "/orchicon.api.v1.AskOrchiconService/ChatStream"
+	// AskOrchiconServiceAbortConversationTurnProcedure is the fully-qualified name of the
+	// AskOrchiconService's AbortConversationTurn RPC.
+	AskOrchiconServiceAbortConversationTurnProcedure = "/orchicon.api.v1.AskOrchiconService/AbortConversationTurn"
 	// AskOrchiconServiceUploadAttachmentProcedure is the fully-qualified name of the
 	// AskOrchiconService's UploadAttachment RPC.
 	AskOrchiconServiceUploadAttachmentProcedure = "/orchicon.api.v1.AskOrchiconService/UploadAttachment"
@@ -93,11 +96,22 @@ type AskOrchiconServiceClient interface {
 	// ListMessages returns messages for a conversation, ordered by
 	// created_at ascending (oldest first).
 	ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error)
-	// ChatStream is the server-streaming RPC for the conversational
-	// interface. The client sends a message (with optional attachments)
-	// and receives a stream of TextChunk, ToolCallChunk, ToolCallResult,
-	// ErrorChunk, and finally DoneSignal events.
+	// ChatStream sends a message (with optional attachments) to a
+	// conversation and returns immediately with a TurnStarted ack carrying
+	// the assistant message id under which the reply will be persisted. The
+	// reply is collected on a request-independent context (bounded by the
+	// reply window) and delivered by polling ListMessages — a browser
+	// disconnect or tab close never cancels or loses it. The TextChunk /
+	// ToolCallResult / ErrorChunk / DoneSignal events are retained for a
+	// future SSE surface but are not emitted by the current implementation.
 	ChatStream(context.Context, *connect.Request[v1.ChatStreamRequest]) (*connect.ServerStreamForClient[v1.ChatStreamResponse], error)
+	// AbortConversationTurn aborts the in-flight turn on a conversation's
+	// opencode session (the Stop button). The session itself is kept alive
+	// for the next message — only the running turn is cancelled, and the
+	// collector persists a user-initiated-stop error message under the acked
+	// assistant message id. Idempotent: aborting a conversation with no
+	// running turn is a no-op.
+	AbortConversationTurn(context.Context, *connect.Request[v1.AbortConversationTurnRequest]) (*connect.Response[v1.AbortConversationTurnResponse], error)
 	// UploadAttachment uploads a file attachment for use in a message.
 	// Returns a URL that can be referenced in subsequent ChatStream calls.
 	UploadAttachment(context.Context, *connect.Request[v1.UploadAttachmentRequest]) (*connect.Response[v1.UploadAttachmentResponse], error)
@@ -164,6 +178,12 @@ func NewAskOrchiconServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(askOrchiconServiceMethods.ByName("ChatStream")),
 			connect.WithClientOptions(opts...),
 		),
+		abortConversationTurn: connect.NewClient[v1.AbortConversationTurnRequest, v1.AbortConversationTurnResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceAbortConversationTurnProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("AbortConversationTurn")),
+			connect.WithClientOptions(opts...),
+		),
 		uploadAttachment: connect.NewClient[v1.UploadAttachmentRequest, v1.UploadAttachmentResponse](
 			httpClient,
 			baseURL+AskOrchiconServiceUploadAttachmentProcedure,
@@ -200,6 +220,7 @@ type askOrchiconServiceClient struct {
 	updateConversationTitle *connect.Client[v1.UpdateConversationTitleRequest, v1.UpdateConversationTitleResponse]
 	listMessages            *connect.Client[v1.ListMessagesRequest, v1.ListMessagesResponse]
 	chatStream              *connect.Client[v1.ChatStreamRequest, v1.ChatStreamResponse]
+	abortConversationTurn   *connect.Client[v1.AbortConversationTurnRequest, v1.AbortConversationTurnResponse]
 	uploadAttachment        *connect.Client[v1.UploadAttachmentRequest, v1.UploadAttachmentResponse]
 	getAgentConfig          *connect.Client[v1.GetAgentConfigRequest, v1.GetAgentConfigResponse]
 	updateAgentConfig       *connect.Client[v1.UpdateAgentConfigRequest, v1.UpdateAgentConfigResponse]
@@ -241,6 +262,11 @@ func (c *askOrchiconServiceClient) ChatStream(ctx context.Context, req *connect.
 	return c.chatStream.CallServerStream(ctx, req)
 }
 
+// AbortConversationTurn calls orchicon.api.v1.AskOrchiconService.AbortConversationTurn.
+func (c *askOrchiconServiceClient) AbortConversationTurn(ctx context.Context, req *connect.Request[v1.AbortConversationTurnRequest]) (*connect.Response[v1.AbortConversationTurnResponse], error) {
+	return c.abortConversationTurn.CallUnary(ctx, req)
+}
+
 // UploadAttachment calls orchicon.api.v1.AskOrchiconService.UploadAttachment.
 func (c *askOrchiconServiceClient) UploadAttachment(ctx context.Context, req *connect.Request[v1.UploadAttachmentRequest]) (*connect.Response[v1.UploadAttachmentResponse], error) {
 	return c.uploadAttachment.CallUnary(ctx, req)
@@ -278,11 +304,22 @@ type AskOrchiconServiceHandler interface {
 	// ListMessages returns messages for a conversation, ordered by
 	// created_at ascending (oldest first).
 	ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error)
-	// ChatStream is the server-streaming RPC for the conversational
-	// interface. The client sends a message (with optional attachments)
-	// and receives a stream of TextChunk, ToolCallChunk, ToolCallResult,
-	// ErrorChunk, and finally DoneSignal events.
+	// ChatStream sends a message (with optional attachments) to a
+	// conversation and returns immediately with a TurnStarted ack carrying
+	// the assistant message id under which the reply will be persisted. The
+	// reply is collected on a request-independent context (bounded by the
+	// reply window) and delivered by polling ListMessages — a browser
+	// disconnect or tab close never cancels or loses it. The TextChunk /
+	// ToolCallResult / ErrorChunk / DoneSignal events are retained for a
+	// future SSE surface but are not emitted by the current implementation.
 	ChatStream(context.Context, *connect.Request[v1.ChatStreamRequest], *connect.ServerStream[v1.ChatStreamResponse]) error
+	// AbortConversationTurn aborts the in-flight turn on a conversation's
+	// opencode session (the Stop button). The session itself is kept alive
+	// for the next message — only the running turn is cancelled, and the
+	// collector persists a user-initiated-stop error message under the acked
+	// assistant message id. Idempotent: aborting a conversation with no
+	// running turn is a no-op.
+	AbortConversationTurn(context.Context, *connect.Request[v1.AbortConversationTurnRequest]) (*connect.Response[v1.AbortConversationTurnResponse], error)
 	// UploadAttachment uploads a file attachment for use in a message.
 	// Returns a URL that can be referenced in subsequent ChatStream calls.
 	UploadAttachment(context.Context, *connect.Request[v1.UploadAttachmentRequest]) (*connect.Response[v1.UploadAttachmentResponse], error)
@@ -345,6 +382,12 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 		connect.WithSchema(askOrchiconServiceMethods.ByName("ChatStream")),
 		connect.WithHandlerOptions(opts...),
 	)
+	askOrchiconServiceAbortConversationTurnHandler := connect.NewUnaryHandler(
+		AskOrchiconServiceAbortConversationTurnProcedure,
+		svc.AbortConversationTurn,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("AbortConversationTurn")),
+		connect.WithHandlerOptions(opts...),
+	)
 	askOrchiconServiceUploadAttachmentHandler := connect.NewUnaryHandler(
 		AskOrchiconServiceUploadAttachmentProcedure,
 		svc.UploadAttachment,
@@ -385,6 +428,8 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 			askOrchiconServiceListMessagesHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceChatStreamProcedure:
 			askOrchiconServiceChatStreamHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceAbortConversationTurnProcedure:
+			askOrchiconServiceAbortConversationTurnHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceUploadAttachmentProcedure:
 			askOrchiconServiceUploadAttachmentHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceGetAgentConfigProcedure:
@@ -428,6 +473,10 @@ func (UnimplementedAskOrchiconServiceHandler) ListMessages(context.Context, *con
 
 func (UnimplementedAskOrchiconServiceHandler) ChatStream(context.Context, *connect.Request[v1.ChatStreamRequest], *connect.ServerStream[v1.ChatStreamResponse]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.ChatStream is not implemented"))
+}
+
+func (UnimplementedAskOrchiconServiceHandler) AbortConversationTurn(context.Context, *connect.Request[v1.AbortConversationTurnRequest]) (*connect.Response[v1.AbortConversationTurnResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.AbortConversationTurn is not implemented"))
 }
 
 func (UnimplementedAskOrchiconServiceHandler) UploadAttachment(context.Context, *connect.Request[v1.UploadAttachmentRequest]) (*connect.Response[v1.UploadAttachmentResponse], error) {

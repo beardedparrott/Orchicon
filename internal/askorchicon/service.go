@@ -35,6 +35,13 @@ type Service struct {
 	// serve could not start — ChatStream fails the turn fast with a clean
 	// message (the one-shot `opencode run` path was removed).
 	hostServe *opencode.HostServe
+	// turns is the in-flight turn registry (one turn per conversation):
+	// the one-turn gate + the Stop path's deterministic collector cancel.
+	turns *turnRegistry
+	// testServeClient is a test-only injection point that bypasses the real
+	// host serve so handler tests can drive ChatStream/Abort with a fake
+	// session client. Never set outside tests.
+	testServeClient sessionTurnClient
 	apiv1connect.UnimplementedAskOrchiconServiceHandler
 }
 
@@ -47,6 +54,7 @@ func New(pool *db.Pool, log *slog.Logger, blobStore blobstore.Store, modelDisc *
 		blobStore:    blobStore,
 		modelDisc:    modelDisc,
 		toolRegistry: NewToolRegistry(pool, log),
+		turns:        newTurnRegistry(),
 	}
 	s.registerSessionTools()
 	return s
@@ -252,6 +260,13 @@ func (s *Service) DeleteConversation(ctx context.Context, req *connect.Request[a
 			}
 		}
 	}
+	// Cancel any in-flight collector for this conversation so it finalizes
+	// immediately and never persists into the deleted conversation (the
+	// collector's persist path also re-checks the conversation and would
+	// skip the write — this just makes it prompt and clean).
+	if _, ok := s.turns.cancel(req.Msg.Id); ok {
+		s.turns.remove(req.Msg.Id)
+	}
 	return connect.NewResponse(&apiv1.DeleteConversationResponse{}), nil
 }
 
@@ -438,11 +453,27 @@ func conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview 
 }
 
 func messageRowToProto(r db.MessageRow) *apiv1.ChatMessage {
+	meta := &apiv1.MessageMetadata{}
+	if len(r.Metadata) > 0 {
+		var raw map[string]any
+		if err := json.Unmarshal(r.Metadata, &raw); err == nil {
+			if v, ok := raw["model_ref"].(string); ok {
+				meta.ModelRef = v
+			}
+			if v, ok := raw["latency_ms"].(float64); ok {
+				meta.LatencyMs = int64(v)
+			}
+			if v, ok := raw["error"].(string); ok {
+				meta.Error = v
+			}
+		}
+	}
 	return &apiv1.ChatMessage{
 		Id:             r.ID,
 		ConversationId: r.ConversationID,
 		Role:           r.Role,
 		Content:        r.Content,
+		Metadata:       meta,
 		CreatedAt:      timestamppb.New(r.CreatedAt),
 	}
 }
