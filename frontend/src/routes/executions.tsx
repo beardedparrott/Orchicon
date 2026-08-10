@@ -219,8 +219,8 @@ function ExecutionsPage() {
                       <div className="min-w-0 flex-1 overflow-hidden">
                         <p className="truncate text-sm font-medium">
                           {e.workflowName
-                            ? `${e.workflowName} — ${workerLabel(e.workerId)}${e.iteration > 0 ? ` (Loop #${e.iteration})` : ""}`
-                            : `${workerLabel(e.workerId)} v${e.workerVersion}${e.iteration > 0 ? ` (loop #${e.iteration})` : ""}`}
+                            ? `${e.workflowName} — ${e.workerName || e.workerId}${e.iteration > 0 ? ` (Loop #${e.iteration})` : ""}`
+                            : `${e.workerName || e.workerId} v${e.workerVersion}${e.iteration > 0 ? ` (loop #${e.iteration})` : ""}`}
                         </p>
                         <p className="break-all font-mono text-xs text-muted-foreground">
                           {e.id}
@@ -304,21 +304,6 @@ function ExecStatusBadge({ status }: { status: number }) {
       {labels[status] ?? "unknown"}
     </span>
   );
-}
-
-/** Convert a worker slug (e.g. "w_se_senior_software_engineer") to a
- *  human-readable name ("Senior Software Engineer"). Falls back to
- *  the raw ID if the slug doesn't follow the convention. */
-function workerLabel(id: string): string {
-  const prefix = "w_se_";
-  if (id.startsWith(prefix)) {
-    const rest = id.slice(prefix.length);
-    return rest
-      .split("_")
-      .map((w) => (w.length > 0 ? w[0].toUpperCase() + w.slice(1) : w))
-      .join(" ");
-  }
-  return id;
 }
 
 function HealthBadge({ health, status }: { health: number; status: number }) {

@@ -892,6 +892,7 @@ func rowToProto(e db.ExecutionRow) *apiv1.WorkerExecution {
 		WorkflowRunId: e.WorkflowRunID,
 		WorkflowStepId: e.WorkflowStepID,
 		WorkflowName:  e.WorkflowName,
+		WorkerName:    e.WorkerName,
 		Iteration:     int32(e.Iteration),
 	}
 	if e.AdapterID != nil {

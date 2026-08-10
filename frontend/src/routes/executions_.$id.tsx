@@ -205,7 +205,7 @@ function ExecutionDetailPage() {
             events={events}
             streamStatus={status}
             storedOutput={exec.output}
-            workerName={exec.workerId}
+            workerName={exec.workerName || exec.workerId}
             systemPrompt={exec.systemPrompt}
             isRunning={isRunning}
             isTerminal={isTerminal}
@@ -316,7 +316,7 @@ function ExecutionContextFooter({
   const items = [
     {
       label: "Worker",
-      value: `${workerLabel(exec.workerId)} v${exec.workerVersion}${exec.iteration > 0 ? ` (loop #${exec.iteration})` : ""}`,
+      value: `${exec.workerName || exec.workerId} v${exec.workerVersion}${exec.iteration > 0 ? ` (loop #${exec.iteration})` : ""}`,
     },
     { label: "Adapter", value: exec.adapterId || "—" },
     { label: "Task", value: exec.taskId },
@@ -419,18 +419,6 @@ function ApprovalDialog({
       </div>
     </div>
   );
-}
-
-function workerLabel(id: string): string {
-  const prefix = "w_se_";
-  if (id.startsWith(prefix)) {
-    const rest = id.slice(prefix.length);
-    return rest
-      .split("_")
-      .map((w) => (w.length > 0 ? w[0].toUpperCase() + w.slice(1) : w))
-      .join(" ");
-  }
-  return id;
 }
 
 function formatPayload(data: Uint8Array): string {

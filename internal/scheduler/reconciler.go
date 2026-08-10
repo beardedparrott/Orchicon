@@ -801,6 +801,9 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 		results["_summary"] = summary
 	}
 	results["_worker"] = exec.WorkerID
+	if exec.WorkerName != "" {
+		results["_worker_name"] = exec.WorkerName
+	}
 	// The decision signal is a SINGLE source of truth: the first word
 	// after the ORCHICON WORKER SUMMARY: marker. There is deliberately
 	// no separate `_decision:` or `_issues:` channel that can contradict
@@ -1715,7 +1718,7 @@ func (r *TaskReconciler) propagateStepRunResults(ctx context.Context, tx pgx.Tx,
 	}
 	// Propagate execution fields onto the step run so the run-view
 	// UI can show them without opening each execution.
-	for _, k := range []string{"_summary", "_decision", "_issues", "_touched_files", "_worker"} {
+	for _, k := range []string{"_summary", "_decision", "_issues", "_touched_files", "_worker", "_worker_name"} {
 		if v, ok := results[k]; ok {
 			merged[k] = v
 		}
