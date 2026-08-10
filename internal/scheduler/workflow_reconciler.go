@@ -920,7 +920,7 @@ func (r *WorkflowReconciler) buildRunNarrative(ctx context.Context, tx pgx.Tx, t
 			"step_name": sr.StepName,
 			"status":    sr.Status,
 		}
-		for _, k := range []string{"_summary", "_decision", "_issues", "_worker", "_recovery_summary"} {
+		for _, k := range []string{"_summary", "_decision", "_issues", "_worker", "_worker_name", "_recovery_summary"} {
 			if v, ok := meta[k]; ok {
 				entry[strings.TrimPrefix(k, "_")] = v
 			}
