@@ -88,6 +88,17 @@ function WorkItemDetailPage() {
     enabled: editing,
   });
 
+  // Whether this item has direct children — "has children" is the sequence
+  // determinant. A parent with children is a sequence run (its children each
+  // run their own bound workflows in chain order); its own workflow binding
+  // is ignored. Derived from the edit project's items (the editor already
+  // fetches them), so the schedule/start card can show for a parent even
+  // without a workflow selected.
+  const hasChildren = useMemo(
+    () => (editProjectItems ?? []).some((i) => i.parentId === id),
+    [editProjectItems, id],
+  );
+
   const [depTarget, setDepTarget] = useState("");
   const [depType, setDepType] = useState(1); // BLOCKS
 
@@ -366,12 +377,14 @@ function WorkItemDetailPage() {
       ) : (
       <>
 
-      {editing && editWorkflowId && (
+      {editing && (editWorkflowId || hasChildren) && (
         <Card>
           <CardHeader>
             <CardTitle>Scheduled start</CardTitle>
             <CardDescription>
-              Leave empty to start immediately. Set a time to schedule the run.
+              {hasChildren
+                ? "Run this item's children sequentially — each child runs its own bound workflow, one after another in chain order."
+                : "Leave empty to start immediately. Set a time to schedule the run."}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -586,6 +599,13 @@ function WorkItemDetailPage() {
             {item.workflowRunId && (
               <CardDescription className="mt-1 text-xs">
                 Active run: {item.workflowRunId.slice(0, 12)}…
+              </CardDescription>
+            )}
+            {hasChildren && (
+              <CardDescription className="mt-1 text-xs text-muted-foreground">
+                This item has children — it runs as a sequence, so its own
+                workflow is ignored. Each child runs its own workflow in chain
+                order.
               </CardDescription>
             )}
           </CardHeader>

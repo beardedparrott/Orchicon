@@ -208,15 +208,12 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	// Schedule-time validation (run-instant on create): if the item has
-	// children and no workflow, it is a sequence — validate the subtree
-	// before anything starts. A freshly created item has no children, so
-	// this is normally a no-op (defensive for batch parents).
-	if autoStart && scheduledStartAt == nil && workflowID == "" {
-		if err := s.validateSequenceSchedule(ctx, ttx.Tx, tenantID, created); err != nil {
-			return nil, err
-		}
-	}
+	// No schedule-time validation at create: a freshly created item has no
+	// children (so the sequence case can't apply), and auto_start_workflow
+	// on a workflow-less item is a stored preference — nothing fires until
+	// a workflow is bound (the auto-start fire path below no-ops for a
+	// workflow-less leaf). Scheduling/run-immediately on an UPDATE validates
+	// and rejects a workflow-less leaf there.
 	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.created", created); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -1266,7 +1263,14 @@ func ValidateSequenceSchedule(ctx context.Context, tx pgx.Tx, tenantID string, i
 		return mapDBError(err)
 	}
 	if len(children) == 0 {
-		return nil // no children → not a sequence
+		// Leaf — not a sequence. Scheduling or auto-starting a leaf with no
+		// workflow bound has nothing to run: reject at schedule time instead
+		// of silently no-oping (the run would never fire).
+		if item.WorkflowID == nil || *item.WorkflowID == "" {
+			return connect.NewError(connect.CodeInvalidArgument,
+				fmt.Errorf("Cannot schedule %q: no workflow is set, so there is nothing to run.", item.Title))
+		}
+		return nil // a workflow-bound leaf is a normal bound run
 	}
 	noWorkflow, oneShot, badWorkflow, err := ValidateSequenceSubtree(ctx, tx, tenantID, item)
 	if err != nil {
