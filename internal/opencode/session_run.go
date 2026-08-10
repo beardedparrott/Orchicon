@@ -289,8 +289,12 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		// ANY telemetry activity (text/tool/step/reasoning) after a probe
 		// is evidence the worker is alive — resolve the probe and revive
 		// without waiting for a full turn (the false-positive case: an
-		// analyst producing output but not touching files).
+		// analyst producing output but not touching files). It is also
+		// evidence the serve's model path is healthy — reset the
+		// consecutive-session-error counter so a single transient failure
+		// never triggers a container recycle.
 		r.resolveProbe()
+		r.noteSessionProgress()
 		r.a.parseEvent(r.parentCtx, r.execRow, r.manifest, legacy, r.callbacks,
 			r.monitor, &r.output, &r.lastStreamErr, &r.textSeq, r.stats)
 		// Record the raw part for the durable transcript.
@@ -408,18 +412,29 @@ func (r *sessionRun) settleFinish() {
 	}()
 }
 
+// sessionErrorMessage extracts the human-readable reason from a
+// session.error bus event. Provider errors nest the readable message at
+// error.data.message (e.g. OpenRouter 500s) — fall back to that when the
+// top-level error.message is absent so the failure reason is diagnosable
+// instead of a generic "opencode session error".
+func sessionErrorMessage(evt BusEvent) string {
+	if errObj, ok := evt.Properties["error"].(map[string]any); ok {
+		if m, ok2 := errObj["message"].(string); ok2 && m != "" {
+			return m
+		}
+		if data, ok2 := errObj["data"].(map[string]any); ok2 {
+			if m, ok3 := data["message"].(string); ok3 {
+				return m
+			}
+		}
+	}
+	return "opencode session error"
+}
+
 // recordStreamError handles a session.error bus event: the turn failed at
 // the model/API level.
 func (r *sessionRun) recordStreamError(evt BusEvent) {
-	msg := ""
-	if errObj, ok := evt.Properties["error"].(map[string]any); ok {
-		if m, ok2 := errObj["message"].(string); ok2 {
-			msg = m
-		}
-	}
-	if msg == "" {
-		msg = "opencode session error"
-	}
+	msg := sessionErrorMessage(evt)
 	r.a.log.Warn("opencode session error", "execution", r.execRow.ID, "message", msg)
 	r.mu.Lock()
 	if r.lastStreamErr == "" {
@@ -427,7 +442,89 @@ func (r *sessionRun) recordStreamError(evt BusEvent) {
 	}
 	r.mu.Unlock()
 	r.callbacks.OnHealth(r.parentCtx, r.execRow.ID, "unhealthy")
+	r.recycleOnWedgedServe(msg)
 	r.finish(false, "opencode_session_error: "+msg)
+}
+
+// recycleOnWedgedServe recycles the workflow's runtime container after a
+// run of CONSECUTIVE model-layer session errors. The observed wedge: a
+// serve whose /global/health answers (so the supervisor's health watchdog
+// never fires) but whose model turns fail instantly — every auto-retry
+// then re-uses the same poisoned serve and fails in ~80ms. Killing the
+// container makes the next dispatch's Create build a fresh serve, which is
+// exactly what un-wedged the field incident (a manual RetryFailedWorkflowRun
+// re-created the container and succeeded on the first try).
+//
+// The threshold is consecutive across executions — a wedge is serve-wide,
+// not execution-specific, so counting within one session would never fire
+// (the first failed execution fails fast and its retries are new sessions).
+// Reset to zero on any non-error progress (a step, tool call, or message
+// completing) so transient single failures never recycle.
+func (r *sessionRun) recycleOnWedgedServe(msg string) {
+	threshold := sessionErrorRecycleThreshold()
+	if threshold < 1 || r.manifest.RuntimeWorkflowID == "" || r.a.rt == nil {
+		return
+	}
+	if !r.a.countSessionError() {
+		return
+	}
+	r.a.log.Warn("recycling wedged runtime container after consecutive session errors",
+		"run", r.manifest.RuntimeWorkflowID, "execution", r.execRow.ID,
+		"threshold", threshold, "error", msg)
+	// Kill removes the container; the next dispatch's Create rebuilds it
+	// with a fresh serve. Best-effort — a failed recycle is just a log.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := r.a.rt.Kill(ctx, r.manifest.RuntimeWorkflowID); err != nil {
+		r.a.log.Warn("runtime container recycle failed", "run", r.manifest.RuntimeWorkflowID, "error", err)
+	}
+}
+
+// countSessionError increments the consecutive session-error counter and
+// returns true once the recycle threshold is reached (the counter is then
+// reset so a still-wedged serve re-arms on later dispatches). Returns
+// false before the threshold; a disabled threshold (<1) always returns
+// false.
+func (a *Adapter) countSessionError() bool {
+	threshold := sessionErrorRecycleThreshold()
+	if threshold < 1 {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.consecutiveSessionErrors++
+	if a.consecutiveSessionErrors < threshold {
+		return false
+	}
+	a.consecutiveSessionErrors = 0
+	return true
+}
+
+// sessionErrorCount returns the current consecutive session-error count
+// (test helper).
+func (a *Adapter) sessionErrorCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.consecutiveSessionErrors
+}
+
+// resetSessionErrors zeroes the consecutive session-error counter (test
+// helper).
+func (a *Adapter) resetSessionErrors() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.consecutiveSessionErrors = 0
+}
+
+// noteSessionProgress resets the consecutive-session-error counter on any
+// non-error session progress (a step, tool call, or message completing).
+func (r *sessionRun) noteSessionProgress() {
+	if sessionErrorRecycleThreshold() < 1 {
+		return
+	}
+	r.a.mu.Lock()
+	r.a.consecutiveSessionErrors = 0
+	r.a.mu.Unlock()
 }
 
 // onStall is the progress monitor's stall callback. Fatal signals abort

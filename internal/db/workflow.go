@@ -848,7 +848,7 @@ func ListWorkflowStepRuns(ctx context.Context, tx pgx.Tx, tenantID, runID string
 		created_at, updated_at
 		FROM workflow_step_runs
 		WHERE tenant_id = $1 AND workflow_run_id = $2
-		ORDER BY created_at ASC`
+		ORDER BY created_at ASC, id ASC`
 	rows, err := tx.Query(ctx, q, tenantID, runID)
 	if err != nil {
 		return nil, fmt.Errorf("db: list workflow step runs: %w", err)

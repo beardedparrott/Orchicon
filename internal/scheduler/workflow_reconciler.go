@@ -362,6 +362,27 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		}
 		runByID = make(map[string]db.WorkflowStepRunRow, len(stepRuns))
 		for _, sr := range stepRuns {
+			// A SUPERSEDED run must never shadow the active run for its
+			// step_id: loop_decision iterations are created in the same
+			// transaction as the superseding update, so several rows can
+			// share a created_at. With ORDER BY created_at ASC (even with
+			// an id tiebreaker), "last row wins" is only safe if the
+			// active row is also the last — prefer a non-superseded row
+			// whenever one exists so a stale entry can't wedge the DAG
+			// (the observed failure: runByID held a superseded succeeded
+			// loop-decision run, the active pending iteration was never
+			// dispatched, and the run sat "running" until force-progress).
+			cur, exists := runByID[sr.StepID]
+			if sr.SupersededBy != "" {
+				// Superseded row: only use it if nothing exists yet; the
+				// active row (when it appears) overwrites it.
+				if exists {
+					continue
+				}
+			} else if exists && cur.SupersededBy == "" {
+				// Active row already won — never overwrite it.
+				continue
+			}
 			runByID[sr.StepID] = sr
 		}
 
@@ -1430,6 +1451,31 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 						reason:       "loop_decision:upstream_failed",
 					})
 				}
+			}
+			// Guard against runaway iteration generation: when the upstream
+			// reviewer is FAILED, depsSatisfied treats the failed upstream as
+			// satisfied for THIS loop decision, so the freshly-created pending
+			// iteration re-dispatches on the next DAG pass and (upstream still
+			// failed) spawns ANOTHER iteration — all within one reconcile
+			// transaction. That floods workflow_step_runs with same-transaction
+			// rows (identical created_at → the "last row wins" ordering hazard
+			// that wedged the DAG in the field). If an ACTIVE (non-superseded)
+			// pending loop-decision iteration already exists for this step, the
+			// recovery re-dispatches the reviewer and re-evaluates when it
+			// lands — don't create a duplicate.
+			hasPendingIter := false
+			if iterRuns, ierr := listStepRunsByStepID(ctx, tx, tenantID, run.ID, step.ID); ierr == nil {
+				for _, prev := range iterRuns {
+					if prev.SupersededBy == "" && prev.ID != sr.ID && prev.Status == domain.StepRunPending {
+						hasPendingIter = true
+						break
+					}
+				}
+			}
+			if hasPendingIter {
+				r.log.Info("loop_decision: upstream failed, pending iteration exists — waiting",
+					"run", run.ID, "step", step.ID)
+				break
 			}
 			nextIter := currentLoopIteration(runs, step.ID) + 1
 			if err := r.createLoopDecisionIteration(ctx, tx, tenantID, run, sr, step, runs, nextIter, now, `{"loop":"recovered"}`); err != nil {

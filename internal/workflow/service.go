@@ -885,6 +885,25 @@ func (s *Service) RetryStepRun(ctx context.Context, req *connect.Request[apiv1.R
 // `_forced: true` result note, terminates any still-running linked executions,
 // and enqueues a workflow.step_succeeded event so the reconciler advances the
 // DAG on its next pass.
+// ForceProgressWorkflowRun advances a stuck running run past its current
+// in-flight step run(s) regardless of their previous status. A run can wedge
+// "running" forever even though the underlying worker execution succeeded:
+// when a LATER step's dispatch fails, reconcileRun errors and rolls back the
+// ENTIRE pass — including this step's terminal mark — leaving the step
+// "running" with a succeeded execution underneath (field incident: a
+// corrupted worker_versions index hid a worker, dispatch of a downstream step
+// failed, the pass rolled back, and the run sat "running" for hours).
+//
+// This is a manual escape hatch. Unlike the original all-or-nothing version
+// (which force-succeeded EVERY active non-terminal step and so skipped real
+// downstream work), it force-succeeds only the STUCK steps — the ones that
+// are in-flight (running/ready/approval_pending/recovering) or that are
+// pending with all DAG dependencies already satisfied (the reconciler wedged
+// before dispatching them). Steps still waiting on an unsatisfied dependency
+// are LEFT PENDING so the reconciler's next pass dispatches them normally —
+// the loop DAG keeps progressing instead of a downstream task/approval step
+// being skipped (the observed bug: a force-progress marked the DevOps PR step
+// succeeded without ever dispatching it, and the PR was never merged).
 func (s *Service) ForceProgressWorkflowRun(ctx context.Context, req *connect.Request[apiv1.ForceProgressWorkflowRunRequest]) (*connect.Response[apiv1.ForceProgressWorkflowRunResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -908,9 +927,50 @@ func (s *Service) ForceProgressWorkflowRun(ctx context.Context, req *connect.Req
 			fmt.Errorf("run is already terminal (status=%s) — nothing to force", run.Status))
 	}
 
+	// Load the published version's steps so we can evaluate DAG deps and
+	// decide which pending steps are genuinely stuck (deps satisfied but
+	// never dispatched) vs still waiting on an upstream.
+	var stepByID map[string]StepWire
+	version, verr := db.GetWorkflowVersion(ctx, ttx.Tx, tenantID, run.WorkflowID, run.WorkflowVersion)
+	if verr == nil {
+		if steps, perr := ParseSteps(version.Steps); perr == nil {
+			stepByID = make(map[string]StepWire, len(steps))
+			for _, st := range steps {
+				stepByID[st.ID] = st
+			}
+		}
+	}
+
 	stepRuns, err := db.ListWorkflowStepRuns(ctx, ttx.Tx, tenantID, req.Msg.RunId)
 	if err != nil {
 		return nil, mapDBError(err)
+	}
+	// Active (non-superseded) run per step — the DAG sees only these.
+	activeByStep := make(map[string]db.WorkflowStepRunRow, len(stepRuns))
+	for _, sr := range stepRuns {
+		if sr.SupersededBy != "" {
+			continue
+		}
+		activeByStep[sr.StepID] = sr
+	}
+	// depsSatisfied mirrors the reconciler: every depends_on must be
+	// succeeded/skipped (or failed when the dependent is a loop decision).
+	depsSatisfied := func(step StepWire, runs map[string]db.WorkflowStepRunRow) bool {
+		isLoop := step.Kind == domain.StepKindLoopDecision
+		for _, dep := range step.DependsOn {
+			sr, ok := runs[dep]
+			if !ok {
+				return false
+			}
+			if sr.Status == domain.StepRunSucceeded || sr.Status == domain.StepRunSkipped {
+				continue
+			}
+			if isLoop && sr.Status == domain.StepRunFailed {
+				continue
+			}
+			return false
+		}
+		return true
 	}
 
 	now := time.Now().UTC()
@@ -922,6 +982,16 @@ func (s *Service) ForceProgressWorkflowRun(ctx context.Context, req *connect.Req
 		switch sr.Status {
 		case domain.StepRunSucceeded, domain.StepRunFailed, domain.StepRunSkipped, domain.StepRunBlocked:
 			continue // already terminal — leave alone
+		case domain.StepRunPending:
+			// A pending step is only "stuck" if its DAG deps are already
+			// satisfied (the reconciler should have dispatched it). If it is
+			// still waiting on an upstream that hasn't resolved, forcing it
+			// would SKIP real work — leave it for the reconciler. If we
+			// can't resolve the step's deps, stay conservative and leave it.
+			step, ok := stepByID[sr.StepID]
+			if !ok || !depsSatisfied(step, activeByStep) {
+				continue
+			}
 		}
 
 		// Annotate the result with a forced marker so the run view shows
@@ -971,7 +1041,7 @@ func (s *Service) ForceProgressWorkflowRun(ctx context.Context, req *connect.Req
 	}
 	if len(forced) == 0 {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			errors.New("no active step runs to force — the run may already be advancing"))
+			errors.New("no stuck step runs to force — the run may already be advancing"))
 	}
 
 	if err := ttx.Commit(ctx); err != nil {
