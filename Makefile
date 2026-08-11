@@ -62,11 +62,16 @@ fetch-tags:
 	@git fetch --tags --quiet origin 2>/dev/null || true
 
 .PHONY: build run test vet tidy
-build: fetch-tags ## Build the control-plane binary into bin/
+# build/run depend on fe-build because the binary embeds frontend/dist via
+# go:embed (assets.go). Without it, a stale dist silently ships the previous
+# UI — exactly how the Ask Orchicon full-viewport fix stayed invisible after
+# a "rebuild". fe-build is stamp-checked, so an unchanged frontend adds no
+# cost to the Go-only iteration loop.
+build: fetch-tags fe-build ## Build the control-plane binary into bin/
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon ./cmd/orchicon
 
-run: fetch-tags ## Run the control plane from source
+run: fetch-tags fe-build ## Run the control plane from source
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon
 
 test: ## Run Go tests
@@ -137,8 +142,16 @@ fe-install: ## Install frontend dependencies
 fe-dev: ## Start the Vite dev server
 	cd frontend && npm run dev
 
-fe-build: ## Build the frontend for production
-	cd frontend && npm run build
+# fe-build rebuilds the production bundle only when the frontend source is
+# newer than the existing dist — repeated `make build` stays fast while any
+# frontend edit is guaranteed to land in the next binary.
+fe-build: ## Build the frontend for production (skipped when dist is up to date)
+	@if [ -f frontend/dist/index.html ] && ! find frontend/src frontend/index.html frontend/vite.config.ts frontend/tailwind.config.js frontend/postcss.config.js frontend/components.json -newer frontend/dist/index.html -print -quit 2>/dev/null | grep -q .; then \
+		echo "==> frontend bundle up to date"; \
+	else \
+		echo "==> building frontend bundle"; \
+		cd frontend && npm run build; \
+	fi
 
 fe-lint: ## Lint the frontend
 	cd frontend && npm run lint
