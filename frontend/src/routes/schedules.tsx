@@ -5,14 +5,24 @@
 // that have fired and are actively executing ("Running"), plus a history
 // of items that already ran ("History"). All data comes from existing
 // Connect-ES clients (AGENTS.md invariants #1/#2): Upcoming is a
-// status = WORK_ITEM_STATUS_SCHEDULED query; Running and History are
+// status = WORK_ITEM_STATUS_SCHEDULED query plus a client-side "queued"
+// section of pending sequence children; Running and History are
 // broad fetches filtered client-side — Running to items with an in-flight
 // workflow run (status RUNNING / CHECKPOINTING / RECOVERING, workflow
-// bound), History to items that have a scheduled_start_at and a terminal
-// status (the ListWorkItems API accepts exactly one status filter, so
+// bound), History to items that have a scheduled_start_at or a completed
+// workflow run or are a completed sequence parent and a terminal status
+// (the ListWorkItems API accepts exactly one status filter, so
 // those status unions cannot be fetched in one call — the fetch is
 // isolated behind useListWorkItems so a future backend filter/RPC can
 // swap in without touching this page's layout).
+//
+// Sequence runs (a parent with children and no bound workflow) fan out to
+// per-child workflows: the engine resets every descendant to pending and
+// arms one child at a time. Only the parent carries scheduled_start_at,
+// so the children never match the SCHEDULED query — the Upcoming view
+// derives them from the full project list (see QueuedSection), and
+// History includes terminal items with workflow_run_id so completed
+// children (and single runs started without a schedule) are not dropped.
 //
 // Recurring scheduled tasks are a future backend feature (design §5).
 // Every card reserves a right-aligned frequency slot that today renders
@@ -58,6 +68,11 @@ import {
 } from "@/components/work-items/sequence-utils";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
+import {
+  ACTIVE_RUNNING_STATUSES,
+  isHistoryItem,
+  queuedSequenceChildren,
+} from "@/lib/schedules-model";
 
 const schedulesSearchSchema = z.object({
   view: z.enum(["upcoming", "running", "history"]).optional(),
@@ -70,21 +85,6 @@ export const Route = createRoute({
   validateSearch: schedulesSearchSchema,
   component: SchedulesPage,
 });
-
-// Terminal statuses that count as "previously ran" for History
-// (succeeded / failed / cancelled).
-const TERMINAL_STATUSES = new Set([6, 7, 8]);
-
-// Active statuses that count as "currently running" for the Running view:
-// work items whose bound workflow run is in flight (RUNNING /
-// CHECKPOINTING / RECOVERING). These are only ever set for tickets bound
-// to an in-flight run (standalone dispatches use assigned), so the
-// predicate captures exactly "currently running workflows" — whether or
-// not the item carried a scheduled start. Disjoint from TERMINAL_STATUSES
-// and from SCHEDULED. A SEQUENCE parent (children + no bound workflow)
-// has no workflow_run_id, so the Running predicate is extended separately
-// (isSequenceRunningParent).
-const ACTIVE_RUNNING_STATUSES = new Set([4, 5, 9]);
 
 // Schedulable kinds: Task, Subtask, and the recovery kinds. Epics and
 // features cannot be scheduled, so they are not offered in the filter.
@@ -403,16 +403,33 @@ function UpcomingView({
     search: search || undefined,
     refetchInterval: 5_000,
   });
-  // A scheduled item is a sequence parent when it has children and no
-  // bound workflow — its own run fans out to per-child workflows. The
-  // parent derivation needs the FULL project list: a scheduled sequence
-  // parent's children are pending (not scheduled), so they never appear
-  // in the SCHEDULED query above.
-  const { data: allItems } = useListWorkItems(projectId, {
+  // The full project list is needed for the sequence derivations below (a
+  // scheduled sequence parent's children are pending, never scheduled), so
+  // the query is isolated behind its own load/error flags.
+  const {
+    data: allItems,
+    isLoading: allLoading,
+    error: allError,
+  } = useListWorkItems(projectId, {
     search: search || undefined,
     refetchInterval: 5_000,
   });
   const parentIds = useMemo(() => sequenceParentIds(allItems ?? []), [allItems]);
+  const positions = useMemo(
+    () => computeSequencePositions(allItems ?? []),
+    [allItems],
+  );
+
+  // Queued sequence children: a running sequence parent's not-yet-armed
+  // children. The sequence engine resets every descendant to pending on
+  // fire and arms one child at a time (parent + current child show under
+  // Running), so the remaining children are pending — NOT scheduled — and
+  // never match the SCHEDULED query above. Deriving them from the full
+  // project list keeps them visible under Upcoming until their turn.
+  const queued = useMemo(
+    () => queuedSequenceChildren(allItems ?? [], kindFilter),
+    [allItems, kindFilter],
+  );
 
   // Kind filter + chronological sort are client-side (the server sort_by
   // only supports title/priority/created_at; scheduled_start_at is not
@@ -427,17 +444,17 @@ function UpcomingView({
     return sortOrder === "asc" ? sorted : sorted.reverse();
   }, [scheduled, kindFilter, sortOrder]);
 
-  if (isLoading) {
+  if (isLoading || allLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
   }
-  if (error) {
+  if (error || allError) {
     return (
       <p className="text-sm text-destructive">
-        Failed to load schedules: {String(error)}
+        Failed to load schedules: {String(error || allError)}
       </p>
     );
   }
-  if (items.length === 0) {
+  if (items.length === 0 && queued.length === 0) {
     return (
       <Card>
         <CardHeader>
@@ -462,17 +479,27 @@ function UpcomingView({
       <div className="flex items-center gap-2 px-2 py-1">
         <input
           type="checkbox"
-          checked={selected.size === items.length}
-          onChange={() => onToggleSelectAll(items)}
+          checked={selected.size === items.length + queued.length}
+          onChange={() => onToggleSelectAll([...queued, ...items])}
           className="h-4 w-4 rounded border-input"
           aria-label="Select all upcoming schedules"
         />
         <span aria-live="polite" className="text-xs text-muted-foreground">
           {selected.size > 0
-            ? `${selected.size} of ${items.length} selected`
-            : `${items.length} scheduled item${items.length === 1 ? "" : "s"}`}
+            ? `${selected.size} of ${items.length + queued.length} selected`
+            : `${items.length + queued.length} scheduled item${items.length + queued.length === 1 ? "" : "s"}`}
         </span>
       </div>
+      {queued.length > 0 && (
+        <QueuedSection
+          queued={queued}
+          projects={projects}
+          selected={selected}
+          onToggleSelect={onToggleSelect}
+          parentIds={parentIds}
+          positions={positions}
+        />
+      )}
       {groups.map((group, gi) => (
         <AgendaGroup
           key={group.key}
@@ -485,6 +512,129 @@ function UpcomingView({
           parentIds={parentIds}
         />
       ))}
+    </div>
+  );
+}
+
+// Queued section: the pending children of a running sequence parent. They
+// have no scheduled_start_at of their own (only the sequence parent is
+// scheduled), so they can't join the day-grouped agenda — this section
+// sits above it and orders them by chain order.
+function QueuedSection({
+  queued,
+  projects,
+  selected,
+  onToggleSelect,
+  parentIds,
+  positions,
+}: {
+  queued: WorkItemProto[];
+  projects?: Project[];
+  selected: Set<string>;
+  onToggleSelect: (id: string) => void;
+  parentIds: Set<string>;
+  positions: Map<string, number>;
+}) {
+  return (
+    <section aria-label="Queued sequence children">
+      <div className="flex items-center gap-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          Queued
+        </h2>
+        <div className="h-px flex-1 bg-border" />
+        <span className="text-xs text-muted-foreground">{queued.length}</span>
+      </div>
+      <ul className="mt-3 space-y-3">
+        {queued.map((item, ii) => (
+          <li key={item.id} className="flex gap-3">
+            <div className="hidden w-16 shrink-0 pt-4 text-right font-mono text-xs tabular-nums text-muted-foreground sm:block">
+              {positions.get(item.id) ? `#${positions.get(item.id)}` : "…"}
+            </div>
+            <div className="relative flex flex-col items-center">
+              <KindDot
+                kind={item.kind}
+                className="mt-4 ring-2 ring-background"
+              />
+              {ii !== queued.length - 1 && (
+                <span
+                  aria-hidden
+                  className="absolute left-1/2 top-6 h-[calc(100%+0.75rem)] w-px -translate-x-1/2 bg-border"
+                />
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <QueuedCard
+                item={item}
+                projects={projects}
+                selected={selected.has(item.id)}
+                onToggleSelect={onToggleSelect}
+                isSequenceChild={!!item.parentId && parentIds.has(item.parentId)}
+                position={positions.get(item.id)}
+              />
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function QueuedCard({
+  item,
+  projects,
+  selected,
+  onToggleSelect,
+  isSequenceChild,
+  position,
+}: {
+  item: WorkItemProto;
+  projects?: Project[];
+  selected: boolean;
+  onToggleSelect: (id: string) => void;
+  isSequenceChild: boolean;
+  position?: number;
+}) {
+  const projectName = projects?.find((p) => p.id === item.projectId)?.name;
+  return (
+    <div className="group flex items-center gap-2">
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={() => onToggleSelect(item.id)}
+        className="h-4 w-4 shrink-0 rounded border-input"
+        aria-label={`Select ${item.title}`}
+      />
+      <Link
+        to="/work-items/$id"
+        params={{ id: item.id }}
+        className="min-w-0 flex-1"
+      >
+        <Card className="transition-colors hover:bg-accent">
+          <CardContent className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-center gap-3">
+              <KindDot kind={item.kind} />
+              <div className="min-w-0 flex-1 overflow-hidden">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-sm font-medium group-hover:underline">
+                    {item.title}
+                  </span>
+                  <KindBadge kind={item.kind} />
+                  {isSequenceChild && <MultiWorkflowChip />}
+                  {position ? <PositionBadge position={position} /> : null}
+                  <StatusPill status={item.status} />
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                  {projectName && <span>{projectName}</span>}
+                  <span className="inline-flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    Queued — waits for the current step
+                  </span>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </Link>
     </div>
   );
 }
@@ -865,18 +1015,22 @@ function HistoryView({
     refetchInterval: 30_000,
   });
 
-  // History = items that had a scheduled start and reached a terminal
-  // status (the API accepts one status filter, so this union is derived
-  // client-side; see the header comment).
+  // History = items that previously ran a workflow: those that had a
+  // scheduled start and reached a terminal status (as today), PLUS any
+  // terminal item that carried a workflow run (a completed sequence
+  // child, or a single workflow run started without a schedule — those
+  // have workflow_run_id but no scheduled_start_at, so the old
+  // scheduledStartAt-only predicate dropped them), PLUS terminal sequence
+  // parents. The API accepts one status filter, so this union is derived
+  // client-side (see the header comment).
   const items = useMemo(() => {
     const base = (allItems ?? []).filter(
       (i) =>
-        i.scheduledStartAt &&
-        TERMINAL_STATUSES.has(i.status) &&
+        isHistoryItem(i, allItems ?? []) &&
         (!kindFilter || i.kind === Number(kindFilter)),
     );
     const sorted = [...base].sort(
-      (a, b) => tsToMs(b.scheduledStartAt) - tsToMs(a.scheduledStartAt),
+      (a, b) => historyRanAt(b) - historyRanAt(a),
     );
     return sortOrder === "desc" ? sorted : sorted.reverse();
   }, [allItems, kindFilter, sortOrder]);
@@ -927,7 +1081,7 @@ function HistoryView({
         {items.map((item, ii) => (
           <li key={item.id} className="flex gap-3">
             <div className="hidden w-16 shrink-0 pt-4 text-right font-mono text-xs tabular-nums text-muted-foreground sm:block">
-              {formatTime(tsToMs(item.scheduledStartAt))}
+              {formatTime(historyRanAt(item))}
             </div>
             <div className="relative flex flex-col items-center">
               <KindDot
@@ -968,7 +1122,7 @@ function HistoryCard({
   onToggleSelect: (id: string) => void;
 }) {
   const projectName = projects?.find((p) => p.id === item.projectId)?.name;
-  const ranAt = tsToMs(item.scheduledStartAt);
+  const ranAt = historyRanAt(item);
   return (
     <div className="group flex items-center gap-2">
       <input
@@ -1202,6 +1356,18 @@ function tsToMs(ts?: Timestamp): number {
 // fall back to updatedAt (the reconciler bumps it while the run is in
 // flight) and then createdAt.
 function runningStartedAt(item: WorkItemProto): number {
+  return (
+    tsToMs(item.scheduledStartAt) ||
+    tsToMs(item.updatedAt) ||
+    tsToMs(item.createdAt)
+  );
+}
+
+// historyRanAt is the effective "ran" time for a History-view item.
+// Sequence children and single runs started without a schedule have no
+// scheduled_start_at (only the sequence parent is scheduled), so fall
+// back to updatedAt (the terminal transition) and then createdAt.
+function historyRanAt(item: WorkItemProto): number {
   return (
     tsToMs(item.scheduledStartAt) ||
     tsToMs(item.updatedAt) ||
