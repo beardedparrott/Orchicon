@@ -126,6 +126,7 @@ function AskOrchiconPage() {
   // Live streaming items accumulated from ChatStream events.
   const [streamItems, setStreamItems] = useState<StreamItem[]>([]);
   const streamPhaseRef = useRef(0);
+  const prevConvIdRef = useRef<string | null>(null);
 
   const { data: conversations, isLoading: convsLoading } =
     useListConversations();
@@ -140,7 +141,13 @@ function AskOrchiconPage() {
   const qc = useQueryClient();
 
   // Switching conversations resets local state.
+  // Skip the reset on null→id transitions (greeting path) so the streaming
+  // state set by sendStreaming is not clobbered by this effect.
   useEffect(() => {
+    const prev = prevConvIdRef.current;
+    prevConvIdRef.current = activeConvId;
+    if (prev === null || activeConvId === null) return;
+    // Switching between two non-null conversation ids — reset.
     setPendingReplyId(null);
     setIsStreaming(false);
     setIsThinking(false);
@@ -386,6 +393,18 @@ function AskOrchiconPage() {
                   />
                 ))}
 
+                {/* Optimistic user message — before streaming bubbles */}
+                {optimisticUserMsg &&
+                  !messages?.some(
+                    (m) =>
+                      m.content === optimisticUserMsg && m.role === "user",
+                  ) && (
+                    <UserBubble
+                      text={optimisticUserMsg}
+                      source="you"
+                    />
+                  )}
+
                 {/* Live streaming items (text + reasoning chunks) */}
                 {isStreaming &&
                   groupedStream.map((item) => {
@@ -409,18 +428,6 @@ function AskOrchiconPage() {
                         return null;
                     }
                   })}
-
-                {/* Optimistic user message */}
-                {optimisticUserMsg &&
-                  !messages?.some(
-                    (m) =>
-                      m.content === optimisticUserMsg && m.role === "user",
-                  ) && (
-                    <UserBubble
-                      text={optimisticUserMsg}
-                      source="you"
-                    />
-                  )}
 
                 {/* Thinking indicator — visible until the first text chunk arrives */}
                 {isThinking && !groupedStream.some((i) => i.kind === "text") && (
