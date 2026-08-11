@@ -40,12 +40,17 @@ const NAV: NavItem[] = [
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {
+  const path = useRouterState({ select: (s) => s.location.pathname });
+  const isAskOrchicon = path === "/ask-orchicon" || path.startsWith("/ask-orchicon/");
+
   return (
     <div className="flex min-h-screen bg-background">
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar />
-        <main className="flex-1 p-6 lg:p-8">{children}</main>
+        <main className={cn("flex-1", isAskOrchicon ? "p-0" : "p-6 lg:p-8")}>
+          {children}
+        </main>
       </div>
     </div>
   );

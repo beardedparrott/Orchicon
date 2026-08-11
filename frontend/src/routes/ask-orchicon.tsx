@@ -7,6 +7,8 @@ import {
   Mic,
   Square,
   RefreshCw,
+  Settings2,
+  Brain,
 } from "lucide-react";
 
 import { Route as rootRoute } from "@/routes/__root";
@@ -150,7 +152,7 @@ function AskOrchiconPage() {
 
   // Sync local mode from active conversation when it loads.
   useEffect(() => {
-    if (activeConv?.mode && activeConv.mode !== ConversationMode.UNSPECIFIED) {
+    if (activeConv?.mode && (activeConv.mode as number) !== ConversationMode.UNSPECIFIED) {
       setLocalMode(activeConv.mode);
     }
   }, [activeConv?.mode]);
@@ -187,16 +189,9 @@ function AskOrchiconPage() {
     }
   }, [messages, isStreaming, pendingReplyId, qc]);
 
-  const handleNewChat = useCallback(async () => {
-    try {
-      const conv = await createConv.mutateAsync({});
-      if (conv?.id) {
-        setActiveConvId(conv.id);
-      }
-    } catch {
-      toast.error("Failed to create conversation", { title: "Error" });
-    }
-  }, [createConv, toast]);
+  const handleNewChat = useCallback(() => {
+    setActiveConvId(null);
+  }, []);
 
   const handleDeleteConv = useCallback(
     async (id: string, e: React.MouseEvent) => {
@@ -351,18 +346,18 @@ function AskOrchiconPage() {
   }, [messages, isStreaming, groupedStream]);
 
   return (
-    <div className="-m-6 lg:-m-8 flex h-[calc(100vh-3.5rem)] gap-0">
+    <div className="flex h-[calc(100vh-3.5rem)] gap-0">
       {/* Main chat area — centered column */}
       <div className="flex flex-1 flex-col min-w-0">
         {!activeConvId ? (
           /* --- Greeting state: centered vertical + horizontal --- */
           <div className="flex flex-1 items-center justify-center px-4">
-            <div className="w-full max-w-2xl space-y-6">
-              <div className="text-center space-y-3">
-                <h1 className="text-2xl font-semibold text-foreground">
+            <div className="w-full max-w-2xl space-y-8">
+              <div className="text-center space-y-4">
+                <h1 className="text-4xl font-extrabold tracking-tight text-foreground md:text-5xl">
                   What would you like to create today?
                 </h1>
-                <p className="text-sm text-muted-foreground">
+                <p className="text-base text-muted-foreground max-w-lg mx-auto md:text-lg">
                   Ask Orchicon anything — create projects, manage work items,
                   brainstorm ideas, or get help with your codebase.
                 </p>
@@ -398,9 +393,22 @@ function AskOrchiconPage() {
           <div className="flex flex-1 flex-col min-h-0">
             {/* Chat header */}
             <div className="flex items-center justify-between border-b px-6 py-3 shrink-0">
-              <h2 className="text-sm font-medium truncate">
-                {activeConv?.title || "Ask Orchicon"}
-              </h2>
+              <div className="flex items-center gap-2 min-w-0">
+                <h2 className="text-sm font-medium truncate">
+                  {activeConv?.title || "Ask Orchicon"}
+                </h2>
+                {localMode === ConversationMode.BRAINSTORM ? (
+                  <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-300">
+                    <Brain className="h-2.5 w-2.5" />
+                    Brainstorm
+                  </span>
+                ) : (
+                  <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-900/30 dark:text-sky-300">
+                    <Settings2 className="h-2.5 w-2.5" />
+                    Orchicon
+                  </span>
+                )}
+              </div>
               <Button variant="ghost" size="sm" onClick={handleNewChat}>
                 <Plus className="h-4 w-4" />
               </Button>
@@ -458,7 +466,11 @@ function AskOrchiconPage() {
                         );
                       case "reasoning":
                         return (
-                          <ReasoningBubble key={item.key} text={item.text} />
+                          <ReasoningBubble
+                            key={item.key}
+                            text={item.text}
+                            streaming={isStreaming}
+                          />
                         );
                       case "error":
                         return (
@@ -469,8 +481,8 @@ function AskOrchiconPage() {
                     }
                   })}
 
-                {/* Thinking indicator — visible until the first text chunk arrives */}
-                {isThinking && !groupedStream.some((i) => i.kind === "text") && (
+                {/* Thinking indicator — visible until any streaming content arrives */}
+                {isThinking && groupedStream.length === 0 && (
                   <div className="flex justify-start">
                     <div className="rounded-2xl rounded-tl-sm border border-sky-300/30 bg-sky-50/20 px-4 py-3 dark:border-sky-950/40 dark:bg-sky-950/10">
                       <div className="flex items-center gap-2">
@@ -512,7 +524,6 @@ function AskOrchiconPage() {
             variant="ghost"
             size="sm"
             onClick={handleNewChat}
-            disabled={createConv.isPending}
           >
             <Plus className="h-4 w-4" />
           </Button>
@@ -804,8 +815,9 @@ function ChatInputField({
           ))}
         </div>
       )}
-      <div className="flex gap-1.5 sm:gap-2 items-end">
-        <div className="flex-1 flex items-end gap-1 rounded-xl border bg-background px-3 py-2 focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
+      <div className="rounded-xl border bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 overflow-hidden">
+        {/* Textarea area */}
+        <div className="flex items-end gap-1 px-3 pt-3 pb-1">
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={disabled}
@@ -842,27 +854,34 @@ function ChatInputField({
             <Mic className="h-4 w-4" />
           </button>
         </div>
-        {onModeChange && (
-          <ModeToggle
-            mode={mode}
-            onModeChange={onModeChange}
-            disabled={disabled}
-          />
-        )}
-        {isStreaming ? (
-          <Button onClick={onStop} variant="destructive" size="sm">
-            <Square className="h-4 w-4 mr-1" />
-            Stop
-          </Button>
-        ) : (
-          <Button
-            onClick={handleSubmit}
-            disabled={(!text.trim() && attachments.length === 0) || disabled}
-            size="sm"
-          >
-            Send
-          </Button>
-        )}
+        {/* Bottom toolbar — send/stop on left, mode dropdown on the right */}
+        <div className="flex items-center justify-between border-t border-border/40 px-3 py-2.5">
+          <div className="flex items-center gap-1.5">
+            {isStreaming ? (
+              <Button onClick={onStop} variant="destructive" size="sm">
+                <Square className="h-3.5 w-3.5 mr-1" />
+                Stop
+              </Button>
+            ) : (
+              <Button
+                onClick={handleSubmit}
+                disabled={(!text.trim() && attachments.length === 0) || disabled}
+                size="sm"
+              >
+                Send
+              </Button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {onModeChange && (
+              <ModeToggle
+                mode={mode}
+                onModeChange={onModeChange}
+                disabled={disabled}
+              />
+            )}
+          </div>
+        </div>
       </div>
       <input
         ref={fileInputRef}

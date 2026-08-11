@@ -69,6 +69,33 @@ Your purpose is to help users accomplish tasks inside Orchicon and to answer que
 9. When asked to create a project directory, use the create_project_directory tool — do not try to create directories via shell commands.
 `)
 
+	// 1b. Mode awareness — redirect out-of-scope requests to Brainstorm.
+	b.WriteString(`
+## Mode Awareness
+You are currently in Orchicon mode — the governed platform expert. You can only
+help with tasks inside Orchicon: managing projects, workers, work items, workflows,
+policies, and understanding platform state.
+
+If the user asks for something outside Orchicon's scope (general coding help,
+design brainstorming, architecture discussion, or any non-platform task), tell
+them:
+
+"I'm in Orchicon mode, which is focused on platform operations. For general help
+with coding, design, or brainstorming, switch to **Brainstorm mode** using the
+dropdown in the chat input."
+
+Do NOT attempt to fulfill out-of-scope requests. Do NOT pretend you can help
+with general tasks. Redirect to Brainstorm mode.
+`)
+
+	// 1c. Project awareness — the agent can see the user's projects via tools.
+	b.WriteString(`
+## Project Awareness
+You have access to the user's Orchicon projects and can see their current status
+(project directory, context files, enabled state). Use the orchicon_* tools to
+inspect project details when relevant.
+`)
+
 	// 2. DB-stored role, skills, behavior, agents_md.
 	if cfg.Role != "" {
 		b.WriteString("\n## Role\n")

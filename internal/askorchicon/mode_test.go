@@ -42,10 +42,10 @@ func testToolRegistry() *ToolRegistry {
 
 func testAgentConfig() db.AgentConfigRow {
 	return db.AgentConfigRow{
-		Role:          "You are a governed Orchicon expert.",
-		Skills:        "Operate the platform.",
-		Behavior:      "Refuse requests outside Orchicon.",
-		SystemPrompt:  "Tenant additional instructions.",
+		Role:         "You are a governed Orchicon expert.",
+		Skills:       "Operate the platform.",
+		Behavior:     "Refuse requests outside Orchicon.",
+		SystemPrompt: "Tenant additional instructions.",
 	}
 }
 
@@ -80,6 +80,7 @@ func TestBuildSystemPromptBrainstorm(t *testing.T) {
 		"## Skills",
 		"## Behavior",
 		"governed Orchicon expert.",
+		"## Mode Awareness",
 	} {
 		if strings.Contains(p, banned) {
 			t.Errorf("brainstorm prompt must not contain %q (governed rules leak into the open mode)", banned)
@@ -99,6 +100,9 @@ func TestBuildSystemPromptOrchicon(t *testing.T) {
 		"You are Orchicon, an AI assistant for the Orchicon platform.",
 		"Refuse any request that falls outside Orchicon",
 		"general knowledge, coding help unrelated to Orchicon",
+		"## Mode Awareness",
+		"switch to **Brainstorm mode**",
+		"## Project Awareness",
 		"## Role",
 		"## Skills",
 		"## Behavior",
@@ -118,6 +122,10 @@ func TestBuildSystemPromptOrchicon(t *testing.T) {
 // legacyBuildSystemPrompt is the pre-Task-4 single BuildSystemPrompt, captured
 // verbatim from git history. TestBuildSystemPromptOrchiconByteIdentical pins
 // the governed mode to it so the Orchicon persona can never drift.
+//
+// Section order matches agent.go's orchiconModeSystemPrompt exactly:
+// Identity → Mode Awareness → Project Awareness → Role/Skills/Behavior →
+// About Orchicon → Available Tools → Additional Instructions.
 func legacyBuildSystemPrompt(cfg db.AgentConfigRow, toolRegistry *ToolRegistry) string {
 	var b strings.Builder
 
@@ -141,6 +149,31 @@ Your purpose is to help users accomplish tasks inside Orchicon and to answer que
 7. Be concise in your responses unless the user asks for detail.
 8. Use the Orchicon tools listed below for all operations. Do NOT use general-purpose tools like terminal, file_edit, grep, glob, or web_fetch — use the Orchicon tools instead.
 9. When asked to create a project directory, use the create_project_directory tool — do not try to create directories via shell commands.
+`)
+
+	b.WriteString(`
+## Mode Awareness
+You are currently in Orchicon mode — the governed platform expert. You can only
+help with tasks inside Orchicon: managing projects, workers, work items, workflows,
+policies, and understanding platform state.
+
+If the user asks for something outside Orchicon's scope (general coding help,
+design brainstorming, architecture discussion, or any non-platform task), tell
+them:
+
+"I'm in Orchicon mode, which is focused on platform operations. For general help
+with coding, design, or brainstorming, switch to **Brainstorm mode** using the
+dropdown in the chat input."
+
+Do NOT attempt to fulfill out-of-scope requests. Do NOT pretend you can help
+with general tasks. Redirect to Brainstorm mode.
+`)
+
+	b.WriteString(`
+## Project Awareness
+You have access to the user's Orchicon projects and can see their current status
+(project directory, context files, enabled state). Use the orchicon_* tools to
+inspect project details when relevant.
 `)
 
 	if cfg.Role != "" {
@@ -381,7 +414,7 @@ func TestModePersistsAcrossTurns(t *testing.T) {
 	convID := createConversation(t, pool, "")
 
 	// Turn 1: default brainstorm persona on a fresh session.
-	ack1, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ack1, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("first turn: %v", err)
 	}
@@ -407,7 +440,7 @@ func TestModePersistsAcrossTurns(t *testing.T) {
 	}
 
 	// Turn 2: SAME session (reuse — no CreateSession), governed persona.
-	ack2, err := s.startConversationTurn(ctx, "tnt_dev", convID, "follow up", nil)
+	ack2, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "follow up", nil)
 	if err != nil {
 		t.Fatalf("second turn: %v", err)
 	}
