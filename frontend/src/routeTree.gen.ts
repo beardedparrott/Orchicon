@@ -22,6 +22,7 @@ import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as PoliciesRouteImport } from './routes/policies'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ExecutionsRouteImport } from './routes/executions'
+import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as AskOrchiconRouteImport } from './routes/ask-orchicon'
 import { Route as ApprovalsRouteImport } from './routes/approvals'
 import { Route as AdminRouteImport } from './routes/admin'
@@ -107,6 +108,11 @@ const LoginRoute = LoginRouteImport.update({
 const ExecutionsRoute = ExecutionsRouteImport.update({
   id: '/executions',
   path: '/executions',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DashboardRoute = DashboardRouteImport.update({
+  id: '/dashboard',
+  path: '/dashboard',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AskOrchiconRoute = AskOrchiconRouteImport.update({
@@ -221,6 +227,7 @@ export interface FileRoutesByFullPath {
   '/admin': typeof AdminRoute
   '/approvals': typeof ApprovalsRoute
   '/ask-orchicon': typeof AskOrchiconRoute
+  '/dashboard': typeof DashboardRoute
   '/executions': typeof ExecutionsRoute
   '/login': typeof LoginRoute
   '/policies': typeof PoliciesRoute
@@ -257,6 +264,7 @@ export interface FileRoutesByTo {
   '/admin': typeof AdminRoute
   '/approvals': typeof ApprovalsRoute
   '/ask-orchicon': typeof AskOrchiconRoute
+  '/dashboard': typeof DashboardRoute
   '/executions': typeof ExecutionsRoute
   '/login': typeof LoginRoute
   '/policies': typeof PoliciesRoute
@@ -294,6 +302,7 @@ export interface FileRoutesById {
   '/admin': typeof AdminRoute
   '/approvals': typeof ApprovalsRoute
   '/ask-orchicon': typeof AskOrchiconRoute
+  '/dashboard': typeof DashboardRoute
   '/executions': typeof ExecutionsRoute
   '/login': typeof LoginRoute
   '/policies': typeof PoliciesRoute
@@ -332,6 +341,7 @@ export interface FileRouteTypes {
     | '/admin'
     | '/approvals'
     | '/ask-orchicon'
+    | '/dashboard'
     | '/executions'
     | '/login'
     | '/policies'
@@ -368,6 +378,7 @@ export interface FileRouteTypes {
     | '/admin'
     | '/approvals'
     | '/ask-orchicon'
+    | '/dashboard'
     | '/executions'
     | '/login'
     | '/policies'
@@ -404,6 +415,7 @@ export interface FileRouteTypes {
     | '/admin'
     | '/approvals'
     | '/ask-orchicon'
+    | '/dashboard'
     | '/executions'
     | '/login'
     | '/policies'
@@ -441,6 +453,7 @@ export interface RootRouteChildren {
   AdminRoute: typeof AdminRoute
   ApprovalsRoute: typeof ApprovalsRoute
   AskOrchiconRoute: typeof AskOrchiconRoute
+  DashboardRoute: typeof DashboardRoute
   ExecutionsRoute: typeof ExecutionsRoute
   LoginRoute: typeof LoginRoute
   PoliciesRoute: typeof PoliciesRoute
@@ -563,6 +576,13 @@ declare module '@tanstack/react-router' {
       path: '/executions'
       fullPath: '/executions'
       preLoaderRoute: typeof ExecutionsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/dashboard': {
+      id: '/dashboard'
+      path: '/dashboard'
+      fullPath: '/dashboard'
+      preLoaderRoute: typeof DashboardRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/ask-orchicon': {
@@ -721,6 +741,7 @@ const rootRouteChildren: RootRouteChildren = {
   AdminRoute: AdminRoute,
   ApprovalsRoute: ApprovalsRoute,
   AskOrchiconRoute: AskOrchiconRoute,
+  DashboardRoute: DashboardRoute,
   ExecutionsRoute: ExecutionsRoute,
   LoginRoute: LoginRoute,
   PoliciesRoute: PoliciesRoute,

@@ -20,8 +20,8 @@ type NavItem = {
 };
 
 const NAV: NavItem[] = [
-  { label: "Dashboard", to: "/" },
   { label: "Ask Orchicon", to: "/ask-orchicon" },
+  { label: "Dashboard", to: "/dashboard" },
   { label: "Projects", to: "/projects" },
   { label: "Work Items", to: "/work-items" },
   { label: "Schedules", to: "/schedules" },
