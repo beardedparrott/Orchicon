@@ -26,30 +26,38 @@ const (
 	MaxContextFiles = 1000
 	// MaxFilePathLen is the max length of a single context path.
 	MaxFilePathLen = 4096
-	// maxInlineFileBytes caps a single file's contents inlined into the
+	// MaxInlineFileBytes caps a single file's contents inlined into the
 	// worker prompt. Directory expansion multiplies content, so a cap is
 	// mandatory to keep prompts bounded (the old unbounded os.ReadFile of
 	// a single huge file could already blow a prompt — this is a strict
 	// improvement). Beyond the cap the worker is told to read the file
-	// from disk.
-	maxInlineFileBytes = 256 * 1024 // 256 KiB
+	// from disk. The project-directory read tool uses the same cap as its
+	// default read bound.
+	MaxInlineFileBytes = 256 * 1024 // 256 KiB
 )
 
 // noiseDirNames are VCS/build/runtime-cache directories skipped when
 // expanding a directory into the prompt. Listing them adds nothing for
 // the model and would otherwise balloon the prompt.
 var noiseDirNames = map[string]bool{
-	".git":       true,
-	".hg":        true,
-	".svn":       true,
+	".git":         true,
+	".hg":          true,
+	".svn":         true,
 	"node_modules": true,
-	"vendor":     true,
-	"dist":       true,
-	"build":      true,
-	".venv":      true,
-	"__pycache__": true,
-	".orchicon":  true,
-	".cache":     true,
+	"vendor":       true,
+	"dist":         true,
+	"build":        true,
+	".venv":        true,
+	"__pycache__":  true,
+	".orchicon":    true,
+	".cache":       true,
+}
+
+// IsNoiseDir reports whether name is a VCS/build/runtime-cache directory
+// skipped when expanding a directory into a listing. This is the same set
+// WalkDir skips, exposed for the project-directory list tool.
+func IsNoiseDir(name string) bool {
+	return noiseDirNames[name]
 }
 
 // Validate checks a list of context paths. Each path must be non-empty,
@@ -141,6 +149,83 @@ func Resolve(p, projectDir string) string {
 		return ""
 	}
 	return filepath.Clean(resolved)
+}
+
+// ResolveWithin resolves a caller-supplied path against a project root,
+// rejecting path traversal (..), absolute paths outside the root, and
+// symlink escapes. It returns the cleaned absolute path for OS calls.
+//
+// Defense in depth, in order:
+//  1. The caller's path is trimmed, must be non-empty, and is bounded to
+//     MaxFilePathLen.
+//  2. The root itself is normalized through filepath.Abs + Clean + a full
+//     EvalSymlinks pass (the project_dir may live under a symlinked home),
+//     yielding the evaluated root used for the symlink re-check.
+//  3. The target is built lexically: absolute paths are cleaned as-is,
+//     relative paths are joined to the root. Both are then containment-
+//     checked against the root — this rejects `..`, `..\`-style escapes,
+//     and absolute paths that leave the root.
+//  4. The target is fully evaluated (EvalSymlinks) and re-checked against
+//     the evaluated root: a symlink inside the root that resolves outside
+//     is rejected; one that stays inside is allowed (legit generated
+//     links). A target that does not exist — or is a broken symlink —
+//     keeps its clean lexical form so the downstream operation reports
+//     the not-found itself.
+//
+// The returned path is the original cleaned target (not the evaluated
+// one), so error messages and tool responses stay in operator-facing
+// terms. Callers must still use Lstat for listing (never descend into
+// symlinked directories) — see the list tool.
+func ResolveWithin(root, p string) (string, error) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "", fmt.Errorf("path must not be empty")
+	}
+	if len(p) > MaxFilePathLen {
+		return "", fmt.Errorf("path exceeds max length of %d characters", MaxFilePathLen)
+	}
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return "", fmt.Errorf("project directory must not be empty")
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve project directory %q: %w", root, err)
+	}
+	absRoot = filepath.Clean(absRoot)
+	evalRoot, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve project directory %q: %w", absRoot, err)
+	}
+	var target string
+	if filepath.IsAbs(p) {
+		target = filepath.Clean(p)
+	} else {
+		target = filepath.Clean(filepath.Join(absRoot, p))
+	}
+	if err := within(absRoot, target); err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(target); err == nil {
+		if err := within(evalRoot, resolved); err != nil {
+			return "", err
+		}
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("resolve %q: %w", target, err)
+	}
+	return target, nil
+}
+
+// within reports whether target is root itself or a lexical descendant.
+func within(root, target string) error {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return fmt.Errorf("path %q is not inside the project directory %q", target, root)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("path %q escapes the project directory %q", target, root)
+	}
+	return nil
 }
 
 // WalkDir lists the files under root recursively, bounded to maxEntries
@@ -239,8 +324,8 @@ func renderFile(sb *strings.Builder, path string) bool {
 		return true
 	}
 	fmt.Fprintf(sb, "## %s\n\n```\n", path)
-	if len(data) > maxInlineFileBytes {
-		sb.Write(data[:maxInlineFileBytes])
+	if len(data) > MaxInlineFileBytes {
+		sb.Write(data[:MaxInlineFileBytes])
 		sb.WriteString("\n…[truncated — read the full file from disk]\n")
 	} else {
 		sb.Write(data)
