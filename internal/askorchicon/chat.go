@@ -231,16 +231,16 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 
 	// --- 2. Persist user message (and title on first message). ---
 	userMsg := db.MessageRow{
-		ID:              db.NewID(),
-		TenantID:        tenantID,
-		ConversationID:  convID,
-		Role:            "user",
-		Content:         msg,
-		ToolCalls:       []byte("[]"),
-		ToolResults:     []byte("[]"),
-		Attachments:     []byte("[]"),
-		Metadata:        []byte("{}"),
-		Reasoning:       []string{},
+		ID:             db.NewID(),
+		TenantID:       tenantID,
+		ConversationID: convID,
+		Role:           "user",
+		Content:        msg,
+		ToolCalls:      []byte("[]"),
+		ToolResults:    []byte("[]"),
+		Attachments:    []byte("[]"),
+		Metadata:       []byte("{}"),
+		Reasoning:      []string{},
 	}
 	ttx, err = s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -553,10 +553,10 @@ type turnAttemptKind int
 
 const (
 	turnCollected turnAttemptKind = iota // reply complete; text is final
-	turnFailed                            // terminal error; err is set
-	turnRecreated                         // session 404'd — a fresh seeded session was created
-	turnReattach                          // bus lost after a live connection — retry after a backoff
-	turnServeDown                         // the serve never accepted a connection this attempt
+	turnFailed                           // terminal error; err is set
+	turnRecreated                        // session 404'd — a fresh seeded session was created
+	turnReattach                         // bus lost after a live connection — retry after a backoff
+	turnServeDown                        // the serve never accepted a connection this attempt
 )
 
 type turnAttemptResult struct {
@@ -800,35 +800,35 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				if !sent {
 					continue
 				}
-			if legacy, ok := opencode.LegacyEventFromBus(evt); ok {
-				t, _ := legacy["type"].(string)
-				part, _ := legacy["part"].(map[string]any)
-				switch t {
-				case "text":
-					if text, ok2 := part["text"].(string); ok2 && text != "" {
-						reply.WriteString(text)
-						reply.WriteString("\n\n")
-						if c.onStreamEvent != nil {
-							c.onStreamEvent(&apiv1.ChatStreamResponse{
-								Event: &apiv1.ChatStreamResponse_TextChunk{
-									TextChunk: &apiv1.TextChunk{Content: text},
-								},
-							})
+				if legacy, ok := opencode.LegacyEventFromBus(evt); ok {
+					t, _ := legacy["type"].(string)
+					part, _ := legacy["part"].(map[string]any)
+					switch t {
+					case "text":
+						if text, ok2 := part["text"].(string); ok2 && text != "" {
+							reply.WriteString(text)
+							reply.WriteString("\n\n")
+							if c.onStreamEvent != nil {
+								c.onStreamEvent(&apiv1.ChatStreamResponse{
+									Event: &apiv1.ChatStreamResponse_TextChunk{
+										TextChunk: &apiv1.TextChunk{Content: text},
+									},
+								})
+							}
 						}
-					}
-				case "reasoning":
-					if text, ok2 := part["text"].(string); ok2 && text != "" {
-						reasoning = append(reasoning, text)
-						if c.onStreamEvent != nil {
-							c.onStreamEvent(&apiv1.ChatStreamResponse{
-								Event: &apiv1.ChatStreamResponse_Reasoning{
-									Reasoning: &apiv1.ReasoningChunk{Content: text},
-								},
-							})
+					case "reasoning":
+						if text, ok2 := part["text"].(string); ok2 && text != "" {
+							reasoning = append(reasoning, text)
+							if c.onStreamEvent != nil {
+								c.onStreamEvent(&apiv1.ChatStreamResponse{
+									Event: &apiv1.ChatStreamResponse_Reasoning{
+										Reasoning: &apiv1.ReasoningChunk{Content: text},
+									},
+								})
+							}
 						}
 					}
 				}
-			}
 			}
 		}
 	}

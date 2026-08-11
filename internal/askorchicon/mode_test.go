@@ -42,10 +42,10 @@ func testToolRegistry() *ToolRegistry {
 
 func testAgentConfig() db.AgentConfigRow {
 	return db.AgentConfigRow{
-		Role:          "You are a governed Orchicon expert.",
-		Skills:        "Operate the platform.",
-		Behavior:      "Refuse requests outside Orchicon.",
-		SystemPrompt:  "Tenant additional instructions.",
+		Role:         "You are a governed Orchicon expert.",
+		Skills:       "Operate the platform.",
+		Behavior:     "Refuse requests outside Orchicon.",
+		SystemPrompt: "Tenant additional instructions.",
 	}
 }
 
@@ -122,6 +122,10 @@ func TestBuildSystemPromptOrchicon(t *testing.T) {
 // legacyBuildSystemPrompt is the pre-Task-4 single BuildSystemPrompt, captured
 // verbatim from git history. TestBuildSystemPromptOrchiconByteIdentical pins
 // the governed mode to it so the Orchicon persona can never drift.
+//
+// Section order matches agent.go's orchiconModeSystemPrompt exactly:
+// Identity → Mode Awareness → Project Awareness → Role/Skills/Behavior →
+// About Orchicon → Available Tools → Additional Instructions.
 func legacyBuildSystemPrompt(cfg db.AgentConfigRow, toolRegistry *ToolRegistry) string {
 	var b strings.Builder
 
@@ -147,27 +151,6 @@ Your purpose is to help users accomplish tasks inside Orchicon and to answer que
 9. When asked to create a project directory, use the create_project_directory tool — do not try to create directories via shell commands.
 `)
 
-	if cfg.Role != "" {
-		b.WriteString("\n## Role\n")
-		b.WriteString(cfg.Role)
-		b.WriteString("\n")
-	}
-	if cfg.Skills != "" {
-		b.WriteString("\n## Skills\n")
-		b.WriteString(cfg.Skills)
-		b.WriteString("\n")
-	}
-	if cfg.Behavior != "" {
-		b.WriteString("\n## Behavior\n")
-		b.WriteString(cfg.Behavior)
-		b.WriteString("\n")
-	}
-	if cfg.AgentsMD != "" {
-		b.WriteString("\n## AGENTS.md\n")
-		b.WriteString(cfg.AgentsMD)
-		b.WriteString("\n")
-	}
-
 	b.WriteString(`
 ## Mode Awareness
 You are currently in Orchicon mode — the governed platform expert. You can only
@@ -192,6 +175,27 @@ You have access to the user's Orchicon projects and can see their current status
 (project directory, context files, enabled state). Use the orchicon_* tools to
 inspect project details when relevant.
 `)
+
+	if cfg.Role != "" {
+		b.WriteString("\n## Role\n")
+		b.WriteString(cfg.Role)
+		b.WriteString("\n")
+	}
+	if cfg.Skills != "" {
+		b.WriteString("\n## Skills\n")
+		b.WriteString(cfg.Skills)
+		b.WriteString("\n")
+	}
+	if cfg.Behavior != "" {
+		b.WriteString("\n## Behavior\n")
+		b.WriteString(cfg.Behavior)
+		b.WriteString("\n")
+	}
+	if cfg.AgentsMD != "" {
+		b.WriteString("\n## AGENTS.md\n")
+		b.WriteString(cfg.AgentsMD)
+		b.WriteString("\n")
+	}
 
 	b.WriteString(`
 ## About Orchicon
