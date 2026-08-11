@@ -141,7 +141,7 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 			WorkflowID:  manifest.RuntimeWorkflowID,
 			Image:       manifest.RuntimeImage,
 			Mounts:      projectMount(manifest.ProjectDir),
-			ServeConfig: a.runtimeServeConfig(manifest),
+			ServeConfig: RuntimeServeConfig(),
 			ProjectDir:  manifest.ProjectDir,
 		})
 		if err != nil {
@@ -167,7 +167,7 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 	return nil
 }
 
-// runtimeServeConfig builds the OPENCODE_CONFIG_CONTENT for a runtime
+// RuntimeServeConfig builds the OPENCODE_CONFIG_CONTENT for a runtime
 // container's serve: the permission rules only, with the operator's MCP
 // servers omitted — a SERVE eagerly connects to every configured MCP
 // server at startup, and the operator's entries (an `orchicon` MCP that
@@ -175,7 +175,7 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 // which would hang the serve (the one-shot run path tolerates MCP
 // failures and keeps them). Worker system prompts ride the per-message
 // `system` field instead.
-func (a *Adapter) runtimeServeConfig(manifest scheduler.ExecutionManifest) string {
+func RuntimeServeConfig() string {
 	return BuildConfigContent(ConfigOptions{
 		AgentName:   workerAgent,
 		AgentPrompt: "",

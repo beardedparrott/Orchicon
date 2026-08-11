@@ -619,7 +619,7 @@ func (d *Daemon) startServe(name string, req CreateRequest) (int, string, error)
 	// real session create round-trip — before handing it to the plane.
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		if d.serveUsable(cip, port, password) {
+		if serveUsableAt(fmt.Sprintf("http://%s:%d", cip, port), password) {
 			// Give the accept path a beat after the first success.
 			time.Sleep(500 * time.Millisecond)
 			return port, password, nil
@@ -629,12 +629,15 @@ func (d *Daemon) startServe(name string, req CreateRequest) (int, string, error)
 	return 0, "", fmt.Errorf("serve %s:%d did not become usable within 30s", cip, port)
 }
 
-// serveUsable verifies the container serve answers health AND can create a
-// session (a cold-starting serve answers health before it can handle real
-// requests). Returns true once usable.
-func (d *Daemon) serveUsable(cip string, port int, password string) bool {
+// serveUsableAt is the L1 serve-readiness probe (the workflow run-start
+// gate): the serve must answer /global/health AND accept a real
+// session-create round-trip. A cold-starting serve answers health before
+// its session machinery is up, so health alone is not "usable" for
+// dispatch. The probe session is left for the serve's own cleanup; the
+// plane's lifecycle gate uses the same probe via the same helper.
+func serveUsableAt(baseURL, password string) bool {
 	client := &http.Client{Timeout: 3 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s:%d/global/health", cip, port), nil)
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/global/health", nil)
 	if err != nil {
 		return false
 	}
@@ -650,7 +653,7 @@ func (d *Daemon) serveUsable(cip string, port int, password string) bool {
 	// The serve is healthy; confirm it can actually create a session (the
 	// cold-start window answers health before the session machinery is up).
 	body := `{"title":"orchicon-serve-probe"}`
-	cReq, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s:%d/session", cip, port), bytes.NewBufferString(body))
+	cReq, _ := http.NewRequest(http.MethodPost, baseURL+"/session", bytes.NewBufferString(body))
 	cReq.Header.Set("Content-Type", "application/json")
 	cReq.SetBasicAuth("opencode", password)
 	cResp, err := client.Do(cReq)

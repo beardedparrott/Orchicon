@@ -216,6 +216,29 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 		}
 	}
 
+	// Runtime-serve readiness belt-and-suspenders: never dispatch a
+	// workflow-run execution before the run's runtime opencode serve is
+	// PROVEN usable (runtime_ready=true). The WorkflowReconciler holds
+	// step progression until the gate flips, but a race — e.g. the inline
+	// DispatchTask firing while the async probe is still flipping the gate
+	// — must not create an execution that immediately hits a cold serve.
+	runID := task.WorkflowRunID
+	if stepRun != nil {
+		runID = stepRun.WorkflowRunID
+	}
+	if runID != "" {
+		if rtx, err := r.pool.BeginTenantTx(context.Background(), tenantID); err == nil {
+			if run, gerr := db.GetWorkflowRun(context.Background(), rtx.Tx, tenantID, runID); gerr == nil {
+				if run.Status == domain.WorkflowRunRunning && !run.RuntimeReady {
+					_ = rtx.Rollback(context.Background())
+					r.log.Debug("deferring dispatch: workflow runtime serve not ready", "task", task.ID, "run", runID)
+					return nil
+				}
+			}
+			_ = rtx.Rollback(context.Background())
+		}
+	}
+
 	// Select a Worker (docs/03 §4.1: rule-based). For a workflow step the
 	// worker is pinned by the STEP (stored on the step run by the
 	// WorkflowReconciler), not the ticket.
@@ -1406,6 +1429,8 @@ func mergeBudgets(tenantDefault, workerOverride []byte) []byte {
 }
 
 func strPtr(s string) *string { return &s }
+
+func boolPtr(b bool) *bool { return &b }
 
 // extractIssuesLine captures an `_issues:` block from the worker's
 // output for the run view and .orchicon/issues. It is INFORMATIONAL

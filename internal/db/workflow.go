@@ -63,6 +63,7 @@ type WorkflowRunRow struct {
 	WorkItemID      string // bound work item id; empty for one-shot runs
 	BoundWorkerRef  []byte // jsonb; reserved for future use
 	RuntimeImage    string // resolved runtime container image tag at run start
+	RuntimeReady    bool   // runtime-serve readiness gate: executions dispatch only once true
 	Version         int
 	StartedAt       *time.Time
 	EndedAt         *time.Time
@@ -501,7 +502,7 @@ func CreateWorkflowRun(ctx context.Context, tx pgx.Tx, r WorkflowRunRow) (Workfl
 	).Scan(
 		&row.ID, &row.TenantID, &row.WorkflowID, &row.WorkflowVersion,
 		&row.ProjectID, &row.Status, &row.CurrentStep, &row.RunContext,
-		&wiID, &row.BoundWorkerRef, &row.RuntimeImage,
+		&wiID, &row.BoundWorkerRef, &row.RuntimeImage, &row.RuntimeReady,
 		&row.Version, &row.StartedAt, &row.EndedAt,
 		&row.CreatedAt, &row.UpdatedAt,
 	)
@@ -525,7 +526,7 @@ func GetWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (Workfl
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 		&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
-		&wiID, &r.BoundWorkerRef, &r.RuntimeImage,
+		&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
 		&r.Version, &r.StartedAt, &r.EndedAt,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -584,7 +585,7 @@ func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) 
 		if err := rows.Scan(
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
-			&wiID, &r.BoundWorkerRef, &r.RuntimeImage,
+			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
@@ -615,6 +616,10 @@ type UpdateWorkflowRunFields struct {
 	// RuntimeImage is the resolved runtime container image tag captured
 	// at run start.
 	RuntimeImage *string
+	// RuntimeReady flips the runtime-serve readiness gate. The reconciler
+	// sets it false at run start and the async ensure-serving pass sets it
+	// true once the workflow's runtime opencode serve is proven usable.
+	RuntimeReady *bool
 	// ClearEndedAt clears ended_at to NULL regardless of the EndedAt
 	// pointer. Used when resuming a terminalized (failed) run — the ended
 	// timestamp must be cleared so the restarted run's lifecycle is honest.
@@ -674,16 +679,21 @@ func UpdateWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string, expe
 		args = append(args, *f.RuntimeImage)
 		setIdx++
 	}
+	if f.RuntimeReady != nil {
+		q += fmt.Sprintf(`, runtime_ready = $%d`, setIdx)
+		args = append(args, *f.RuntimeReady)
+		setIdx++
+	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		version, started_at, ended_at, created_at, updated_at`
+		runtime_ready, version, started_at, ended_at, created_at, updated_at`
 	var r WorkflowRunRow
 	var wiID *string
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 		&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
-		&wiID, &r.BoundWorkerRef, &r.RuntimeImage,
+		&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
 		&r.Version, &r.StartedAt, &r.EndedAt,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -989,7 +999,7 @@ func ListPendingWorkflowRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([
 		if err := rows.Scan(
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
-			&wiID, &r.BoundWorkerRef, &r.RuntimeImage,
+			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {

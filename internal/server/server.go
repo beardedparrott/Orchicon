@@ -349,7 +349,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	var runtimeLifecycle scheduler.RuntimeLifecycle
 	if rtClient != nil {
 		if rtClient.Ready(context.Background()) {
-			runtimeLifecycle = runtime.NewLifecycle(rtClient, pool, log)
+			runtimeLifecycle = runtime.NewLifecycle(rtClient, pool, log, opencode.RuntimeServeConfig())
 			// Route executions that belong to a workflow run into that
 			// workflow's runtime container instead of a local subprocess.
 			adapterBridge.SetRuntimeClient(rtClient)
