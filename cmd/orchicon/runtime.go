@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -49,6 +50,26 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 		}
 	}
 
+	// Self-copy the daemon binary to a STABLE path next to the socket. The
+	// running daemon's original file can be deleted by dev hygiene (`make
+	// clean` removes bin/orchicon) while the daemon keeps running — a stale
+	// ExePath then fails every container create with "executable missing"
+	// and every workflow-run execution with "no opencode serve available".
+	// Copying once at startup means the mounted binary is never the file a
+	// cleanup target; a rebuilt + restarted daemon refreshes the copy.
+	if exePath != "" {
+		stableExe := filepath.Join(filepath.Dir(socketPath), "orchicon")
+		if err := os.MkdirAll(filepath.Dir(stableExe), 0o755); err == nil {
+			if cerr := copySelf(exePath, stableExe); cerr != nil {
+				log.Warn("daemon self-copy failed — runtime containers may break after make clean", "error", cerr)
+			} else {
+				exePath = stableExe
+			}
+		} else {
+			log.Warn("daemon self-copy dir", "error", err)
+		}
+	}
+
 	d := &runtime.Daemon{
 		SocketPath:   socketPath,
 		DockerBin:    "docker",
@@ -73,6 +94,35 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 		return err
 	}
 	return nil
+}
+
+// copySelf copies src to dst, refreshing the copy only when src is newer
+// (a daemon rebuild) so a stable copy isn't rewritten on every start. The
+// copy keeps the daemon's binary mountable even after the original file is
+// deleted by `make clean`. Best-effort on a running Linux process: the
+// source is readable (its inode is alive), the copy is made before any
+// cleanup can run.
+func copySelf(src, dst string) error {
+	if st, err := os.Stat(dst); err == nil {
+		if si, serr := os.Stat(src); serr == nil && !si.ModTime().After(st.ModTime()) {
+			return nil // copy is current
+		}
+		_ = os.Remove(dst)
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // runRuntimeSupervisor runs the in-container PID-1 dispatch loop.

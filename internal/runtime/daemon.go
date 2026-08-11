@@ -35,13 +35,16 @@ type Daemon struct {
 	GroupID      int      // host gid
 	HostHome     string   // host user home, mounted as the container HOME
 	AllowedRoots []string // host prefixes a project mount may be under
-	// ExePath is the daemon's own executable, resolved at process start. It
-	// is bind-mounted read-only into every runtime container at
-	// /usr/local/bin/orchicon so the container can exec `orchicon
-	// runtime-supervisor` / `runtime-client` without the binary being baked
-	// into the image — a rebuilt daemon binary is picked up by every
-	// newly-created container with no image rebuild (the same "mount, never
-	// bake" pattern as the adapter CLIs).
+	// ExePath is the daemon's own executable, bind-mounted read-only into
+	// every runtime container at /usr/local/bin/orchicon so the container can
+	// exec `orchicon runtime-supervisor` / `runtime-client` without the
+	// binary being baked into the image — a rebuilt daemon binary is picked
+	// up by every newly-created container with no image rebuild (the same
+	// "mount, never bake" pattern as the adapter CLIs). The CLI copies the
+	// running binary to a STABLE path next to the socket at startup
+	// (cmd/orchicon/runtime.go copySelf), so dev hygiene that deletes the
+	// original (`make clean`) can never orphan the mount — the copy is what
+	// gets mounted.
 	ExePath      string
 	CPUs         string
 	Memory       string
