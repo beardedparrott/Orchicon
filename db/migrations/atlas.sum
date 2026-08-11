@@ -1,4 +1,4 @@
-h1:HioH8zn8kf6tlm3Z2XKdrsdtypgi+8jS1jnlk+Kj+yQ=
+h1:oPK0mcFsogFIgme/jqfJIobUHl4AdbuzMSwjcWF9vXQ=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712192105_initial_schema_down.sql h1:RDSZVdJtR8DJx9HvT6WrBdEOEoJpM/46JutUdlPs5wU=
 20260712223028_add_outbox.sql h1:+idZYfVIjOHjGIluT5JM5M0dMF6L1+VmeHeGy66DLEI=
@@ -83,3 +83,4 @@ h1:HioH8zn8kf6tlm3Z2XKdrsdtypgi+8jS1jnlk+Kj+yQ=
 20260808120000_work_items_acceptance_review_down.sql h1:n+kdZvQIeC56EWgfmE6pITl8Ckx/OKBOFfgBh2ifA0M=
 20260809000000_work_items_sort_order.sql h1:PhteiCamgdOWK4788rg0q28SP/Fk/p6693tvOx3VNJI=
 20260810000000_ask_orchicon_conversation_session_id.sql h1:W/i9zBS2sYv+/HcSAm0Uykszl74IIpJY8Mn1cH/ibEc=
+20260811000000_ask_orchicon_messages_reasoning.sql h1:rjOOsHIh62EGjewUHuGkXa6W5oFfNUB05+dGHkVL1SQ=

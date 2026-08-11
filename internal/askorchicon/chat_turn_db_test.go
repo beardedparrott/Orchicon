@@ -161,11 +161,12 @@ func TestStartConversationTurnReturnsAckAndPersistsReplyAfterReturn(t *testing.T
 	}
 
 	// Now the model replies (the collector is draining on a detached
-	// context). Feed text + idle and wait for the persisted reply.
+	// context). Feed reasoning + text + idle and wait for the persisted reply.
 	waitForSend(t, client, 1)
 	if got := client.sendCalls[0]; got.sessionID != "ses_1" {
 		t.Fatalf("first-message send session = %q, want created ses_1", got.sessionID)
 	}
+	client.sub.feed(busReasoning("ses_1", "analyzing the request"))
 	client.sub.feed(busText("ses_1", "Hello back"))
 	client.sub.feed(busIdle("ses_1"))
 
@@ -176,10 +177,24 @@ func TestStartConversationTurnReturnsAckAndPersistsReplyAfterReturn(t *testing.T
 	if strings.TrimSpace(reply.Content) != "Hello back" {
 		t.Errorf("persisted reply = %q, want %q", reply.Content, "Hello back")
 	}
+	// Reasoning chunks from the SSE bus are persisted on the assistant
+	// message (Task 3): the reasoning bubble data path.
+	if len(reply.Reasoning) != 1 || reply.Reasoning[0] != "analyzing the request" {
+		t.Errorf("persisted reasoning = %v, want [analyzing the request]", reply.Reasoning)
+	}
 	var meta map[string]any
 	_ = json.Unmarshal(reply.Metadata, &meta)
 	if meta["model_ref"] == "" {
 		t.Errorf("reply metadata missing model_ref: %v", meta)
+	}
+
+	// The user message carries no reasoning (empty array, not nil).
+	msgs = listMessages(t, pool, convID)
+	if len(msgs) != 2 || msgs[0].Role != "user" {
+		t.Fatalf("expected user + assistant messages, got %+v", msgs)
+	}
+	if msgs[0].Reasoning == nil || len(msgs[0].Reasoning) != 0 {
+		t.Errorf("user message reasoning = %v, want empty non-nil slice", msgs[0].Reasoning)
 	}
 }
 
@@ -285,6 +300,11 @@ func TestStartConversationTurnTimeoutPersistsError(t *testing.T) {
 	}
 	if msg.Content != "" {
 		t.Errorf("error message content = %q, want empty", msg.Content)
+	}
+	// No reasoning parts arrived before the timeout — the persisted array is
+	// empty (a model that emits no reasoning yields no events).
+	if msg.Reasoning == nil || len(msg.Reasoning) != 0 {
+		t.Errorf("error message reasoning = %v, want empty non-nil slice", msg.Reasoning)
 	}
 	var meta map[string]any
 	if err := json.Unmarshal(msg.Metadata, &meta); err != nil {

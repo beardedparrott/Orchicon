@@ -202,6 +202,7 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 			ToolResults:    []byte("[]"),
 			Attachments:    []byte("[]"),
 			Metadata:       []byte("{}"),
+			Reasoning:      []string{},
 		}
 		if _, err := db.CreateMessage(ctx, ttx.Tx, msgRow); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
@@ -473,6 +474,7 @@ func messageRowToProto(r db.MessageRow) *apiv1.ChatMessage {
 		ConversationId: r.ConversationID,
 		Role:           r.Role,
 		Content:        r.Content,
+		Reasoning:      r.Reasoning,
 		Metadata:       meta,
 		CreatedAt:      timestamppb.New(r.CreatedAt),
 	}

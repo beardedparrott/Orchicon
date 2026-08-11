@@ -44,8 +44,9 @@ service AskOrchiconService {
   // reply is collected on a request-independent context (bounded by the
   // reply window) and delivered by polling ListMessages — a browser
   // disconnect or tab close never cancels or loses it. The TextChunk /
-  // ToolCallResult / ErrorChunk / DoneSignal events are retained for a
-  // future SSE surface but are not emitted by the current implementation.
+  // ReasoningChunk / ToolCallResult / ErrorChunk / DoneSignal events are
+  // retained for a future SSE surface but are not emitted by the current
+  // implementation.
   rpc ChatStream(ChatStreamRequest) returns (stream ChatStreamResponse);
 
   // AbortConversationTurn aborts the in-flight turn on a conversation's
@@ -151,6 +152,7 @@ message ChatStreamResponse {
     ErrorChunk error = 4;
     DoneSignal done = 5;
     TurnStarted turn_started = 6;
+    ReasoningChunk reasoning = 7;
   }
 }
 

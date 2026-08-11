@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -30,6 +31,7 @@ type MessageRow struct {
 	ToolResults     []byte
 	Attachments     []byte
 	Metadata        []byte
+	Reasoning       []string
 	CreatedAt       time.Time
 }
 
@@ -167,15 +169,21 @@ func DeleteConversation(ctx context.Context, tx pgx.Tx, tenantID, id string) err
 // --- Messages ---
 
 func CreateMessage(ctx context.Context, tx pgx.Tx, m MessageRow) (MessageRow, error) {
+	// The reasoning jsonb column is NOT NULL DEFAULT '[]': a nil slice is
+	// marshaled as an empty array so inserts never violate the constraint.
+	reasoningJSON := []byte("[]")
+	if m.Reasoning != nil {
+		reasoningJSON, _ = json.Marshal(m.Reasoning)
+	}
 	const q = `INSERT INTO ask_orchicon_messages
-		(id, tenant_id, conversation_id, role, content, tool_calls, tool_results, attachments, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING id, tenant_id, conversation_id, role, content, tool_calls, tool_results, attachments, metadata, created_at`
+		(id, tenant_id, conversation_id, role, content, tool_calls, tool_results, attachments, metadata, reasoning)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		RETURNING id, tenant_id, conversation_id, role, content, tool_calls, tool_results, attachments, metadata, reasoning, created_at`
 	row := m
 	err := tx.QueryRow(ctx, q, m.ID, m.TenantID, m.ConversationID, m.Role, m.Content,
-		m.ToolCalls, m.ToolResults, m.Attachments, m.Metadata).Scan(
+		m.ToolCalls, m.ToolResults, m.Attachments, m.Metadata, reasoningJSON).Scan(
 		&row.ID, &row.TenantID, &row.ConversationID, &row.Role, &row.Content,
-		&row.ToolCalls, &row.ToolResults, &row.Attachments, &row.Metadata, &row.CreatedAt,
+		&row.ToolCalls, &row.ToolResults, &row.Attachments, &row.Metadata, &row.Reasoning, &row.CreatedAt,
 	)
 	if err != nil {
 		return MessageRow{}, fmt.Errorf("db: create message: %w", err)
@@ -188,7 +196,7 @@ func ListMessages(ctx context.Context, tx pgx.Tx, tenantID, conversationID strin
 	var q string
 	var args []any
 	if afterID != "" {
-		q = `SELECT id, tenant_id, conversation_id, role, content, tool_calls, tool_results, attachments, metadata, created_at
+		q = `SELECT id, tenant_id, conversation_id, role, content, tool_calls, tool_results, attachments, metadata, reasoning, created_at
 			FROM ask_orchicon_messages
 			WHERE tenant_id = $1 AND conversation_id = $2 AND created_at < (
 				SELECT created_at FROM ask_orchicon_messages WHERE tenant_id = $1 AND id = $3
@@ -196,7 +204,7 @@ func ListMessages(ctx context.Context, tx pgx.Tx, tenantID, conversationID strin
 			ORDER BY created_at DESC LIMIT $4`
 		args = []any{tenantID, conversationID, afterID, limit}
 	} else {
-		q = `SELECT id, tenant_id, conversation_id, role, content, tool_calls, tool_results, attachments, metadata, created_at
+		q = `SELECT id, tenant_id, conversation_id, role, content, tool_calls, tool_results, attachments, metadata, reasoning, created_at
 			FROM ask_orchicon_messages
 			WHERE tenant_id = $1 AND conversation_id = $2
 			ORDER BY created_at DESC LIMIT $3`
@@ -326,9 +334,12 @@ func scanConversation(row pgx.Rows) (ConversationRow, error) {
 func scanMessage(row pgx.Rows) (MessageRow, error) {
 	var r MessageRow
 	if err := row.Scan(&r.ID, &r.TenantID, &r.ConversationID, &r.Role, &r.Content,
-		&r.ToolCalls, &r.ToolResults, &r.Attachments, &r.Metadata, &r.CreatedAt,
+		&r.ToolCalls, &r.ToolResults, &r.Attachments, &r.Metadata, &r.Reasoning, &r.CreatedAt,
 	); err != nil {
 		return MessageRow{}, fmt.Errorf("db: scan message: %w", err)
+	}
+	if r.Reasoning == nil {
+		r.Reasoning = []string{}
 	}
 	return r, nil
 }

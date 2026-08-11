@@ -102,8 +102,9 @@ type AskOrchiconServiceClient interface {
 	// reply is collected on a request-independent context (bounded by the
 	// reply window) and delivered by polling ListMessages — a browser
 	// disconnect or tab close never cancels or loses it. The TextChunk /
-	// ToolCallResult / ErrorChunk / DoneSignal events are retained for a
-	// future SSE surface but are not emitted by the current implementation.
+	// ReasoningChunk / ToolCallResult / ErrorChunk / DoneSignal events are
+	// retained for a future SSE surface but are not emitted by the current
+	// implementation.
 	ChatStream(context.Context, *connect.Request[v1.ChatStreamRequest]) (*connect.ServerStreamForClient[v1.ChatStreamResponse], error)
 	// AbortConversationTurn aborts the in-flight turn on a conversation's
 	// opencode session (the Stop button). The session itself is kept alive
@@ -310,8 +311,9 @@ type AskOrchiconServiceHandler interface {
 	// reply is collected on a request-independent context (bounded by the
 	// reply window) and delivered by polling ListMessages — a browser
 	// disconnect or tab close never cancels or loses it. The TextChunk /
-	// ToolCallResult / ErrorChunk / DoneSignal events are retained for a
-	// future SSE surface but are not emitted by the current implementation.
+	// ReasoningChunk / ToolCallResult / ErrorChunk / DoneSignal events are
+	// retained for a future SSE surface but are not emitted by the current
+	// implementation.
 	ChatStream(context.Context, *connect.Request[v1.ChatStreamRequest], *connect.ServerStream[v1.ChatStreamResponse]) error
 	// AbortConversationTurn aborts the in-flight turn on a conversation's
 	// opencode session (the Stop button). The session itself is kept alive

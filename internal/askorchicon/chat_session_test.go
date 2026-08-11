@@ -200,6 +200,22 @@ func busText(sessionID, text string) opencode.BusEvent {
 	}
 }
 
+// busReasoning builds a completed reasoning-part bus event for a session (the
+// same shape the serve emits for thinking blocks and LegacyEventFromBus maps
+// to {type: "reasoning", part: {...}}).
+func busReasoning(sessionID, text string) opencode.BusEvent {
+	return opencode.BusEvent{
+		Type: "message.part.updated",
+		Properties: map[string]any{
+			"sessionID": sessionID,
+			"part": map[string]any{
+				"type": "reasoning", "text": text,
+				"time": map[string]any{"start": 1.0, "end": 2.0},
+			},
+		},
+	}
+}
+
 func busTool(sessionID string) opencode.BusEvent {
 	return opencode.BusEvent{
 		Type: "message.part.updated",
@@ -705,23 +721,25 @@ func TestRunOpenCodeTurnSubscribeFailureReturnsError(t *testing.T) {
 
 // collectTurn runs collectConversationReply against a fake client and returns
 // when the collector finalizes (success or error).
-func collectTurn(t *testing.T, client sessionTurnClient, opts turnCollectOpts) (string, string, error) {
+func collectTurn(t *testing.T, client sessionTurnClient, opts turnCollectOpts) (string, []string, string, error) {
 	t.Helper()
 	s := &Service{log: slog.Default(), turns: newTurnRegistry()}
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
 	done := make(chan struct{})
-	var reply, sid string
+	var reply string
+	var reasoning []string
+	var sid string
 	var err error
 	go func() {
 		defer close(done)
-		reply, sid, err = s.collectConversationReply(context.Background(), opts)
+		reply, reasoning, sid, err = s.collectConversationReply(context.Background(), opts)
 	}()
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("collectConversationReply did not return within 10s")
 	}
-	return reply, sid, err
+	return reply, reasoning, sid, err
 }
 
 // waitForSend polls the fake until SendMessage has been called n times.
@@ -756,7 +774,7 @@ func TestCollectConversationReplyCollectsReply(t *testing.T) {
 		client.sub.feed(busText("ses_live", "Hi there"))
 		client.sub.feed(busIdle("ses_live"))
 	}()
-	reply, sid, err := collectTurn(t, client, opts)
+	reply, _, sid, err := collectTurn(t, client, opts)
 	if err != nil {
 		t.Fatalf("collect error: %v", err)
 	}
@@ -776,6 +794,67 @@ func TestCollectConversationReplyCollectsReply(t *testing.T) {
 	}
 }
 
+// TestCollectConversationReplyCollectsReasoning verifies reasoning parts on
+// the bus are unwrapped via LegacyEventFromBus, accumulated separately from
+// the reply text (never folded into assistant content), and returned by the
+// collector — the data path F4's reasoning bubbles consume.
+func TestCollectConversationReplyCollectsReasoning(t *testing.T) {
+	client := &fakeSessionClient{}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
+	}
+	go func() {
+		waitForSend(t, client, 1)
+		client.sub.feed(busReasoning("ses_live", "think step 1"))
+		client.sub.feed(busText("ses_live", "Answer"))
+		client.sub.feed(busReasoning("ses_live", "think step 2"))
+		client.sub.feed(busIdle("ses_live"))
+	}()
+	reply, reasoning, sid, err := collectTurn(t, client, opts)
+	if err != nil {
+		t.Fatalf("collect error: %v", err)
+	}
+	if reply != "Answer" {
+		t.Errorf("reply = %q, want %q (reasoning must not fold into content)", reply, "Answer")
+	}
+	want := []string{"think step 1", "think step 2"}
+	if len(reasoning) != len(want) {
+		t.Fatalf("reasoning = %v, want %v", reasoning, want)
+	}
+	for i := range want {
+		if reasoning[i] != want[i] {
+			t.Errorf("reasoning[%d] = %q, want %q (boundaries preserved)", i, reasoning[i], want[i])
+		}
+	}
+	if sid != "ses_live" {
+		t.Errorf("final session = %q, want ses_live", sid)
+	}
+}
+
+// TestCollectConversationReplyNoReasoningYieldsEmpty verifies a turn with no
+// reasoning parts (a model that emits none) yields an empty slice — additive,
+// no events, no noise.
+func TestCollectConversationReplyNoReasoningYieldsEmpty(t *testing.T) {
+	client := &fakeSessionClient{}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
+	}
+	go func() {
+		waitForSend(t, client, 1)
+		client.sub.feed(busText("ses_live", "plain answer"))
+		client.sub.feed(busIdle("ses_live"))
+	}()
+	_, reasoning, _, err := collectTurn(t, client, opts)
+	if err != nil {
+		t.Fatalf("collect error: %v", err)
+	}
+	if len(reasoning) != 0 {
+		t.Errorf("reasoning = %v, want empty", reasoning)
+	}
+}
+
 // TestCollectConversationReplyFirstMessageCreatesSession verifies a first
 // message (no persisted session id) creates the session and uses the seed
 // system prompt.
@@ -790,7 +869,7 @@ func TestCollectConversationReplyFirstMessageCreatesSession(t *testing.T) {
 		client.sub.feed(busText("ses_1", "created"))
 		client.sub.feed(busIdle("ses_1"))
 	}()
-	_, sid, err := collectTurn(t, client, opts)
+	_, _, sid, err := collectTurn(t, client, opts)
 	if err != nil {
 		t.Fatalf("collect error: %v", err)
 	}
@@ -816,7 +895,7 @@ func TestCollectConversationReplyTimeout(t *testing.T) {
 		client: client, sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
 		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
 	}
-	_, _, err := collectTurn(t, client, opts)
+	_, _, _, err := collectTurn(t, client, opts)
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("error = %v, want timeout", err)
 	}
@@ -834,7 +913,7 @@ func TestCollectConversationReplySessionError(t *testing.T) {
 		waitForSend(t, client, 1)
 		client.sub.feed(busSessionError("ses_live", "provider 500"))
 	}()
-	_, _, err := collectTurn(t, client, opts)
+	_, _, _, err := collectTurn(t, client, opts)
 	if err == nil || !strings.Contains(err.Error(), "provider 500") {
 		t.Fatalf("error = %v, want provider 500 message", err)
 	}
@@ -857,7 +936,7 @@ func TestCollectConversationReplyReattachesOnBusLoss(t *testing.T) {
 		client.sub.feed(busText("ses_live", "recovered"))
 		client.sub.feed(busIdle("ses_live"))
 	}()
-	reply, sid, err := collectTurn(t, client, opts)
+	reply, _, sid, err := collectTurn(t, client, opts)
 	if err != nil {
 		t.Fatalf("collect error: %v", err)
 	}
@@ -895,7 +974,7 @@ func TestCollectConversationReplyRecreatesLostSession(t *testing.T) {
 		client.sub.feed(busText("ses_1", "recreated"))
 		client.sub.feed(busIdle("ses_1"))
 	}()
-	reply, sid, err := collectTurn(t, client, opts)
+	reply, _, sid, err := collectTurn(t, client, opts)
 	if err != nil {
 		t.Fatalf("collect error: %v", err)
 	}
@@ -936,7 +1015,7 @@ func TestCollectConversationReplyIgnoresIdleBeforeSend(t *testing.T) {
 	go func() {
 		defer close(done)
 		s := &Service{log: slog.Default(), turns: newTurnRegistry()}
-		reply, sid, err = s.collectConversationReply(context.Background(), opts)
+		reply, _, sid, err = s.collectConversationReply(context.Background(), opts)
 	}()
 	waitForSend(t, client, 1)
 	// Stale idle + text from a prior turn replayed before our send is
@@ -993,7 +1072,7 @@ func TestCollectConversationReplyStopCancels(t *testing.T) {
 	go func() {
 		defer close(done)
 		s := &Service{log: slog.Default(), turns: newTurnRegistry()}
-		_, _, err = s.collectConversationReply(ctx, opts)
+		_, _, _, err = s.collectConversationReply(ctx, opts)
 	}()
 	waitForSend(t, client, 1)
 	cancel()
@@ -1021,7 +1100,7 @@ func TestCollectConversationReplyServeDownFailsFast(t *testing.T) {
 		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
 	}
 	start := time.Now()
-	_, _, err := collectTurn(t, client, opts)
+	_, _, _, err := collectTurn(t, client, opts)
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("serve-down turn took %v to fail, want fast-fail well under the 30m window", elapsed)
 	}
@@ -1045,7 +1124,7 @@ func TestCollectConversationReplyServeDownRecovers(t *testing.T) {
 		client.sub.feed(busText("ses_live", "back after drop"))
 		client.sub.feed(busIdle("ses_live"))
 	}()
-	reply, sid, err := collectTurn(t, client, opts)
+	reply, _, sid, err := collectTurn(t, client, opts)
 	if err != nil {
 		t.Fatalf("collect error: %v", err)
 	}
@@ -1082,7 +1161,7 @@ func TestCollectConversationReplyDropAfterLiveKeepsWindow(t *testing.T) {
 		client.sub.feed(busText("ses_live", "recovered after restart"))
 		client.sub.feed(busIdle("ses_live"))
 	}()
-	reply, _, err := collectTurn(t, client, opts)
+	reply, _, _, err := collectTurn(t, client, opts)
 	if err != nil {
 		t.Fatalf("collect error: %v", err)
 	}
