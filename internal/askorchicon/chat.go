@@ -165,18 +165,29 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("message too long (max 10000 characters)"))
 	}
 
-	assistantID, err := s.startConversationTurn(ctx, tenantID, req.Msg.ConversationId, msg, req.Msg.Attachments)
+	assistantID, streamEventCh, err := s.startConversationTurn(ctx, tenantID, req.Msg.ConversationId, msg, req.Msg.Attachments)
 	if err != nil {
 		return err
 	}
 
-	// Ack immediately. The reply is delivered by polling ListMessages for
-	// the persisted message under assistantID.
-	return stream.Send(&apiv1.ChatStreamResponse{
+	// Ack immediately.
+	if err := stream.Send(&apiv1.ChatStreamResponse{
 		Event: &apiv1.ChatStreamResponse_TurnStarted{
 			TurnStarted: &apiv1.TurnStarted{AssistantMessageId: assistantID},
 		},
-	})
+	}); err != nil {
+		return err
+	}
+
+	// Drain streaming events to the client. When the channel closes (turn
+	// complete or error), this goroutine exits, which lets ChatStream return,
+	// closing the HTTP stream.
+	for resp := range streamEventCh {
+		if err := stream.Send(resp); err != nil {
+			break // client gone — stop draining
+		}
+	}
+	return nil
 }
 
 // startConversationTurn is ChatStream's core (extracted for testability): it
@@ -185,7 +196,7 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 // which the reply (or error) will be persisted. Errors are *connect.Error
 // values with the right code (NotFound for a missing conversation,
 // FailedPrecondition when a turn is already pending — one turn at a time).
-func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, msg string, attachments []*apiv1.AttachmentInput) (string, error) {
+func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, msg string, attachments []*apiv1.AttachmentInput) (string, chan *apiv1.ChatStreamResponse, error) {
 	// --- 1. Load conversation + register the turn. ---
 	// The turn is registered BEFORE the user message is persisted so a
 	// rejected second send (one turn per conversation) never orphans a
@@ -195,7 +206,7 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 	detached := context.WithoutCancel(ctx)
 	turnCtx, cancelTurn := context.WithCancel(detached)
 	if !s.turns.register(convID, cancelTurn) {
-		return "", connect.NewError(connect.CodeFailedPrecondition,
+		return "", nil, connect.NewError(connect.CodeFailedPrecondition,
 			errors.New("a reply is still in progress for this conversation — wait for it to complete or stop it first"))
 	}
 	releaseTurn := func() {
@@ -206,16 +217,16 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		releaseTurn()
-		return "", connect.NewError(connect.CodeInternal, err)
+		return "", nil, connect.NewError(connect.CodeInternal, err)
 	}
 	conv, err := db.GetConversation(ctx, ttx.Tx, tenantID, convID)
 	ttx.Rollback(ctx)
 	if err != nil {
 		releaseTurn()
 		if errors.Is(err, db.ErrNotFound) {
-			return "", connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
+			return "", nil, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
 		}
-		return "", connect.NewError(connect.CodeInternal, err)
+		return "", nil, connect.NewError(connect.CodeInternal, err)
 	}
 
 	// --- 2. Persist user message (and title on first message). ---
@@ -234,17 +245,17 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 	ttx, err = s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		releaseTurn()
-		return "", connect.NewError(connect.CodeInternal, err)
+		return "", nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if _, err := db.CreateMessage(ctx, ttx.Tx, userMsg); err != nil {
 		ttx.Rollback(ctx)
 		releaseTurn()
-		return "", connect.NewError(connect.CodeInternal, fmt.Errorf("save user message: %w", err))
+		return "", nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save user message: %w", err))
 	}
 	if err := db.UpdateConversationTimestamp(ctx, ttx.Tx, tenantID, convID); err != nil {
 		ttx.Rollback(ctx)
 		releaseTurn()
-		return "", connect.NewError(connect.CodeInternal, err)
+		return "", nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if conv.Title == "" {
 		title := msg
@@ -255,7 +266,7 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		releaseTurn()
-		return "", connect.NewError(connect.CodeInternal, err)
+		return "", nil, connect.NewError(connect.CodeInternal, err)
 	}
 
 	// --- 3. Resolve model and build prompts (DB-only, no serve
@@ -268,7 +279,7 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 	ttx, err = s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		releaseTurn()
-		return "", connect.NewError(connect.CodeInternal, err)
+		return "", nil, connect.NewError(connect.CodeInternal, err)
 	}
 	prevMessages, _ := db.ListMessages(ctx, ttx.Tx, tenantID, convID, 50, "")
 	cfg, _ := db.GetAgentConfig(ctx, ttx.Tx, tenantID)
@@ -289,14 +300,20 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 	seedSystem := buildSystemPrompt(conv.Mode, cfg, s.toolRegistry, prevMessages, true, attachments, projectContext)
 	reuseSystem := buildSystemPrompt(conv.Mode, cfg, s.toolRegistry, prevMessages, false, attachments, projectContext)
 
-	// --- 4. Launch the detached reply collector and return immediately.
-	// ChatStream does NOT hold the browser connection open for the turn:
-	// the collector re-attaches after serve loss, falls back to a fresh
-	// session seeded from the DB transcript, and persists the reply (or an
-	// error) under the acked assistant message id — even if the tab is
-	// closed. The TextChunk/ToolCallResult streaming events are retained in
-	// the proto for a future SSE surface but are not emitted. ---
+	// --- 4. Launch the detached reply collector and stream events to the
+	// client. The stream channel is buffered so the collector never blocks.
+	// When the channel closes (turn complete or error), the drain goroutine
+	// exits, which lets ChatStream return, closing the HTTP stream. ---
 	assistantID := db.NewID()
+	streamEventCh := make(chan *apiv1.ChatStreamResponse, 64)
+	onStreamEvent := func(resp *apiv1.ChatStreamResponse) {
+		select {
+		case streamEventCh <- resp:
+		default:
+			// Channel full — drop event (client may be slow or gone).
+		}
+	}
+
 	if client := s.hostServeClient(); client != nil {
 		go func() {
 			reply, reasoning, sid, terr := s.collectConversationReply(turnCtx, turnCollectOpts{
@@ -309,6 +326,7 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 				seedSystem:     seedSystem,
 				reuseSystem:    reuseSystem,
 				userMsg:        msg,
+				onStreamEvent:  onStreamEvent,
 			})
 			// Reasoning chunks that arrived before the turn ended (success or
 			// error/stop/timeout) are always persisted on the assistant
@@ -320,9 +338,10 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 					errText = "Turn stopped by the user."
 				}
 				s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, errText, reasoning)
-				return
+			} else {
+				s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, strings.TrimSpace(reply), sid, "", reasoning)
 			}
-			s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, strings.TrimSpace(reply), sid, "", reasoning)
+			close(streamEventCh)
 		}()
 	} else {
 		// No session transport (serve disabled / not started): fail the
@@ -330,9 +349,10 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 		releaseTurn()
 		s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", conv.SessionID,
 			"Ask Orchicon is temporarily unavailable — the opencode serve is starting. Please try again in a moment.", []string{})
+		close(streamEventCh)
 	}
 
-	return assistantID, nil
+	return assistantID, streamEventCh, nil
 }
 
 // AbortConversationTurn implements the Stop button: it cancels the detached
@@ -523,6 +543,9 @@ type turnCollectOpts struct {
 	seedSystem  string
 	reuseSystem string
 	userMsg     string
+	// onStreamEvent is called for each streaming text/reasoning chunk
+	// from the bus. Safe for concurrent use (non-blocking send).
+	onStreamEvent func(*apiv1.ChatStreamResponse)
 }
 
 // turnAttemptKind is the outcome of a single subscribe+send+drain attempt.
@@ -777,21 +800,35 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				if !sent {
 					continue
 				}
-				if legacy, ok := opencode.LegacyEventFromBus(evt); ok {
-					t, _ := legacy["type"].(string)
-					part, _ := legacy["part"].(map[string]any)
-					switch t {
-					case "text":
-						if text, ok2 := part["text"].(string); ok2 && text != "" {
-							reply.WriteString(text)
-							reply.WriteString("\n\n")
+			if legacy, ok := opencode.LegacyEventFromBus(evt); ok {
+				t, _ := legacy["type"].(string)
+				part, _ := legacy["part"].(map[string]any)
+				switch t {
+				case "text":
+					if text, ok2 := part["text"].(string); ok2 && text != "" {
+						reply.WriteString(text)
+						reply.WriteString("\n\n")
+						if c.onStreamEvent != nil {
+							c.onStreamEvent(&apiv1.ChatStreamResponse{
+								Event: &apiv1.ChatStreamResponse_TextChunk{
+									TextChunk: &apiv1.TextChunk{Content: text},
+								},
+							})
 						}
-					case "reasoning":
-						if text, ok2 := part["text"].(string); ok2 && text != "" {
-							reasoning = append(reasoning, text)
+					}
+				case "reasoning":
+					if text, ok2 := part["text"].(string); ok2 && text != "" {
+						reasoning = append(reasoning, text)
+						if c.onStreamEvent != nil {
+							c.onStreamEvent(&apiv1.ChatStreamResponse{
+								Event: &apiv1.ChatStreamResponse_Reasoning{
+									Reasoning: &apiv1.ReasoningChunk{Content: text},
+								},
+							})
 						}
 					}
 				}
+			}
 			}
 		}
 	}
