@@ -143,11 +143,12 @@ function AskOrchiconPage() {
   // Switching conversations resets local state.
   // Skip the reset on null→id transitions (greeting path) so the streaming
   // state set by sendStreaming is not clobbered by this effect.
+  // Also reset on id→null (delete active conversation mid-stream) to clear
+  // stale streaming state — only null→id is skipped.
   useEffect(() => {
     const prev = prevConvIdRef.current;
     prevConvIdRef.current = activeConvId;
-    if (prev === null || activeConvId === null) return;
-    // Switching between two non-null conversation ids — reset.
+    if (prev === null) return;
     setPendingReplyId(null);
     setIsStreaming(false);
     setIsThinking(false);

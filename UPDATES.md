@@ -12,6 +12,7 @@
 
 | # | Type | Phase | Summary |
 |---|---|---|---|
+| 132 | Bug fix | UI | Ask Orchicon: fix delete-active-conversation-while-streaming regression — reset guard now clears stale state on id→null transitions (skip only null→id). |
 | 131 | Bug fix | UI | Ask Orchicon: fix greeting-state send clobbered by useEffect reset (track prev conv id, skip null→id transitions), fix optimistic user bubble ordering to render before streaming bubbles. |
 | 130 | Bug fix | UI | Ask Orchicon: fix greeting-state first message silently dropped (stale closure on `activeConvId`), remove bogus `isStreaming` prop from AssistantBubble (tsc error), type SpeechRecognition constructor properly, and keep thinking indicator visible until first text chunk arrives. |
 | 129 | Feature | UI | Ask Orchicon page overhaul + execution chat patterns: centered ChatGPT-style layout (max-w-3xl), greeting state ("What would you like to create today?"), shared chat bubble components extracted to `components/chat/`, streaming text/reasoning chunk rendering, auto-stick scroll, conversations panel on right (w-80). |
