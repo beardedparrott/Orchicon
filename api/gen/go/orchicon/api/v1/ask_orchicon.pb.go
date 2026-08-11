@@ -29,6 +29,67 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// ConversationMode is the active persona for a conversation. The mode selects
+// the per-message system prompt applied to opencode turns; the opencode
+// session itself is unchanged by a mode switch (the per-turn `system` field
+// carries the new persona on the same session — no session change, no serve
+// restart).
+type ConversationMode int32
+
+const (
+	ConversationMode_CONVERSATION_MODE_UNSPECIFIED ConversationMode = 0
+	// BRAINSTORM is the default: an open systems-thinking partner that helps
+	// the user create. General design, coding, and brainstorming are in scope;
+	// the Orchicon MCP tool surface is shared with ORCHICON mode.
+	ConversationMode_CONVERSATION_MODE_BRAINSTORM ConversationMode = 1
+	// ORCHICON is the strictly-governed platform expert persona: it answers
+	// questions about Orchicon and operates on the user's Orchicon data, and
+	// refuses general coding help, personal conversation, or non-Orchicon
+	// topics.
+	ConversationMode_CONVERSATION_MODE_ORCHICON ConversationMode = 2
+)
+
+// Enum value maps for ConversationMode.
+var (
+	ConversationMode_name = map[int32]string{
+		0: "CONVERSATION_MODE_UNSPECIFIED",
+		1: "CONVERSATION_MODE_BRAINSTORM",
+		2: "CONVERSATION_MODE_ORCHICON",
+	}
+	ConversationMode_value = map[string]int32{
+		"CONVERSATION_MODE_UNSPECIFIED": 0,
+		"CONVERSATION_MODE_BRAINSTORM":  1,
+		"CONVERSATION_MODE_ORCHICON":    2,
+	}
+)
+
+func (x ConversationMode) Enum() *ConversationMode {
+	p := new(ConversationMode)
+	*p = x
+	return p
+}
+
+func (x ConversationMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ConversationMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_orchicon_api_v1_ask_orchicon_proto_enumTypes[0].Descriptor()
+}
+
+func (ConversationMode) Type() protoreflect.EnumType {
+	return &file_orchicon_api_v1_ask_orchicon_proto_enumTypes[0]
+}
+
+func (x ConversationMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ConversationMode.Descriptor instead.
+func (ConversationMode) EnumDescriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_ask_orchicon_proto_rawDescGZIP(), []int{0}
+}
+
 // Conversation is a top-level chat session with the Ask Orchicon agent.
 type Conversation struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
@@ -43,7 +104,12 @@ type Conversation struct {
 	// session_id is the persistent opencode serve session this conversation's
 	// turns run on (Task 1 session transport). Empty when the conversation has
 	// never chatted, the transport is disabled, or it predates this field.
-	SessionId     string `protobuf:"bytes,9,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	SessionId string `protobuf:"bytes,9,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// mode is the active persona (brainstorm default). The mode is applied as
+	// the opencode per-turn system prompt, so toggling it mid-conversation
+	// needs no session change or serve restart — the next message carries the
+	// new persona on the same session.
+	Mode          ConversationMode `protobuf:"varint,10,opt,name=mode,proto3,enum=orchicon.api.v1.ConversationMode" json:"mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -139,6 +205,13 @@ func (x *Conversation) GetSessionId() string {
 		return x.SessionId
 	}
 	return ""
+}
+
+func (x *Conversation) GetMode() ConversationMode {
+	if x != nil {
+		return x.Mode
+	}
+	return ConversationMode_CONVERSATION_MODE_UNSPECIFIED
 }
 
 // ChatMessage is a single message within a conversation.
@@ -1081,7 +1154,7 @@ var File_orchicon_api_v1_ask_orchicon_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\n" +
-	"\"orchicon/api/v1/ask_orchicon.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xda\x02\n" +
+	"\"orchicon/api/v1/ask_orchicon.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x91\x03\n" +
 	"\fConversation\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x14\n" +
@@ -1094,7 +1167,9 @@ const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\t \x01(\tR\tsessionId\"\xc4\x03\n" +
+	"session_id\x18\t \x01(\tR\tsessionId\x125\n" +
+	"\x04mode\x18\n" +
+	" \x01(\x0e2!.orchicon.api.v1.ConversationModeR\x04mode\"\xc4\x03\n" +
 	"\vChatMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12\x12\n" +
@@ -1178,7 +1253,11 @@ const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\x0fAttachmentInput\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1b\n" +
 	"\tmime_type\x18\x02 \x01(\tR\bmimeType\x12\x12\n" +
-	"\x04data\x18\x03 \x01(\fR\x04dataB\xca\x01\n" +
+	"\x04data\x18\x03 \x01(\fR\x04data*w\n" +
+	"\x10ConversationMode\x12!\n" +
+	"\x1dCONVERSATION_MODE_UNSPECIFIED\x10\x00\x12 \n" +
+	"\x1cCONVERSATION_MODE_BRAINSTORM\x10\x01\x12\x1e\n" +
+	"\x1aCONVERSATION_MODE_ORCHICON\x10\x02B\xca\x01\n" +
 	"\x13com.orchicon.api.v1B\x10AskOrchiconProtoP\x01ZCgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1;apiv1\xa2\x02\x03OAX\xaa\x02\x0fOrchicon.Api.V1\xca\x02\x0fOrchicon\\Api\\V1\xe2\x02\x1bOrchicon\\Api\\V1\\GPBMetadata\xea\x02\x11Orchicon::Api::V1b\x06proto3"
 
 var (
@@ -1193,40 +1272,43 @@ func file_orchicon_api_v1_ask_orchicon_proto_rawDescGZIP() []byte {
 	return file_orchicon_api_v1_ask_orchicon_proto_rawDescData
 }
 
+var file_orchicon_api_v1_ask_orchicon_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_orchicon_api_v1_ask_orchicon_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_orchicon_api_v1_ask_orchicon_proto_goTypes = []any{
-	(*Conversation)(nil),          // 0: orchicon.api.v1.Conversation
-	(*ChatMessage)(nil),           // 1: orchicon.api.v1.ChatMessage
-	(*ToolCall)(nil),              // 2: orchicon.api.v1.ToolCall
-	(*ToolResult)(nil),            // 3: orchicon.api.v1.ToolResult
-	(*Attachment)(nil),            // 4: orchicon.api.v1.Attachment
-	(*MessageMetadata)(nil),       // 5: orchicon.api.v1.MessageMetadata
-	(*AgentConfig)(nil),           // 6: orchicon.api.v1.AgentConfig
-	(*TextChunk)(nil),             // 7: orchicon.api.v1.TextChunk
-	(*ToolCallChunk)(nil),         // 8: orchicon.api.v1.ToolCallChunk
-	(*ToolCallResult)(nil),        // 9: orchicon.api.v1.ToolCallResult
-	(*ErrorChunk)(nil),            // 10: orchicon.api.v1.ErrorChunk
-	(*DoneSignal)(nil),            // 11: orchicon.api.v1.DoneSignal
-	(*ReasoningChunk)(nil),        // 12: orchicon.api.v1.ReasoningChunk
-	(*AttachmentInput)(nil),       // 13: orchicon.api.v1.AttachmentInput
-	(*timestamppb.Timestamp)(nil), // 14: google.protobuf.Timestamp
+	(ConversationMode)(0),         // 0: orchicon.api.v1.ConversationMode
+	(*Conversation)(nil),          // 1: orchicon.api.v1.Conversation
+	(*ChatMessage)(nil),           // 2: orchicon.api.v1.ChatMessage
+	(*ToolCall)(nil),              // 3: orchicon.api.v1.ToolCall
+	(*ToolResult)(nil),            // 4: orchicon.api.v1.ToolResult
+	(*Attachment)(nil),            // 5: orchicon.api.v1.Attachment
+	(*MessageMetadata)(nil),       // 6: orchicon.api.v1.MessageMetadata
+	(*AgentConfig)(nil),           // 7: orchicon.api.v1.AgentConfig
+	(*TextChunk)(nil),             // 8: orchicon.api.v1.TextChunk
+	(*ToolCallChunk)(nil),         // 9: orchicon.api.v1.ToolCallChunk
+	(*ToolCallResult)(nil),        // 10: orchicon.api.v1.ToolCallResult
+	(*ErrorChunk)(nil),            // 11: orchicon.api.v1.ErrorChunk
+	(*DoneSignal)(nil),            // 12: orchicon.api.v1.DoneSignal
+	(*ReasoningChunk)(nil),        // 13: orchicon.api.v1.ReasoningChunk
+	(*AttachmentInput)(nil),       // 14: orchicon.api.v1.AttachmentInput
+	(*timestamppb.Timestamp)(nil), // 15: google.protobuf.Timestamp
 }
 var file_orchicon_api_v1_ask_orchicon_proto_depIdxs = []int32{
-	14, // 0: orchicon.api.v1.Conversation.created_at:type_name -> google.protobuf.Timestamp
-	14, // 1: orchicon.api.v1.Conversation.updated_at:type_name -> google.protobuf.Timestamp
-	2,  // 2: orchicon.api.v1.ChatMessage.tool_calls:type_name -> orchicon.api.v1.ToolCall
-	3,  // 3: orchicon.api.v1.ChatMessage.tool_results:type_name -> orchicon.api.v1.ToolResult
-	4,  // 4: orchicon.api.v1.ChatMessage.attachments:type_name -> orchicon.api.v1.Attachment
-	5,  // 5: orchicon.api.v1.ChatMessage.metadata:type_name -> orchicon.api.v1.MessageMetadata
-	14, // 6: orchicon.api.v1.ChatMessage.created_at:type_name -> google.protobuf.Timestamp
-	14, // 7: orchicon.api.v1.AgentConfig.created_at:type_name -> google.protobuf.Timestamp
-	14, // 8: orchicon.api.v1.AgentConfig.updated_at:type_name -> google.protobuf.Timestamp
-	5,  // 9: orchicon.api.v1.DoneSignal.metadata:type_name -> orchicon.api.v1.MessageMetadata
-	10, // [10:10] is the sub-list for method output_type
-	10, // [10:10] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	15, // 0: orchicon.api.v1.Conversation.created_at:type_name -> google.protobuf.Timestamp
+	15, // 1: orchicon.api.v1.Conversation.updated_at:type_name -> google.protobuf.Timestamp
+	0,  // 2: orchicon.api.v1.Conversation.mode:type_name -> orchicon.api.v1.ConversationMode
+	3,  // 3: orchicon.api.v1.ChatMessage.tool_calls:type_name -> orchicon.api.v1.ToolCall
+	4,  // 4: orchicon.api.v1.ChatMessage.tool_results:type_name -> orchicon.api.v1.ToolResult
+	5,  // 5: orchicon.api.v1.ChatMessage.attachments:type_name -> orchicon.api.v1.Attachment
+	6,  // 6: orchicon.api.v1.ChatMessage.metadata:type_name -> orchicon.api.v1.MessageMetadata
+	15, // 7: orchicon.api.v1.ChatMessage.created_at:type_name -> google.protobuf.Timestamp
+	15, // 8: orchicon.api.v1.AgentConfig.created_at:type_name -> google.protobuf.Timestamp
+	15, // 9: orchicon.api.v1.AgentConfig.updated_at:type_name -> google.protobuf.Timestamp
+	6,  // 10: orchicon.api.v1.DoneSignal.metadata:type_name -> orchicon.api.v1.MessageMetadata
+	11, // [11:11] is the sub-list for method output_type
+	11, // [11:11] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_ask_orchicon_proto_init() }
@@ -1239,13 +1321,14 @@ func file_orchicon_api_v1_ask_orchicon_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_ask_orchicon_proto_rawDesc), len(file_orchicon_api_v1_ask_orchicon_proto_rawDesc)),
-			NumEnums:      0,
+			NumEnums:      1,
 			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_orchicon_api_v1_ask_orchicon_proto_goTypes,
 		DependencyIndexes: file_orchicon_api_v1_ask_orchicon_proto_depIdxs,
+		EnumInfos:         file_orchicon_api_v1_ask_orchicon_proto_enumTypes,
 		MessageInfos:      file_orchicon_api_v1_ask_orchicon_proto_msgTypes,
 	}.Build()
 	File_orchicon_api_v1_ask_orchicon_proto = out.File

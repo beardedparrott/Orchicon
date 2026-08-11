@@ -56,6 +56,9 @@ const (
 	// AskOrchiconServiceUpdateConversationTitleProcedure is the fully-qualified name of the
 	// AskOrchiconService's UpdateConversationTitle RPC.
 	AskOrchiconServiceUpdateConversationTitleProcedure = "/orchicon.api.v1.AskOrchiconService/UpdateConversationTitle"
+	// AskOrchiconServiceSetConversationModeProcedure is the fully-qualified name of the
+	// AskOrchiconService's SetConversationMode RPC.
+	AskOrchiconServiceSetConversationModeProcedure = "/orchicon.api.v1.AskOrchiconService/SetConversationMode"
 	// AskOrchiconServiceListMessagesProcedure is the fully-qualified name of the AskOrchiconService's
 	// ListMessages RPC.
 	AskOrchiconServiceListMessagesProcedure = "/orchicon.api.v1.AskOrchiconService/ListMessages"
@@ -93,6 +96,11 @@ type AskOrchiconServiceClient interface {
 	DeleteConversation(context.Context, *connect.Request[v1.DeleteConversationRequest]) (*connect.Response[v1.DeleteConversationResponse], error)
 	// UpdateConversationTitle updates the title of a conversation.
 	UpdateConversationTitle(context.Context, *connect.Request[v1.UpdateConversationTitleRequest]) (*connect.Response[v1.UpdateConversationTitleResponse], error)
+	// SetConversationMode switches the active persona for a conversation
+	// (brainstorm <-> orchicon). The change applies from the NEXT message on:
+	// the same opencode session persists and the per-turn system prompt swaps
+	// with no session change or serve restart.
+	SetConversationMode(context.Context, *connect.Request[v1.SetConversationModeRequest]) (*connect.Response[v1.SetConversationModeResponse], error)
 	// ListMessages returns messages for a conversation, ordered by
 	// created_at ascending (oldest first).
 	ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error)
@@ -167,6 +175,12 @@ func NewAskOrchiconServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(askOrchiconServiceMethods.ByName("UpdateConversationTitle")),
 			connect.WithClientOptions(opts...),
 		),
+		setConversationMode: connect.NewClient[v1.SetConversationModeRequest, v1.SetConversationModeResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceSetConversationModeProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationMode")),
+			connect.WithClientOptions(opts...),
+		),
 		listMessages: connect.NewClient[v1.ListMessagesRequest, v1.ListMessagesResponse](
 			httpClient,
 			baseURL+AskOrchiconServiceListMessagesProcedure,
@@ -219,6 +233,7 @@ type askOrchiconServiceClient struct {
 	createConversation      *connect.Client[v1.CreateConversationRequest, v1.CreateConversationResponse]
 	deleteConversation      *connect.Client[v1.DeleteConversationRequest, v1.DeleteConversationResponse]
 	updateConversationTitle *connect.Client[v1.UpdateConversationTitleRequest, v1.UpdateConversationTitleResponse]
+	setConversationMode     *connect.Client[v1.SetConversationModeRequest, v1.SetConversationModeResponse]
 	listMessages            *connect.Client[v1.ListMessagesRequest, v1.ListMessagesResponse]
 	chatStream              *connect.Client[v1.ChatStreamRequest, v1.ChatStreamResponse]
 	abortConversationTurn   *connect.Client[v1.AbortConversationTurnRequest, v1.AbortConversationTurnResponse]
@@ -251,6 +266,11 @@ func (c *askOrchiconServiceClient) DeleteConversation(ctx context.Context, req *
 // UpdateConversationTitle calls orchicon.api.v1.AskOrchiconService.UpdateConversationTitle.
 func (c *askOrchiconServiceClient) UpdateConversationTitle(ctx context.Context, req *connect.Request[v1.UpdateConversationTitleRequest]) (*connect.Response[v1.UpdateConversationTitleResponse], error) {
 	return c.updateConversationTitle.CallUnary(ctx, req)
+}
+
+// SetConversationMode calls orchicon.api.v1.AskOrchiconService.SetConversationMode.
+func (c *askOrchiconServiceClient) SetConversationMode(ctx context.Context, req *connect.Request[v1.SetConversationModeRequest]) (*connect.Response[v1.SetConversationModeResponse], error) {
+	return c.setConversationMode.CallUnary(ctx, req)
 }
 
 // ListMessages calls orchicon.api.v1.AskOrchiconService.ListMessages.
@@ -302,6 +322,11 @@ type AskOrchiconServiceHandler interface {
 	DeleteConversation(context.Context, *connect.Request[v1.DeleteConversationRequest]) (*connect.Response[v1.DeleteConversationResponse], error)
 	// UpdateConversationTitle updates the title of a conversation.
 	UpdateConversationTitle(context.Context, *connect.Request[v1.UpdateConversationTitleRequest]) (*connect.Response[v1.UpdateConversationTitleResponse], error)
+	// SetConversationMode switches the active persona for a conversation
+	// (brainstorm <-> orchicon). The change applies from the NEXT message on:
+	// the same opencode session persists and the per-turn system prompt swaps
+	// with no session change or serve restart.
+	SetConversationMode(context.Context, *connect.Request[v1.SetConversationModeRequest]) (*connect.Response[v1.SetConversationModeResponse], error)
 	// ListMessages returns messages for a conversation, ordered by
 	// created_at ascending (oldest first).
 	ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error)
@@ -372,6 +397,12 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 		connect.WithSchema(askOrchiconServiceMethods.ByName("UpdateConversationTitle")),
 		connect.WithHandlerOptions(opts...),
 	)
+	askOrchiconServiceSetConversationModeHandler := connect.NewUnaryHandler(
+		AskOrchiconServiceSetConversationModeProcedure,
+		svc.SetConversationMode,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationMode")),
+		connect.WithHandlerOptions(opts...),
+	)
 	askOrchiconServiceListMessagesHandler := connect.NewUnaryHandler(
 		AskOrchiconServiceListMessagesProcedure,
 		svc.ListMessages,
@@ -426,6 +457,8 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 			askOrchiconServiceDeleteConversationHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceUpdateConversationTitleProcedure:
 			askOrchiconServiceUpdateConversationTitleHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceSetConversationModeProcedure:
+			askOrchiconServiceSetConversationModeHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceListMessagesProcedure:
 			askOrchiconServiceListMessagesHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceChatStreamProcedure:
@@ -467,6 +500,10 @@ func (UnimplementedAskOrchiconServiceHandler) DeleteConversation(context.Context
 
 func (UnimplementedAskOrchiconServiceHandler) UpdateConversationTitle(context.Context, *connect.Request[v1.UpdateConversationTitleRequest]) (*connect.Response[v1.UpdateConversationTitleResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.UpdateConversationTitle is not implemented"))
+}
+
+func (UnimplementedAskOrchiconServiceHandler) SetConversationMode(context.Context, *connect.Request[v1.SetConversationModeRequest]) (*connect.Response[v1.SetConversationModeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.SetConversationMode is not implemented"))
 }
 
 func (UnimplementedAskOrchiconServiceHandler) ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error) {
