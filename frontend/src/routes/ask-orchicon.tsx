@@ -418,7 +418,7 @@ function AskOrchiconPage() {
             <ChatScrollContainer
               items={[displayMessages, isThinking, optimisticUserMsg]}
             >
-              <div className="mx-auto max-w-3xl space-y-4 px-4 py-6">
+              <div className="space-y-4 px-6 py-6">
                 {msgsLoading && (
                   <p className="text-center text-sm text-muted-foreground">
                     Loading messages...
@@ -501,16 +501,14 @@ function AskOrchiconPage() {
 
             {/* Input — fixed at bottom */}
             <div className="shrink-0 border-t">
-              <div className="mx-auto max-w-3xl">
-                <ChatInputField
-                  onSend={handleSendMessage}
-                  onStop={handleStopStreaming}
-                  isStreaming={isStreaming}
-                  placeholder="Ask Orchicon anything..."
-                  mode={localMode}
-                  onModeChange={handleModeChange}
-                />
-              </div>
+              <ChatInputField
+                onSend={handleSendMessage}
+                onStop={handleStopStreaming}
+                isStreaming={isStreaming}
+                placeholder="Ask Orchicon anything..."
+                mode={localMode}
+                onModeChange={handleModeChange}
+              />
             </div>
           </div>
         )}
