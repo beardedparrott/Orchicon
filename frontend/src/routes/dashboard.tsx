@@ -1,4 +1,4 @@
-import { createRoute, Redirect } from "@tanstack/react-router";
+import { createRoute } from "@tanstack/react-router";
 import { useMemo } from "react";
 
 import { Route as rootRoute } from "@/routes/__root";
