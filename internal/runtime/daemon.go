@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,8 +21,9 @@ import (
 
 // Daemon is the host-side runtime orchestrator. It is the ONLY process
 // with access to the Docker socket: it creates/kills runtime containers
-// and brokers execs into them. The control plane reaches it over a unix
-// socket mounted into the supervisor container (see client.go).
+// and warms/leases them through the warm pool. The control plane reaches
+// it over a unix socket mounted into the supervisor container (see
+// client.go).
 //
 // Every request is validated against a closed allowlist so the control
 // plane cannot use the daemon to create arbitrary containers, mount
@@ -49,18 +51,17 @@ type Daemon struct {
 	CPUs         string
 	Memory       string
 	TmpfsSize    string
-	// MaxAge is the hard backstop for leaked runtime containers: any
-	// orchicon-runtime-* container older than this is removed. The
-	// control plane's state-aware sweep is the primary cleanup (it knows
-	// which runs are active); this catches the plane-down / crashed case
-	// where a container would otherwise linger forever.
-	MaxAge time.Duration
-	// SweepInterval is how often the age-based orphan sweep runs.
+	// MaxAge / SweepInterval are retained for config compatibility; the
+	// warm pool's idle-reap now owns container cleanup (the pool is reset
+	// wholesale at daemon start, which covers the plane-down leak case).
+	MaxAge        time.Duration
 	SweepInterval time.Duration
 	Log           *slog.Logger
-	// createMu serializes createRuntime so concurrent Create calls for the
-	// same workflow (WorkflowReconciler.EnsureForRun + adapter self-heal)
-	// cannot race `docker run` on the same container name.
+	// pool leases/resets warm runtime containers (internal/runtime/pool.go).
+	pool *daemonPool
+	// createMu serializes createContainer so concurrent checkouts cannot
+	// race `docker run` on the same name (the pool names are unique, but
+	// serializing the docker create path keeps docker itself calm).
 	createMu sync.Mutex
 }
 
@@ -116,10 +117,6 @@ type ListResponse struct {
 	Runtimes []string `json:"runtimes"`
 }
 
-func (d *Daemon) containerName(workflowID string) string {
-	return "orchicon-runtime-" + workflowID
-}
-
 // HTTP mux setup.
 func (d *Daemon) handler() http.Handler {
 	mux := http.NewServeMux()
@@ -156,73 +153,25 @@ func (d *Daemon) ListenAndServe(ctx context.Context) error {
 		<-ctx.Done()
 		srv.Close()
 	}()
+	// Warm-pool lifecycle: leases are daemon-resident, so start from a
+	// clean slate (all runtime containers removed — covers plane-down
+	// leaks) then idle-reap clean containers periodically.
+	d.pool = newDaemonPool(d)
+	d.pool.resetPool()
+	go func() {
+		tick := time.NewTicker(5 * time.Minute)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+			}
+			d.pool.idleReap()
+		}
+	}()
 	d.Log.Info("runtime daemon listening", "socket", d.SocketPath)
-	// Age-based orphan sweep: removes leaked runtime containers whose
-	// run is long gone (plane down / crashed) but which no one reaped.
-	go d.sweepOrphans(ctx)
 	return srv.Serve(l)
-}
-
-// sweepOrphans periodically removes runtime containers older than MaxAge.
-// It is the hard backstop for leftover containers; the control plane's
-// state-aware adopt sweep is the primary (and faster) cleanup. The first
-// sweep runs immediately at daemon start so containers leaked by a crash
-// are reaped within seconds of the daemon coming back, not after the
-// first interval tick.
-func (d *Daemon) sweepOrphans(ctx context.Context) {
-	if d.MaxAge <= 0 {
-		return
-	}
-	interval := d.SweepInterval
-	if interval <= 0 {
-		interval = 5 * time.Minute
-	}
-	d.sweepOnce()
-	tick := time.NewTicker(interval)
-	defer tick.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-		}
-		d.sweepOnce()
-	}
-}
-
-func (d *Daemon) sweepOnce() {
-	names, err := d.listRuntimes("")
-	if err != nil {
-		d.Log.Warn("orphan sweep: list", "error", err)
-		return
-	}
-	for _, name := range names {
-		created, err := d.containerCreated(name)
-		if err != nil {
-			continue
-		}
-		if time.Since(created) <= d.MaxAge {
-			continue
-		}
-		d.Log.Warn("orphan sweep: removing aged runtime container", "name", name, "age", time.Since(created).Round(time.Minute).String())
-		if out, err := d.docker("rm", "-f", name); err != nil {
-			d.Log.Warn("orphan sweep: remove failed", "name", name, "error", err, "out", strings.TrimSpace(out))
-		}
-	}
-}
-
-// containerCreated returns the container's creation time (RFC3339 from
-// `docker inspect --format {{.Created}}`).
-func (d *Daemon) containerCreated(name string) (time.Time, error) {
-	out, err := d.docker("inspect", "--format", "{{.Created}}", name)
-	if err != nil {
-		return time.Time{}, err
-	}
-	t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(out))
-	if err != nil {
-		return time.Time{}, err
-	}
-	return t, nil
 }
 
 func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -231,8 +180,8 @@ func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // handleRuntimes implements the collection routes:
 //
-//	GET  /v1/runtimes            -> list active runtime containers (adopt)
-//	POST /v1/runtimes            -> create a runtime container
+//	GET  /v1/runtimes            -> list warm-pool containers
+//	POST /v1/runtimes            -> lease a warm container for a run
 func (d *Daemon) handleRuntimes(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -254,7 +203,7 @@ func (d *Daemon) handleRuntimes(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		resp, err := d.createRuntime(req)
+		resp, err := d.pool.checkout(r.Context(), req.WorkflowID, req)
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -267,7 +216,7 @@ func (d *Daemon) handleRuntimes(w http.ResponseWriter, r *http.Request) {
 
 // handleRuntime implements the per-runtime routes:
 //
-//	DELETE /v1/runtimes/{id}      -> kill + remove the runtime container
+//	DELETE /v1/runtimes/{id}      -> release the run's lease (reset to the pool)
 func (d *Daemon) handleRuntime(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/runtimes/")
 	action := ""
@@ -281,7 +230,11 @@ func (d *Daemon) handleRuntime(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case action == "" && r.Method == http.MethodDelete:
-		d.handleKill(w, id)
+		// Release the run's lease: the container is removed and reset in the
+		// background back into the warm pool (pristine + serve warmed). A
+		// run with no lease (already released / never leased) is a no-op.
+		d.pool.release(id)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "released"})
 	default:
 		httpError(w, http.StatusNotFound, "not found")
 	}
@@ -348,46 +301,16 @@ func (d *Daemon) withinAllowedRoots(path string) bool {
 	return false
 }
 
-// createRuntime ensures a runtime container exists for the workflow and
-// returns its state. Idempotent: if it is already running, returns it.
-//
-// Container creation is serialized with createMu: the control plane calls
-// Create from BOTH the WorkflowReconciler (EnsureForRun when a run leaves
-// pending) and the adapter (self-heal before every exec), so two requests
-// for the same workflow can race `docker run` on the same name — one wins
-// and the other hits "name already in use", removes the winner's container
-// mid-setup, and the exec lands on a container that is being recreated.
-// The mutex makes createRuntime atomic per workflow.
-func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
-	name := d.containerName(req.WorkflowID)
+// createContainer creates a runtime container with the given pool-managed
+// name, warms its opencode serve (when ServeConfig is set), and returns its
+// state. Container creation is serialized with createMu so concurrent
+// checkouts/resets cannot race `docker run` on the same name.
+func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateResponse, error) {
 	d.createMu.Lock()
 	defer d.createMu.Unlock()
-	if running, _ := d.containerRunning(name); running {
-		resp := &CreateResponse{Name: name, Running: true}
-		// Converge the opencode serve on an already-running container: the
-		// WorkflowReconciler creates the container at run start WITHOUT a
-		// serve config, and the first dispatch (this Create with
-		// ServeConfig) brings the serve up. Idempotent (the supervisor
-		// owns the password + answers the same port).
-		if req.ServeConfig != "" {
-			port, pw, serr := d.startServe(name, req)
-			if serr != nil {
-				// Fail fast: the one-shot degradation was removed. A serve
-				// that cannot come up is a hard dispatch error — the adapter
-				// surfaces it as failed_to_start → workflow recovery. The
-				// container stays up so the watchdog / a later retry can
-				// converge the serve.
-				return nil, fmt.Errorf("start serve in runtime %s: %w", name, serr)
-			}
-			resp.ServePort = port
-			resp.ServePassword = pw
-			resp.ServeURL = fmt.Sprintf("http://%s:%d", d.containerIP(name), port)
-		}
-		return resp, nil
-	}
 	// A stopped/crashed container with this name blocks recreation
-	// ("name already in use"). Remove it first so an active run always
-	// gets a fresh runtime (leftover-container hygiene).
+	// ("name already in use"). Remove it first so the pool always gets a
+	// fresh runtime (leftover-container hygiene).
 	if exists, _ := d.containerExists(name); exists {
 		d.Log.Warn("removing stale runtime container", "name", name)
 		if out, err := d.docker("rm", "-f", name); err != nil {
@@ -399,8 +322,12 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 	if image == "" {
 		image = d.Image
 	}
+	workflowLabel := req.WorkflowID
+	if workflowLabel == "" {
+		workflowLabel = "pool"
+	}
 	args := []string{"run", "-d", "--name", name,
-		"--label", "orchicon.workflow=" + req.WorkflowID,
+		"--label", "orchicon.workflow=" + workflowLabel,
 		"--label", "orchicon.instance=" + instanceID(req.InstanceID),
 		"--user", fmt.Sprintf("%d:%d", d.UserID, d.GroupID),
 		"--cpus", d.CPUs,
@@ -726,21 +653,6 @@ func (d *Daemon) listRuntimes(instance string) ([]string, error) {
 	return names, nil
 }
 
-func (d *Daemon) handleKill(w http.ResponseWriter, id string) {
-	name := d.containerName(id)
-	out, err := d.docker("rm", "-f", name)
-	if err != nil {
-		// Not running / already removed / still settling is fine.
-		if strings.Contains(out, "No such container") || strings.Contains(out, "in progress") {
-			writeJSON(w, http.StatusOK, map[string]string{"status": "gone"})
-			return
-		}
-		httpError(w, http.StatusInternalServerError, "kill "+name+": "+err.Error()+" ("+strings.TrimSpace(out)+")")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
-}
-
 // pingRuntime runs a bounded readiness ping against the container's
 // supervisor socket via `orchicon runtime-client`. The client exits 0 on
 // success; a missing container/socket or timeout returns false.
@@ -770,6 +682,26 @@ func (d *Daemon) docker(args ...string) (string, error) {
 	cmd.Stderr = &buf
 	err := cmd.Run()
 	return buf.String(), err
+}
+
+// envInt parses an integer env var with a fallback (0 on invalid).
+func (d *Daemon) envInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+// envDuration parses a duration env var with a fallback (0 on invalid).
+func (d *Daemon) envDuration(key string) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if dur, err := time.ParseDuration(v); err == nil {
+			return dur
+		}
+	}
+	return 0
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

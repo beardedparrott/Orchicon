@@ -211,18 +211,14 @@ func (l *Lifecycle) ReapForRun(ctx context.Context, runID string) error {
 	return nil
 }
 
-// Adopt reconciles the daemon's runtime containers with the set of
-// active (pending/running/paused) workflow runs: it kills containers
-// whose run is no longer active (orphans — e.g. after a plane crash or a
-// run aborted while the plane was down) and ensures containers exist for
-// every active run. Called once at boot.
+// Adopt ensures a runtime lease exists for every active (pending/running)
+// workflow run at boot. The warm pool owns container lifecycle cleanup
+// (idle-reap + a wholesale reset at daemon start), so adopt only ensures
+// leases for active runs after a plane/daemon restart — the run-start gate
+// and the adapter's self-heal cover the rest.
 func (l *Lifecycle) Adopt(ctx context.Context) error {
 	if l.client == nil {
 		return nil
-	}
-	containers, err := l.client.List(ctx)
-	if err != nil {
-		return fmt.Errorf("adopt: list runtimes: %w", err)
 	}
 	ttx, err := l.pool.BeginTenantTx(ctx, devTenantID)
 	if err != nil {
@@ -232,20 +228,6 @@ func (l *Lifecycle) Adopt(ctx context.Context) error {
 	_ = ttx.Rollback(ctx)
 	if err != nil {
 		return fmt.Errorf("adopt: list runs: %w", err)
-	}
-
-	active := make(map[string]bool, len(runs))
-	for _, run := range runs {
-		active[run.ID] = true
-	}
-	for _, name := range containers {
-		id := strings.TrimPrefix(name, "orchicon-runtime-")
-		if !active[id] {
-			l.log.Warn("reaping orphan runtime container", "container", name)
-			if err := l.client.Kill(ctx, id); err != nil {
-				l.log.Warn("adopt: reap orphan failed", "container", name, "error", err)
-			}
-		}
 	}
 	for _, run := range runs {
 		if err := l.EnsureForRun(ctx, run); err != nil {
