@@ -133,7 +133,7 @@
           <div class="card">
             <h3>Single container + per-workflow runtime containers</h3>
             <p>The whole stack — Postgres, NATS, telemetry, control plane — runs in one container with <code>orchicon container</code> (PID-1 supervisor). Dev + prod as two containers, your data preserved.</p>
-            <p>Worker executions run in their own short-lived container per workflow run (<code>orchicon runtime-daemon</code> on the host), armed with a baked system toolchain and running as your user — no root, fully ephemeral, torn down at completion. The runtime adapter CLI (opencode) is never baked in: it's mounted from your own host install.</p>
+            <p>Worker executions run in an isolated container per workflow run, drawn from a warm pool (<code>orchicon runtime-daemon</code> on the host) so dispatch never cold-starts — and reset to pristine after each run so no state crosses boundaries. Running as your user — no root, fully ephemeral, torn down at completion. The runtime adapter CLI (opencode) is never baked in: it's mounted from your own host install.</p>
           </div>
         </div>
       </div>

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,8 +21,9 @@ import (
 
 // Daemon is the host-side runtime orchestrator. It is the ONLY process
 // with access to the Docker socket: it creates/kills runtime containers
-// and brokers execs into them. The control plane reaches it over a unix
-// socket mounted into the supervisor container (see client.go).
+// and warms/leases them through the warm pool. The control plane reaches
+// it over a unix socket mounted into the supervisor container (see
+// client.go).
 //
 // Every request is validated against a closed allowlist so the control
 // plane cannot use the daemon to create arbitrary containers, mount
@@ -35,29 +37,31 @@ type Daemon struct {
 	GroupID      int      // host gid
 	HostHome     string   // host user home, mounted as the container HOME
 	AllowedRoots []string // host prefixes a project mount may be under
-	// ExePath is the daemon's own executable, resolved at process start. It
-	// is bind-mounted read-only into every runtime container at
-	// /usr/local/bin/orchicon so the container can exec `orchicon
-	// runtime-supervisor` / `runtime-client` without the binary being baked
-	// into the image — a rebuilt daemon binary is picked up by every
-	// newly-created container with no image rebuild (the same "mount, never
-	// bake" pattern as the adapter CLIs).
+	// ExePath is the daemon's own executable, bind-mounted read-only into
+	// every runtime container at /usr/local/bin/orchicon so the container can
+	// exec `orchicon runtime-supervisor` / `runtime-client` without the
+	// binary being baked into the image — a rebuilt daemon binary is picked
+	// up by every newly-created container with no image rebuild (the same
+	// "mount, never bake" pattern as the adapter CLIs). The CLI copies the
+	// running binary to a STABLE path next to the socket at startup
+	// (cmd/orchicon/runtime.go copySelf), so dev hygiene that deletes the
+	// original (`make clean`) can never orphan the mount — the copy is what
+	// gets mounted.
 	ExePath      string
 	CPUs         string
 	Memory       string
 	TmpfsSize    string
-	// MaxAge is the hard backstop for leaked runtime containers: any
-	// orchicon-runtime-* container older than this is removed. The
-	// control plane's state-aware sweep is the primary cleanup (it knows
-	// which runs are active); this catches the plane-down / crashed case
-	// where a container would otherwise linger forever.
-	MaxAge time.Duration
-	// SweepInterval is how often the age-based orphan sweep runs.
+	// MaxAge / SweepInterval are retained for config compatibility; the
+	// warm pool's idle-reap now owns container cleanup (the pool is reset
+	// wholesale at daemon start, which covers the plane-down leak case).
+	MaxAge        time.Duration
 	SweepInterval time.Duration
 	Log           *slog.Logger
-	// createMu serializes createRuntime so concurrent Create calls for the
-	// same workflow (WorkflowReconciler.EnsureForRun + adapter self-heal)
-	// cannot race `docker run` on the same container name.
+	// pool leases/resets warm runtime containers (internal/runtime/pool.go).
+	pool *daemonPool
+	// createMu serializes createContainer so concurrent checkouts cannot
+	// race `docker run` on the same name (the pool names are unique, but
+	// serializing the docker create path keeps docker itself calm).
 	createMu sync.Mutex
 }
 
@@ -108,32 +112,9 @@ type CreateResponse struct {
 	ServeURL      string `json:"serve_url,omitempty"`
 }
 
-// ExecRequest is the body of POST /v1/runtimes/{id}/exec.
-type ExecRequest struct {
-	ExecID     string   `json:"exec_id"`
-	Argv       []string `json:"argv"`
-	Env        []string `json:"env"`
-	Cwd        string   `json:"cwd"`
-	ProjectDir string   `json:"project_dir"`
-	// ReconnectGraceSeconds is how long the supervisor keeps an orphaned
-	// child (no attached client) running before killing it, so the client
-	// can re-attach to a transiently broken stream. Zero = default (60).
-	ReconnectGraceSeconds int64 `json:"reconnect_grace_seconds,omitempty"`
-}
-
-// SignalRequest is the body of POST /v1/runtimes/{id}/signal.
-type SignalRequest struct {
-	ExecID string `json:"exec_id"`
-	Signal string `json:"signal"`
-}
-
 // ListResponse is returned by GET /v1/runtimes.
 type ListResponse struct {
 	Runtimes []string `json:"runtimes"`
-}
-
-func (d *Daemon) containerName(workflowID string) string {
-	return "orchicon-runtime-" + workflowID
 }
 
 // HTTP mux setup.
@@ -172,73 +153,25 @@ func (d *Daemon) ListenAndServe(ctx context.Context) error {
 		<-ctx.Done()
 		srv.Close()
 	}()
+	// Warm-pool lifecycle: leases are daemon-resident, so start from a
+	// clean slate (all runtime containers removed — covers plane-down
+	// leaks) then idle-reap clean containers periodically.
+	d.pool = newDaemonPool(d)
+	d.pool.resetPool()
+	go func() {
+		tick := time.NewTicker(5 * time.Minute)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+			}
+			d.pool.idleReap()
+		}
+	}()
 	d.Log.Info("runtime daemon listening", "socket", d.SocketPath)
-	// Age-based orphan sweep: removes leaked runtime containers whose
-	// run is long gone (plane down / crashed) but which no one reaped.
-	go d.sweepOrphans(ctx)
 	return srv.Serve(l)
-}
-
-// sweepOrphans periodically removes runtime containers older than MaxAge.
-// It is the hard backstop for leftover containers; the control plane's
-// state-aware adopt sweep is the primary (and faster) cleanup. The first
-// sweep runs immediately at daemon start so containers leaked by a crash
-// are reaped within seconds of the daemon coming back, not after the
-// first interval tick.
-func (d *Daemon) sweepOrphans(ctx context.Context) {
-	if d.MaxAge <= 0 {
-		return
-	}
-	interval := d.SweepInterval
-	if interval <= 0 {
-		interval = 5 * time.Minute
-	}
-	d.sweepOnce()
-	tick := time.NewTicker(interval)
-	defer tick.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-		}
-		d.sweepOnce()
-	}
-}
-
-func (d *Daemon) sweepOnce() {
-	names, err := d.listRuntimes("")
-	if err != nil {
-		d.Log.Warn("orphan sweep: list", "error", err)
-		return
-	}
-	for _, name := range names {
-		created, err := d.containerCreated(name)
-		if err != nil {
-			continue
-		}
-		if time.Since(created) <= d.MaxAge {
-			continue
-		}
-		d.Log.Warn("orphan sweep: removing aged runtime container", "name", name, "age", time.Since(created).Round(time.Minute).String())
-		if out, err := d.docker("rm", "-f", name); err != nil {
-			d.Log.Warn("orphan sweep: remove failed", "name", name, "error", err, "out", strings.TrimSpace(out))
-		}
-	}
-}
-
-// containerCreated returns the container's creation time (RFC3339 from
-// `docker inspect --format {{.Created}}`).
-func (d *Daemon) containerCreated(name string) (time.Time, error) {
-	out, err := d.docker("inspect", "--format", "{{.Created}}", name)
-	if err != nil {
-		return time.Time{}, err
-	}
-	t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(out))
-	if err != nil {
-		return time.Time{}, err
-	}
-	return t, nil
 }
 
 func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -247,8 +180,8 @@ func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // handleRuntimes implements the collection routes:
 //
-//	GET  /v1/runtimes            -> list active runtime containers (adopt)
-//	POST /v1/runtimes            -> create a runtime container
+//	GET  /v1/runtimes            -> list warm-pool containers
+//	POST /v1/runtimes            -> lease a warm container for a run
 func (d *Daemon) handleRuntimes(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -270,7 +203,7 @@ func (d *Daemon) handleRuntimes(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		resp, err := d.createRuntime(req)
+		resp, err := d.pool.checkout(r.Context(), req.WorkflowID, req)
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -283,9 +216,7 @@ func (d *Daemon) handleRuntimes(w http.ResponseWriter, r *http.Request) {
 
 // handleRuntime implements the per-runtime routes:
 //
-//	POST /v1/runtimes/{id}/exec   -> stream an exec into the runtime
-//	POST /v1/runtimes/{id}/signal -> signal a running exec
-//	DELETE /v1/runtimes/{id}      -> kill + remove the runtime container
+//	DELETE /v1/runtimes/{id}      -> release the run's lease (reset to the pool)
 func (d *Daemon) handleRuntime(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/runtimes/")
 	action := ""
@@ -298,19 +229,12 @@ func (d *Daemon) handleRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
-	case action == "exec" && r.Method == http.MethodPost:
-		d.handleExec(w, r, id)
-	case action == "signal" && r.Method == http.MethodPost:
-		d.handleSignal(w, r, id)
-	case strings.HasPrefix(action, "execs/") && r.Method == http.MethodGet:
-		execID := strings.TrimPrefix(action, "execs/")
-		if execID == "" || strings.Contains(execID, "/") {
-			httpError(w, http.StatusBadRequest, "bad exec id")
-			return
-		}
-		d.handleExecStatus(w, id, execID)
 	case action == "" && r.Method == http.MethodDelete:
-		d.handleKill(w, id)
+		// Release the run's lease: the container is removed and reset in the
+		// background back into the warm pool (pristine + serve warmed). A
+		// run with no lease (already released / never leased) is a no-op.
+		d.pool.release(id)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "released"})
 	default:
 		httpError(w, http.StatusNotFound, "not found")
 	}
@@ -377,46 +301,16 @@ func (d *Daemon) withinAllowedRoots(path string) bool {
 	return false
 }
 
-// createRuntime ensures a runtime container exists for the workflow and
-// returns its state. Idempotent: if it is already running, returns it.
-//
-// Container creation is serialized with createMu: the control plane calls
-// Create from BOTH the WorkflowReconciler (EnsureForRun when a run leaves
-// pending) and the adapter (self-heal before every exec), so two requests
-// for the same workflow can race `docker run` on the same name — one wins
-// and the other hits "name already in use", removes the winner's container
-// mid-setup, and the exec lands on a container that is being recreated.
-// The mutex makes createRuntime atomic per workflow.
-func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
-	name := d.containerName(req.WorkflowID)
+// createContainer creates a runtime container with the given pool-managed
+// name, warms its opencode serve (when ServeConfig is set), and returns its
+// state. Container creation is serialized with createMu so concurrent
+// checkouts/resets cannot race `docker run` on the same name.
+func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateResponse, error) {
 	d.createMu.Lock()
 	defer d.createMu.Unlock()
-	if running, _ := d.containerRunning(name); running {
-		resp := &CreateResponse{Name: name, Running: true}
-		// Converge the opencode serve on an already-running container: the
-		// WorkflowReconciler creates the container at run start WITHOUT a
-		// serve config, and the first dispatch (this Create with
-		// ServeConfig) brings the serve up. Idempotent (the supervisor
-		// owns the password + answers the same port).
-		if req.ServeConfig != "" {
-			port, pw, serr := d.startServe(name, req)
-			if serr != nil {
-				// Fail fast: the one-shot degradation was removed. A serve
-				// that cannot come up is a hard dispatch error — the adapter
-				// surfaces it as failed_to_start → workflow recovery. The
-				// container stays up so the watchdog / a later retry can
-				// converge the serve.
-				return nil, fmt.Errorf("start serve in runtime %s: %w", name, serr)
-			}
-			resp.ServePort = port
-			resp.ServePassword = pw
-			resp.ServeURL = fmt.Sprintf("http://%s:%d", d.containerIP(name), port)
-		}
-		return resp, nil
-	}
 	// A stopped/crashed container with this name blocks recreation
-	// ("name already in use"). Remove it first so an active run always
-	// gets a fresh runtime (leftover-container hygiene).
+	// ("name already in use"). Remove it first so the pool always gets a
+	// fresh runtime (leftover-container hygiene).
 	if exists, _ := d.containerExists(name); exists {
 		d.Log.Warn("removing stale runtime container", "name", name)
 		if out, err := d.docker("rm", "-f", name); err != nil {
@@ -428,8 +322,12 @@ func (d *Daemon) createRuntime(req CreateRequest) (*CreateResponse, error) {
 	if image == "" {
 		image = d.Image
 	}
+	workflowLabel := req.WorkflowID
+	if workflowLabel == "" {
+		workflowLabel = "pool"
+	}
 	args := []string{"run", "-d", "--name", name,
-		"--label", "orchicon.workflow=" + req.WorkflowID,
+		"--label", "orchicon.workflow=" + workflowLabel,
 		"--label", "orchicon.instance=" + instanceID(req.InstanceID),
 		"--user", fmt.Sprintf("%d:%d", d.UserID, d.GroupID),
 		"--cpus", d.CPUs,
@@ -648,7 +546,7 @@ func (d *Daemon) startServe(name string, req CreateRequest) (int, string, error)
 	// real session create round-trip — before handing it to the plane.
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		if d.serveUsable(cip, port, password) {
+		if serveUsableAt(fmt.Sprintf("http://%s:%d", cip, port), password) {
 			// Give the accept path a beat after the first success.
 			time.Sleep(500 * time.Millisecond)
 			return port, password, nil
@@ -658,12 +556,15 @@ func (d *Daemon) startServe(name string, req CreateRequest) (int, string, error)
 	return 0, "", fmt.Errorf("serve %s:%d did not become usable within 30s", cip, port)
 }
 
-// serveUsable verifies the container serve answers health AND can create a
-// session (a cold-starting serve answers health before it can handle real
-// requests). Returns true once usable.
-func (d *Daemon) serveUsable(cip string, port int, password string) bool {
+// serveUsableAt is the L1 serve-readiness probe (the workflow run-start
+// gate): the serve must answer /global/health AND accept a real
+// session-create round-trip. A cold-starting serve answers health before
+// its session machinery is up, so health alone is not "usable" for
+// dispatch. The probe session is left for the serve's own cleanup; the
+// plane's lifecycle gate uses the same probe via the same helper.
+func serveUsableAt(baseURL, password string) bool {
 	client := &http.Client{Timeout: 3 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s:%d/global/health", cip, port), nil)
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/global/health", nil)
 	if err != nil {
 		return false
 	}
@@ -679,7 +580,7 @@ func (d *Daemon) serveUsable(cip string, port int, password string) bool {
 	// The serve is healthy; confirm it can actually create a session (the
 	// cold-start window answers health before the session machinery is up).
 	body := `{"title":"orchicon-serve-probe"}`
-	cReq, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s:%d/session", cip, port), bytes.NewBufferString(body))
+	cReq, _ := http.NewRequest(http.MethodPost, baseURL+"/session", bytes.NewBufferString(body))
 	cReq.Header.Set("Content-Type", "application/json")
 	cReq.SetBasicAuth("opencode", password)
 	cResp, err := client.Do(cReq)
@@ -752,164 +653,6 @@ func (d *Daemon) listRuntimes(instance string) ([]string, error) {
 	return names, nil
 }
 
-// handleExec streams a dispatch into the runtime container: it pipes the
-// request JSON into `orchicon runtime-client` (via docker exec) and
-// relays the JSON-lines events to the HTTP response, flushing each line.
-func (d *Daemon) handleExec(w http.ResponseWriter, r *http.Request, id string) {
-	name := d.containerName(id)
-	var req ExecRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpError(w, http.StatusBadRequest, "bad request: "+err.Error())
-		return
-	}
-	if err := validateExec(req); err != nil {
-		httpError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	reqJSON, err := json.Marshal(AgentRequest{
-		Cmd:                   "exec",
-		ExecID:                req.ExecID,
-		Argv:                  req.Argv,
-		Env:                   req.Env,
-		Cwd:                   req.Cwd,
-		ProjectDir:            req.ProjectDir,
-		ReconnectGraceSeconds: req.ReconnectGraceSeconds,
-	})
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	cmd := exec.Command(d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
-	cmd.Stdin = bytes.NewReader(reqJSON)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if err := cmd.Start(); err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	defer cmd.Wait()
-
-	// When the control plane's request ends (client cancel, plane shutdown,
-	// or a transient transport break), close the docker-exec CLI. We do NOT
-	// SIGKILL the opencode child here: a transient break must not kill a
-	// healthy execution. Closing the docker-exec makes the supervisor see
-	// the disconnect; it keeps the child running for the reconnect grace
-	// (so the client can re-attach) and kills it only if nothing re-attaches
-	// within that window. Explicit termination (wall-clock deadline, abort,
-	// plane shutdown) signals the child directly via the signal endpoint.
-	go func() {
-		<-r.Context().Done()
-		d.Log.Info("runtime exec request ended — disconnecting stream", "runtime", name, "exec", req.ExecID)
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-	}()
-
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	enc := json.NewEncoder(w)
-	dec := json.NewDecoder(stdout)
-	for {
-		var ev AgentEvent
-		if err := dec.Decode(&ev); err != nil {
-			break
-		}
-		_ = enc.Encode(ev)
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-		if ev.Event == "exit" || ev.Event == "error" {
-			break
-		}
-	}
-}
-
-func (d *Daemon) handleSignal(w http.ResponseWriter, r *http.Request, id string) {
-	name := d.containerName(id)
-	var req SignalRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpError(w, http.StatusBadRequest, "bad request: "+err.Error())
-		return
-	}
-	reqJSON, err := json.Marshal(AgentRequest{Cmd: "signal", ExecID: req.ExecID, Signal: req.Signal})
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	cmd := exec.Command(d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
-	cmd.Stdin = bytes.NewReader(reqJSON)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "signal exec: "+err.Error()+" ("+strings.TrimSpace(string(out))+")")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-// handleExecStatus reports whether an exec is still running inside a
-// runtime container (the execution-liveness reaper's query).
-//
-// The answer must distinguish three cases so the reaper never kills a
-// healthy execution on a transient blip:
-//   - container missing       -> alive:false, container:false (definitive dead)
-//   - supervisor answers      -> alive:<its verdict>          (definitive)
-//   - the probe itself failed -> unknown:true                 (UNDETERMINABLE)
-//
-// The old code swallowed the docker-exec error and defaulted to
-// alive:false, so a transient docker/socket hiccup made a running exec
-// look dead and the single-probe reaper reaped it.
-func (d *Daemon) handleExecStatus(w http.ResponseWriter, id, execID string) {
-	name := d.containerName(id)
-	if running, err := d.containerRunning(name); err != nil || !running {
-		writeJSON(w, http.StatusOK, map[string]bool{"alive": false, "container": false})
-		return
-	}
-	reqJSON, err := json.Marshal(AgentRequest{Cmd: "status", ExecID: execID})
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]bool{"alive": false, "container": true})
-		return
-	}
-	cmd := exec.Command(d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
-	cmd.Stdin = bytes.NewReader(reqJSON)
-	out, perr := cmd.Output()
-	if perr != nil {
-		// Probe failed (docker exec hiccup, supervisor socket momentarily
-		// unavailable) — not a definitive "dead". Report undeterminable so
-		// the reaper skips instead of reaping a healthy execution.
-		writeJSON(w, http.StatusOK, map[string]any{"alive": false, "container": true, "unknown": true})
-		return
-	}
-	sc := bufio.NewScanner(bytes.NewReader(out))
-	for sc.Scan() {
-		var ev AgentEvent
-		if json.Unmarshal(sc.Bytes(), &ev) == nil && ev.Event == "status" {
-			writeJSON(w, http.StatusOK, map[string]bool{"alive": ev.Alive, "container": true})
-			return
-		}
-	}
-	// The supervisor didn't answer the status query — undeterminable.
-	writeJSON(w, http.StatusOK, map[string]any{"alive": false, "container": true, "unknown": true})
-}
-
-func (d *Daemon) handleKill(w http.ResponseWriter, id string) {
-	name := d.containerName(id)
-	out, err := d.docker("rm", "-f", name)
-	if err != nil {
-		// Not running / already removed / still settling is fine.
-		if strings.Contains(out, "No such container") || strings.Contains(out, "in progress") {
-			writeJSON(w, http.StatusOK, map[string]string{"status": "gone"})
-			return
-		}
-		httpError(w, http.StatusInternalServerError, "kill "+name+": "+err.Error()+" ("+strings.TrimSpace(out)+")")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
-}
-
 // pingRuntime runs a bounded readiness ping against the container's
 // supervisor socket via `orchicon runtime-client`. The client exits 0 on
 // success; a missing container/socket or timeout returns false.
@@ -932,19 +675,6 @@ func (d *Daemon) pingRuntime(name string) bool {
 }
 
 // validateExec enforces the daemon's argv allowlist.
-func validateExec(req ExecRequest) error {
-	if len(req.Argv) == 0 {
-		return fmt.Errorf("argv required")
-	}
-	base := filepath.Base(req.Argv[0])
-	switch base {
-	case "opencode", "orchicon", "bash", "sh":
-	default:
-		return fmt.Errorf("argv[0] not allowed: %s", base)
-	}
-	return nil
-}
-
 func (d *Daemon) docker(args ...string) (string, error) {
 	cmd := exec.Command(d.DockerBin, args...)
 	var buf bytes.Buffer
@@ -954,22 +684,24 @@ func (d *Daemon) docker(args ...string) (string, error) {
 	return buf.String(), err
 }
 
-// signalRuntimeExec sends a signal to a running exec inside a runtime
-// container via `orchicon runtime-client` (bounded; best-effort).
-func (d *Daemon) signalRuntimeExec(name, execID, sig string) error {
-	reqJSON, err := json.Marshal(AgentRequest{Cmd: "signal", ExecID: execID, Signal: sig})
-	if err != nil {
-		return err
+// envInt parses an integer env var with a fallback (0 on invalid).
+func (d *Daemon) envInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
-	cmd.Stdin = bytes.NewReader(reqJSON)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("signal %s exec %s: %v (%s)", name, execID, err, strings.TrimSpace(string(out)))
+	return fallback
+}
+
+// envDuration parses a duration env var with a fallback (0 on invalid).
+func (d *Daemon) envDuration(key string) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if dur, err := time.ParseDuration(v); err == nil {
+			return dur
+		}
 	}
-	return nil
+	return 0
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

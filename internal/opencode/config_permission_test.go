@@ -47,9 +47,21 @@ func TestBuildConfigContentInjectPermissionDeny(t *testing.T) {
 		t.Fatalf("expected bash rules in permission block, got %#v", perm["bash"])
 	}
 
-	for _, rule := range []string{"rm", "rm *", "rm -rf *", "rm -rf /", "rm -rf /*", "rm -fr /", "sudo", "sudo *", "(*rm*", "{*rm*", "mkfs*", "fdisk*", "shred *", "dd * of=/dev/*", "chmod -R 777 /*", "chown -R * /*", "curl * | sh"} {
+	// The destructive-class rm targets stay denied (/, system paths, ~,
+	// $HOME, current-dir wipes). In-project cleanup (`rm -rf build/`) is NOT
+	// denied — the execution guard is the precise backstop for the project
+	// boundary.
+	for _, rule := range []string{"rm -rf /", "rm -rf /*", "rm -fr /", "rm -rf /home/*", "rm -rf /root/*", "rm -rf /etc/*", "rm -rf /usr/*", "rm -rf /var/*", "rm -rf /bin/*", "rm -rf /boot/*", "rm -rf ~", "rm -rf ~/*", "rm -rf $HOME", "rm -rf ${HOME}/*", "rm --no-preserve-root *", "/bin/rm *", "/usr/bin/rm *", "rm -rf . /", "rm -rf . ..", "sudo", "sudo *", "(*rm*", "{*rm*", "mkfs*", "fdisk*", "shred *", "dd * of=/dev/*", "chmod -R 777 /*", "chown -R * /*", "curl * | sh"} {
 		if got, ok := bash[rule].(string); !ok || got != "deny" {
 			t.Errorf("bash rule %q = %#v, want %q", rule, bash[rule], "deny")
+		}
+	}
+	// The catch-all rm denials are GONE — legitimate in-project cleanup must
+	// not be blocked at the permission layer (the guard enforces the project
+	// boundary precisely).
+	for _, rule := range []string{"rm", "rm *", "rm -rf *", "rm -fr *", "rm -f *", "rm -Rf *", "rm -fR *", "rm -frr *"} {
+		if _, ok := bash[rule]; ok {
+			t.Errorf("bash rule %q must NOT be denied (in-project cleanup is legitimate)", rule)
 		}
 	}
 }

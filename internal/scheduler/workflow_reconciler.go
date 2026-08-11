@@ -44,6 +44,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
@@ -70,14 +71,27 @@ type WorkflowReconciler struct {
 	// (architecture-notes/sequential-multi-workflow-runs.md §2.2).
 	// Optional — the scan pass is the safety net.
 	sequenceNotifier func(ctx context.Context, parentID string)
+
+	// warming tracks workflow runs whose runtime-serve readiness probe is
+	// in flight (the async ensure-serving pass). Guards against spawning a
+	// duplicate probe goroutine per run; a plane restart clears it and the
+	// next reconcile pass re-triggers the (idempotent) probe.
+	warmingMu sync.Mutex
+	warming   map[string]bool
 }
 
-// RuntimeLifecycle creates/reaps the per-workflow runtime container.
-// Implemented by runtime.Lifecycle; declared here to keep the reconciler
-// decoupled. A nil implementation disables runtime containers (headless
-// `orchicon serve`).
+// RuntimeLifecycle creates/reaps the per-workflow runtime container and
+// proves its opencode serve usable before a run dispatches. Implemented by
+// runtime.Lifecycle; declared here to keep the reconciler decoupled. A nil
+// implementation disables runtime containers (headless `orchicon serve`).
 type RuntimeLifecycle interface {
 	EnsureForRun(ctx context.Context, run db.WorkflowRunRow) error
+	// EnsureServing ensures the run's runtime container exists with its
+	// opencode serve brought up, then blocks until the serve is PROVEN
+	// usable (L1: health + a real session-create round-trip). The
+	// reconciler must not dispatch an execution for the run until it
+	// returns nil.
+	EnsureServing(ctx context.Context, run db.WorkflowRunRow) error
 	ReapForRun(ctx context.Context, runID string) error
 }
 
@@ -104,7 +118,7 @@ func (r *WorkflowReconciler) runtimeEnabled() bool {
 // runtime is the per-workflow runtime container lifecycle; nil disables
 // runtime containers.
 func NewWorkflowReconciler(pool *db.Pool, log *slog.Logger, pe PolicyEvaluator, td TaskDispatcher, rt RecoveryTrigger, rl RuntimeLifecycle) *WorkflowReconciler {
-	return &WorkflowReconciler{pool: pool, log: log, policy: pe, taskDispatcher: td, recovery: rt, runtime: rl}
+	return &WorkflowReconciler{pool: pool, log: log, policy: pe, taskDispatcher: td, recovery: rt, runtime: rl, warming: make(map[string]bool)}
 }
 
 // SetSequenceNotifier injects the callback that advances a sequence parent
@@ -185,22 +199,18 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		return nil
 	}
 
-	// Runtime-container side effects are deferred until after the DB
-	// transaction commits: creating/reaping a container is not part of
-	// run state, and a failed container operation must not roll back run
-	// progress.
-	ensureRuntime := false
+	// Reaping a terminal run's runtime container is deferred until after
+	// the DB transaction commits: the container is not part of run state,
+	// and a failed container operation must not roll back run progress.
+	// (Container CREATION for a started run is now owned entirely by the
+	// async ensure-serving pass — the run-start serve gate — so it is not
+	// deferred here.)
 	reapRuntime := false
 	defer func() {
 		if !r.runtimeEnabled() {
 			return
 		}
 		bg := context.Background()
-		if ensureRuntime && !reapRuntime {
-			if err := r.runtime.EnsureForRun(bg, run); err != nil {
-				r.log.Warn("ensure workflow runtime failed", "run", run.ID, "error", err)
-			}
-		}
 		if reapRuntime {
 			if err := r.runtime.ReapForRun(bg, run.ID); err != nil {
 				r.log.Warn("reap workflow runtime failed", "run", run.ID, "error", err)
@@ -286,15 +296,49 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		updated, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
 			Status:       strPtr(domain.WorkflowRunRunning),
 			RuntimeImage: &resolved,
+			// The runtime-serve readiness gate: false when a runtime daemon
+			// is wired (the async ensure-serving pass proves the serve and
+			// flips it true), true for headless serve (no container — the
+			// host serve is always-on).
+			RuntimeReady: boolPtr(!r.runtimeEnabled()),
 		})
 		if err != nil {
 			return fmt.Errorf("transition run to running: %w", err)
 		}
 		run = updated
-		ensureRuntime = true
 		if err := r.enqueueRunEvent(ctx, ttx.Tx, domain.WorkflowEventRunStarted, run, ""); err != nil {
 			return fmt.Errorf("enqueue run_started: %w", err)
 		}
+	}
+
+	// Runtime-serve readiness gate: no execution may start for a run until
+	// its runtime container's opencode serve is PROVEN usable. The async
+	// ensure-serving pass (startEnsureServing) flips runtime_ready=true;
+	// while it is false, DAG progression is HELD so neither the inline
+	// DispatchTask nor the TaskReconciler scan can create an execution.
+	// This converts the old dispatch-time race (a cold-starting serve
+	// failing the first execution's 30s window) into a deterministic
+	// run-start check.
+	if run.Status == domain.WorkflowRunRunning && !run.RuntimeReady {
+		if r.runtimeEnabled() {
+			r.startEnsureServing(run)
+			// Commit the transition (the deferred rollback would undo it on
+			// the early return) and hold progression until the probe flips
+			// the gate.
+			if cerr := ttx.Commit(ctx); cerr != nil {
+				return fmt.Errorf("commit run start (warming runtime): %w", cerr)
+			}
+			return nil
+		}
+		// No runtime configured (headless): the gate is moot — flip it so
+		// progression proceeds immediately. Covers runs created before the
+		// runtime_ready migration (default false).
+		if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
+			RuntimeReady: boolPtr(true),
+		}); err != nil {
+			return fmt.Errorf("clear runtime gate (headless): %w", err)
+		}
+		run.RuntimeReady = true
 	}
 
 	// stepRuns + runByID are built inside the outer-progress loop so
@@ -916,6 +960,99 @@ func (r *WorkflowReconciler) failRunAtStart(ctx context.Context, tx pgx.Tx, tena
 	}
 	_ = r.enqueueRunEvent(ctx, tx, domain.WorkflowEventRunFailed, run, reason)
 	return nil
+}
+
+// startEnsureServing kicks off the ASYNC runtime-serve readiness probe for
+// a run (idempotent — one goroutine per run; the in-flight map clears when
+// it finishes). On success it flips the run's runtime_ready gate so the
+// next reconcile pass progresses the DAG; on failure it fails the run at
+// start with the serve error. A plane restart clears the map and the next
+// reconcile pass re-triggers the (idempotent) probe.
+func (r *WorkflowReconciler) startEnsureServing(run db.WorkflowRunRow) {
+	r.warmingMu.Lock()
+	if r.warming[run.ID] {
+		r.warmingMu.Unlock()
+		return
+	}
+	r.warming[run.ID] = true
+	r.warmingMu.Unlock()
+
+	go func() {
+		defer func() {
+			r.warmingMu.Lock()
+			delete(r.warming, run.ID)
+			r.warmingMu.Unlock()
+		}()
+		bg := context.Background()
+		if err := r.runtime.EnsureServing(bg, run); err != nil {
+			r.log.Error("workflow runtime serve failed to become usable — failing run", "run", run.ID, "error", err)
+			r.failRunServeGate(bg, run, err)
+			return
+		}
+		if err := r.markRuntimeReady(bg, run); err != nil {
+			r.log.Warn("mark workflow runtime ready failed", "run", run.ID, "error", err)
+		}
+	}()
+}
+
+// markRuntimeReady flips the run's runtime_ready gate to true (its serve
+// passed the L1 probe). No-op if the run terminalized while warming.
+func (r *WorkflowReconciler) markRuntimeReady(ctx context.Context, run db.WorkflowRunRow) error {
+	ttx, err := r.pool.BeginTenantTx(ctx, run.TenantID)
+	if err != nil {
+		return err
+	}
+	defer ttx.Rollback(ctx)
+	cur, err := db.GetWorkflowRun(ctx, ttx.Tx, run.TenantID, run.ID)
+	if err != nil {
+		return err
+	}
+	if cur.Status != domain.WorkflowRunRunning {
+		return nil // run terminalized while warming — nothing to gate
+	}
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, run.TenantID, run.ID, cur.Version, db.UpdateWorkflowRunFields{
+		RuntimeReady: boolPtr(true),
+	}); err != nil {
+		return err
+	}
+	return ttx.Commit(ctx)
+}
+
+// failRunServeGate fails a run whose runtime serve could not be proven
+// usable within the readiness window. Same fail-at-start treatment as the
+// other structural run-start failures (unresolvable image, empty DAG) — a
+// serve that cannot come up is a config/infra error, not a recoverable
+// execution failure, and without this the gate would hold the run warming
+// forever. The run's container (if any) is reaped.
+func (r *WorkflowReconciler) failRunServeGate(ctx context.Context, run db.WorkflowRunRow, serveErr error) {
+	reason := fmt.Sprintf("runtime opencode serve failed to become usable: %v", serveErr)
+	ttx, err := r.pool.BeginTenantTx(ctx, run.TenantID)
+	if err != nil {
+		r.log.Error("fail run serve gate: begin tx", "run", run.ID, "error", err)
+		return
+	}
+	defer ttx.Rollback(ctx)
+	cur, err := db.GetWorkflowRun(ctx, ttx.Tx, run.TenantID, run.ID)
+	if err != nil {
+		r.log.Error("fail run serve gate: get run", "run", run.ID, "error", err)
+		return
+	}
+	if cur.Status != domain.WorkflowRunRunning {
+		return // already terminal — nothing to fail
+	}
+	if err := r.failRunAtStart(ctx, ttx.Tx, run.TenantID, cur, reason); err != nil {
+		r.log.Error("fail run serve gate", "run", run.ID, "error", err)
+		return
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		r.log.Error("fail run serve gate: commit", "run", run.ID, "error", err)
+		return
+	}
+	if r.runtime != nil {
+		if err := r.runtime.ReapForRun(context.Background(), run.ID); err != nil {
+			r.log.Warn("reap failed run runtime", "run", run.ID, "error", err)
+		}
+	}
 }
 
 // buildRunNarrative aggregates the run's step results + recovery episodes

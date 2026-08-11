@@ -21,7 +21,7 @@ func TestRunServeLivenessGate(t *testing.T) {
 	// Register a serve session whose process is dead (nothing listens on
 	// the default port, so serveHealthy fails).
 	h.mu.Lock()
-	h.cmd[serveExecID] = newExecSession(serveExecID, 0)
+	h.cmd[serveExecID] = newExecSession(serveExecID)
 	h.servePw = "dead-serve-password"
 	h.serveStarted = true
 	h.mu.Unlock()

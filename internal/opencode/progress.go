@@ -104,9 +104,9 @@ func stallWindowsFromManifest(m scheduler.ExecutionManifest) stallWindows {
 }
 
 // progressMonitor tracks per-execution progress signals and detects stalls.
-// It is fed events from parseStdoutLine and runs a background ticker that
-// checks the stall windows. Thread-safe (the stdout reader + the ticker
-// goroutine both touch it).
+// It is fed events from parseEvent (the session-transport bus mapping) and
+// runs a background ticker that checks the stall windows. Thread-safe (the
+// event goroutine + the ticker both touch it).
 type progressMonitor struct {
 	mu sync.Mutex
 
@@ -160,8 +160,8 @@ func newProgressMonitor(execID string, w stallWindows) *progressMonitor {
 	return m
 }
 
-// observe feeds a parsed stdout event into the monitor. Called from the
-// stdout reader goroutine (parseStdoutLine). eventType matches opencode's
+// observe feeds a parsed event into the monitor. Called from the session
+// transport's event dispatch (parseEvent). eventType matches opencode's
 // `--format json` event types (docs/04 §6.1).
 func (m *progressMonitor) observe(eventType string, part map[string]any) {
 	m.mu.Lock()

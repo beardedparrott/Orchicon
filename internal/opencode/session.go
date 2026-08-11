@@ -109,6 +109,23 @@ func (c *SessionClient) Healthy(ctx context.Context) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
+// ProbeUsable is the L1 serve-readiness probe (the workflow run-start gate):
+// the serve must answer /global/health AND accept a real session-create
+// round-trip. A cold-starting serve answers health before its session
+// machinery is up, so health alone is not "usable" for dispatch. The probe
+// session is aborted after creation so no probe residue accumulates.
+func (c *SessionClient) ProbeUsable(ctx context.Context) error {
+	if !c.Healthy(ctx) {
+		return fmt.Errorf("opencode serve not healthy (%s)", c.baseURL)
+	}
+	sid, err := c.CreateSession(ctx, "orchicon-serving-probe")
+	if err != nil {
+		return fmt.Errorf("opencode serve session create failed: %w", err)
+	}
+	_ = c.Abort(ctx, sid)
+	return nil
+}
+
 // CreateSession creates a session on the serve, scoped to the client's
 // directory. The permission ruleset mirrors `opencode run`'s non-interactive
 // mode: the agent may never ask for permission or enter/exit plan mode, so

@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -25,29 +24,27 @@ import (
 // AgentRequest is a single dispatch from the daemon to the in-container
 // supervisor. It travels as one JSON document over the supervisor's unix
 // socket (written by `orchicon runtime-client`, which the daemon reaches
-// via `docker exec`).
+// via `docker exec`). The only commands left after the one-shot exec
+// transport was removed are "ping" (readiness) and "serve" (the container's
+// opencode serve handshake).
 type AgentRequest struct {
-	Cmd        string   `json:"cmd"` // "exec" | "signal" | "ping"
-	ExecID     string   `json:"exec_id,omitempty"`
+	Cmd        string   `json:"cmd"` // "ping" | "serve"
 	Argv       []string `json:"argv,omitempty"`
 	Env        []string `json:"env,omitempty"`
 	Cwd        string   `json:"cwd,omitempty"`
 	ProjectDir string   `json:"project_dir,omitempty"`
-	Signal     string   `json:"signal,omitempty"` // e.g. "SIGTERM"
-	// ReconnectGraceSeconds is how long a disconnected exec session's child
-	// is kept running (waiting for a re-attach) before being killed.
-	ReconnectGraceSeconds int64 `json:"reconnect_grace_seconds,omitempty"`
 }
 
-// AgentEvent is one JSON-lines record streamed back for an exec: either a
-// {stream,data} chunk of child output, or the final {event:"exit"} marker.
+// AgentEvent is one JSON-lines record the supervisor or the image-build
+// path streams back: the {event:"serve", port, password} handshake answer,
+// an {event:"error"} for a failed bring-up, {pong:true} for a ping, or a
+// {stream,data} chunk of `docker build` output (Runtime Image Deploy).
 type AgentEvent struct {
-	Stream   string `json:"stream,omitempty"` // "stdout" | "stderr"
+	Stream   string `json:"stream,omitempty"` // "stdout" | "stderr" (docker build relay)
 	Data     string `json:"data,omitempty"`
-	Event    string `json:"event,omitempty"` // "exit" | "error" | "status" | "serve"
+	Event    string `json:"event,omitempty"` // "error" | "exit" | "serve"
 	ExitCode int    `json:"exit_code,omitempty"`
 	Error    string `json:"error,omitempty"`
-	Alive    bool   `json:"alive,omitempty"`
 	Pong     bool   `json:"pong,omitempty"`
 	Port     int    `json:"port,omitempty"`     // serve cmd: the container-internal serve port
 	Password string `json:"password,omitempty"` // serve cmd: the container's serve password
@@ -71,13 +68,8 @@ var runtimeBinAllowlist = map[string]bool{
 	"sh":       true,
 }
 
-// defaultReconnectGrace is how long a disconnected exec session's child is
-// kept running (waiting for the client to re-attach) before being killed.
-// Overridable per-exec via AgentRequest.ReconnectGraceSeconds.
-const defaultReconnectGrace = 60 * time.Second
-
 // RunSupervisor runs the in-container dispatch loop as PID 1. It accepts
-// exec/signal/ping requests on socketPath and runs each exec as a child
+// ping/serve requests on socketPath and runs each as a child
 // process, streaming stdout/stderr and tracking children by exec_id so a
 // later signal request can target one.
 func RunSupervisor(socketPath string, log *slog.Logger) error {
@@ -129,41 +121,29 @@ func RunSupervisor(socketPath string, log *slog.Logger) error {
 	}
 }
 
-// execSession is one running child plus its attached clients. A session
-// survives a client disconnect: the child keeps running for a reconnect
-// grace, so a transient transport blip can re-attach instead of killing
-// the execution. On grace expiry (no client re-attached — the plane is
-// really gone) the child is killed. A DETACHED session (the opencode
-// serve for the container) has no clients and no grace: it lives until
-// explicitly signalled or the container tears down.
+// execSession is one running child. After the one-shot exec transport was
+// removed, the only child the supervisor tracks is the container's opencode
+// serve (a DETACHED process: no attached clients, no reconnect grace — it
+// lives until explicitly killed or the container tears down). It keeps the
+// terminal state so a later signal/kill can target it and so the serve
+// watchdog can restart a wedged process.
 type execSession struct {
 	id       string
 	cmd      *exec.Cmd
-	stdout   io.ReadCloser
-	stderr   io.ReadCloser
 	guardDir string
 	detached bool
 
 	mu       sync.Mutex
-	clients  map[net.Conn]*json.Encoder
 	exited   bool
 	exitCode int
 	exitErr  error
 	done     chan struct{}
-	grace    *time.Timer
-	graceDur time.Duration
-	// writeMu serializes writes to the attached clients (two broadcast
-	// goroutines + the exit broadcast) so a conn is never written
-	// concurrently.
-	writeMu sync.Mutex
 }
 
-func newExecSession(id string, graceDur time.Duration) *execSession {
+func newExecSession(id string) *execSession {
 	return &execSession{
-		id:       id,
-		clients:  make(map[net.Conn]*json.Encoder),
-		done:     make(chan struct{}),
-		graceDur: graceDur,
+		id:   id,
+		done: make(chan struct{}),
 	}
 }
 
@@ -210,112 +190,11 @@ func (h *childRegistry) serve(conn net.Conn) {
 	switch req.Cmd {
 	case "ping":
 		_ = enc.Encode(AgentEvent{Pong: true})
-	case "exec":
-		h.runExec(conn, enc, req)
 	case "serve":
 		h.runServe(enc, req)
-	case "signal":
-		h.signal(enc, req)
-	case "status":
-		h.status(enc, req)
 	default:
 		_ = enc.Encode(AgentEvent{Event: "error", Error: "unknown cmd: " + req.Cmd})
 	}
-}
-
-func (h *childRegistry) runExec(conn net.Conn, enc *json.Encoder, req AgentRequest) {
-	if len(req.Argv) == 0 || req.Argv[0] == "" {
-		_ = enc.Encode(AgentEvent{Event: "error", Error: "empty argv"})
-		return
-	}
-	// Safety: the supervisor only ever runs a closed set of entry points
-	// (adapter CLI runs and in-container tooling). The daemon already
-	// enforces this, but belt-and-suspenders here too. The adapter CLIs
-	// (opencode; claude/codex when their adapters land) are mounted in at
-	// runtime by the daemon, never baked into the image.
-	base := filepath.Base(req.Argv[0])
-	if !runtimeBinAllowlist[base] {
-		_ = enc.Encode(AgentEvent{Event: "error", Error: "argv[0] not allowlisted: " + base})
-		return
-	}
-
-	// Re-attach: if the exec is already running (the client reconnected
-	// after a transport blip), do NOT start a second child — attach this
-	// connection to the existing session.
-	h.mu.Lock()
-	existing, ok := h.cmd[req.ExecID]
-	h.mu.Unlock()
-	if ok {
-		existing.attach(conn, enc)
-		return
-	}
-
-	graceDur := defaultReconnectGrace
-	if req.ReconnectGraceSeconds > 0 {
-		graceDur = time.Duration(req.ReconnectGraceSeconds) * time.Second
-	}
-	s := newExecSession(req.ExecID, graceDur)
-
-	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
-	if req.Cwd != "" {
-		cmd.Dir = req.Cwd
-	}
-	cmd.Env = agentEnv(req)
-	cmd.Stdin = nil // non-interactive; opencode runs with --auto
-
-	// OpenCode data isolation: give the worker an ephemeral XDG data dir
-	// seeded with the model auth read from the READ-ONLY host mount. The
-	// worker's opencode sessions/keys/telemetry then land in the
-	// ephemeral filesystem (wiped at container teardown) instead of the
-	// host's real ~/.local/share/opencode.
-	cmd.Env = isolateOpenCodeData(cmd.Env)
-
-	// Build the execution guard shim inside the container so every child
-	// the worker spawns resolves rm/sudo/dd/etc. through the shim.
-	guardDir, guardErr := guard.MakeGuard("/tmp", req.ProjectDir)
-	if guardErr != nil {
-		h.log.Warn("supervisor: guard not applied", "error", guardErr, "exec", req.ExecID)
-	} else {
-		cmd.Env = prependGuard(cmd.Env, guardDir)
-		s.guardDir = guardDir
-		h.log.Debug("supervisor: guard applied", "dir", guardDir, "path", envPath(cmd.Env), "exec", req.ExecID)
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		_ = enc.Encode(AgentEvent{Event: "error", Error: err.Error()})
-		return
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		_ = enc.Encode(AgentEvent{Event: "error", Error: err.Error()})
-		return
-	}
-	s.cmd, s.stdout, s.stderr = cmd, stdout, stderr
-
-	if err := cmd.Start(); err != nil {
-		_ = enc.Encode(AgentEvent{Event: "error", Error: err.Error()})
-		return
-	}
-
-	h.mu.Lock()
-	// A concurrent re-attach may have registered the same exec_id first
-	// (client retried while this create was in flight). Kill the duplicate
-	// child and attach to the registered session.
-	if dup, registered := h.cmd[req.ExecID]; registered {
-		h.mu.Unlock()
-		_ = cmd.Process.Kill()
-		h.cleanupSession(s)
-		dup.attach(conn, enc)
-		return
-	}
-	h.cmd[req.ExecID] = s
-	h.mu.Unlock()
-
-	go h.watchExec(s)
-	go s.broadcastStream("stdout", s.stdout)
-	go s.broadcastStream("stderr", s.stderr)
-	s.attach(conn, enc)
 }
 
 // serveExecID is the reserved exec id for the container's opencode serve.
@@ -394,7 +273,7 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 		return
 	}
 
-	s := newExecSession(serveExecID, 0)
+	s := newExecSession(serveExecID)
 	s.detached = true
 
 	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
@@ -552,7 +431,7 @@ func (h *childRegistry) startServeAgain(req AgentRequest) error {
 	}
 	h.mu.Unlock()
 
-	s := newExecSession(serveExecID, 0)
+	s := newExecSession(serveExecID)
 	s.detached = true
 
 	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
@@ -637,16 +516,14 @@ func serveHealthy(port int, password string) bool {
 }
 
 // watchExec waits for the child to exit, records the terminal state, and
-// broadcasts the exit event to every attached client.
+// closes the session. The serve has no attached clients (it is detached),
+// so there is nothing to broadcast to — the terminal state is what a
+// later liveness-gated runServe / the watchdog uses to decide a restart.
 func (h *childRegistry) watchExec(s *execSession) {
 	waitErr := s.cmd.Wait()
 	code := 1
 	if s.cmd.ProcessState != nil {
 		code = s.cmd.ProcessState.ExitCode()
-	}
-	ev := AgentEvent{Event: "exit", ExitCode: code}
-	if waitErr != nil && !errors.Is(waitErr, io.EOF) {
-		ev.Error = waitErr.Error()
 	}
 	s.mu.Lock()
 	s.exited = true
@@ -654,13 +531,6 @@ func (h *childRegistry) watchExec(s *execSession) {
 	if waitErr != nil && !errors.Is(waitErr, io.EOF) {
 		s.exitErr = waitErr
 	}
-	s.cancelGrace()
-	s.writeMu.Lock()
-	for _, enc := range s.clients {
-		_ = enc.Encode(ev)
-	}
-	s.clients = map[net.Conn]*json.Encoder{}
-	s.writeMu.Unlock()
 	s.mu.Unlock()
 	close(s.done)
 	// Only unregister if this session is STILL the registered one. A wedged
@@ -681,93 +551,6 @@ func (h *childRegistry) cleanupSession(s *execSession) {
 	}
 }
 
-// attach registers a client with the session. The session's broadcast
-// goroutines fan output out to every attached client; this call just adds
-// the client, watches for its disconnect (starting the reconnect grace if
-// it was the last), and blocks until the exec completes.
-func (s *execSession) attach(conn net.Conn, enc *json.Encoder) {
-	s.mu.Lock()
-	if s.exited {
-		// The exec already finished — report its final state immediately.
-		ev := AgentEvent{Event: "exit", ExitCode: s.exitCode}
-		if s.exitErr != nil {
-			ev.Error = s.exitErr.Error()
-		}
-		s.mu.Unlock()
-		_ = enc.Encode(ev)
-		return
-	}
-	s.clients[conn] = enc
-	s.cancelGrace()
-	s.mu.Unlock()
-
-	go s.watchClient(conn)
-	<-s.done
-}
-
-// watchClient reads a client connection until it closes (disconnect). A
-// client is dropped the moment it goes away so the reconnect grace starts
-// immediately — independent of whether the child produces output.
-func (s *execSession) watchClient(conn net.Conn) {
-	_, _ = io.Copy(io.Discard, conn)
-	s.mu.Lock()
-	if _, ok := s.clients[conn]; ok {
-		delete(s.clients, conn)
-		if len(s.clients) == 0 && !s.exited {
-			s.startGrace()
-		}
-	}
-	s.mu.Unlock()
-}
-
-// broadcastStream reads a child pipe line by line and fans each event out
-// to every attached client. Clients whose write fails are dropped (they
-// disconnected). Line cap 1MB — matching the control-plane adapter.
-func (s *execSession) broadcastStream(stream string, r io.Reader) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	for sc.Scan() {
-		line := sc.Text()
-		ev := AgentEvent{Stream: stream, Data: line}
-		s.writeMu.Lock()
-		s.mu.Lock()
-		for conn, enc := range s.clients {
-			if err := enc.Encode(ev); err != nil {
-				delete(s.clients, conn)
-				if len(s.clients) == 0 && !s.exited {
-					s.startGrace()
-				}
-			}
-		}
-		s.mu.Unlock()
-		s.writeMu.Unlock()
-	}
-}
-
-func (s *execSession) startGrace() {
-	if s.grace != nil {
-		return
-	}
-	s.grace = time.AfterFunc(s.graceDur, func() {
-		s.mu.Lock()
-		if s.exited {
-			s.mu.Unlock()
-			return
-		}
-		s.mu.Unlock()
-		if s.cmd != nil && s.cmd.Process != nil {
-			_ = s.cmd.Process.Kill()
-		}
-	})
-}
-
-func (s *execSession) cancelGrace() {
-	if s.grace != nil {
-		s.grace.Stop()
-		s.grace = nil
-	}
-}
-
 // kill terminates the child process (SIGKILL) without waiting. Used to
 // tear down a wedged serve so a fresh one can take its place.
 func (s *execSession) kill() {
@@ -776,84 +559,12 @@ func (s *execSession) kill() {
 	}
 }
 
-// status reports whether the exec is still running. Used by the control
-// plane's execution-liveness reaper to detect executions orphaned by a
-// plane restart or a lost runtime container.
-func (h *childRegistry) status(enc *json.Encoder, req AgentRequest) {
-	h.mu.Lock()
-	s, ok := h.cmd[req.ExecID]
-	h.mu.Unlock()
-	alive := false
-	if ok {
-		s.mu.Lock()
-		alive = !s.exited
-		s.mu.Unlock()
-	}
-	_ = enc.Encode(AgentEvent{Event: "status", Alive: alive})
-}
-
-func (h *childRegistry) signal(enc *json.Encoder, req AgentRequest) {
-	h.mu.Lock()
-	s, ok := h.cmd[req.ExecID]
-	h.mu.Unlock()
-	if !ok {
-		_ = enc.Encode(AgentEvent{Event: "error", Error: "no such exec: " + req.ExecID})
-		return
-	}
-	sig := signalByName(req.Signal)
-	if sig == syscall.Signal(0) {
-		_ = enc.Encode(AgentEvent{Event: "error", Error: "unknown signal: " + req.Signal})
-		return
-	}
-	if s.cmd != nil && s.cmd.Process != nil {
-		_ = s.cmd.Process.Signal(sig)
-	}
-	_ = enc.Encode(AgentEvent{Event: "exit", ExitCode: 0})
-}
-
 func (h *childRegistry) killAll(sig syscall.Signal) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, s := range h.cmd {
 		if s.cmd != nil && s.cmd.Process != nil {
 			_ = s.cmd.Process.Signal(sig)
-		}
-	}
-}
-
-func signalByName(name string) syscall.Signal {
-	switch strings.ToUpper(strings.TrimPrefix(name, "SIG")) {
-	case "TERM":
-		return syscall.SIGTERM
-	case "KILL":
-		return syscall.SIGKILL
-	case "INT":
-		return syscall.SIGINT
-	case "HUP":
-		return syscall.SIGHUP
-	case "":
-		return syscall.SIGTERM
-	}
-	return syscall.Signal(0)
-}
-
-// streamTo reads a pipe line by line and encodes each as a {stream,data}
-// event, stopping on the first encode error (the client disconnected). The
-// early stop matters: a re-attach must be able to resume from the same
-// pipe, so a client's stream goroutine must not keep consuming it after
-// the client is gone. Line cap 1MB — matching the control-plane adapter's
-// local-path scanner (internal/opencode/adapter.go) because opencode
-// `--format json` delivers an entire model response as ONE stdout line and
-// a review/analysis can legitimately exceed 64KB. A smaller cap silently
-// drops the line AND every subsequent event.
-func streamTo(enc *json.Encoder, stream string, r io.Reader, wg *sync.WaitGroup) {
-	defer wg.Done()
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	for sc.Scan() {
-		if err := enc.Encode(AgentEvent{Stream: stream, Data: sc.Text()}); err != nil {
-			// Client disconnected — stop reading so a re-attach can resume.
-			return
 		}
 	}
 }
@@ -899,24 +610,10 @@ func envPath(env []string) string {
 	return ""
 }
 
-// isolateOpenCodeData redirects the worker's opencode state (sessions,
-// keys, telemetry) into an ephemeral directory under /tmp, seeded with
-// the model auth from the read-only host mount (~/.local/share/opencode
-// is mounted ro by the daemon). The worker can authenticate to the
-// model providers but can never write to the host's opencode data.
-func isolateOpenCodeData(env []string) []string {
-	xdg, err := os.MkdirTemp("/tmp", "opencode-data-*")
-	if err != nil {
-		return env
-	}
-	return isolateOpenCodeDataInto(env, xdg)
-}
-
 // isolateOpenCodeDataInto redirects opencode state into a caller-chosen
 // directory (seeded with the model auth) and returns the env with
 // XDG_DATA_HOME set. The serve uses a STABLE dir (serveDataDir) so a
-// watchdog restart preserves sessions; one-shot execs use a fresh temp
-// dir via isolateOpenCodeData.
+// watchdog restart preserves sessions.
 func isolateOpenCodeDataInto(env []string, xdg string) []string {
 	if xdg == "" {
 		return env
@@ -1007,12 +704,6 @@ func RunClient(socketPath string, in io.Reader, out io.Writer) (int, error) {
 			// The supervisor answered the serve request with the port;
 			// relay the event and exit cleanly.
 			return 0, nil
-		}
-		if ev.Event == "status" {
-			if ev.Alive {
-				return 0, nil
-			}
-			return 1, nil
 		}
 		if ev.Event == "exit" {
 			if ev.Error != "" && ev.ExitCode == 0 {

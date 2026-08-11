@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"strings"
@@ -10,6 +11,18 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
+
+// parseStreamLine unmarshals a JSON event line and feeds it through the
+// session-transport dispatch (parseEvent), the single path the adapter uses
+// now that the legacy stdout-line parser is gone.
+func parseStreamLine(t *testing.T, a *Adapter, ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, line string, output *strings.Builder, lastStreamErr *string, textSeq *int, stats *execStreamState) {
+	t.Helper()
+	var evt map[string]any
+	if err := json.Unmarshal([]byte(line), &evt); err != nil {
+		t.Fatalf("unmarshal event: %v", err)
+	}
+	a.parseEvent(ctx, execRow, manifest, evt, nil, nil, output, lastStreamErr, textSeq, stats)
+}
 
 // TestExecStreamStateBalancedSteps verifies that a run which emits matching
 // step_start/step_finish pairs is NOT flagged as having an unfinished step —
@@ -24,8 +37,8 @@ func TestExecStreamStateBalancedSteps(t *testing.T) {
 	textSeq := 0
 	ctx := context.Background()
 
-	a.parseStdoutLine(ctx, execRow, manifest, `{"type":"step_start"}`, nil, nil, &output, &lastStreamErr, &textSeq, stats)
-	a.parseStdoutLine(ctx, execRow, manifest, `{"type":"step_finish","part":{"tokens":{"input":1,"output":1},"cost":0.001}}`, nil, nil, &output, &lastStreamErr, &textSeq, stats)
+	parseStreamLine(t, a, ctx, execRow, manifest, `{"type":"step_start"}`, &output, &lastStreamErr, &textSeq, stats)
+	parseStreamLine(t, a, ctx, execRow, manifest, `{"type":"step_finish","part":{"tokens":{"input":1,"output":1},"cost":0.001}}`, &output, &lastStreamErr, &textSeq, stats)
 
 	if stats.stepStarts != 1 || stats.stepFinishes != 1 {
 		t.Fatalf("expected 1/1 step start/finish, got %d/%d", stats.stepStarts, stats.stepFinishes)
@@ -49,7 +62,7 @@ func TestExecStreamStateUnfinishedStep(t *testing.T) {
 	textSeq := 0
 	ctx := context.Background()
 
-	a.parseStdoutLine(ctx, execRow, manifest, `{"type":"step_start"}`, nil, nil, &output, &lastStreamErr, &textSeq, stats)
+	parseStreamLine(t, a, ctx, execRow, manifest, `{"type":"step_start"}`, &output, &lastStreamErr, &textSeq, stats)
 
 	if stats.stepStarts != 1 || stats.stepFinishes != 0 {
 		t.Fatalf("expected 1/0 step start/finish, got %d/%d", stats.stepStarts, stats.stepFinishes)
@@ -74,8 +87,8 @@ func TestExecStreamStateTruncatedFinish(t *testing.T) {
 	textSeq := 0
 	ctx := context.Background()
 
-	a.parseStdoutLine(ctx, execRow, manifest, `{"type":"step_start"}`, nil, nil, &output, &lastStreamErr, &textSeq, stats)
-	a.parseStdoutLine(ctx, execRow, manifest, `{"type":"step_finish","part":{"reason":"unknown","tokens":{"input":0,"output":0},"cost":0}}`, nil, nil, &output, &lastStreamErr, &textSeq, stats)
+	parseStreamLine(t, a, ctx, execRow, manifest, `{"type":"step_start"}`, &output, &lastStreamErr, &textSeq, stats)
+	parseStreamLine(t, a, ctx, execRow, manifest, `{"type":"step_finish","part":{"reason":"unknown","tokens":{"input":0,"output":0},"cost":0}}`, &output, &lastStreamErr, &textSeq, stats)
 
 	if stats.stepStarts != 1 || stats.stepFinishes != 1 {
 		t.Fatalf("expected 1/1 step start/finish, got %d/%d", stats.stepStarts, stats.stepFinishes)
@@ -101,8 +114,8 @@ func TestExecStreamStateNormalFinishNotTruncated(t *testing.T) {
 	textSeq := 0
 	ctx := context.Background()
 
-	a.parseStdoutLine(ctx, execRow, manifest, `{"type":"step_start"}`, nil, nil, &output, &lastStreamErr, &textSeq, stats)
-	a.parseStdoutLine(ctx, execRow, manifest, `{"type":"step_finish","part":{"reason":"done","tokens":{"input":10,"output":5},"cost":0.001}}`, nil, nil, &output, &lastStreamErr, &textSeq, stats)
+	parseStreamLine(t, a, ctx, execRow, manifest, `{"type":"step_start"}`, &output, &lastStreamErr, &textSeq, stats)
+	parseStreamLine(t, a, ctx, execRow, manifest, `{"type":"step_finish","part":{"reason":"done","tokens":{"input":10,"output":5},"cost":0.001}}`, &output, &lastStreamErr, &textSeq, stats)
 
 	if stats.truncatedFinish {
 		t.Fatalf("a normal step_finish must not flag truncatedFinish")

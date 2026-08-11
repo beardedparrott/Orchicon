@@ -139,9 +139,9 @@ and [DOCUMENTATION.md §Single-Container Deployment](DOCUMENTATION.md).
 | `orchicon serve --detach` / `--stop` | Fork/stop a background server |
 | `orchicon container` | Run the whole stack as PID 1 (container image) |
 | `orchicon install` | One-command setup: pull images, start the runtime daemon, launch the container, print connection info |
-| `orchicon runtime-daemon` | Host process owning the Docker socket; spawns per-workflow runtime containers |
-| `orchicon runtime-supervisor` | Runtime container PID 1 (streams `opencode run`) |
-| `orchicon runtime-client` | Forwards dispatches into the runtime container |
+| `orchicon runtime-daemon` | Host process owning the Docker socket; owns the warm pool of per-workflow runtime containers |
+| `orchicon runtime-supervisor` | Runtime container PID 1 (hosts the container's opencode serve) |
+| `orchicon runtime-client` | Forwards daemon requests (serve handshake / ping) into the runtime container |
 | `scripts/container.sh up dev\|prod` | Start a single-container instance |
 | `scripts/container.sh runtime-daemon` / `runtime-stop` | Start / stop the runtime daemon |
 | `orchicon version` | Print the installed version |
