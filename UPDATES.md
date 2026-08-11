@@ -12,6 +12,7 @@
 
 | # | Type | Phase | Summary |
 |---|---|---|---|
+| 133 | Feature | UI | Ask Orchicon: add Brainstorm ⟷ Orchicon mode toggle (pill segmented control) next to send button — persists via conversation.mode, optimistic update, keyboard accessible (arrow keys), responsive (icon-only on mobile). |
 | 132 | Bug fix | UI | Ask Orchicon: fix delete-active-conversation-while-streaming regression — reset guard now clears stale state on id→null transitions (skip only null→id). |
 | 131 | Bug fix | UI | Ask Orchicon: fix greeting-state send clobbered by useEffect reset (track prev conv id, skip null→id transitions), fix optimistic user bubble ordering to render before streaming bubbles. |
 | 130 | Bug fix | UI | Ask Orchicon: fix greeting-state first message silently dropped (stale closure on `activeConvId`), remove bogus `isStreaming` prop from AssistantBubble (tsc error), type SpeechRecognition constructor properly, and keep thinking indicator visible until first text chunk arrives. |
