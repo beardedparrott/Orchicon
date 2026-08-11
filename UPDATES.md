@@ -12,6 +12,7 @@
 
 | # | Type | Phase | Summary |
 |---|---|---|---|
+| 134 | Feature | Workers | Rework the canned AI Approver (`w_se_ai_approver`) seed to decide based on WHO the previous step's worker was, not line-by-line code inspection: it identifies the previous worker via `.orchicon/<workflow-run>/worker` + the Execution history, reviews the PLAN only after a planner (e.g. Principal Software Architect) and the previous step's overall status (`success`/`failure`) + summary after an implementer (e.g. Senior Software Engineer, QA Engineer) — manager/Product-Owner style, no diff expectations. Safety marker bumped to v13 so the seed rolls forward to existing workers; seed tests updated + new decision-basis test. |
 | 133 | Feature | UI | Ask Orchicon: add Brainstorm ⟷ Orchicon mode toggle (pill segmented control) next to send button — persists via conversation.mode, optimistic update, keyboard accessible (arrow keys), responsive (icon-only on mobile). |
 | 132 | Bug fix | UI | Ask Orchicon: fix delete-active-conversation-while-streaming regression — reset guard now clears stale state on id→null transitions (skip only null→id). |
 | 131 | Bug fix | UI | Ask Orchicon: fix greeting-state send clobbered by useEffect reset (track prev conv id, skip null→id transitions), fix optimistic user bubble ordering to render before streaming bubbles. |
