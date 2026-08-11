@@ -118,24 +118,58 @@ function groupStreamItems(items: StreamItem[]): StreamItem[] {
   return out;
 }
 
+// Per-conversation streaming state. Each conversation keeps its own
+// in-flight turn so navigating away and back never drops the Stop button
+// or the growing reasoning bubble, and isStreaming stays true for the
+// conversation that is actually still processing (which also blocks a
+// duplicate send instead of hitting the server's "already one processing").
+interface ConvStream {
+  isStreaming: boolean;
+  isThinking: boolean;
+  optimisticUserMsg: string | null;
+  pendingReplyId: string | null;
+  items: StreamItem[];
+}
+
+const EMPTY_STREAM: ConvStream = {
+  isStreaming: false,
+  isThinking: false,
+  optimisticUserMsg: null,
+  pendingReplyId: null,
+  items: [],
+};
+
 function AskOrchiconPage() {
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [isThinking, setIsThinking] = useState(false);
-  const [optimisticUserMsg, setOptimisticUserMsg] = useState<string | null>(
-    null,
-  );
-  const [pendingReplyId, setPendingReplyId] = useState<string | null>(null);
   const toast = useToast();
   // Mode state — defaults to BRAINSTORM; synced from activeConv when available.
   const [localMode, setLocalMode] = useState<ConversationMode>(
     ConversationMode.BRAINSTORM,
   );
 
-  // Live streaming items accumulated from ChatStream events.
-  const [streamItems, setStreamItems] = useState<StreamItem[]>([]);
-  const streamPhaseRef = useRef(0);
-  const prevConvIdRef = useRef<string | null>(null);
+  // Live streaming state keyed by conversation id.
+  const [streams, setStreams] = useState<Record<string, ConvStream>>({});
+
+  // Update one conversation's stream slot with a functional updater so
+  // async chunk handlers never read stale state (append via the previous
+  // value, not a captured `streams`).
+  const setStream = useCallback(
+    (convId: string, updater: (prev: ConvStream) => ConvStream) => {
+      setStreams((prev) => ({
+        ...prev,
+        [convId]: updater(prev[convId] ?? EMPTY_STREAM),
+      }));
+    },
+    [],
+  );
+
+  // The ACTIVE conversation's derived streaming state.
+  const activeStream = activeConvId ? streams[activeConvId] : undefined;
+  const isStreaming = activeStream?.isStreaming ?? false;
+  const isThinking = activeStream?.isThinking ?? false;
+  const optimisticUserMsg = activeStream?.optimisticUserMsg ?? null;
+  const pendingReplyId = activeStream?.pendingReplyId ?? null;
+  const streamItems = activeStream?.items ?? [];
 
   const { data: conversations, isLoading: convsLoading } =
     useListConversations();
@@ -157,37 +191,24 @@ function AskOrchiconPage() {
     }
   }, [activeConv?.mode]);
 
-  // Switching conversations resets local state.
-  // Skip the reset on null→id transitions (greeting path) so the streaming
-  // state set by sendStreaming is not clobbered by this effect.
-  // Also reset on id→null (delete active conversation mid-stream) to clear
-  // stale streaming state — only null→id is skipped.
-  useEffect(() => {
-    const prev = prevConvIdRef.current;
-    prevConvIdRef.current = activeConvId;
-    if (prev === null) return;
-    setPendingReplyId(null);
-    setIsStreaming(false);
-    setIsThinking(false);
-    setOptimisticUserMsg(null);
-    setStreamItems([]);
-    streamPhaseRef.current = 0;
-  }, [activeConvId]);
-
   // The reply (or error) is persisted under the acked assistant message id.
-  // When it appears via polling, the turn is over — clear the pending state.
+  // When it appears via polling, the turn is over — clear the ACTIVE
+  // conversation's stream slot (other conversations keep their own state,
+  // so a turn running while you browse elsewhere stays intact).
   useEffect(() => {
-    if (!isStreaming || !pendingReplyId || !messages) return;
+    if (!activeConvId || !isStreaming || !pendingReplyId || !messages) return;
     if (messages.some((m) => m.id === pendingReplyId)) {
-      setPendingReplyId(null);
-      setIsStreaming(false);
-      setIsThinking(false);
-      setOptimisticUserMsg(null);
-      setStreamItems([]);
-      streamPhaseRef.current = 0;
+      setStream(activeConvId, (prev) => ({
+        ...prev,
+        isStreaming: false,
+        isThinking: false,
+        optimisticUserMsg: null,
+        pendingReplyId: null,
+        items: [],
+      }));
       qc.invalidateQueries({ queryKey: askKeys.conversations });
     }
-  }, [messages, isStreaming, pendingReplyId, qc]);
+  }, [messages, isStreaming, pendingReplyId, activeConvId, setStream, qc]);
 
   const handleNewChat = useCallback(() => {
     setActiveConvId(null);
@@ -198,6 +219,13 @@ function AskOrchiconPage() {
       e.stopPropagation();
       try {
         await deleteConv.mutateAsync(id);
+        // Drop the deleted conversation's stream slot (its turn is gone).
+        setStreams((prev) => {
+          if (!(id in prev)) return prev;
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
         if (activeConvId === id) {
           setActiveConvId(null);
         }
@@ -212,20 +240,48 @@ function AskOrchiconPage() {
     if (!activeConvId) return;
     try {
       await abortTurn.mutateAsync(activeConvId);
+      setStream(activeConvId, (prev) => ({
+        ...prev,
+        isStreaming: false,
+        isThinking: false,
+        optimisticUserMsg: null,
+        pendingReplyId: null,
+        items: [],
+      }));
     } catch {
       toast.error("Failed to stop the reply", { title: "Error" });
     }
-  }, [activeConvId, abortTurn, toast]);
+  }, [activeConvId, abortTurn, setStream, toast]);
 
   // Streaming helper — takes convId as a parameter so it is never stale.
+  // Mutates the given conversation's OWN stream slot via functional
+  // updaters, so a turn keeps running (and the UI keeps updating) even
+  // while the user is browsing a different conversation. When the stream
+  // ends without an acked reply (error / aborted before turnStarted), the
+  // slot is cleared; acked turns clear via the pendingReplyId poll above.
   const sendStreaming = useCallback(
     async (convId: string, text: string, attachments?: AttachmentInput[]) => {
-      setOptimisticUserMsg(text);
-      setIsStreaming(true);
-      setIsThinking(true);
-      setPendingReplyId(null);
-      setStreamItems([]);
-      streamPhaseRef.current = 0;
+      setStream(convId, (prev) => ({
+        ...prev,
+        optimisticUserMsg: text,
+        isStreaming: true,
+        isThinking: true,
+        pendingReplyId: null,
+        items: [],
+      }));
+
+      const fail = (err?: unknown) => {
+        setStream(convId, (prev) => ({
+          ...prev,
+          isStreaming: false,
+          isThinking: false,
+          optimisticUserMsg: null,
+          items: [],
+        }));
+        if (err) {
+          toast.error(String(err instanceof Error ? err.message : err), { title: "Chat error" });
+        }
+      };
 
       try {
         const stream = askOrchiconClient.chatStream({
@@ -236,61 +292,59 @@ function AskOrchiconPage() {
         let acked = false;
         for await (const chunk of stream) {
           if (chunk.event.case === "turnStarted") {
-            setPendingReplyId(chunk.event.value.assistantMessageId);
+            const assistantMessageId = chunk.event.value.assistantMessageId;
+            setStream(convId, (prev) => ({
+              ...prev,
+              pendingReplyId: assistantMessageId,
+            }));
             acked = true;
           } else if (chunk.event.case === "textChunk") {
             const content = chunk.event.value.content;
             if (content) {
-              const phase = `p-${streamPhaseRef.current}`;
-              setStreamItems((prev) => [
+              setStream(convId, (prev) => ({
                 ...prev,
-                {
-                  kind: "text",
-                  text: content,
-                  at: Date.now(),
-                  key: `st-${Date.now()}-${Math.random()}`,
-                  phase,
-                },
-              ]);
+                items: [
+                  ...prev.items,
+                  {
+                    kind: "text",
+                    text: content,
+                    at: Date.now(),
+                    key: `st-${Date.now()}-${Math.random()}`,
+                    phase: "p-0",
+                  },
+                ],
+              }));
             }
           } else if (chunk.event.case === "reasoning") {
             const content = chunk.event.value.content;
             if (content) {
-              const phase = `p-${streamPhaseRef.current}`;
-              setStreamItems((prev) => [
+              setStream(convId, (prev) => ({
                 ...prev,
-                {
-                  kind: "reasoning",
-                  text: content,
-                  at: Date.now(),
-                  key: `sr-${Date.now()}-${Math.random()}`,
-                  phase,
-                },
-              ]);
+                items: [
+                  ...prev.items,
+                  {
+                    kind: "reasoning",
+                    text: content,
+                    at: Date.now(),
+                    key: `sr-${Date.now()}-${Math.random()}`,
+                    phase: "p-0",
+                  },
+                ],
+              }));
             }
           } else if (chunk.event.case === "error") {
             toast.error(chunk.event.value.message);
-            setIsStreaming(false);
-            setIsThinking(false);
-            setOptimisticUserMsg(null);
-            setStreamItems([]);
+            fail();
           }
         }
         if (!acked) {
-          setIsStreaming(false);
-          setIsThinking(false);
-          setOptimisticUserMsg(null);
-          setStreamItems([]);
+          fail();
         }
       } catch (err: unknown) {
-        setIsStreaming(false);
-        setIsThinking(false);
-        setOptimisticUserMsg(null);
-        setStreamItems([]);
-        toast.error(String(err instanceof Error ? err.message : err), { title: "Chat error" });
+        fail(err);
       }
     },
-    [toast],
+    [toast, setStream],
   );
 
   const handleSendMessage = useCallback(

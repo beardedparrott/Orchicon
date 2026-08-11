@@ -31,6 +31,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Copy } from "lucide-react";
 import type { StreamExecutionEventsResponse } from "@/api/gen/orchicon/api/v1/execution_pb";
+import { ReasoningBubble as SharedReasoningBubble } from "@/components/chat";
 import { Markdown } from "@/components/markdown";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -496,7 +497,7 @@ const rendered = useMemo<
             if ("chunks" in block) {
               if (block.kind === "reasoning-group") {
                 return (
-                  <ReasoningBubble key={`rg-${idx}`} chunks={block.chunks} />
+                  <ReasoningBubble key={`rg-${idx}`} chunks={block.chunks} streaming={isLive} />
                 );
               }
               return (
@@ -677,39 +678,14 @@ function InlineArtifactCard({ artifact }: { artifact: ParsedArtifact }) {
   );
 }
 
-function ReasoningBubble({ chunks }: { chunks: ParsedReasoningChunk[] }) {
+function ReasoningBubble({ chunks, streaming }: { chunks: ParsedReasoningChunk[]; streaming?: boolean }) {
   // Reasoning is the model's "thinking" content (only emitted when
-  // opencode is started with --thinking). Render it in a distinct
-  // style — italic, dimmed, slightly inset — so it reads as
-  // meta-content alongside the actual answer. Collapsed by default
-  // if it gets long so it doesn't dominate the chat; expanded on
-  // click.
+  // opencode is started with --thinking). Rendered via the shared
+  // chat ReasoningBubble so execution views carry the same streaming
+  // reasoning UX as Ask Orchicon — auto-open while streaming, live
+  // char count, hide/show toggle. Collapsed by default once done.
   const text = chunks.map((c) => c.text).join("");
-  const lastTs = chunks[chunks.length - 1].occurredAt;
-  const long = text.length > 600;
-  return (
-    <div className="flex justify-start">
-      <div className="max-w-[85%] rounded-lg border border-violet-300/30 bg-violet-50/20 px-3 py-2 text-xs italic leading-relaxed text-muted-foreground dark:bg-violet-950/10">
-      <details open={true}>
-          <summary className="cursor-pointer select-none text-[10px] font-medium not-italic uppercase tracking-wide text-violet-700 dark:text-violet-300">
-            <span className="inline-flex items-center gap-1">
-              <span className="inline-block h-1.5 w-1.5 rounded-full bg-violet-500" />
-              reasoning
-            </span>
-            <span className="ml-2 opacity-60 not-italic">{lastTs.toLocaleTimeString()}</span>
-            {long && (
-              <span className="ml-2 text-[10px] opacity-60 not-italic">
-                (click to expand)
-              </span>
-            )}
-          </summary>
-          <div className="mt-2 text-xs not-italic">
-            <Markdown>{text}</Markdown>
-          </div>
-        </details>
-      </div>
-    </div>
-  );
+  return <SharedReasoningBubble text={text} streaming={streaming} />;
 }
 
 function ToolCard({ tool }: { tool: ParsedToolCall }) {
