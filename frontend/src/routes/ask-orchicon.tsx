@@ -292,9 +292,10 @@ function AskOrchiconPage() {
         let acked = false;
         for await (const chunk of stream) {
           if (chunk.event.case === "turnStarted") {
+            const assistantMessageId = chunk.event.value.assistantMessageId;
             setStream(convId, (prev) => ({
               ...prev,
-              pendingReplyId: chunk.event.value.assistantMessageId,
+              pendingReplyId: assistantMessageId,
             }));
             acked = true;
           } else if (chunk.event.case === "textChunk") {
