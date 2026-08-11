@@ -199,10 +199,9 @@ function AskOrchiconPage() {
     }
   }, [activeConvId, abortTurn, toast]);
 
-  const handleSendMessage = useCallback(
-    async (text: string, attachments?: AttachmentInput[]) => {
-      if (!text.trim() || !activeConvId || isStreaming) return;
-
+  // Streaming helper — takes convId as a parameter so it is never stale.
+  const sendStreaming = useCallback(
+    async (convId: string, text: string, attachments?: AttachmentInput[]) => {
       setOptimisticUserMsg(text);
       setIsStreaming(true);
       setIsThinking(true);
@@ -212,7 +211,7 @@ function AskOrchiconPage() {
 
       try {
         const stream = askOrchiconClient.chatStream({
-          conversationId: activeConvId,
+          conversationId: convId,
           message: text,
           attachments: attachments ?? [],
         });
@@ -221,9 +220,7 @@ function AskOrchiconPage() {
           if (chunk.event.case === "turnStarted") {
             setPendingReplyId(chunk.event.value.assistantMessageId);
             acked = true;
-            setIsThinking(false);
           } else if (chunk.event.case === "textChunk") {
-            // Live text chunk from the streaming backend.
             const content = chunk.event.value.content;
             if (content) {
               const phase = `p-${streamPhaseRef.current}`;
@@ -239,7 +236,6 @@ function AskOrchiconPage() {
               ]);
             }
           } else if (chunk.event.case === "reasoning") {
-            // Live reasoning chunk.
             const content = chunk.event.value.content;
             if (content) {
               const phase = `p-${streamPhaseRef.current}`;
@@ -276,7 +272,15 @@ function AskOrchiconPage() {
         toast.error(String(err instanceof Error ? err.message : err), { title: "Chat error" });
       }
     },
-    [activeConvId, isStreaming, toast],
+    [toast],
+  );
+
+  const handleSendMessage = useCallback(
+    async (text: string, attachments?: AttachmentInput[]) => {
+      if (!text.trim() || !activeConvId || isStreaming) return;
+      await sendStreaming(activeConvId, text, attachments);
+    },
+    [activeConvId, isStreaming, sendStreaming],
   );
 
   const handleRetry = useCallback(() => {
@@ -322,14 +326,13 @@ function AskOrchiconPage() {
               </div>
               <ChatInputField
                 onSend={async (text, attachments) => {
-                  // Create a conversation first, then send the message.
+                  // Create a conversation first, then send via the streaming
+                  // helper directly (avoids the stale-closure on handleSendMessage).
                   try {
                     const conv = await createConv.mutateAsync({});
                     if (conv?.id) {
                       setActiveConvId(conv.id);
-                      // Small delay to let the route mount, then send.
-                      await new Promise((r) => setTimeout(r, 50));
-                      handleSendMessage(text, attachments);
+                      await sendStreaming(conv.id, text, attachments);
                     }
                   } catch {
                     toast.error("Failed to create conversation", {
@@ -392,7 +395,6 @@ function AskOrchiconPage() {
                           <AssistantBubble
                             key={item.key}
                             text={item.text}
-                            isStreaming
                           />
                         );
                       case "reasoning":
@@ -420,8 +422,8 @@ function AskOrchiconPage() {
                     />
                   )}
 
-                {/* Thinking indicator */}
-                {isThinking && !groupedStream.length && (
+                {/* Thinking indicator — visible until the first text chunk arrives */}
+                {isThinking && !groupedStream.some((i) => i.kind === "text") && (
                   <div className="flex justify-start">
                     <div className="rounded-2xl rounded-tl-sm border border-sky-300/30 bg-sky-50/20 px-4 py-3 dark:border-sky-950/40 dark:bg-sky-950/10">
                       <div className="flex items-center gap-2">
@@ -635,13 +637,13 @@ function ChatInputField({
       "webkitSpeechRecognition" in window ||
       "SpeechRecognition" in window
     ) {
-      const SpeechRecognition =
-        (window as unknown as { SpeechRecognition?: unknown }).SpeechRecognition ??
-        (window as unknown as { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition;
-      const recognition = new SpeechRecognition();
+      const SpeechRecognitionCtor =
+        window.SpeechRecognition ?? window.webkitSpeechRecognition;
+      if (!SpeechRecognitionCtor) return;
+      const recognition = new SpeechRecognitionCtor();
       recognition.lang = "en-US";
       recognition.interimResults = false;
-      recognition.onresult = (event: { results: { [key: number]: { [key: number]: { transcript: string } } } }) => {
+      recognition.onresult = (event: SpeechRecognitionEvent) => {
         const transcript = event.results[0][0].transcript;
         setText((prev) => (prev ? prev + " " : "") + transcript);
       };
