@@ -67,22 +67,6 @@ message TenantSettings {
   // not kill a healthy execution. Default 3.
   int32 execution_reap_consecutive_failures = 16;
 
-  // --- Execution transport resilience (reconnect) ---
-  // The exec stream between the control plane and the runtime supervisor
-  // can break on a transient socket/docker hiccup. The execution is NOT
-  // failed on a broken stream: the client re-attaches for the same exec
-  // and the supervisor keeps the child running during the reconnect grace.
-  // An empty/zero value means "use the env var or built-in default".
-
-  // How many times the client retries the exec stream (with backoff) before
-  // giving up on a transport break. Default 3.
-  int32 execution_reconnect_attempts = 17;
-
-  // How long the supervisor keeps an orphaned child (no attached client)
-  // running before killing it, giving the client time to re-attach.
-  // Seconds. Default 60.
-  int64 execution_reconnect_grace_seconds = 18;
-
   // --- Execution budget (defaults) ---
   // Default budget JSON applied to executions whose worker does not set its
   // own budget_overrides. Recognized keys: tokens, cost_usd,

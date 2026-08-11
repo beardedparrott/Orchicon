@@ -472,8 +472,6 @@ function DefaultsTab() {
   const [draftBudgetToolCalls, setDraftBudgetToolCalls] = useState("");
   const [draftReapGrace, setDraftReapGrace] = useState("");
   const [draftReapFailures, setDraftReapFailures] = useState("");
-  const [draftReconnectAttempts, setDraftReconnectAttempts] = useState("");
-  const [draftReconnectGrace, setDraftReconnectGrace] = useState("");
   const [draftLogDirectory, setDraftLogDirectory] = useState("");
   const [draftLogMaxSize, setDraftLogMaxSize] = useState("");
   const [draftLogRollInterval, setDraftLogRollInterval] = useState("");
@@ -497,8 +495,6 @@ function DefaultsTab() {
       setDraftBudgetToolCalls(budget.toolCallCount);
       setDraftReapGrace(String(settings.executionReapGraceSeconds ?? ""));
       setDraftReapFailures(String(settings.executionReapConsecutiveFailures ?? ""));
-      setDraftReconnectAttempts(String(settings.executionReconnectAttempts ?? ""));
-      setDraftReconnectGrace(String(settings.executionReconnectGraceSeconds ?? ""));
       setDraftLogDirectory(settings.logDirectory ?? "");
       setDraftLogMaxSize(settings.logMaxSizeMb ? String(settings.logMaxSizeMb) : "");
       setDraftLogRollInterval(settings.logRollIntervalHours ? String(settings.logRollIntervalHours) : "");
@@ -526,8 +522,6 @@ function DefaultsTab() {
         ),
         executionReapGraceSeconds: parseInt(draftReapGrace) || 0,
         executionReapConsecutiveFailures: parseInt(draftReapFailures) || 0,
-        executionReconnectAttempts: parseInt(draftReconnectAttempts) || 0,
-        executionReconnectGraceSeconds: parseInt(draftReconnectGrace) || 0,
         logDirectory: draftLogDirectory,
         logMaxSizeMb: parseInt(draftLogMaxSize) || 0,
         logRollIntervalHours: parseInt(draftLogRollInterval) || 0,
@@ -700,20 +694,6 @@ function DefaultsTab() {
                 value={draftReapFailures}
                 onChange={setDraftReapFailures}
                 placeholder="3"
-              />
-              <StallField
-                label="Reconnect attempts"
-                description="Client retries of a broken exec stream before giving up"
-                value={draftReconnectAttempts}
-                onChange={setDraftReconnectAttempts}
-                placeholder="3"
-              />
-              <StallField
-                label="Reconnect grace (seconds)"
-                description="How long the supervisor keeps an orphaned child before killing it"
-                value={draftReconnectGrace}
-                onChange={setDraftReconnectGrace}
-                placeholder="60"
               />
             </div>
           </CardContent>

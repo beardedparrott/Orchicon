@@ -477,8 +477,6 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	var stallRepCount int32
 	var stallRepWindow int64
 	var defaultBudgetOverrides []byte
-	var reconnectAttempts int32
-	var reconnectGrace int64
 	{
 		settingsCtx := context.Background()
 		stx, err := r.pool.BeginTenantTx(settingsCtx, exec.TenantID)
@@ -492,8 +490,6 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				stallRepCount = s.StallRepetitionCount
 				stallRepWindow = s.StallRepetitionWindowSeconds
 				defaultBudgetOverrides = s.DefaultBudgetOverrides
-				reconnectAttempts = s.ExecutionReconnectAttempts
-				reconnectGrace = s.ExecutionReconnectGraceSeconds
 			}
 			stx.Rollback(settingsCtx)
 		}
@@ -540,8 +536,6 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		StallTextLoopWindowSeconds:    stallTextLoop,
 		StallRepetitionCount:          stallRepCount,
 		StallRepetitionWindowSeconds:  stallRepWindow,
-		ReconnectAttempts:             reconnectAttempts,
-		ReconnectGraceSeconds:         reconnectGrace,
 	}
 	if err := r.bridge.Start(ctx, exec, manifest, r); err != nil {
 		r.log.Error("adapter start failed", "execution", exec.ID, "error", err)

@@ -447,33 +447,6 @@ func allTokensZero(tokens map[string]any) bool {
 	return true
 }
 
-// parseStdoutLine decodes a JSON line from OpenCode's stdout into a
-// telemetry event and routes it to the callbacks. The JSON shape follows
-// opencode v1.x's `--format json` event stream (docs/04 §6.1):
-// each line has `type`, `timestamp`, `sessionID`, and a `part` object.
-// Each event is also fed to the progress monitor (may be nil in tests)
-// for stall detection (docs/06 §2 stalled trigger).
-//
-// `output` is the per-execution text accumulator (PR B — context
-// propagation). For "text" events the part text is appended so the
-// full worker output is available to OnResult.
-//
-// `textSeq` is a per-execution monotonic counter for streamed text
-// chunks. The frontend uses it to order chunks if NATS delivers them
-// out of order; it is incremented once per emitTextChunk call.
-//
-// `stats` (may be nil in tests) counts step_start/step_finish events so
-// the caller can detect an execution that ended mid-step.
-func (a *Adapter) parseStdoutLine(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, line string, callbacks scheduler.ExecutionCallbacks, monitor *progressMonitor, output *strings.Builder, lastStreamErr *string, textSeq *int, stats *execStreamState) {
-	var evt map[string]any
-	if err := json.Unmarshal([]byte(line), &evt); err != nil {
-		// Non-JSON line: treat as a log/progress marker.
-		a.log.Debug("opencode stdout (non-JSON)", "execution", execRow.ID, "line", line)
-		return
-	}
-	a.parseEvent(ctx, execRow, manifest, evt, callbacks, monitor, output, lastStreamErr, textSeq, stats)
-}
-
 // parseEvent dispatches a decoded opencode event into the telemetry
 // pipeline. It is the single dispatch used by the session transport
 // (legacyEventFromBus builds the {type, part} object from the server SSE
@@ -663,12 +636,6 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 			*lastStreamErr = msg
 		}
 		callbacks.OnHealth(ctx, execID, domain.HealthUnhealthy)
-	case evtToolCall, evtToolResult, evtFileDiff:
-		// Legacy event names. opencode v1.x does NOT emit these —
-		// it uses `tool_use` (above) with embedded state for both
-		// input and output. Keep these branches as no-ops so a
-		// future rename is a one-line change.
-		a.log.Debug("opencode legacy event ignored", "execution", execID, "type", eventType)
 	default:
 		a.log.Debug("opencode event", "execution", execID, "type", eventType)
 	}
@@ -684,7 +651,7 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 // Each chunk is delivered via callbacks.OnText with a per-execution
 // sequence number so the frontend can order chunks even if NATS
 // delivers them out of order. The accumulator (`output`) is NOT
-// touched here — it is updated separately in parseStdoutLine so the
+// touched here — it is updated in parseEvent's text case so the
 // ORCHICON WORKER SUMMARY block is still extractable at OnResult time.
 func (a *Adapter) emitTextChunked(ctx context.Context, callbacks scheduler.ExecutionCallbacks, execID, text string, seq *int) {
 	if text == "" {
@@ -943,8 +910,8 @@ const textStreamingChunkSize = 40
 const textStreamingChunkDelay = 60 * time.Millisecond
 
 // opencode v1.x's --format json stream emits these event types.
-// Keep them as named constants so the dispatch table in
-// parseStdoutLine reads like the schema.
+// Keep them as named constants so the dispatch table in parseEvent
+// reads like the schema.
 const (
 	evtStepStart    = "step_start"
 	evtStepFinish   = "step_finish"
@@ -953,13 +920,6 @@ const (
 	evtReasoning    = "reasoning" // v1.x: only when --thinking is enabled
 	evtError        = "error"
 	evtHealth       = "health"
-	// Legacy names kept for backwards compatibility with older
-	// opencode builds / fork compat — we ignore these now but the
-	// case branches remain as no-ops so a future event-type rename
-	// is a one-liner.
-	evtToolCall     = "tool_call"
-	evtToolResult   = "tool_result"
-	evtFileDiff     = "file_diff"
 )
 
 // sessionErrorRecycleThreshold is the number of CONSECUTIVE model-layer

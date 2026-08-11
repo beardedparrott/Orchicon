@@ -11,16 +11,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// execAliveChecker reports whether an exec is still running inside a
-// workflow's runtime container. Satisfied by runtime.Client.
-type execAliveChecker interface {
-	ExecAlive(ctx context.Context, workflowID, execID string) (bool, error)
-}
-
 // ExecutionReaper finds executions that are stuck `running` with no live
-// process — orphaned by a control-plane restart (in-flight subprocesses
-// die with the plane) or by a lost/crashed runtime container — and fails
-// them so recovery re-dispatches the step.
+// process — orphaned by a control-plane restart (in-flight session runs die
+// with the plane) — and fails them so recovery re-dispatches the step.
 //
 // Without this, a `container.sh rebuild` mid-workflow left the workflow
 // run, step, and execution `running` forever (the stall monitor and
@@ -28,15 +21,14 @@ type execAliveChecker interface {
 // reconciler re-checks running executions).
 //
 // The reaper is deliberately cautious: the liveness probe can false-negative
-// on a transient docker/socket hiccup, so an execution is only reaped after
-// it has been "not alive" for `consecutive_failures` consecutive probes
-// AND is older than the `grace` window (fresh-dispatch race). Both are
-// tenant settings (execution_reap_grace_seconds / _consecutive_failures)
-// with env-var fallbacks (ORCHICON_REAP_GRACE_SECONDS /
-// ORCHICON_REAP_CONSECUTIVE_FAILURES) for dev overrides.
+// on a transient blip, so an execution is only reaped after it has been
+// "not alive" for `consecutive_failures` consecutive probes AND is older
+// than the `grace` window (fresh-dispatch race). Both are tenant settings
+// (execution_reap_grace_seconds / _consecutive_failures) with env-var
+// fallbacks (ORCHICON_REAP_GRACE_SECONDS / ORCHICON_REAP_CONSECUTIVE_FAILURES)
+// for dev overrides.
 type ExecutionReaper struct {
 	pool   *db.Pool
-	rt     execAliveChecker   // nil = no runtime daemon (in-process only)
 	active func(execID string) bool // adapter.IsExecutionActive
 	fail   func(ctx context.Context, execID, errorMessage string)
 	log    *slog.Logger
@@ -47,11 +39,9 @@ type ExecutionReaper struct {
 	notAlive   map[string]int
 }
 
-// NewExecutionReaper creates the liveness reaper. rt may be nil (headless
-// serve): workflow-run executions are then skipped (undeterminable) and
-// only in-process executions are reaped.
-func NewExecutionReaper(pool *db.Pool, rt execAliveChecker, active func(string) bool, fail func(context.Context, string, string), log *slog.Logger) *ExecutionReaper {
-	return &ExecutionReaper{pool: pool, rt: rt, active: active, fail: fail, log: log, notAlive: make(map[string]int)}
+// NewExecutionReaper creates the liveness reaper.
+func NewExecutionReaper(pool *db.Pool, active func(string) bool, fail func(context.Context, string, string), log *slog.Logger) *ExecutionReaper {
+	return &ExecutionReaper{pool: pool, active: active, fail: fail, log: log, notAlive: make(map[string]int)}
 }
 
 // reapTuning resolves the grace window and consecutive-failure threshold
@@ -111,28 +101,11 @@ func (r *ExecutionReaper) Reap(ctx context.Context) error {
 			continue
 		}
 		dead := false
-		switch {
-		case exec.WorkflowRunID != "":
-			// Workflow-run execution: ask the daemon whether the exec is
-			// alive inside the runtime container. Only a definitive
-			// "not alive" (or missing container) counts as dead; a daemon
-			// outage (error) is skipped so a temporary disconnect can't
-			// mass-reap healthy executions.
-			if r.rt == nil {
-				continue
-			}
-			alive, err := r.rt.ExecAlive(ctx, exec.WorkflowRunID, exec.ID)
-			if err != nil {
-				r.log.Debug("exec liveness: undeterminable", "execution", exec.ID, "error", err)
-				continue
-			}
-			dead = !alive
-		default:
-			// In-process execution (headless serve / no workflow run):
-			// its subprocess lives in this plane, so if the adapter is not
-			// tracking it, the process is gone.
-			dead = r.active == nil || !r.active(exec.ID)
-		}
+		// Every execution (workflow-run or standalone) is a session run
+		// tracked in the adapter's in-plane registry. If the adapter is no
+		// longer tracking it, the session runner is gone (plane restart /
+		// runtime container lost) — dead.
+		dead = r.active == nil || !r.active(exec.ID)
 		if !dead {
 			r.forget(exec.ID)
 			continue

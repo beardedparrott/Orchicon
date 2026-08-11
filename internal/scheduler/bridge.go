@@ -41,14 +41,6 @@ type ExecutionManifest struct {
 	StallTextLoopWindowSeconds    int64
 	StallRepetitionCount          int32
 	StallRepetitionWindowSeconds  int64
-	// ReconnectAttempts is how many times the adapter retries a broken exec
-	// stream (transport blip) before failing the execution. Zero = built-in
-	// default (3).
-	ReconnectAttempts int32
-	// ReconnectGraceSeconds is how long the runtime supervisor keeps an
-	// orphaned child running (no attached client) before killing it, so the
-	// client can re-attach. Zero = built-in default (60).
-	ReconnectGraceSeconds int64
 }
 
 // ExecutionCallbacks are the status callbacks the adapter bridge uses to

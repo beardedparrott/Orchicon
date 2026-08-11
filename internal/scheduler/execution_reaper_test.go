@@ -7,7 +7,7 @@ import "testing"
 // resets the streak, and that pruning drops counters for executions that
 // are no longer running.
 func TestReaperConsecutiveNotAlive(t *testing.T) {
-	r := NewExecutionReaper(nil, nil, nil, nil, nil)
+	r := NewExecutionReaper(nil, nil, nil, nil)
 
 	if got := r.bump("ex1"); got != 1 {
 		t.Fatalf("first bump: got %d, want 1", got)

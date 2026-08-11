@@ -108,25 +108,6 @@ type CreateResponse struct {
 	ServeURL      string `json:"serve_url,omitempty"`
 }
 
-// ExecRequest is the body of POST /v1/runtimes/{id}/exec.
-type ExecRequest struct {
-	ExecID     string   `json:"exec_id"`
-	Argv       []string `json:"argv"`
-	Env        []string `json:"env"`
-	Cwd        string   `json:"cwd"`
-	ProjectDir string   `json:"project_dir"`
-	// ReconnectGraceSeconds is how long the supervisor keeps an orphaned
-	// child (no attached client) running before killing it, so the client
-	// can re-attach to a transiently broken stream. Zero = default (60).
-	ReconnectGraceSeconds int64 `json:"reconnect_grace_seconds,omitempty"`
-}
-
-// SignalRequest is the body of POST /v1/runtimes/{id}/signal.
-type SignalRequest struct {
-	ExecID string `json:"exec_id"`
-	Signal string `json:"signal"`
-}
-
 // ListResponse is returned by GET /v1/runtimes.
 type ListResponse struct {
 	Runtimes []string `json:"runtimes"`
@@ -283,8 +264,6 @@ func (d *Daemon) handleRuntimes(w http.ResponseWriter, r *http.Request) {
 
 // handleRuntime implements the per-runtime routes:
 //
-//	POST /v1/runtimes/{id}/exec   -> stream an exec into the runtime
-//	POST /v1/runtimes/{id}/signal -> signal a running exec
 //	DELETE /v1/runtimes/{id}      -> kill + remove the runtime container
 func (d *Daemon) handleRuntime(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/runtimes/")
@@ -298,17 +277,6 @@ func (d *Daemon) handleRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
-	case action == "exec" && r.Method == http.MethodPost:
-		d.handleExec(w, r, id)
-	case action == "signal" && r.Method == http.MethodPost:
-		d.handleSignal(w, r, id)
-	case strings.HasPrefix(action, "execs/") && r.Method == http.MethodGet:
-		execID := strings.TrimPrefix(action, "execs/")
-		if execID == "" || strings.Contains(execID, "/") {
-			httpError(w, http.StatusBadRequest, "bad exec id")
-			return
-		}
-		d.handleExecStatus(w, id, execID)
 	case action == "" && r.Method == http.MethodDelete:
 		d.handleKill(w, id)
 	default:
@@ -752,149 +720,6 @@ func (d *Daemon) listRuntimes(instance string) ([]string, error) {
 	return names, nil
 }
 
-// handleExec streams a dispatch into the runtime container: it pipes the
-// request JSON into `orchicon runtime-client` (via docker exec) and
-// relays the JSON-lines events to the HTTP response, flushing each line.
-func (d *Daemon) handleExec(w http.ResponseWriter, r *http.Request, id string) {
-	name := d.containerName(id)
-	var req ExecRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpError(w, http.StatusBadRequest, "bad request: "+err.Error())
-		return
-	}
-	if err := validateExec(req); err != nil {
-		httpError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	reqJSON, err := json.Marshal(AgentRequest{
-		Cmd:                   "exec",
-		ExecID:                req.ExecID,
-		Argv:                  req.Argv,
-		Env:                   req.Env,
-		Cwd:                   req.Cwd,
-		ProjectDir:            req.ProjectDir,
-		ReconnectGraceSeconds: req.ReconnectGraceSeconds,
-	})
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	cmd := exec.Command(d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
-	cmd.Stdin = bytes.NewReader(reqJSON)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if err := cmd.Start(); err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	defer cmd.Wait()
-
-	// When the control plane's request ends (client cancel, plane shutdown,
-	// or a transient transport break), close the docker-exec CLI. We do NOT
-	// SIGKILL the opencode child here: a transient break must not kill a
-	// healthy execution. Closing the docker-exec makes the supervisor see
-	// the disconnect; it keeps the child running for the reconnect grace
-	// (so the client can re-attach) and kills it only if nothing re-attaches
-	// within that window. Explicit termination (wall-clock deadline, abort,
-	// plane shutdown) signals the child directly via the signal endpoint.
-	go func() {
-		<-r.Context().Done()
-		d.Log.Info("runtime exec request ended — disconnecting stream", "runtime", name, "exec", req.ExecID)
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-	}()
-
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	enc := json.NewEncoder(w)
-	dec := json.NewDecoder(stdout)
-	for {
-		var ev AgentEvent
-		if err := dec.Decode(&ev); err != nil {
-			break
-		}
-		_ = enc.Encode(ev)
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-		if ev.Event == "exit" || ev.Event == "error" {
-			break
-		}
-	}
-}
-
-func (d *Daemon) handleSignal(w http.ResponseWriter, r *http.Request, id string) {
-	name := d.containerName(id)
-	var req SignalRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpError(w, http.StatusBadRequest, "bad request: "+err.Error())
-		return
-	}
-	reqJSON, err := json.Marshal(AgentRequest{Cmd: "signal", ExecID: req.ExecID, Signal: req.Signal})
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	cmd := exec.Command(d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
-	cmd.Stdin = bytes.NewReader(reqJSON)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "signal exec: "+err.Error()+" ("+strings.TrimSpace(string(out))+")")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-// handleExecStatus reports whether an exec is still running inside a
-// runtime container (the execution-liveness reaper's query).
-//
-// The answer must distinguish three cases so the reaper never kills a
-// healthy execution on a transient blip:
-//   - container missing       -> alive:false, container:false (definitive dead)
-//   - supervisor answers      -> alive:<its verdict>          (definitive)
-//   - the probe itself failed -> unknown:true                 (UNDETERMINABLE)
-//
-// The old code swallowed the docker-exec error and defaulted to
-// alive:false, so a transient docker/socket hiccup made a running exec
-// look dead and the single-probe reaper reaped it.
-func (d *Daemon) handleExecStatus(w http.ResponseWriter, id, execID string) {
-	name := d.containerName(id)
-	if running, err := d.containerRunning(name); err != nil || !running {
-		writeJSON(w, http.StatusOK, map[string]bool{"alive": false, "container": false})
-		return
-	}
-	reqJSON, err := json.Marshal(AgentRequest{Cmd: "status", ExecID: execID})
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]bool{"alive": false, "container": true})
-		return
-	}
-	cmd := exec.Command(d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
-	cmd.Stdin = bytes.NewReader(reqJSON)
-	out, perr := cmd.Output()
-	if perr != nil {
-		// Probe failed (docker exec hiccup, supervisor socket momentarily
-		// unavailable) — not a definitive "dead". Report undeterminable so
-		// the reaper skips instead of reaping a healthy execution.
-		writeJSON(w, http.StatusOK, map[string]any{"alive": false, "container": true, "unknown": true})
-		return
-	}
-	sc := bufio.NewScanner(bytes.NewReader(out))
-	for sc.Scan() {
-		var ev AgentEvent
-		if json.Unmarshal(sc.Bytes(), &ev) == nil && ev.Event == "status" {
-			writeJSON(w, http.StatusOK, map[string]bool{"alive": ev.Alive, "container": true})
-			return
-		}
-	}
-	// The supervisor didn't answer the status query — undeterminable.
-	writeJSON(w, http.StatusOK, map[string]any{"alive": false, "container": true, "unknown": true})
-}
-
 func (d *Daemon) handleKill(w http.ResponseWriter, id string) {
 	name := d.containerName(id)
 	out, err := d.docker("rm", "-f", name)
@@ -932,19 +757,6 @@ func (d *Daemon) pingRuntime(name string) bool {
 }
 
 // validateExec enforces the daemon's argv allowlist.
-func validateExec(req ExecRequest) error {
-	if len(req.Argv) == 0 {
-		return fmt.Errorf("argv required")
-	}
-	base := filepath.Base(req.Argv[0])
-	switch base {
-	case "opencode", "orchicon", "bash", "sh":
-	default:
-		return fmt.Errorf("argv[0] not allowed: %s", base)
-	}
-	return nil
-}
-
 func (d *Daemon) docker(args ...string) (string, error) {
 	cmd := exec.Command(d.DockerBin, args...)
 	var buf bytes.Buffer
@@ -952,24 +764,6 @@ func (d *Daemon) docker(args ...string) (string, error) {
 	cmd.Stderr = &buf
 	err := cmd.Run()
 	return buf.String(), err
-}
-
-// signalRuntimeExec sends a signal to a running exec inside a runtime
-// container via `orchicon runtime-client` (bounded; best-effort).
-func (d *Daemon) signalRuntimeExec(name, execID, sig string) error {
-	reqJSON, err := json.Marshal(AgentRequest{Cmd: "signal", ExecID: execID, Signal: sig})
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
-	cmd.Stdin = bytes.NewReader(reqJSON)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("signal %s exec %s: %v (%s)", name, execID, err, strings.TrimSpace(string(out)))
-	}
-	return nil
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
