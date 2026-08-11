@@ -14,6 +14,47 @@ import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialM
 import { Message, proto3, protoInt64, Timestamp } from "@bufbuild/protobuf";
 
 /**
+ * ConversationMode is the active persona for a conversation. The mode selects
+ * the per-message system prompt applied to opencode turns; the opencode
+ * session itself is unchanged by a mode switch (the per-turn `system` field
+ * carries the new persona on the same session — no session change, no serve
+ * restart).
+ *
+ * @generated from enum orchicon.api.v1.ConversationMode
+ */
+export enum ConversationMode {
+  /**
+   * @generated from enum value: CONVERSATION_MODE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * BRAINSTORM is the default: an open systems-thinking partner that helps
+   * the user create. General design, coding, and brainstorming are in scope;
+   * the Orchicon MCP tool surface is shared with ORCHICON mode.
+   *
+   * @generated from enum value: CONVERSATION_MODE_BRAINSTORM = 1;
+   */
+  BRAINSTORM = 1,
+
+  /**
+   * ORCHICON is the strictly-governed platform expert persona: it answers
+   * questions about Orchicon and operates on the user's Orchicon data, and
+   * refuses general coding help, personal conversation, or non-Orchicon
+   * topics.
+   *
+   * @generated from enum value: CONVERSATION_MODE_ORCHICON = 2;
+   */
+  ORCHICON = 2,
+}
+// Retrieve enum metadata with: proto3.getEnumType(ConversationMode)
+proto3.util.setEnumType(ConversationMode, "orchicon.api.v1.ConversationMode", [
+  { no: 0, name: "CONVERSATION_MODE_UNSPECIFIED" },
+  { no: 1, name: "CONVERSATION_MODE_BRAINSTORM" },
+  { no: 2, name: "CONVERSATION_MODE_ORCHICON" },
+]);
+
+/**
  * Conversation is a top-level chat session with the Ask Orchicon agent.
  *
  * @generated from message orchicon.api.v1.Conversation
@@ -68,6 +109,16 @@ export class Conversation extends Message<Conversation> {
    */
   sessionId = "";
 
+  /**
+   * mode is the active persona (brainstorm default). The mode is applied as
+   * the opencode per-turn system prompt, so toggling it mid-conversation
+   * needs no session change or serve restart — the next message carries the
+   * new persona on the same session.
+   *
+   * @generated from field: orchicon.api.v1.ConversationMode mode = 10;
+   */
+  mode = ConversationMode.UNSPECIFIED;
+
   constructor(data?: PartialMessage<Conversation>) {
     super();
     proto3.util.initPartial(data, this);
@@ -85,6 +136,7 @@ export class Conversation extends Message<Conversation> {
     { no: 7, name: "created_at", kind: "message", T: Timestamp },
     { no: 8, name: "updated_at", kind: "message", T: Timestamp },
     { no: 9, name: "session_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 10, name: "mode", kind: "enum", T: proto3.getEnumType(ConversationMode) },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Conversation {

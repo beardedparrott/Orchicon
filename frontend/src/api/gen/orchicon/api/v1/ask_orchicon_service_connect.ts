@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse } from "./ask_orchicon_service_pb.js";
+import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, SetConversationModeRequest, SetConversationModeResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse } from "./ask_orchicon_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -77,6 +77,20 @@ export const AskOrchiconService = {
       name: "UpdateConversationTitle",
       I: UpdateConversationTitleRequest,
       O: UpdateConversationTitleResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * SetConversationMode switches the active persona for a conversation
+     * (brainstorm <-> orchicon). The change applies from the NEXT message on:
+     * the same opencode session persists and the per-turn system prompt swaps
+     * with no session change or serve restart.
+     *
+     * @generated from rpc orchicon.api.v1.AskOrchiconService.SetConversationMode
+     */
+    setConversationMode: {
+      name: "SetConversationMode",
+      I: SetConversationModeRequest,
+      O: SetConversationModeResponse,
       kind: MethodKind.Unary,
     },
     /**

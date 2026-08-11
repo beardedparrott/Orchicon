@@ -16,6 +16,11 @@ type ConversationRow struct {
 	Title     string
 	ModelRef  string
 	SessionID string
+	// Mode is the per-conversation persona: 'brainstorm' (default, open
+	// systems-thinking partner) or 'orchicon' (governed platform expert).
+	// Read at turn-dispatch time and applied per message via the opencode
+	// per-turn system prompt.
+	Mode      string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -55,12 +60,15 @@ type AgentConfigRow struct {
 // --- Conversations ---
 
 func CreateConversation(ctx context.Context, tx pgx.Tx, c ConversationRow) (ConversationRow, error) {
-	const q = `INSERT INTO ask_orchicon_conversations (id, tenant_id, title, model_ref)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, tenant_id, title, model_ref, session_id, created_at, updated_at`
+	// An empty mode falls back to the migration's 'brainstorm' default
+	// (COALESCE guards any caller that omits it), so absent/unspecified
+	// always lands on the default persona.
+	const q = `INSERT INTO ask_orchicon_conversations (id, tenant_id, title, model_ref, mode)
+		VALUES ($1, $2, $3, $4, COALESCE(NULLIF($5, ''), 'brainstorm'))
+		RETURNING id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at`
 	row := c
-	err := tx.QueryRow(ctx, q, c.ID, c.TenantID, c.Title, c.ModelRef).Scan(
-		&row.ID, &row.TenantID, &row.Title, &row.ModelRef, &row.SessionID, &row.CreatedAt, &row.UpdatedAt,
+	err := tx.QueryRow(ctx, q, c.ID, c.TenantID, c.Title, c.ModelRef, c.Mode).Scan(
+		&row.ID, &row.TenantID, &row.Title, &row.ModelRef, &row.SessionID, &row.Mode, &row.CreatedAt, &row.UpdatedAt,
 	)
 	if err != nil {
 		return ConversationRow{}, fmt.Errorf("db: create conversation: %w", err)
@@ -69,7 +77,7 @@ func CreateConversation(ctx context.Context, tx pgx.Tx, c ConversationRow) (Conv
 }
 
 func GetConversation(ctx context.Context, tx pgx.Tx, tenantID, id string) (ConversationRow, error) {
-	const q = `SELECT id, tenant_id, title, model_ref, session_id, created_at, updated_at
+	const q = `SELECT id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at
 		FROM ask_orchicon_conversations WHERE tenant_id = $1 AND id = $2`
 	row, err := tx.Query(ctx, q, tenantID, id)
 	if err != nil {
@@ -87,13 +95,13 @@ func ListConversations(ctx context.Context, tx pgx.Tx, tenantID string, limit in
 	var q string
 	var args []any
 	if afterID != "" {
-		q = `SELECT id, tenant_id, title, model_ref, session_id, created_at, updated_at
+		q = `SELECT id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at
 			FROM ask_orchicon_conversations
 			WHERE tenant_id = $1 AND updated_at < (SELECT updated_at FROM ask_orchicon_conversations WHERE tenant_id = $1 AND id = $2)
 			ORDER BY updated_at DESC LIMIT $3`
 		args = []any{tenantID, afterID, limit}
 	} else {
-		q = `SELECT id, tenant_id, title, model_ref, session_id, created_at, updated_at
+		q = `SELECT id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at
 			FROM ask_orchicon_conversations
 			WHERE tenant_id = $1
 			ORDER BY updated_at DESC LIMIT $2`
@@ -120,10 +128,29 @@ func ListConversations(ctx context.Context, tx pgx.Tx, tenantID string, limit in
 func UpdateConversationTitle(ctx context.Context, tx pgx.Tx, tenantID, id, title string) (ConversationRow, error) {
 	const q = `UPDATE ask_orchicon_conversations SET title = $3, updated_at = now()
 		WHERE tenant_id = $1 AND id = $2
-		RETURNING id, tenant_id, title, model_ref, session_id, created_at, updated_at`
+		RETURNING id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at`
 	row, err := tx.Query(ctx, q, tenantID, id, title)
 	if err != nil {
 		return ConversationRow{}, fmt.Errorf("db: update conversation title: %w", err)
+	}
+	defer row.Close()
+	if row.Next() {
+		return scanConversation(row)
+	}
+	return ConversationRow{}, ErrNotFound
+}
+
+// UpdateConversationMode switches a conversation's persona (brainstorm /
+// orchicon). The new mode takes effect on the NEXT message: it is read at
+// turn-dispatch time and applied via the opencode per-turn system prompt, so
+// no session change or serve restart is needed. Returns the updated row.
+func UpdateConversationMode(ctx context.Context, tx pgx.Tx, tenantID, id, mode string) (ConversationRow, error) {
+	const q = `UPDATE ask_orchicon_conversations SET mode = $3, updated_at = now()
+		WHERE tenant_id = $1 AND id = $2
+		RETURNING id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at`
+	row, err := tx.Query(ctx, q, tenantID, id, mode)
+	if err != nil {
+		return ConversationRow{}, fmt.Errorf("db: update conversation mode: %w", err)
 	}
 	defer row.Close()
 	if row.Next() {
@@ -325,7 +352,7 @@ func UpsertAgentConfig(ctx context.Context, tx pgx.Tx, tenantID string, c AgentC
 
 func scanConversation(row pgx.Rows) (ConversationRow, error) {
 	var r ConversationRow
-	if err := row.Scan(&r.ID, &r.TenantID, &r.Title, &r.ModelRef, &r.SessionID, &r.CreatedAt, &r.UpdatedAt); err != nil {
+	if err := row.Scan(&r.ID, &r.TenantID, &r.Title, &r.ModelRef, &r.SessionID, &r.Mode, &r.CreatedAt, &r.UpdatedAt); err != nil {
 		return ConversationRow{}, fmt.Errorf("db: scan conversation: %w", err)
 	}
 	return r, nil

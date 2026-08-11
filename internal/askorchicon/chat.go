@@ -282,9 +282,12 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 	// (DB history included) is used when a fresh session is created (first
 	// message, or a lost session recreated); the reuse variant (no history —
 	// it already lives in the session) is the steady-state system for
-	// follow-up turns.
-	seedSystem := buildSystemPrompt(cfg, s.toolRegistry, prevMessages, true, attachments, projectContext)
-	reuseSystem := buildSystemPrompt(cfg, s.toolRegistry, prevMessages, false, attachments, projectContext)
+	// follow-up turns. Both variants are built from the conversation's CURRENT
+	// mode: the mode is applied per message as the opencode per-turn `system`
+	// field, so a mid-conversation mode switch changes the next message's
+	// persona with no session change or serve restart.
+	seedSystem := buildSystemPrompt(conv.Mode, cfg, s.toolRegistry, prevMessages, true, attachments, projectContext)
+	reuseSystem := buildSystemPrompt(conv.Mode, cfg, s.toolRegistry, prevMessages, false, attachments, projectContext)
 
 	// --- 4. Launch the detached reply collector and return immediately.
 	// ChatStream does NOT hold the browser connection open for the turn:
@@ -375,8 +378,10 @@ func (s *Service) AbortConversationTurn(ctx context.Context, req *connect.Reques
 }
 
 // buildSystemPrompt assembles the per-message `system` prompt for the Ask
-// Orchicon agent. It carries the identity block (BuildSystemPrompt), the
-// enabled-projects context, the tools list, and this message's attachments.
+// Orchicon agent. It carries the mode's identity block (BuildSystemPrompt),
+// the enabled-projects context, the tools list, and this message's
+// attachments. mode selects the persona (brainstorm | orchicon); it is the
+// conversation's persisted mode read at turn-dispatch time.
 //
 // When includeHistory is true the DB conversation history is ALSO injected
 // (last 10 messages, chronological) plus the "refer to earlier" hint — this
@@ -385,10 +390,10 @@ func (s *Service) AbortConversationTurn(ctx context.Context, req *connect.Reques
 // prior turns. When false (the steady-state follow-up on a live session) no
 // history block is emitted: the history already lives in the session, and
 // re-injecting it would double tokens and can confuse the model.
-func buildSystemPrompt(cfg db.AgentConfigRow, registry *ToolRegistry, history []db.MessageRow, includeHistory bool, attachments []*apiv1.AttachmentInput, projectContext string) string {
+func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistry, history []db.MessageRow, includeHistory bool, attachments []*apiv1.AttachmentInput, projectContext string) string {
 	var b strings.Builder
 
-	b.WriteString(BuildSystemPrompt(cfg, registry))
+	b.WriteString(BuildSystemPrompt(mode, cfg, registry))
 	b.WriteString("\n\n")
 
 	if includeHistory {

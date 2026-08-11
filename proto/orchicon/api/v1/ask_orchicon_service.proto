@@ -32,6 +32,12 @@ service AskOrchiconService {
   // UpdateConversationTitle updates the title of a conversation.
   rpc UpdateConversationTitle(UpdateConversationTitleRequest) returns (UpdateConversationTitleResponse);
 
+  // SetConversationMode switches the active persona for a conversation
+  // (brainstorm <-> orchicon). The change applies from the NEXT message on:
+  // the same opencode session persists and the per-turn system prompt swaps
+  // with no session change or serve restart.
+  rpc SetConversationMode(SetConversationModeRequest) returns (SetConversationModeResponse);
+
   // Messages.
 
   // ListMessages returns messages for a conversation, ordered by
@@ -102,9 +108,20 @@ message GetConversationResponse {
 message CreateConversationRequest {
   string model_ref = 1;
   string initial_message = 2;
+  // mode is the starting persona. Unset/UNSPECIFIED defaults to BRAINSTORM.
+  ConversationMode mode = 3;
 }
 
 message CreateConversationResponse {
+  Conversation conversation = 1;
+}
+
+message SetConversationModeRequest {
+  string id = 1;
+  ConversationMode mode = 2;
+}
+
+message SetConversationModeResponse {
   Conversation conversation = 1;
 }
 

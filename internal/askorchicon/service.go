@@ -173,6 +173,10 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	mode, err := conversationModeFromProto(req.Msg.Mode)
+	if err != nil {
+		return nil, err
+	}
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -183,6 +187,7 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 		ID:       db.NewID(),
 		TenantID: tenantID,
 		ModelRef: req.Msg.ModelRef,
+		Mode:     mode,
 	}
 	row, err := db.CreateConversation(ctx, ttx.Tx, convRow)
 	if err != nil {
@@ -297,6 +302,45 @@ func (s *Service) UpdateConversationTitle(ctx context.Context, req *connect.Requ
 	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
 	return connect.NewResponse(&apiv1.UpdateConversationTitleResponse{
+		Conversation: conversationRowToProto(row, count, preview),
+	}), nil
+}
+
+// SetConversationMode switches a conversation's persona (brainstorm <-> orchicon).
+// The new mode is persisted on the conversation and takes effect
+// on the NEXT message: the turn reads it at dispatch time and applies it as
+// the opencode per-turn system prompt — no session change or serve restart
+// needed (the F4 task 9 toggle surface).
+func (s *Service) SetConversationMode(ctx context.Context, req *connect.Request[apiv1.SetConversationModeRequest]) (*connect.Response[apiv1.SetConversationModeResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	mode, err := conversationModeFromProto(req.Msg.Mode)
+	if err != nil {
+		return nil, err
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	row, err := db.UpdateConversationMode(ctx, ttx.Tx, tenantID, req.Msg.Id, mode)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
+	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
+	return connect.NewResponse(&apiv1.SetConversationModeResponse{
 		Conversation: conversationRowToProto(row, count, preview),
 	}), nil
 }
@@ -445,12 +489,52 @@ func conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview 
 		Title:              r.Title,
 		ModelRef:           r.ModelRef,
 		SessionId:          r.SessionID,
+		Mode:               conversationModeToProto(r.Mode),
 		MessageCount:       int32(messageCount),
 		LastMessagePreview: lastPreview,
 		CreatedAt:          timestamppb.New(r.CreatedAt),
 		UpdatedAt:          timestamppb.New(r.UpdatedAt),
 	}
 	return p
+}
+
+// conversationMode constants mirror the DB column's text values ('brainstorm'
+// default, 'orchicon'). They are the single source of truth for the mode
+// strings used across the DB layer and the per-mode prompt dispatch.
+const (
+	modeBrainstorm = "brainstorm"
+	modeOrchicon   = "orchicon"
+)
+
+// conversationModeFromProto validates + normalizes a proto ConversationMode
+// to its DB text value. UNSPECIFIED (and the wire's empty/absent value) maps
+// to the brainstorm default; an unknown enum value on the wire is rejected
+// with CodeInvalidArgument (never silently coerced).
+func conversationModeFromProto(m apiv1.ConversationMode) (string, error) {
+	switch m {
+	case apiv1.ConversationMode_CONVERSATION_MODE_UNSPECIFIED,
+		apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM:
+		return modeBrainstorm, nil
+	case apiv1.ConversationMode_CONVERSATION_MODE_ORCHICON:
+		return modeOrchicon, nil
+	default:
+		return "", connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("unknown conversation mode value %d", int32(m)))
+	}
+}
+
+// conversationModeToProto maps a DB mode text value back to the proto enum.
+// Unknown/empty (defensive — the boundary validator keeps these out) maps to
+// UNSPECIFIED.
+func conversationModeToProto(mode string) apiv1.ConversationMode {
+	switch mode {
+	case modeBrainstorm:
+		return apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM
+	case modeOrchicon:
+		return apiv1.ConversationMode_CONVERSATION_MODE_ORCHICON
+	default:
+		return apiv1.ConversationMode_CONVERSATION_MODE_UNSPECIFIED
+	}
 }
 
 func messageRowToProto(r db.MessageRow) *apiv1.ChatMessage {
