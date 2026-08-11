@@ -32,7 +32,7 @@ import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-import { mergeSessionItems, type ChatItem, type ParsedTool } from "./sessionItems";
+import { groupByPhase, mergeSessionItems, type ChatItem, type ParsedTool } from "./sessionItems";
 
 interface SessionChatPaneProps {
   executionId: string;
@@ -63,6 +63,12 @@ function transcriptItems(
   parts: { seq: bigint; kind: string; payload: Uint8Array; createdAt?: { seconds: bigint } }[] | undefined,
 ): ChatItem[] {  if (!parts?.length) return [];
   const out: ChatItem[] = [];
+  // Phase counter: each opencode step is one assistant generation period.
+  // step_start / step_finish parts are boundaries that close the phase but
+  // render nothing; every text/reasoning part is tagged with the step it
+  // belongs to. The keys are derived from seq order, so they are stable
+  // across the 2s transcript-flush renders (no mid-stream regrouping).
+  let step = 0;
   for (const p of parts) {
     const at = p.createdAt?.seconds
       ? Number(p.createdAt.seconds) * 1000
@@ -70,6 +76,10 @@ function transcriptItems(
     const key = `t-${p.seq.toString()}`;
     const pl = decodePayload(p.payload);
     switch (p.kind) {
+      case "step_start":
+      case "step_finish":
+        step++;
+        break;
       case "user_message":
         if (typeof pl.text === "string" && pl.text) {
           out.push({
@@ -83,7 +93,7 @@ function transcriptItems(
         break;
       case "text":
         if (typeof pl.part?.text === "string" && pl.part.text) {
-          out.push({ kind: "text", text: pl.part.text, at, key });
+          out.push({ kind: "text", text: pl.part.text, at, key, phase: `step-${step}` });
         }
         break;
       case "tool_use": {
@@ -108,7 +118,7 @@ function transcriptItems(
       }
       case "reasoning":
         if (typeof pl.part?.text === "string" && pl.part.text) {
-          out.push({ kind: "reasoning", text: pl.part.text, at, key });
+          out.push({ kind: "reasoning", text: pl.part.text, at, key, phase: `step-${step}` });
         }
         break;
       case "session_info":
@@ -129,13 +139,21 @@ function transcriptItems(
         break;
     }
   }
-  return out;
+  // Group the history per (kind, phase) so the terminal view — which
+  // renders the transcript alone — converges with the live view: each
+  // step's per-chunk reasoning parts become ONE bubble.
+  return groupByPhase(out);
 }
 
 // --- live event stream → chat items (mirrors RuntimeSessionPane) --------
 
 function liveItems(events: StreamExecutionEventsResponse[]): ChatItem[] {
   const out: ChatItem[] = [];
+  // Synthetic phase counter: the live stream has no step markers, so we
+  // increment on the boundary events (tool / error) that separate one
+  // assistant generation period from the next. The events array is
+  // monotonic, so these `live-N` keys are stable across renders.
+  let phase = 0;
   for (const resp of events) {
     const evt = resp.event;
     if (!evt) continue;
@@ -165,8 +183,8 @@ function liveItems(events: StreamExecutionEventsResponse[]): ChatItem[] {
         }
         out.push(
           isReasoning
-            ? { kind: "reasoning", text, at, key: `r-${id}` }
-            : { kind: "text", text, at, key: id, live: true },
+            ? { kind: "reasoning", text, at, key: `r-${id}`, live: true, phase: `live-${phase}` }
+            : { kind: "text", text, at, key: id, live: true, phase: `live-${phase}` },
         );
         break;
       }
@@ -175,6 +193,7 @@ function liveItems(events: StreamExecutionEventsResponse[]): ChatItem[] {
         const input = (payload.input as string) || "";
         const output = (payload.output as string) || "";
         out.push({ kind: "tool", tool: { id, toolName, input, output, at }, key: id });
+        phase++;
         break;
       }
       case 8:
@@ -184,6 +203,7 @@ function liveItems(events: StreamExecutionEventsResponse[]): ChatItem[] {
           at,
           key: id,
         });
+        phase++;
         break;
       case 10: {
         // ARTIFACT

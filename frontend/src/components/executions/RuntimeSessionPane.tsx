@@ -85,15 +85,18 @@ interface RenderedBlockWithArtifacts {
 // ChatMessage is the unified type the renderer iterates over. The
 // streaming array of events is collapsed into an ordered list of
 // messages so the timeline reads top-to-bottom like a chat log.
+// `phase` is a stable per-generation key (live-N): text/reasoning
+// chunks of one phase render as ONE growing bubble even when the model
+// interleaves them; boundaries (system/tool/result/error) seal it.
 type ChatMessage =
   | { kind: "prompt"; text: string; key: string }
-  | { kind: "system"; text: string; key: string; occurredAt: Date }
-  | { kind: "tool"; tool: ParsedToolCall; key: string }
-  | { kind: "text"; chunk: ParsedTextChunk; key: string }
-  | { kind: "reasoning"; chunk: ParsedReasoningChunk; key: string }
-  | { kind: "result"; result: ParsedResult; key: string }
-  | { kind: "error"; error: ParsedError; key: string }
-  | { kind: "artifact"; artifact: ParsedArtifact; key: string };
+  | { kind: "system"; text: string; key: string; occurredAt: Date; phase?: string }
+  | { kind: "tool"; tool: ParsedToolCall; key: string; phase?: string }
+  | { kind: "text"; chunk: ParsedTextChunk; key: string; phase?: string }
+  | { kind: "reasoning"; chunk: ParsedReasoningChunk; key: string; phase?: string }
+  | { kind: "result"; result: ParsedResult; key: string; phase?: string }
+  | { kind: "error"; error: ParsedError; key: string; phase?: string }
+  | { kind: "artifact"; artifact: ParsedArtifact; key: string; phase?: string };
 
 interface RuntimeSessionPaneProps {
   events: StreamExecutionEventsResponse[];
@@ -125,6 +128,14 @@ export function RuntimeSessionPane({ events, prompt, streamStatus, storedOutput 
     // accidentally merge unrelated consecutive calls of the same
     // tool.
     const openInputs = new Map<string, ParsedToolCall>();
+
+    // Synthetic phase counter for the group-by-phase rendering. The live
+    // stream has no step markers, so boundaries (STARTED / TOOL_CALL /
+    // RESULT / ERROR) increment it; text/reasoning chunks get the phase
+    // that is open at their position. The events array is monotonic, so
+    // these `live-N` keys are stable across renders — no mid-stream
+    // regrouping while the transcript catches up.
+    let phase = 0;
 
     for (const resp of events) {
       const evt = resp.event;
@@ -173,7 +184,9 @@ export function RuntimeSessionPane({ events, prompt, streamStatus, storedOutput 
             text: payload.message || "Execution started",
             key: id,
             occurredAt: ts,
+            phase: `live-${phase}`,
           });
+          phase++;
           break;
         case 2: {
           // TELEMETRY — either an assistant text chunk or a
@@ -205,6 +218,7 @@ export function RuntimeSessionPane({ events, prompt, streamStatus, storedOutput 
                 occurredAt: ts,
               },
               key: `reason-${id}`,
+              phase: `live-${phase}`,
             });
           } else {
             out.push({
@@ -215,6 +229,7 @@ export function RuntimeSessionPane({ events, prompt, streamStatus, storedOutput 
                 occurredAt: ts,
               },
               key: id,
+              phase: `live-${phase}`,
             });
           }
           break;
@@ -243,6 +258,7 @@ export function RuntimeSessionPane({ events, prompt, streamStatus, storedOutput 
                 occurredAt: ts,
               },
               key: id,
+              phase: `live-${phase}`,
             });
           } else if (input && !output) {
             const tc: ParsedToolCall = {
@@ -253,7 +269,7 @@ export function RuntimeSessionPane({ events, prompt, streamStatus, storedOutput 
               occurredAt: ts,
             };
             openInputs.set(id, tc);
-            out.push({ kind: "tool", tool: tc, key: id });
+            out.push({ kind: "tool", tool: tc, key: id, phase: `live-${phase}` });
           } else if (output) {
             // The matching input event_id isn't on the wire, so we
             // match by tool name + position. If a tool card without
@@ -287,6 +303,7 @@ export function RuntimeSessionPane({ events, prompt, streamStatus, storedOutput 
             // unbounded across long sessions.
             if (openInputs.size > 64) openInputs.clear();
           }
+          phase++;
           break;
         }
         case 7: // RESULT (final aggregated result)
@@ -295,8 +312,10 @@ export function RuntimeSessionPane({ events, prompt, streamStatus, storedOutput 
               kind: "result",
               result: { text: payload.text as string, occurredAt: ts },
               key: id,
+              phase: `live-${phase}`,
             });
           }
+          phase++;
           break;
         case 8: // ERROR
           out.push({
@@ -306,7 +325,9 @@ export function RuntimeSessionPane({ events, prompt, streamStatus, storedOutput 
               occurredAt: ts,
             },
             key: id,
+            phase: `live-${phase}`,
           });
+          phase++;
           break;
         case 10: // ARTIFACT
           if (payload.content) {
@@ -319,6 +340,7 @@ export function RuntimeSessionPane({ events, prompt, streamStatus, storedOutput 
                 occurredAt: ts,
               },
               key: id,
+              phase: `live-${phase}`,
             });
           }
           break;
@@ -331,8 +353,10 @@ export function RuntimeSessionPane({ events, prompt, streamStatus, storedOutput 
               text: eventType,
               key: id,
               occurredAt: ts,
+              phase: `live-${phase}`,
             });
           }
+          phase++;
           break;
       }
     }
@@ -353,13 +377,13 @@ export function RuntimeSessionPane({ events, prompt, streamStatus, storedOutput 
     }
   }, [messages.length]);
 
-// Tool call grouping: collapse consecutive `text` chunks from the
-// same event window so the chat doesn't show a million tiny bubbles
-// for streamed output. (Each `text` event is one chunk; we keep
-// them separate events so the timeline stays accurate, but render
-// them as one visual block.) Same applies to `reasoning` chunks —
-// the operator should see one continuous "thinking" block, not a
-// hundred tiny cards.
+// Bubble grouping by phase: each `live-N` phase is one assistant
+// generation period. Text chunks append to the OPEN text group for their
+// phase and reasoning chunks to the OPEN reasoning group for their phase,
+// so interleaved-streaming models (reasoning → text → reasoning…) render
+// as ONE growing reasoning bubble plus ONE growing text bubble instead of
+// a run of chopped fragments. A boundary message (system / tool / result /
+// error) seals the phase; artifacts absorb into the open text group.
 const rendered = useMemo<
   Array<
     | ChatMessage
@@ -372,30 +396,40 @@ const rendered = useMemo<
       | RenderedBlockWithArtifacts
       | { kind: "reasoning-group"; chunks: ParsedReasoningChunk[] }
     > = [];
+    const textByPhase = new Map<string, RenderedBlockWithArtifacts>();
+    const reasoningByPhase = new Map<string, { kind: "reasoning-group"; chunks: ParsedReasoningChunk[] }>();
+
+    const openTextGroup = (phase: string): RenderedBlockWithArtifacts => {
+      let g = textByPhase.get(phase);
+      if (!g) {
+        g = { kind: "text-group", chunks: [], artifacts: [] };
+        textByPhase.set(phase, g);
+        blocks.push(g);
+      }
+      return g;
+    };
+    const openReasoningGroup = (phase: string): { kind: "reasoning-group"; chunks: ParsedReasoningChunk[] } => {
+      let g = reasoningByPhase.get(phase);
+      if (!g) {
+        g = { kind: "reasoning-group", chunks: [] };
+        reasoningByPhase.set(phase, g);
+        blocks.push(g);
+      }
+      return g;
+    };
+
     for (const m of messages) {
       if (m.kind === "text") {
-        const last = blocks[blocks.length - 1];
-        if (last && "kind" in last && last.kind === "text-group") {
-          last.chunks.push(m.chunk);
-        } else {
-          blocks.push({ kind: "text-group", chunks: [m.chunk], artifacts: [] });
-        }
+        openTextGroup(m.phase ?? "").chunks.push(m.chunk);
       } else if (m.kind === "reasoning") {
-        const last = blocks[blocks.length - 1];
-        if (last && "kind" in last && last.kind === "reasoning-group") {
-          last.chunks.push(m.chunk);
-        } else {
-          blocks.push({ kind: "reasoning-group", chunks: [m.chunk] });
-        }
+        openReasoningGroup(m.phase ?? "").chunks.push(m.chunk);
       } else if (m.kind === "artifact") {
-        // Absorb artifact into the preceding text group so it doesn't
-        // break the assistant message into separate bubbles.
-        const last = blocks[blocks.length - 1];
-        if (last && "kind" in last && last.kind === "text-group") {
-          last.artifacts.push(m.artifact);
-        } else {
-          blocks.push(m);
-        }
+        // Absorb artifact into the phase's open text group so it doesn't
+        // break the assistant message into separate bubbles (an artifact
+        // outside an open text group renders on its own).
+        const g = textByPhase.get(m.phase ?? "");
+        if (g) g.artifacts.push(m.artifact);
+        else blocks.push(m);
       } else {
         blocks.push(m);
       }
