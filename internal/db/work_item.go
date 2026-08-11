@@ -38,7 +38,19 @@ type WorkItemRow struct {
 	Priority           int
 	Budgets            []byte // jsonb
 	ContextWindow      int
-	Results            []byte // jsonb
+	// SortOrder is the sibling order within (parent_id) — the sequence
+	// engine's derived cursor (architecture-notes/
+	// sequential-multi-workflow-runs.md §1). Nullable; backfilled by
+	// created_at at migration time, changed only by ReorderWorkItems
+	// (explicit drag), never by display sort. NULL sorts last.
+	//
+	// CONVENTION: 1-based — the first child is 1 (ReorderWorkItems writes
+	// i+1), and 0/NULL means "unset" (sorts last; the frontend's
+	// byChainOrder treats sortOrder===0 as unset). NEVER write 0 as a real
+	// position: it is indistinguishable from unset on the wire (proto
+	// `double sort_order` defaults to 0) and will silently sort last.
+	SortOrder *float64
+	Results   []byte // jsonb
 	// PromptContext is the composite prompt the worker should see when
 	// dispatched for this work item. Set by the WorkflowReconciler
 	// before dispatch (PR B — context propagation). Read by the opencode
@@ -86,8 +98,8 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
 			acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
 			workflow_run_id, workflow_step_id,
-			priority, budgets, context_window, results, prompt_context,
-			scheduled_start_at, auto_start_workflow, runtime_image, context_files, version, created_at, updated_at`
+		priority, budgets, context_window, sort_order, results, prompt_context,
+		scheduled_start_at, auto_start_workflow, runtime_image, context_files, version, created_at, updated_at`
 	row := w
 	err := tx.QueryRow(ctx, q,
 		w.ID, w.TenantID, w.ProjectID, w.ParentID, w.Kind, w.Title, w.Description,
@@ -99,7 +111,7 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		&row.ID, &row.TenantID, &row.ProjectID, &row.ParentID, &row.Kind, &row.Title,
 		&row.Description, &row.AcceptanceCriteria, &row.AcceptanceReview, &row.Status, &row.AssignedWorkerRef,
 		&row.WorkflowID, &row.WorkflowRunID, &row.WorkflowStepID,
-		&row.Priority, &row.Budgets, &row.ContextWindow, &row.Results,
+		&row.Priority, &row.Budgets, &row.ContextWindow, &row.SortOrder, &row.Results,
 		&row.PromptContext,
 		&row.ScheduledStartAt, &row.AutoStartWorkflow, &row.RuntimeImage, &row.ContextFiles,
 		&row.Version, &row.CreatedAt, &row.UpdatedAt,
@@ -115,7 +127,7 @@ func GetWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkItemR
 	const q = `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
 		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
 		workflow_run_id, workflow_step_id,
-		priority, budgets, context_window, results, prompt_context,
+		priority, budgets, context_window, sort_order, results, prompt_context,
 		scheduled_start_at, auto_start_workflow, runtime_image, context_files, version, created_at, updated_at
 		FROM work_items WHERE id = $1 AND tenant_id = $2`
 	var w WorkItemRow
@@ -123,7 +135,7 @@ func GetWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkItemR
 		&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
 		&w.Description, &w.AcceptanceCriteria, &w.AcceptanceReview, &w.Status, &w.AssignedWorkerRef,
 		&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
-		&w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
+		&w.Priority, &w.Budgets, &w.ContextWindow, &w.SortOrder, &w.Results,
 		&w.PromptContext,
 		&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ContextFiles,
 		&w.Version, &w.CreatedAt, &w.UpdatedAt,
@@ -160,7 +172,7 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 	q := `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
 		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
 		workflow_run_id, workflow_step_id,
-		priority, budgets, context_window, results, prompt_context,
+		priority, budgets, context_window, sort_order, results, prompt_context,
 		scheduled_start_at, auto_start_workflow, runtime_image, context_files, version, created_at, updated_at
 		FROM work_items
 		WHERE tenant_id = $1 AND ($2 = '' OR project_id = $2) AND ($3 = '' OR id > $3)`
@@ -194,7 +206,22 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 	if strings.ToLower(f.SortOrder) == "desc" {
 		orderDir = "DESC"
 	}
-	q += ` ORDER BY ` + orderCol + ` ` + orderDir + ` LIMIT $` + fmt.Sprint(len(args)+1)
+	// Default ordering (no explicit sort_by) follows the sequence chain:
+	// sort_order NULLS LAST, created_at — the tree/board show sibling order
+	// by default. sort_order is never a display-sort option (the filter-bar
+	// dropdown only offers title/priority/created_at), so no UI control
+	// claims to write it. Cursor pagination (AfterID set) keeps the stable
+	// id order — the chain-order default only applies to full-page reads.
+	if f.SortBy == "" && f.AfterID == "" {
+		if orderDir == "ASC" {
+			q += ` ORDER BY sort_order NULLS LAST, created_at ASC, id ASC`
+		} else {
+			q += ` ORDER BY sort_order DESC NULLS LAST, created_at DESC, id DESC`
+		}
+	} else {
+		q += ` ORDER BY ` + orderCol + ` ` + orderDir
+	}
+	q += ` LIMIT $` + fmt.Sprint(len(args)+1)
 	args = append(args, f.PageSize)
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
@@ -208,7 +235,7 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 			&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
 			&w.Description, &w.AcceptanceCriteria, &w.AcceptanceReview, &w.Status, &w.AssignedWorkerRef,
 			&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
-			&w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
+			&w.Priority, &w.Budgets, &w.ContextWindow, &w.SortOrder, &w.Results,
 			&w.PromptContext,
 			&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ContextFiles,
 			&w.Version, &w.CreatedAt, &w.UpdatedAt,
@@ -227,9 +254,9 @@ func ListDirectChildren(ctx context.Context, tx pgx.Tx, tenantID, parentID strin
 	const q = `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
 		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
 		workflow_run_id, workflow_step_id,
-		priority, budgets, context_window, results, prompt_context,
+		priority, budgets, context_window, sort_order, results, prompt_context,
 		scheduled_start_at, auto_start_workflow, runtime_image, context_files, version, created_at, updated_at
-		FROM work_items WHERE tenant_id = $1 AND parent_id = $2 ORDER BY id`
+		FROM work_items WHERE tenant_id = $1 AND parent_id = $2 ORDER BY sort_order NULLS LAST, created_at, id`
 	rows, err := tx.Query(ctx, q, tenantID, parentID)
 	if err != nil {
 		return nil, fmt.Errorf("db: list direct children: %w", err)
@@ -242,12 +269,107 @@ func ListDirectChildren(ctx context.Context, tx pgx.Tx, tenantID, parentID strin
 			&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
 			&w.Description, &w.AcceptanceCriteria, &w.AcceptanceReview, &w.Status, &w.AssignedWorkerRef,
 			&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
-			&w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
+			&w.Priority, &w.Budgets, &w.ContextWindow, &w.SortOrder, &w.Results,
 			&w.PromptContext,
 			&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ContextFiles,
 			&w.Version, &w.CreatedAt, &w.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan direct child: %w", err)
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// ListSequenceActiveParents returns the work items that are sequence
+// parents in flight OR halted: status IN ('running','failed'), NO bound
+// workflow run (workflow_run_id empty), and at least one direct child.
+// This is the sequence engine's scan predicate (architecture-notes/
+// sequential-multi-workflow-runs.md §2). It is disjoint from bound-run
+// tickets (which carry a workflow_run_id) and from standalone one-shot
+// running items (which have no children). FAILED parents are included so
+// a retried child (the derived cursor's next sibling) can revive the
+// chain automatically.
+func ListSequenceActiveParents(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkItemRow, error) {
+	const q = `SELECT w.id, w.tenant_id, w.project_id, w.parent_id, w.kind, w.title, description,
+		acceptance_criteria, acceptance_review, w.status, assigned_worker_ref, workflow_id,
+		workflow_run_id, workflow_step_id,
+		priority, budgets, context_window, sort_order, results, prompt_context,
+		scheduled_start_at, auto_start_workflow, runtime_image, context_files, version, created_at, updated_at
+		FROM work_items w
+		WHERE w.tenant_id = $1
+		  AND w.status IN ('running', 'failed')
+		  AND w.workflow_run_id = ''
+		  AND EXISTS (SELECT 1 FROM work_items c WHERE c.tenant_id = $1 AND c.parent_id = w.id)
+		ORDER BY w.updated_at
+		LIMIT 100`
+	rows, err := tx.Query(ctx, q, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("db: list sequence active parents: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkItemRow
+	for rows.Next() {
+		var w WorkItemRow
+		if err := rows.Scan(
+			&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
+			&w.Description, &w.AcceptanceCriteria, &w.AcceptanceReview, &w.Status, &w.AssignedWorkerRef,
+			&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
+			&w.Priority, &w.Budgets, &w.ContextWindow, &w.SortOrder, &w.Results,
+			&w.PromptContext,
+			&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ContextFiles,
+			&w.Version, &w.CreatedAt, &w.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan sequence active parent: %w", err)
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// ListSiblingsForReorder returns the direct children of parentID
+// (empty = top-level) within a project, ordered by sort_order NULLS LAST,
+// created_at — the ReorderWorkItems read (architecture-notes/
+// sequential-multi-workflow-runs.md §1).
+func ListSiblingsForReorder(ctx context.Context, tx pgx.Tx, tenantID, projectID, parentID string) ([]WorkItemRow, error) {
+	var q string
+	var args []any
+	cols := `id, tenant_id, project_id, parent_id, kind, title, description,
+		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
+		workflow_run_id, workflow_step_id,
+		priority, budgets, context_window, sort_order, results, prompt_context,
+		scheduled_start_at, auto_start_workflow, runtime_image, context_files, version, created_at, updated_at`
+	if parentID == "" {
+		q = `SELECT ` + cols + `
+		FROM work_items
+		WHERE tenant_id = $1 AND project_id = $2 AND parent_id IS NULL
+		ORDER BY sort_order NULLS LAST, created_at, id`
+		args = []any{tenantID, projectID}
+	} else {
+		q = `SELECT ` + cols + `
+		FROM work_items
+		WHERE tenant_id = $1 AND project_id = $2 AND parent_id = $3
+		ORDER BY sort_order NULLS LAST, created_at, id`
+		args = []any{tenantID, projectID, parentID}
+	}
+	rows, err := tx.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: list siblings for reorder: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkItemRow
+	for rows.Next() {
+		var w WorkItemRow
+		if err := rows.Scan(
+			&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
+			&w.Description, &w.AcceptanceCriteria, &w.AcceptanceReview, &w.Status, &w.AssignedWorkerRef,
+			&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
+			&w.Priority, &w.Budgets, &w.ContextWindow, &w.SortOrder, &w.Results,
+			&w.PromptContext,
+			&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ContextFiles,
+			&w.Version, &w.CreatedAt, &w.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan sibling for reorder: %w", err)
 		}
 		out = append(out, w)
 	}
@@ -312,6 +434,11 @@ type UpdateWorkItemFields struct {
 	// ContextFiles updates the item's context_files JSONB. A non-nil
 	// pointer to an empty JSON array ("[]") clears the selection.
 	ContextFiles *[]byte
+	// SortOrder renumbers the sibling order within (parent_id). Set
+	// exclusively by ReorderWorkItems (explicit drag); display sort never
+	// mutates it. The sequence cursor is derived from sort_order at
+	// reconcile time, so a mid-run drag only shifts future arming.
+	SortOrder *float64
 }
 
 // UpdateWorkItem applies a partial update with optimistic concurrency.
@@ -442,18 +569,23 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 		args = append(args, *f.ContextFiles)
 		setIdx++
 	}
+	if f.SortOrder != nil {
+		q += fmt.Sprintf(`, sort_order = $%d`, setIdx)
+		args = append(args, *f.SortOrder)
+		setIdx++
+	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
 		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
 		workflow_run_id, workflow_step_id,
-		priority, budgets, context_window, results, prompt_context,
+		priority, budgets, context_window, sort_order, results, prompt_context,
 		scheduled_start_at, auto_start_workflow, runtime_image, context_files, version, created_at, updated_at`
 	var w WorkItemRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
 		&w.Description, &w.AcceptanceCriteria, &w.AcceptanceReview, &w.Status, &w.AssignedWorkerRef,
 		&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
-		&w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
+		&w.Priority, &w.Budgets, &w.ContextWindow, &w.SortOrder, &w.Results,
 		&w.PromptContext,
 		&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ContextFiles,
 		&w.Version, &w.CreatedAt, &w.UpdatedAt,

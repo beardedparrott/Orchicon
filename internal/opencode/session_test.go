@@ -74,7 +74,7 @@ func TestLegacyEventFromBus(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := legacyEventFromBus(tc.evt)
+			got, ok := LegacyEventFromBus(tc.evt)
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
 			}
@@ -174,5 +174,68 @@ func TestSessionRunAllTurnsDone(t *testing.T) {
 	case <-r.done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("allTurnsDone did not settle the execution")
+	}
+}
+
+// TestCompletionProbeDecision covers the pure decision core of the
+// completion-signal probe (H1): a session that goes idle with the decision
+// marker present settles; one without the marker gets probed while budget
+// remains and fails once the budget is spent.
+func TestCompletionProbeDecision(t *testing.T) {
+	now := time.Now()
+	withMarker := "Did the work.\n\nORCHICON WORKER SUMMARY: success — done"
+	withoutMarker := "Did the work, but the summary line never arrived."
+
+	cases := []struct {
+		name      string
+		output    string
+		nudges    int
+		lastNudge time.Time
+		wantProbe bool
+		wantFail  bool
+	}{
+		{
+			name:      "marker present settles",
+			output:    withMarker,
+			nudges:    0,
+			lastNudge: time.Time{},
+			wantProbe: false, wantFail: false,
+		},
+		{
+			name:      "marker present settles even with budget left",
+			output:    withMarker,
+			nudges:    1,
+			lastNudge: now,
+			wantProbe: false, wantFail: false,
+		},
+		{
+			name:      "missing marker probes while budget remains",
+			output:    withoutMarker,
+			nudges:    0,
+			lastNudge: time.Time{},
+			wantProbe: true, wantFail: false,
+		},
+		{
+			name:      "missing marker fails when budget exhausted",
+			output:    withoutMarker,
+			nudges:    nudgeMax(),
+			lastNudge: time.Time{},
+			wantProbe: false, wantFail: true,
+		},
+		{
+			name:      "missing marker fails inside cooldown window",
+			output:    withoutMarker,
+			nudges:    0,
+			lastNudge: now, // just nudged → cooldown blocks another probe
+			wantProbe: false, wantFail: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			probe, fail := completionProbeDecision(tc.output, tc.nudges, tc.lastNudge, now)
+			if probe != tc.wantProbe || fail != tc.wantFail {
+				t.Fatalf("probe=%v fail=%v, want probe=%v fail=%v", probe, fail, tc.wantProbe, tc.wantFail)
+			}
+		})
 	}
 }

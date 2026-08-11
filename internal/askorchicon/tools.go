@@ -153,6 +153,29 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Project ID"}},
 			Required:    []string{"id"},
 		},
+		{
+			Name:        "list_project_dir",
+			Description: "List the top-level entries of a project's project_dir (or a subdirectory of it). Read-only and path-traversal-safe: paths resolve inside the project directory only — use it to see what is in a project, existing or one just created in-conversation.",
+			Mutating:    false,
+			Fn:          toolListProjectDir,
+			Properties: map[string]PropertySchema{
+				"project_id": {Type: "string", Description: "Project ID"},
+				"path":       {Type: "string", Description: "Optional path inside the project directory — a relative subpath or an absolute path within it. Defaults to the project_dir root."},
+			},
+			Required: []string{"project_id"},
+		},
+		{
+			Name:        "read_project_file",
+			Description: "Read a file inside a project's project_dir (or a subdirectory of it). Read-only and path-traversal-safe: paths resolve inside the project directory only — use it to read files in a project, existing or one just created in-conversation.",
+			Mutating:    false,
+			Fn:          toolReadProjectFile,
+			Properties: map[string]PropertySchema{
+				"project_id": {Type: "string", Description: "Project ID"},
+				"path":       {Type: "string", Description: "File path — a relative path inside the project directory or an absolute path within it"},
+				"max_bytes":  {Type: "number", Description: "Optional max bytes to read (1 to 262144; default 262144)"},
+			},
+			Required: []string{"project_id", "path"},
+		},
 
 		// --- Work Items ---
 		{
@@ -243,6 +266,18 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Fn:          toolScheduleWorkItem,
 			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Work item ID"}, "scheduled_time": {Type: "string", Description: "Optional scheduled time (ISO 8601 or 'N minutes from now')"}},
 			Required:    []string{"id"},
+		},
+		{
+			Name:        "reorder_work_items",
+			Description: "Reorder the direct children of a work item (or top-level items when parent_id is empty) within a project — the sequence chain order. Provide project_id, an optional parent_id, and child_ids in the new order. Only this reorders a sequence; display sort never mutates it.",
+			Mutating:    true,
+			Fn:          toolReorderWorkItems,
+			Properties: map[string]PropertySchema{
+				"project_id": {Type: "string", Description: "Project ID"},
+				"parent_id":  {Type: "string", Description: "Parent work item ID (empty = top level)"},
+				"child_ids":  {Type: "array", Description: "Direct child work item IDs in the new order"},
+			},
+			Required: []string{"project_id", "child_ids"},
 		},
 		{
 			Name:        "delete_work_item",

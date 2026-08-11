@@ -87,3 +87,62 @@ export function KindDot({ kind, className }: { kind: number; className?: string 
     />
   );
 }
+
+/**
+ * "multi-workflow" chip — the color-coded label shown on a sequence parent
+ * (a work item with children running sequentially, each with its own
+ * workflow) and its children (architecture-notes/
+ * sequential-multi-workflow-runs.md §4). Indigo so it reads distinct from
+ * the status pills / kind badges.
+ */
+export function MultiWorkflowChip({
+  label = "multi-workflow",
+  className,
+}: {
+  label?: string;
+  className?: string;
+}) {
+  const isDark = useDarkPalette();
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+        isDark ? "bg-indigo-500/20 text-indigo-300" : "bg-indigo-500/15 text-indigo-800",
+        className,
+      )}
+    >
+      {label}
+    </span>
+  );
+}
+
+/** Sequential-order badge for a sequence child, derived from sort_order rank
+ *  within its parent — never from display order. Styled to match the status
+ *  pill (pending's gray), so it reads consistently on the tree/board. The
+ *  label defaults to "#N"; the tree passes a fuller "Sequential Order #N". */
+export function PositionBadge({
+  position,
+  className,
+  label,
+}: {
+  position: number;
+  className?: string;
+  /** display text; defaults to "#N" */
+  label?: string;
+}) {
+  const isDark = useDarkPalette();
+  const text = label ?? `#${position}`;
+  return (
+    <span
+      aria-label={text}
+      title={text}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
+        isDark ? "bg-gray-500/15 text-gray-300" : "bg-gray-500/15 text-gray-700",
+        className,
+      )}
+    >
+      {text}
+    </span>
+  );
+}

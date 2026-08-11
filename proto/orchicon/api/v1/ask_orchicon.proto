@@ -10,6 +10,24 @@ package orchicon.api.v1;
 
 import "google/protobuf/timestamp.proto";
 
+// ConversationMode is the active persona for a conversation. The mode selects
+// the per-message system prompt applied to opencode turns; the opencode
+// session itself is unchanged by a mode switch (the per-turn `system` field
+// carries the new persona on the same session — no session change, no serve
+// restart).
+enum ConversationMode {
+  CONVERSATION_MODE_UNSPECIFIED = 0;
+  // BRAINSTORM is the default: an open systems-thinking partner that helps
+  // the user create. General design, coding, and brainstorming are in scope;
+  // the Orchicon MCP tool surface is shared with ORCHICON mode.
+  CONVERSATION_MODE_BRAINSTORM = 1;
+  // ORCHICON is the strictly-governed platform expert persona: it answers
+  // questions about Orchicon and operates on the user's Orchicon data, and
+  // refuses general coding help, personal conversation, or non-Orchicon
+  // topics.
+  CONVERSATION_MODE_ORCHICON = 2;
+}
+
 // Conversation is a top-level chat session with the Ask Orchicon agent.
 message Conversation {
   string id = 1;
@@ -20,6 +38,15 @@ message Conversation {
   string last_message_preview = 6;
   google.protobuf.Timestamp created_at = 7;
   google.protobuf.Timestamp updated_at = 8;
+  // session_id is the persistent opencode serve session this conversation's
+  // turns run on (Task 1 session transport). Empty when the conversation has
+  // never chatted, the transport is disabled, or it predates this field.
+  string session_id = 9;
+  // mode is the active persona (brainstorm default). The mode is applied as
+  // the opencode per-turn system prompt, so toggling it mid-conversation
+  // needs no session change or serve restart — the next message carries the
+  // new persona on the same session.
+  ConversationMode mode = 10;
 }
 
 // ChatMessage is a single message within a conversation.
@@ -33,6 +60,11 @@ message ChatMessage {
   repeated Attachment attachments = 7;
   MessageMetadata metadata = 8;
   google.protobuf.Timestamp created_at = 9;
+  // reasoning holds the assistant message's reasoning chunks (one entry per
+  // reasoning part received that turn, boundaries preserved), rendered by the
+  // frontend as thinking bubbles. Empty for user/tool/system messages and for
+  // assistants that emit no reasoning parts.
+  repeated string reasoning = 10;
 }
 
 // ToolCall represents a function call made by the agent.
@@ -59,13 +91,18 @@ message Attachment {
   string attachment_type = 5; // "file" | "image" | "audio" | "pdf"
 }
 
-// MessageMetadata captures token usage, cost, and latency for a message.
+// MessageMetadata captures token usage, cost, latency, and error state for
+// a message.
 message MessageMetadata {
   string model_ref = 1;
   int64 prompt_tokens = 2;
   int64 completion_tokens = 3;
   double cost_usd = 4;
   int64 latency_ms = 5;
+  // error is set when the turn failed (timeout, session error, user stop,
+  // or serve loss). The message content is empty in that case; the
+  // frontend renders an error bubble with a retry affordance.
+  string error = 6;
 }
 
 // AgentConfig defines Orchicon's agent identity, skills, tools, and
@@ -118,6 +155,15 @@ message ErrorChunk {
 message DoneSignal {
   string assistant_message_id = 1;
   MessageMetadata metadata = 2;
+}
+
+// ReasoningChunk is a reasoning (thinking) fragment from the agent,
+// unwrapped from the SSE bus's `{"kind":"reasoning",...}` events the same way
+// executions surface reasoning. Defined as a typed ChatStream event for the
+// future SSE surface; today reasoning is persisted on ChatMessage.reasoning
+// and delivered by polling ListMessages.
+message ReasoningChunk {
+  string content = 1;
 }
 
 // AttachmentInput is a file attachment sent with a chat message.

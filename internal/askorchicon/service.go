@@ -14,14 +14,15 @@ import (
 	"github.com/beardedparrott/orchicon/internal/aigateway"
 	"github.com/beardedparrott/orchicon/internal/blobstore"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Service implements the AskOrchiconService Connect handler.
 type Service struct {
-	pool          *db.Pool
-	log           *slog.Logger
+	pool         *db.Pool
+	log          *slog.Logger
 	blobStore     blobstore.Store
 	modelDisc     *aigateway.ModelDiscoverer
 	toolRegistry  *ToolRegistry
@@ -29,6 +30,18 @@ type Service struct {
 	// (Stage 3). Wired by the server to the opencode adapter; nil when
 	// the session transport is unavailable.
 	sendMessage func(ctx context.Context, execID, message string) error
+	// hostServe is the always-on host opencode serve. Chat turns run as
+	// persistent sessions on it; nil when the transport is disabled or the
+	// serve could not start — ChatStream fails the turn fast with a clean
+	// message (the one-shot `opencode run` path was removed).
+	hostServe *opencode.HostServe
+	// turns is the in-flight turn registry (one turn per conversation):
+	// the one-turn gate + the Stop path's deterministic collector cancel.
+	turns *turnRegistry
+	// testServeClient is a test-only injection point that bypasses the real
+	// host serve so handler tests can drive ChatStream/Abort with a fake
+	// session client. Never set outside tests.
+	testServeClient sessionTurnClient
 	apiv1connect.UnimplementedAskOrchiconServiceHandler
 }
 
@@ -41,6 +54,7 @@ func New(pool *db.Pool, log *slog.Logger, blobStore blobstore.Store, modelDisc *
 		blobStore:    blobStore,
 		modelDisc:    modelDisc,
 		toolRegistry: NewToolRegistry(pool, log),
+		turns:        newTurnRegistry(),
 	}
 	s.registerSessionTools()
 	return s
@@ -51,6 +65,14 @@ func New(pool *db.Pool, log *slog.Logger, blobStore blobstore.Store, modelDisc *
 // tool.
 func (s *Service) SetSendExecutionMessage(fn func(ctx context.Context, execID, message string) error) {
 	s.sendMessage = fn
+}
+
+// SetHostServe wires the always-on host opencode serve into the chat so
+// conversation turns run as persistent sessions on it (first message
+// CreateSession, follow-ups prompt_async on the same session). The service
+// treats a nil serve as "fail the turn fast" (no one-shot fallback).
+func (s *Service) SetHostServe(hs *opencode.HostServe) {
+	s.hostServe = hs
 }
 
 // registerSessionTools adds tools that depend on service-injected
@@ -151,6 +173,10 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	mode, err := conversationModeFromProto(req.Msg.Mode)
+	if err != nil {
+		return nil, err
+	}
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -161,6 +187,7 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 		ID:       db.NewID(),
 		TenantID: tenantID,
 		ModelRef: req.Msg.ModelRef,
+		Mode:     mode,
 	}
 	row, err := db.CreateConversation(ctx, ttx.Tx, convRow)
 	if err != nil {
@@ -180,6 +207,7 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 			ToolResults:    []byte("[]"),
 			Attachments:    []byte("[]"),
 			Metadata:       []byte("{}"),
+			Reasoning:      []string{},
 		}
 		if _, err := db.CreateMessage(ctx, ttx.Tx, msgRow); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
@@ -214,6 +242,10 @@ func (s *Service) DeleteConversation(ctx context.Context, req *connect.Request[a
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
+	conv, err := db.GetConversation(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil && !errors.Is(err, db.ErrNotFound) {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	if err := db.DeleteConversationMessages(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -222,6 +254,24 @@ func (s *Service) DeleteConversation(ctx context.Context, req *connect.Request[a
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	// Best-effort abort of the conversation's opencode session. There is no
+	// delete-session API on the serve; abort cancels any running turn while
+	// keeping the session, and is safe to ignore on error (the durable
+	// record is already gone; the serve will reclaim the session eventually).
+	if conv.SessionID != "" {
+		if hs := s.hostServe; hs != nil {
+			if client := hs.Client(); client != nil {
+				_ = client.Abort(ctx, conv.SessionID)
+			}
+		}
+	}
+	// Cancel any in-flight collector for this conversation so it finalizes
+	// immediately and never persists into the deleted conversation (the
+	// collector's persist path also re-checks the conversation and would
+	// skip the write — this just makes it prompt and clean).
+	if _, ok := s.turns.cancel(req.Msg.Id); ok {
+		s.turns.remove(req.Msg.Id)
 	}
 	return connect.NewResponse(&apiv1.DeleteConversationResponse{}), nil
 }
@@ -252,6 +302,45 @@ func (s *Service) UpdateConversationTitle(ctx context.Context, req *connect.Requ
 	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
 	return connect.NewResponse(&apiv1.UpdateConversationTitleResponse{
+		Conversation: conversationRowToProto(row, count, preview),
+	}), nil
+}
+
+// SetConversationMode switches a conversation's persona (brainstorm <-> orchicon).
+// The new mode is persisted on the conversation and takes effect
+// on the NEXT message: the turn reads it at dispatch time and applies it as
+// the opencode per-turn system prompt — no session change or serve restart
+// needed (the F4 task 9 toggle surface).
+func (s *Service) SetConversationMode(ctx context.Context, req *connect.Request[apiv1.SetConversationModeRequest]) (*connect.Response[apiv1.SetConversationModeResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	mode, err := conversationModeFromProto(req.Msg.Mode)
+	if err != nil {
+		return nil, err
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	row, err := db.UpdateConversationMode(ctx, ttx.Tx, tenantID, req.Msg.Id, mode)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
+	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
+	return connect.NewResponse(&apiv1.SetConversationModeResponse{
 		Conversation: conversationRowToProto(row, count, preview),
 	}), nil
 }
@@ -399,6 +488,8 @@ func conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview 
 		TenantId:           r.TenantID,
 		Title:              r.Title,
 		ModelRef:           r.ModelRef,
+		SessionId:          r.SessionID,
+		Mode:               conversationModeToProto(r.Mode),
 		MessageCount:       int32(messageCount),
 		LastMessagePreview: lastPreview,
 		CreatedAt:          timestamppb.New(r.CreatedAt),
@@ -407,12 +498,68 @@ func conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview 
 	return p
 }
 
+// conversationMode constants mirror the DB column's text values ('brainstorm'
+// default, 'orchicon'). They are the single source of truth for the mode
+// strings used across the DB layer and the per-mode prompt dispatch.
+const (
+	modeBrainstorm = "brainstorm"
+	modeOrchicon   = "orchicon"
+)
+
+// conversationModeFromProto validates + normalizes a proto ConversationMode
+// to its DB text value. UNSPECIFIED (and the wire's empty/absent value) maps
+// to the brainstorm default; an unknown enum value on the wire is rejected
+// with CodeInvalidArgument (never silently coerced).
+func conversationModeFromProto(m apiv1.ConversationMode) (string, error) {
+	switch m {
+	case apiv1.ConversationMode_CONVERSATION_MODE_UNSPECIFIED,
+		apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM:
+		return modeBrainstorm, nil
+	case apiv1.ConversationMode_CONVERSATION_MODE_ORCHICON:
+		return modeOrchicon, nil
+	default:
+		return "", connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("unknown conversation mode value %d", int32(m)))
+	}
+}
+
+// conversationModeToProto maps a DB mode text value back to the proto enum.
+// Unknown/empty (defensive — the boundary validator keeps these out) maps to
+// UNSPECIFIED.
+func conversationModeToProto(mode string) apiv1.ConversationMode {
+	switch mode {
+	case modeBrainstorm:
+		return apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM
+	case modeOrchicon:
+		return apiv1.ConversationMode_CONVERSATION_MODE_ORCHICON
+	default:
+		return apiv1.ConversationMode_CONVERSATION_MODE_UNSPECIFIED
+	}
+}
+
 func messageRowToProto(r db.MessageRow) *apiv1.ChatMessage {
+	meta := &apiv1.MessageMetadata{}
+	if len(r.Metadata) > 0 {
+		var raw map[string]any
+		if err := json.Unmarshal(r.Metadata, &raw); err == nil {
+			if v, ok := raw["model_ref"].(string); ok {
+				meta.ModelRef = v
+			}
+			if v, ok := raw["latency_ms"].(float64); ok {
+				meta.LatencyMs = int64(v)
+			}
+			if v, ok := raw["error"].(string); ok {
+				meta.Error = v
+			}
+		}
+	}
 	return &apiv1.ChatMessage{
 		Id:             r.ID,
 		ConversationId: r.ConversationID,
 		Role:           r.Role,
 		Content:        r.Content,
+		Reasoning:      r.Reasoning,
+		Metadata:       meta,
 		CreatedAt:      timestamppb.New(r.CreatedAt),
 	}
 }

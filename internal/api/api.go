@@ -31,6 +31,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/recovery"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/runtimeimage"
+	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/settings"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
@@ -77,6 +78,12 @@ type Dependencies struct {
 	// session in place (no new execution/work item). Nil when the session
 	// transport is unavailable.
 	ContinueSession func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error)
+	// HostServe is the always-on host opencode serve. Ask Orchicon
+	// conversation turns run as persistent sessions on it (first message
+	// CreateSession, follow-ups prompt_async on the same session). Nil when
+	// the transport is disabled or the serve could not start — the chat
+	// degrades to the legacy per-message subprocess path.
+	HostServe *opencode.HostServe
 }
 
 // Mount returns an http.Handler serving the Orchicon API. Generated
@@ -122,6 +129,15 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	workItemSvc := workitem.New(deps.Pool, deps.Log)
 	workItemSvc.SetStartWorkflowStarter(func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
 		return workflow.StartWorkflowDirect(ctx, deps.Pool, deps.Log, tenantID, workflowID, projectID, workItemID)
+	})
+	// Sequence auto-start (run-instant on a parent with children): fire
+	// the chain through the sequence engine. Validation of the subtree
+	// runs in the handler before this is invoked.
+	workItemSvc.SetStartSequenceStarter(func(ctx context.Context, tenantID, parentID string) error {
+		return scheduler.StartSequence(ctx, deps.Pool, deps.Log, tenantID, parentID,
+			func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
+				return workflow.StartWorkflowDirect(ctx, deps.Pool, deps.Log, tenantID, workflowID, projectID, workItemID)
+			})
 	})
 	if deps.RuntimeClient != nil {
 		workItemSvc.SetRuntimeImageResolver(func(ctx context.Context) string {
@@ -196,6 +212,7 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	if deps.SendExecutionMessage != nil {
 		askSvc.SetSendExecutionMessage(deps.SendExecutionMessage)
 	}
+	askSvc.SetHostServe(deps.HostServe)
 	mux.Handle(apiv1connect.NewAskOrchiconServiceHandler(askSvc, interceptorOpt))
 
 	// Grafana UI reverse proxy (docs/10 §11): serves Grafana same-origin

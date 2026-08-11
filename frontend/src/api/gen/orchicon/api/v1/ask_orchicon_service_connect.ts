@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { ChatStreamRequest, ChatStreamResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse } from "./ask_orchicon_service_pb.js";
+import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, SetConversationModeRequest, SetConversationModeResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse } from "./ask_orchicon_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -80,6 +80,20 @@ export const AskOrchiconService = {
       kind: MethodKind.Unary,
     },
     /**
+     * SetConversationMode switches the active persona for a conversation
+     * (brainstorm <-> orchicon). The change applies from the NEXT message on:
+     * the same opencode session persists and the per-turn system prompt swaps
+     * with no session change or serve restart.
+     *
+     * @generated from rpc orchicon.api.v1.AskOrchiconService.SetConversationMode
+     */
+    setConversationMode: {
+      name: "SetConversationMode",
+      I: SetConversationModeRequest,
+      O: SetConversationModeResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
      * ListMessages returns messages for a conversation, ordered by
      * created_at ascending (oldest first).
      *
@@ -92,10 +106,15 @@ export const AskOrchiconService = {
       kind: MethodKind.Unary,
     },
     /**
-     * ChatStream is the server-streaming RPC for the conversational
-     * interface. The client sends a message (with optional attachments)
-     * and receives a stream of TextChunk, ToolCallChunk, ToolCallResult,
-     * ErrorChunk, and finally DoneSignal events.
+     * ChatStream sends a message (with optional attachments) to a
+     * conversation and returns immediately with a TurnStarted ack carrying
+     * the assistant message id under which the reply will be persisted. The
+     * reply is collected on a request-independent context (bounded by the
+     * reply window) and delivered by polling ListMessages — a browser
+     * disconnect or tab close never cancels or loses it. The TextChunk /
+     * ReasoningChunk / ToolCallResult / ErrorChunk / DoneSignal events are
+     * retained for a future SSE surface but are not emitted by the current
+     * implementation.
      *
      * @generated from rpc orchicon.api.v1.AskOrchiconService.ChatStream
      */
@@ -104,6 +123,22 @@ export const AskOrchiconService = {
       I: ChatStreamRequest,
       O: ChatStreamResponse,
       kind: MethodKind.ServerStreaming,
+    },
+    /**
+     * AbortConversationTurn aborts the in-flight turn on a conversation's
+     * opencode session (the Stop button). The session itself is kept alive
+     * for the next message — only the running turn is cancelled, and the
+     * collector persists a user-initiated-stop error message under the acked
+     * assistant message id. Idempotent: aborting a conversation with no
+     * running turn is a no-op.
+     *
+     * @generated from rpc orchicon.api.v1.AskOrchiconService.AbortConversationTurn
+     */
+    abortConversationTurn: {
+      name: "AbortConversationTurn",
+      I: AbortConversationTurnRequest,
+      O: AbortConversationTurnResponse,
+      kind: MethodKind.Unary,
     },
     /**
      * UploadAttachment uploads a file attachment for use in a message.

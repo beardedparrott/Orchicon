@@ -201,8 +201,9 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// follow-ups, and any execution not bound to a workflow-run container
 	// run as persistent sessions on it. The plane supervises the serve
 	// (spawn on boot + health watchdog with restart), so the session host
-	// is never down; a serve failure degrades that population to the
-	// legacy one-shot subprocess path.
+	// is never down. With the one-shot subprocess path removed, a serve
+	// failure now means those executions fail fast (failed_to_start)
+	// rather than degrading to a second transport.
 	var hostServe *opencode.HostServe
 	var serveCancel context.CancelFunc
 	if os.Getenv("ORCHICON_OPCODE_SESSION_TRANSPORT") != "0" {
@@ -216,7 +217,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			serveCancel = cancel
 			go func() {
 				if err := hostServe.Start(serveCtx); err != nil {
-					log.Warn("host opencode serve unavailable — sessions disabled, falling back to one-shot runs", "error", err)
+					log.Warn("host opencode serve unavailable — session-dependent executions will fail fast", "error", err)
 					return
 				}
 				hostServe.Watch(serveCtx)
@@ -307,6 +308,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		ContinueSession: func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error) {
 			return adapterBridge.ContinueSession(ctx, opts)
 		},
+		HostServe: hostServe,
 	}
 	handler := api.Mount(mux, deps)
 
@@ -347,13 +349,13 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	var runtimeLifecycle scheduler.RuntimeLifecycle
 	if rtClient != nil {
 		if rtClient.Ready(context.Background()) {
-			runtimeLifecycle = runtime.NewLifecycle(rtClient, pool, log)
+			runtimeLifecycle = runtime.NewLifecycle(rtClient, pool, log, opencode.RuntimeServeConfig())
 			// Route executions that belong to a workflow run into that
 			// workflow's runtime container instead of a local subprocess.
 			adapterBridge.SetRuntimeClient(rtClient)
 			// Execution liveness: fail executions orphaned by a plane
 			// restart or a lost runtime container so recovery re-dispatches.
-			s.reaper = scheduler.NewExecutionReaper(pool, rtClient, adapterBridge.IsExecutionActive, taskRec.FailLostExecution, log)
+			s.reaper = scheduler.NewExecutionReaper(pool, adapterBridge.IsExecutionActive, taskRec.FailLostExecution, log)
 			log.Info("workflow runtime daemon connected", "socket", cfg.RuntimeSocket)
 		} else {
 			log.Warn("workflow runtime daemon not reachable — in-process execution", "socket", cfg.RuntimeSocket)
@@ -361,7 +363,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	}
 	// Headless: still reap in-process executions orphaned by a restart.
 	if s.reaper == nil {
-		s.reaper = scheduler.NewExecutionReaper(pool, nil, adapterBridge.IsExecutionActive, taskRec.FailLostExecution, log)
+		s.reaper = scheduler.NewExecutionReaper(pool, adapterBridge.IsExecutionActive, taskRec.FailLostExecution, log)
 	}
 	workflowRec := scheduler.NewWorkflowReconciler(pool, log, policyEngine, taskRec, recoveryEngine, runtimeLifecycle)
 	// The Server keeps a concrete *runtime.Lifecycle for the adopt sweep;
@@ -383,11 +385,31 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
 			return workflow.StartWorkflowDirect(ctx, pool, log, tenantID, workflowID, projectID, workItemID)
 		})
+	// Sequence engine: a scheduled parent with children and no workflow is
+	// fired through StartSequence (flip running + reset descendants + arm
+	// first child). The sequence reconciler advances the chain on child
+	// terminal transitions.
+	startWorkflowFn := func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
+		return workflow.StartWorkflowDirect(ctx, pool, log, tenantID, workflowID, projectID, workItemID)
+	}
+	sequenceRec := scheduler.NewSequenceReconciler(pool, log, startWorkflowFn)
+	scheduledRunRec.SetSequenceStarter(func(ctx context.Context, tenantID, parentID string) error {
+		return scheduler.StartSequence(ctx, pool, log, tenantID, parentID, startWorkflowFn)
+	})
 	s.rcmgr = reconciler.NewManager(pool, log)
 	s.rcmgr.Register(taskRec)
 	s.rcmgr.Register(workflowRec)
 	s.rcmgr.Register(recoveryRec)
 	s.rcmgr.Register(scheduledRunRec)
+	s.rcmgr.Register(sequenceRec)
+	// Wire the sequence notifier: when a bound child work item reaches a
+	// terminal state, advance its parent's chain immediately (the scan
+	// pass every 200ms is the safety net).
+	workflowRec.SetSequenceNotifier(func(ctx context.Context, parentID string) {
+		if s.rcmgr != nil {
+			s.rcmgr.Enqueue("sequence", parentID)
+		}
+	})
 
 	// Seed an in-process OpenCode adapter registration so the
 	// TaskReconciler can find a ready adapter for dispatch (docs/04 §6.3:

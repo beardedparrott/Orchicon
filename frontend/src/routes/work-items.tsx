@@ -13,7 +13,7 @@
 import { createRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { useBatchDeleteWorkItems, useGetDependencyGraph, useListWorkItems } from "@/api/workItems";
+import { useBatchDeleteWorkItems, useGetDependencyGraph, useListWorkItems, useReorderWorkItems } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
 import { Button } from "@/components/ui/button";
 import {
@@ -23,6 +23,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useToast } from "@/components/ui/toast";
 import { useBatchMoveWorkItems } from "@/components/work-items/batch-move";
 import { computeBlockState, buildTreeData, filterItemsByKindStatus } from "@/components/work-items/dependency-utils";
 import {
@@ -79,6 +80,20 @@ function WorkItemsPage() {
   const hasProjects = projects && projects.length > 0;
   const batchDelete = useBatchDeleteWorkItems();
   const { moveItems, isPending: movePending } = useBatchMoveWorkItems(projectId);
+  const toast = useToast();
+  const reorder = useReorderWorkItems();
+  const handleReorder = (parentId: string, childIds: string[]) => {
+    // The RPC requires the siblings' project — derive it from the items
+    // themselves so reorder works in the "All projects" view too (the
+    // page's projectId is empty there).
+    const sibling = (items ?? []).find((i) => i.id === childIds[0]);
+    const pid = sibling?.projectId ?? projectId;
+    if (!pid) {
+      toast.error("Cannot reorder: the work item has no project.");
+      return;
+    }
+    reorder.mutate({ projectId: pid, parentId, childIds });
+  };
 
   // Server state (design §3): list + DAG, both auto-refreshed. The shell
   // owns the queries so the filter bar's select-all/count and the shared
@@ -222,7 +237,12 @@ function WorkItemsPage() {
         kinds={kinds}
         onKindFilterChange={(next) => setFilters({ kinds: next })}
         sortBy={sortBy}
-        onSortByChange={(value) => setFilters({ sortBy: value })}
+        onSortByChange={(value) =>
+          // Chain order ("") is always ascending — reset a leftover desc
+          // direction so the server's `ORDER BY sort_order NULLS LAST,
+          // created_at ASC` (not a reversed chain) applies.
+          setFilters(value === "" ? { sortBy: value, sortOrder: "asc" } : { sortBy: value })
+        }
         sortOrder={sortOrder}
         onSortOrderChange={(value) => setFilters({ sortOrder: value })}
         view={view}
@@ -265,6 +285,7 @@ function WorkItemsPage() {
             {view === "tree" ? (
               <WorkItemsTree
                 treeItems={treeData.treeItems}
+                allItems={items}
                 matchIds={new Set(treeData.matches.map((i) => i.id))}
                 ancestorIds={treeData.ancestorIds}
                 filterActive={hasQuery}
@@ -275,6 +296,7 @@ function WorkItemsPage() {
                 blockState={blockState}
                 selected={selected}
                 onToggleSelect={toggle}
+                onReorder={handleReorder}
                 isLoading={isLoading}
                 error={error}
                 hasQuery={hasQuery}
@@ -283,6 +305,7 @@ function WorkItemsPage() {
               <WorkItemsBoard
                 projectId={projectId}
                 items={filteredItems}
+                allItems={items}
                 blockState={blockState}
                 selected={selected}
                 onToggleSelect={toggle}

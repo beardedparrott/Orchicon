@@ -14,6 +14,47 @@ import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialM
 import { Message, proto3, protoInt64, Timestamp } from "@bufbuild/protobuf";
 
 /**
+ * ConversationMode is the active persona for a conversation. The mode selects
+ * the per-message system prompt applied to opencode turns; the opencode
+ * session itself is unchanged by a mode switch (the per-turn `system` field
+ * carries the new persona on the same session — no session change, no serve
+ * restart).
+ *
+ * @generated from enum orchicon.api.v1.ConversationMode
+ */
+export enum ConversationMode {
+  /**
+   * @generated from enum value: CONVERSATION_MODE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * BRAINSTORM is the default: an open systems-thinking partner that helps
+   * the user create. General design, coding, and brainstorming are in scope;
+   * the Orchicon MCP tool surface is shared with ORCHICON mode.
+   *
+   * @generated from enum value: CONVERSATION_MODE_BRAINSTORM = 1;
+   */
+  BRAINSTORM = 1,
+
+  /**
+   * ORCHICON is the strictly-governed platform expert persona: it answers
+   * questions about Orchicon and operates on the user's Orchicon data, and
+   * refuses general coding help, personal conversation, or non-Orchicon
+   * topics.
+   *
+   * @generated from enum value: CONVERSATION_MODE_ORCHICON = 2;
+   */
+  ORCHICON = 2,
+}
+// Retrieve enum metadata with: proto3.getEnumType(ConversationMode)
+proto3.util.setEnumType(ConversationMode, "orchicon.api.v1.ConversationMode", [
+  { no: 0, name: "CONVERSATION_MODE_UNSPECIFIED" },
+  { no: 1, name: "CONVERSATION_MODE_BRAINSTORM" },
+  { no: 2, name: "CONVERSATION_MODE_ORCHICON" },
+]);
+
+/**
  * Conversation is a top-level chat session with the Ask Orchicon agent.
  *
  * @generated from message orchicon.api.v1.Conversation
@@ -59,6 +100,25 @@ export class Conversation extends Message<Conversation> {
    */
   updatedAt?: Timestamp;
 
+  /**
+   * session_id is the persistent opencode serve session this conversation's
+   * turns run on (Task 1 session transport). Empty when the conversation has
+   * never chatted, the transport is disabled, or it predates this field.
+   *
+   * @generated from field: string session_id = 9;
+   */
+  sessionId = "";
+
+  /**
+   * mode is the active persona (brainstorm default). The mode is applied as
+   * the opencode per-turn system prompt, so toggling it mid-conversation
+   * needs no session change or serve restart — the next message carries the
+   * new persona on the same session.
+   *
+   * @generated from field: orchicon.api.v1.ConversationMode mode = 10;
+   */
+  mode = ConversationMode.UNSPECIFIED;
+
   constructor(data?: PartialMessage<Conversation>) {
     super();
     proto3.util.initPartial(data, this);
@@ -75,6 +135,8 @@ export class Conversation extends Message<Conversation> {
     { no: 6, name: "last_message_preview", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 7, name: "created_at", kind: "message", T: Timestamp },
     { no: 8, name: "updated_at", kind: "message", T: Timestamp },
+    { no: 9, name: "session_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 10, name: "mode", kind: "enum", T: proto3.getEnumType(ConversationMode) },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Conversation {
@@ -147,6 +209,16 @@ export class ChatMessage extends Message<ChatMessage> {
    */
   createdAt?: Timestamp;
 
+  /**
+   * reasoning holds the assistant message's reasoning chunks (one entry per
+   * reasoning part received that turn, boundaries preserved), rendered by the
+   * frontend as thinking bubbles. Empty for user/tool/system messages and for
+   * assistants that emit no reasoning parts.
+   *
+   * @generated from field: repeated string reasoning = 10;
+   */
+  reasoning: string[] = [];
+
   constructor(data?: PartialMessage<ChatMessage>) {
     super();
     proto3.util.initPartial(data, this);
@@ -164,6 +236,7 @@ export class ChatMessage extends Message<ChatMessage> {
     { no: 7, name: "attachments", kind: "message", T: Attachment, repeated: true },
     { no: 8, name: "metadata", kind: "message", T: MessageMetadata },
     { no: 9, name: "created_at", kind: "message", T: Timestamp },
+    { no: 10, name: "reasoning", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ChatMessage {
@@ -363,7 +436,8 @@ export class Attachment extends Message<Attachment> {
 }
 
 /**
- * MessageMetadata captures token usage, cost, and latency for a message.
+ * MessageMetadata captures token usage, cost, latency, and error state for
+ * a message.
  *
  * @generated from message orchicon.api.v1.MessageMetadata
  */
@@ -393,6 +467,15 @@ export class MessageMetadata extends Message<MessageMetadata> {
    */
   latencyMs = protoInt64.zero;
 
+  /**
+   * error is set when the turn failed (timeout, session error, user stop,
+   * or serve loss). The message content is empty in that case; the
+   * frontend renders an error bubble with a retry affordance.
+   *
+   * @generated from field: string error = 6;
+   */
+  error = "";
+
   constructor(data?: PartialMessage<MessageMetadata>) {
     super();
     proto3.util.initPartial(data, this);
@@ -406,6 +489,7 @@ export class MessageMetadata extends Message<MessageMetadata> {
     { no: 3, name: "completion_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 4, name: "cost_usd", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
     { no: 5, name: "latency_ms", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 6, name: "error", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): MessageMetadata {
@@ -761,6 +845,49 @@ export class DoneSignal extends Message<DoneSignal> {
 
   static equals(a: DoneSignal | PlainMessage<DoneSignal> | undefined, b: DoneSignal | PlainMessage<DoneSignal> | undefined): boolean {
     return proto3.util.equals(DoneSignal, a, b);
+  }
+}
+
+/**
+ * ReasoningChunk is a reasoning (thinking) fragment from the agent,
+ * unwrapped from the SSE bus's `{"kind":"reasoning",...}` events the same way
+ * executions surface reasoning. Defined as a typed ChatStream event for the
+ * future SSE surface; today reasoning is persisted on ChatMessage.reasoning
+ * and delivered by polling ListMessages.
+ *
+ * @generated from message orchicon.api.v1.ReasoningChunk
+ */
+export class ReasoningChunk extends Message<ReasoningChunk> {
+  /**
+   * @generated from field: string content = 1;
+   */
+  content = "";
+
+  constructor(data?: PartialMessage<ReasoningChunk>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ReasoningChunk";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "content", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ReasoningChunk {
+    return new ReasoningChunk().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ReasoningChunk {
+    return new ReasoningChunk().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ReasoningChunk {
+    return new ReasoningChunk().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ReasoningChunk | PlainMessage<ReasoningChunk> | undefined, b: ReasoningChunk | PlainMessage<ReasoningChunk> | undefined): boolean {
+    return proto3.util.equals(ReasoningChunk, a, b);
   }
 }
 

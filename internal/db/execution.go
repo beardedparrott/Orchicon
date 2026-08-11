@@ -32,6 +32,7 @@ type ExecutionRow struct {
 	WorkflowRunID   string
 	WorkflowStepID  string
 	WorkflowName    string
+	WorkerName      string // worker display name (LEFT JOINed from workers at query time)
 	TaskName        string // work item title (denormalised via LEFT JOIN at query time)
 	ErrorMessage    string
 	Output          string
@@ -87,11 +88,12 @@ func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (Executio
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
-		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
+		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, COALESCE(wkr.name, '') AS worker_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
 		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
 		LEFT JOIN workflows w ON w.id = wr.workflow_id
+		LEFT JOIN workers wkr ON wkr.id = we.worker_id AND wkr.tenant_id = we.tenant_id
 		WHERE we.id = $1 AND we.tenant_id = $2`
 	var e ExecutionRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
@@ -99,7 +101,7 @@ func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (Executio
 		&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 		&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 		&e.CheckpointRef, &e.RecoveryID,
-		&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName,
+		&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName, &e.WorkerName,
 		&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
 		&e.Version,
 		&e.CreatedAt, &e.UpdatedAt,
@@ -144,11 +146,12 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 	q := `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
-		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
+		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, COALESCE(wkr.name, '') AS worker_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
 		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
 		LEFT JOIN workflows w ON w.id = wr.workflow_id
+		LEFT JOIN workers wkr ON wkr.id = we.worker_id AND wkr.tenant_id = we.tenant_id
 		WHERE we.tenant_id = $1`
 	args := []any{f.TenantID}
 	argIdx := 2
@@ -218,7 +221,7 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 			&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 			&e.CheckpointRef, &e.RecoveryID,
-			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName,
+			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName, &e.WorkerName,
 			&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
 			&e.Version,
 			&e.CreatedAt, &e.UpdatedAt,
@@ -343,11 +346,12 @@ func ListDispatchingExecutions(ctx context.Context, tx pgx.Tx, tenantID string) 
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
-		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
+		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, COALESCE(wkr.name, '') AS worker_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
 		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
 		LEFT JOIN workflows w ON w.id = wr.workflow_id
+		LEFT JOIN workers wkr ON wkr.id = we.worker_id AND wkr.tenant_id = we.tenant_id
 		WHERE we.tenant_id = $1 AND we.status = 'dispatching'
 		ORDER BY we.created_at ASC`
 	rows, err := tx.Query(ctx, q, tenantID)
@@ -363,7 +367,7 @@ func ListDispatchingExecutions(ctx context.Context, tx pgx.Tx, tenantID string) 
 			&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 			&e.CheckpointRef, &e.RecoveryID,
-			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName,
+			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName, &e.WorkerName,
 			&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
 			&e.Version,
 			&e.CreatedAt, &e.UpdatedAt,
@@ -383,11 +387,12 @@ func ListRunningExecutions(ctx context.Context, tx pgx.Tx, tenantID string) ([]E
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
-		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
+		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, COALESCE(wkr.name, '') AS worker_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
 		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
 		LEFT JOIN workflows w ON w.id = wr.workflow_id
+		LEFT JOIN workers wkr ON wkr.id = we.worker_id AND wkr.tenant_id = we.tenant_id
 		WHERE we.tenant_id = $1 AND we.status IN ('running', 'healthy', 'dispatching')
 		ORDER BY we.created_at ASC`
 	rows, err := tx.Query(ctx, q, tenantID)
@@ -403,7 +408,7 @@ func ListRunningExecutions(ctx context.Context, tx pgx.Tx, tenantID string) ([]E
 			&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 			&e.CheckpointRef, &e.RecoveryID,
-			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName,
+			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName, &e.WorkerName,
 			&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
 			&e.Version,
 			&e.CreatedAt, &e.UpdatedAt,
@@ -422,7 +427,7 @@ func ListReadyTasks(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkItem
 	const q = `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
 		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
 		workflow_run_id, workflow_step_id,
-		priority, budgets, context_window, results, prompt_context, context_files, version, created_at, updated_at
+		priority, budgets, context_window, sort_order, results, prompt_context, context_files, version, created_at, updated_at
 		FROM work_items
 		WHERE tenant_id = $1 AND status = 'ready' AND assigned_worker_ref IS NOT NULL
 		ORDER BY priority DESC, created_at ASC`
@@ -438,7 +443,7 @@ func ListReadyTasks(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkItem
 			&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
 			&w.Description, &w.AcceptanceCriteria, &w.AcceptanceReview, &w.Status, &w.AssignedWorkerRef,
 			&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
-			&w.Priority, &w.Budgets, &w.ContextWindow, &w.Results,
+			&w.Priority, &w.Budgets, &w.ContextWindow, &w.SortOrder, &w.Results,
 			&w.PromptContext, &w.ContextFiles, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan work item: %w", err)
@@ -494,11 +499,12 @@ func GetLatestExecutionForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID 
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
-		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
+		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, COALESCE(wkr.name, '') AS worker_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
 		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
 		LEFT JOIN workflows w ON w.id = wr.workflow_id
+		LEFT JOIN workers wkr ON wkr.id = we.worker_id AND wkr.tenant_id = we.tenant_id
 		WHERE we.task_id = $1 AND we.tenant_id = $2
 		ORDER BY we.created_at DESC LIMIT 1`
 	var e ExecutionRow
@@ -507,7 +513,7 @@ func GetLatestExecutionForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID 
 		&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 		&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 		&e.CheckpointRef, &e.RecoveryID,
-		&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName,
+		&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName, &e.WorkerName,
 		&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
 		&e.Version,
 		&e.CreatedAt, &e.UpdatedAt,

@@ -533,6 +533,11 @@ table "work_items" {
     null = false
     default = 0
   }
+  column "sort_order" {
+    type = double
+    null = true
+    comment = "Sibling order within (parent_id). Nullable; backfilled by created_at. Only changed by ReorderWorkItems (drag), never by display sort."
+  }
   column "results" {
     type = jsonb
     null = false
@@ -568,6 +573,9 @@ table "work_items" {
   }
   index "work_items_project_parent_idx" {
     columns = [column.project_id, column.parent_id]
+  }
+  index "work_items_project_parent_sort_idx" {
+    columns = [column.project_id, column.parent_id, column.sort_order]
   }
   index "work_items_tenant_status_idx" {
     columns = [column.tenant_id, column.status]

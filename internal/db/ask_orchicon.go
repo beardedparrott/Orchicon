@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -14,6 +15,12 @@ type ConversationRow struct {
 	TenantID  string
 	Title     string
 	ModelRef  string
+	SessionID string
+	// Mode is the per-conversation persona: 'brainstorm' (default, open
+	// systems-thinking partner) or 'orchicon' (governed platform expert).
+	// Read at turn-dispatch time and applied per message via the opencode
+	// per-turn system prompt.
+	Mode      string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -29,6 +36,7 @@ type MessageRow struct {
 	ToolResults     []byte
 	Attachments     []byte
 	Metadata        []byte
+	Reasoning       []string
 	CreatedAt       time.Time
 }
 
@@ -52,12 +60,15 @@ type AgentConfigRow struct {
 // --- Conversations ---
 
 func CreateConversation(ctx context.Context, tx pgx.Tx, c ConversationRow) (ConversationRow, error) {
-	const q = `INSERT INTO ask_orchicon_conversations (id, tenant_id, title, model_ref)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, tenant_id, title, model_ref, created_at, updated_at`
+	// An empty mode falls back to the migration's 'brainstorm' default
+	// (COALESCE guards any caller that omits it), so absent/unspecified
+	// always lands on the default persona.
+	const q = `INSERT INTO ask_orchicon_conversations (id, tenant_id, title, model_ref, mode)
+		VALUES ($1, $2, $3, $4, COALESCE(NULLIF($5, ''), 'brainstorm'))
+		RETURNING id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at`
 	row := c
-	err := tx.QueryRow(ctx, q, c.ID, c.TenantID, c.Title, c.ModelRef).Scan(
-		&row.ID, &row.TenantID, &row.Title, &row.ModelRef, &row.CreatedAt, &row.UpdatedAt,
+	err := tx.QueryRow(ctx, q, c.ID, c.TenantID, c.Title, c.ModelRef, c.Mode).Scan(
+		&row.ID, &row.TenantID, &row.Title, &row.ModelRef, &row.SessionID, &row.Mode, &row.CreatedAt, &row.UpdatedAt,
 	)
 	if err != nil {
 		return ConversationRow{}, fmt.Errorf("db: create conversation: %w", err)
@@ -66,7 +77,7 @@ func CreateConversation(ctx context.Context, tx pgx.Tx, c ConversationRow) (Conv
 }
 
 func GetConversation(ctx context.Context, tx pgx.Tx, tenantID, id string) (ConversationRow, error) {
-	const q = `SELECT id, tenant_id, title, model_ref, created_at, updated_at
+	const q = `SELECT id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at
 		FROM ask_orchicon_conversations WHERE tenant_id = $1 AND id = $2`
 	row, err := tx.Query(ctx, q, tenantID, id)
 	if err != nil {
@@ -84,13 +95,13 @@ func ListConversations(ctx context.Context, tx pgx.Tx, tenantID string, limit in
 	var q string
 	var args []any
 	if afterID != "" {
-		q = `SELECT id, tenant_id, title, model_ref, created_at, updated_at
+		q = `SELECT id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at
 			FROM ask_orchicon_conversations
 			WHERE tenant_id = $1 AND updated_at < (SELECT updated_at FROM ask_orchicon_conversations WHERE tenant_id = $1 AND id = $2)
 			ORDER BY updated_at DESC LIMIT $3`
 		args = []any{tenantID, afterID, limit}
 	} else {
-		q = `SELECT id, tenant_id, title, model_ref, created_at, updated_at
+		q = `SELECT id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at
 			FROM ask_orchicon_conversations
 			WHERE tenant_id = $1
 			ORDER BY updated_at DESC LIMIT $2`
@@ -117,7 +128,7 @@ func ListConversations(ctx context.Context, tx pgx.Tx, tenantID string, limit in
 func UpdateConversationTitle(ctx context.Context, tx pgx.Tx, tenantID, id, title string) (ConversationRow, error) {
 	const q = `UPDATE ask_orchicon_conversations SET title = $3, updated_at = now()
 		WHERE tenant_id = $1 AND id = $2
-		RETURNING id, tenant_id, title, model_ref, created_at, updated_at`
+		RETURNING id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at`
 	row, err := tx.Query(ctx, q, tenantID, id, title)
 	if err != nil {
 		return ConversationRow{}, fmt.Errorf("db: update conversation title: %w", err)
@@ -127,6 +138,40 @@ func UpdateConversationTitle(ctx context.Context, tx pgx.Tx, tenantID, id, title
 		return scanConversation(row)
 	}
 	return ConversationRow{}, ErrNotFound
+}
+
+// UpdateConversationMode switches a conversation's persona (brainstorm /
+// orchicon). The new mode takes effect on the NEXT message: it is read at
+// turn-dispatch time and applied via the opencode per-turn system prompt, so
+// no session change or serve restart is needed. Returns the updated row.
+func UpdateConversationMode(ctx context.Context, tx pgx.Tx, tenantID, id, mode string) (ConversationRow, error) {
+	const q = `UPDATE ask_orchicon_conversations SET mode = $3, updated_at = now()
+		WHERE tenant_id = $1 AND id = $2
+		RETURNING id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at`
+	row, err := tx.Query(ctx, q, tenantID, id, mode)
+	if err != nil {
+		return ConversationRow{}, fmt.Errorf("db: update conversation mode: %w", err)
+	}
+	defer row.Close()
+	if row.Next() {
+		return scanConversation(row)
+	}
+	return ConversationRow{}, ErrNotFound
+}
+
+// UpdateConversationSessionID persists the opencode serve session id on the
+// conversation (Task 1 session transport). It is called as soon as a fresh
+// session is created (best-effort, its own tiny tenant tx) so a crash
+// mid-turn cannot orphan a session the next message would have to rediscover,
+// and again when a lost session is recreated.
+func UpdateConversationSessionID(ctx context.Context, tx pgx.Tx, tenantID, id, sessionID string) error {
+	const q = `UPDATE ask_orchicon_conversations SET session_id = $3, updated_at = now()
+		WHERE tenant_id = $1 AND id = $2`
+	_, err := tx.Exec(ctx, q, tenantID, id, sessionID)
+	if err != nil {
+		return fmt.Errorf("db: update conversation session id: %w", err)
+	}
+	return nil
 }
 
 func UpdateConversationTimestamp(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
@@ -151,15 +196,21 @@ func DeleteConversation(ctx context.Context, tx pgx.Tx, tenantID, id string) err
 // --- Messages ---
 
 func CreateMessage(ctx context.Context, tx pgx.Tx, m MessageRow) (MessageRow, error) {
+	// The reasoning jsonb column is NOT NULL DEFAULT '[]': a nil slice is
+	// marshaled as an empty array so inserts never violate the constraint.
+	reasoningJSON := []byte("[]")
+	if m.Reasoning != nil {
+		reasoningJSON, _ = json.Marshal(m.Reasoning)
+	}
 	const q = `INSERT INTO ask_orchicon_messages
-		(id, tenant_id, conversation_id, role, content, tool_calls, tool_results, attachments, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING id, tenant_id, conversation_id, role, content, tool_calls, tool_results, attachments, metadata, created_at`
+		(id, tenant_id, conversation_id, role, content, tool_calls, tool_results, attachments, metadata, reasoning)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		RETURNING id, tenant_id, conversation_id, role, content, tool_calls, tool_results, attachments, metadata, reasoning, created_at`
 	row := m
 	err := tx.QueryRow(ctx, q, m.ID, m.TenantID, m.ConversationID, m.Role, m.Content,
-		m.ToolCalls, m.ToolResults, m.Attachments, m.Metadata).Scan(
+		m.ToolCalls, m.ToolResults, m.Attachments, m.Metadata, reasoningJSON).Scan(
 		&row.ID, &row.TenantID, &row.ConversationID, &row.Role, &row.Content,
-		&row.ToolCalls, &row.ToolResults, &row.Attachments, &row.Metadata, &row.CreatedAt,
+		&row.ToolCalls, &row.ToolResults, &row.Attachments, &row.Metadata, &row.Reasoning, &row.CreatedAt,
 	)
 	if err != nil {
 		return MessageRow{}, fmt.Errorf("db: create message: %w", err)
@@ -172,7 +223,7 @@ func ListMessages(ctx context.Context, tx pgx.Tx, tenantID, conversationID strin
 	var q string
 	var args []any
 	if afterID != "" {
-		q = `SELECT id, tenant_id, conversation_id, role, content, tool_calls, tool_results, attachments, metadata, created_at
+		q = `SELECT id, tenant_id, conversation_id, role, content, tool_calls, tool_results, attachments, metadata, reasoning, created_at
 			FROM ask_orchicon_messages
 			WHERE tenant_id = $1 AND conversation_id = $2 AND created_at < (
 				SELECT created_at FROM ask_orchicon_messages WHERE tenant_id = $1 AND id = $3
@@ -180,7 +231,7 @@ func ListMessages(ctx context.Context, tx pgx.Tx, tenantID, conversationID strin
 			ORDER BY created_at DESC LIMIT $4`
 		args = []any{tenantID, conversationID, afterID, limit}
 	} else {
-		q = `SELECT id, tenant_id, conversation_id, role, content, tool_calls, tool_results, attachments, metadata, created_at
+		q = `SELECT id, tenant_id, conversation_id, role, content, tool_calls, tool_results, attachments, metadata, reasoning, created_at
 			FROM ask_orchicon_messages
 			WHERE tenant_id = $1 AND conversation_id = $2
 			ORDER BY created_at DESC LIMIT $3`
@@ -301,7 +352,7 @@ func UpsertAgentConfig(ctx context.Context, tx pgx.Tx, tenantID string, c AgentC
 
 func scanConversation(row pgx.Rows) (ConversationRow, error) {
 	var r ConversationRow
-	if err := row.Scan(&r.ID, &r.TenantID, &r.Title, &r.ModelRef, &r.CreatedAt, &r.UpdatedAt); err != nil {
+	if err := row.Scan(&r.ID, &r.TenantID, &r.Title, &r.ModelRef, &r.SessionID, &r.Mode, &r.CreatedAt, &r.UpdatedAt); err != nil {
 		return ConversationRow{}, fmt.Errorf("db: scan conversation: %w", err)
 	}
 	return r, nil
@@ -310,9 +361,12 @@ func scanConversation(row pgx.Rows) (ConversationRow, error) {
 func scanMessage(row pgx.Rows) (MessageRow, error) {
 	var r MessageRow
 	if err := row.Scan(&r.ID, &r.TenantID, &r.ConversationID, &r.Role, &r.Content,
-		&r.ToolCalls, &r.ToolResults, &r.Attachments, &r.Metadata, &r.CreatedAt,
+		&r.ToolCalls, &r.ToolResults, &r.Attachments, &r.Metadata, &r.Reasoning, &r.CreatedAt,
 	); err != nil {
 		return MessageRow{}, fmt.Errorf("db: scan message: %w", err)
+	}
+	if r.Reasoning == nil {
+		r.Reasoning = []string{}
 	}
 	return r, nil
 }

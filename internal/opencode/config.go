@@ -261,20 +261,26 @@ const ScratchDir = "/tmp/orchicon"
 // os.system, subprocess.run) is invisible here. That hole is closed by the
 // OS-level execution guard (guard.go), which shims dangerous binaries on the
 // worker's PATH and catches the command no matter where it is spawned. The
-// rules below are belt-and-suspenders for the direct-Bash-tool case, covering
-// recursive/forced deletes, sudo escalation, disk/partition/LVM tools, the
-// shell-construct smuggling variants (`(rm -rf /) &`, `{ rm -rf /; }`, chained
-// `;`/`&&`/`&`/`|`), device redirection, root-wide chmod/chown, and
-// download-and-execute.
+// rules below are belt-and-suspenders for the direct-Bash-tool case: the
+// destructive-class `rm` targets (/, system paths, ~, $HOME, --no-preserve-
+// root, current-dir wipes — in-project cleanup is allowed), sudo escalation,
+// disk/partition/LVM tools, the shell-construct smuggling variants
+// (`(rm -rf /) &`, `{ rm -rf /; }`, chained `;`/`&&`/`&`/`|`), device
+// redirection, root-wide chmod/chown, and download-and-execute.
 //
 // There is intentionally no catch-all "*" rule here: unmatched commands fall
 // back to opencode's default (ask, which --auto approves) instead of letting a
 // broad allow rule win by ordering.
 func permissionRules() map[string]any {
 	bashDeny := []string{
-		// rm family — direct and absolute-path invocations.
-		"rm", "rm *", "rm -rf *", "rm -fr *", "rm -R *", "rm -r *", "rm -f *",
-		"rm -Rf *", "rm -fR *", "rm -frr *",
+		// rm family — target-scoped. In-project cleanup (`rm -rf build/`,
+		// `node_modules`, `.next`) is legitimate and no longer denied (the
+		// denial burned worker tokens on `find -delete`/python workarounds);
+		// the OS-level execution guard is the precise backstop (it allows rm
+		// only when every path stays inside the project). What stays denied
+		// is the destructive class: absolute system paths, /, ~, $HOME,
+		// --no-preserve-root, and the current-dir-wipe variants — the
+		// commands that escape the project no matter how they're written.
 		"rm -rf /", "rm -r /", "rm -R /", "rm -f /", "rm -fr /", "rm -Rf /",
 		"rm -rf /*", "rm -fr /*", "rm -r /*", "rm -R /*", "rm -f /*",
 		"rm -rf /home/*", "rm -rf /root/*", "rm -rf /etc/*", "rm -rf /usr/*",
@@ -347,8 +353,8 @@ type ConfigOptions struct {
 	// operator's entries (e.g. an `orchicon` MCP that `docker exec`s into
 	// a container, or a local node-based Playwright MCP) cannot run inside
 	// the sandbox — an unresolvable MCP hangs the serve's event loop, so
-	// the published port never answers. The one-shot `opencode run` path
-	// tolerates MCP failures and keeps them.
+	// the published port never answers. (The removed one-shot `opencode
+	// run` path tolerated MCP failures; a serve cannot.)
 	SkipUserMCP bool
 }
 

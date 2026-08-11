@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { askOrchiconClient } from "@/api/clients";
 import type { Conversation } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 import type { ChatMessage } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
+import { ConversationMode } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 
 export const askKeys = {
   conversations: ["ask", "conversations"] as const,
@@ -34,10 +35,15 @@ export function useGetConversation(id: string) {
 export function useCreateConversation() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (opts: { modelRef?: string; initialMessage?: string }) => {
+    mutationFn: async (opts: {
+      modelRef?: string;
+      initialMessage?: string;
+      mode?: ConversationMode;
+    }) => {
       const res = await askOrchiconClient.createConversation({
         modelRef: opts.modelRef ?? "",
         initialMessage: opts.initialMessage ?? "",
+        mode: opts.mode ?? ConversationMode.BRAINSTORM,
       });
       return res.conversation as Conversation | undefined;
     },
@@ -72,7 +78,7 @@ export function useUpdateConversationTitle() {
   });
 }
 
-export function useListMessages(conversationId: string) {
+export function useListMessages(conversationId: string, opts?: { refetchInterval?: number | false }) {
   return useQuery({
     queryKey: askKeys.messages(conversationId),
     queryFn: async () => {
@@ -80,6 +86,17 @@ export function useListMessages(conversationId: string) {
       return (res.messages ?? []).reverse() as ChatMessage[];
     },
     enabled: !!conversationId,
+    // Poll while a turn is pending so the detached collector's persisted
+    // reply (or error) appears without a manual refresh.
+    refetchInterval: opts?.refetchInterval ?? false,
+  });
+}
+
+export function useAbortConversationTurn() {
+  return useMutation({
+    mutationFn: async (conversationId: string) => {
+      await askOrchiconClient.abortConversationTurn({ conversationId });
+    },
   });
 }
 
@@ -102,6 +119,23 @@ export function useUpdateAgentConfig() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: askKeys.config });
+    },
+  });
+}
+
+export function useSetConversationMode() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (opts: { id: string; mode: ConversationMode }) => {
+      const res = await askOrchiconClient.setConversationMode({
+        id: opts.id,
+        mode: opts.mode,
+      });
+      return res.conversation as Conversation | undefined;
+    },
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: askKeys.conversations });
+      qc.invalidateQueries({ queryKey: askKeys.conversation(variables.id) });
     },
   });
 }

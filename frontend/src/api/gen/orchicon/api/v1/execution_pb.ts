@@ -358,6 +358,13 @@ export class WorkerExecution extends Message<WorkerExecution> {
    */
   systemPrompt = "";
 
+  /**
+   * human-readable worker name (LEFT JOINed from workers at query time)
+   *
+   * @generated from field: string worker_name = 25;
+   */
+  workerName = "";
+
   constructor(data?: PartialMessage<WorkerExecution>) {
     super();
     proto3.util.initPartial(data, this);
@@ -390,6 +397,7 @@ export class WorkerExecution extends Message<WorkerExecution> {
     { no: 22, name: "conversation", kind: "scalar", T: 12 /* ScalarType.BYTES */ },
     { no: 23, name: "iteration", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 24, name: "system_prompt", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 25, name: "worker_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkerExecution {

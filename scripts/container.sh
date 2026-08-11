@@ -467,7 +467,11 @@ case "${1:-}" in
   runtime-stop)
     # Stop the runtime daemon (and any runtime containers) for an instance.
     stop_runtime_daemon "${2:-dev}"
-    pid=$(pgrep -x orchicon | head -1)
+    # Match ONLY the host daemon (pgrep -x orchicon would also match the
+    # container supervisor/plane, which run in the shared pid namespace).
+    # The pattern is unique enough not to match this script's own command
+    # line (which never contains "orchicon runtime-daemon").
+    pid=$(pgrep -f "orchicon runtime-daemon" | head -1)
     [ -n "$pid" ] && kill "$pid" 2>/dev/null && log_ok "runtime daemon stopped"
     [ -z "$pid" ] && log_dim "runtime daemon not running"
     ;;

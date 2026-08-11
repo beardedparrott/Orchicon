@@ -28,11 +28,12 @@ import {
 } from "lucide-react";
 import type { StreamExecutionEventsResponse } from "@/api/gen/orchicon/api/v1/execution_pb";
 import { useGetExecutionSession, useSendExecutionMessage, useContinueExecutionSession } from "@/api/executions";
+import { ReasoningBubble } from "@/components/chat";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-import { mergeSessionItems, type ChatItem, type ParsedTool } from "./sessionItems";
+import { groupByPhase, mergeSessionItems, type ChatItem, type ParsedTool } from "./sessionItems";
 
 interface SessionChatPaneProps {
   executionId: string;
@@ -63,6 +64,12 @@ function transcriptItems(
   parts: { seq: bigint; kind: string; payload: Uint8Array; createdAt?: { seconds: bigint } }[] | undefined,
 ): ChatItem[] {  if (!parts?.length) return [];
   const out: ChatItem[] = [];
+  // Phase counter: each opencode step is one assistant generation period.
+  // step_start / step_finish parts are boundaries that close the phase but
+  // render nothing; every text/reasoning part is tagged with the step it
+  // belongs to. The keys are derived from seq order, so they are stable
+  // across the 2s transcript-flush renders (no mid-stream regrouping).
+  let step = 0;
   for (const p of parts) {
     const at = p.createdAt?.seconds
       ? Number(p.createdAt.seconds) * 1000
@@ -70,6 +77,10 @@ function transcriptItems(
     const key = `t-${p.seq.toString()}`;
     const pl = decodePayload(p.payload);
     switch (p.kind) {
+      case "step_start":
+      case "step_finish":
+        step++;
+        break;
       case "user_message":
         if (typeof pl.text === "string" && pl.text) {
           out.push({
@@ -83,7 +94,7 @@ function transcriptItems(
         break;
       case "text":
         if (typeof pl.part?.text === "string" && pl.part.text) {
-          out.push({ kind: "text", text: pl.part.text, at, key });
+          out.push({ kind: "text", text: pl.part.text, at, key, phase: `step-${step}` });
         }
         break;
       case "tool_use": {
@@ -108,7 +119,7 @@ function transcriptItems(
       }
       case "reasoning":
         if (typeof pl.part?.text === "string" && pl.part.text) {
-          out.push({ kind: "reasoning", text: pl.part.text, at, key });
+          out.push({ kind: "reasoning", text: pl.part.text, at, key, phase: `step-${step}` });
         }
         break;
       case "session_info":
@@ -129,13 +140,21 @@ function transcriptItems(
         break;
     }
   }
-  return out;
+  // Group the history per (kind, phase) so the terminal view — which
+  // renders the transcript alone — converges with the live view: each
+  // step's per-chunk reasoning parts become ONE bubble.
+  return groupByPhase(out);
 }
 
 // --- live event stream → chat items (mirrors RuntimeSessionPane) --------
 
 function liveItems(events: StreamExecutionEventsResponse[]): ChatItem[] {
   const out: ChatItem[] = [];
+  // Synthetic phase counter: the live stream has no step markers, so we
+  // increment on the boundary events (tool / error) that separate one
+  // assistant generation period from the next. The events array is
+  // monotonic, so these `live-N` keys are stable across renders.
+  let phase = 0;
   for (const resp of events) {
     const evt = resp.event;
     if (!evt) continue;
@@ -165,8 +184,8 @@ function liveItems(events: StreamExecutionEventsResponse[]): ChatItem[] {
         }
         out.push(
           isReasoning
-            ? { kind: "reasoning", text, at, key: `r-${id}` }
-            : { kind: "text", text, at, key: id, live: true },
+            ? { kind: "reasoning", text, at, key: `r-${id}`, live: true, phase: `live-${phase}` }
+            : { kind: "text", text, at, key: id, live: true, phase: `live-${phase}` },
         );
         break;
       }
@@ -175,6 +194,7 @@ function liveItems(events: StreamExecutionEventsResponse[]): ChatItem[] {
         const input = (payload.input as string) || "";
         const output = (payload.output as string) || "";
         out.push({ kind: "tool", tool: { id, toolName, input, output, at }, key: id });
+        phase++;
         break;
       }
       case 8:
@@ -184,6 +204,7 @@ function liveItems(events: StreamExecutionEventsResponse[]): ChatItem[] {
           at,
           key: id,
         });
+        phase++;
         break;
       case 10: {
         // ARTIFACT
@@ -423,27 +444,6 @@ function ToolCard({ tool }: { tool: ParsedTool }) {
   );
 }
 
-function ReasoningBubble({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="flex justify-start pl-2">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="max-w-[92%] rounded-xl border border-violet-300/30 bg-violet-50/20 px-3 py-2 text-left text-[13px] italic leading-relaxed text-muted-foreground dark:bg-violet-950/10"
-      >
-        <span className="flex items-center gap-1.5 font-medium not-italic text-violet-700 dark:text-violet-300">
-          <span className="inline-block h-1.5 w-1.5 rounded-full bg-violet-500" />
-          reasoning {open ? "· hide" : `· ${text.length.toLocaleString()} chars`}
-        </span>
-        {open && (
-          <span className="mt-1 block whitespace-pre-wrap break-words">{text}</span>
-        )}
-      </button>
-    </div>
-  );
-}
-
 function ArtifactCard({ artifact }: { artifact: { name: string; type: string; content: string } }) {
   const fileName = artifact.name.split("/").pop() || artifact.name;
   const isMarkdown = artifact.type === "markdown" || fileName.endsWith(".md");
@@ -518,6 +518,10 @@ export function SessionChatPane({
   const sendMsg = useSendExecutionMessage();
   const continueSession = useContinueExecutionSession();
   const { data: transcript, refetch: refetchTranscript } = useGetExecutionSession(executionId, true);
+  // A follow-up on a completed execution is fire-and-forget: the RPC returns
+  // immediately and the reply lands in the transcript asynchronously. Track
+  // that the reply is pending so the pane keeps polling until it arrives.
+  const [followUpReplyPending, setFollowUpReplyPending] = useState(false);
   // Poll every 2s while running so the pane shows the full conversation as
   // it grows (joining mid-run shows everything already said; the runner
   // flushes the transcript every ~2s).
@@ -538,6 +542,46 @@ export function SessionChatPane({
     }
     wasRunning.current = isRunning;
   }, [isRunning, refetchTranscript]);
+
+  // A completed-execution follow-up is fire-and-forget: the RPC returns at
+  // once and the reply is written to the transcript later. While a follow-up
+  // reply is pending, poll the transcript so the assistant's reply appears
+  // without a manual refresh (the model can take minutes).
+  const followUpReplySeq = useRef(0n);
+  useEffect(() => {
+    if (!followUpReplyPending) return;
+    const parts = transcript ?? [];
+    // The reply is the assistant text that lands AFTER the follow-up was
+    // sent. The boundary is fixed at send time (the max transcript seq then)
+    // so a previous follow-up's reply in an ongoing conversation can never be
+    // mistaken for this one's. If the transcript wasn't loaded at send time
+    // (boundary 0n), establish it lazily from the newest follow_up user
+    // message once it appears.
+    let boundary = followUpReplySeq.current;
+    if (boundary === 0n) {
+      let latestFollowUp = 0n;
+      for (const p of parts) {
+        if (p.kind !== "user_message") continue;
+        const pl = decodePayload(p.payload);
+        if (pl.source === "follow_up" && p.seq > latestFollowUp) {
+          latestFollowUp = p.seq;
+        }
+      }
+      if (latestFollowUp > 0n) {
+        followUpReplySeq.current = latestFollowUp;
+        boundary = latestFollowUp;
+      }
+    }
+    const replied =
+      boundary > 0n &&
+      parts.some((p) => p.kind === "text" && p.seq > boundary);
+    if (replied) {
+      setFollowUpReplyPending(false);
+      return;
+    }
+    const t = window.setInterval(() => void refetchTranscript(), 2000);
+    return () => window.clearInterval(t);
+  }, [followUpReplyPending, transcript, refetchTranscript]);
   // Poll while running so user messages (goal/nudges/human) appear even
   // before the terminal flush.
   const live = useMemo(() => liveItems(events), [events]);
@@ -643,18 +687,28 @@ export function SessionChatPane({
         return;
       }
       // Completed execution: run the follow-up IN the session (no new
-      // execution/work item). Show the user's bubble immediately (the
-      // model can take minutes); the reply lands in the transcript and the
-      // refetch below renders the real exchange, replacing the optimistic
-      // bubble once the server has recorded the question.
+      // execution/work item). The RPC returns immediately (fire-and-forget);
+      // the reply is recorded into the transcript asynchronously. Show the
+      // user's bubble immediately, mark the reply as pending, and poll until
+      // the durable transcript carries the assistant's reply. The boundary is
+      // the max transcript seq AT SEND TIME — the reply lands after it.
       const key = `pending-${pendingSeq.current++}`;
       setPending((prev) => [...prev, { key, text: msg, at: Date.now() }]);
       setDraft("");
+      let boundary = 0n;
+      for (const p of transcript ?? []) {
+        if (p.seq > boundary) boundary = p.seq;
+      }
+      followUpReplySeq.current = boundary;
+      setFollowUpReplyPending(true);
       continueSession.mutate(
         { executionId, message: msg },
         {
           onSuccess: () => {
             setComposerOpen(false);
+          },
+          onError: () => {
+            setFollowUpReplyPending(false);
           },
           onSettled: () => {
             void refetchTranscript();
@@ -662,11 +716,12 @@ export function SessionChatPane({
         },
       );
     },
-    [executionId, isRunning, sendMsg, continueSession, refetchTranscript],
+    [executionId, isRunning, sendMsg, continueSession, refetchTranscript, transcript],
   );
 
   const isStreaming = streamStatus === "open" && isRunning;
-  const followUpPending = !isRunning && continueSession.isPending;
+  const followUpPending =
+    !isRunning && (continueSession.isPending || followUpReplyPending);
   const busy = sendMsg.isPending || continueSession.isPending;
 
   // The system-prompt bubble above already carries the full composite
@@ -739,7 +794,7 @@ export function SessionChatPane({
             case "tool":
               return <ToolCard key={item.key} tool={item.tool} />;
             case "reasoning":
-              return <ReasoningBubble key={item.key} text={item.text} />;
+              return <ReasoningBubble key={item.key} text={item.text} streaming={!!item.live} />;
             case "artifact":
               return <ArtifactCard key={item.key} artifact={item} />;
             case "error":

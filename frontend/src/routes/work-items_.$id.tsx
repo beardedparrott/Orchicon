@@ -30,8 +30,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { KindPill } from "@/components/work-items/work-item-badges";
+import { KindPill, PositionBadge } from "@/components/work-items/work-item-badges";
 import { WorkItemParentSelect } from "@/components/work-items/work-item-parent-select";
+import { computeSequencePositions } from "@/components/work-items/sequence-utils";
 import { kindLabel, kindMeta, statusMeta, isTerminal, MANUALLY_UNMOVABLE_STATUSES } from "@/components/work-items/work-item-meta";
 import { cn } from "@/lib/utils";
 import { Timestamp } from "@bufbuild/protobuf";
@@ -88,6 +89,17 @@ function WorkItemDetailPage() {
     enabled: editing,
   });
 
+  // Whether this item has direct children — "has children" is the sequence
+  // determinant. A parent with children is a sequence run (its children each
+  // run their own bound workflows in chain order); its own workflow binding
+  // is ignored. Derived from the edit project's items (the editor already
+  // fetches them), so the schedule/start card can show for a parent even
+  // without a workflow selected.
+  const hasChildren = useMemo(
+    () => (editProjectItems ?? []).some((i) => i.parentId === id),
+    [editProjectItems, id],
+  );
+
   const [depTarget, setDepTarget] = useState("");
   const [depType, setDepType] = useState(1); // BLOCKS
 
@@ -95,6 +107,14 @@ function WorkItemDetailPage() {
   const itemsById = useMemo(
     () => new Map((graph?.nodes ?? []).map((n) => [n.id, n])),
     [graph],
+  );
+
+  // Chain position within its parent's siblings (sequence-child rank),
+  // derived from the already-loaded project graph — shows the item's order
+  // in its sequence chain on the detail page.
+  const chainPosition = useMemo(
+    () => computeSequencePositions(graph?.nodes ?? []).get(id),
+    [graph, id],
   );
 
   if (isLoading) {
@@ -366,12 +386,14 @@ function WorkItemDetailPage() {
       ) : (
       <>
 
-      {editing && editWorkflowId && (
+      {editing && (editWorkflowId || hasChildren) && (
         <Card>
           <CardHeader>
             <CardTitle>Scheduled start</CardTitle>
             <CardDescription>
-              Leave empty to start immediately. Set a time to schedule the run.
+              {hasChildren
+                ? "Run this item's children sequentially — each child runs its own bound workflow, one after another in chain order."
+                : "Leave empty to start immediately. Set a time to schedule the run."}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -511,6 +533,16 @@ function WorkItemDetailPage() {
             </CardHeader>
           </Card>
         ) : null}
+        {chainPosition ? (
+          <Card>
+            <CardHeader>
+              <CardDescription>Chain position</CardDescription>
+              <CardTitle className="text-base">
+                <PositionBadge position={chainPosition} />
+              </CardTitle>
+            </CardHeader>
+          </Card>
+        ) : null}
         {item.scheduledStartAt && (
           <Card>
             <CardHeader>
@@ -586,6 +618,13 @@ function WorkItemDetailPage() {
             {item.workflowRunId && (
               <CardDescription className="mt-1 text-xs">
                 Active run: {item.workflowRunId.slice(0, 12)}…
+              </CardDescription>
+            )}
+            {hasChildren && (
+              <CardDescription className="mt-1 text-xs text-muted-foreground">
+                This item has children — it runs as a sequence, so its own
+                workflow is ignored. Each child runs its own workflow in chain
+                order.
               </CardDescription>
             )}
           </CardHeader>

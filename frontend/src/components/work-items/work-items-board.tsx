@@ -24,7 +24,7 @@
 //   (Epic → Feature → Task → Subtask). Children are indented under their
 //   parent card within the same column.
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   DndContext,
@@ -55,6 +55,8 @@ import {
 } from "@/components/work-items/work-item-meta";
 import type { BlockState } from "@/components/work-items/dependency-utils";
 import { blockingTitles } from "@/components/work-items/dependency-utils";
+import { computeSequencePositions } from "@/components/work-items/sequence-utils";
+import { PositionBadge } from "@/components/work-items/work-item-badges";
 import { WorkItemCard } from "@/components/work-items/work-item-card";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -65,6 +67,10 @@ export interface WorkItemsBoardProps {
   projectId: string;
   /** items that pass the active kind/status filters (all columns) */
   items: WorkItem[];
+  /** the FULL project item list (unfiltered) — source for sequence chain
+   *  positions so a filter that hides a parent/sibling never distorts the
+   *  #N badge or drops it entirely */
+  allItems?: WorkItem[];
   blockState: BlockState;
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
@@ -116,6 +122,7 @@ function buildHierarchy(items: WorkItem[]): HierarchyNode[] {
 export function WorkItemsBoard({
   projectId,
   items,
+  allItems,
   blockState,
   selected,
   onToggleSelect,
@@ -131,8 +138,25 @@ export function WorkItemsBoard({
   const toast = useToast();
   const [movingId, setMovingId] = useState<string | null>(null);
   const [activeItem, setActiveItem] = useState<WorkItem | null>(null);
-  /** size of the selection being dragged together; 0/1 = plain single drag */
   const [dragCount, setDragCount] = useState(0);
+  const suppressClickRef = useRef(false);
+  // A drag ends with the browser dispatching a click on the element under
+  // the pointer — the card titles are <Link>s, so without this the post-drag
+  // click navigates to the item's detail page instead of just moving the
+  // card. The suppression MUST be a DOCUMENT-level native capture listener:
+  // after a dnd-kit drag the click's propagation path is [target → document]
+  // and listeners on the container div or the card itself are never reached.
+  useEffect(() => {
+    const onCaptureClick = (e: MouseEvent) => {
+      if (suppressClickRef.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        suppressClickRef.current = false;
+      }
+    };
+    document.addEventListener("click", onCaptureClick, true);
+    return () => document.removeEventListener("click", onCaptureClick, true);
+  }, []);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -142,6 +166,14 @@ export function WorkItemsBoard({
   );
 
   const itemsById = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
+  // Chain positions (sort_order rank within parent) so every SEQUENCE
+  // child card shows its true sequence position regardless of display
+  // sort. Derived from the FULL project list (allItems) so a filter that
+  // hides a parent or sibling never distorts the badge.
+  const positions = useMemo(
+    () => computeSequencePositions(allItems ?? items),
+    [allItems, items],
+  );
 
   const handleDragStart = useCallback(
     (event: DragStartEvent) => {
@@ -151,6 +183,10 @@ export function WorkItemsBoard({
         setActiveItem(item);
         setDragCount(selected.has(item.id) && selected.size > 1 ? selected.size : 0);
       }
+      // A drag ends with a click on the element under the pointer — the
+      // card's title is a <Link>, so without this the post-drag click
+      // navigates to the item's detail page instead of just moving it.
+      suppressClickRef.current = true;
     },
     [itemsById, selected],
   );
@@ -226,6 +262,14 @@ export function WorkItemsBoard({
   const handleDragEnd = (event: DragEndEvent) => {
     setActiveItem(null);
     setDragCount(0);
+    // Keep the suppression flag set long enough that the post-mouseup click
+    // lands inside it (setTimeout(0) could clear it BEFORE the click fires,
+    // letting the card title <Link> navigate after a drag — the observed
+    // bug). The container's onClickCapture consumes the flag; this timer is
+    // only the backstop for a release with no subsequent click.
+    window.setTimeout(() => {
+      suppressClickRef.current = false;
+    }, 300);
     const { active, over } = event;
     if (!over) return;
     const item = itemsById.get(String(active.id));
@@ -302,6 +346,13 @@ export function WorkItemsBoard({
       collisionDetection={pointerWithin}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
+      onDragCancel={() => {
+        setActiveItem(null);
+        setDragCount(0);
+        window.setTimeout(() => {
+          suppressClickRef.current = false;
+        }, 300);
+      }}
       // Disable dnd-kit auto-scroll: the board overflows horizontally
       // (flex-1 min-w-[280px] columns), so near the viewport edge the
       // auto-scroller shifts the board mid-drag and pointerWithin then
@@ -332,6 +383,7 @@ export function WorkItemsBoard({
               collapsedIds={collapsedIds}
               onToggleCollapse={onToggleCollapse}
               dragCount={dragCount}
+              positions={positions}
             />
           );
         })}
@@ -380,6 +432,7 @@ function BoardColumn({
   collapsedIds,
   onToggleCollapse,
   dragCount,
+  positions,
 }: {
   column: { status: number; label: string };
   items: WorkItem[];
@@ -392,6 +445,7 @@ function BoardColumn({
   collapsedIds: Set<string>;
   onToggleCollapse: (id: string) => void;
   dragCount: number;
+  positions: Map<string, number>;
 }) {
   const isReadOnly = MANUALLY_UNMOVABLE_STATUSES.has(column.status);
 
@@ -462,6 +516,7 @@ function BoardColumn({
               collapsedIds={collapsedIds}
               onToggleCollapse={onToggleCollapse}
               dragCount={dragCount}
+              positions={positions}
             />
           ))}
         </SortableContext>
@@ -492,6 +547,7 @@ function HierarchyNodeComponent({
   collapsedIds,
   onToggleCollapse,
   dragCount,
+  positions,
   depth = 0,
 }: {
   node: HierarchyNode;
@@ -504,6 +560,7 @@ function HierarchyNodeComponent({
   collapsedIds: Set<string>;
   onToggleCollapse: (id: string) => void;
   dragCount: number;
+  positions: Map<string, number>;
   depth?: number;
 }) {
   // Persisted per-project collapse state; default EXPANDED (ADR-WI-3) so
@@ -525,6 +582,7 @@ function HierarchyNodeComponent({
           expanded={expanded}
           onToggleExpand={() => onToggleCollapse(node.item.id)}
           multiDragCount={dragCount}
+          position={positions.get(node.item.id)}
         />
       </div>
       {expanded &&
@@ -542,6 +600,7 @@ function HierarchyNodeComponent({
             collapsedIds={collapsedIds}
             onToggleCollapse={onToggleCollapse}
             dragCount={dragCount}
+            positions={positions}
             depth={depth + 1}
           />
         ))}
@@ -564,6 +623,7 @@ function SortableCard({
   expanded = true,
   onToggleExpand,
   multiDragCount = 0,
+  position,
 }: {
   item: WorkItem;
   selected: Set<string>;
@@ -576,6 +636,8 @@ function SortableCard({
   onToggleExpand?: () => void;
   /** >1 when the drag carries the whole selection (ADR-WI-4) */
   multiDragCount?: number;
+  /** chain position badge (#1, #2, …) — true sequence order */
+  position?: number;
 }) {
   const {
     attributes,
@@ -612,6 +674,7 @@ function SortableCard({
         selected={selected.has(item.id)}
         onToggleSelect={onToggleSelect}
         blockedBy={blockState.blockedBy}
+        badge={position ? <PositionBadge position={position} /> : undefined}
         depsCount={
           (blockState.blocks.get(item.id)?.length ?? 0) +
           (blockState.blockedBy.get(item.id)?.length ?? 0)

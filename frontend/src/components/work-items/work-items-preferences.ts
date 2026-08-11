@@ -37,7 +37,13 @@ import {
 } from "@/components/work-items/work-item-meta";
 
 const PREFIX = "orchicon.workItems.";
-const VERSION = 2;
+// VERSION 3: the default display sort became CHAIN ORDER (empty sort_by,
+// ascending) so the tree/board default to sort_order — the sequence order.
+// V2 envelopes stored `sortBy: "created_at", sortOrder: "desc"`, which
+// silently disabled the server's sort_order default and made tree drags
+// no-ops. Bumping the version makes stale v2 filter/view state fall back to
+// the new defaults instead of pinning an explicit created_at sort.
+const VERSION = 3;
 
 export interface WorkItemFilters {
   /** OR-composed status filter; empty = nothing matches */
@@ -49,12 +55,20 @@ export interface WorkItemFilters {
   sortOrder: string;
 }
 
+// The default sort is CHAIN ORDER (empty sort_by = the server's
+// `ORDER BY sort_order NULLS LAST, created_at`), so the tree renders
+// siblings in sequence order and the board orders cards within a column by
+// sort_order (architecture-notes/sequential-multi-workflow-runs.md §1).
+// Ascending keeps siblings 1..N; a DESC chain-order sort would reverse the
+// run order. Choosing an explicit display sort (created/title/priority)
+// reorders the view only — it never mutates sort_order, and the board's
+// position badges (#1, #2, …) keep the true chain order unambiguous.
 export const DEFAULT_FILTERS: WorkItemFilters = {
   statuses: ALL_STATUS_VALUES,
   kinds: ALL_KIND_VALUES,
   search: "",
-  sortBy: "created_at",
-  sortOrder: "desc",
+  sortBy: "", // chain order (sort_order NULLS LAST, created_at)
+  sortOrder: "asc",
 };
 
 export const DEFAULT_VIEW: WorkItemsView = "board";

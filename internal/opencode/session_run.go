@@ -98,10 +98,29 @@ const livenessProbeText = "Do NOT stop or restart your task. This is a liveness 
 	"If your task is complete, end your output with: ORCHICON WORKER SUMMARY: success — <summary>. " +
 	"If you are genuinely blocked and cannot proceed, end your output with: ORCHICON WORKER SUMMARY: failure — <reason>."
 
+// decisionMarker is the single routing signal every worker execution ends
+// with (docs: the first word after it is success|failure). The completion
+// probe and the settle-time success guard check for its presence so a
+// session that ended without delivering the signal is never recorded as a
+// clean success.
+const decisionMarker = "ORCHICON WORKER SUMMARY:"
+
+// completionProbeText is sent on session.idle when the worker's turn ended
+// WITHOUT the decision marker — e.g. the final model response was truncated
+// mid-stream (a step_finish with reason "unknown"/0 tokens), so the worker
+// never delivered its ORCHICON WORKER SUMMARY. Interjecting a prompt asks
+// the (still-live) session to finish the signal instead of recording a
+// hollow success; a session that still cannot produce the marker fails.
+const completionProbeText = "Your response appears to have been cut off before your final ORCHICON WORKER SUMMARY was captured. " +
+	"Please do not restart your work. " +
+	"If you have finished your task, reply with your final summary exactly in this form: " +
+	"ORCHICON WORKER SUMMARY: success — <summary>  (or  failure — <reason>). " +
+	"If you are still working, report your current status and then continue, and be sure to end with your ORCHICON WORKER SUMMARY when done."
+
 // run executes the whole session lifecycle. It returns nil once the
 // execution has completed (OnResult fired). A non-nil error means the
-// session transport could not be set up at all — the caller falls back to
-// the legacy one-shot subprocess path.
+// session transport could not be set up — with the one-shot path removed,
+// the caller surfaces it as a failed execution.
 func (r *sessionRun) run() error {
 	client := r.client
 	// The durable transcript writer must be set before any recordPart
@@ -110,7 +129,7 @@ func (r *sessionRun) run() error {
 
 	// The serve's published port can be refused for a beat after the
 	// docker-proxy binds it; retry the session create briefly so a
-	// converging serve doesn't trip the one-shot fallback.
+	// converging serve doesn't fail the execution.
 	var sid string
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
@@ -156,7 +175,8 @@ func (r *sessionRun) run() error {
 		r.a.mu.Unlock()
 	}()
 
-	// Progress monitor: same stall signals as the one-shot path. Advisory
+	// Progress monitor: same stall signals as the one-shot path (which
+	// shares the guardrails). Advisory
 	// (no_file_progress) trips a liveness probe; fatal signals abort the
 	// session and fail the execution.
 	r.monitor = newProgressMonitor(r.execRow.ID, stallWindowsFromManifest(r.manifest))
@@ -208,7 +228,7 @@ func (r *sessionRun) run() error {
 	<-r.done
 
 	// Finalize: fold the terminal reason, stream error, and the
-	// step-balance check into OnResult (mirrors the one-shot path).
+	// step-balance check into OnResult.
 	ok := r.resultOk
 	var parts []string
 	if r.resultErr != "" {
@@ -217,7 +237,12 @@ func (r *sessionRun) run() error {
 	if r.lastStreamErr != "" {
 		parts = append(parts, r.lastStreamErr)
 	}
-	if r.stats.stepStarts > r.stats.stepFinishes {
+	// A stream that ended mid-step or on a truncated final step is NOT a
+	// success — unless the output still carries the decision signal (the
+	// completion probe may have salvaged it, or the summary was delivered
+	// before the trailing step event was lost). A missing signal means the
+	// worker's final response never completed.
+	if r.stats.unfinished() && !strings.Contains(r.output.String(), decisionMarker) {
 		ok = false
 		parts = append(parts, "execution ended before the final model step completed (model response stream truncated or event dropped)")
 	}
@@ -248,6 +273,9 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		// can span multiple steps/tool loops, so step-finish alone is not
 		// a turn boundary).
 		r.resolveProbe()
+		if r.maybeProbeCompletion() {
+			return
+		}
 		r.allTurnsDone()
 		return
 	case "session.status":
@@ -257,12 +285,16 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		r.recordStreamError(evt)
 		return
 	}
-	if legacy, ok := legacyEventFromBus(evt); ok {
+	if legacy, ok := LegacyEventFromBus(evt); ok {
 		// ANY telemetry activity (text/tool/step/reasoning) after a probe
 		// is evidence the worker is alive — resolve the probe and revive
 		// without waiting for a full turn (the false-positive case: an
-		// analyst producing output but not touching files).
+		// analyst producing output but not touching files). It is also
+		// evidence the serve's model path is healthy — reset the
+		// consecutive-session-error counter so a single transient failure
+		// never triggers a container recycle.
 		r.resolveProbe()
+		r.noteSessionProgress()
 		r.a.parseEvent(r.parentCtx, r.execRow, r.manifest, legacy, r.callbacks,
 			r.monitor, &r.output, &r.lastStreamErr, &r.textSeq, r.stats)
 		// Record the raw part for the durable transcript.
@@ -380,19 +412,29 @@ func (r *sessionRun) settleFinish() {
 	}()
 }
 
-// recordStreamError handles a session.error bus event: the turn failed at
-// the model/API level, which mirrors the one-shot path failing the run on
-// a JSON error event.
-func (r *sessionRun) recordStreamError(evt BusEvent) {
-	msg := ""
+// sessionErrorMessage extracts the human-readable reason from a
+// session.error bus event. Provider errors nest the readable message at
+// error.data.message (e.g. OpenRouter 500s) — fall back to that when the
+// top-level error.message is absent so the failure reason is diagnosable
+// instead of a generic "opencode session error".
+func sessionErrorMessage(evt BusEvent) string {
 	if errObj, ok := evt.Properties["error"].(map[string]any); ok {
-		if m, ok2 := errObj["message"].(string); ok2 {
-			msg = m
+		if m, ok2 := errObj["message"].(string); ok2 && m != "" {
+			return m
+		}
+		if data, ok2 := errObj["data"].(map[string]any); ok2 {
+			if m, ok3 := data["message"].(string); ok3 {
+				return m
+			}
 		}
 	}
-	if msg == "" {
-		msg = "opencode session error"
-	}
+	return "opencode session error"
+}
+
+// recordStreamError handles a session.error bus event: the turn failed at
+// the model/API level.
+func (r *sessionRun) recordStreamError(evt BusEvent) {
+	msg := sessionErrorMessage(evt)
 	r.a.log.Warn("opencode session error", "execution", r.execRow.ID, "message", msg)
 	r.mu.Lock()
 	if r.lastStreamErr == "" {
@@ -400,7 +442,89 @@ func (r *sessionRun) recordStreamError(evt BusEvent) {
 	}
 	r.mu.Unlock()
 	r.callbacks.OnHealth(r.parentCtx, r.execRow.ID, "unhealthy")
+	r.recycleOnWedgedServe(msg)
 	r.finish(false, "opencode_session_error: "+msg)
+}
+
+// recycleOnWedgedServe recycles the workflow's runtime container after a
+// run of CONSECUTIVE model-layer session errors. The observed wedge: a
+// serve whose /global/health answers (so the supervisor's health watchdog
+// never fires) but whose model turns fail instantly — every auto-retry
+// then re-uses the same poisoned serve and fails in ~80ms. Killing the
+// container makes the next dispatch's Create build a fresh serve, which is
+// exactly what un-wedged the field incident (a manual RetryFailedWorkflowRun
+// re-created the container and succeeded on the first try).
+//
+// The threshold is consecutive across executions — a wedge is serve-wide,
+// not execution-specific, so counting within one session would never fire
+// (the first failed execution fails fast and its retries are new sessions).
+// Reset to zero on any non-error progress (a step, tool call, or message
+// completing) so transient single failures never recycle.
+func (r *sessionRun) recycleOnWedgedServe(msg string) {
+	threshold := sessionErrorRecycleThreshold()
+	if threshold < 1 || r.manifest.RuntimeWorkflowID == "" || r.a.rt == nil {
+		return
+	}
+	if !r.a.countSessionError() {
+		return
+	}
+	r.a.log.Warn("recycling wedged runtime container after consecutive session errors",
+		"run", r.manifest.RuntimeWorkflowID, "execution", r.execRow.ID,
+		"threshold", threshold, "error", msg)
+	// Kill removes the container; the next dispatch's Create rebuilds it
+	// with a fresh serve. Best-effort — a failed recycle is just a log.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := r.a.rt.Kill(ctx, r.manifest.RuntimeWorkflowID); err != nil {
+		r.a.log.Warn("runtime container recycle failed", "run", r.manifest.RuntimeWorkflowID, "error", err)
+	}
+}
+
+// countSessionError increments the consecutive session-error counter and
+// returns true once the recycle threshold is reached (the counter is then
+// reset so a still-wedged serve re-arms on later dispatches). Returns
+// false before the threshold; a disabled threshold (<1) always returns
+// false.
+func (a *Adapter) countSessionError() bool {
+	threshold := sessionErrorRecycleThreshold()
+	if threshold < 1 {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.consecutiveSessionErrors++
+	if a.consecutiveSessionErrors < threshold {
+		return false
+	}
+	a.consecutiveSessionErrors = 0
+	return true
+}
+
+// sessionErrorCount returns the current consecutive session-error count
+// (test helper).
+func (a *Adapter) sessionErrorCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.consecutiveSessionErrors
+}
+
+// resetSessionErrors zeroes the consecutive session-error counter (test
+// helper).
+func (a *Adapter) resetSessionErrors() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.consecutiveSessionErrors = 0
+}
+
+// noteSessionProgress resets the consecutive-session-error counter on any
+// non-error session progress (a step, tool call, or message completing).
+func (r *sessionRun) noteSessionProgress() {
+	if sessionErrorRecycleThreshold() < 1 {
+		return
+	}
+	r.a.mu.Lock()
+	r.a.consecutiveSessionErrors = 0
+	r.a.mu.Unlock()
 }
 
 // onStall is the progress monitor's stall callback. Fatal signals abort
@@ -465,6 +589,97 @@ func (r *sessionRun) maybeNudge(reason string) {
 			r.finish(false, "stalled:no_file_progress:liveness_probe_no_response")
 		}
 	}()
+}
+
+// completionProbeDecision is the pure decision core of the completion-probe
+// logic (testable without a live session):
+//
+//   - output has the decision marker  → (false, false): settle normally.
+//   - marker missing, budget left     → (true,  false): send a probe.
+//   - marker missing, budget spent    → (false, true): fail — the worker
+//     never delivered its decision signal.
+func completionProbeDecision(output string, nudgesSent int, lastNudgeAt, now time.Time) (probe bool, fail bool) {
+	if strings.Contains(output, decisionMarker) {
+		return false, false
+	}
+	if nudgesSent >= nudgeMax() || now.Sub(lastNudgeAt) < nudgeCooldown() {
+		return false, true
+	}
+	return true, false
+}
+
+// maybeProbeCompletion decides whether a session that went idle WITHOUT the
+// ORCHICON WORKER SUMMARY decision signal can still be completed. The most
+// common cause is the final model turn being truncated mid-stream (a
+// step_finish with reason "unknown"/0 tokens), so the worker never delivered
+// its summary. The session is still live at idle, so a completion probe
+// (a fresh prompt_async turn) asks it to finish the signal — the reply either
+// carries the marker (the next idle settles normally) or counts as the
+// liveness evidence that clears the probe. When the probe budget is
+// exhausted and the marker is still absent, the run FAILS instead of being
+// recorded as a hollow success (the workflow's loop decision / re-ask / fail
+// path is the correct owner of a missing signal).
+//
+// Returns true when the caller must NOT settle: either a probe was sent and
+// is being awaited, or the run was already failed for the missing signal.
+func (r *sessionRun) maybeProbeCompletion() bool {
+	r.mu.Lock()
+	if r.finished || r.probePending {
+		r.mu.Unlock()
+		return false
+	}
+	probe, fail := completionProbeDecision(r.output.String(), r.nudgesSent, r.lastNudgeAt, time.Now())
+	if fail {
+		// Probe budget exhausted and still no signal — this is NOT a success.
+		// The final turn was truncated / the summary was lost.
+		r.mu.Unlock()
+		r.a.log.Warn("session idle without decision signal — failing",
+			"execution", r.execRow.ID, "nudges", r.nudgesSent)
+		r.finish(false, "stalled:missing_decision_signal:completion_probe_no_response")
+		return true
+	}
+	if !probe {
+		r.mu.Unlock()
+		return false
+	}
+	now := time.Now()
+	r.nudgesSent++
+	r.probePending = true
+	r.probeDeadline = now.Add(nudgeReplyWindow())
+	r.mu.Unlock()
+
+	r.a.log.Info("session idle without decision signal — sending completion probe",
+		"execution", r.execRow.ID, "nudge", r.nudgesSent, "max", nudgeMax())
+	if err := r.client.SendMessage(r.parentCtx, r.sessionID, r.system, r.modelRef, completionProbeText); err != nil {
+		r.mu.Lock()
+		r.probePending = false
+		r.mu.Unlock()
+		r.a.log.Warn("completion probe send failed — failing", "execution", r.execRow.ID, "error", err)
+		r.finish(false, "stalled:missing_decision_signal:completion_probe_no_response")
+		return true
+	}
+	r.bumpPending()
+	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": completionProbeText, "source": "nudge"})
+
+	// Verdict: no reply within the window → fail. Any reply resolves the
+	// probe (resolveProbe fires on telemetry activity) and the next
+	// session.idle re-enters maybeProbeCompletion with the accumulated
+	// output — so a successful summary probe settles normally.
+	go func() {
+		select {
+		case <-r.done:
+			return
+		case <-time.After(nudgeReplyWindow()):
+		}
+		r.mu.Lock()
+		still := r.probePending && !r.finished
+		r.mu.Unlock()
+		if still {
+			r.a.log.Warn("completion probe timed out — failing", "execution", r.execRow.ID)
+			r.finish(false, "stalled:missing_decision_signal:completion_probe_no_response")
+		}
+	}()
+	return true
 }
 
 // runSSE maintains the /event subscription with reconnects, routing every

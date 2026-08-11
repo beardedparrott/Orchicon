@@ -289,8 +289,15 @@ type WorkItem struct {
 	// Editable by humans via UpdateWorkItem so auto-generated reviews can be
 	// corrected/extended by a reviewer.
 	AcceptanceReview string `protobuf:"bytes,27,opt,name=acceptance_review,json=acceptanceReview,proto3" json:"acceptance_review,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// sort_order is the sibling order within (parent_id): the sequence
+	// engine's derived cursor (architecture-notes/
+	// sequential-multi-workflow-runs.md §1). Nullable — only meaningful
+	// within a parent (top-level = the parent_id IS NULL group). Changed
+	// ONLY by ReorderWorkItems (explicit drag); display sort (ListWorkItems
+	// sort_by) never mutates it. NULL sorts last.
+	SortOrder     float64 `protobuf:"fixed64,28,opt,name=sort_order,json=sortOrder,proto3" json:"sort_order,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WorkItem) Reset() {
@@ -505,6 +512,13 @@ func (x *WorkItem) GetAcceptanceReview() string {
 	return ""
 }
 
+func (x *WorkItem) GetSortOrder() float64 {
+	if x != nil {
+		return x.SortOrder
+	}
+	return 0
+}
+
 // WorkItemDependency is an edge in the work DAG. The scheduler treats
 // the union of edges as a DAG; cycles are rejected at admission
 // (docs/02_Domain_Model.md §2.2, docs/09 §3.2).
@@ -659,7 +673,7 @@ var File_orchicon_api_v1_work_item_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\n" +
-	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa7\b\n" +
+	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc6\b\n" +
 	"\bWorkItem\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -691,7 +705,9 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"updated_at\x18\x12 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12#\n" +
 	"\rruntime_image\x18\x18 \x01(\tR\fruntimeImage\x12#\n" +
 	"\rcontext_files\x18\x1a \x03(\tR\fcontextFiles\x12+\n" +
-	"\x11acceptance_review\x18\x1b \x01(\tR\x10acceptanceReviewB\x16\n" +
+	"\x11acceptance_review\x18\x1b \x01(\tR\x10acceptanceReview\x12\x1d\n" +
+	"\n" +
+	"sort_order\x18\x1c \x01(\x01R\tsortOrderB\x16\n" +
 	"\x14_auto_start_workflow\"\xfe\x01\n" +
 	"\x12WorkItemDependency\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +

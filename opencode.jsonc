@@ -26,13 +26,13 @@
         "-i",
         "-e",
         "ORCHICON_MCP_TENANT_ID=tnt_dev",
-        "orchicon-cnt-prod",
+        "orchicon-cnt-dev",
         "orchicon",
         "mcp"
       ],
       "enabled": true
     },
-    "orchicon-dev": {
+    "orchicon-prod": {
       "type": "local",
       "command": [
         "docker",
@@ -40,7 +40,7 @@
         "-i",
         "-e",
         "ORCHICON_MCP_TENANT_ID=tnt_dev",
-        "orchicon-cnt-dev",
+        "orchicon-cnt-prod",
         "orchicon",
         "mcp"
       ],

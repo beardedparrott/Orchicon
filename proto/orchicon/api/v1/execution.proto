@@ -44,6 +44,7 @@ message WorkerExecution {
   bytes conversation = 22; // JSONB: follow-up conversation array [{role, content, type, created_at}]
   int32 iteration = 23; // loop number: 0 = first dispatch, 1+ = loop_decision re-ask/re-entry
   string system_prompt = 24; // the actual system prompt sent to the model for this execution — the workflow step run's _prompt (per-step composite). Empty for non-workflow / legacy dispatch.
+  string worker_name = 25; // human-readable worker name (LEFT JOINed from workers at query time)
 }
 
 // ExecutionStatus — lifecycle of a WorkerExecution

@@ -216,6 +216,29 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 		}
 	}
 
+	// Runtime-serve readiness belt-and-suspenders: never dispatch a
+	// workflow-run execution before the run's runtime opencode serve is
+	// PROVEN usable (runtime_ready=true). The WorkflowReconciler holds
+	// step progression until the gate flips, but a race — e.g. the inline
+	// DispatchTask firing while the async probe is still flipping the gate
+	// — must not create an execution that immediately hits a cold serve.
+	runID := task.WorkflowRunID
+	if stepRun != nil {
+		runID = stepRun.WorkflowRunID
+	}
+	if runID != "" {
+		if rtx, err := r.pool.BeginTenantTx(context.Background(), tenantID); err == nil {
+			if run, gerr := db.GetWorkflowRun(context.Background(), rtx.Tx, tenantID, runID); gerr == nil {
+				if run.Status == domain.WorkflowRunRunning && !run.RuntimeReady {
+					_ = rtx.Rollback(context.Background())
+					r.log.Debug("deferring dispatch: workflow runtime serve not ready", "task", task.ID, "run", runID)
+					return nil
+				}
+			}
+			_ = rtx.Rollback(context.Background())
+		}
+	}
+
 	// Select a Worker (docs/03 §4.1: rule-based). For a workflow step the
 	// worker is pinned by the STEP (stored on the step run by the
 	// WorkflowReconciler), not the ticket.
@@ -477,8 +500,6 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	var stallRepCount int32
 	var stallRepWindow int64
 	var defaultBudgetOverrides []byte
-	var reconnectAttempts int32
-	var reconnectGrace int64
 	{
 		settingsCtx := context.Background()
 		stx, err := r.pool.BeginTenantTx(settingsCtx, exec.TenantID)
@@ -492,8 +513,6 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				stallRepCount = s.StallRepetitionCount
 				stallRepWindow = s.StallRepetitionWindowSeconds
 				defaultBudgetOverrides = s.DefaultBudgetOverrides
-				reconnectAttempts = s.ExecutionReconnectAttempts
-				reconnectGrace = s.ExecutionReconnectGraceSeconds
 			}
 			stx.Rollback(settingsCtx)
 		}
@@ -540,8 +559,6 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		StallTextLoopWindowSeconds:    stallTextLoop,
 		StallRepetitionCount:          stallRepCount,
 		StallRepetitionWindowSeconds:  stallRepWindow,
-		ReconnectAttempts:             reconnectAttempts,
-		ReconnectGraceSeconds:         reconnectGrace,
 	}
 	if err := r.bridge.Start(ctx, exec, manifest, r); err != nil {
 		r.log.Error("adapter start failed", "execution", exec.ID, "error", err)
@@ -801,6 +818,9 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 		results["_summary"] = summary
 	}
 	results["_worker"] = exec.WorkerID
+	if exec.WorkerName != "" {
+		results["_worker_name"] = exec.WorkerName
+	}
 	// The decision signal is a SINGLE source of truth: the first word
 	// after the ORCHICON WORKER SUMMARY: marker. There is deliberately
 	// no separate `_decision:` or `_issues:` channel that can contradict
@@ -1410,6 +1430,8 @@ func mergeBudgets(tenantDefault, workerOverride []byte) []byte {
 
 func strPtr(s string) *string { return &s }
 
+func boolPtr(b bool) *bool { return &b }
+
 // extractIssuesLine captures an `_issues:` block from the worker's
 // output for the run view and .orchicon/issues. It is INFORMATIONAL
 // ONLY — it never influences the workflow decision, which is the single
@@ -1715,7 +1737,7 @@ func (r *TaskReconciler) propagateStepRunResults(ctx context.Context, tx pgx.Tx,
 	}
 	// Propagate execution fields onto the step run so the run-view
 	// UI can show them without opening each execution.
-	for _, k := range []string{"_summary", "_decision", "_issues", "_touched_files", "_worker"} {
+	for _, k := range []string{"_summary", "_decision", "_issues", "_touched_files", "_worker", "_worker_name"} {
 		if v, ok := results[k]; ok {
 			merged[k] = v
 		}
