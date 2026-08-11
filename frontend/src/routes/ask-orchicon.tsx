@@ -854,17 +854,8 @@ function ChatInputField({
             <Mic className="h-4 w-4" />
           </button>
         </div>
-        {/* Bottom toolbar — mode dropdown on the right, send/stop on the far right */}
-        <div className="flex items-center justify-between border-t border-border/40 px-3 py-2">
-          <div className="flex items-center gap-2">
-            {onModeChange && (
-              <ModeToggle
-                mode={mode}
-                onModeChange={onModeChange}
-                disabled={disabled}
-              />
-            )}
-          </div>
+        {/* Bottom toolbar — send/stop on left, mode dropdown on the right */}
+        <div className="flex items-center justify-between border-t border-border/40 px-3 py-2.5">
           <div className="flex items-center gap-1.5">
             {isStreaming ? (
               <Button onClick={onStop} variant="destructive" size="sm">
@@ -879,6 +870,15 @@ function ChatInputField({
               >
                 Send
               </Button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {onModeChange && (
+              <ModeToggle
+                mode={mode}
+                onModeChange={onModeChange}
+                disabled={disabled}
+              />
             )}
           </div>
         </div>
