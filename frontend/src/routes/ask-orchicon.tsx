@@ -152,7 +152,7 @@ function AskOrchiconPage() {
 
   // Sync local mode from active conversation when it loads.
   useEffect(() => {
-    if (activeConv?.mode && activeConv.mode !== ConversationMode.UNSPECIFIED) {
+    if (activeConv?.mode && (activeConv.mode as number) !== ConversationMode.UNSPECIFIED) {
       setLocalMode(activeConv.mode);
     }
   }, [activeConv?.mode]);
