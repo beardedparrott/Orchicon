@@ -111,10 +111,12 @@ func (p *daemonPool) checkout(ctx context.Context, runID string, req CreateReque
 		if ent != nil {
 			return ent.response(), nil
 		}
-		// Lease points at a dropped entry (shouldn't happen) — fall through
-		// to a fresh lease.
+		// Lease points at a dropped entry (shouldn't happen) — clear it and
+		// fall through to a fresh lease.
 		p.mu.Lock()
 		delete(p.leased, runID)
+		p.mu.Unlock()
+	} else {
 		p.mu.Unlock()
 	}
 
@@ -154,6 +156,21 @@ func (p *daemonPool) checkout(ctx context.Context, runID string, req CreateReque
 	if err != nil {
 		return nil, err
 	}
+	// A concurrent checkout for the SAME run may have won the create race
+	// while we were inside createContainer (both saw no lease). If a lease
+	// now exists, drop the container we just made and hand back the winner's
+	// — never two containers for one run.
+	p.mu.Lock()
+	if winnerName, ok := p.leased[runID]; ok && winnerName != resp.Name {
+		winner := p.entries[winnerName]
+		p.mu.Unlock()
+		if winner != nil {
+			_, _ = p.d.docker("rm", "-f", resp.Name)
+			return winner.response(), nil
+		}
+		p.mu.Lock()
+		delete(p.leased, runID)
+	}
 	ent := &poolEntry{
 		name:          resp.Name,
 		envKey:        key,
@@ -167,7 +184,6 @@ func (p *daemonPool) checkout(ctx context.Context, runID string, req CreateReque
 		leasedBy:      runID,
 		lastUsed:      time.Now(),
 	}
-	p.mu.Lock()
 	p.entries[ent.name] = ent
 	p.leased[runID] = ent.name
 	p.mu.Unlock()
@@ -201,8 +217,10 @@ func (p *daemonPool) release(runID string) {
 
 // resetAndPool recreates a released container fresh (pristine + warm serve)
 // and returns it to the clean pool, respecting the per-env cap. A failed
-// reset is dropped — the next checkout creates fresh.
+// reset is dropped — the next checkout creates fresh. The released
+// container is removed FIRST so a reset never leaks its predecessor.
 func (p *daemonPool) resetAndPool(old *poolEntry) {
+	_, _ = p.d.docker("rm", "-f", old.name)
 	name := poolName(old.envKey)
 	resp, err := p.d.createContainer(name, CreateRequest{
 		Image:       old.image,
@@ -227,14 +245,18 @@ func (p *daemonPool) resetAndPool(old *poolEntry) {
 		lastUsed:      time.Now(),
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if len(p.clean[ent.envKey]) >= p.poolCap() {
+	overCap := len(p.clean[ent.envKey]) >= p.poolCap()
+	if !overCap {
+		p.entries[name] = ent
+		p.clean[ent.envKey] = append(p.clean[ent.envKey], name)
+	}
+	p.mu.Unlock()
+	if overCap {
+		// At the per-env cap: drop the freshly-reset container (never a
+		// docker call under the pool lock).
 		p.d.Log.Info("pool reset: at per-env cap, dropping container", "env", ent.envKey, "container", name)
 		_, _ = p.d.docker("rm", "-f", name)
-		return
 	}
-	p.entries[name] = ent
-	p.clean[ent.envKey] = append(p.clean[ent.envKey], name)
 }
 
 // response builds the CreateResponse for an existing entry.

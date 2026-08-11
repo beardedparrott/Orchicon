@@ -491,7 +491,7 @@ func CreateWorkflowRun(ctx context.Context, tx pgx.Tx, r WorkflowRunRow) (Workfl
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id, tenant_id, workflow_id, workflow_version, project_id, status,
 			current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-			version, started_at, ended_at, created_at, updated_at`
+			runtime_ready, version, started_at, ended_at, created_at, updated_at`
 	row := r
 	var wiID *string
 	err := tx.QueryRow(ctx, q,
@@ -519,7 +519,7 @@ func CreateWorkflowRun(ctx context.Context, tx pgx.Tx, r WorkflowRunRow) (Workfl
 func GetWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkflowRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		version, started_at, ended_at, created_at, updated_at
+		runtime_ready, version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs WHERE id = $1 AND tenant_id = $2`
 	var r WorkflowRunRow
 	var wiID *string
@@ -559,7 +559,7 @@ func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) 
 	}
 	q := `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		version, started_at, ended_at, created_at, updated_at
+		runtime_ready, version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND ($2 = '' OR id > $2)`
 	args := []any{f.TenantID, f.AfterID}
@@ -983,7 +983,7 @@ func UpdateWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string, 
 func ListPendingWorkflowRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkflowRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		version, started_at, ended_at, created_at, updated_at
+		runtime_ready, version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND status IN ('pending', 'running', 'paused')
 		ORDER BY created_at ASC`

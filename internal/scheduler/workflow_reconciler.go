@@ -199,22 +199,18 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		return nil
 	}
 
-	// Runtime-container side effects are deferred until after the DB
-	// transaction commits: creating/reaping a container is not part of
-	// run state, and a failed container operation must not roll back run
-	// progress.
-	ensureRuntime := false
+	// Reaping a terminal run's runtime container is deferred until after
+	// the DB transaction commits: the container is not part of run state,
+	// and a failed container operation must not roll back run progress.
+	// (Container CREATION for a started run is now owned entirely by the
+	// async ensure-serving pass — the run-start serve gate — so it is not
+	// deferred here.)
 	reapRuntime := false
 	defer func() {
 		if !r.runtimeEnabled() {
 			return
 		}
 		bg := context.Background()
-		if ensureRuntime && !reapRuntime {
-			if err := r.runtime.EnsureForRun(bg, run); err != nil {
-				r.log.Warn("ensure workflow runtime failed", "run", run.ID, "error", err)
-			}
-		}
 		if reapRuntime {
 			if err := r.runtime.ReapForRun(bg, run.ID); err != nil {
 				r.log.Warn("reap workflow runtime failed", "run", run.ID, "error", err)
@@ -310,7 +306,6 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			return fmt.Errorf("transition run to running: %w", err)
 		}
 		run = updated
-		ensureRuntime = true
 		if err := r.enqueueRunEvent(ctx, ttx.Tx, domain.WorkflowEventRunStarted, run, ""); err != nil {
 			return fmt.Errorf("enqueue run_started: %w", err)
 		}

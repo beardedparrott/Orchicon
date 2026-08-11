@@ -36,15 +36,15 @@ func NewClient(socketPath, instance string) *Client {
 	return &Client{
 		socketPath: socketPath,
 		instance:   instance,
-		hc: &http.Client{
-			Transport: &http.Transport{
-				DialContext:         dial,
-				MaxIdleConns:        4,
-				IdleConnTimeout:     30 * time.Second,
-				ResponseHeaderTimeout: 30 * time.Second,
-			},
-			Timeout: 0, // exec streams are long-lived
+	hc: &http.Client{
+		Transport: &http.Transport{
+			DialContext:         dial,
+			MaxIdleConns:        4,
+			IdleConnTimeout:     30 * time.Second,
+			ResponseHeaderTimeout: 120 * time.Second,
 		},
+		Timeout: 0, // exec streams are long-lived
+	},
 	}
 }
 
