@@ -13,6 +13,7 @@ import { Route as rootRoute } from "@/routes/__root";
 
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import { ModeToggle } from "@/components/ui/mode-toggle";
 import { cn } from "@/lib/utils";
 import {
   useListConversations,
@@ -21,10 +22,12 @@ import {
   useListMessages,
   useGetConversation,
   useAbortConversationTurn,
+  useSetConversationMode,
   askKeys,
 } from "@/api/askOrchicon";
 import { askOrchiconClient } from "@/api/clients";
 import { useToast, useToastStore } from "@/components/ui/toast";
+import { ConversationMode } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 import type { ChatMessage } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 import { AttachmentInput } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 import {
@@ -122,6 +125,10 @@ function AskOrchiconPage() {
   );
   const [pendingReplyId, setPendingReplyId] = useState<string | null>(null);
   const toast = useToast();
+  // Mode state — defaults to BRAINSTORM; synced from activeConv when available.
+  const [localMode, setLocalMode] = useState<ConversationMode>(
+    ConversationMode.BRAINSTORM,
+  );
 
   // Live streaming items accumulated from ChatStream events.
   const [streamItems, setStreamItems] = useState<StreamItem[]>([]);
@@ -138,7 +145,15 @@ function AskOrchiconPage() {
   const createConv = useCreateConversation();
   const deleteConv = useDeleteConversation();
   const abortTurn = useAbortConversationTurn();
+  const setMode = useSetConversationMode();
   const qc = useQueryClient();
+
+  // Sync local mode from active conversation when it loads.
+  useEffect(() => {
+    if (activeConv?.mode && activeConv.mode !== ConversationMode.UNSPECIFIED) {
+      setLocalMode(activeConv.mode);
+    }
+  }, [activeConv?.mode]);
 
   // Switching conversations resets local state.
   // Skip the reset on null→id transitions (greeting path) so the streaming
@@ -301,6 +316,26 @@ function AskOrchiconPage() {
     }
   }, [messages, handleSendMessage]);
 
+  // Optimistic mode toggle — flips local state immediately, API in background.
+  const handleModeChange = useCallback(
+    (next: ConversationMode) => {
+      const prev = localMode;
+      setLocalMode(next);
+      if (activeConvId) {
+        setMode.mutate(
+          { id: activeConvId, mode: next },
+          {
+            onError: () => {
+              setLocalMode(prev);
+              toast.error("Failed to change mode", { title: "Error" });
+            },
+          },
+        );
+      }
+    },
+    [localMode, activeConvId, setMode, toast],
+  );
+
   // Group streaming items into coalesced bubbles.
   const groupedStream = useMemo(
     () => groupStreamItems(streamItems),
@@ -337,7 +372,9 @@ function AskOrchiconPage() {
                   // Create a conversation first, then send via the streaming
                   // helper directly (avoids the stale-closure on handleSendMessage).
                   try {
-                    const conv = await createConv.mutateAsync({});
+                    const conv = await createConv.mutateAsync({
+                      mode: localMode,
+                    });
                     if (conv?.id) {
                       setActiveConvId(conv.id);
                       await sendStreaming(conv.id, text, attachments);
@@ -351,6 +388,8 @@ function AskOrchiconPage() {
                 onStop={handleStopStreaming}
                 isStreaming={isStreaming}
                 placeholder="Ask Orchicon anything..."
+                mode={localMode}
+                onModeChange={handleModeChange}
               />
             </div>
           </div>
@@ -456,6 +495,8 @@ function AskOrchiconPage() {
                   onStop={handleStopStreaming}
                   isStreaming={isStreaming}
                   placeholder="Ask Orchicon anything..."
+                  mode={localMode}
+                  onModeChange={handleModeChange}
                 />
               </div>
             </div>
@@ -580,11 +621,15 @@ function ChatInputField({
   onStop,
   isStreaming,
   placeholder = "Ask Orchicon anything...",
+  mode = ConversationMode.BRAINSTORM,
+  onModeChange,
 }: {
   onSend: (text: string, attachments?: AttachmentInput[]) => void;
   onStop: () => void;
   isStreaming: boolean;
   placeholder?: string;
+  mode?: ConversationMode;
+  onModeChange?: (mode: ConversationMode) => void;
 }) {
   const disabled = isStreaming;
   const [text, setText] = useState("");
@@ -759,7 +804,7 @@ function ChatInputField({
           ))}
         </div>
       )}
-      <div className="flex gap-2 items-end">
+      <div className="flex gap-1.5 sm:gap-2 items-end">
         <div className="flex-1 flex items-end gap-1 rounded-xl border bg-background px-3 py-2 focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
           <button
             onClick={() => fileInputRef.current?.click()}
@@ -797,6 +842,13 @@ function ChatInputField({
             <Mic className="h-4 w-4" />
           </button>
         </div>
+        {onModeChange && (
+          <ModeToggle
+            mode={mode}
+            onModeChange={onModeChange}
+            disabled={disabled}
+          />
+        )}
         {isStreaming ? (
           <Button onClick={onStop} variant="destructive" size="sm">
             <Square className="h-4 w-4 mr-1" />
