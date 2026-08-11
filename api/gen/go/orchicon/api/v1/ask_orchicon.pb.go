@@ -153,8 +153,13 @@ type ChatMessage struct {
 	Attachments    []*Attachment          `protobuf:"bytes,7,rep,name=attachments,proto3" json:"attachments,omitempty"`
 	Metadata       *MessageMetadata       `protobuf:"bytes,8,opt,name=metadata,proto3" json:"metadata,omitempty"`
 	CreatedAt      *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// reasoning holds the assistant message's reasoning chunks (one entry per
+	// reasoning part received that turn, boundaries preserved), rendered by the
+	// frontend as thinking bubbles. Empty for user/tool/system messages and for
+	// assistants that emit no reasoning parts.
+	Reasoning     []string `protobuf:"bytes,10,rep,name=reasoning,proto3" json:"reasoning,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ChatMessage) Reset() {
@@ -246,6 +251,13 @@ func (x *ChatMessage) GetMetadata() *MessageMetadata {
 func (x *ChatMessage) GetCreatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.CreatedAt
+	}
+	return nil
+}
+
+func (x *ChatMessage) GetReasoning() []string {
+	if x != nil {
+		return x.Reasoning
 	}
 	return nil
 }
@@ -955,6 +967,55 @@ func (x *DoneSignal) GetMetadata() *MessageMetadata {
 	return nil
 }
 
+// ReasoningChunk is a reasoning (thinking) fragment from the agent,
+// unwrapped from the SSE bus's `{"kind":"reasoning",...}` events the same way
+// executions surface reasoning. Defined as a typed ChatStream event for the
+// future SSE surface; today reasoning is persisted on ChatMessage.reasoning
+// and delivered by polling ListMessages.
+type ReasoningChunk struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Content       string                 `protobuf:"bytes,1,opt,name=content,proto3" json:"content,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReasoningChunk) Reset() {
+	*x = ReasoningChunk{}
+	mi := &file_orchicon_api_v1_ask_orchicon_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReasoningChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReasoningChunk) ProtoMessage() {}
+
+func (x *ReasoningChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_ask_orchicon_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReasoningChunk.ProtoReflect.Descriptor instead.
+func (*ReasoningChunk) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_ask_orchicon_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ReasoningChunk) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
 // AttachmentInput is a file attachment sent with a chat message.
 type AttachmentInput struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -967,7 +1028,7 @@ type AttachmentInput struct {
 
 func (x *AttachmentInput) Reset() {
 	*x = AttachmentInput{}
-	mi := &file_orchicon_api_v1_ask_orchicon_proto_msgTypes[12]
+	mi := &file_orchicon_api_v1_ask_orchicon_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -979,7 +1040,7 @@ func (x *AttachmentInput) String() string {
 func (*AttachmentInput) ProtoMessage() {}
 
 func (x *AttachmentInput) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_proto_msgTypes[12]
+	mi := &file_orchicon_api_v1_ask_orchicon_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -992,7 +1053,7 @@ func (x *AttachmentInput) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachmentInput.ProtoReflect.Descriptor instead.
 func (*AttachmentInput) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_proto_rawDescGZIP(), []int{12}
+	return file_orchicon_api_v1_ask_orchicon_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *AttachmentInput) GetName() string {
@@ -1033,7 +1094,7 @@ const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\t \x01(\tR\tsessionId\"\xa6\x03\n" +
+	"session_id\x18\t \x01(\tR\tsessionId\"\xc4\x03\n" +
 	"\vChatMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12\x12\n" +
@@ -1045,7 +1106,9 @@ const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\vattachments\x18\a \x03(\v2\x1b.orchicon.api.v1.AttachmentR\vattachments\x12<\n" +
 	"\bmetadata\x18\b \x01(\v2 .orchicon.api.v1.MessageMetadataR\bmetadata\x129\n" +
 	"\n" +
-	"created_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"q\n" +
+	"created_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x1c\n" +
+	"\treasoning\x18\n" +
+	" \x03(\tR\treasoning\"q\n" +
 	"\bToolCall\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12#\n" +
@@ -1109,7 +1172,9 @@ const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\n" +
 	"DoneSignal\x120\n" +
 	"\x14assistant_message_id\x18\x01 \x01(\tR\x12assistantMessageId\x12<\n" +
-	"\bmetadata\x18\x02 \x01(\v2 .orchicon.api.v1.MessageMetadataR\bmetadata\"V\n" +
+	"\bmetadata\x18\x02 \x01(\v2 .orchicon.api.v1.MessageMetadataR\bmetadata\"*\n" +
+	"\x0eReasoningChunk\x12\x18\n" +
+	"\acontent\x18\x01 \x01(\tR\acontent\"V\n" +
 	"\x0fAttachmentInput\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1b\n" +
 	"\tmime_type\x18\x02 \x01(\tR\bmimeType\x12\x12\n" +
@@ -1128,7 +1193,7 @@ func file_orchicon_api_v1_ask_orchicon_proto_rawDescGZIP() []byte {
 	return file_orchicon_api_v1_ask_orchicon_proto_rawDescData
 }
 
-var file_orchicon_api_v1_ask_orchicon_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_orchicon_api_v1_ask_orchicon_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_orchicon_api_v1_ask_orchicon_proto_goTypes = []any{
 	(*Conversation)(nil),          // 0: orchicon.api.v1.Conversation
 	(*ChatMessage)(nil),           // 1: orchicon.api.v1.ChatMessage
@@ -1142,19 +1207,20 @@ var file_orchicon_api_v1_ask_orchicon_proto_goTypes = []any{
 	(*ToolCallResult)(nil),        // 9: orchicon.api.v1.ToolCallResult
 	(*ErrorChunk)(nil),            // 10: orchicon.api.v1.ErrorChunk
 	(*DoneSignal)(nil),            // 11: orchicon.api.v1.DoneSignal
-	(*AttachmentInput)(nil),       // 12: orchicon.api.v1.AttachmentInput
-	(*timestamppb.Timestamp)(nil), // 13: google.protobuf.Timestamp
+	(*ReasoningChunk)(nil),        // 12: orchicon.api.v1.ReasoningChunk
+	(*AttachmentInput)(nil),       // 13: orchicon.api.v1.AttachmentInput
+	(*timestamppb.Timestamp)(nil), // 14: google.protobuf.Timestamp
 }
 var file_orchicon_api_v1_ask_orchicon_proto_depIdxs = []int32{
-	13, // 0: orchicon.api.v1.Conversation.created_at:type_name -> google.protobuf.Timestamp
-	13, // 1: orchicon.api.v1.Conversation.updated_at:type_name -> google.protobuf.Timestamp
+	14, // 0: orchicon.api.v1.Conversation.created_at:type_name -> google.protobuf.Timestamp
+	14, // 1: orchicon.api.v1.Conversation.updated_at:type_name -> google.protobuf.Timestamp
 	2,  // 2: orchicon.api.v1.ChatMessage.tool_calls:type_name -> orchicon.api.v1.ToolCall
 	3,  // 3: orchicon.api.v1.ChatMessage.tool_results:type_name -> orchicon.api.v1.ToolResult
 	4,  // 4: orchicon.api.v1.ChatMessage.attachments:type_name -> orchicon.api.v1.Attachment
 	5,  // 5: orchicon.api.v1.ChatMessage.metadata:type_name -> orchicon.api.v1.MessageMetadata
-	13, // 6: orchicon.api.v1.ChatMessage.created_at:type_name -> google.protobuf.Timestamp
-	13, // 7: orchicon.api.v1.AgentConfig.created_at:type_name -> google.protobuf.Timestamp
-	13, // 8: orchicon.api.v1.AgentConfig.updated_at:type_name -> google.protobuf.Timestamp
+	14, // 6: orchicon.api.v1.ChatMessage.created_at:type_name -> google.protobuf.Timestamp
+	14, // 7: orchicon.api.v1.AgentConfig.created_at:type_name -> google.protobuf.Timestamp
+	14, // 8: orchicon.api.v1.AgentConfig.updated_at:type_name -> google.protobuf.Timestamp
 	5,  // 9: orchicon.api.v1.DoneSignal.metadata:type_name -> orchicon.api.v1.MessageMetadata
 	10, // [10:10] is the sub-list for method output_type
 	10, // [10:10] is the sub-list for method input_type
@@ -1174,7 +1240,7 @@ func file_orchicon_api_v1_ask_orchicon_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_ask_orchicon_proto_rawDesc), len(file_orchicon_api_v1_ask_orchicon_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   13,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

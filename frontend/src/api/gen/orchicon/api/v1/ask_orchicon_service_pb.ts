@@ -13,7 +13,7 @@
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3 } from "@bufbuild/protobuf";
-import { AgentConfig, AttachmentInput, ChatMessage, Conversation, DoneSignal, ErrorChunk, TextChunk, ToolCallChunk, ToolCallResult } from "./ask_orchicon_pb.js";
+import { AgentConfig, AttachmentInput, ChatMessage, Conversation, DoneSignal, ErrorChunk, ReasoningChunk, TextChunk, ToolCallChunk, ToolCallResult } from "./ask_orchicon_pb.js";
 import { ModelCapabilities } from "./ai_gateway_pb.js";
 
 /**
@@ -588,6 +588,12 @@ export class ChatStreamResponse extends Message<ChatStreamResponse> {
      */
     value: TurnStarted;
     case: "turnStarted";
+  } | {
+    /**
+     * @generated from field: orchicon.api.v1.ReasoningChunk reasoning = 7;
+     */
+    value: ReasoningChunk;
+    case: "reasoning";
   } | { case: undefined; value?: undefined } = { case: undefined };
 
   constructor(data?: PartialMessage<ChatStreamResponse>) {
@@ -604,6 +610,7 @@ export class ChatStreamResponse extends Message<ChatStreamResponse> {
     { no: 4, name: "error", kind: "message", T: ErrorChunk, oneof: "event" },
     { no: 5, name: "done", kind: "message", T: DoneSignal, oneof: "event" },
     { no: 6, name: "turn_started", kind: "message", T: TurnStarted, oneof: "event" },
+    { no: 7, name: "reasoning", kind: "message", T: ReasoningChunk, oneof: "event" },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ChatStreamResponse {

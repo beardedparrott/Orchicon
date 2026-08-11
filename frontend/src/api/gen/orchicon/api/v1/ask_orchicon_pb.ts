@@ -157,6 +157,16 @@ export class ChatMessage extends Message<ChatMessage> {
    */
   createdAt?: Timestamp;
 
+  /**
+   * reasoning holds the assistant message's reasoning chunks (one entry per
+   * reasoning part received that turn, boundaries preserved), rendered by the
+   * frontend as thinking bubbles. Empty for user/tool/system messages and for
+   * assistants that emit no reasoning parts.
+   *
+   * @generated from field: repeated string reasoning = 10;
+   */
+  reasoning: string[] = [];
+
   constructor(data?: PartialMessage<ChatMessage>) {
     super();
     proto3.util.initPartial(data, this);
@@ -174,6 +184,7 @@ export class ChatMessage extends Message<ChatMessage> {
     { no: 7, name: "attachments", kind: "message", T: Attachment, repeated: true },
     { no: 8, name: "metadata", kind: "message", T: MessageMetadata },
     { no: 9, name: "created_at", kind: "message", T: Timestamp },
+    { no: 10, name: "reasoning", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ChatMessage {
@@ -782,6 +793,49 @@ export class DoneSignal extends Message<DoneSignal> {
 
   static equals(a: DoneSignal | PlainMessage<DoneSignal> | undefined, b: DoneSignal | PlainMessage<DoneSignal> | undefined): boolean {
     return proto3.util.equals(DoneSignal, a, b);
+  }
+}
+
+/**
+ * ReasoningChunk is a reasoning (thinking) fragment from the agent,
+ * unwrapped from the SSE bus's `{"kind":"reasoning",...}` events the same way
+ * executions surface reasoning. Defined as a typed ChatStream event for the
+ * future SSE surface; today reasoning is persisted on ChatMessage.reasoning
+ * and delivered by polling ListMessages.
+ *
+ * @generated from message orchicon.api.v1.ReasoningChunk
+ */
+export class ReasoningChunk extends Message<ReasoningChunk> {
+  /**
+   * @generated from field: string content = 1;
+   */
+  content = "";
+
+  constructor(data?: PartialMessage<ReasoningChunk>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ReasoningChunk";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "content", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ReasoningChunk {
+    return new ReasoningChunk().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ReasoningChunk {
+    return new ReasoningChunk().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ReasoningChunk {
+    return new ReasoningChunk().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ReasoningChunk | PlainMessage<ReasoningChunk> | undefined, b: ReasoningChunk | PlainMessage<ReasoningChunk> | undefined): boolean {
+    return proto3.util.equals(ReasoningChunk, a, b);
   }
 }
 

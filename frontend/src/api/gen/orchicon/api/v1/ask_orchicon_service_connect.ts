@@ -98,8 +98,9 @@ export const AskOrchiconService = {
      * reply is collected on a request-independent context (bounded by the
      * reply window) and delivered by polling ListMessages — a browser
      * disconnect or tab close never cancels or loses it. The TextChunk /
-     * ToolCallResult / ErrorChunk / DoneSignal events are retained for a
-     * future SSE surface but are not emitted by the current implementation.
+     * ReasoningChunk / ToolCallResult / ErrorChunk / DoneSignal events are
+     * retained for a future SSE surface but are not emitted by the current
+     * implementation.
      *
      * @generated from rpc orchicon.api.v1.AskOrchiconService.ChatStream
      */

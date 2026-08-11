@@ -229,6 +229,7 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 		ToolResults:     []byte("[]"),
 		Attachments:     []byte("[]"),
 		Metadata:        []byte("{}"),
+		Reasoning:       []string{},
 	}
 	ttx, err = s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -295,7 +296,7 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 	assistantID := db.NewID()
 	if client := s.hostServeClient(); client != nil {
 		go func() {
-			reply, sid, terr := s.collectConversationReply(turnCtx, turnCollectOpts{
+			reply, reasoning, sid, terr := s.collectConversationReply(turnCtx, turnCollectOpts{
 				client:         client,
 				tenantID:       tenantID,
 				convID:         convID,
@@ -306,22 +307,26 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 				reuseSystem:    reuseSystem,
 				userMsg:        msg,
 			})
+			// Reasoning chunks that arrived before the turn ended (success or
+			// error/stop/timeout) are always persisted on the assistant
+			// message — partial reasoning is preserved, matching the
+			// "partial content is preserved as an error message" spirit.
 			if terr != nil {
 				errText := terr.Error()
 				if errors.Is(terr, context.Canceled) {
 					errText = "Turn stopped by the user."
 				}
-				s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, errText)
+				s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, errText, reasoning)
 				return
 			}
-			s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, strings.TrimSpace(reply), sid, "")
+			s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, strings.TrimSpace(reply), sid, "", reasoning)
 		}()
 	} else {
 		// No session transport (serve disabled / not started): fail the
 		// turn fast with a clean, visible, retryable error message.
 		releaseTurn()
 		s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", conv.SessionID,
-			"Ask Orchicon is temporarily unavailable — the opencode serve is starting. Please try again in a moment.")
+			"Ask Orchicon is temporarily unavailable — the opencode serve is starting. Please try again in a moment.", []string{})
 	}
 
 	return assistantID, nil
@@ -527,10 +532,11 @@ const (
 )
 
 type turnAttemptResult struct {
-	kind   turnAttemptKind
-	text   string
-	newSid string
-	err    error
+	kind      turnAttemptKind
+	text      string
+	reasoning []string
+	newSid    string
+	err       error
 }
 
 // collectConversationReply is the detached reply collector for one chat
@@ -549,13 +555,15 @@ type turnAttemptResult struct {
 //   - retries stay inside the reply window; when exhausted the turn is
 //     persisted as an error by the caller.
 //
-// It returns the collected assistant text, the (possibly recreated) session
-// id used for the final dispatch, and a terminal error (reply timeout,
-// session.error, serve loss exhausted, user stop via the registry cancel).
-func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpts) (string, string, error) {
+// It returns the collected assistant text, the collected reasoning chunks
+// (partial on error/stop/timeout turns — whatever arrived is preserved), the
+// (possibly recreated) session id used for the final dispatch, and a terminal
+// error (reply timeout, session.error, serve loss exhausted, user stop via
+// the registry cancel).
+func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpts) (text string, reasoning []string, sid string, err error) {
 	defer s.turns.remove(c.convID)
 
-	sid := c.sessionID
+	sid = c.sessionID
 	system := c.reuseSystem
 	recreated := false
 
@@ -566,7 +574,7 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 	if sid == "" {
 		fresh, cerr := c.client.CreateSession(ctx, "ask-orchicon:"+c.convID)
 		if cerr != nil {
-			return "", "", fmt.Errorf("create conversation session: %w", cerr)
+			return "", nil, "", fmt.Errorf("create conversation session: %w", cerr)
 		}
 		sid = fresh
 		system = c.seedSystem
@@ -592,11 +600,15 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 
 	for {
 		res := s.runOneTurnAttempt(ctx, window, c, sid, system, recreated)
+		// Reasoning chunks observed across attempts survive serve loss:
+		// whatever arrived before a re-attach is carried forward, matching
+		// the "partial reasoning is preserved" spirit for error paths.
+		reasoning = append(reasoning, res.reasoning...)
 		switch res.kind {
 		case turnCollected:
-			return res.text, sid, nil
+			return res.text, reasoning, sid, nil
 		case turnFailed:
-			return res.text, sid, res.err
+			return res.text, reasoning, sid, res.err
 		case turnRecreated:
 			sid = res.newSid
 			system = c.seedSystem
@@ -610,9 +622,9 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 			everLive = true
 			select {
 			case <-ctx.Done():
-				return res.text, sid, ctx.Err()
+				return res.text, reasoning, sid, ctx.Err()
 			case <-window.C:
-				return res.text, sid, errors.New("the opencode serve did not recover within the reply window — please retry")
+				return res.text, reasoning, sid, errors.New("the opencode serve did not recover within the reply window — please retry")
 			case <-time.After(askReattachBackoff()):
 			}
 		case turnServeDown:
@@ -623,19 +635,19 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 			// window like turnReattach.
 			if !everLive {
 				if time.Now().After(serveDownDeadline) {
-					return res.text, sid, errors.New("the opencode serve is unavailable — please try again in a moment")
+					return res.text, reasoning, sid, errors.New("the opencode serve is unavailable — please try again in a moment")
 				}
 				select {
 				case <-ctx.Done():
-					return res.text, sid, ctx.Err()
+					return res.text, reasoning, sid, ctx.Err()
 				case <-time.After(askReattachBackoff()):
 				}
 			} else {
 				select {
 				case <-ctx.Done():
-					return res.text, sid, ctx.Err()
+					return res.text, reasoning, sid, ctx.Err()
 				case <-window.C:
-					return res.text, sid, errors.New("the opencode serve did not recover within the reply window — please retry")
+					return res.text, reasoning, sid, errors.New("the opencode serve did not recover within the reply window — please retry")
 				case <-time.After(askReattachBackoff()):
 				}
 			}
@@ -678,6 +690,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 	}()
 
 	var reply strings.Builder
+	var reasoning []string
 	sent := false
 	// The handshake bound (ORCHICON_ASK_TIMEOUT) starts after subscribe and
 	// only fires while the message is still un-accepted, so a wedged serve
@@ -691,12 +704,12 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 		case <-subCtx.Done():
 			// User stop (registry cancel) or the request-context's
 			// cancellation — the turn ends without a reply.
-			return turnAttemptResult{kind: turnFailed, err: subCtx.Err()}
+			return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: subCtx.Err()}
 		case <-window.C:
-			return turnAttemptResult{kind: turnFailed, err: fmt.Errorf("reply timed out after %s — the model may be overloaded or unavailable", askReplyWindow())}
+			return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("reply timed out after %s — the model may be overloaded or unavailable", askReplyWindow())}
 		case <-handshake.C:
 			if !sent {
-				return turnAttemptResult{kind: turnFailed, err: fmt.Errorf("the opencode serve did not accept the message within %s — please try again", askTimeout())}
+				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("the opencode serve did not accept the message within %s — please try again", askTimeout())}
 			}
 		case res := <-sendCh:
 			if res != nil {
@@ -705,18 +718,18 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					// recreate + re-seed the DB history and re-dispatch once.
 					fresh, cerr := c.client.CreateSession(ctx, "ask-orchicon:"+c.convID)
 					if cerr != nil {
-						return turnAttemptResult{kind: turnFailed, err: fmt.Errorf("recreate conversation session: %w", cerr)}
+						return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("recreate conversation session: %w", cerr)}
 					}
 					return turnAttemptResult{kind: turnRecreated, newSid: fresh}
 				}
-				return turnAttemptResult{kind: turnFailed, err: fmt.Errorf("conversation session send: %w", res)}
+				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("conversation session send: %w", res)}
 			}
 			sent = true
 		case evt, ok := <-sub.Events():
 			if !ok {
 				// Bus closed — the serve died mid-reply. Re-attach (bounded
 				// by the reply window in the collector loop).
-				return turnAttemptResult{kind: turnReattach}
+				return turnAttemptResult{kind: turnReattach, reasoning: reasoning}
 			}
 			if esid, _ := evt.Properties["sessionID"].(string); esid != "" && esid != sid {
 				continue
@@ -727,7 +740,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				// (sent). A stale idle from a prior turn (sent == false)
 				// must never complete a new turn.
 				if sent {
-					return turnAttemptResult{kind: turnCollected, text: strings.TrimSpace(reply.String())}
+					return turnAttemptResult{kind: turnCollected, text: strings.TrimSpace(reply.String()), reasoning: reasoning}
 				}
 			case "permission.asked":
 				// Auto-approve (the --auto equivalent). Session-level deny
@@ -745,25 +758,32 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					}
 				}
 				s.log.Warn("opencode session error", "conversation", c.convID, "message", msg)
-				return turnAttemptResult{kind: turnFailed, err: errors.New(msg)}
+				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: errors.New(msg)}
 			default:
-				// Telemetry: collect completed text parts (the same
-				// LegacyEventFromBus mapping executions use). Adjacent
+				// Telemetry: collect completed text and reasoning parts (the
+				// same LegacyEventFromBus mapping executions use). Adjacent
 				// parts are separated so distinct text parts don't
-				// concatenate without a boundary. Text observed BEFORE our
-				// message was accepted (sent == false) belongs to a prior
-				// turn still draining on the shared bus — it must not leak
-				// into this turn's persisted reply.
+				// concatenate without a boundary. Reasoning is accumulated
+				// separately — never folded into assistant content (matching
+				// executions). Events observed BEFORE our message was
+				// accepted (sent == false) belong to a prior turn still
+				// draining on the shared bus — they must not leak into this
+				// turn's persisted reply.
 				if !sent {
 					continue
 				}
 				if legacy, ok := opencode.LegacyEventFromBus(evt); ok {
-					if t, _ := legacy["type"].(string); t == "text" {
-						if part, ok2 := legacy["part"].(map[string]any); ok2 {
-							if text, ok3 := part["text"].(string); ok3 && text != "" {
-								reply.WriteString(text)
-								reply.WriteString("\n\n")
-							}
+					t, _ := legacy["type"].(string)
+					part, _ := legacy["part"].(map[string]any)
+					switch t {
+					case "text":
+						if text, ok2 := part["text"].(string); ok2 && text != "" {
+							reply.WriteString(text)
+							reply.WriteString("\n\n")
+						}
+					case "reasoning":
+						if text, ok2 := part["text"].(string); ok2 && text != "" {
+							reasoning = append(reasoning, text)
 						}
 					}
 				}
@@ -775,10 +795,13 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 // persistConversationReply persists the collected assistant message for a
 // turn under the acked message id and bumps the conversation timestamp. An
 // error turn persists empty content with metadata.error set (surfaced as an
-// error bubble with a retry affordance by the frontend). It runs on the
-// detached context (never the request's). Fail-safe: if the conversation was
-// deleted while the turn ran, the write is skipped (no orphan row).
-func (s *Service) persistConversationReply(ctx context.Context, tenantID, convID, assistantMsgID, modelRef, content, sid, errText string) {
+// error bubble with a retry affordance by the frontend). reasoning carries
+// the reasoning chunks that arrived during the turn (possibly partial on an
+// error/stop/timeout turn) and is persisted as-is on the assistant message.
+// It runs on the detached context (never the request's). Fail-safe: if the
+// conversation was deleted while the turn ran, the write is skipped (no
+// orphan row).
+func (s *Service) persistConversationReply(ctx context.Context, tenantID, convID, assistantMsgID, modelRef, content, sid, errText string, reasoning []string) {
 	if s.pool == nil {
 		return
 	}
@@ -811,6 +834,7 @@ func (s *Service) persistConversationReply(ctx context.Context, tenantID, convID
 		ToolResults:    []byte("[]"),
 		Attachments:    []byte("[]"),
 		Metadata:       metaJSON,
+		Reasoning:      reasoning,
 	}
 	if _, err := db.CreateMessage(ctx, ttx.Tx, assistantMsg); err != nil {
 		s.log.Warn("persist conversation reply", "conversation", convID, "error", err)

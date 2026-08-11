@@ -37,6 +37,11 @@ message ChatMessage {
   repeated Attachment attachments = 7;
   MessageMetadata metadata = 8;
   google.protobuf.Timestamp created_at = 9;
+  // reasoning holds the assistant message's reasoning chunks (one entry per
+  // reasoning part received that turn, boundaries preserved), rendered by the
+  // frontend as thinking bubbles. Empty for user/tool/system messages and for
+  // assistants that emit no reasoning parts.
+  repeated string reasoning = 10;
 }
 
 // ToolCall represents a function call made by the agent.
@@ -127,6 +132,15 @@ message ErrorChunk {
 message DoneSignal {
   string assistant_message_id = 1;
   MessageMetadata metadata = 2;
+}
+
+// ReasoningChunk is a reasoning (thinking) fragment from the agent,
+// unwrapped from the SSE bus's `{"kind":"reasoning",...}` events the same way
+// executions surface reasoning. Defined as a typed ChatStream event for the
+// future SSE surface; today reasoning is persisted on ChatMessage.reasoning
+// and delivered by polling ListMessages.
+message ReasoningChunk {
+  string content = 1;
 }
 
 // AttachmentInput is a file attachment sent with a chat message.
