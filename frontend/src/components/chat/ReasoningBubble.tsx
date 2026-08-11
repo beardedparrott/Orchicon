@@ -16,7 +16,7 @@ export function ReasoningBubble({
   const prevLenRef = useRef(text.length);
   const contentRef = useRef<HTMLDivElement>(null);
 
-  // Auto-open when streaming starts, auto-close when streaming ends.
+  // Auto-open when streaming starts.
   useEffect(() => {
     if (streaming) {
       setOpen(true);

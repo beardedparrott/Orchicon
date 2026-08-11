@@ -1,4 +1,5 @@
 import { useCallback, useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { Brain, Settings2, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ConversationMode } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
@@ -24,6 +25,21 @@ export function ModeToggle({
   const [open, setOpen] = useState(false);
   const [announcement, setAnnouncement] = useState("");
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menuStyle, setMenuStyle] = useState<React.CSSProperties>({});
+
+  // Position the portaled menu above the trigger button.
+  useEffect(() => {
+    if (open && ref.current) {
+      const rect = ref.current.getBoundingClientRect();
+      setMenuStyle({
+        position: "fixed",
+        bottom: `${window.innerHeight - rect.top + 4}px`,
+        right: `${window.innerWidth - rect.right}px`,
+        minWidth: `${rect.width}px`,
+      });
+    }
+  }, [open]);
 
   const current = options.find((o) => o.value === mode) ?? options[0];
   const CurrentIcon = current.icon;
@@ -44,9 +60,14 @@ export function ModeToggle({
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false);
+      const target = e.target as Node;
+      if (
+        (ref.current && ref.current.contains(target)) ||
+        (menuRef.current && menuRef.current.contains(target))
+      ) {
+        return;
       }
+      setOpen(false);
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
@@ -110,39 +131,43 @@ export function ModeToggle({
           )}
         />
       </button>
-      {open && (
-        <div
-          role="listbox"
-          aria-label="Select mode"
-          className="absolute bottom-full right-0 mb-1 z-50 min-w-[140px] overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-md animate-in fade-in-0 zoom-in-95"
-        >
-          {options.map((opt) => {
-            const active = mode === opt.value;
-            const Icon = opt.icon;
-            return (
-              <button
-                key={opt.value}
-                role="option"
-                aria-selected={active}
-                type="button"
-                onClick={() => handleChange(opt.value)}
-                className={cn(
-                  "flex w-full items-center gap-2 px-3 py-2 text-xs font-medium transition-colors",
-                  "hover:bg-accent hover:text-accent-foreground",
-                  "focus:bg-accent focus:text-accent-foreground focus:outline-none",
-                  active && "bg-accent text-accent-foreground",
-                )}
-              >
-                <Icon className="h-3.5 w-3.5" />
-                {opt.label}
-                {active && (
-                  <span className="ml-auto text-primary">✓</span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="listbox"
+            aria-label="Select mode"
+            style={menuStyle}
+            className="z-50 min-w-[140px] overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-md animate-in fade-in-0 zoom-in-95"
+          >
+            {options.map((opt) => {
+              const active = mode === opt.value;
+              const Icon = opt.icon;
+              return (
+                <button
+                  key={opt.value}
+                  role="option"
+                  aria-selected={active}
+                  type="button"
+                  onClick={() => handleChange(opt.value)}
+                  className={cn(
+                    "flex w-full items-center gap-2 px-3 py-2 text-xs font-medium transition-colors",
+                    "hover:bg-accent hover:text-accent-foreground",
+                    "focus:bg-accent focus:text-accent-foreground focus:outline-none",
+                    active && "bg-accent text-accent-foreground",
+                  )}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {opt.label}
+                  {active && (
+                    <span className="ml-auto text-primary">✓</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>,
+          document.body,
+        )}
       <span className="sr-only" role="status" aria-live="polite">
         {announcement}
       </span>
