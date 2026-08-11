@@ -26,6 +26,11 @@ on:
 permissions:
   contents: write
   packages: write
+  # The final "Dispatch release pruning" step calls `gh workflow run
+  # prune-releases.yml`, which requires the `actions: write` scope on the
+  # GITHUB_TOKEN — without it the dispatch 403s and the release cap is
+  # never enforced.
+  actions: write
 
 jobs:
   guard:
