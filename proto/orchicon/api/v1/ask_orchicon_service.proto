@@ -53,6 +53,9 @@ service AskOrchiconService {
   // ReasoningChunk / ToolCallResult / ErrorChunk / DoneSignal events are
   // retained for a future SSE surface but are not emitted by the current
   // implementation.
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE — ChatStreamResponse is
+  // deliberately shared with InterjectConversationTurn (the interject stream
+  // is the same oneof: TextChunk / ReasoningChunk / TurnStarted).
   rpc ChatStream(ChatStreamRequest) returns (stream ChatStreamResponse);
 
   // AbortConversationTurn aborts the in-flight turn on a conversation's
@@ -62,6 +65,21 @@ service AskOrchiconService {
   // assistant message id. Idempotent: aborting a conversation with no
   // running turn is a no-op.
   rpc AbortConversationTurn(AbortConversationTurnRequest) returns (AbortConversationTurnResponse);
+
+  // InterjectConversationTurn sends a message that SUPERSEDES an in-flight
+  // turn (the chat equivalent of a worker-execution nudge, but with an
+  // interrupt): the current turn's collector is cancelled, the
+  // conversation's opencode session is aborted so the model stops generating
+  // NOW, and the interjection is dispatched on a fresh turn that ack a new
+  // assistant message id and streams TextChunk / ReasoningChunk events live.
+  // The superseded turn's partial content is persisted as a plain assistant
+  // message (skipped entirely when nothing arrived). Idempotent: interjecting
+  // a conversation with no running turn behaves exactly like ChatStream.
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE — the interject stream is the
+  // same ChatStreamResponse oneof as ChatStream (TextChunk / ReasoningChunk /
+  // TurnStarted); reusing the type is deliberate.
+  rpc InterjectConversationTurn(InterjectConversationTurnRequest)
+      returns (stream ChatStreamResponse);
 
   // Attachments.
 
@@ -187,6 +205,15 @@ message AbortConversationTurnRequest {
 }
 
 message AbortConversationTurnResponse {}
+
+// InterjectConversationTurnRequest identifies the conversation to interject
+// and carries the steering message. The message replaces (supersedes) the
+// in-flight turn and is answered on a fresh turn; attachments are optional.
+message InterjectConversationTurnRequest {
+  string conversation_id = 1;
+  string message = 2;
+  repeated AttachmentInput attachments = 3;
+}
 
 // --- Attachments ---
 

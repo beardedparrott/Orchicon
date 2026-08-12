@@ -114,6 +114,193 @@ func listMessages(t *testing.T, pool *db.Pool, convID string) []db.MessageRow {
 	return rows
 }
 
+// busToolWithArgs builds a completed tool-part bus event with the given
+// tool name and args (the repetition-signature input).
+func busToolWithArgs(sessionID, tool string, input map[string]any) opencode.BusEvent {
+	return opencode.BusEvent{
+		Type: "message.part.updated",
+		Properties: map[string]any{
+			"sessionID": sessionID,
+			"part": map[string]any{
+				"type":  "tool",
+				"tool":  tool,
+				"input": input,
+				"state": map[string]any{"status": "completed", "output": "[]"},
+			},
+		},
+	}
+}
+
+// TestStartConversationTurnStallAborts verifies ADR-ASK-1: a turn fed no
+// activity within the no-progress window aborts the serve session and
+// persists a "stuck" error under the acked id — NOT the 30-minute
+// reply-window timeout. This is the "spins forever" fix.
+func TestStartConversationTurnStallAborts(t *testing.T) {
+	t.Setenv("ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW", "100ms")
+	pool := chatDBTestPool(t)
+	client := &fakeSessionClient{}
+	s := newChatService(t, pool, client)
+
+	convID := createConversation(t, pool, "")
+	ctx := context.Background()
+	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	if err != nil {
+		t.Fatalf("startConversationTurn: %v", err)
+	}
+
+	// No reply events are fed — the stall monitor trips, aborts the session,
+	// and persists a clear retryable error (not a 30-minute timeout wait).
+	msg := waitForMessage(t, pool, convID, ackID)
+	if msg.Role != "assistant" {
+		t.Fatalf("acked message role = %q, want assistant", msg.Role)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(msg.Metadata, &meta); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
+	}
+	errText, _ := meta["error"].(string)
+	if !strings.Contains(errText, "stuck") || !strings.Contains(errText, "stalled") {
+		t.Errorf("metadata.error = %q, want a stall message mentioning 'stuck' and 'stalled'", errText)
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.aborted) == 0 {
+		t.Error("stall must abort the serve session (interrupt the model now)")
+	}
+}
+
+// TestStartConversationTurnRepetitionStallAborts verifies the repetition
+// signal: the same tool_use signature repeated beyond the count within the
+// window aborts the turn with a stall error instead of looping forever.
+func TestStartConversationTurnRepetitionStallAborts(t *testing.T) {
+	t.Setenv("ORCHICON_ASK_STALL_REPETITION_WINDOW", "2s")
+	t.Setenv("ORCHICON_ASK_STALL_REPETITION_COUNT", "3")
+	pool := chatDBTestPool(t)
+	client := &fakeSessionClient{}
+	s := newChatService(t, pool, client)
+
+	convID := createConversation(t, pool, "")
+	ctx := context.Background()
+	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	if err != nil {
+		t.Fatalf("startConversationTurn: %v", err)
+	}
+
+	// Feed the SAME tool call repeatedly (after the send was accepted).
+	waitForSend(t, client, 1)
+	time.Sleep(100 * time.Millisecond) // let the collector flip sent before the tool events
+	input := map[string]any{"dir": "src"}
+	for i := 0; i < 5; i++ {
+		client.sub.feed(busToolWithArgs("ses_1", "orchicon_list_project_dir", input))
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	msg := waitForMessage(t, pool, convID, ackID)
+	var meta map[string]any
+	if err := json.Unmarshal(msg.Metadata, &meta); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
+	}
+	errText, _ := meta["error"].(string)
+	if !strings.Contains(errText, "stuck") || !strings.Contains(errText, "stalled:repetition") {
+		t.Errorf("metadata.error = %q, want a repetition stall message", errText)
+	}
+}
+
+// TestInterjectConversationTurnSupersedes verifies ADR-ASK-2 end to end: an
+// interjection on a conversation with an in-flight turn cancels the old
+// collector (whose partial content is persisted as a PLAIN assistant
+// message, not an error bubble), aborts the serve session, dispatches a
+// fresh turn that acks a DIFFERENT assistant id and persists its own reply,
+// and leaves exactly the new turn's registry entry (the stale-token guard).
+func TestInterjectConversationTurnSupersedes(t *testing.T) {
+	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
+	pool := chatDBTestPool(t)
+	client := &fakeSessionClient{}
+	s := newChatService(t, pool, client)
+
+	convID := createConversation(t, pool, "")
+	setConversationSessionID(t, pool, convID, "ses_keep")
+	ctx := context.Background()
+
+	// 1. Start a turn; feed a bit of partial content but never idle.
+	ack1, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "first", nil)
+	if err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+	waitForSend(t, client, 1)
+	client.sub.feed(busText("ses_keep", "partial answer"))
+	time.Sleep(100 * time.Millisecond) // let the old collector process the text before the cancel races it
+
+	// 2. Interject (supersede) with a second message.
+	ack2, _, err := s.startConversationTurnOpts(ctx, "tnt_dev", convID, "stop and focus on X", nil, turnDispatchOpts{supersede: true})
+	if err != nil {
+		t.Fatalf("interject: %v", err)
+	}
+	if ack2 == ack1 {
+		t.Fatal("interject must ack a DIFFERENT assistant message id")
+	}
+
+	// 3. The superseded turn's partial content is persisted as a plain
+	// (non-error) assistant message; the serve session was aborted.
+	partial := waitForMessage(t, pool, convID, ack1)
+	if partial.Role != "assistant" {
+		t.Fatalf("superseded message role = %q, want assistant", partial.Role)
+	}
+	if strings.TrimSpace(partial.Content) != "partial answer" {
+		t.Errorf("superseded content = %q, want %q", partial.Content, "partial answer")
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(partial.Metadata, &meta); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
+	}
+	if _, isErr := meta["error"]; isErr {
+		t.Errorf("superseded message metadata carries an error: %v", meta)
+	}
+
+	// 5. The serve session was aborted by the supersede, and the registry
+	// holds exactly the NEW turn — the superseded collector's deferred
+	// remove (token-guarded) could not clobber the replacement entry while
+	// it is still live.
+	client.mu.Lock()
+	aborted := len(client.aborted)
+	client.mu.Unlock()
+	if aborted == 0 {
+		t.Error("supersede must abort the serve session to interrupt the model")
+	}
+	s.turns.mu.Lock()
+	_, present := s.turns.turns[convID]
+	s.turns.mu.Unlock()
+	if !present {
+		t.Fatal("expected the interjection turn to still be registered (stale-token guard failed)")
+	}
+
+	// 6. The interjection reply is persisted under ack2, then BOTH
+	// collectors finalize and the registry drains to empty (each removes
+	// only its own token).
+	waitForSend(t, client, 2)
+	time.Sleep(100 * time.Millisecond) // let the new collector flip sent before the reply events
+	client.sub.feed(busText("ses_keep", "focusing on X"))
+	client.sub.feed(busIdle("ses_keep"))
+	reply := waitForMessage(t, pool, convID, ack2)
+	if strings.TrimSpace(reply.Content) != "focusing on X" {
+		t.Errorf("interjection reply = %q, want %q", reply.Content, "focusing on X")
+	}
+	deadline := time.After(5 * time.Second)
+	for {
+		s.turns.mu.Lock()
+		_, present := s.turns.turns[convID]
+		s.turns.mu.Unlock()
+		if !present {
+			break
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("registry must drain to empty after both turns finalize")
+		}
+	}
+}
+
 // waitForMessage polls for a message by id and returns it.
 func waitForMessage(t *testing.T, pool *db.Pool, convID, id string) db.MessageRow {
 	t.Helper()
@@ -246,8 +433,8 @@ func TestAbortConversationTurn(t *testing.T) {
 
 	// Register a turn manually (as the collector would) with a recording
 	// cancel so the abort's cancellation is observable.
-	turnCtx, cancelTurn := context.WithCancel(context.Background())
-	if !s.turns.register(convID, cancelTurn) {
+	turnCtx, cancelTurn := context.WithCancelCause(context.Background())
+	if _, ok := s.turns.register(convID, "tnt_dev", cancelTurn); !ok {
 		t.Fatal("register turn")
 	}
 	cancelled := make(chan struct{})

@@ -1170,24 +1170,39 @@ func TestCollectConversationReplyDropAfterLiveKeepsWindow(t *testing.T) {
 	}
 }
 
-// TestTurnRegistry verifies the one-turn-per-conversation gate and the
+// TestTurnRegistry verifies the one-turn-per-conversation gate, the
 // cancel-leaves-entry-until-remove semantics that keep a new send gated while
-// the old turn finalizes.
+// the old turn finalizes, and the token-guarded removal that lets a
+// superseded collector's deferred remove never clobber a replacement turn.
 func TestTurnRegistry(t *testing.T) {
 	r := newTurnRegistry()
-	ctx1, c1 := context.WithCancel(context.Background())
-	_, c2 := context.WithCancel(context.Background())
-	if !r.register("conv_a", c1) {
+	ctx1, c1 := context.WithCancelCause(context.Background())
+	_, c2 := context.WithCancelCause(context.Background())
+
+	tok1, ok := r.register("conv_a", "tnt_dev", c1)
+	if !ok {
 		t.Fatal("first register should succeed")
 	}
-	if r.register("conv_a", c2) {
+	if tok1 == 0 {
+		t.Fatal("register must return a non-zero token")
+	}
+	if _, ok := r.register("conv_a", "tnt_dev", c2); ok {
 		t.Fatal("second register for the same conversation must fail (one turn at a time)")
 	}
+
+	// cancel fires the collector's cancel with the cause and returns the
+	// token, leaving the entry until the collector removes it.
 	cancelled := make(chan struct{})
-	go func() { <-ctx1.Done(); close(cancelled) }()
-	got, ok := r.cancel("conv_a")
-	if !ok || got == nil {
-		t.Fatalf("cancel = (%v, %v), want (c1, true)", got, ok)
+	go func() {
+		<-ctx1.Done()
+		if cause := context.Cause(ctx1); cause != errUserStop {
+			t.Errorf("cancel cause = %v, want errUserStop", cause)
+		}
+		close(cancelled)
+	}()
+	tok, ok := r.cancel("conv_a", errUserStop)
+	if !ok || tok != tok1 {
+		t.Fatalf("cancel = (%d, %v), want (%d, true)", tok, ok, tok1)
 	}
 	select {
 	case <-cancelled:
@@ -1196,14 +1211,62 @@ func TestTurnRegistry(t *testing.T) {
 	}
 	// The entry stays until the collector removes it — a new send is still
 	// gated while the old turn finalizes.
-	if r.register("conv_a", c2) {
+	if _, ok := r.register("conv_a", "tnt_dev", c2); ok {
 		t.Fatal("register must still fail after cancel (entry removed on finalize)")
 	}
-	r.remove("conv_a")
-	if !r.register("conv_a", c2) {
-		t.Fatal("register must succeed after the collector removes its entry")
+
+	// Token-guarded removal: a STALE finalize (wrong token) must not remove
+	// the entry; the current token does.
+	r.remove("conv_a", tok1+999)
+	if _, ok := r.register("conv_a", "tnt_dev", c2); ok {
+		t.Fatal("stale-token remove must not delete the entry")
 	}
-	if _, ok := r.cancel("conv_a"); !ok {
-		t.Fatal("cancel after re-register should report the entry")
+	r.remove("conv_a", tok1)
+	tok2, ok := r.register("conv_a", "tnt_dev", c2)
+	if !ok || tok2 <= tok1 {
+		t.Fatal("register must succeed after the collector removes its entry, with a fresh token")
+	}
+	if tok, ok := r.cancel("conv_a", errUserStop); !ok || tok != tok2 {
+		t.Fatalf("cancel after re-register = (%d, %v), want (%d, true)", tok, ok, tok2)
 	}
 }
+
+// TestTurnRegistrySweep verifies the TTL sweeper: entries older than the
+// max age are cancelled with errTurnExpired, removed, and reported with
+// their tenant so the sweeper can abort the serve session. Fresh entries
+// are untouched.
+func TestTurnRegistrySweep(t *testing.T) {
+	r := newTurnRegistry()
+	_, c1 := context.WithCancelCause(context.Background())
+	_, c2 := context.WithCancelCause(context.Background())
+	_, ok := r.register("conv_old", "tnt_old", c1)
+	if !ok {
+		t.Fatal("register conv_old")
+	}
+	_, ok = r.register("conv_fresh", "tnt_fresh", c2)
+	if !ok {
+		t.Fatal("register conv_fresh")
+	}
+	// Manually age the old entry past the TTL.
+	now := time.Now()
+	r.mu.Lock()
+	old := r.turns["conv_old"]
+	old.started = now.Add(-10 * time.Minute)
+	r.turns["conv_old"] = old
+	r.mu.Unlock()
+
+	evicted := r.sweep(now, 5*time.Minute)
+	if len(evicted) != 1 || evicted[0].convID != "conv_old" || evicted[0].tenant != "tnt_old" {
+		t.Fatalf("evicted = %+v, want [conv_old/tnt_old]", evicted)
+	}
+	// The old entry is gone; the fresh one survives.
+	if _, ok := r.turns["conv_old"]; ok {
+		t.Error("expired entry must be removed by sweep")
+	}
+	if _, ok := r.turns["conv_fresh"]; !ok {
+		t.Error("fresh entry must survive the sweep")
+	}
+	// The expired cancel fired with errTurnExpired (captured above via
+	// context.Cause on the cancelled context).
+}
+

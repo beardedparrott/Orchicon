@@ -126,6 +126,10 @@ function groupStreamItems(items: StreamItem[]): StreamItem[] {
 interface ConvStream {
   isStreaming: boolean;
   isThinking: boolean;
+  // reconnecting marks an ACKED turn whose ChatStream socket dropped — the
+  // detached collector keeps running server-side, so the slot stays attached
+  // (Stop + interject remain) and completion is resolved via the poll.
+  reconnecting: boolean;
   optimisticUserMsg: string | null;
   pendingReplyId: string | null;
   items: StreamItem[];
@@ -134,6 +138,7 @@ interface ConvStream {
 const EMPTY_STREAM: ConvStream = {
   isStreaming: false,
   isThinking: false,
+  reconnecting: false,
   optimisticUserMsg: null,
   pendingReplyId: null,
   items: [],
@@ -149,6 +154,13 @@ function AskOrchiconPage() {
 
   // Live streaming state keyed by conversation id.
   const [streams, setStreams] = useState<Record<string, ConvStream>>({});
+
+  // Per-conversation dispatch generation. Each send/interject bumps it; a
+  // stream's fail() only owns the slot while its generation is current. This
+  // stops a superseded (older) turn's socket-drop from tearing down the
+  // interject turn that replaced it — the classic stale-closure hazard once
+  // two streams can overlap for a conversation.
+  const dispatchGenRef = useRef<Record<string, number>>({});
 
   // Update one conversation's stream slot with a functional updater so
   // async chunk handlers never read stale state (append via the previous
@@ -167,6 +179,7 @@ function AskOrchiconPage() {
   const activeStream = activeConvId ? streams[activeConvId] : undefined;
   const isStreaming = activeStream?.isStreaming ?? false;
   const isThinking = activeStream?.isThinking ?? false;
+  const reconnecting = activeStream?.reconnecting ?? false;
   const optimisticUserMsg = activeStream?.optimisticUserMsg ?? null;
   const pendingReplyId = activeStream?.pendingReplyId ?? null;
   const streamItems = activeStream?.items ?? [];
@@ -202,6 +215,7 @@ function AskOrchiconPage() {
         ...prev,
         isStreaming: false,
         isThinking: false,
+        reconnecting: false,
         optimisticUserMsg: null,
         pendingReplyId: null,
         items: [],
@@ -244,6 +258,7 @@ function AskOrchiconPage() {
         ...prev,
         isStreaming: false,
         isThinking: false,
+        reconnecting: false,
         optimisticUserMsg: null,
         pendingReplyId: null,
         items: [],
@@ -259,36 +274,61 @@ function AskOrchiconPage() {
   // while the user is browsing a different conversation. When the stream
   // ends without an acked reply (error / aborted before turnStarted), the
   // slot is cleared; acked turns clear via the pendingReplyId poll above.
-  const sendStreaming = useCallback(
-    async (convId: string, text: string, attachments?: AttachmentInput[]) => {
-      setStream(convId, (prev) => ({
-        ...prev,
-        optimisticUserMsg: text,
-        isStreaming: true,
-        isThinking: true,
-        pendingReplyId: null,
-        items: [],
-      }));
+  const runStream = useCallback(
+    async (
+      convId: string,
+      text: string,
+      attachments: AttachmentInput[] | undefined,
+      mode: "send" | "interject",
+    ) => {
+      const gen = (dispatchGenRef.current[convId] ?? 0) + 1;
+      dispatchGenRef.current[convId] = gen;
 
+      const stream =
+        mode === "interject"
+          ? askOrchiconClient.interjectConversationTurn({
+              conversationId: convId,
+              message: text,
+              attachments: attachments ?? [],
+            })
+          : askOrchiconClient.chatStream({
+              conversationId: convId,
+              message: text,
+              attachments: attachments ?? [],
+            });
+
+      // fail tears down the stream slot ONLY when the turn was never acked
+      // (no pendingReplyId) AND this stream is still the current dispatch.
+      // Once acked, the server-side collector runs on a request-independent
+      // context — a dropped socket (network blip, server restart,
+      // backgrounded tab) must NOT orphan the turn from the UI: the slot
+      // stays streaming so the Stop button and the interject input remain,
+      // and the existing ListMessages poll resolves completion when the
+      // persisted reply/error appears. A stale generation (a newer interject
+      // owns the slot) never touches the state.
       const fail = (err?: unknown) => {
-        setStream(convId, (prev) => ({
-          ...prev,
-          isStreaming: false,
-          isThinking: false,
-          optimisticUserMsg: null,
-          items: [],
-        }));
+        setStream(convId, (prev) => {
+          if (dispatchGenRef.current[convId] !== gen) {
+            return prev;
+          }
+          if (prev.pendingReplyId) {
+            return { ...prev, isThinking: false, reconnecting: true };
+          }
+          return {
+            ...prev,
+            isStreaming: false,
+            isThinking: false,
+            reconnecting: false,
+            optimisticUserMsg: null,
+            items: [],
+          };
+        });
         if (err) {
           toast.error(String(err instanceof Error ? err.message : err), { title: "Chat error" });
         }
       };
 
       try {
-        const stream = askOrchiconClient.chatStream({
-          conversationId: convId,
-          message: text,
-          attachments: attachments ?? [],
-        });
         let acked = false;
         for await (const chunk of stream) {
           if (chunk.event.case === "turnStarted") {
@@ -296,6 +336,7 @@ function AskOrchiconPage() {
             setStream(convId, (prev) => ({
               ...prev,
               pendingReplyId: assistantMessageId,
+              reconnecting: false,
             }));
             acked = true;
           } else if (chunk.event.case === "textChunk") {
@@ -335,6 +376,7 @@ function AskOrchiconPage() {
           } else if (chunk.event.case === "error") {
             toast.error(chunk.event.value.message);
             fail();
+            return;
           }
         }
         if (!acked) {
@@ -347,12 +389,58 @@ function AskOrchiconPage() {
     [toast, setStream],
   );
 
+  // A normal send: starts a fresh turn on the conversation.
+  const sendStreaming = useCallback(
+    async (convId: string, text: string, attachments?: AttachmentInput[]) => {
+      setStream(convId, (prev) => ({
+        ...prev,
+        optimisticUserMsg: text,
+        isStreaming: true,
+        isThinking: true,
+        reconnecting: false,
+        pendingReplyId: null,
+        items: [],
+      }));
+      await runStream(convId, text, attachments, "send");
+    },
+    [runStream, setStream],
+  );
+
+  // An interjection: sent while a turn is already streaming. The server
+  // supersedes the in-flight turn (persisting its partial content as a plain
+  // message) and answers this message on a fresh turn that acks a NEW
+  // assistant message id. The old id's partial message appears via the poll
+  // and must NOT clear the new turn — the poll effect keys on the current
+  // pendingReplyId, which turnStarted now points at the new id.
+  const interjectStreaming = useCallback(
+    async (convId: string, text: string, attachments?: AttachmentInput[]) => {
+      setStream(convId, (prev) => ({
+        ...prev,
+        optimisticUserMsg: text,
+        isStreaming: true,
+        isThinking: true,
+        reconnecting: false,
+        pendingReplyId: null,
+        items: [],
+      }));
+      await runStream(convId, text, attachments, "interject");
+    },
+    [runStream, setStream],
+  );
+
   const handleSendMessage = useCallback(
     async (text: string, attachments?: AttachmentInput[]) => {
-      if (!text.trim() || !activeConvId || isStreaming) return;
-      await sendStreaming(activeConvId, text, attachments);
+      if (!text.trim() || !activeConvId) return;
+      if (isStreaming) {
+        // Send while streaming = interject: interrupt the current reply and
+        // redirect the model (the server aborts the session + supersedes the
+        // turn), never the "another reply already processing" dead-end.
+        await interjectStreaming(activeConvId, text, attachments);
+      } else {
+        await sendStreaming(activeConvId, text, attachments);
+      }
     },
-    [activeConvId, isStreaming, sendStreaming],
+    [activeConvId, isStreaming, sendStreaming, interjectStreaming],
   );
 
   const handleRetry = useCallback(() => {
@@ -549,6 +637,19 @@ function AskOrchiconPage() {
                   </div>
                 )}
 
+                {/* Reconnecting notice — the acked turn's socket dropped but
+                    the detached collector keeps running server-side. The Stop
+                    button + interject input stay available and the poll
+                    resolves completion. */}
+                {isStreaming && reconnecting && (
+                  <div className="flex justify-center">
+                    <p className="text-xs text-muted-foreground">
+                      Connection lost — still working… You can interject or
+                      stop this reply.
+                    </p>
+                  </div>
+                )}
+
                 <div className="h-4" />
               </div>
             </ChatScrollContainer>
@@ -694,14 +795,16 @@ function ChatInputField({
   mode?: ConversationMode;
   onModeChange?: (mode: ConversationMode) => void;
 }) {
-  const disabled = isStreaming;
+  // The input stays ENABLED while streaming: sending mid-reply is the
+  // interject path (interrupt + redirect), not a rejected "already
+  // processing" send. Only the Stop button is offered alongside Send.
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<AttachmentInput[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleSubmit = useCallback(() => {
-    if ((text.trim() || attachments.length > 0) && !disabled) {
+    if (text.trim() || attachments.length > 0) {
       onSend(
         text.trim(),
         attachments.length > 0 ? attachments : undefined,
@@ -712,7 +815,7 @@ function ChatInputField({
         inputRef.current.style.height = "auto";
       }
     }
-  }, [text, attachments, disabled, onSend]);
+  }, [text, attachments, onSend]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -872,8 +975,7 @@ function ChatInputField({
         <div className="flex items-end gap-1 px-3 pt-3 pb-1">
           <button
             onClick={() => fileInputRef.current?.click()}
-            disabled={disabled}
-            className="shrink-0 rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent disabled:opacity-50"
+            className="shrink-0 rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent"
             title="Attach file"
           >
             <Paperclip className="h-4 w-4" />
@@ -888,15 +990,13 @@ function ChatInputField({
             }}
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
-            disabled={disabled}
             rows={1}
-            className="flex-1 resize-none bg-transparent px-1 py-0 text-sm leading-6 outline-none placeholder:text-muted-foreground disabled:opacity-50 min-h-[24px] max-h-[192px]"
+            className="flex-1 resize-none bg-transparent px-1 py-0 text-sm leading-6 outline-none placeholder:text-muted-foreground min-h-[24px] max-h-[192px]"
           />
           <button
             onClick={isRecording ? handleStopRecording : handleVoiceInput}
-            disabled={disabled}
             className={cn(
-              "shrink-0 rounded p-1 disabled:opacity-50",
+              "shrink-0 rounded p-1",
               isRecording
                 ? "text-destructive hover:bg-destructive/10 animate-pulse"
                 : "text-muted-foreground hover:text-foreground hover:bg-accent",
@@ -910,14 +1010,24 @@ function ChatInputField({
         <div className="flex items-center justify-between border-t border-border/40 px-3 py-2.5">
           <div className="flex items-center gap-1.5">
             {isStreaming ? (
-              <Button onClick={onStop} variant="destructive" size="sm">
-                <Square className="h-3.5 w-3.5 mr-1" />
-                Stop
-              </Button>
+              <>
+                <Button
+                  onClick={handleSubmit}
+                  disabled={!text.trim() && attachments.length === 0}
+                  size="sm"
+                  title="Send interrupts the current reply and redirects the model"
+                >
+                  Send
+                </Button>
+                <Button onClick={onStop} variant="destructive" size="sm">
+                  <Square className="h-3.5 w-3.5 mr-1" />
+                  Stop
+                </Button>
+              </>
             ) : (
               <Button
                 onClick={handleSubmit}
-                disabled={(!text.trim() && attachments.length === 0) || disabled}
+                disabled={!text.trim() && attachments.length === 0}
                 size="sm"
               >
                 Send
@@ -929,7 +1039,6 @@ function ChatInputField({
               <ModeToggle
                 mode={mode}
                 onModeChange={onModeChange}
-                disabled={disabled}
               />
             )}
           </div>
