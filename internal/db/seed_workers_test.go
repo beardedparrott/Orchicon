@@ -302,7 +302,7 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 	}
 	if _, err := ttx.Exec(ctx,
 		`UPDATE worker_versions
-		    SET agents_md = replace(agents_md, 'orchicon.safety=v13', 'orchicon.safety=v0')
+		    SET agents_md = replace(agents_md, 'orchicon.safety=v14', 'orchicon.safety=v0')
 		  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`, userID); err != nil {
 		t.Fatalf("stale marker: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 		userID).Scan(&agents); err != nil {
 		t.Fatalf("query adopted agents: %v", err)
 	}
-	if !strings.Contains(agents, "orchicon.safety=v13") {
+	if !strings.Contains(agents, "orchicon.safety=v14") {
 		t.Errorf("adopted worker should have been rolled forward to the current marker, got %q", agents[len(agents)-40:])
 	}
 }
@@ -389,8 +389,74 @@ func TestSeedCannedWorkersCarryDevOnlyGuard(t *testing.T) {
 	if !strings.Contains(agents, "orchicon-cnt-prod") || !strings.Contains(agents, "orchicon-cnt-dev") {
 		t.Errorf("DEV-ONLY guard must name both instances so the rule is unambiguous")
 	}
-	if !strings.Contains(agents, "orchicon.safety=v13") {
-		t.Errorf("canned worker must carry the current safety marker (orchicon.safety=v13)")
+	if !strings.Contains(agents, "orchicon.safety=v14") {
+		t.Errorf("canned worker must carry the current safety marker (orchicon.safety=v14)")
+	}
+}
+
+// TestSeedUIWorkersAreFullStack: the UI canned workers must be full-stack
+// engineers to whom UI is a strength — never a "UI-only specialist" identity
+// that gates them out of backend work. Their seed content must claim the full
+// stack, explicitly refuse to gate work on being UI, and NOT carry the old
+// limiting identity ("specializes in UI", "X first — you also happen to be").
+func TestSeedUIWorkersAreFullStack(t *testing.T) {
+	pool := seedTestPool(t)
+	ctx := context.Background()
+
+	for _, canned := range []struct{ id string }{
+		{"w_ui_design_architect"},
+		{"w_ui_developer"},
+		{"w_ui_qa_engineer"},
+	} {
+		if err := db.SeedDevWorkers(ctx, pool); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		var role, skills, agents string
+		if err := pool.QueryRow(ctx,
+			`SELECT role, skills, agents_md FROM worker_versions
+			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+			canned.id).Scan(&role, &skills, &agents); err != nil {
+			t.Fatalf("query %s: %v", canned.id, err)
+		}
+		blob := role + "\n" + skills + "\n" + agents
+
+		// Full-stack framing + explicit refusal to gate on UI.
+		for _, want := range []string{
+			"full stack",
+			"Never refuse or gate work because it isn't 'UI'",
+		} {
+			if !strings.Contains(strings.ToLower(blob), strings.ToLower(want)) {
+				t.Errorf("%s seed missing %q", canned.id, want)
+			}
+		}
+
+		// The old limiting identity is gone.
+		for _, gone := range []string{
+			"specializes in UI",
+			"specialist is UI",
+			"whose specialty is UI",
+			"specialize in UI/UX",
+			"you also happen to be",
+			"a developer first",
+			"an architect first",
+			"a QA engineer first",
+		} {
+			if strings.Contains(strings.ToLower(blob), strings.ToLower(gone)) {
+				t.Errorf("%s seed still carries limiting UI-only identity %q", canned.id, gone)
+			}
+		}
+
+		// Vision-capable model pinned; never a dead/wrong model.
+		var modelRef string
+		if err := pool.QueryRow(ctx,
+			`SELECT model_ref FROM worker_versions
+			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+			canned.id).Scan(&modelRef); err != nil {
+			t.Fatalf("query %s model_ref: %v", canned.id, err)
+		}
+		if modelRef != "opencode-go/mimo-v2.5" {
+			t.Errorf("%s should keep the vision-capable model mimo-v2.5, got %q", canned.id, modelRef)
+		}
 	}
 }
 
@@ -414,7 +480,7 @@ func TestSeedDesignApproverCarriesDesignReviewContract(t *testing.T) {
 		t.Fatalf("query canned Design Approver agents: %v", err)
 	}
 	checks := []string{
-		"orchicon.safety=v13",
+		"orchicon.safety=v14",
 		"review the design/architecture PLAN only",
 		"plan is sound and complete; implementation may begin",
 		"plan does not meet the bar",
@@ -454,7 +520,7 @@ func TestSeedCodeApproverCarriesCodeReviewContract(t *testing.T) {
 		t.Fatalf("query canned Code Approver agents: %v", err)
 	}
 	checks := []string{
-		"orchicon.safety=v13",
+		"orchicon.safety=v14",
 		"review the completed IMPLEMENTATION",
 		"do not re-review it",
 		"implementation is done and meets the acceptance criteria",

@@ -677,9 +677,9 @@ open http://localhost:8080
 | Design Approver | Worker-backed approval of the architecture/design plan — reviews the plan against acceptance criteria, approve/reject |
 | Code Approver | Worker-backed approval of the completed implementation — verifies done-ness after QA/PR, approve/reject |
 | Principal Software Architect | Architecture design, ADR documentation, and technical strategy |
-| UI Design Architect | Design systems, design tokens, UI architecture, accessibility/UX standards |
-| UI Developer | Hands-on UI implementation — accessible, responsive, design-system-driven frontend work |
-| UI QA Engineer | Validates UI — visual consistency, accessibility (WCAG), responsive behavior |
+| UI Design Architect | Full-stack Principal Software Architect who also sets the UI design direction (design system, tokens, accessibility, UX standards) — never UI-limited |
+| UI Developer | Full-stack Senior Engineer with deep frontend craft — accessible, responsive, design-system-driven UI plus the backend work that supports it |
+| UI QA Engineer | Full-stack QA who validates backend/API behavior and UI quality (visual fidelity, accessibility (WCAG), responsive behavior) |
 
 The UI workers also carry a **Browser automation (Playwright) — VISUAL verification** block in their AGENTS.md: the runtime container has no root process, so headless Chromium must launch with `--no-sandbox` (via a project `scripts/browser.cjs` helper with `launch()`/`shot()`). The `:orchicon-dev` runtime image preinstalls Playwright + Chromium (`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`, `NODE_PATH=/usr/local/lib/node_modules` so `require('playwright')` resolves globally). The protocol: start the app in-container, launch the browser, navigate at desktop + mobile viewports, screenshot to `/tmp/orchicon/`, **read the screenshot back** (that is how the model sees the UI), and iterate against the acceptance criteria.
 
