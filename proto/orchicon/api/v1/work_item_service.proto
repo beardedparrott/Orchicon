@@ -85,6 +85,9 @@ message CreateWorkItemRequest {
   // context_files are absolute file OR directory paths selected as worker
   // context for this item (same model as projects.context_files).
   repeated string context_files = 16;
+  // recurring_schedule sets a recurrence pattern; the item's status is
+  // automatically flipped to RECURRING on create.
+  optional orchicon.api.v1.RecurringSchedule recurring_schedule = 17;
 }
 
 message CreateWorkItemResponse {
@@ -147,6 +150,10 @@ message UpdateWorkItemRequest {
   // acceptance_review sets the human-readable acceptance review. Empty
   // string clears it; an absent field leaves it unchanged.
   optional string acceptance_review = 23;
+  // recurring_schedule sets or clears the recurrence definition. Setting it
+  // flips status to RECURRING; clearing it (empty message) resets to
+  // non-recurring and clears next_run_at.
+  optional orchicon.api.v1.RecurringSchedule recurring_schedule = 24;
 }
 
 message UpdateWorkItemResponse {

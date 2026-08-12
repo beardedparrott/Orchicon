@@ -298,7 +298,13 @@ type WorkItem struct {
 	// within a parent (top-level = the parent_id IS NULL group). Changed
 	// ONLY by ReorderWorkItems (explicit drag); display sort (ListWorkItems
 	// sort_by) never mutates it. NULL sorts last.
-	SortOrder     float64 `protobuf:"fixed64,28,opt,name=sort_order,json=sortOrder,proto3" json:"sort_order,omitempty"`
+	SortOrder float64 `protobuf:"fixed64,28,opt,name=sort_order,json=sortOrder,proto3" json:"sort_order,omitempty"`
+	// recurring_schedule holds the recurrence definition (frequency, interval,
+	// days, start_date, start_time). NULL = not recurring.
+	RecurringSchedule *RecurringSchedule `protobuf:"bytes,29,opt,name=recurring_schedule,json=recurringSchedule,proto3,oneof" json:"recurring_schedule,omitempty"`
+	// next_run_at is the computed next occurrence of a recurring item, used by
+	// the scheduler due-scan. NULL = not recurring or no next occurrence.
+	NextRunAt     *timestamppb.Timestamp `protobuf:"bytes,30,opt,name=next_run_at,json=nextRunAt,proto3" json:"next_run_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -522,6 +528,98 @@ func (x *WorkItem) GetSortOrder() float64 {
 	return 0
 }
 
+func (x *WorkItem) GetRecurringSchedule() *RecurringSchedule {
+	if x != nil {
+		return x.RecurringSchedule
+	}
+	return nil
+}
+
+func (x *WorkItem) GetNextRunAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.NextRunAt
+	}
+	return nil
+}
+
+// RecurringSchedule defines the recurrence pattern for a recurring work item.
+// Stored as JSONB in the recurring_schedule column. NULL = not recurring.
+type RecurringSchedule struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Frequency     string                 `protobuf:"bytes,1,opt,name=frequency,proto3" json:"frequency,omitempty"`                  // minute | hourly | daily | weekly | monthly
+	Interval      int32                  `protobuf:"varint,2,opt,name=interval,proto3" json:"interval,omitempty"`                   // >= 1 (e.g. every 2 hours)
+	Days          []string               `protobuf:"bytes,3,rep,name=days,proto3" json:"days,omitempty"`                            // subset of Mon,Tue,Wed,Thu,Fri,Sat,Sun; empty = every day
+	StartDate     string                 `protobuf:"bytes,4,opt,name=start_date,json=startDate,proto3" json:"start_date,omitempty"` // YYYY-MM-DD (first occurrence date)
+	StartTime     string                 `protobuf:"bytes,5,opt,name=start_time,json=startTime,proto3" json:"start_time,omitempty"` // HH:MM (time of day for occurrences)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RecurringSchedule) Reset() {
+	*x = RecurringSchedule{}
+	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecurringSchedule) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecurringSchedule) ProtoMessage() {}
+
+func (x *RecurringSchedule) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecurringSchedule.ProtoReflect.Descriptor instead.
+func (*RecurringSchedule) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_work_item_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *RecurringSchedule) GetFrequency() string {
+	if x != nil {
+		return x.Frequency
+	}
+	return ""
+}
+
+func (x *RecurringSchedule) GetInterval() int32 {
+	if x != nil {
+		return x.Interval
+	}
+	return 0
+}
+
+func (x *RecurringSchedule) GetDays() []string {
+	if x != nil {
+		return x.Days
+	}
+	return nil
+}
+
+func (x *RecurringSchedule) GetStartDate() string {
+	if x != nil {
+		return x.StartDate
+	}
+	return ""
+}
+
+func (x *RecurringSchedule) GetStartTime() string {
+	if x != nil {
+		return x.StartTime
+	}
+	return ""
+}
+
 // WorkItemDependency is an edge in the work DAG. The scheduler treats
 // the union of edges as a DAG; cycles are rejected at admission
 // (docs/02_Domain_Model.md §2.2, docs/09 §3.2).
@@ -540,7 +638,7 @@ type WorkItemDependency struct {
 
 func (x *WorkItemDependency) Reset() {
 	*x = WorkItemDependency{}
-	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[1]
+	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -552,7 +650,7 @@ func (x *WorkItemDependency) String() string {
 func (*WorkItemDependency) ProtoMessage() {}
 
 func (x *WorkItemDependency) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[1]
+	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -565,7 +663,7 @@ func (x *WorkItemDependency) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkItemDependency.ProtoReflect.Descriptor instead.
 func (*WorkItemDependency) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_work_item_proto_rawDescGZIP(), []int{1}
+	return file_orchicon_api_v1_work_item_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *WorkItemDependency) GetId() string {
@@ -630,7 +728,7 @@ type DependencyGraph struct {
 
 func (x *DependencyGraph) Reset() {
 	*x = DependencyGraph{}
-	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[2]
+	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -642,7 +740,7 @@ func (x *DependencyGraph) String() string {
 func (*DependencyGraph) ProtoMessage() {}
 
 func (x *DependencyGraph) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[2]
+	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -655,7 +753,7 @@ func (x *DependencyGraph) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DependencyGraph.ProtoReflect.Descriptor instead.
 func (*DependencyGraph) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_work_item_proto_rawDescGZIP(), []int{2}
+	return file_orchicon_api_v1_work_item_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *DependencyGraph) GetNodes() []*WorkItem {
@@ -676,7 +774,7 @@ var File_orchicon_api_v1_work_item_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\n" +
-	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc6\b\n" +
+	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf1\t\n" +
 	"\bWorkItem\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -710,8 +808,19 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\rcontext_files\x18\x1a \x03(\tR\fcontextFiles\x12+\n" +
 	"\x11acceptance_review\x18\x1b \x01(\tR\x10acceptanceReview\x12\x1d\n" +
 	"\n" +
-	"sort_order\x18\x1c \x01(\x01R\tsortOrderB\x16\n" +
-	"\x14_auto_start_workflow\"\xfe\x01\n" +
+	"sort_order\x18\x1c \x01(\x01R\tsortOrder\x12V\n" +
+	"\x12recurring_schedule\x18\x1d \x01(\v2\".orchicon.api.v1.RecurringScheduleH\x01R\x11recurringSchedule\x88\x01\x01\x12:\n" +
+	"\vnext_run_at\x18\x1e \x01(\v2\x1a.google.protobuf.TimestampR\tnextRunAtB\x16\n" +
+	"\x14_auto_start_workflowB\x15\n" +
+	"\x13_recurring_schedule\"\x9f\x01\n" +
+	"\x11RecurringSchedule\x12\x1c\n" +
+	"\tfrequency\x18\x01 \x01(\tR\tfrequency\x12\x1a\n" +
+	"\binterval\x18\x02 \x01(\x05R\binterval\x12\x12\n" +
+	"\x04days\x18\x03 \x03(\tR\x04days\x12\x1d\n" +
+	"\n" +
+	"start_date\x18\x04 \x01(\tR\tstartDate\x12\x1d\n" +
+	"\n" +
+	"start_time\x18\x05 \x01(\tR\tstartTime\"\xfe\x01\n" +
 	"\x12WorkItemDependency\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -769,31 +878,34 @@ func file_orchicon_api_v1_work_item_proto_rawDescGZIP() []byte {
 }
 
 var file_orchicon_api_v1_work_item_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_orchicon_api_v1_work_item_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_orchicon_api_v1_work_item_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_orchicon_api_v1_work_item_proto_goTypes = []any{
 	(WorkItemKind)(0),             // 0: orchicon.api.v1.WorkItemKind
 	(WorkItemStatus)(0),           // 1: orchicon.api.v1.WorkItemStatus
 	(DependencyType)(0),           // 2: orchicon.api.v1.DependencyType
 	(*WorkItem)(nil),              // 3: orchicon.api.v1.WorkItem
-	(*WorkItemDependency)(nil),    // 4: orchicon.api.v1.WorkItemDependency
-	(*DependencyGraph)(nil),       // 5: orchicon.api.v1.DependencyGraph
-	(*timestamppb.Timestamp)(nil), // 6: google.protobuf.Timestamp
+	(*RecurringSchedule)(nil),     // 4: orchicon.api.v1.RecurringSchedule
+	(*WorkItemDependency)(nil),    // 5: orchicon.api.v1.WorkItemDependency
+	(*DependencyGraph)(nil),       // 6: orchicon.api.v1.DependencyGraph
+	(*timestamppb.Timestamp)(nil), // 7: google.protobuf.Timestamp
 }
 var file_orchicon_api_v1_work_item_proto_depIdxs = []int32{
-	0, // 0: orchicon.api.v1.WorkItem.kind:type_name -> orchicon.api.v1.WorkItemKind
-	1, // 1: orchicon.api.v1.WorkItem.status:type_name -> orchicon.api.v1.WorkItemStatus
-	6, // 2: orchicon.api.v1.WorkItem.scheduled_start_at:type_name -> google.protobuf.Timestamp
-	6, // 3: orchicon.api.v1.WorkItem.created_at:type_name -> google.protobuf.Timestamp
-	6, // 4: orchicon.api.v1.WorkItem.updated_at:type_name -> google.protobuf.Timestamp
-	2, // 5: orchicon.api.v1.WorkItemDependency.type:type_name -> orchicon.api.v1.DependencyType
-	6, // 6: orchicon.api.v1.WorkItemDependency.created_at:type_name -> google.protobuf.Timestamp
-	3, // 7: orchicon.api.v1.DependencyGraph.nodes:type_name -> orchicon.api.v1.WorkItem
-	4, // 8: orchicon.api.v1.DependencyGraph.edges:type_name -> orchicon.api.v1.WorkItemDependency
-	9, // [9:9] is the sub-list for method output_type
-	9, // [9:9] is the sub-list for method input_type
-	9, // [9:9] is the sub-list for extension type_name
-	9, // [9:9] is the sub-list for extension extendee
-	0, // [0:9] is the sub-list for field type_name
+	0,  // 0: orchicon.api.v1.WorkItem.kind:type_name -> orchicon.api.v1.WorkItemKind
+	1,  // 1: orchicon.api.v1.WorkItem.status:type_name -> orchicon.api.v1.WorkItemStatus
+	7,  // 2: orchicon.api.v1.WorkItem.scheduled_start_at:type_name -> google.protobuf.Timestamp
+	7,  // 3: orchicon.api.v1.WorkItem.created_at:type_name -> google.protobuf.Timestamp
+	7,  // 4: orchicon.api.v1.WorkItem.updated_at:type_name -> google.protobuf.Timestamp
+	4,  // 5: orchicon.api.v1.WorkItem.recurring_schedule:type_name -> orchicon.api.v1.RecurringSchedule
+	7,  // 6: orchicon.api.v1.WorkItem.next_run_at:type_name -> google.protobuf.Timestamp
+	2,  // 7: orchicon.api.v1.WorkItemDependency.type:type_name -> orchicon.api.v1.DependencyType
+	7,  // 8: orchicon.api.v1.WorkItemDependency.created_at:type_name -> google.protobuf.Timestamp
+	3,  // 9: orchicon.api.v1.DependencyGraph.nodes:type_name -> orchicon.api.v1.WorkItem
+	5,  // 10: orchicon.api.v1.DependencyGraph.edges:type_name -> orchicon.api.v1.WorkItemDependency
+	11, // [11:11] is the sub-list for method output_type
+	11, // [11:11] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_work_item_proto_init() }
@@ -808,7 +920,7 @@ func file_orchicon_api_v1_work_item_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_work_item_proto_rawDesc), len(file_orchicon_api_v1_work_item_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   3,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

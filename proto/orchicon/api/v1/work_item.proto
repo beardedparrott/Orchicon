@@ -92,6 +92,22 @@ message WorkItem {
   // ONLY by ReorderWorkItems (explicit drag); display sort (ListWorkItems
   // sort_by) never mutates it. NULL sorts last.
   double sort_order = 28;
+  // recurring_schedule holds the recurrence definition (frequency, interval,
+  // days, start_date, start_time). NULL = not recurring.
+  optional RecurringSchedule recurring_schedule = 29;
+  // next_run_at is the computed next occurrence of a recurring item, used by
+  // the scheduler due-scan. NULL = not recurring or no next occurrence.
+  google.protobuf.Timestamp next_run_at = 30;
+}
+
+// RecurringSchedule defines the recurrence pattern for a recurring work item.
+// Stored as JSONB in the recurring_schedule column. NULL = not recurring.
+message RecurringSchedule {
+  string frequency = 1;   // minute | hourly | daily | weekly | monthly
+  int32 interval = 2;     // >= 1 (e.g. every 2 hours)
+  repeated string days = 3; // subset of Mon,Tue,Wed,Thu,Fri,Sat,Sun; empty = every day
+  string start_date = 4;  // YYYY-MM-DD (first occurrence date)
+  string start_time = 5;  // HH:MM (time of day for occurrences)
 }
 
 // WorkItemStatus — schedulable kinds follow:

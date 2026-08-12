@@ -14,7 +14,7 @@
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3, Timestamp } from "@bufbuild/protobuf";
-import { DependencyGraph, DependencyType, WorkItem, WorkItemDependency, WorkItemKind, WorkItemStatus } from "./work_item_pb.js";
+import { DependencyGraph, DependencyType, RecurringSchedule, WorkItem, WorkItemDependency, WorkItemKind, WorkItemStatus } from "./work_item_pb.js";
 import { ContextFiles } from "./project_pb.js";
 
 /**
@@ -122,6 +122,14 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
    */
   contextFiles: string[] = [];
 
+  /**
+   * recurring_schedule sets a recurrence pattern; the item's status is
+   * automatically flipped to RECURRING on create.
+   *
+   * @generated from field: optional orchicon.api.v1.RecurringSchedule recurring_schedule = 17;
+   */
+  recurringSchedule?: RecurringSchedule;
+
   constructor(data?: PartialMessage<CreateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -146,6 +154,7 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
     { no: 14, name: "auto_start_workflow", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
     { no: 15, name: "runtime_image", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 16, name: "context_files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 17, name: "recurring_schedule", kind: "message", T: RecurringSchedule, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkItemRequest {
@@ -537,6 +546,15 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
    */
   acceptanceReview?: string;
 
+  /**
+   * recurring_schedule sets or clears the recurrence definition. Setting it
+   * flips status to RECURRING; clearing it (empty message) resets to
+   * non-recurring and clears next_run_at.
+   *
+   * @generated from field: optional orchicon.api.v1.RecurringSchedule recurring_schedule = 24;
+   */
+  recurringSchedule?: RecurringSchedule;
+
   constructor(data?: PartialMessage<UpdateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -564,6 +582,7 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
     { no: 21, name: "kind", kind: "enum", T: proto3.getEnumType(WorkItemKind), opt: true },
     { no: 22, name: "context_files", kind: "message", T: ContextFiles, opt: true },
     { no: 23, name: "acceptance_review", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 24, name: "recurring_schedule", kind: "message", T: RecurringSchedule, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkItemRequest {
