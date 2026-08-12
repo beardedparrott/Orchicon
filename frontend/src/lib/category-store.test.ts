@@ -7,7 +7,6 @@ import {
   seedAssignments,
   getItemsForCategory,
 } from "@/lib/category-store";
-import type { CategoryState } from "@/lib/category-store";
 
 // In-memory localStorage shim (same as work-items-preferences.test.ts)
 const memoryStore = new Map<string, string>();
