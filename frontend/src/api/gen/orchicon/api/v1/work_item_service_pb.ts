@@ -18,6 +18,46 @@ import { DependencyGraph, DependencyType, RecurringSchedule, WorkItem, WorkItemD
 import { ContextFiles } from "./project_pb.js";
 
 /**
+ * SequenceAction enumerates the manual sequence control gestures.
+ *
+ * @generated from enum orchicon.api.v1.SequenceAction
+ */
+export enum SequenceAction {
+  /**
+   * @generated from enum value: SEQUENCE_ACTION_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * re-fire the chain from child #1 (destructive)
+   *
+   * @generated from enum value: SEQUENCE_ACTION_START = 1;
+   */
+  START = 1,
+
+  /**
+   * continue from the first non-succeeded child
+   *
+   * @generated from enum value: SEQUENCE_ACTION_RESUME = 2;
+   */
+  RESUME = 2,
+
+  /**
+   * park the chain (parent → pending, schedule cleared)
+   *
+   * @generated from enum value: SEQUENCE_ACTION_STOP = 3;
+   */
+  STOP = 3,
+}
+// Retrieve enum metadata with: proto3.getEnumType(SequenceAction)
+proto3.util.setEnumType(SequenceAction, "orchicon.api.v1.SequenceAction", [
+  { no: 0, name: "SEQUENCE_ACTION_UNSPECIFIED" },
+  { no: 1, name: "SEQUENCE_ACTION_START" },
+  { no: 2, name: "SEQUENCE_ACTION_RESUME" },
+  { no: 3, name: "SEQUENCE_ACTION_STOP" },
+]);
+
+/**
  * @generated from message orchicon.api.v1.CreateWorkItemRequest
  */
 export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
@@ -1286,6 +1326,90 @@ export class ReorderWorkItemsResponse extends Message<ReorderWorkItemsResponse> 
 
   static equals(a: ReorderWorkItemsResponse | PlainMessage<ReorderWorkItemsResponse> | undefined, b: ReorderWorkItemsResponse | PlainMessage<ReorderWorkItemsResponse> | undefined): boolean {
     return proto3.util.equals(ReorderWorkItemsResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ControlSequenceRequest
+ */
+export class ControlSequenceRequest extends Message<ControlSequenceRequest> {
+  /**
+   * the sequence parent work item id
+   *
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * @generated from field: orchicon.api.v1.SequenceAction action = 2;
+   */
+  action = SequenceAction.UNSPECIFIED;
+
+  constructor(data?: PartialMessage<ControlSequenceRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ControlSequenceRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "action", kind: "enum", T: proto3.getEnumType(SequenceAction) },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ControlSequenceRequest {
+    return new ControlSequenceRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ControlSequenceRequest {
+    return new ControlSequenceRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ControlSequenceRequest {
+    return new ControlSequenceRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ControlSequenceRequest | PlainMessage<ControlSequenceRequest> | undefined, b: ControlSequenceRequest | PlainMessage<ControlSequenceRequest> | undefined): boolean {
+    return proto3.util.equals(ControlSequenceRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ControlSequenceResponse
+ */
+export class ControlSequenceResponse extends Message<ControlSequenceResponse> {
+  /**
+   * the parent after the action, server-confirmed
+   *
+   * @generated from field: orchicon.api.v1.WorkItem work_item = 1;
+   */
+  workItem?: WorkItem;
+
+  constructor(data?: PartialMessage<ControlSequenceResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ControlSequenceResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "work_item", kind: "message", T: WorkItem },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ControlSequenceResponse {
+    return new ControlSequenceResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ControlSequenceResponse {
+    return new ControlSequenceResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ControlSequenceResponse {
+    return new ControlSequenceResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ControlSequenceResponse | PlainMessage<ControlSequenceResponse> | undefined, b: ControlSequenceResponse | PlainMessage<ControlSequenceResponse> | undefined): boolean {
+    return proto3.util.equals(ControlSequenceResponse, a, b);
   }
 }
 

@@ -436,6 +436,107 @@ func StartSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantI
 	if err := ttx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
+	fireLeafStarts(ctx, pool, log, starts, start)
+	return nil
+}
+
+// ResumeSequence resumes a sequence parent from its current state —
+// parent → running, and the engine derives the first non-succeeded child
+// and arms it (reusing reconcileParent). Unlike StartSequence it does NOT
+// reset the subtree: prior child successes are preserved, and the chain
+// continues from where it left off. This is the manual counterpart to the
+// auto-resume path (a failed parent whose children are no longer halted
+// revives on the next scan); it exists for the parked case — a parent
+// parked by StopSequence (status pending) is never picked up by the scan,
+// so Resume is how it re-enters the chain without destroying history.
+//
+// Validation of the subtree (workflows bound, no one-shots) is the
+// CALLER's responsibility and runs before this (mirrors StartSequence).
+func ResumeSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantID, parentID string, start StartWorkflowFn) error {
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer ttx.Rollback(ctx)
+
+	parent, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, parentID)
+	if err != nil {
+		return err
+	}
+	children, err := db.ListDirectChildren(ctx, ttx.Tx, tenantID, parentID)
+	if err != nil {
+		return fmt.Errorf("list children: %w", err)
+	}
+	if len(children) == 0 {
+		return errors.New("cannot resume a sequence on a work item with no children")
+	}
+
+	// Parent → running; clear a stale workflow binding on the parent
+	// (same rationale as StartSequence — a parent with children IS a
+	// sequence container, its own workflow_id is ignored). No subtree
+	// reset: resume keeps history.
+	status := domain.WorkItemRunning
+	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, parentID, parent.Version, db.UpdateWorkItemFields{
+		Status:     &status,
+		WorkflowID: strPtr(""),
+	}); err != nil {
+		return fmt.Errorf("resume sequence parent: %w", err)
+	}
+	// Arm the first non-succeeded child in sort_order (reuses the
+	// engine's advance logic; succeeded children are already terminal, so
+	// the derived cursor passes over them).
+	starts, err := reconcileParent(ctx, ttx.Tx, tenantID, parentID, start)
+	if err != nil {
+		return err
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	fireLeafStarts(ctx, pool, log, starts, start)
+	return nil
+}
+
+// StopSequence parks a sequence parent: parent → pending AND clears
+// scheduled_start_at, nothing else. An in-flight child finishes naturally;
+// its completion is inert because the engine only advances running/failed
+// parents (reconcileParent's sequence-parent guard). This is how a chain
+// is halted without destroying history — children can then be run
+// standalone, and Resume re-enters the chain from the first non-succeeded
+// child.
+func StopSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantID, parentID string) error {
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer ttx.Rollback(ctx)
+
+	parent, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, parentID)
+	if err != nil {
+		return err
+	}
+	children, err := db.ListDirectChildren(ctx, ttx.Tx, tenantID, parentID)
+	if err != nil {
+		return fmt.Errorf("list children: %w", err)
+	}
+	if len(children) == 0 {
+		return errors.New("cannot stop a sequence on a work item with no children")
+	}
+
+	status := domain.WorkItemPending
+	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, parentID, parent.Version, db.UpdateWorkItemFields{
+		Status:                &status,
+		ClearScheduledStartAt: true,
+	}); err != nil {
+		return fmt.Errorf("park sequence parent: %w", err)
+	}
+	return ttx.Commit(ctx)
+}
+
+// fireLeafStarts starts the armed leaf workflows after the reconciler
+// transaction commits, self-healing any child whose start fails (reset to
+// pending so the next pass re-arms). Shared by StartSequence and
+// ResumeSequence.
+func fireLeafStarts(ctx context.Context, pool *db.Pool, log *slog.Logger, starts []leafStart, start StartWorkflowFn) {
 	for _, s := range starts {
 		if err := start(ctx, s.tenantID, s.workflowID, s.projectID, s.itemID); err != nil {
 			log.Warn("sequence: start child workflow failed",
@@ -445,7 +546,6 @@ func StartSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantI
 			resetArmedChild(ctx, pool, s.tenantID, s.itemID)
 		}
 	}
-	return nil
 }
 
 // resetArmedChild resets a leaf child back to pending after its workflow

@@ -14,6 +14,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
+	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/beardedparrott/orchicon/internal/workitem"
@@ -873,6 +874,132 @@ func toolReorderWorkItems(ctx context.Context, pool *db.Pool, args json.RawMessa
 		out = append(out, reorderedItem{ID: sib.ID, Title: sib.Title, Order: float64(i + 1)})
 	}
 	return json.Marshal(map[string]any{"reordered": out, "parent_id": params.ParentID})
+}
+
+// toolControlSequence drives a sequence parent manually (start / resume /
+// stop) — mirrors the ControlSequence RPC (AGENTS.md Ask-Orchicon-sync
+// rule). A parent with children IS a sequence run; these explicit gestures
+// are what the engine's derived cursor cannot infer on its own:
+//   - start re-fires the chain from child #1 (destructive — every
+//     descendant resets to pending).
+//   - resume continues from the first non-succeeded child (keeps state).
+//   - stop parks the chain (parent → pending, schedule cleared) so
+//     children can be run standalone.
+func toolControlSequence(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ID     string `json:"id"`
+		Action string `json:"action"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if params.ID == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	action := strings.ToLower(strings.TrimSpace(params.Action))
+	if action == "" {
+		return nil, fmt.Errorf("action is required: start, resume, or stop")
+	}
+	tenantID := tenant.FromContext(ctx)
+
+	// Sequence-parent guard shared with the RPC: must have children and no
+	// bound workflow run. Load inside a read tx to validate.
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, params.ID)
+	if err != nil {
+		ttx.Rollback(ctx)
+		return nil, err
+	}
+	if current.WorkflowRunID != "" {
+		ttx.Rollback(ctx)
+		return nil, fmt.Errorf("work item %q is bound to a workflow run — not a sequence parent", params.ID)
+	}
+	children, err := db.ListDirectChildren(ctx, ttx.Tx, tenantID, params.ID)
+	if err != nil {
+		ttx.Rollback(ctx)
+		return nil, err
+	}
+	if len(children) == 0 {
+		ttx.Rollback(ctx)
+		return nil, fmt.Errorf("work item %q has no children — only sequence parents (work items with children) can be started/resumed/stopped", params.ID)
+	}
+
+	var outcome string
+	switch action {
+	case "start":
+		if workitem.IsActiveRunStatus(current.Status) {
+			ttx.Rollback(ctx)
+			return nil, fmt.Errorf("cannot START a sequence that is already running — STOP it first")
+		}
+		if err := workitem.ValidateSequenceSchedule(ctx, ttx.Tx, tenantID, current); err != nil {
+			ttx.Rollback(ctx)
+			return nil, err
+		}
+		if err := ttx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		if err := scheduler.StartSequence(ctx, pool, toolLogger, tenantID, params.ID,
+			func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
+				return workflow.StartWorkflowDirect(ctx, pool, toolLogger, tenantID, workflowID, projectID, workItemID)
+			}); err != nil {
+			return nil, err
+		}
+		outcome = "started"
+	case "resume":
+		if current.Status != domain.WorkItemFailed && current.Status != domain.WorkItemPending {
+			ttx.Rollback(ctx)
+			return nil, fmt.Errorf("cannot RESUME a sequence that is not halted (failed) or parked (pending)")
+		}
+		if err := workitem.ValidateSequenceSchedule(ctx, ttx.Tx, tenantID, current); err != nil {
+			ttx.Rollback(ctx)
+			return nil, err
+		}
+		if err := ttx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		if err := scheduler.ResumeSequence(ctx, pool, toolLogger, tenantID, params.ID,
+			func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
+				return workflow.StartWorkflowDirect(ctx, pool, toolLogger, tenantID, workflowID, projectID, workItemID)
+			}); err != nil {
+			return nil, err
+		}
+		outcome = "resumed"
+	case "stop":
+		if current.Status != domain.WorkItemRunning && current.Status != domain.WorkItemFailed {
+			ttx.Rollback(ctx)
+			return nil, fmt.Errorf("cannot STOP a sequence that is not running or failed")
+		}
+		if err := ttx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		if err := scheduler.StopSequence(ctx, pool, toolLogger, tenantID, params.ID); err != nil {
+			return nil, err
+		}
+		outcome = "stopped"
+	default:
+		ttx.Rollback(ctx)
+		return nil, fmt.Errorf("action must be one of start, resume, stop")
+	}
+
+	// Re-read the parent after the action for server-confirmed state.
+	ttx2, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer ttx2.Rollback(ctx)
+	updated, err := db.GetWorkItem(ctx, ttx2.Tx, tenantID, params.ID)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{
+		"action":          outcome,
+		"work_item_id":    updated.ID,
+		"work_item_title": updated.Title,
+		"status":          updated.Status,
+	})
 }
 
 func parseScheduledTime(s string) (time.Time, error) {

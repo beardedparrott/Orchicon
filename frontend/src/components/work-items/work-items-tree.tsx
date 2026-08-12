@@ -51,6 +51,7 @@ import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { KindBadge, PositionBadge, StatusPill } from "@/components/work-items/work-item-badges";
 import type { BlockState } from "@/components/work-items/dependency-utils";
 import { computeSequencePositions, sortByChainOrder } from "@/components/work-items/sequence-utils";
+import { SequenceControls } from "@/components/work-items/sequence-controls";
 import { BlockedChip } from "@/components/work-items/work-item-card";
 import { subtreeSelectionState } from "@/components/work-items/use-work-item-selection";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -542,6 +543,7 @@ function SortableTreeRow({
           depsCount={depsCountOf(item.id, blockState)}
         />
         <StatusPill status={item.status} className="hidden sm:inline-flex" />
+        {hasChildren && <SequenceControls item={item} />}
       </span>
     </div>
   );

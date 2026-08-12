@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
@@ -344,4 +345,252 @@ func sequenceChildren(t *testing.T, pool *db.Pool, parentID string) []db.WorkIte
 		t.Fatal(err)
 	}
 	return children
+}
+
+// --- ControlSequence handler ------------------------------------------------
+
+// TestControlSequenceRejectsNonSequenceParent: ControlSequence must reject
+// a work item that is not a sequence parent — a leaf (no children) or a
+// bound-run ticket — before any action runs.
+func TestControlSequenceRejectsNonSequenceParent(t *testing.T) {
+	pool := validateParentTestPool(t)
+	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
+	projID := validateParentProject(t, ctx, pool)
+	svc := New(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	t.Run("leaf has no children", func(t *testing.T) {
+		leaf := createSequenceItem(t, pool, projID, domain.WorkItemKindTask, "Leaf", nil, nil, nil)
+		_, err := svc.ControlSequence(ctx, connect.NewRequest(&apiv1.ControlSequenceRequest{
+			Id:     leaf.ID,
+			Action: apiv1.SequenceAction_SEQUENCE_ACTION_START,
+		}))
+		if err == nil || connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("want InvalidArgument for a leaf, got %v", err)
+		}
+	})
+
+	t.Run("bound-run ticket is not a sequence parent", func(t *testing.T) {
+		wf := seedPublishedWorkflowForTest(t, pool, projID, true)
+		parent := createSequenceItem(t, pool, projID, domain.WorkItemKindEpic, "Bound Parent", nil, nil, nil)
+		_ = createSequenceItem(t, pool, projID, domain.WorkItemKindTask, "C", &parent.ID, &wf, nil)
+		// Stamp a bound run on the parent — it becomes a run ticket, not a
+		// sequence container (the engine's reconcileParent guard treats a
+		// non-empty workflow_run_id the same way).
+		setSequenceWorkItemField(t, pool, parent.ID, func(f *db.UpdateWorkItemFields) {
+			rid := "run-" + db.NewID()
+			f.WorkflowRunID = &rid
+		})
+		_, err := svc.ControlSequence(ctx, connect.NewRequest(&apiv1.ControlSequenceRequest{
+			Id:     parent.ID,
+			Action: apiv1.SequenceAction_SEQUENCE_ACTION_STOP,
+		}))
+		if err == nil || connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("want InvalidArgument for a bound-run ticket, got %v", err)
+		}
+	})
+}
+
+// TestControlSequenceStartRejectsActiveRun: START on a parent that is
+// already running is a failed precondition — an active chain must be
+// STOPped (parked) before it can be re-fired.
+func TestControlSequenceStartRejectsActiveRun(t *testing.T) {
+	pool := validateParentTestPool(t)
+	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
+	projID := validateParentProject(t, ctx, pool)
+	svc := New(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	wf := seedPublishedWorkflowForTest(t, pool, projID, true)
+
+	parent := createSequenceItem(t, pool, projID, domain.WorkItemKindEpic, "Parent", nil, nil, nil)
+	_ = createSequenceItem(t, pool, projID, domain.WorkItemKindTask, "C", &parent.ID, &wf, nil)
+	setSequenceWorkItemField(t, pool, parent.ID, func(f *db.UpdateWorkItemFields) {
+		status := domain.WorkItemRunning
+		f.Status = &status
+	})
+
+	_, err := svc.ControlSequence(ctx, connect.NewRequest(&apiv1.ControlSequenceRequest{
+		Id:     parent.ID,
+		Action: apiv1.SequenceAction_SEQUENCE_ACTION_START,
+	}))
+	if err == nil || connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("want FailedPrecondition START on running parent, got %v", err)
+	}
+}
+
+// TestControlSequenceResumeStops: a stopped (parked) parent resumes through
+// the handler's injected starter, and a running parent stops (parks) so its
+// schedule is cleared. Exercises the RPC → scheduler wiring.
+func TestControlSequenceResumeStops(t *testing.T) {
+	pool := validateParentTestPool(t)
+	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
+	projID := validateParentProject(t, ctx, pool)
+	svc := New(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	wf := seedPublishedWorkflowForTest(t, pool, projID, true)
+
+	parent := createSequenceItem(t, pool, projID, domain.WorkItemKindEpic, "Parent", nil, nil, nil)
+	c1 := createSequenceItem(t, pool, projID, domain.WorkItemKindTask, "C1", &parent.ID, &wf, nil)
+	_ = createSequenceItem(t, pool, projID, domain.WorkItemKindTask, "C2", &parent.ID, &wf, nil)
+	// Establish chain order.
+	reorderSequenceItems(t, pool, projID, parent.ID, []string{c1.ID})
+
+	// Park the parent (parent → pending, schedule cleared) via STOP.
+	svc.SetStopSequenceStarter(func(ctx context.Context, tenantID, parentID string) error {
+		stop := schedulerStop{}
+		return stop.stop(ctx, pool, tenantID, parentID)
+	})
+	svc.SetResumeSequenceStarter(func(ctx context.Context, tenantID, parentID string) error {
+		stop := schedulerStop{}
+		return stop.resume(ctx, pool, tenantID, parentID)
+	})
+	svc.SetStartSequenceStarter(func(ctx context.Context, tenantID, parentID string) error {
+		stop := schedulerStop{}
+		return stop.start(ctx, pool, tenantID, parentID)
+	})
+
+	// STOP: parent was running (armed by a prior fire) → parked pending.
+	setSequenceWorkItemField(t, pool, parent.ID, func(f *db.UpdateWorkItemFields) {
+		status := domain.WorkItemRunning
+		f.Status = &status
+		scheduled := time.Now().Add(time.Hour)
+		f.ScheduledStartAt = &scheduled
+	})
+	resp, err := svc.ControlSequence(ctx, connect.NewRequest(&apiv1.ControlSequenceRequest{
+		Id:     parent.ID,
+		Action: apiv1.SequenceAction_SEQUENCE_ACTION_STOP,
+	}))
+	if err != nil {
+		t.Fatalf("STOP: %v", err)
+	}
+	if got := resp.Msg.WorkItem.Status; got != apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING {
+		t.Errorf("parent status after STOP = %v, want pending", got)
+	}
+	got := mustGetSequenceItem(t, pool, parent.ID)
+	if got.ScheduledStartAt != nil {
+		t.Errorf("parent scheduled_start_at after STOP = %v, want cleared", got.ScheduledStartAt)
+	}
+
+	// RESUME: parked parent → running, first non-succeeded child armed.
+	resp2, err := svc.ControlSequence(ctx, connect.NewRequest(&apiv1.ControlSequenceRequest{
+		Id:     parent.ID,
+		Action: apiv1.SequenceAction_SEQUENCE_ACTION_RESUME,
+	}))
+	if err != nil {
+		t.Fatalf("RESUME: %v", err)
+	}
+	if got := resp2.Msg.WorkItem.Status; got != apiv1.WorkItemStatus_WORK_ITEM_STATUS_RUNNING {
+		t.Errorf("parent status after RESUME = %v, want running", got)
+	}
+	if got := mustGetSequenceItem(t, pool, c1.ID); got.Status != domain.WorkItemRunning {
+		t.Errorf("c1 status after RESUME = %q, want running (armed)", got.Status)
+	}
+}
+
+// schedulerStop bridges the test to the real scheduler primitives without
+// importing the scheduler package (avoids a package cycle in tests).
+type schedulerStop struct{}
+
+func (schedulerStop) stop(ctx context.Context, pool *db.Pool, tenantID, parentID string) error {
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	defer ttx.Rollback(ctx)
+	parent, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, parentID)
+	if err != nil {
+		return err
+	}
+	status := domain.WorkItemPending
+	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, parentID, parent.Version, db.UpdateWorkItemFields{
+		Status:                &status,
+		ClearScheduledStartAt: true,
+	}); err != nil {
+		return err
+	}
+	return ttx.Commit(ctx)
+}
+
+func (schedulerStop) resume(ctx context.Context, pool *db.Pool, tenantID, parentID string) error {
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	defer ttx.Rollback(ctx)
+	parent, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, parentID)
+	if err != nil {
+		return err
+	}
+	status := domain.WorkItemRunning
+	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, parentID, parent.Version, db.UpdateWorkItemFields{
+		Status: &status,
+	}); err != nil {
+		return err
+	}
+	children, err := db.ListDirectChildren(ctx, ttx.Tx, tenantID, parentID)
+	if err != nil {
+		return err
+	}
+	for _, c := range children {
+		if c.Status != domain.WorkItemSucceeded {
+			s := domain.WorkItemRunning
+			if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, c.ID, c.Version, db.UpdateWorkItemFields{
+				Status: &s,
+			}); err != nil {
+				return err
+			}
+			break
+		}
+	}
+	return ttx.Commit(ctx)
+}
+
+func (schedulerStop) start(ctx context.Context, pool *db.Pool, tenantID, parentID string) error {
+	// Unused by the test — present so SetStartSequenceStarter is satisfied
+	// for the (unused) START path; it must not panic.
+	return nil
+}
+
+func setSequenceWorkItemField(t *testing.T, pool *db.Pool, id string, apply func(f *db.UpdateWorkItemFields)) {
+	t.Helper()
+	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
+	ttx, err := pool.BeginTenantTx(ctx, validateParentTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ttx.Rollback(ctx)
+	w, err := db.GetWorkItem(ctx, ttx.Tx, validateParentTestTenant, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := db.UpdateWorkItemFields{}
+	apply(&f)
+	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, validateParentTestTenant, id, w.Version, f); err != nil {
+		t.Fatal(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func reorderSequenceItems(t *testing.T, pool *db.Pool, projID, parentID string, ordered []string) {
+	t.Helper()
+	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
+	ttx, err := pool.BeginTenantTx(ctx, validateParentTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ttx.Rollback(ctx)
+	for i, id := range ordered {
+		w, err := db.GetWorkItem(ctx, ttx.Tx, validateParentTestTenant, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		o := float64(i + 1)
+		if _, err := db.UpdateWorkItem(ctx, ttx.Tx, validateParentTestTenant, id, w.Version, db.UpdateWorkItemFields{
+			SortOrder: &o,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
 }
