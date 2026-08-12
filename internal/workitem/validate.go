@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
@@ -34,11 +35,11 @@ import (
 
 // Input size bounds (AGENTS.md security standards).
 const (
-	maxTitleLen       = 500
-	maxDescLen        = 1 << 20 // 1 MiB — descriptions can be large
-	maxBudgetsLen     = 1 << 20
-	maxWorkerRefLen   = 1 << 14
-	maxProjectIDLen   = 200
+	maxTitleLen     = 500
+	maxDescLen      = 1 << 20 // 1 MiB — descriptions can be large
+	maxBudgetsLen   = 1 << 20
+	maxWorkerRefLen = 1 << 14
+	maxProjectIDLen = 200
 )
 
 // kindOrder maps a kind to its depth in the hierarchy (1-4). Used to
@@ -397,4 +398,212 @@ func workflowHasSteps(ctx context.Context, tx pgx.Tx, tenantID string, wf db.Wor
 		}
 	}
 	return len(steps) > 0
+}
+
+// validFrequencies is the set of allowed recurring schedule frequencies.
+var validFrequencies = map[string]bool{
+	"minute":  true,
+	"hourly":  true,
+	"daily":   true,
+	"weekly":  true,
+	"monthly": true,
+}
+
+// validDays is the set of allowed day names for weekly schedules.
+var validDays = map[string]bool{
+	"Mon": true, "Tue": true, "Wed": true, "Thu": true,
+	"Fri": true, "Sat": true, "Sun": true,
+}
+
+// recurringScheduleJSON is the JSON shape stored in the recurring_schedule
+// JSONB column. It mirrors the proto RecurringSchedule for DB round-tripping.
+type recurringScheduleJSON struct {
+	Frequency string   `json:"frequency"`
+	Interval  int      `json:"interval"`
+	Days      []string `json:"days"`
+	StartDate string   `json:"start_date"`
+	StartTime string   `json:"start_time"`
+}
+
+// IsRecurringScheduleEmpty reports whether a non-nil RecurringSchedule has all
+// zero-value fields, which the API contract treats as "clear the schedule".
+func IsRecurringScheduleEmpty(msg *apiv1.RecurringSchedule) bool {
+	if msg == nil {
+		return false
+	}
+	return strings.TrimSpace(msg.Frequency) == "" &&
+		msg.Interval == 0 &&
+		len(msg.Days) == 0 &&
+		strings.TrimSpace(msg.StartDate) == "" &&
+		strings.TrimSpace(msg.StartTime) == ""
+}
+
+// ValidateRecurringSchedule validates a proto RecurringSchedule message and
+// returns its JSONB representation. Returns nil, nil when the input is nil
+// (not recurring). Exported so the Ask Orchicon MCP tools share the API's
+// boundary validation (AGENTS.md Ask-Orchicon-sync rule).
+func ValidateRecurringSchedule(msg *apiv1.RecurringSchedule) ([]byte, error) {
+	if msg == nil {
+		return nil, nil
+	}
+	freq := strings.ToLower(strings.TrimSpace(msg.Frequency))
+	if !validFrequencies[freq] {
+		return nil, fmt.Errorf("recurring_schedule.frequency must be one of minute, hourly, daily, weekly, monthly; got %q", msg.Frequency)
+	}
+	if msg.Interval < 1 {
+		return nil, fmt.Errorf("recurring_schedule.interval must be >= 1; got %d", msg.Interval)
+	}
+	days := make([]string, 0, len(msg.Days))
+	for _, d := range msg.Days {
+		d = strings.TrimSpace(d)
+		if d == "" {
+			continue
+		}
+		if !validDays[d] {
+			return nil, fmt.Errorf("recurring_schedule.days contains invalid day %q; must be one of Mon, Tue, Wed, Thu, Fri, Sat, Sun", d)
+		}
+		days = append(days, d)
+	}
+	startDate := strings.TrimSpace(msg.StartDate)
+	if startDate == "" {
+		return nil, errors.New("recurring_schedule.start_date must not be empty")
+	}
+	if _, err := time.Parse("2006-01-02", startDate); err != nil {
+		return nil, fmt.Errorf("recurring_schedule.start_date must be YYYY-MM-DD; got %q", startDate)
+	}
+	startTime := strings.TrimSpace(msg.StartTime)
+	if startTime == "" {
+		return nil, errors.New("recurring_schedule.start_time must not be empty")
+	}
+	if _, err := time.Parse("15:04", startTime); err != nil {
+		return nil, fmt.Errorf("recurring_schedule.start_time must be HH:MM; got %q", startTime)
+	}
+	schedule := recurringScheduleJSON{
+		Frequency: freq,
+		Interval:  int(msg.Interval),
+		Days:      days,
+		StartDate: startDate,
+		StartTime: startTime,
+	}
+	b, err := json.Marshal(schedule)
+	if err != nil {
+		return nil, fmt.Errorf("recurring_schedule: marshal: %w", err)
+	}
+	return b, nil
+}
+
+// ComputeNextRunAt computes the first occurrence of a recurring schedule
+// that is >= the given "now" time. The start_date + start_time define the
+// anchor; the frequency/interval/days define the cadence. Returns nil when
+// the schedule is nil (not recurring).
+func ComputeNextRunAt(schedule *apiv1.RecurringSchedule, now time.Time) *time.Time {
+	if schedule == nil {
+		return nil
+	}
+	startDate := strings.TrimSpace(schedule.StartDate)
+	startTime := strings.TrimSpace(schedule.StartTime)
+	anchor, err := time.Parse("2006-01-02 15:04", startDate+" "+startTime)
+	if err != nil {
+		return nil
+	}
+	freq := strings.ToLower(strings.TrimSpace(schedule.Frequency))
+	interval := int(schedule.Interval)
+	if interval < 1 {
+		interval = 1
+	}
+
+	// For weekly frequency with a days list, walk day-by-day so we hit
+	// every selected weekday within each cadence week. The previous
+	// approach (7*interval-day jumps from the anchor) only ever landed on
+	// the anchor's weekday, skipping all other selected days.
+	if freq == "weekly" && len(schedule.Days) > 0 {
+		cadenceDays := 7 * interval
+		anchorWeekday := int(anchor.Weekday())
+		// Precompute valid day offsets from the anchor's weekday.
+		// For each selected day, the offset is the number of days after
+		// the anchor's weekday within the same cadence week.
+		validOffsets := make(map[int]bool)
+		for _, d := range schedule.Days {
+			wd := weekdayOffset(d)
+			offset := (wd - anchorWeekday + 7) % 7
+			validOffsets[offset] = true
+		}
+		candidate := anchor
+		for i := 0; i < 1000; i++ {
+			if !candidate.Before(now) {
+				daysSinceAnchor := int(candidate.Sub(anchor).Hours() / 24)
+				if daysSinceAnchor >= 0 && validOffsets[daysSinceAnchor%cadenceDays] {
+					return &candidate
+				}
+			}
+			candidate = candidate.AddDate(0, 0, 1)
+		}
+		// Fallback: return the anchor even though it may be in the past.
+		return &anchor
+	}
+
+	// Walk forward from the anchor until we find a time >= now.
+	// Cap at 1000 iterations to prevent infinite loops on degenerate inputs.
+	candidate := anchor
+	for i := 0; i < 1000; i++ {
+		if !candidate.Before(now) {
+			return &candidate
+		}
+		candidate = advanceTime(candidate, freq, interval)
+	}
+	// Fallback: return the anchor even though it's in the past.
+	return &anchor
+}
+
+// dayMatches reports whether the given time's weekday is in the allowed set.
+func dayMatches(t time.Time, days []string) bool {
+	weekday := t.Weekday().String()[:3] // "Mon", "Tue", etc.
+	for _, d := range days {
+		if d == weekday {
+			return true
+		}
+	}
+	return false
+}
+
+// weekdayOffset returns Go's native weekday number (0=Sun, 1=Mon, … 6=Sat)
+// for a three-letter day name. This matches time.Weekday so offset
+// calculations against anchor.Weekday() are consistent.
+func weekdayOffset(day string) int {
+	switch day {
+	case "Sun":
+		return 0
+	case "Mon":
+		return 1
+	case "Tue":
+		return 2
+	case "Wed":
+		return 3
+	case "Thu":
+		return 4
+	case "Fri":
+		return 5
+	case "Sat":
+		return 6
+	default:
+		return 0
+	}
+}
+
+// advanceTime moves the candidate forward by one step of the given frequency.
+func advanceTime(t time.Time, freq string, interval int) time.Time {
+	switch freq {
+	case "minute":
+		return t.Add(time.Duration(interval) * time.Minute)
+	case "hourly":
+		return t.Add(time.Duration(interval) * time.Hour)
+	case "daily":
+		return t.AddDate(0, 0, interval)
+	case "weekly":
+		return t.AddDate(0, 0, 7*interval)
+	case "monthly":
+		return t.AddDate(0, interval, 0)
+	default:
+		return t.AddDate(0, 0, interval)
+	}
 }

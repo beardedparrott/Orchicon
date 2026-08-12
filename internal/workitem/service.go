@@ -171,9 +171,23 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		workflowID = "" // keep empty for unbound items
 	}
 
+	// Parse and validate recurring schedule (if provided).
+	recurringSchedule, err := ValidateRecurringSchedule(msg.RecurringSchedule)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	status := domain.WorkItemPending
 	if scheduledStartAt != nil {
 		status = domain.WorkItemScheduled
+	}
+	if recurringSchedule != nil {
+		status = domain.WorkItemRecurring
+	}
+	now := time.Now().UTC()
+	var nextRunAt *time.Time
+	if recurringSchedule != nil {
+		nextRunAt = ComputeNextRunAt(msg.RecurringSchedule, now)
 	}
 	row := db.WorkItemRow{
 		ID:                 db.NewID(),
@@ -192,6 +206,8 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		ScheduledStartAt:   scheduledStartAt,
 		AutoStartWorkflow:  autoStart,
 		ContextFiles:       contextFiles,
+		RecurringSchedule:  recurringSchedule,
+		NextRunAt:          nextRunAt,
 	}
 	// Stamp the runtime image: the caller's choice wins; empty = the base
 	// image (resolved from the daemon). The value is stored concretely so
@@ -381,6 +397,24 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 			fields.ClearScheduledStartAt = true
 		}
 	}
+	// Parse and validate recurring schedule (if provided). Setting a
+	// recurring schedule flips the item to "recurring" status; setting
+	// status to anything OTHER than "recurring" clears the schedule.
+	// An empty but present message (proto3 "clear" semantics) sets the
+	// clear flag instead of running validation.
+	if msg.RecurringSchedule != nil {
+		if IsRecurringScheduleEmpty(msg.RecurringSchedule) {
+			fields.ClearRecurringSchedule = true
+		} else {
+			recurringSchedule, err := ValidateRecurringSchedule(msg.RecurringSchedule)
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			}
+			fields.RecurringSchedule = &recurringSchedule
+			nextRunAt := ComputeNextRunAt(msg.RecurringSchedule, time.Now().UTC())
+			fields.NextRunAt = nextRunAt
+		}
+	}
 	if msg.WorkflowRunId != nil {
 		v := *msg.WorkflowRunId
 		fields.WorkflowRunID = &v
@@ -542,6 +576,9 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		if kindSwitchPlan.ClearScheduledStartAt {
 			fields.ClearScheduledStartAt = true
 		}
+		if kindSwitchPlan.ClearRecurringSchedule {
+			fields.ClearRecurringSchedule = true
+		}
 	}
 	// Saving a scheduled start flips the item to "scheduled" (ADR-001 in
 	// architecture-notes/running-workflows-not-showing-in-schedules.md).
@@ -556,6 +593,30 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		!(kindSwitchPlan != nil && kindSwitchPlan.ClearScheduledStartAt) {
 		fields.Status = strPtr(domain.WorkItemScheduled)
 	}
+	// Setting a recurring schedule flips the item to "recurring" status.
+	// Applied AFTER the kind-switch plan so a switch to a non-schedulable
+	// kind (which clears the schedule and demotes status to pending) always
+	// wins. Guarded against in-flight runs: flipping a running item would
+	// misstate an in-flight run. Clearing a schedule (form omits the field)
+	// never triggers the flip.
+	if msg.RecurringSchedule != nil &&
+		!IsActiveRunStatus(current.Status) &&
+		!(kindSwitchPlan != nil && kindSwitchPlan.ClearRecurringSchedule) {
+		fields.Status = strPtr(domain.WorkItemRecurring)
+	}
+	// Switching status to anything OTHER than "recurring" clears the
+	// recurring schedule and next_run_at. This mirrors the
+	// ClearScheduledStartAt semantics for scheduled_start_at. The clear
+	// only fires when the request explicitly sets status AND the new
+	// status is not recurring AND the item currently has a schedule.
+	if fields.Status != nil && *fields.Status != domain.WorkItemRecurring && current.RecurringSchedule != nil {
+		fields.ClearRecurringSchedule = true
+	}
+	// Also clear recurring schedule when status is not being set at all
+	// but the request explicitly clears it via empty RecurringSchedule.
+	// The empty-message detection above sets ClearRecurringSchedule; this
+	// block catches the case where status is not changing but the schedule
+	// still needs to be cleared.
 	// Schedule-time validation (architecture-notes §3): scheduling or
 	// auto-starting runs the subtree validation — a parent WITH children is
 	// a sequence (the subtree must be executable: every leaf bound to a
@@ -925,15 +986,10 @@ func (s *Service) UnassignWorker(ctx context.Context, req *connect.Request[apiv1
 	const q = `UPDATE work_items
 		SET assigned_worker_ref = NULL, updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
-		RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
-			acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
-			priority, budgets, context_window, sort_order, results, prompt_context, context_files, version, created_at, updated_at`
+		RETURNING ` + db.WorkItemSelectCols
 	var updated db.WorkItemRow
 	err = ttx.Tx.QueryRow(ctx, q, tenantID, req.Msg.Id, current.Version).Scan(
-		&updated.ID, &updated.TenantID, &updated.ProjectID, &updated.ParentID, &updated.Kind, &updated.Title,
-		&updated.Description, &updated.AcceptanceCriteria, &updated.AcceptanceReview, &updated.Status, &updated.AssignedWorkerRef,
-		&updated.WorkflowID, &updated.Priority, &updated.Budgets, &updated.ContextWindow, &updated.SortOrder, &updated.Results,
-		&updated.PromptContext, &updated.ContextFiles, &updated.Version, &updated.CreatedAt, &updated.UpdatedAt,
+		db.WorkItemScanPtrs(&updated)...,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("work item not found"))
@@ -1446,6 +1502,15 @@ func rowToProto(w db.WorkItemRow) *apiv1.WorkItem {
 	p.RuntimeImage = w.RuntimeImage
 	if w.SortOrder != nil {
 		p.SortOrder = *w.SortOrder
+	}
+	if len(w.RecurringSchedule) > 0 {
+		var rs apiv1.RecurringSchedule
+		if err := json.Unmarshal(w.RecurringSchedule, &rs); err == nil {
+			p.RecurringSchedule = &rs
+		}
+	}
+	if w.NextRunAt != nil {
+		p.NextRunAt = timestamppb.New(*w.NextRunAt)
 	}
 	return p
 }

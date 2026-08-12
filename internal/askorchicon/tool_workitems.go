@@ -665,15 +665,10 @@ func toolUnassignWorker(ctx context.Context, pool *db.Pool, args json.RawMessage
 	const q = `UPDATE work_items
 		SET assigned_worker_ref = NULL, updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
-		RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
-			acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
-			priority, budgets, context_window, results, prompt_context, context_files, version, created_at, updated_at`
+		RETURNING ` + db.WorkItemSelectCols
 	var updated db.WorkItemRow
 	err = ttx.Tx.QueryRow(ctx, q, tenantID, params.ID, current.Version).Scan(
-		&updated.ID, &updated.TenantID, &updated.ProjectID, &updated.ParentID, &updated.Kind, &updated.Title,
-		&updated.Description, &updated.AcceptanceCriteria, &updated.AcceptanceReview, &updated.Status, &updated.AssignedWorkerRef,
-		&updated.WorkflowID, &updated.Priority, &updated.Budgets, &updated.ContextWindow, &updated.Results,
-		&updated.PromptContext, &updated.ContextFiles, &updated.Version, &updated.CreatedAt, &updated.UpdatedAt,
+		db.WorkItemScanPtrs(&updated)...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("db: unassign worker: %w", err)
