@@ -12,6 +12,7 @@
 
 | # | Type | Phase | Summary |
 |---|---|---|---|
+| 145 | Docs | Repo | Add AGENTS.md reminder that PRs must explicitly target `develop` (base defaults to `main` now that it is the default branch). |
 | 144 | Chore | Repo | Flip GitHub default branch to `main`; update AGENTS.md + CLOUDFLARE_SETUP.md default-branch references. Branch protection unchanged on both branches. |
 | 143 | Feature | UI | Add category folders for workers and workflows — localStorage-backed collapsible folder groups with rename, delete, description editing, and "New Category" dialog. All items seeded into "Software Development" on first load; folders collapsed by default. |
 | 142 | Feature | DB | Forward-only migration adding recurring-schedule storage to `work_items`: `recurring_schedule` (JSONB, `{frequency, interval, days[], start_date, start_time}`) + `next_run_at` (TIMESTAMPTZ, computed next occurrence for the scheduler due-scan), with `COMMENT ON COLUMN` for both and a partial `idx_work_items_tenant_next_run_at` index on `(tenant_id, next_run_at) WHERE next_run_at IS NOT NULL`. Same table, so no new RLS policy; hand-written per the additive convention (patterned after `work_item_scheduled_start` / `work_items_sort_order`), `make migrate-hash` rehashed `atlas.sum`. Verified the migration runner applies it on a fresh DB with both columns + index present. |
