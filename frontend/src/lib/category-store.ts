@@ -74,6 +74,10 @@ function parseEnvelope<T>(key: string): T | undefined {
   }
 }
 
+function hasEnvelope(key: string): boolean {
+  return readRaw(key) !== null;
+}
+
 function writeEnvelope(key: string, value: object): void {
   writeRaw(key, JSON.stringify({ v: VERSION, ...value }));
 }
@@ -121,12 +125,12 @@ export function seedAssignments(
   page: CategoryPage,
   entityIds: string[],
 ): CategoryState {
-  const existing = loadCategoryState(page);
   // Only seed when no localStorage envelope exists (first load).
   // Never re-assign items that lost their assignment (e.g. after
-  // deleting a category) — they stay in Uncategorized.
-  if (Object.keys(existing.assignments).length > 0) {
-    return existing;
+  // deleting a category) — they stay in Uncategorized even if
+  // the assignments object is empty.
+  if (hasEnvelope(`${PREFIX}${page}`)) {
+    return loadCategoryState(page);
   }
   // First load: assign everything to Software Development
   const assignments: Record<string, string> = {};
