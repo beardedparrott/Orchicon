@@ -498,29 +498,29 @@ function WorkItemDetailPage() {
                   }}
                   className="rounded-md border bg-background px-2 py-1 text-sm"
                 >
-                  <option value={1}>pending</option>
-                  <option value={2}>ready</option>
-                  <option value={3}>assigned</option>
-                  <option value={4}>running</option>
-                  <option value={6}>succeeded</option>
-                  <option value={7}>failed</option>
-                  <option value={8}>cancelled</option>
-                  <option value={9}>recovering</option>
-                  <option value={10}>scheduled</option>
-                  <option value={11}>recurring</option>
+                  <option value={WorkItemStatus.PENDING}>pending</option>
+                  <option value={WorkItemStatus.READY}>ready</option>
+                  <option value={WorkItemStatus.ASSIGNED}>assigned</option>
+                  <option value={WorkItemStatus.RUNNING}>running</option>
+                  <option value={WorkItemStatus.SUCCEEDED}>succeeded</option>
+                  <option value={WorkItemStatus.FAILED}>failed</option>
+                  <option value={WorkItemStatus.CANCELLED}>cancelled</option>
+                  <option value={WorkItemStatus.RECOVERING}>recovering</option>
+                  <option value={WorkItemStatus.SCHEDULED}>scheduled</option>
+                  <option value={WorkItemStatus.RECURRING}>recurring</option>
                 </select>
               ) : (
                 ({
-                  1: "pending",
-                  10: "scheduled",
-                  2: "ready",
-                  3: "assigned",
-                  4: "running",
-                  6: "succeeded",
-                  7: "failed",
-                  8: "cancelled",
-                  9: "recovering",
-                  11: "recurring",
+                  [WorkItemStatus.PENDING]: "pending",
+                  [WorkItemStatus.SCHEDULED]: "scheduled",
+                  [WorkItemStatus.READY]: "ready",
+                  [WorkItemStatus.ASSIGNED]: "assigned",
+                  [WorkItemStatus.RUNNING]: "running",
+                  [WorkItemStatus.SUCCEEDED]: "succeeded",
+                  [WorkItemStatus.FAILED]: "failed",
+                  [WorkItemStatus.CANCELLED]: "cancelled",
+                  [WorkItemStatus.RECOVERING]: "recovering",
+                  [WorkItemStatus.RECURRING]: "recurring",
                 } as Record<number, string>)[item.status] ?? "unknown"
               )}
             </CardTitle>
@@ -546,10 +546,10 @@ function WorkItemDetailPage() {
                   }
                   className="rounded-md border bg-background px-2 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <option value={1}>Epic</option>
-                  <option value={2}>Feature</option>
-                  <option value={3}>Task</option>
-                  <option value={4}>Subtask</option>
+                  <option value={WorkItemKind.EPIC}>Epic</option>
+                  <option value={WorkItemKind.FEATURE}>Feature</option>
+                  <option value={WorkItemKind.TASK}>Task</option>
+                  <option value={WorkItemKind.SUBTASK}>Subtask</option>
                 </select>
               ) : (
                 <span className="inline-flex items-center gap-2">
