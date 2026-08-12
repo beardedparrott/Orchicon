@@ -512,21 +512,29 @@ func ComputeNextRunAt(schedule *apiv1.RecurringSchedule, now time.Time) *time.Ti
 		interval = 1
 	}
 
-	// For weekly frequency with a days list, walk day-by-day so we hit
-	// every selected weekday within each cadence week. The previous
-	// approach (7*interval-day jumps from the anchor) only ever landed on
-	// the anchor's weekday, skipping all other selected days.
-	if freq == "weekly" && len(schedule.Days) > 0 {
+	// For weekly frequency, walk day-by-day so we hit every selected
+	// weekday within each cadence week. Empty days means "every day"
+	// (all 7 weekdays are valid). The previous approach (7*interval-day
+	// jumps from the anchor) only ever landed on the anchor's weekday,
+	// skipping all other selected days.
+	if freq == "weekly" {
 		cadenceDays := 7 * interval
 		anchorWeekday := int(anchor.Weekday())
 		// Precompute valid day offsets from the anchor's weekday.
 		// For each selected day, the offset is the number of days after
 		// the anchor's weekday within the same cadence week.
 		validOffsets := make(map[int]bool)
-		for _, d := range schedule.Days {
-			wd := weekdayOffset(d)
-			offset := (wd - anchorWeekday + 7) % 7
-			validOffsets[offset] = true
+		if len(schedule.Days) == 0 {
+			// Empty days = every day of the week.
+			for i := 0; i < 7; i++ {
+				validOffsets[i] = true
+			}
+		} else {
+			for _, d := range schedule.Days {
+				wd := weekdayOffset(d)
+				offset := (wd - anchorWeekday + 7) % 7
+				validOffsets[offset] = true
+			}
 		}
 		candidate := anchor
 		for i := 0; i < 1000; i++ {

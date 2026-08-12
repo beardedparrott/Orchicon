@@ -757,6 +757,49 @@ func TestComputeNextRunAt_WeeklyWithDays_WrongAnchorDay(t *testing.T) {
 	}
 }
 
+func TestComputeNextRunAt_WeeklyEmptyDays_Daily(t *testing.T) {
+	// Anchor Mon 08-10, empty days = every day, interval=1.
+	// now=Tue 08-11 08:00. Tue 08-11 09:00 is >= now and is day offset 1
+	// from anchor (valid since all offsets are valid with empty days).
+	now := time.Date(2026, 8, 11, 8, 0, 0, 0, time.UTC) // Tue 08:00
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "weekly",
+		Interval:  1,
+		StartDate: "2026-08-10",
+		StartTime: "09:00",
+	}
+	got := ComputeNextRunAt(msg, now)
+	if got == nil {
+		t.Fatal("expected non-nil next run")
+	}
+	expected := time.Date(2026, 8, 11, 9, 0, 0, 0, time.UTC) // Tue 08-11
+	if !got.Equal(expected) {
+		t.Errorf("expected %v, got %v", expected, got)
+	}
+}
+
+func TestComputeNextRunAt_WeeklyEmptyDays_Biweekly(t *testing.T) {
+	// Anchor Mon 08-10, empty days = every day, interval=2 (every 14 days).
+	// now=Sat 08-15 08:00. Anchor weekday Mon (offset 0). Day offset 5
+	// (Sat) from anchor: 5%14=5, valid (all offsets valid).
+	now := time.Date(2026, 8, 15, 8, 0, 0, 0, time.UTC) // Sat 08:00
+	msg := &apiv1.RecurringSchedule{
+		Frequency: "weekly",
+		Interval:  2,
+		StartDate: "2026-08-10",
+		StartTime: "09:00",
+	}
+	got := ComputeNextRunAt(msg, now)
+	if got == nil {
+		t.Fatal("expected non-nil next run")
+	}
+	// Sat 08-15 is 5 days from anchor, cadenceDays=14, 5%14=5, valid.
+	expected := time.Date(2026, 8, 15, 9, 0, 0, 0, time.UTC) // Sat 08-15
+	if !got.Equal(expected) {
+		t.Errorf("expected %v, got %v", expected, got)
+	}
+}
+
 // --- Blocker 1 regression test: IsRecurringScheduleEmpty ---
 
 func TestIsRecurringScheduleEmpty(t *testing.T) {

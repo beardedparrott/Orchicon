@@ -171,7 +171,12 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		workflowID = "" // keep empty for unbound items
 	}
 
-	// Parse and validate recurring schedule (if provided).
+	// Parse and validate recurring schedule (if provided). An empty but
+	// present message (proto3 "clear" semantics) is normalized to nil
+	// before validation — same treatment as UpdateWorkItem.
+	if msg.RecurringSchedule != nil && IsRecurringScheduleEmpty(msg.RecurringSchedule) {
+		msg.RecurringSchedule = nil
+	}
 	recurringSchedule, err := ValidateRecurringSchedule(msg.RecurringSchedule)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
@@ -600,6 +605,7 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	// misstate an in-flight run. Clearing a schedule (form omits the field)
 	// never triggers the flip.
 	if msg.RecurringSchedule != nil &&
+		!IsRecurringScheduleEmpty(msg.RecurringSchedule) &&
 		!IsActiveRunStatus(current.Status) &&
 		!(kindSwitchPlan != nil && kindSwitchPlan.ClearRecurringSchedule) {
 		fields.Status = strPtr(domain.WorkItemRecurring)
@@ -611,6 +617,15 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	// status is not recurring AND the item currently has a schedule.
 	if fields.Status != nil && *fields.Status != domain.WorkItemRecurring && current.RecurringSchedule != nil {
 		fields.ClearRecurringSchedule = true
+	}
+	// Demote to pending when the recurring schedule is cleared (via empty
+	// message) and the item is currently recurring, and no explicit status
+	// is being set in this request. Mirrors ClearScheduledStartAt handling.
+	if fields.ClearRecurringSchedule &&
+		current.Status == domain.WorkItemRecurring &&
+		fields.Status == nil {
+		s := domain.WorkItemPending
+		fields.Status = &s
 	}
 	// Also clear recurring schedule when status is not being set at all
 	// but the request explicitly clears it via empty RecurringSchedule.
