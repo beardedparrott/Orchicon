@@ -396,12 +396,17 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	scheduledRunRec.SetSequenceStarter(func(ctx context.Context, tenantID, parentID string) error {
 		return scheduler.StartSequence(ctx, pool, log, tenantID, parentID, startWorkflowFn)
 	})
+	recurringFireRec := scheduler.NewRecurringFireReconciler(pool, log, startWorkflowFn)
+	recurringFireRec.SetSequenceStarter(func(ctx context.Context, tenantID, parentID string) error {
+		return scheduler.StartSequence(ctx, pool, log, tenantID, parentID, startWorkflowFn)
+	})
 	s.rcmgr = reconciler.NewManager(pool, log)
 	s.rcmgr.Register(taskRec)
 	s.rcmgr.Register(workflowRec)
 	s.rcmgr.Register(recoveryRec)
 	s.rcmgr.Register(scheduledRunRec)
 	s.rcmgr.Register(sequenceRec)
+	s.rcmgr.Register(recurringFireRec)
 	// Wire the sequence notifier: when a bound child work item reaches a
 	// terminal state, advance its parent's chain immediately (the scan
 	// pass every 200ms is the safety net).
