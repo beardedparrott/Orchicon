@@ -78,6 +78,9 @@ const (
 	// WorkItemServiceReorderWorkItemsProcedure is the fully-qualified name of the WorkItemService's
 	// ReorderWorkItems RPC.
 	WorkItemServiceReorderWorkItemsProcedure = "/orchicon.api.v1.WorkItemService/ReorderWorkItems"
+	// WorkItemServiceControlSequenceProcedure is the fully-qualified name of the WorkItemService's
+	// ControlSequence RPC.
+	WorkItemServiceControlSequenceProcedure = "/orchicon.api.v1.WorkItemService/ControlSequence"
 )
 
 // WorkItemServiceClient is a client for the orchicon.api.v1.WorkItemService service.
@@ -120,6 +123,16 @@ type WorkItemServiceClient interface {
 	// derived from sort_order at reconcile time, so a mid-run drag shifts
 	// only future arming.
 	ReorderWorkItems(context.Context, *connect.Request[v1.ReorderWorkItemsRequest]) (*connect.Response[v1.ReorderWorkItemsResponse], error)
+	// ControlSequence drives a sequence parent manually (START / RESUME /
+	// STOP). A parent with children IS a sequence run; these explicit
+	// gestures are what the engine's derived cursor cannot infer on its own:
+	//   - START re-fires the chain from child #1 (destructive — every
+	//     descendant resets to pending); validations + in-flight guards run
+	//     server-side.
+	//   - RESUME continues from the first non-succeeded child (keeps state).
+	//   - STOP parks the chain (parent → pending, schedule cleared) so
+	//     children can be run standalone.
+	ControlSequence(context.Context, *connect.Request[v1.ControlSequenceRequest]) (*connect.Response[v1.ControlSequenceResponse], error)
 }
 
 // NewWorkItemServiceClient constructs a client for the orchicon.api.v1.WorkItemService service. By
@@ -205,6 +218,12 @@ func NewWorkItemServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workItemServiceMethods.ByName("ReorderWorkItems")),
 			connect.WithClientOptions(opts...),
 		),
+		controlSequence: connect.NewClient[v1.ControlSequenceRequest, v1.ControlSequenceResponse](
+			httpClient,
+			baseURL+WorkItemServiceControlSequenceProcedure,
+			connect.WithSchema(workItemServiceMethods.ByName("ControlSequence")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -222,6 +241,7 @@ type workItemServiceClient struct {
 	assignWorker       *connect.Client[v1.AssignWorkerRequest, v1.AssignWorkerResponse]
 	unassignWorker     *connect.Client[v1.UnassignWorkerRequest, v1.UnassignWorkerResponse]
 	reorderWorkItems   *connect.Client[v1.ReorderWorkItemsRequest, v1.ReorderWorkItemsResponse]
+	controlSequence    *connect.Client[v1.ControlSequenceRequest, v1.ControlSequenceResponse]
 }
 
 // CreateWorkItem calls orchicon.api.v1.WorkItemService.CreateWorkItem.
@@ -284,6 +304,11 @@ func (c *workItemServiceClient) ReorderWorkItems(ctx context.Context, req *conne
 	return c.reorderWorkItems.CallUnary(ctx, req)
 }
 
+// ControlSequence calls orchicon.api.v1.WorkItemService.ControlSequence.
+func (c *workItemServiceClient) ControlSequence(ctx context.Context, req *connect.Request[v1.ControlSequenceRequest]) (*connect.Response[v1.ControlSequenceResponse], error) {
+	return c.controlSequence.CallUnary(ctx, req)
+}
+
 // WorkItemServiceHandler is an implementation of the orchicon.api.v1.WorkItemService service.
 type WorkItemServiceHandler interface {
 	// CreateWorkItem creates a new work item (epic/feature/task/subtask)
@@ -324,6 +349,16 @@ type WorkItemServiceHandler interface {
 	// derived from sort_order at reconcile time, so a mid-run drag shifts
 	// only future arming.
 	ReorderWorkItems(context.Context, *connect.Request[v1.ReorderWorkItemsRequest]) (*connect.Response[v1.ReorderWorkItemsResponse], error)
+	// ControlSequence drives a sequence parent manually (START / RESUME /
+	// STOP). A parent with children IS a sequence run; these explicit
+	// gestures are what the engine's derived cursor cannot infer on its own:
+	//   - START re-fires the chain from child #1 (destructive — every
+	//     descendant resets to pending); validations + in-flight guards run
+	//     server-side.
+	//   - RESUME continues from the first non-succeeded child (keeps state).
+	//   - STOP parks the chain (parent → pending, schedule cleared) so
+	//     children can be run standalone.
+	ControlSequence(context.Context, *connect.Request[v1.ControlSequenceRequest]) (*connect.Response[v1.ControlSequenceResponse], error)
 }
 
 // NewWorkItemServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -405,6 +440,12 @@ func NewWorkItemServiceHandler(svc WorkItemServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workItemServiceMethods.ByName("ReorderWorkItems")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workItemServiceControlSequenceHandler := connect.NewUnaryHandler(
+		WorkItemServiceControlSequenceProcedure,
+		svc.ControlSequence,
+		connect.WithSchema(workItemServiceMethods.ByName("ControlSequence")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/orchicon.api.v1.WorkItemService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case WorkItemServiceCreateWorkItemProcedure:
@@ -431,6 +472,8 @@ func NewWorkItemServiceHandler(svc WorkItemServiceHandler, opts ...connect.Handl
 			workItemServiceUnassignWorkerHandler.ServeHTTP(w, r)
 		case WorkItemServiceReorderWorkItemsProcedure:
 			workItemServiceReorderWorkItemsHandler.ServeHTTP(w, r)
+		case WorkItemServiceControlSequenceProcedure:
+			workItemServiceControlSequenceHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -486,4 +529,8 @@ func (UnimplementedWorkItemServiceHandler) UnassignWorker(context.Context, *conn
 
 func (UnimplementedWorkItemServiceHandler) ReorderWorkItems(context.Context, *connect.Request[v1.ReorderWorkItemsRequest]) (*connect.Response[v1.ReorderWorkItemsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkItemService.ReorderWorkItems is not implemented"))
+}
+
+func (UnimplementedWorkItemServiceHandler) ControlSequence(context.Context, *connect.Request[v1.ControlSequenceRequest]) (*connect.Response[v1.ControlSequenceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkItemService.ControlSequence is not implemented"))
 }

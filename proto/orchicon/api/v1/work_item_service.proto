@@ -64,6 +64,25 @@ service WorkItemService {
   // derived from sort_order at reconcile time, so a mid-run drag shifts
   // only future arming.
   rpc ReorderWorkItems(ReorderWorkItemsRequest) returns (ReorderWorkItemsResponse);
+
+  // ControlSequence drives a sequence parent manually (START / RESUME /
+  // STOP). A parent with children IS a sequence run; these explicit
+  // gestures are what the engine's derived cursor cannot infer on its own:
+  //   - START re-fires the chain from child #1 (destructive — every
+  //     descendant resets to pending); validations + in-flight guards run
+  //     server-side.
+  //   - RESUME continues from the first non-succeeded child (keeps state).
+  //   - STOP parks the chain (parent → pending, schedule cleared) so
+  //     children can be run standalone.
+  rpc ControlSequence(ControlSequenceRequest) returns (ControlSequenceResponse);
+}
+
+// SequenceAction enumerates the manual sequence control gestures.
+enum SequenceAction {
+  SEQUENCE_ACTION_UNSPECIFIED = 0;
+  SEQUENCE_ACTION_START = 1; // re-fire the chain from child #1 (destructive)
+  SEQUENCE_ACTION_RESUME = 2; // continue from the first non-succeeded child
+  SEQUENCE_ACTION_STOP = 3; // park the chain (parent → pending, schedule cleared)
 }
 
 message CreateWorkItemRequest {
@@ -227,4 +246,13 @@ message ReorderWorkItemsRequest {
 
 message ReorderWorkItemsResponse {
   repeated WorkItem work_items = 1; // the reordered children, server-confirmed
+}
+
+message ControlSequenceRequest {
+  string id = 1; // the sequence parent work item id
+  SequenceAction action = 2;
+}
+
+message ControlSequenceResponse {
+  WorkItem work_item = 1; // the parent after the action, server-confirmed
 }

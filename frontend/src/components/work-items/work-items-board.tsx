@@ -56,6 +56,7 @@ import {
 import type { BlockState } from "@/components/work-items/dependency-utils";
 import { blockingTitles } from "@/components/work-items/dependency-utils";
 import { computeSequencePositions } from "@/components/work-items/sequence-utils";
+import { SequenceControls } from "@/components/work-items/sequence-controls";
 import { PositionBadge } from "@/components/work-items/work-item-badges";
 import { WorkItemCard } from "@/components/work-items/work-item-card";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -682,6 +683,9 @@ function SortableCard({
         moving={moving}
         actions={
           <div className="flex items-center gap-1">
+            {hasChildren && (
+              <SequenceControls item={item} />
+            )}
             {hasChildren && (
               <button
                 type="button"

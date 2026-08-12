@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -705,6 +706,118 @@ func TestMidRunReorderNeverArmsAheadOfInFlightChild(t *testing.T) {
 	}
 	if got := env.armedWorkItems(); len(got) != 2 || got[1] != c3.ID {
 		t.Errorf("armed work items = %v, want [c1 c3]", got)
+	}
+}
+
+// TestResumeSequenceParksThenResumes: a chain parked by StopSequence
+// (parent → pending) is picked up by ResumeSequence and continues from the
+// first non-succeeded child, keeping prior successes.
+func TestResumeSequenceParksThenResumes(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf1 := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	wf2 := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf1)
+	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C2", &parent.ID, &wf2)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID})
+
+	// Run the chain to c1 succeeded, c2 pending, parent running.
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatal(err)
+	}
+	setStatus(t, env.pool, c1.ID, domain.WorkItemSucceeded)
+
+	// Park the chain: parent → pending, schedule cleared.
+	setField(t, env.pool, parent.ID, func(f *db.UpdateWorkItemFields) {
+		status := domain.WorkItemPending
+		f.Status = &status
+		scheduled := time.Now().Add(time.Hour)
+		f.ScheduledStartAt = &scheduled
+	})
+	if err := StopSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID); err != nil {
+		t.Fatalf("StopSequence: %v", err)
+	}
+	gotParent := mustGet(t, env.pool, parent.ID)
+	if gotParent.Status != domain.WorkItemPending {
+		t.Fatalf("parent status after stop = %q, want pending", gotParent.Status)
+	}
+	if gotParent.ScheduledStartAt != nil {
+		t.Errorf("parent scheduled_start_at after stop = %v, want cleared", gotParent.ScheduledStartAt)
+	}
+
+	// Resume: parent → running, c2 (first non-succeeded) arms, c1 kept.
+	if err := ResumeSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatalf("ResumeSequence: %v", err)
+	}
+	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemRunning {
+		t.Errorf("parent status after resume = %q, want running", got.Status)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemSucceeded {
+		t.Errorf("c1 status after resume = %q, want succeeded (history kept)", got.Status)
+	}
+	if got := mustGet(t, env.pool, c2.ID); got.Status != domain.WorkItemRunning {
+		t.Errorf("c2 status after resume = %q, want running (armed)", got.Status)
+	}
+	armed := env.armedWorkItems()
+	if len(armed) != 2 || armed[1] != c2.ID {
+		t.Errorf("armed work items = %v, want [c1 c2]", armed)
+	}
+}
+
+// TestResumeSequenceNoChildren: resume/stop on a leaf (no children) is
+// rejected — only sequence parents can be controlled.
+func TestResumeSequenceNoChildren(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	leaf := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Leaf", nil, &wf)
+
+	if err := ResumeSequence(ctx, env.pool, nil, approvalTestTenant, leaf.ID, env.startFn()); err == nil {
+		t.Error("ResumeSequence on a leaf should fail (no children)")
+	}
+	if err := StopSequence(ctx, env.pool, nil, approvalTestTenant, leaf.ID); err == nil {
+		t.Error("StopSequence on a leaf should fail (no children)")
+	}
+}
+
+// TestStopSequenceInFlightChildInert: STOP parks the parent while an
+// in-flight child keeps running; the child's later success does NOT revive
+// the parked parent (completion is inert because the engine only advances
+// running/failed parents).
+func TestStopSequenceInFlightChildInert(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID})
+
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemRunning {
+		t.Fatalf("precondition: c1 should be running, got %q", got.Status)
+	}
+	if err := StopSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID); err != nil {
+		t.Fatalf("StopSequence: %v", err)
+	}
+	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemPending {
+		t.Fatalf("parent status after stop = %q, want pending", got.Status)
+	}
+	// The in-flight child finishes; its completion must NOT revive the
+	// parked parent (reconcileOne's sequence-parent guard is inert on a
+	// pending parent).
+	setStatus(t, env.pool, c1.ID, domain.WorkItemSucceeded)
+	rec := NewSequenceReconciler(env.pool, nil, env.startFn())
+	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemPending {
+		t.Errorf("parent status after in-flight child success = %q, want pending (completion inert)", got.Status)
+	}
+	if got := env.armedWorkItems(); len(got) != 1 {
+		t.Errorf("armed work items = %v, want only the original [c1]", got)
 	}
 }
 

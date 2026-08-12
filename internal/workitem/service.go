@@ -31,6 +31,16 @@ type StartWorkflowStarter func(ctx context.Context, tenantID, workflowID, projec
 // sequence engine; validation of the subtree runs BEFORE it is called.
 type StartSequenceStarter func(ctx context.Context, tenantID, parentID string) error
 
+// ResumeSequenceStarter resumes a sequence parent from its current state:
+// parent → running, first non-succeeded child armed, history kept.
+// Injected by the server wired to the sequence engine.
+type ResumeSequenceStarter func(ctx context.Context, tenantID, parentID string) error
+
+// StopSequenceStarter parks a sequence parent: parent → pending and the
+// scheduled start cleared, nothing else. Injected by the server wired to
+// the sequence engine.
+type StopSequenceStarter func(ctx context.Context, tenantID, parentID string) error
+
 // RuntimeImageResolver resolves the base runtime image tag (or "" when no
 // daemon is configured). Injected by the server so the backend can stamp
 // the work item's runtime_image default (AGENTS.md: the default is a
@@ -48,6 +58,8 @@ type Service struct {
 	log             *slog.Logger
 	startWorkflowFn StartWorkflowStarter
 	sequenceStartFn StartSequenceStarter
+	sequenceResumeFn ResumeSequenceStarter
+	sequenceStopFn  StopSequenceStarter
 	runtimeImageFn  RuntimeImageResolver
 	apiv1connect.UnimplementedWorkItemServiceHandler
 }
@@ -68,6 +80,16 @@ func (s *Service) SetStartWorkflowStarter(fn StartWorkflowStarter) { s.startWork
 // for a parent work item with children (auto-start / run-instant path).
 // Called by the server before the reconciler starts.
 func (s *Service) SetStartSequenceStarter(fn StartSequenceStarter) { s.sequenceStartFn = fn }
+
+// SetResumeSequenceStarter injects the function that resumes a sequence
+// parent (parent → running, first non-succeeded child armed, history
+// kept). Called by the server before the reconciler starts.
+func (s *Service) SetResumeSequenceStarter(fn ResumeSequenceStarter) { s.sequenceResumeFn = fn }
+
+// SetStopSequenceStarter injects the function that parks a sequence parent
+// (parent → pending, scheduled start cleared). Called by the server before
+// the reconciler starts.
+func (s *Service) SetStopSequenceStarter(fn StopSequenceStarter) { s.sequenceStopFn = fn }
 
 // SetRuntimeImageResolver injects the function that resolves the base
 // runtime image tag, used to stamp the work item's runtime_image default.
@@ -1121,6 +1143,138 @@ func (s *Service) ReorderWorkItems(ctx context.Context, req *connect.Request[api
 		resp.WorkItems = append(resp.WorkItems, rowToProto(sib))
 	}
 	return connect.NewResponse(resp), nil
+}
+
+// ControlSequence drives a sequence parent manually (START / RESUME /
+// STOP). A parent with children IS a sequence run; these explicit gestures
+// are what the engine's derived cursor cannot infer on its own:
+//   - START re-fires the chain from child #1 (destructive — every
+//     descendant resets to pending); validations + in-flight guards run
+//     server-side.
+//   - RESUME continues from the first non-succeeded child (keeps state).
+//   - STOP parks the chain (parent → pending, schedule cleared) so
+//     children can be run standalone.
+//
+// All three actions require a work item that IS a sequence parent: it must
+// have at least one direct child and carry no bound workflow run (a parent
+// with children and a bound run is a run ticket, not a sequence).
+func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv1.ControlSequenceRequest]) (*connect.Response[apiv1.ControlSequenceResponse], error) {
+	msg := req.Msg
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	switch msg.Action {
+	case apiv1.SequenceAction_SEQUENCE_ACTION_START,
+		apiv1.SequenceAction_SEQUENCE_ACTION_RESUME,
+		apiv1.SequenceAction_SEQUENCE_ACTION_STOP:
+	default:
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("action must be one of START, RESUME, STOP"))
+	}
+
+	// Load the item and confirm it IS a sequence parent (has children, no
+	// bound workflow run). The engine's reconcileParent guard uses the
+	// same predicate, so this can never drift.
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if current.WorkflowRunID != "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("work item %q is bound to a workflow run — not a sequence parent", msg.Id))
+	}
+	children, err := db.ListDirectChildren(ctx, ttx.Tx, tenantID, msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if len(children) == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("work item %q has no children — only sequence parents (work items with children) can be started/resumed/stopped", msg.Id))
+	}
+
+	switch msg.Action {
+	case apiv1.SequenceAction_SEQUENCE_ACTION_START:
+		// START is destructive (wipes prior child successes). Reject while
+		// the parent is running/checkpointing/recovering — an active chain
+		// must be STOPped (parked) before it can be re-fired.
+		if IsActiveRunStatus(current.Status) {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				errors.New("cannot START a sequence that is already running — STOP it first"))
+		}
+		// Subtree validation (workflows bound, no one-shots) before the
+		// destructive fire, mirroring the schedule-time path.
+		if err := ValidateSequenceSchedule(ctx, ttx.Tx, tenantID, current); err != nil {
+			return nil, err
+		}
+		if s.sequenceStartFn == nil {
+			return nil, connect.NewError(connect.CodeUnavailable, errors.New("sequence starter not wired"))
+		}
+		if err := ttx.Commit(ctx); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+		}
+		if err := s.sequenceStartFn(ctx, tenantID, msg.Id); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+	case apiv1.SequenceAction_SEQUENCE_ACTION_RESUME:
+		// RESUME is enabled when the chain is halted (parent failed) or
+		// parked (parent pending with children). A running chain has
+		// nothing to resume — the derived cursor is already advancing it.
+		if current.Status != domain.WorkItemFailed && current.Status != domain.WorkItemPending {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				errors.New("cannot RESUME a sequence that is not halted (failed) or parked (pending)"))
+		}
+		// The subtree must still be schedulable (a failed child's workflow
+		// may have been unbound); validate before re-arming.
+		if err := ValidateSequenceSchedule(ctx, ttx.Tx, tenantID, current); err != nil {
+			return nil, err
+		}
+		if s.sequenceResumeFn == nil {
+			return nil, connect.NewError(connect.CodeUnavailable, errors.New("sequence resume not wired"))
+		}
+		if err := ttx.Commit(ctx); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+		}
+		if err := s.sequenceResumeFn(ctx, tenantID, msg.Id); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+	case apiv1.SequenceAction_SEQUENCE_ACTION_STOP:
+		// STOP parks the chain: parent → pending, schedule cleared. An
+		// in-flight child finishes naturally; its completion is inert
+		// because the engine only advances running/failed parents.
+		if current.Status != domain.WorkItemRunning && current.Status != domain.WorkItemFailed {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				errors.New("cannot STOP a sequence that is not running or failed"))
+		}
+		if s.sequenceStopFn == nil {
+			return nil, connect.NewError(connect.CodeUnavailable, errors.New("sequence stop not wired"))
+		}
+		if err := ttx.Commit(ctx); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+		}
+		if err := s.sequenceStopFn(ctx, tenantID, msg.Id); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+	}
+
+	// Re-read the parent after the action and return server-confirmed state.
+	ttx2, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx2.Rollback(ctx)
+	updated, err := db.GetWorkItem(ctx, ttx2.Tx, tenantID, msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	return connect.NewResponse(&apiv1.ControlSequenceResponse{WorkItem: rowToProto(updated)}), nil
 }
 
 // --- helpers ---------------------------------------------------------------

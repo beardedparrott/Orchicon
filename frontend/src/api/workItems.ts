@@ -14,6 +14,7 @@ import type { DependencyGraph } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import type { WorkItemStatus } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import type { CreateWorkItemRequest } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import type { UpdateWorkItemRequest } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
+import { SequenceAction } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import type { PartialMessage } from "@bufbuild/protobuf";
 
 // Query keys are centralized so invalidation is type-safe.
@@ -286,6 +287,35 @@ export function useReorderWorkItems() {
       if (items.length > 0) {
         qc.invalidateQueries({ queryKey: workItemKeys.detail(items[0].id) });
       }
+    },
+  });
+}
+
+// useControlSequence drives a sequence parent manually (START / RESUME /
+// STOP). A parent with children IS a sequence run; these explicit gestures
+// are what the engine's derived cursor cannot infer on its own:
+//   - START re-fires the chain from child #1 (destructive — every
+//     descendant resets to pending); validations + in-flight guards run
+//     server-side.
+//   - RESUME continues from the first non-succeeded child (keeps state).
+//   - STOP parks the chain (parent → pending, schedule cleared) so
+//     children can be run standalone.
+// Invalidates by the returned item's project (works in any view — board,
+// tree, schedules, all-projects).
+export function useControlSequence() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { id: string; action: SequenceAction }) => {
+      const res = await workItemClient.controlSequence({
+        id: input.id,
+        action: input.action,
+      });
+      return res.workItem as WorkItem;
+    },
+    onSuccess: (item) => {
+      qc.invalidateQueries({ queryKey: workItemKeys.list(item.projectId) });
+      qc.invalidateQueries({ queryKey: workItemKeys.detail(item.id) });
+      qc.invalidateQueries({ queryKey: workItemKeys.graph(item.projectId) });
     },
   });
 }

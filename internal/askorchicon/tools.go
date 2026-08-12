@@ -280,6 +280,17 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Required: []string{"project_id", "child_ids"},
 		},
 		{
+			Name:        "control_sequence",
+			Description: "Drive a sequence parent manually (a work item that has children IS a sequence run). Provide id and action: start (re-fires the chain from child #1 — destructive, wipes prior child successes), resume (continues from the first non-succeeded child, keeps state; enabled when halted/failed or parked/pending), or stop (parks the chain: parent → pending and clears the scheduled start, so children can be run standalone; an in-flight child finishes naturally).",
+			Mutating:    true,
+			Fn:          toolControlSequence,
+			Properties: map[string]PropertySchema{
+				"id":     {Type: "string", Description: "Work item ID (the sequence parent)"},
+				"action": {Type: "string", Description: "start, resume, or stop"},
+			},
+			Required: []string{"id", "action"},
+		},
+		{
 			Name:        "delete_work_item",
 			Description: "Soft-delete a work item by ID (status → cancelled). This is reversible via update_work_item.",
 			Mutating:    true,

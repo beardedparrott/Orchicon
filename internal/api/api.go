@@ -139,6 +139,17 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 				return workflow.StartWorkflowDirect(ctx, deps.Pool, deps.Log, tenantID, workflowID, projectID, workItemID)
 			})
 	})
+	// Sequence control (ControlSequence RPC): resume parks/continues a
+	// sequence parent manually. Both go through the sequence engine.
+	workItemSvc.SetResumeSequenceStarter(func(ctx context.Context, tenantID, parentID string) error {
+		return scheduler.ResumeSequence(ctx, deps.Pool, deps.Log, tenantID, parentID,
+			func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
+				return workflow.StartWorkflowDirect(ctx, deps.Pool, deps.Log, tenantID, workflowID, projectID, workItemID)
+			})
+	})
+	workItemSvc.SetStopSequenceStarter(func(ctx context.Context, tenantID, parentID string) error {
+		return scheduler.StopSequence(ctx, deps.Pool, deps.Log, tenantID, parentID)
+	})
 	if deps.RuntimeClient != nil {
 		workItemSvc.SetRuntimeImageResolver(func(ctx context.Context) string {
 			imgs, err := deps.RuntimeClient.Images(ctx)
