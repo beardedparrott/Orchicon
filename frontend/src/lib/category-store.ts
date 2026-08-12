@@ -122,16 +122,11 @@ export function seedAssignments(
   entityIds: string[],
 ): CategoryState {
   const existing = loadCategoryState(page);
-  // Only seed if there are no assignments yet
+  // Only seed when no localStorage envelope exists (first load).
+  // Never re-assign items that lost their assignment (e.g. after
+  // deleting a category) — they stay in Uncategorized.
   if (Object.keys(existing.assignments).length > 0) {
-    // Still ensure new items get assigned
-    const updated = { ...existing.assignments };
-    for (const id of entityIds) {
-      if (!updated[id]) {
-        updated[id] = SEED_CATEGORY.id;
-      }
-    }
-    return { ...existing, assignments: updated };
+    return existing;
   }
   // First load: assign everything to Software Development
   const assignments: Record<string, string> = {};
