@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, createRoute } from "@tanstack/react-router";
-import { Trash2, SearchX } from "lucide-react";
+import { Trash2, SearchX, FolderPlus } from "lucide-react";
 
 import { useBatchDeleteWorkflows, useListWorkflows } from "@/api/workflows";
 import { WorkflowStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
@@ -13,13 +13,17 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { CategoryFolder } from "@/components/CategoryFolder";
+import { CategoryAssignSelect } from "@/components/CategoryAssignSelect";
+import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
+import {
+  useCategoryPreferences,
+  getItemsForCategory,
+  type Category,
+} from "@/lib/category-store";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 
-// Workflows list (docs/10 §5, docs/02 §2.4). Fetches via Connect-ES +
-// TanStack Query; the UI reflects server state only (AGENTS.md
-// invariant #1). Workflows are composable execution plans — project-
-// scoped or tenant-level templates.
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/workflows",
@@ -32,17 +36,80 @@ function WorkflowsPage() {
   const [sortBy, setSortBy] = useState("created_at");
   const [sortOrder, setSortOrder] = useState("asc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [showCreateCategory, setShowCreateCategory] = useState(false);
 
   const statusFilter =
     status === "all" ? undefined : (Number(status) as WorkflowStatus);
 
-  const { data: workflows, isLoading, error } = useListWorkflows({
+  const {
+    data: workflows,
+    isLoading,
+    error,
+  } = useListWorkflows({
     search,
     status: statusFilter,
     sortBy,
     sortOrder,
   });
   const batchDelete = useBatchDeleteWorkflows();
+
+  const prefs = useCategoryPreferences("workflows");
+  const { ensureSeeded } = prefs;
+
+  // Seed all workflows into categories on first load
+  const workflowIds = useMemo(
+    () => (workflows ? workflows.map((w) => w.id) : []),
+    [workflows],
+  );
+  useEffect(() => {
+    if (workflowIds.length > 0) {
+      ensureSeeded(workflowIds);
+    }
+  }, [workflowIds, ensureSeeded]);
+
+  // Group workflows by category
+  const { categorized, uncategorized } = useMemo(() => {
+    if (!workflows)
+      return { categorized: new Map<string, string[]>(), uncategorized: [] };
+    const ids = workflows.map((w) => w.id);
+    return getItemsForCategory(prefs.state, ids);
+  }, [prefs.state, workflows]);
+
+  // Build ordered list of categories with their workflows
+  const categoryGroups = useMemo(() => {
+    if (!workflows) return [];
+    const workflowMap = new Map(workflows.map((w) => [w.id, w]));
+    const groups: { category: Category; items: typeof workflows }[] = [];
+
+    const sortedCategories = [...prefs.state.categories].sort(
+      (a, b) => a.order - b.order,
+    );
+
+    for (const cat of sortedCategories) {
+      const itemIds = categorized.get(cat.id) ?? [];
+      const items = itemIds
+        .map((id) => workflowMap.get(id))
+        .filter((w): w is NonNullable<typeof w> => w != null);
+      groups.push({ category: cat, items });
+    }
+
+    // Uncategorized group
+    const uncategorizedItems = uncategorized
+      .map((id) => workflowMap.get(id))
+      .filter((w): w is NonNullable<typeof w> => w != null);
+    if (uncategorizedItems.length > 0) {
+      groups.push({
+        category: {
+          id: "uncategorized",
+          name: "Uncategorized",
+          order: Infinity,
+        },
+        items: uncategorizedItems,
+      });
+    }
+
+    return groups;
+  }, [workflows, categorized, uncategorized, prefs.state.categories]);
 
   const toggleSelect = (id: string) => {
     setSelected((prev) => {
@@ -65,11 +132,18 @@ function WorkflowsPage() {
   const handleBatchDelete = () => {
     if (selected.size === 0) return;
     const count = selected.size;
-    if (!window.confirm(`Delete ${count} workflow${count === 1 ? "" : "s"}? This cannot be undone.`)) return;
+    if (
+      !window.confirm(
+        `Delete ${count} workflow${count === 1 ? "" : "s"}? This cannot be undone.`,
+      )
+    )
+      return;
     batchDelete.mutate(Array.from(selected), {
       onSuccess: () => setSelected(new Set()),
     });
   };
+
+  const existingCategoryNames = prefs.state.categories.map((c) => c.name);
 
   return (
     <div className="space-y-6">
@@ -120,6 +194,14 @@ function WorkflowsPage() {
           <option value="asc">Asc</option>
           <option value="desc">Desc</option>
         </select>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setShowCreateCategory(true)}
+        >
+          <FolderPlus className="mr-1 h-3.5 w-3.5" />
+          New Category
+        </Button>
         {selected.size > 0 && (
           <Button
             variant="destructive"
@@ -160,7 +242,9 @@ function WorkflowsPage() {
           <div className="flex items-center gap-2 px-2 py-1">
             <input
               type="checkbox"
-              checked={workflows.length > 0 && selected.size === workflows.length}
+              checked={
+                workflows.length > 0 && selected.size === workflows.length
+              }
               onChange={toggleSelectAll}
               className="h-4 w-4 rounded border-input"
             />
@@ -170,62 +254,114 @@ function WorkflowsPage() {
                 : `${workflows.length} workflow${workflows.length === 1 ? "" : "s"}`}
             </span>
           </div>
-          <div className="space-y-1">
-            {workflows.map((w) => (
-              <div key={w.id} className="group flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={selected.has(w.id)}
-                  onChange={() => toggleSelect(w.id)}
-                  className="ml-2 h-4 w-4 shrink-0 rounded border-input"
-                />
-                <Link to="/workflows/$id" params={{ id: w.id }} className="min-w-0 flex-1">
-                  <Card className="transition-colors hover:bg-accent">
-                    <CardContent className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="flex min-w-0 items-center gap-3">
-                        <StatusBadge status={w.status} />
-                        <div className="min-w-0 flex-1 overflow-hidden">
-                          <p className="truncate text-sm font-medium">{w.name}</p>
-                          <div className="flex items-center gap-2">
-                            <span className={cn(
-                              "rounded-full px-1.5 py-0.5 text-[10px] font-medium",
-                              w.projectId
-                                ? "bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300"
-                                : "bg-purple-100 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300",
-                            )}>
-                              {w.projectId ? "One-Shot" : "Template"}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground sm:shrink-0">
-                        <span>v{w.currentVersion || "—"}</span>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </Link>
-                <button
-                  onClick={() => {
-                    if (window.confirm("Delete this workflow?")) {
-                      batchDelete.mutate([w.id]);
-                    }
-                  }}
-                  className="opacity-0 group-hover:opacity-100 rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground hover:text-destructive hover:bg-accent transition-all shrink-0"
-                  title="Delete workflow"
-                >
-                  ✕
-                </button>
-              </div>
+          <div>
+            {categoryGroups.map(({ category, items }) => (
+              <CategoryFolder
+                key={category.id}
+                category={category}
+                count={items.length}
+                isCollapsed={
+                  category.id === "uncategorized"
+                    ? prefs.collapsed.has("uncategorized")
+                    : prefs.collapsed.has(category.id)
+                }
+                onToggle={() => prefs.toggleCollapsed(category.id)}
+                onRename={(newName) =>
+                  prefs.renameCategory(category.id, newName)
+                }
+                onDelete={() => {
+                  if (
+                    window.confirm(
+                      `Delete "${category.name}"? Items will move to Uncategorized.`,
+                    )
+                  ) {
+                    prefs.deleteCategory(category.id);
+                  }
+                }}
+                onUpdateDescription={(desc) =>
+                  prefs.updateDescription(category.id, desc)
+                }
+              >
+                <div className="space-y-1">
+                  {items.map((w) => (
+                    <div key={w.id} className="group flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={selected.has(w.id)}
+                        onChange={() => toggleSelect(w.id)}
+                        className="ml-2 h-4 w-4 shrink-0 rounded border-input"
+                      />
+                      <Link
+                        to="/workflows/$id"
+                        params={{ id: w.id }}
+                        className="min-w-0 flex-1"
+                      >
+                        <Card className="transition-colors hover:bg-accent">
+                          <CardContent className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="flex min-w-0 items-center gap-3">
+                              <StatusBadge status={w.status} />
+                              <div className="min-w-0 flex-1 overflow-hidden">
+                                <p className="truncate text-sm font-medium">
+                                  {w.name}
+                                </p>
+                                <div className="flex items-center gap-2">
+                                  <span
+                                    className={cn(
+                                      "rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+                                      w.projectId
+                                        ? "bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300"
+                                        : "bg-purple-100 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300",
+                                    )}
+                                  >
+                                    {w.projectId ? "One-Shot" : "Template"}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground sm:shrink-0">
+                              <span>v{w.currentVersion || "—"}</span>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      </Link>
+                      <button
+                        onClick={() => {
+                          if (window.confirm("Delete this workflow?")) {
+                            batchDelete.mutate([w.id]);
+                          }
+                        }}
+                        className="opacity-0 group-hover:opacity-100 rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground hover:text-destructive hover:bg-accent transition-all shrink-0"
+                        title="Delete workflow"
+                      >
+                        ✕
+                      </button>
+                      <CategoryAssignSelect
+                        entityId={w.id}
+                        currentCategoryId={prefs.state.assignments[w.id]}
+                        categories={prefs.state.categories}
+                        onAssign={prefs.assignItem}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </CategoryFolder>
             ))}
           </div>
         </>
       )}
+
+      <CreateCategoryDialog
+        open={showCreateCategory}
+        onOpenChange={setShowCreateCategory}
+        onCreate={(name, description) =>
+          prefs.createCategory(name, description)
+        }
+        existingNames={existingCategoryNames}
+      />
     </div>
   );
 }
 
-// StatusBadge renders a colored pill for the workflow lifecycle state
-// (docs/02 §2.4).
 function StatusBadge({ status }: { status: number }) {
   const label = STATUS_LABELS[status] ?? "unknown";
   return (

@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, createRoute } from "@tanstack/react-router";
-import { Trash2, SearchX } from "lucide-react";
+import { Trash2, SearchX, FolderPlus } from "lucide-react";
 
 import { useBatchDeleteWorkers, useListWorkers } from "@/api/workers";
 import { WorkerStatus } from "@/api/gen/orchicon/api/v1/worker_pb";
@@ -13,13 +13,17 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { CategoryFolder } from "@/components/CategoryFolder";
+import { CategoryAssignSelect } from "@/components/CategoryAssignSelect";
+import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
+import {
+  useCategoryPreferences,
+  getItemsForCategory,
+  type Category,
+} from "@/lib/category-store";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 
-// Worker catalog (docs/10 §5, docs/05 §3). Fetches via Connect-ES +
-// TanStack Query; the UI reflects server state only (AGENTS.md
-// invariant #1). Workers are tenant-owned, reusable, versioned
-// execution profiles (docs/05 §1).
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/workers",
@@ -32,10 +36,74 @@ function WorkersPage() {
   const [sortBy, setSortBy] = useState("created_at");
   const [sortOrder, setSortOrder] = useState("asc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [showCreateCategory, setShowCreateCategory] = useState(false);
 
-  const statusFilter = status === "all" ? undefined : Number(status) as WorkerStatus;
-  const { data: workers, isLoading, error } = useListWorkers({ search, status: statusFilter, sortBy, sortOrder });
+  const statusFilter =
+    status === "all" ? undefined : (Number(status) as WorkerStatus);
+  const {
+    data: workers,
+    isLoading,
+    error,
+  } = useListWorkers({ search, status: statusFilter, sortBy, sortOrder });
   const batchDelete = useBatchDeleteWorkers();
+
+  const prefs = useCategoryPreferences("workers");
+  const { ensureSeeded } = prefs;
+
+  // Seed all workers into categories on first load
+  const workerIds = useMemo(
+    () => (workers ? workers.map((w) => w.id) : []),
+    [workers],
+  );
+  useEffect(() => {
+    if (workerIds.length > 0) {
+      ensureSeeded(workerIds);
+    }
+  }, [workerIds, ensureSeeded]);
+
+  // Group workers by category
+  const { categorized, uncategorized } = useMemo(() => {
+    if (!workers)
+      return { categorized: new Map<string, string[]>(), uncategorized: [] };
+    const ids = workers.map((w) => w.id);
+    return getItemsForCategory(prefs.state, ids);
+  }, [prefs.state, workers]);
+
+  // Build ordered list of categories with their workers
+  const categoryGroups = useMemo(() => {
+    if (!workers) return [];
+    const workerMap = new Map(workers.map((w) => [w.id, w]));
+    const groups: { category: Category; items: typeof workers }[] = [];
+
+    const sortedCategories = [...prefs.state.categories].sort(
+      (a, b) => a.order - b.order,
+    );
+
+    for (const cat of sortedCategories) {
+      const itemIds = categorized.get(cat.id) ?? [];
+      const items = itemIds
+        .map((id) => workerMap.get(id))
+        .filter((w): w is NonNullable<typeof w> => w != null);
+      groups.push({ category: cat, items });
+    }
+
+    // Uncategorized group
+    const uncategorizedItems = uncategorized
+      .map((id) => workerMap.get(id))
+      .filter((w): w is NonNullable<typeof w> => w != null);
+    if (uncategorizedItems.length > 0) {
+      groups.push({
+        category: {
+          id: "uncategorized",
+          name: "Uncategorized",
+          order: Infinity,
+        },
+        items: uncategorizedItems,
+      });
+    }
+
+    return groups;
+  }, [workers, categorized, uncategorized, prefs.state.categories]);
 
   const toggleSelect = (id: string) => {
     setSelected((prev) => {
@@ -58,11 +126,18 @@ function WorkersPage() {
   const handleBatchDelete = () => {
     if (selected.size === 0) return;
     const count = selected.size;
-    if (!window.confirm(`Delete ${count} worker${count === 1 ? "" : "s"}? This cannot be undone.`)) return;
+    if (
+      !window.confirm(
+        `Delete ${count} worker${count === 1 ? "" : "s"}? This cannot be undone.`,
+      )
+    )
+      return;
     batchDelete.mutate(Array.from(selected), {
       onSuccess: () => setSelected(new Set()),
     });
   };
+
+  const existingCategoryNames = prefs.state.categories.map((c) => c.name);
 
   return (
     <div className="space-y-6">
@@ -114,6 +189,14 @@ function WorkersPage() {
           <option value="asc">Asc</option>
           <option value="desc">Desc</option>
         </select>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setShowCreateCategory(true)}
+        >
+          <FolderPlus className="mr-1 h-3.5 w-3.5" />
+          New Category
+        </Button>
         {selected.size > 0 && (
           <Button
             variant="destructive"
@@ -154,7 +237,9 @@ function WorkersPage() {
           <div className="flex items-center gap-2 px-2 py-1">
             <input
               type="checkbox"
-              checked={workers.length > 0 && selected.size === workers.length}
+              checked={
+                workers.length > 0 && selected.size === workers.length
+              }
               onChange={toggleSelectAll}
               className="h-4 w-4 rounded border-input"
             />
@@ -164,56 +249,110 @@ function WorkersPage() {
                 : `${workers.length} worker${workers.length === 1 ? "" : "s"}`}
             </span>
           </div>
-          <div className="space-y-1">
-            {workers.map((w) => (
-              <div key={w.id} className="group flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={selected.has(w.id)}
-                  onChange={() => toggleSelect(w.id)}
-                  className="ml-2 h-4 w-4 shrink-0 rounded border-input"
-                />
-                <Link to="/workers/$id" params={{ id: w.id }} className="min-w-0 flex-1">
-                  <Card className="transition-colors hover:bg-accent">
-                    <CardContent className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="flex min-w-0 items-center gap-3">
-                        <WorkerStatusBadge status={w.status} />
-                        <div className="min-w-0 flex-1 overflow-hidden">
-                          <p className="truncate text-sm font-medium">{w.name}</p>
-                          <p className="break-all font-mono text-xs text-muted-foreground">{w.slug}</p>
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground sm:shrink-0">
-                        {w.purpose && (
-                          <span className="max-w-[200px] truncate">{w.purpose}</span>
-                        )}
-                        <span>v{w.currentVersion}</span>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </Link>
-                <button
-                  onClick={() => {
-                    if (window.confirm("Delete this worker?")) {
-                      batchDelete.mutate([w.id]);
-                    }
-                  }}
-                  className="opacity-0 group-hover:opacity-100 rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground hover:text-destructive hover:bg-accent transition-all shrink-0"
-                  title="Delete worker"
-                >
-                  ✕
-                </button>
-              </div>
+          <div>
+            {categoryGroups.map(({ category, items }) => (
+              <CategoryFolder
+                key={category.id}
+                category={category}
+                count={items.length}
+                isCollapsed={
+                  category.id === "uncategorized"
+                    ? prefs.collapsed.has("uncategorized")
+                    : prefs.collapsed.has(category.id)
+                }
+                onToggle={() => prefs.toggleCollapsed(category.id)}
+                onRename={(newName) =>
+                  prefs.renameCategory(category.id, newName)
+                }
+                onDelete={() => {
+                  if (
+                    window.confirm(
+                      `Delete "${category.name}"? Items will move to Uncategorized.`,
+                    )
+                  ) {
+                    prefs.deleteCategory(category.id);
+                  }
+                }}
+                onUpdateDescription={(desc) =>
+                  prefs.updateDescription(category.id, desc)
+                }
+              >
+                <div className="space-y-1">
+                  {items.map((w) => (
+                    <div key={w.id} className="group flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={selected.has(w.id)}
+                        onChange={() => toggleSelect(w.id)}
+                        className="ml-2 h-4 w-4 shrink-0 rounded border-input"
+                      />
+                      <Link
+                        to="/workers/$id"
+                        params={{ id: w.id }}
+                        className="min-w-0 flex-1"
+                      >
+                        <Card className="transition-colors hover:bg-accent">
+                          <CardContent className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="flex min-w-0 items-center gap-3">
+                              <WorkerStatusBadge status={w.status} />
+                              <div className="min-w-0 flex-1 overflow-hidden">
+                                <p className="truncate text-sm font-medium">
+                                  {w.name}
+                                </p>
+                                <p className="break-all font-mono text-xs text-muted-foreground">
+                                  {w.slug}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground sm:shrink-0">
+                              {w.purpose && (
+                                <span className="max-w-[200px] truncate">
+                                  {w.purpose}
+                                </span>
+                              )}
+                              <span>v{w.currentVersion}</span>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      </Link>
+                      <button
+                        onClick={() => {
+                          if (window.confirm("Delete this worker?")) {
+                            batchDelete.mutate([w.id]);
+                          }
+                        }}
+                        className="opacity-0 group-hover:opacity-100 rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground hover:text-destructive hover:bg-accent transition-all shrink-0"
+                        title="Delete worker"
+                      >
+                        ✕
+                      </button>
+                      <CategoryAssignSelect
+                        entityId={w.id}
+                        currentCategoryId={prefs.state.assignments[w.id]}
+                        categories={prefs.state.categories}
+                        onAssign={prefs.assignItem}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </CategoryFolder>
             ))}
           </div>
         </>
       )}
+
+      <CreateCategoryDialog
+        open={showCreateCategory}
+        onOpenChange={setShowCreateCategory}
+        onCreate={(name, description) =>
+          prefs.createCategory(name, description)
+        }
+        existingNames={existingCategoryNames}
+      />
     </div>
   );
 }
 
-// WorkerStatusBadge renders a colored pill for the worker lifecycle
-// state (docs/05 §4).
 function WorkerStatusBadge({ status }: { status: number }) {
   const label = STATUS_LABELS[status] ?? "unknown";
   return (
