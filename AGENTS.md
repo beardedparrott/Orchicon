@@ -56,6 +56,7 @@ The project's model spend is rising. Be economical but **never at the expense of
 - ALWAYS create a new branch before starting work. NEVER commit to `main` or `develop`.
 - **Branch off `develop`**, never `main` (the repo default branch is `main`, but the integration branch is `develop`). If you
   find yourself on a branch created from `main`, rebase it onto `develop` before PRing.
+- **PRs must explicitly target `develop`.** Because `main` is the default branch, PR-creating tools (`gh pr create`, UI) default the base to `main` — always pass `--base develop` (or pick it in the UI) or the PR silently lands on the release branch.
 - A local pre-commit hook (`.git/hooks/pre-commit`) rejects any commit on `main`, `master`, or `develop`. If the hook is missing, re-create it:
 
   ```bash
@@ -71,7 +72,7 @@ The project's model spend is rising. Be economical but **never at the expense of
 - Commit early and often on your branch. Write clear commit messages in present tense: `Add project CRUD service and data-access layer`. Stage only the files relevant to the commit.
 - **Never create a pull request without asking the user for approval first.** Ask, wait for a yes, then proceed.
 - Once work is complete and properly tested, ask the user to verify.
-- After the user verifies, ask again for approval to open the PR, then open it. **PRs target `develop` and must NOT carry the `release` label** — that label only belongs on the human's `develop` → `main` release PR. Merging into `develop` never creates a release; releases are made exclusively by the human merging `develop` → `main` (the auto-release workflow fires only on `main`).
+- After the user verifies, ask again for approval to open the PR, then open it. **PRs target `develop` and must NOT carry the `release` label** — that label only belongs on the human's `develop` → `main` release PR. Set the base to `develop` explicitly (`gh pr create --base develop`) — since `main` is the repo default, an unspecified base defaults to `main`. Merging into `develop` never creates a release; releases are made exclusively by the human merging `develop` → `main` (the auto-release workflow fires only on `main`).
 - **Before merging**, ALWAYS ASK THE USER AGAIN (PR-creation approval ≠ merge approval). Update `UPDATES.md` with a new table row for this PR (typed format: `| # | Type | Phase | One-line summary |`, monotonic row numbers). **Do NOT touch README.md's "Last Release Changes" section manually** — it is auto-synced from `UPDATES.md` by `scripts/gen-release-notes.sh --sync-readme` (one source of truth, two consumers: README + the release body). Per-PR workers only ever append to `UPDATES.md`.
 - After the merge, delete the branch.
 - Before starting work, always `git pull origin develop` to get the latest. Before pushing, `git fetch origin && git rebase origin/develop` if the branch has been open for a while.
