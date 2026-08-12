@@ -101,7 +101,12 @@ export function saveCategoryState(page: CategoryPage, state: CategoryState): voi
 
 export function loadCollapsedState(page: CategoryPage): Set<string> {
   const parsed = parseEnvelope<{ ids: string[] }>(`${PREFIX}${page}.collapsed`);
-  return new Set(Array.isArray(parsed?.ids) ? parsed!.ids.filter((id) => typeof id === "string") : []);
+  if (Array.isArray(parsed?.ids)) {
+    return new Set(parsed!.ids.filter((id) => typeof id === "string"));
+  }
+  // First load (no saved collapsed state): default ALL categories to collapsed.
+  const categoryState = loadCategoryState(page);
+  return new Set(categoryState.categories.map((c) => c.id));
 }
 
 export function saveCollapsedState(page: CategoryPage, ids: Set<string>): void {
@@ -189,6 +194,13 @@ export function useCategoryPreferences(page: CategoryPage): CategoryPreferences 
       const next = { ...state, categories: [...state.categories, newCat] };
       setState(next);
       saveCategoryState(page, next);
+      // New folders are collapsed by default
+      setCollapsedState((prev) => {
+        const next = new Set(prev);
+        next.add(id);
+        saveCollapsedState(page, next);
+        return next;
+      });
       return newCat;
     },
     [page, state],
@@ -243,7 +255,13 @@ export function useCategoryPreferences(page: CategoryPage): CategoryPreferences 
 
   const assignItem = useCallback(
     (entityId: string, categoryId: string) => {
-      const assignments = { ...state.assignments, [entityId]: categoryId };
+      const assignments = { ...state.assignments };
+      if (!categoryId) {
+        // Move to uncategorized: remove the assignment
+        delete assignments[entityId];
+      } else {
+        assignments[entityId] = categoryId;
+      }
       const next = { ...state, assignments };
       setState(next);
       saveCategoryState(page, next);

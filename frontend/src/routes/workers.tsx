@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { CategoryFolder } from "@/components/CategoryFolder";
+import { CategoryAssignSelect } from "@/components/CategoryAssignSelect";
 import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
 import {
   useCategoryPreferences,
@@ -325,6 +326,12 @@ function WorkersPage() {
                       >
                         ✕
                       </button>
+                      <CategoryAssignSelect
+                        entityId={w.id}
+                        currentCategoryId={prefs.state.assignments[w.id]}
+                        categories={prefs.state.categories}
+                        onAssign={prefs.assignItem}
+                      />
                     </div>
                   ))}
                 </div>
