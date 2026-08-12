@@ -1,11 +1,11 @@
 import { describe, expect, it, beforeEach } from "vitest";
 
+import type { CategoryState } from "@/lib/category-store";
 import {
   loadCategoryState,
   saveCategoryState,
   seedAssignments,
   getItemsForCategory,
-  CategoryState,
 } from "@/lib/category-store";
 
 // In-memory localStorage shim (same as work-items-preferences.test.ts)
