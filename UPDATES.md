@@ -11,7 +11,8 @@
 > merge to drop released rows and keep only the current cycle.
 
 | # | Type | Phase | Summary |
-|---|---|---|---|
+|---|---|---|---|---|
+| 146 | Bug fix | Recurring schedule | Fix empty-clear guard, weekly empty-days, and create normalization for recurring schedules |
 | 145 | Docs | Repo | Add AGENTS.md reminder that PRs must explicitly target `develop` (base defaults to `main` now that it is the default branch). |
 | 144 | Chore | Repo | Flip GitHub default branch to `main`; update AGENTS.md + CLOUDFLARE_SETUP.md default-branch references. Branch protection unchanged on both branches. |
 | 143 | Feature | UI | Add category folders for workers and workflows — localStorage-backed collapsible folder groups with rename, delete, description editing, and "New Category" dialog. All items seeded into "Software Development" on first load; folders collapsed by default. |
