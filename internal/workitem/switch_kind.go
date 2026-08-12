@@ -176,7 +176,8 @@ func ResolveKindSwitch(ctx context.Context, tx pgx.Tx, tenantID string, current 
 		plan.ClearWorkerRef = true
 		plan.ClearScheduledStartAt = true
 		switch current.Status {
-		case domain.WorkItemReady, domain.WorkItemAssigned, domain.WorkItemScheduled:
+		case domain.WorkItemReady, domain.WorkItemAssigned, domain.WorkItemScheduled,
+			domain.WorkItemRecurring:
 			s := domain.WorkItemPending
 			plan.NewStatus = &s
 		}

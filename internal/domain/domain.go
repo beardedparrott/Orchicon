@@ -143,6 +143,7 @@ const (
 	WorkItemFailed       = "failed"
 	WorkItemCancelled    = "cancelled"
 	WorkItemRecovering   = "recovering"
+	WorkItemRecurring    = "recurring"
 )
 
 // Dependency types — edges in the work DAG

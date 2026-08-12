@@ -1368,6 +1368,8 @@ func statusToProto(status string) apiv1.WorkItemStatus {
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECOVERING
 	case domain.WorkItemScheduled:
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_SCHEDULED
+	case domain.WorkItemRecurring:
+		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECURRING
 	default:
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_UNSPECIFIED
 	}

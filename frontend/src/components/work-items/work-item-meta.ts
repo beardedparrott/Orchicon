@@ -237,6 +237,13 @@ const STATUS_META: Record<number, StatusMeta> = {
     pillDark: "bg-purple-500/15 text-purple-300",
     dot: "bg-purple-500",
   },
+  [WorkItemStatus.RECURRING]: {
+    label: "recurring",
+    titleLabel: "Recurring",
+    pill: "bg-teal-500/15 text-teal-800",
+    pillDark: "bg-teal-500/15 text-teal-300",
+    dot: "bg-teal-500",
+  },
 };
 
 export function statusMeta(status: number): StatusMeta {
@@ -262,6 +269,7 @@ export const STATUS_FILTER_OPTIONS = [
   { value: WorkItemStatus.CANCELLED, label: "Cancelled" },
   { value: WorkItemStatus.RECOVERING, label: "Recovering" },
   { value: WorkItemStatus.SCHEDULED, label: "Scheduled" },
+  { value: WorkItemStatus.RECURRING, label: "Recurring" },
 ];
 
 /** Every status value offered by the status filter — the default
@@ -308,11 +316,12 @@ export const BOARD_COLUMNS: BoardColumn[] = [
 
 // Statuses without a dedicated column render in the column of their
 // closest active status: checkpointing/recovering → Running,
-// scheduled → Pending. The card still shows its REAL status pill.
+// scheduled/recurring → Pending. The card still shows its REAL status pill.
 export function columnForStatus(status: number): number {
   if (status === WorkItemStatus.CHECKPOINTING) return WorkItemStatus.RUNNING;
   if (status === WorkItemStatus.RECOVERING) return WorkItemStatus.RUNNING;
   if (status === WorkItemStatus.SCHEDULED) return WorkItemStatus.PENDING;
+  if (status === WorkItemStatus.RECURRING) return WorkItemStatus.PENDING;
   return status;
 }
 

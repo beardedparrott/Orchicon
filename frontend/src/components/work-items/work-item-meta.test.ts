@@ -87,10 +87,11 @@ describe("status meta palette variants", () => {
 });
 
 describe("board column mapping and transition matrix (regression guards)", () => {
-  it("checkpointing/recovering render in Running, scheduled in Pending", () => {
+  it("checkpointing/recovering render in Running, scheduled/recurring in Pending", () => {
     expect(columnForStatus(WorkItemStatus.CHECKPOINTING)).toBe(WorkItemStatus.RUNNING);
     expect(columnForStatus(WorkItemStatus.RECOVERING)).toBe(WorkItemStatus.RUNNING);
     expect(columnForStatus(WorkItemStatus.SCHEDULED)).toBe(WorkItemStatus.PENDING);
+    expect(columnForStatus(WorkItemStatus.RECURRING)).toBe(WorkItemStatus.PENDING);
     expect(columnForStatus(WorkItemStatus.RUNNING)).toBe(WorkItemStatus.RUNNING);
   });
 
@@ -123,5 +124,6 @@ describe("board column mapping and transition matrix (regression guards)", () =>
     expect(isTerminal(WorkItemStatus.CANCELLED)).toBe(true);
     expect(isTerminal(WorkItemStatus.RUNNING)).toBe(false);
     expect(isTerminal(WorkItemStatus.READY)).toBe(false);
+    expect(isTerminal(WorkItemStatus.RECURRING)).toBe(false);
   });
 });
