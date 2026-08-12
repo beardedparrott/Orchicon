@@ -394,15 +394,15 @@ func TestSeedCannedWorkersCarryDevOnlyGuard(t *testing.T) {
 	}
 }
 
-// TestSeedAiApproverCarriesDecisionBasis: the canned AI Approver's seed
-// content must instruct it to identify who the previous step's worker was
-// before approving — reviewing the plan only after a planner, and the
-// previous step's overall status + summary after an implementer — with no
-// line-by-line code inspection expectations.
-func TestSeedAiApproverCarriesDecisionBasis(t *testing.T) {
+// TestSeedDesignApproverCarriesDesignReviewContract: the canned Design
+// Approver's seed content must statically review the PLAN only — no
+// implementation expectations, no predecessor-type inference. The review
+// type is fixed by the worker, not guessed at runtime (the split-approver
+// fix: two workflows steps no longer share one context-switching worker).
+func TestSeedDesignApproverCarriesDesignReviewContract(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
-	const cannedID = "w_se_ai_approver"
+	const cannedID = "w_se_design_approver"
 
 	if err := db.SeedDevWorkers(ctx, pool); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -411,28 +411,66 @@ func TestSeedAiApproverCarriesDecisionBasis(t *testing.T) {
 	if err := pool.QueryRow(ctx,
 		`SELECT agents_md FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
 		cannedID).Scan(&agents); err != nil {
-		t.Fatalf("query canned AI Approver agents: %v", err)
+		t.Fatalf("query canned Design Approver agents: %v", err)
 	}
 	checks := []string{
 		"orchicon.safety=v13",
-		"Identify the previous worker",
-		".orchicon/<workflow-run>/worker",
-		"Execution history",
-		"Previous worker was a planner",
-		"reviewing the PLAN, not the implementation",
-		"Previous worker was an implementer",
-		"approve based on the overall status of the previous step",
-		"Do not review diffs or inspect the implementation line by line",
+		"review the design/architecture PLAN only",
+		"plan is sound and complete; implementation may begin",
+		"plan does not meet the bar",
+		"acceptance criterion",
 	}
 	for _, c := range checks {
 		if !strings.Contains(agents, c) {
-			t.Errorf("AI Approver agents_md missing %q", c)
+			t.Errorf("Design Approver agents_md missing %q", c)
 		}
 	}
-	// The old diff/line-by-line expectations must be gone.
-	for _, gone := range []string{"Review the upstream context, diff", "code quality, test coverage"} {
+	// The old context-switching inference must be gone from the design
+	// approver: it never identifies a previous worker or reviews an
+	// implementation.
+	for _, gone := range []string{"Identify the previous worker", "Previous worker was an implementer", "review the outcome of the QA/review loop"} {
 		if strings.Contains(agents, gone) {
-			t.Errorf("AI Approver agents_md should no longer contain %q", gone)
+			t.Errorf("Design Approver agents_md should no longer contain %q", gone)
+		}
+	}
+}
+
+// TestSeedCodeApproverCarriesCodeReviewContract: the canned Code Approver's
+// seed content must statically verify DONE-ness of the completed
+// implementation after QA/PR — not the design, and not inferred from who
+// ran before it.
+func TestSeedCodeApproverCarriesCodeReviewContract(t *testing.T) {
+	pool := seedTestPool(t)
+	ctx := context.Background()
+	const cannedID = "w_se_code_approver"
+
+	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	var agents string
+	if err := pool.QueryRow(ctx,
+		`SELECT agents_md FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+		cannedID).Scan(&agents); err != nil {
+		t.Fatalf("query canned Code Approver agents: %v", err)
+	}
+	checks := []string{
+		"orchicon.safety=v13",
+		"review the completed IMPLEMENTATION",
+		"do not re-review it",
+		"implementation is done and meets the acceptance criteria",
+		"implementation is not done",
+		"acceptance criterion",
+	}
+	for _, c := range checks {
+		if !strings.Contains(agents, c) {
+			t.Errorf("Code Approver agents_md missing %q", c)
+		}
+	}
+	// The old context-switching inference must be gone from the code
+	// approver: it never identifies a previous worker or reviews a plan.
+	for _, gone := range []string{"Identify the previous worker", "Previous worker was a planner", "There is no implementation to inspect"} {
+		if strings.Contains(agents, gone) {
+			t.Errorf("Code Approver agents_md should no longer contain %q", gone)
 		}
 	}
 }

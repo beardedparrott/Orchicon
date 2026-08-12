@@ -121,8 +121,8 @@ func newApprovalTestEnv(t *testing.T) *approvalTestEnv {
 		ID:   "step-approval",
 		Name: "Approve",
 		Kind: domain.StepKindApproval,
-		Ref:  "w_se_ai_approver",
-		Config: `{"reviewer":"worker","worker_ref":"w_se_ai_approver","max_iterations":3}`,
+		Ref:  "w_se_code_approver",
+		Config: `{"reviewer":"worker","worker_ref":"w_se_code_approver","max_iterations":3}`,
 	}
 	sr, err := db.CreateWorkflowStepRun(ctx, ttx.Tx, db.WorkflowStepRunRow{
 		ID: db.NewID(), TenantID: approvalTestTenant,
@@ -217,8 +217,8 @@ func TestApprovalDispatchCreatesNoWorkItems(t *testing.T) {
 	if res.Prompt == "" {
 		t.Errorf("_prompt is empty — the approver would run without context")
 	}
-	if res.WorkerID != "w_se_ai_approver" {
-		t.Errorf("_worker_id = %q, want w_se_ai_approver", res.WorkerID)
+	if res.WorkerID != "w_se_code_approver" {
+		t.Errorf("_worker_id = %q, want w_se_code_approver", res.WorkerID)
 	}
 	if res.WorkerVersion <= 0 {
 		t.Errorf("_worker_version = %d, want the resolved published version", res.WorkerVersion)
@@ -268,7 +268,7 @@ func TestApprovalRetryDoesNotCloneTicket(t *testing.T) {
 	exec, err := db.CreateExecution(ctx, ttx.Tx, db.ExecutionRow{
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		ProjectID: env.projectID, TaskID: env.ticketID,
-		WorkerID: "w_se_ai_approver", WorkerVersion: 1,
+		WorkerID: "w_se_code_approver", WorkerVersion: 1,
 		Status: domain.ExecutionFailed, HealthState: domain.HealthTerminating,
 		StartedAt: &now, EndedAt: &now,
 		WorkflowRunID: env.run.ID, WorkflowStepID: env.step.ID,
@@ -380,7 +380,7 @@ func TestApprovalDispatchFailsWithoutTicket(t *testing.T) {
 	}
 	step := workflow.StepWire{
 		ID: "step-approval", Name: "Approve", Kind: domain.StepKindApproval,
-		Ref:    "w_se_ai_approver",
+		Ref:    "w_se_code_approver",
 		Config: `{"reviewer":"worker"}`,
 	}
 	sr, err := db.CreateWorkflowStepRun(ctx, ttx.Tx, db.WorkflowStepRunRow{

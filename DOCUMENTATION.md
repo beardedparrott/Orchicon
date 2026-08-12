@@ -674,7 +674,8 @@ open http://localhost:8080
 | PR Reviewer | Code review — finds bugs, security issues, and correctness problems |
 | QA Engineer | Functional and regression testing — validates acceptance criteria |
 | DevOps Engineer | Repository setup (early steps) and PR/merge after approval (late steps) |
-| AI Approver | Worker-backed approval — evaluates context and outputs approve/reject |
+| Design Approver | Worker-backed approval of the architecture/design plan — reviews the plan against acceptance criteria, approve/reject |
+| Code Approver | Worker-backed approval of the completed implementation — verifies done-ness after QA/PR, approve/reject |
 | Principal Software Architect | Architecture design, ADR documentation, and technical strategy |
 | UI Design Architect | Design systems, design tokens, UI architecture, accessibility/UX standards |
 | UI Developer | Hands-on UI implementation — accessible, responsive, design-system-driven frontend work |
@@ -774,7 +775,7 @@ The **Approval** step kind blocks a workflow at a human (or AI) review gate. It 
 
 **Worker-backed approval (AI Approver):**
 1. In the step's Properties Panel, set **Reviewer** to **Worker**
-2. Select an approver worker (e.g. AI Approver — an opinionated worker that outputs approve/reject)
+2. Select an approver worker (e.g. Design Approver for an architecture/design plan, Code Approver for a completed implementation — each has a fixed review contract, no runtime role-guessing)
 3. The step dispatches the approver worker like a task step, against the run's **shared work item** (the ticket from an upstream WORK_ITEM marker or the run's bound item) — no per-step approval work item is ever created; the **step run itself is the approval record**, carrying the composite prompt, the approver worker pin, the upstream review context, and the decision. Work Items stay clean — no "Approval: …" clutter rows.
 4. The worker's `ORCHICON WORKER SUMMARY` output determines the decision:
    - `success` → approved, workflow proceeds
