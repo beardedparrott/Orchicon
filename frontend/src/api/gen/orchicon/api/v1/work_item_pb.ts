@@ -403,6 +403,22 @@ export class WorkItem extends Message<WorkItem> {
    */
   sortOrder = 0;
 
+  /**
+   * recurring_schedule holds the recurrence definition (frequency, interval,
+   * days, start_date, start_time). NULL = not recurring.
+   *
+   * @generated from field: optional orchicon.api.v1.RecurringSchedule recurring_schedule = 29;
+   */
+  recurringSchedule?: RecurringSchedule;
+
+  /**
+   * next_run_at is the computed next occurrence of a recurring item, used by
+   * the scheduler due-scan. NULL = not recurring or no next occurrence.
+   *
+   * @generated from field: google.protobuf.Timestamp next_run_at = 30;
+   */
+  nextRunAt?: Timestamp;
+
   constructor(data?: PartialMessage<WorkItem>) {
     super();
     proto3.util.initPartial(data, this);
@@ -438,6 +454,8 @@ export class WorkItem extends Message<WorkItem> {
     { no: 26, name: "context_files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
     { no: 27, name: "acceptance_review", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 28, name: "sort_order", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+    { no: 29, name: "recurring_schedule", kind: "message", T: RecurringSchedule, opt: true },
+    { no: 30, name: "next_run_at", kind: "message", T: Timestamp },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkItem {
@@ -454,6 +472,80 @@ export class WorkItem extends Message<WorkItem> {
 
   static equals(a: WorkItem | PlainMessage<WorkItem> | undefined, b: WorkItem | PlainMessage<WorkItem> | undefined): boolean {
     return proto3.util.equals(WorkItem, a, b);
+  }
+}
+
+/**
+ * RecurringSchedule defines the recurrence pattern for a recurring work item.
+ * Stored as JSONB in the recurring_schedule column. NULL = not recurring.
+ *
+ * @generated from message orchicon.api.v1.RecurringSchedule
+ */
+export class RecurringSchedule extends Message<RecurringSchedule> {
+  /**
+   * minute | hourly | daily | weekly | monthly
+   *
+   * @generated from field: string frequency = 1;
+   */
+  frequency = "";
+
+  /**
+   * >= 1 (e.g. every 2 hours)
+   *
+   * @generated from field: int32 interval = 2;
+   */
+  interval = 0;
+
+  /**
+   * subset of Mon,Tue,Wed,Thu,Fri,Sat,Sun; empty = every day
+   *
+   * @generated from field: repeated string days = 3;
+   */
+  days: string[] = [];
+
+  /**
+   * YYYY-MM-DD (first occurrence date)
+   *
+   * @generated from field: string start_date = 4;
+   */
+  startDate = "";
+
+  /**
+   * HH:MM (time of day for occurrences)
+   *
+   * @generated from field: string start_time = 5;
+   */
+  startTime = "";
+
+  constructor(data?: PartialMessage<RecurringSchedule>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RecurringSchedule";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "frequency", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "interval", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 3, name: "days", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 4, name: "start_date", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "start_time", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RecurringSchedule {
+    return new RecurringSchedule().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RecurringSchedule {
+    return new RecurringSchedule().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RecurringSchedule {
+    return new RecurringSchedule().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RecurringSchedule | PlainMessage<RecurringSchedule> | undefined, b: RecurringSchedule | PlainMessage<RecurringSchedule> | undefined): boolean {
+    return proto3.util.equals(RecurringSchedule, a, b);
   }
 }
 

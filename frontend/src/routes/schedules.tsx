@@ -67,6 +67,7 @@ import {
   sequenceParentIds,
 } from "@/components/work-items/sequence-utils";
 import { cn } from "@/lib/utils";
+import { formatRecurrence } from "@/components/work-items/RecurringScheduleForm";
 import { Route as rootRoute } from "@/routes/__root";
 import {
   ACTIVE_RUNNING_STATUSES,
@@ -1332,14 +1333,11 @@ function RunChip({ workflowId, runId }: { workflowId: string; runId: string }) {
   );
 }
 
-// Recurring scheduled tasks are a future backend feature (design §5).
-// Today every scheduled item is one-time; when a recurrence/cron field
-// lands on the work item, ONLY this helper changes — the frequency slot
-// already exists on every card, so the layout does not reflow. The `item`
-// parameter is the future recurrence contract (kept for the signature).
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function recurrenceBadge(_item: WorkItemProto): string {
-  return "One-time";
+// Recurring scheduled tasks: when a recurrence/cron field lands on the work
+// item, this helper returns the human-readable badge string. The frequency
+// slot already exists on every card, so the layout does not reflow.
+function recurrenceBadge(item: WorkItemProto): string {
+  return formatRecurrence(item.recurringSchedule);
 }
 
 // ---------------------------------------------------------------------------

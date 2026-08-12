@@ -19,6 +19,7 @@ import { EntityYamlView } from "@/components/EntityYamlView";
 import { FileBrowser } from "@/components/FileBrowser";
 import { Markdown } from "@/components/markdown";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
+import { RecurringScheduleForm, formatRecurrence } from "@/components/work-items/RecurringScheduleForm";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -36,6 +37,7 @@ import { computeSequencePositions } from "@/components/work-items/sequence-utils
 import { kindLabel, kindMeta, statusMeta, isTerminal, MANUALLY_UNMOVABLE_STATUSES } from "@/components/work-items/work-item-meta";
 import { cn } from "@/lib/utils";
 import { Timestamp } from "@bufbuild/protobuf";
+import { RecurringSchedule } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { Route as rootRoute } from "@/routes/__root";
 
 // Work item detail (docs/10 §5, docs/02 §2.2). Shows the item's kind,
@@ -78,6 +80,7 @@ function WorkItemDetailPage() {
   const [editParentId, setEditParentId] = useState("");
   const [editKind, setEditKind] = useState(0);
   const [editContextFiles, setEditContextFiles] = useState<string[]>([]);
+  const [editRecurringSchedule, setEditRecurringSchedule] = useState<RecurringSchedule | undefined>(undefined);
 
   const { data: workflows } = useListWorkflows({ status: 2, templatesOnly: true }); // published templates only
 
@@ -247,6 +250,11 @@ function WorkItemDetailPage() {
                 setStatus(item.status);
                 setEditKind(item.kind);
                 setEditContextFiles(item.contextFiles ?? []);
+                setEditRecurringSchedule(
+                  item.recurringSchedule
+                    ? new RecurringSchedule(item.recurringSchedule)
+                    : undefined,
+                );
                 setEditing(true);
               }}
             >
@@ -320,6 +328,15 @@ function WorkItemDetailPage() {
               item.contextFiles && item.contextFiles.length > 0
                 ? item.contextFiles
                 : undefined,
+            recurring_schedule: item.recurringSchedule
+              ? {
+                  frequency: item.recurringSchedule.frequency,
+                  interval: item.recurringSchedule.interval,
+                  days: item.recurringSchedule.days.length > 0 ? item.recurringSchedule.days : undefined,
+                  start_date: item.recurringSchedule.startDate || undefined,
+                  start_time: item.recurringSchedule.startTime || undefined,
+                }
+              : undefined,
             version: item.version,
             created_at: item.createdAt
               ? new Date(Number(item.createdAt.seconds) * 1000).toISOString()
@@ -361,6 +378,19 @@ function WorkItemDetailPage() {
               // (orphan, or line removed) stays unchanged instead of
               // erroring on every save.
               parentId: str("parent_id") || undefined,
+              // recurring_schedule is parsed from the YAML object if present;
+              // an absent field leaves it unchanged.
+              recurringSchedule: parsed.recurring_schedule
+                ? new RecurringSchedule({
+                    frequency: String((parsed.recurring_schedule as Record<string, unknown>).frequency ?? "daily"),
+                    interval: Number((parsed.recurring_schedule as Record<string, unknown>).interval ?? 1),
+                    days: Array.isArray((parsed.recurring_schedule as Record<string, unknown>).days)
+                      ? ((parsed.recurring_schedule as Record<string, unknown>).days as unknown[]).map(String)
+                      : [],
+                    startDate: String((parsed.recurring_schedule as Record<string, unknown>).start_date ?? ""),
+                    startTime: String((parsed.recurring_schedule as Record<string, unknown>).start_time ?? ""),
+                  })
+                : undefined,
             });
           }}
           saveDisabled={updateWorkItem.isPending}
@@ -418,6 +448,24 @@ function WorkItemDetailPage() {
               />
               <Label htmlFor="autoStart">Start immediately on save</Label>
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {editing && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Recurring schedule</CardTitle>
+            <CardDescription>
+              Set a recurrence pattern. Setting this flips the item to
+              recurring status; clearing it resets to non-recurring.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <RecurringScheduleForm
+              value={editRecurringSchedule}
+              onChange={setEditRecurringSchedule}
+            />
           </CardContent>
         </Card>
       )}
@@ -552,6 +600,16 @@ function WorkItemDetailPage() {
               <CardDescription>Next Run</CardDescription>
               <CardTitle className="text-sm font-normal">
                 {new Date(Number(item.scheduledStartAt.seconds) * 1000).toLocaleString()}
+              </CardTitle>
+            </CardHeader>
+          </Card>
+        )}
+        {item.recurringSchedule && (
+          <Card>
+            <CardHeader>
+              <CardDescription>Recurrence</CardDescription>
+              <CardTitle className="text-sm font-normal">
+                {formatRecurrence(item.recurringSchedule)}
               </CardTitle>
             </CardHeader>
           </Card>
@@ -835,6 +893,7 @@ function WorkItemDetailPage() {
                   parentId: editParentId || undefined,
                   kind: kindChanging ? editKind : undefined,
                   contextFiles: { files: editContextFiles },
+                  recurringSchedule: editRecurringSchedule,
                 },
                 { onSuccess: () => setEditing(false) },
               );
