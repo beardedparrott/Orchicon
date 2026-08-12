@@ -70,6 +70,11 @@ func askStallRepetitionWindow() time.Duration {
 // only for events already filtered to our session id. The event goroutine
 // and the stall ticker both touch it, so it is mutex-guarded.
 type chatStallMonitor struct {
+	// modelRef is the model this turn dispatched on (provider/model), carried
+	// so the stall reason can name it — the single most useful diagnostic
+	// when a turn wedges (a rate-limited or unavailable model looks exactly
+	// like a "stuck" model to the user).
+	modelRef string
 	mu sync.Mutex
 
 	noProgressWindow time.Duration
@@ -90,8 +95,9 @@ type chatStallMonitor struct {
 	fired bool
 }
 
-func newChatStallMonitor() *chatStallMonitor {
+func newChatStallMonitor(modelRef string) *chatStallMonitor {
 	return &chatStallMonitor{
+		modelRef:         modelRef,
 		noProgressWindow: askStallNoProgressWindow(),
 		repetitionCount:  askStallRepetitionCount(),
 		repetitionWindow: askStallRepetitionWindow(),
@@ -115,9 +121,21 @@ func (m *chatStallMonitor) observe(etype string, part map[string]any) {
 	case "tool_use":
 		m.lastActivity = now
 		// Signature = tool name + args. Repeating the exact same call (same
-		// tool, same args) is the loop signal (mirrors progress.go).
+		// tool, same args) is the loop signal (mirrors progress.go). The
+		// opencode v1.x tool part nests the input under `state.input` (see
+		// LegacyEventFromBus), NOT `input`/`args` — reading the top-level
+		// fields made every bash call collapse to `bash|null` and tripped
+		// repetition on legitimately distinct commands (8 different git
+		// commands → "8 repeats of bash|null"). Fall back to the legacy
+		// fields for test-shaped parts.
 		tool, _ := part["tool"].(string)
-		args := part["input"]
+		var args any
+		if state, ok := part["state"].(map[string]any); ok {
+			args = state["input"]
+		}
+		if args == nil {
+			args = part["input"]
+		}
 		if args == nil {
 			args = part["args"]
 		}
@@ -137,7 +155,10 @@ func (m *chatStallMonitor) observe(etype string, part map[string]any) {
 }
 
 // stallReason returns a non-empty stall reason when a signal has tripped
-// (once, latched), else "". The ticker calls it on its interval.
+// (once, latched), else "". The ticker calls it on its interval. The reason
+// names the model the turn dispatched on so the surfaced error tells the
+// user WHICH model wedged — a rate-limited or unavailable provider is the
+// most common cause of a "stalled" Ask Orchicon turn.
 func (m *chatStallMonitor) stallReason() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -147,7 +168,7 @@ func (m *chatStallMonitor) stallReason() string {
 	now := m.now()
 	if now.Sub(m.lastActivity) > m.noProgressWindow {
 		m.fired = true
-		return fmt.Sprintf("stalled:no_progress (%s with no activity)", m.noProgressWindow)
+		return fmt.Sprintf("stalled:no_progress (%s with no activity from model %s)", m.noProgressWindow, m.modelRef)
 	}
 	if m.repetitionCount > 0 {
 		cutoff := now.Add(-m.repetitionWindow)
@@ -161,7 +182,7 @@ func (m *chatStallMonitor) stallReason() string {
 			m.sigs[sig] = kept
 			if len(kept) > m.repetitionCount {
 				m.fired = true
-				return fmt.Sprintf("stalled:repetition (%d repeats of %s within %s)", len(kept), sig, m.repetitionWindow)
+				return fmt.Sprintf("stalled:repetition (%d repeats of %s within %s on model %s)", len(kept), sig, m.repetitionWindow, m.modelRef)
 			}
 		}
 	}

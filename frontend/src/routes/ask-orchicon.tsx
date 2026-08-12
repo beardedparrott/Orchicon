@@ -27,6 +27,7 @@ import {
   useSetConversationMode,
   askKeys,
 } from "@/api/askOrchicon";
+import { useGetSettings } from "@/api/settings";
 import { askOrchiconClient } from "@/api/clients";
 import { useToast, useToastStore } from "@/components/ui/toast";
 import { ConversationMode } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
@@ -144,6 +145,12 @@ const EMPTY_STREAM: ConvStream = {
   items: [],
 };
 
+// The server's last-resort fallback when no Ask Orchicon model is configured
+// (conversation model_ref empty AND tenant default empty). Mirrors chat.go's
+// hardcoded fallback — the free model is rate-limited and is the #1 cause of
+// "Ask Orchicon is stuck" (a silent provider 429 looks like a stall).
+const FALLBACK_ASK_MODEL = "opencode/deepseek-v4-flash-free";
+
 function AskOrchiconPage() {
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
   const toast = useToast();
@@ -191,11 +198,26 @@ function AskOrchiconPage() {
     { refetchInterval: isStreaming ? 2000 : false },
   );
   const { data: activeConv } = useGetConversation(activeConvId ?? "");
+  const { data: settings } = useGetSettings();
   const createConv = useCreateConversation();
   const deleteConv = useDeleteConversation();
   const abortTurn = useAbortConversationTurn();
   const setMode = useSetConversationMode();
   const qc = useQueryClient();
+
+  // The effective model answering this conversation: the conversation's own
+  // model_ref wins, then the tenant default, then the server's free fallback.
+  // Surfacing this directly answers "which model is answering?" — the most
+  // common cause of a stuck turn is a silently-fallen-back free model.
+  const effectiveModel = useMemo(
+    () =>
+      activeConv?.modelRef ||
+      settings?.defaultAskOrchiconModel ||
+      FALLBACK_ASK_MODEL,
+    [activeConv?.modelRef, settings?.defaultAskOrchiconModel],
+  );
+  const isUsingFallbackModel =
+    !activeConv?.modelRef && !settings?.defaultAskOrchiconModel;
 
   // Sync local mode from active conversation when it loads.
   useEffect(() => {
@@ -550,11 +572,45 @@ function AskOrchiconPage() {
                     Orchicon
                   </span>
                 )}
+                {/* The model answering this conversation — surfaced so a
+                    silent fallback to the free model is never invisible. */}
+                <span
+                  className={cn(
+                    "shrink-0 max-w-[220px] truncate inline-flex items-center rounded-md px-2 py-0.5 font-mono text-[10px]",
+                    isUsingFallbackModel
+                      ? "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300"
+                      : "bg-muted text-muted-foreground",
+                  )}
+                  title={
+                    isUsingFallbackModel
+                      ? "No Ask Orchicon model is configured — using the free fallback model, which is rate-limited and can appear stuck."
+                      : "The model answering this conversation"
+                  }
+                >
+                  {effectiveModel}
+                </span>
               </div>
               <Button variant="ghost" size="sm" onClick={handleNewChat}>
                 <Plus className="h-4 w-4" />
               </Button>
             </div>
+
+            {/* Fallback-model warning: no Ask Orchicon model is configured,
+                so the server is answering with the free fallback model. That
+                model is rate-limited and is the #1 cause of a stuck turn —
+                surfacing it turns a confusing "Orchicon is thinking" into an
+                actionable "your model config is missing". */}
+            {isUsingFallbackModel && (
+              <div className="flex items-start gap-2 border-b border-amber-300/40 bg-amber-50/60 px-6 py-2 text-xs text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-300">
+                <RefreshCw className="mt-0.5 h-3 w-3 shrink-0" />
+                <span className="min-w-0 [overflow-wrap:anywhere]">
+                  No Ask Orchicon model is configured — answering with the free
+                  fallback model (<span className="font-mono">{effectiveModel}</span>),
+                  which is rate-limited and can appear stuck. Set a model in
+                  Settings → Default models.
+                </span>
+              </div>
+            )}
 
             {/* Messages — auto-stick scroll */}
             <ChatScrollContainer
@@ -626,11 +682,18 @@ function AskOrchiconPage() {
                 {/* Thinking indicator — visible until any streaming content arrives */}
                 {isThinking && groupedStream.length === 0 && (
                   <div className="flex justify-start">
-                    <div className="rounded-2xl rounded-tl-sm border border-sky-300/30 bg-sky-50/20 px-4 py-3 dark:border-sky-950/40 dark:bg-sky-950/10">
+                    <div className="max-w-[88%] rounded-2xl rounded-tl-sm border border-sky-300/30 bg-sky-50/20 px-4 py-3 dark:border-sky-950/40 dark:bg-sky-950/10">
                       <div className="flex items-center gap-2">
-                        <span className="inline-block h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse" />
-                        <span className="text-sm text-muted-foreground">
-                          Orchicon is thinking…
+                        <span className="shrink-0 inline-block h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse" />
+                        <span className="min-w-0 text-sm text-muted-foreground [overflow-wrap:anywhere]">
+                          Orchicon is thinking
+                          {isUsingFallbackModel && (
+                            <span className="text-muted-foreground/70">
+                              {" "}
+                              ({effectiveModel} — free fallback, may be rate-limited)
+                            </span>
+                          )}
+                          …
                         </span>
                       </div>
                     </div>
@@ -744,14 +807,25 @@ function MessageBubble({
   }
 
   if (isError) {
+    const errModel = message.metadata?.modelRef;
     return (
       <div className="flex justify-start">
         <div className="max-w-[88%] rounded-2xl rounded-tl-sm border border-destructive/50 bg-destructive/10 px-4 py-3">
           <p className="text-sm text-destructive mb-1">
             {message.metadata?.error}
           </p>
+          {/* The model the failed turn dispatched on — a stalled Ask Orchicon
+              turn is almost always a model/provider problem (rate limit,
+              quota, unavailable model), and naming it turns a mystery into a
+              fixable config check. */}
+          {errModel && (
+            <p className="text-xs text-muted-foreground mt-1 [overflow-wrap:anywhere]">
+              Model: <span className="font-mono">{errModel}</span> — if this
+              repeats, check Settings → Default models.
+            </p>
+          )}
           {onRetry && (
-            <Button variant="outline" size="sm" onClick={onRetry}>
+            <Button variant="outline" size="sm" onClick={onRetry} className="mt-2">
               <RefreshCw className="h-3.5 w-3.5 mr-1" />
               Retry
             </Button>

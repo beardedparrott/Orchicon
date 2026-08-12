@@ -450,7 +450,14 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// interaction — the reply is collected detached). ---
 	modelRef := s.modelRefOrFallback(ctx, tenantID, conv.ModelRef)
 	if modelRef == "" {
+		// No model configured anywhere (conversation, tenant default): fall
+		// back to the free model. This is the silent failure that turned
+		// into "Ask Orchicon is stuck" for users — the free model is
+		// rate-limited and wedges turns. Log it loudly so the operator
+		// knows a model setting is missing.
 		modelRef = "opencode/deepseek-v4-flash-free"
+		s.log.Warn("ask orchicon using fallback free model — no model configured for conversation or tenant default",
+			"conversation", convID, "tenant", tenantID, "model", modelRef)
 	}
 
 	ttx, err = s.pool.BeginTenantTx(ctx, tenantID)
@@ -929,7 +936,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 	// ticker polls on a bounded interval (≤30s, ≥1s) so a trip is detected
 	// promptly; the monitor is fed only after sent == true (pre-accept
 	// events belong to a prior turn draining on the shared bus).
-	monitor := newChatStallMonitor()
+	monitor := newChatStallMonitor(c.modelRef)
 	stallTick := monitor.noProgressWindow
 	if rw := monitor.repetitionWindow; rw < stallTick {
 		stallTick = rw
@@ -954,7 +961,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 			// message).
 			return turnAttemptResult{kind: turnFailed, text: reply.String(), reasoning: reasoning, err: context.Cause(subCtx)}
 		case <-window.C:
-			return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("reply timed out after %s — the model may be overloaded or unavailable", askReplyWindow())}
+			return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("reply timed out after %s on model %s — the model may be overloaded or unavailable. Check the Ask Orchicon model in Settings → Default models, then retry.", askReplyWindow(), c.modelRef)}
 		case <-handshake.C:
 			if !sent {
 				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("the opencode serve did not accept the message within %s — please try again", askTimeout())}
@@ -963,10 +970,12 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 			if reason := monitor.stallReason(); reason != "" {
 				// The model has stopped making progress: interrupt it NOW
 				// (the same abort the Stop button uses) and fail the turn
-				// with a clear, retryable message.
+				// with a clear, retryable message that names the model —
+				// a rate-limited or unavailable provider looks exactly
+				// like a "stuck" model to the user.
 				_ = c.client.Abort(context.WithoutCancel(subCtx), sid)
-				s.log.Warn("ask orchicon turn stalled", "conversation", c.convID, "session", sid, "reason", reason)
-				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("The model appears to be stuck (%s). The turn was interrupted — send a message or retry to continue.", reason)}
+				s.log.Warn("ask orchicon turn stalled", "conversation", c.convID, "session", sid, "model", c.modelRef, "reason", reason)
+				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("The model (%s) stopped responding (%s). This is often a provider/model issue (rate limit, quota, or an unavailable model). Check the Ask Orchicon model in Settings → Default models, then retry.", c.modelRef, reason)}
 			}
 		case res := <-sendCh:
 			if res != nil {
