@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, SetConversationModeRequest, SetConversationModeResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse } from "./ask_orchicon_service_pb.js";
+import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, SetConversationModeRequest, SetConversationModeResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse } from "./ask_orchicon_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -115,6 +115,9 @@ export const AskOrchiconService = {
      * ReasoningChunk / ToolCallResult / ErrorChunk / DoneSignal events are
      * retained for a future SSE surface but are not emitted by the current
      * implementation.
+     * buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE — ChatStreamResponse is
+     * deliberately shared with InterjectConversationTurn (the interject stream
+     * is the same oneof: TextChunk / ReasoningChunk / TurnStarted).
      *
      * @generated from rpc orchicon.api.v1.AskOrchiconService.ChatStream
      */
@@ -139,6 +142,28 @@ export const AskOrchiconService = {
       I: AbortConversationTurnRequest,
       O: AbortConversationTurnResponse,
       kind: MethodKind.Unary,
+    },
+    /**
+     * InterjectConversationTurn sends a message that SUPERSEDES an in-flight
+     * turn (the chat equivalent of a worker-execution nudge, but with an
+     * interrupt): the current turn's collector is cancelled, the
+     * conversation's opencode session is aborted so the model stops generating
+     * NOW, and the interjection is dispatched on a fresh turn that ack a new
+     * assistant message id and streams TextChunk / ReasoningChunk events live.
+     * The superseded turn's partial content is persisted as a plain assistant
+     * message (skipped entirely when nothing arrived). Idempotent: interjecting
+     * a conversation with no running turn behaves exactly like ChatStream.
+     * buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE — the interject stream is the
+     * same ChatStreamResponse oneof as ChatStream (TextChunk / ReasoningChunk /
+     * TurnStarted); reusing the type is deliberate.
+     *
+     * @generated from rpc orchicon.api.v1.AskOrchiconService.InterjectConversationTurn
+     */
+    interjectConversationTurn: {
+      name: "InterjectConversationTurn",
+      I: InterjectConversationTurnRequest,
+      O: ChatStreamResponse,
+      kind: MethodKind.ServerStreaming,
     },
     /**
      * UploadAttachment uploads a file attachment for use in a message.

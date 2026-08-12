@@ -68,6 +68,9 @@ const (
 	// AskOrchiconServiceAbortConversationTurnProcedure is the fully-qualified name of the
 	// AskOrchiconService's AbortConversationTurn RPC.
 	AskOrchiconServiceAbortConversationTurnProcedure = "/orchicon.api.v1.AskOrchiconService/AbortConversationTurn"
+	// AskOrchiconServiceInterjectConversationTurnProcedure is the fully-qualified name of the
+	// AskOrchiconService's InterjectConversationTurn RPC.
+	AskOrchiconServiceInterjectConversationTurnProcedure = "/orchicon.api.v1.AskOrchiconService/InterjectConversationTurn"
 	// AskOrchiconServiceUploadAttachmentProcedure is the fully-qualified name of the
 	// AskOrchiconService's UploadAttachment RPC.
 	AskOrchiconServiceUploadAttachmentProcedure = "/orchicon.api.v1.AskOrchiconService/UploadAttachment"
@@ -113,6 +116,9 @@ type AskOrchiconServiceClient interface {
 	// ReasoningChunk / ToolCallResult / ErrorChunk / DoneSignal events are
 	// retained for a future SSE surface but are not emitted by the current
 	// implementation.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE — ChatStreamResponse is
+	// deliberately shared with InterjectConversationTurn (the interject stream
+	// is the same oneof: TextChunk / ReasoningChunk / TurnStarted).
 	ChatStream(context.Context, *connect.Request[v1.ChatStreamRequest]) (*connect.ServerStreamForClient[v1.ChatStreamResponse], error)
 	// AbortConversationTurn aborts the in-flight turn on a conversation's
 	// opencode session (the Stop button). The session itself is kept alive
@@ -121,6 +127,19 @@ type AskOrchiconServiceClient interface {
 	// assistant message id. Idempotent: aborting a conversation with no
 	// running turn is a no-op.
 	AbortConversationTurn(context.Context, *connect.Request[v1.AbortConversationTurnRequest]) (*connect.Response[v1.AbortConversationTurnResponse], error)
+	// InterjectConversationTurn sends a message that SUPERSEDES an in-flight
+	// turn (the chat equivalent of a worker-execution nudge, but with an
+	// interrupt): the current turn's collector is cancelled, the
+	// conversation's opencode session is aborted so the model stops generating
+	// NOW, and the interjection is dispatched on a fresh turn that ack a new
+	// assistant message id and streams TextChunk / ReasoningChunk events live.
+	// The superseded turn's partial content is persisted as a plain assistant
+	// message (skipped entirely when nothing arrived). Idempotent: interjecting
+	// a conversation with no running turn behaves exactly like ChatStream.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE — the interject stream is the
+	// same ChatStreamResponse oneof as ChatStream (TextChunk / ReasoningChunk /
+	// TurnStarted); reusing the type is deliberate.
+	InterjectConversationTurn(context.Context, *connect.Request[v1.InterjectConversationTurnRequest]) (*connect.ServerStreamForClient[v1.ChatStreamResponse], error)
 	// UploadAttachment uploads a file attachment for use in a message.
 	// Returns a URL that can be referenced in subsequent ChatStream calls.
 	UploadAttachment(context.Context, *connect.Request[v1.UploadAttachmentRequest]) (*connect.Response[v1.UploadAttachmentResponse], error)
@@ -199,6 +218,12 @@ func NewAskOrchiconServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(askOrchiconServiceMethods.ByName("AbortConversationTurn")),
 			connect.WithClientOptions(opts...),
 		),
+		interjectConversationTurn: connect.NewClient[v1.InterjectConversationTurnRequest, v1.ChatStreamResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceInterjectConversationTurnProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("InterjectConversationTurn")),
+			connect.WithClientOptions(opts...),
+		),
 		uploadAttachment: connect.NewClient[v1.UploadAttachmentRequest, v1.UploadAttachmentResponse](
 			httpClient,
 			baseURL+AskOrchiconServiceUploadAttachmentProcedure,
@@ -228,19 +253,20 @@ func NewAskOrchiconServiceClient(httpClient connect.HTTPClient, baseURL string, 
 
 // askOrchiconServiceClient implements AskOrchiconServiceClient.
 type askOrchiconServiceClient struct {
-	listConversations       *connect.Client[v1.ListConversationsRequest, v1.ListConversationsResponse]
-	getConversation         *connect.Client[v1.GetConversationRequest, v1.GetConversationResponse]
-	createConversation      *connect.Client[v1.CreateConversationRequest, v1.CreateConversationResponse]
-	deleteConversation      *connect.Client[v1.DeleteConversationRequest, v1.DeleteConversationResponse]
-	updateConversationTitle *connect.Client[v1.UpdateConversationTitleRequest, v1.UpdateConversationTitleResponse]
-	setConversationMode     *connect.Client[v1.SetConversationModeRequest, v1.SetConversationModeResponse]
-	listMessages            *connect.Client[v1.ListMessagesRequest, v1.ListMessagesResponse]
-	chatStream              *connect.Client[v1.ChatStreamRequest, v1.ChatStreamResponse]
-	abortConversationTurn   *connect.Client[v1.AbortConversationTurnRequest, v1.AbortConversationTurnResponse]
-	uploadAttachment        *connect.Client[v1.UploadAttachmentRequest, v1.UploadAttachmentResponse]
-	getAgentConfig          *connect.Client[v1.GetAgentConfigRequest, v1.GetAgentConfigResponse]
-	updateAgentConfig       *connect.Client[v1.UpdateAgentConfigRequest, v1.UpdateAgentConfigResponse]
-	getModelCapabilities    *connect.Client[v1.GetModelCapabilitiesRequest, v1.GetModelCapabilitiesResponse]
+	listConversations         *connect.Client[v1.ListConversationsRequest, v1.ListConversationsResponse]
+	getConversation           *connect.Client[v1.GetConversationRequest, v1.GetConversationResponse]
+	createConversation        *connect.Client[v1.CreateConversationRequest, v1.CreateConversationResponse]
+	deleteConversation        *connect.Client[v1.DeleteConversationRequest, v1.DeleteConversationResponse]
+	updateConversationTitle   *connect.Client[v1.UpdateConversationTitleRequest, v1.UpdateConversationTitleResponse]
+	setConversationMode       *connect.Client[v1.SetConversationModeRequest, v1.SetConversationModeResponse]
+	listMessages              *connect.Client[v1.ListMessagesRequest, v1.ListMessagesResponse]
+	chatStream                *connect.Client[v1.ChatStreamRequest, v1.ChatStreamResponse]
+	abortConversationTurn     *connect.Client[v1.AbortConversationTurnRequest, v1.AbortConversationTurnResponse]
+	interjectConversationTurn *connect.Client[v1.InterjectConversationTurnRequest, v1.ChatStreamResponse]
+	uploadAttachment          *connect.Client[v1.UploadAttachmentRequest, v1.UploadAttachmentResponse]
+	getAgentConfig            *connect.Client[v1.GetAgentConfigRequest, v1.GetAgentConfigResponse]
+	updateAgentConfig         *connect.Client[v1.UpdateAgentConfigRequest, v1.UpdateAgentConfigResponse]
+	getModelCapabilities      *connect.Client[v1.GetModelCapabilitiesRequest, v1.GetModelCapabilitiesResponse]
 }
 
 // ListConversations calls orchicon.api.v1.AskOrchiconService.ListConversations.
@@ -286,6 +312,11 @@ func (c *askOrchiconServiceClient) ChatStream(ctx context.Context, req *connect.
 // AbortConversationTurn calls orchicon.api.v1.AskOrchiconService.AbortConversationTurn.
 func (c *askOrchiconServiceClient) AbortConversationTurn(ctx context.Context, req *connect.Request[v1.AbortConversationTurnRequest]) (*connect.Response[v1.AbortConversationTurnResponse], error) {
 	return c.abortConversationTurn.CallUnary(ctx, req)
+}
+
+// InterjectConversationTurn calls orchicon.api.v1.AskOrchiconService.InterjectConversationTurn.
+func (c *askOrchiconServiceClient) InterjectConversationTurn(ctx context.Context, req *connect.Request[v1.InterjectConversationTurnRequest]) (*connect.ServerStreamForClient[v1.ChatStreamResponse], error) {
+	return c.interjectConversationTurn.CallServerStream(ctx, req)
 }
 
 // UploadAttachment calls orchicon.api.v1.AskOrchiconService.UploadAttachment.
@@ -339,6 +370,9 @@ type AskOrchiconServiceHandler interface {
 	// ReasoningChunk / ToolCallResult / ErrorChunk / DoneSignal events are
 	// retained for a future SSE surface but are not emitted by the current
 	// implementation.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE — ChatStreamResponse is
+	// deliberately shared with InterjectConversationTurn (the interject stream
+	// is the same oneof: TextChunk / ReasoningChunk / TurnStarted).
 	ChatStream(context.Context, *connect.Request[v1.ChatStreamRequest], *connect.ServerStream[v1.ChatStreamResponse]) error
 	// AbortConversationTurn aborts the in-flight turn on a conversation's
 	// opencode session (the Stop button). The session itself is kept alive
@@ -347,6 +381,19 @@ type AskOrchiconServiceHandler interface {
 	// assistant message id. Idempotent: aborting a conversation with no
 	// running turn is a no-op.
 	AbortConversationTurn(context.Context, *connect.Request[v1.AbortConversationTurnRequest]) (*connect.Response[v1.AbortConversationTurnResponse], error)
+	// InterjectConversationTurn sends a message that SUPERSEDES an in-flight
+	// turn (the chat equivalent of a worker-execution nudge, but with an
+	// interrupt): the current turn's collector is cancelled, the
+	// conversation's opencode session is aborted so the model stops generating
+	// NOW, and the interjection is dispatched on a fresh turn that ack a new
+	// assistant message id and streams TextChunk / ReasoningChunk events live.
+	// The superseded turn's partial content is persisted as a plain assistant
+	// message (skipped entirely when nothing arrived). Idempotent: interjecting
+	// a conversation with no running turn behaves exactly like ChatStream.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE — the interject stream is the
+	// same ChatStreamResponse oneof as ChatStream (TextChunk / ReasoningChunk /
+	// TurnStarted); reusing the type is deliberate.
+	InterjectConversationTurn(context.Context, *connect.Request[v1.InterjectConversationTurnRequest], *connect.ServerStream[v1.ChatStreamResponse]) error
 	// UploadAttachment uploads a file attachment for use in a message.
 	// Returns a URL that can be referenced in subsequent ChatStream calls.
 	UploadAttachment(context.Context, *connect.Request[v1.UploadAttachmentRequest]) (*connect.Response[v1.UploadAttachmentResponse], error)
@@ -421,6 +468,12 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 		connect.WithSchema(askOrchiconServiceMethods.ByName("AbortConversationTurn")),
 		connect.WithHandlerOptions(opts...),
 	)
+	askOrchiconServiceInterjectConversationTurnHandler := connect.NewServerStreamHandler(
+		AskOrchiconServiceInterjectConversationTurnProcedure,
+		svc.InterjectConversationTurn,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("InterjectConversationTurn")),
+		connect.WithHandlerOptions(opts...),
+	)
 	askOrchiconServiceUploadAttachmentHandler := connect.NewUnaryHandler(
 		AskOrchiconServiceUploadAttachmentProcedure,
 		svc.UploadAttachment,
@@ -465,6 +518,8 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 			askOrchiconServiceChatStreamHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceAbortConversationTurnProcedure:
 			askOrchiconServiceAbortConversationTurnHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceInterjectConversationTurnProcedure:
+			askOrchiconServiceInterjectConversationTurnHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceUploadAttachmentProcedure:
 			askOrchiconServiceUploadAttachmentHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceGetAgentConfigProcedure:
@@ -516,6 +571,10 @@ func (UnimplementedAskOrchiconServiceHandler) ChatStream(context.Context, *conne
 
 func (UnimplementedAskOrchiconServiceHandler) AbortConversationTurn(context.Context, *connect.Request[v1.AbortConversationTurnRequest]) (*connect.Response[v1.AbortConversationTurnResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.AbortConversationTurn is not implemented"))
+}
+
+func (UnimplementedAskOrchiconServiceHandler) InterjectConversationTurn(context.Context, *connect.Request[v1.InterjectConversationTurnRequest], *connect.ServerStream[v1.ChatStreamResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.InterjectConversationTurn is not implemented"))
 }
 
 func (UnimplementedAskOrchiconServiceHandler) UploadAttachment(context.Context, *connect.Request[v1.UploadAttachmentRequest]) (*connect.Response[v1.UploadAttachmentResponse], error) {

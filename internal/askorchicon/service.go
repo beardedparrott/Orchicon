@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
@@ -57,7 +58,43 @@ func New(pool *db.Pool, log *slog.Logger, blobStore blobstore.Store, modelDisc *
 		turns:        newTurnRegistry(),
 	}
 	s.registerSessionTools()
+	s.startSweeper()
 	return s
+}
+
+// startSweeper launches the background turn-registry sweeper (ADR-ASK-3): it
+// ticks every interval, evicts entries older than the TTL (cancelling the
+// collector with errTurnExpired), and for each evicted conversation aborts
+// the serve session — belt-and-suspenders on top of the stall monitor. This
+// is the "every turn has a hard backstop" guarantee: a collector that can
+// never finalize is reaped in bounded time instead of blocking the
+// conversation forever (the reported server-restart-required behaviour).
+func (s *Service) startSweeper() {
+	go func() {
+		ticker := time.NewTicker(askSweepInterval())
+		defer ticker.Stop()
+		for range ticker.C {
+			for _, ev := range s.turns.sweep(time.Now(), askTurnMaxAge()) {
+				s.log.Warn("conversation turn expired — aborting serve session", "conversation", ev.convID)
+				if s.pool == nil {
+					continue
+				}
+				ctx := context.Background()
+				ttx, err := s.pool.BeginTenantTx(ctx, ev.tenant)
+				if err != nil {
+					continue
+				}
+				conv, err := db.GetConversation(ctx, ttx.Tx, ev.tenant, ev.convID)
+				ttx.Rollback(ctx)
+				if err != nil || conv.SessionID == "" {
+					continue
+				}
+				if client := s.hostServeClient(); client != nil {
+					_ = client.Abort(ctx, conv.SessionID)
+				}
+			}
+		}
+	}()
 }
 
 // SetSendExecutionMessage wires the live-session message router (the
@@ -270,8 +307,8 @@ func (s *Service) DeleteConversation(ctx context.Context, req *connect.Request[a
 	// immediately and never persists into the deleted conversation (the
 	// collector's persist path also re-checks the conversation and would
 	// skip the write — this just makes it prompt and clean).
-	if _, ok := s.turns.cancel(req.Msg.Id); ok {
-		s.turns.remove(req.Msg.Id)
+	if token, ok := s.turns.cancel(req.Msg.Id, errUserStop); ok {
+		s.turns.remove(req.Msg.Id, token)
 	}
 	return connect.NewResponse(&apiv1.DeleteConversationResponse{}), nil
 }
