@@ -302,7 +302,7 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 	}
 	if _, err := ttx.Exec(ctx,
 		`UPDATE worker_versions
-		    SET agents_md = replace(agents_md, 'orchicon.safety=v13', 'orchicon.safety=v0')
+		    SET agents_md = replace(agents_md, 'orchicon.safety=v14', 'orchicon.safety=v0')
 		  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`, userID); err != nil {
 		t.Fatalf("stale marker: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 		userID).Scan(&agents); err != nil {
 		t.Fatalf("query adopted agents: %v", err)
 	}
-	if !strings.Contains(agents, "orchicon.safety=v13") {
+	if !strings.Contains(agents, "orchicon.safety=v14") {
 		t.Errorf("adopted worker should have been rolled forward to the current marker, got %q", agents[len(agents)-40:])
 	}
 }
@@ -389,20 +389,86 @@ func TestSeedCannedWorkersCarryDevOnlyGuard(t *testing.T) {
 	if !strings.Contains(agents, "orchicon-cnt-prod") || !strings.Contains(agents, "orchicon-cnt-dev") {
 		t.Errorf("DEV-ONLY guard must name both instances so the rule is unambiguous")
 	}
-	if !strings.Contains(agents, "orchicon.safety=v13") {
-		t.Errorf("canned worker must carry the current safety marker (orchicon.safety=v13)")
+	if !strings.Contains(agents, "orchicon.safety=v14") {
+		t.Errorf("canned worker must carry the current safety marker (orchicon.safety=v14)")
 	}
 }
 
-// TestSeedAiApproverCarriesDecisionBasis: the canned AI Approver's seed
-// content must instruct it to identify who the previous step's worker was
-// before approving — reviewing the plan only after a planner, and the
-// previous step's overall status + summary after an implementer — with no
-// line-by-line code inspection expectations.
-func TestSeedAiApproverCarriesDecisionBasis(t *testing.T) {
+// TestSeedUIWorkersAreFullStack: the UI canned workers must be full-stack
+// engineers to whom UI is a strength — never a "UI-only specialist" identity
+// that gates them out of backend work. Their seed content must claim the full
+// stack, explicitly refuse to gate work on being UI, and NOT carry the old
+// limiting identity ("specializes in UI", "X first — you also happen to be").
+func TestSeedUIWorkersAreFullStack(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
-	const cannedID = "w_se_ai_approver"
+
+	for _, canned := range []struct{ id string }{
+		{"w_ui_design_architect"},
+		{"w_ui_developer"},
+		{"w_ui_qa_engineer"},
+	} {
+		if err := db.SeedDevWorkers(ctx, pool); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		var role, skills, agents string
+		if err := pool.QueryRow(ctx,
+			`SELECT role, skills, agents_md FROM worker_versions
+			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+			canned.id).Scan(&role, &skills, &agents); err != nil {
+			t.Fatalf("query %s: %v", canned.id, err)
+		}
+		blob := role + "\n" + skills + "\n" + agents
+
+		// Full-stack framing + explicit refusal to gate on UI.
+		for _, want := range []string{
+			"full stack",
+			"Never refuse or gate work because it isn't 'UI'",
+		} {
+			if !strings.Contains(strings.ToLower(blob), strings.ToLower(want)) {
+				t.Errorf("%s seed missing %q", canned.id, want)
+			}
+		}
+
+		// The old limiting identity is gone.
+		for _, gone := range []string{
+			"specializes in UI",
+			"specialist is UI",
+			"whose specialty is UI",
+			"specialize in UI/UX",
+			"you also happen to be",
+			"a developer first",
+			"an architect first",
+			"a QA engineer first",
+		} {
+			if strings.Contains(strings.ToLower(blob), strings.ToLower(gone)) {
+				t.Errorf("%s seed still carries limiting UI-only identity %q", canned.id, gone)
+			}
+		}
+
+		// Vision-capable model pinned; never a dead/wrong model.
+		var modelRef string
+		if err := pool.QueryRow(ctx,
+			`SELECT model_ref FROM worker_versions
+			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+			canned.id).Scan(&modelRef); err != nil {
+			t.Fatalf("query %s model_ref: %v", canned.id, err)
+		}
+		if modelRef != "opencode-go/mimo-v2.5" {
+			t.Errorf("%s should keep the vision-capable model mimo-v2.5, got %q", canned.id, modelRef)
+		}
+	}
+}
+
+// TestSeedDesignApproverCarriesDesignReviewContract: the canned Design
+// Approver's seed content must statically review the PLAN only — no
+// implementation expectations, no predecessor-type inference. The review
+// type is fixed by the worker, not guessed at runtime (the split-approver
+// fix: two workflows steps no longer share one context-switching worker).
+func TestSeedDesignApproverCarriesDesignReviewContract(t *testing.T) {
+	pool := seedTestPool(t)
+	ctx := context.Background()
+	const cannedID = "w_se_design_approver"
 
 	if err := db.SeedDevWorkers(ctx, pool); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -411,28 +477,66 @@ func TestSeedAiApproverCarriesDecisionBasis(t *testing.T) {
 	if err := pool.QueryRow(ctx,
 		`SELECT agents_md FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
 		cannedID).Scan(&agents); err != nil {
-		t.Fatalf("query canned AI Approver agents: %v", err)
+		t.Fatalf("query canned Design Approver agents: %v", err)
 	}
 	checks := []string{
-		"orchicon.safety=v13",
-		"Identify the previous worker",
-		".orchicon/<workflow-run>/worker",
-		"Execution history",
-		"Previous worker was a planner",
-		"reviewing the PLAN, not the implementation",
-		"Previous worker was an implementer",
-		"approve based on the overall status of the previous step",
-		"Do not review diffs or inspect the implementation line by line",
+		"orchicon.safety=v14",
+		"review the design/architecture PLAN only",
+		"plan is sound and complete; implementation may begin",
+		"plan does not meet the bar",
+		"acceptance criterion",
 	}
 	for _, c := range checks {
 		if !strings.Contains(agents, c) {
-			t.Errorf("AI Approver agents_md missing %q", c)
+			t.Errorf("Design Approver agents_md missing %q", c)
 		}
 	}
-	// The old diff/line-by-line expectations must be gone.
-	for _, gone := range []string{"Review the upstream context, diff", "code quality, test coverage"} {
+	// The old context-switching inference must be gone from the design
+	// approver: it never identifies a previous worker or reviews an
+	// implementation.
+	for _, gone := range []string{"Identify the previous worker", "Previous worker was an implementer", "review the outcome of the QA/review loop"} {
 		if strings.Contains(agents, gone) {
-			t.Errorf("AI Approver agents_md should no longer contain %q", gone)
+			t.Errorf("Design Approver agents_md should no longer contain %q", gone)
+		}
+	}
+}
+
+// TestSeedCodeApproverCarriesCodeReviewContract: the canned Code Approver's
+// seed content must statically verify DONE-ness of the completed
+// implementation after QA/PR — not the design, and not inferred from who
+// ran before it.
+func TestSeedCodeApproverCarriesCodeReviewContract(t *testing.T) {
+	pool := seedTestPool(t)
+	ctx := context.Background()
+	const cannedID = "w_se_code_approver"
+
+	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	var agents string
+	if err := pool.QueryRow(ctx,
+		`SELECT agents_md FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+		cannedID).Scan(&agents); err != nil {
+		t.Fatalf("query canned Code Approver agents: %v", err)
+	}
+	checks := []string{
+		"orchicon.safety=v14",
+		"review the completed IMPLEMENTATION",
+		"do not re-review it",
+		"implementation is done and meets the acceptance criteria",
+		"implementation is not done",
+		"acceptance criterion",
+	}
+	for _, c := range checks {
+		if !strings.Contains(agents, c) {
+			t.Errorf("Code Approver agents_md missing %q", c)
+		}
+	}
+	// The old context-switching inference must be gone from the code
+	// approver: it never identifies a previous worker or reviews a plan.
+	for _, gone := range []string{"Identify the previous worker", "Previous worker was a planner", "There is no implementation to inspect"} {
+		if strings.Contains(agents, gone) {
+			t.Errorf("Code Approver agents_md should no longer contain %q", gone)
 		}
 	}
 }
