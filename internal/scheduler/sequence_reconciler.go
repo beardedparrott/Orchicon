@@ -212,7 +212,8 @@ func reconcileParent(ctx context.Context, tx pgx.Tx, tenantID, parentID string, 
 		}
 		return nil, nil
 	case domain.WorkItemRunning, domain.WorkItemAssigned, domain.WorkItemReady,
-		domain.WorkItemCheckpointing, domain.WorkItemRecovering, domain.WorkItemScheduled:
+		domain.WorkItemCheckpointing, domain.WorkItemRecovering, domain.WorkItemScheduled,
+		domain.WorkItemRecurring:
 		// In flight (or human-managed): wait for the current child.
 		return nil, nil
 	case domain.WorkItemPending:
@@ -319,7 +320,7 @@ func anySiblingBlocksArming(children []db.WorkItemRow) bool {
 		switch c.Status {
 		case domain.WorkItemRunning, domain.WorkItemCheckpointing,
 			domain.WorkItemRecovering, domain.WorkItemAssigned, domain.WorkItemReady,
-			domain.WorkItemScheduled,
+			domain.WorkItemScheduled, domain.WorkItemRecurring,
 			domain.WorkItemFailed, domain.WorkItemCancelled:
 			return true
 		}

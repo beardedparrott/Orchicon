@@ -306,6 +306,7 @@ function WorkItemDetailPage() {
               7: "failed",
               8: "cancelled",
               9: "recovering",
+              11: "recurring",
             } as Record<number, string>)[item.status] ?? "unknown",
             priority: item.priority,
             description: item.description || undefined,
@@ -330,7 +331,7 @@ function WorkItemDetailPage() {
           title="Work Item YAML"
           editable
           onSave={(parsed) => {
-            const statusMap: Record<string, number> = { pending: 1, scheduled: 10, ready: 2, assigned: 3, running: 4, succeeded: 6, failed: 7, cancelled: 8 };
+            const statusMap: Record<string, number> = { pending: 1, scheduled: 10, ready: 2, assigned: 3, running: 4, succeeded: 6, failed: 7, cancelled: 8, recurring: 11 };
             // Always include all known fields from the YAML. Optional text
             // fields default to "" so removing a line from YAML clears it.
             const str = (key: string): string => String(parsed[key] ?? "");
@@ -441,6 +442,7 @@ function WorkItemDetailPage() {
                   <option value={8}>cancelled</option>
                   <option value={9}>recovering</option>
                   <option value={10}>scheduled</option>
+                  <option value={11}>recurring</option>
                 </select>
               ) : (
                 ({
@@ -453,6 +455,7 @@ function WorkItemDetailPage() {
                   7: "failed",
                   8: "cancelled",
                   9: "recovering",
+                  11: "recurring",
                 } as Record<number, string>)[item.status] ?? "unknown"
               )}
             </CardTitle>

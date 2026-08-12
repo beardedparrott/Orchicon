@@ -183,6 +183,8 @@ func validateStatus(status apiv1.WorkItemStatus) string {
 		return domain.WorkItemRecovering
 	case apiv1.WorkItemStatus_WORK_ITEM_STATUS_SCHEDULED:
 		return domain.WorkItemScheduled
+	case apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECURRING:
+		return domain.WorkItemRecurring
 	default:
 		return domain.WorkItemPending
 	}
@@ -198,10 +200,10 @@ func ValidateStatus(status string) (string, error) {
 	case domain.WorkItemPending, domain.WorkItemScheduled, domain.WorkItemReady,
 		domain.WorkItemAssigned, domain.WorkItemRunning, domain.WorkItemCheckpointing,
 		domain.WorkItemSucceeded, domain.WorkItemFailed, domain.WorkItemCancelled,
-		domain.WorkItemRecovering:
+		domain.WorkItemRecovering, domain.WorkItemRecurring:
 		return status, nil
 	default:
-		return "", fmt.Errorf("status must be one of pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering")
+		return "", fmt.Errorf("status must be one of pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering, recurring")
 	}
 }
 

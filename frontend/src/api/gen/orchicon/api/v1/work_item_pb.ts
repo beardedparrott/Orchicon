@@ -157,6 +157,11 @@ export enum WorkItemStatus {
    * @generated from enum value: WORK_ITEM_STATUS_SCHEDULED = 10;
    */
   SCHEDULED = 10,
+
+  /**
+   * @generated from enum value: WORK_ITEM_STATUS_RECURRING = 11;
+   */
+  RECURRING = 11,
 }
 // Retrieve enum metadata with: proto3.getEnumType(WorkItemStatus)
 proto3.util.setEnumType(WorkItemStatus, "orchicon.api.v1.WorkItemStatus", [
@@ -171,6 +176,7 @@ proto3.util.setEnumType(WorkItemStatus, "orchicon.api.v1.WorkItemStatus", [
   { no: 8, name: "WORK_ITEM_STATUS_CANCELLED" },
   { no: 9, name: "WORK_ITEM_STATUS_RECOVERING" },
   { no: 10, name: "WORK_ITEM_STATUS_SCHEDULED" },
+  { no: 11, name: "WORK_ITEM_STATUS_RECURRING" },
 ]);
 
 /**
