@@ -37,7 +37,7 @@ import { computeSequencePositions } from "@/components/work-items/sequence-utils
 import { kindLabel, kindMeta, statusMeta, isTerminal, MANUALLY_UNMOVABLE_STATUSES } from "@/components/work-items/work-item-meta";
 import { cn } from "@/lib/utils";
 import { Timestamp } from "@bufbuild/protobuf";
-import { RecurringSchedule } from "@/api/gen/orchicon/api/v1/work_item_pb";
+import { RecurringSchedule, WorkItemKind, WorkItemStatus } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { Route as rootRoute } from "@/routes/__root";
 
 // Work item detail (docs/10 §5, docs/02 §2.2). Shows the item's kind,
@@ -264,7 +264,7 @@ function WorkItemDetailPage() {
           <Button
             variant="outline"
             onClick={handleSoftDelete}
-            disabled={deleteWorkItem.isPending || item.status === 8}
+            disabled={deleteWorkItem.isPending || item.status === WorkItemStatus.CANCELLED}
           >
             {deleteWorkItem.isPending ? "Cancelling…" : "Cancel item"}
           </Button>
@@ -297,24 +297,24 @@ function WorkItemDetailPage() {
             id: item.id,
             title: item.title,
             kind: ({
-              1: "epic",
-              2: "feature",
-              3: "task",
-              4: "subtask",
+              [WorkItemKind.EPIC]: "epic",
+              [WorkItemKind.FEATURE]: "feature",
+              [WorkItemKind.TASK]: "task",
+              [WorkItemKind.SUBTASK]: "subtask",
             } as Record<number, string>)[item.kind] ?? "unknown",
             project_id: item.projectId,
             parent_id: item.parentId || undefined,
             status: ({
-              1: "pending",
-              10: "scheduled",
-              2: "ready",
-              3: "assigned",
-              4: "running",
-              6: "succeeded",
-              7: "failed",
-              8: "cancelled",
-              9: "recovering",
-              11: "recurring",
+              [WorkItemStatus.PENDING]: "pending",
+              [WorkItemStatus.SCHEDULED]: "scheduled",
+              [WorkItemStatus.READY]: "ready",
+              [WorkItemStatus.ASSIGNED]: "assigned",
+              [WorkItemStatus.RUNNING]: "running",
+              [WorkItemStatus.SUCCEEDED]: "succeeded",
+              [WorkItemStatus.FAILED]: "failed",
+              [WorkItemStatus.CANCELLED]: "cancelled",
+              [WorkItemStatus.RECOVERING]: "recovering",
+              [WorkItemStatus.RECURRING]: "recurring",
             } as Record<number, string>)[item.status] ?? "unknown",
             priority: item.priority,
             description: item.description || undefined,
@@ -348,7 +348,17 @@ function WorkItemDetailPage() {
           title="Work Item YAML"
           editable
           onSave={(parsed) => {
-            const statusMap: Record<string, number> = { pending: 1, scheduled: 10, ready: 2, assigned: 3, running: 4, succeeded: 6, failed: 7, cancelled: 8, recurring: 11 };
+            const statusMap: Record<string, number> = {
+              pending: WorkItemStatus.PENDING,
+              scheduled: WorkItemStatus.SCHEDULED,
+              ready: WorkItemStatus.READY,
+              assigned: WorkItemStatus.ASSIGNED,
+              running: WorkItemStatus.RUNNING,
+              succeeded: WorkItemStatus.SUCCEEDED,
+              failed: WorkItemStatus.FAILED,
+              cancelled: WorkItemStatus.CANCELLED,
+              recurring: WorkItemStatus.RECURRING,
+            };
             // Always include all known fields from the YAML. Optional text
             // fields default to "" so removing a line from YAML clears it.
             const str = (key: string): string => String(parsed[key] ?? "");
@@ -478,7 +488,14 @@ function WorkItemDetailPage() {
               {editing ? (
                 <select
                   value={status}
-                  onChange={(e) => setStatus(Number(e.target.value))}
+                  onChange={(e) => {
+                    const next = Number(e.target.value);
+                    setStatus(next);
+                    // Switching away from recurring clears the schedule
+                    if (next !== WorkItemStatus.RECURRING && editRecurringSchedule) {
+                      setEditRecurringSchedule(new RecurringSchedule());
+                    }
+                  }}
                   className="rounded-md border bg-background px-2 py-1 text-sm"
                 >
                   <option value={1}>pending</option>
@@ -548,12 +565,12 @@ function WorkItemDetailPage() {
             parent picker (ADR-WIT-5); candidates are filtered by the
             SELECTED kind (a switched-to deeper kind offers deeper
             parents, an epic switched to a non-epic forces a pick). */}
-        {item.parentId || (editing && editKind !== 1) ? (
+                {item.parentId || (editing && editKind !== WorkItemKind.EPIC) ? (
           <Card>
             <CardHeader>
               <CardDescription>Parent</CardDescription>
               <CardTitle className="text-base">
-                {editing && editKind !== 1 ? (
+                {editing && editKind !== WorkItemKind.EPIC ? (
                   <WorkItemParentSelect
                     items={editProjectItems ?? []}
                     childKind={editKind}
@@ -866,9 +883,9 @@ function WorkItemDetailPage() {
                     moving.map((c) => `  • ${c.title}`).join("\n"),
                   );
                 }
-                if (editKind === 1 || editKind === 2) {
+                if (editKind === WorkItemKind.EPIC || editKind === WorkItemKind.FEATURE) {
                   lines.push(
-                    "\nWorker assignment, scheduled start, and ready/assigned/scheduled status will be cleared.",
+                    "\nWorker assignment, scheduled start, recurring schedule, and ready/assigned/scheduled status will be cleared.",
                   );
                 }
                 if (!window.confirm(lines.join("\n"))) return;
@@ -893,7 +910,10 @@ function WorkItemDetailPage() {
                   parentId: editParentId || undefined,
                   kind: kindChanging ? editKind : undefined,
                   contextFiles: { files: editContextFiles },
-                  recurringSchedule: editRecurringSchedule,
+                  recurringSchedule:
+                    kindChanging && (editKind === WorkItemKind.EPIC || editKind === WorkItemKind.FEATURE)
+                      ? new RecurringSchedule()
+                      : editRecurringSchedule,
                 },
                 { onSuccess: () => setEditing(false) },
               );

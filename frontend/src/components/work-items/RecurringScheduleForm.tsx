@@ -47,7 +47,9 @@ export function RecurringScheduleForm({
   const handleToggle = (on: boolean) => {
     setEnabled(on);
     if (!on) {
-      onChange(undefined);
+      // Emit an empty message to signal "clear" — proto3 optional presence
+      // means undefined = unchanged, empty message = clear.
+      onChange(new RecurringSchedule());
     } else {
       // Default: daily, interval 1, start_date = today
       const today = new Date();
