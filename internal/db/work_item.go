@@ -68,9 +68,18 @@ type WorkItemRow struct {
 	// (internal/contextfiles). Read-only input, never mutated by the
 	// reconcilers.
 	ContextFiles []byte // jsonb
-	Version      int
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// RecurringSchedule is the JSONB recurrence definition
+	// {frequency, interval, days[], start_date, start_time}.
+	// NULL = not recurring. Stored as raw bytes; validated at the API
+	// boundary (validate.go).
+	RecurringSchedule []byte // jsonb
+	// NextRunAt is the computed next occurrence of a recurring item,
+	// used by the scheduler due-scan cursor. NULL = not recurring or
+	// no next occurrence yet.
+	NextRunAt *time.Time
+	Version   int
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // CreateWorkItem inserts a new work item within the given tenant
@@ -93,13 +102,16 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		 acceptance_criteria, status, assigned_worker_ref, workflow_id,
 		 workflow_run_id, workflow_step_id,
 		 priority, budgets, context_window, results, prompt_context,
-		 scheduled_start_at, auto_start_workflow, runtime_image, context_files)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+		 scheduled_start_at, auto_start_workflow, runtime_image, context_files,
+		 recurring_schedule, next_run_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
 		RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
 			acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
 			workflow_run_id, workflow_step_id,
 		priority, budgets, context_window, sort_order, results, prompt_context,
-		scheduled_start_at, auto_start_workflow, runtime_image, context_files, version, created_at, updated_at`
+		scheduled_start_at, auto_start_workflow, runtime_image, context_files,
+		recurring_schedule, next_run_at,
+		version, created_at, updated_at`
 	row := w
 	err := tx.QueryRow(ctx, q,
 		w.ID, w.TenantID, w.ProjectID, w.ParentID, w.Kind, w.Title, w.Description,
@@ -107,6 +119,7 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		w.WorkflowRunID, w.WorkflowStepID,
 		w.Priority, w.Budgets, w.ContextWindow, w.Results, w.PromptContext,
 		w.ScheduledStartAt, w.AutoStartWorkflow, w.RuntimeImage, w.ContextFiles,
+		w.RecurringSchedule, w.NextRunAt,
 	).Scan(
 		&row.ID, &row.TenantID, &row.ProjectID, &row.ParentID, &row.Kind, &row.Title,
 		&row.Description, &row.AcceptanceCriteria, &row.AcceptanceReview, &row.Status, &row.AssignedWorkerRef,
@@ -114,6 +127,7 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		&row.Priority, &row.Budgets, &row.ContextWindow, &row.SortOrder, &row.Results,
 		&row.PromptContext,
 		&row.ScheduledStartAt, &row.AutoStartWorkflow, &row.RuntimeImage, &row.ContextFiles,
+		&row.RecurringSchedule, &row.NextRunAt,
 		&row.Version, &row.CreatedAt, &row.UpdatedAt,
 	)
 	if err != nil {
@@ -122,24 +136,40 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 	return row, nil
 }
 
-// GetWorkItem fetches a single work item by id within the tenant scope.
-func GetWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkItemRow, error) {
-	const q = `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
-		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
-		workflow_run_id, workflow_step_id,
-		priority, budgets, context_window, sort_order, results, prompt_context,
-		scheduled_start_at, auto_start_workflow, runtime_image, context_files, version, created_at, updated_at
-		FROM work_items WHERE id = $1 AND tenant_id = $2`
-	var w WorkItemRow
-	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
+// WorkItemSelectCols is the canonical 29-column SELECT / RETURNING list
+// shared by every query that reads a full WorkItemRow. Keeping it in one
+// place prevents the column-list drift that caused UnassignWorker to
+// silently zero-out fields (the original bug that motivated this constant).
+const WorkItemSelectCols = `id, tenant_id, project_id, parent_id, kind, title, description,
+	acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
+	workflow_run_id, workflow_step_id,
+	priority, budgets, context_window, sort_order, results, prompt_context,
+	scheduled_start_at, auto_start_workflow, runtime_image, context_files,
+	recurring_schedule, next_run_at,
+	version, created_at, updated_at`
+
+// WorkItemScanPtrs returns a slice of Scan pointers matching
+// WorkItemSelectCols for the given WorkItemRow. The positional order must
+// exactly match the column list.
+func WorkItemScanPtrs(w *WorkItemRow) []any {
+	return []any{
 		&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
 		&w.Description, &w.AcceptanceCriteria, &w.AcceptanceReview, &w.Status, &w.AssignedWorkerRef,
 		&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
 		&w.Priority, &w.Budgets, &w.ContextWindow, &w.SortOrder, &w.Results,
 		&w.PromptContext,
 		&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ContextFiles,
+		&w.RecurringSchedule, &w.NextRunAt,
 		&w.Version, &w.CreatedAt, &w.UpdatedAt,
-	)
+	}
+}
+
+// GetWorkItem fetches a single work item by id within the tenant scope.
+func GetWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkItemRow, error) {
+	const q = `SELECT ` + WorkItemSelectCols + `
+		FROM work_items WHERE id = $1 AND tenant_id = $2`
+	var w WorkItemRow
+	err := tx.QueryRow(ctx, q, id, tenantID).Scan(WorkItemScanPtrs(&w)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkItemRow{}, ErrNotFound
 	}
@@ -169,11 +199,7 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 	if f.PageSize <= 0 || f.PageSize > 1000 {
 		f.PageSize = 100
 	}
-	q := `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
-		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
-		workflow_run_id, workflow_step_id,
-		priority, budgets, context_window, sort_order, results, prompt_context,
-		scheduled_start_at, auto_start_workflow, runtime_image, context_files, version, created_at, updated_at
+	q := `SELECT ` + WorkItemSelectCols + `
 		FROM work_items
 		WHERE tenant_id = $1 AND ($2 = '' OR project_id = $2) AND ($3 = '' OR id > $3)`
 	args := []any{f.TenantID, f.ProjectID, f.AfterID}
@@ -231,15 +257,7 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 	var out []WorkItemRow
 	for rows.Next() {
 		var w WorkItemRow
-		if err := rows.Scan(
-			&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
-			&w.Description, &w.AcceptanceCriteria, &w.AcceptanceReview, &w.Status, &w.AssignedWorkerRef,
-			&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
-			&w.Priority, &w.Budgets, &w.ContextWindow, &w.SortOrder, &w.Results,
-			&w.PromptContext,
-			&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ContextFiles,
-			&w.Version, &w.CreatedAt, &w.UpdatedAt,
-		); err != nil {
+		if err := rows.Scan(WorkItemScanPtrs(&w)...); err != nil {
 			return nil, fmt.Errorf("db: scan work item: %w", err)
 		}
 		out = append(out, w)
@@ -251,11 +269,7 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 // the tenant scope. Used by kind-switch resolution (ADR-WIT-2) to reparent
 // direct children that can no longer sit under a switched item.
 func ListDirectChildren(ctx context.Context, tx pgx.Tx, tenantID, parentID string) ([]WorkItemRow, error) {
-	const q = `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
-		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
-		workflow_run_id, workflow_step_id,
-		priority, budgets, context_window, sort_order, results, prompt_context,
-		scheduled_start_at, auto_start_workflow, runtime_image, context_files, version, created_at, updated_at
+	const q = `SELECT ` + WorkItemSelectCols + `
 		FROM work_items WHERE tenant_id = $1 AND parent_id = $2 ORDER BY sort_order NULLS LAST, created_at, id`
 	rows, err := tx.Query(ctx, q, tenantID, parentID)
 	if err != nil {
@@ -265,15 +279,7 @@ func ListDirectChildren(ctx context.Context, tx pgx.Tx, tenantID, parentID strin
 	var out []WorkItemRow
 	for rows.Next() {
 		var w WorkItemRow
-		if err := rows.Scan(
-			&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
-			&w.Description, &w.AcceptanceCriteria, &w.AcceptanceReview, &w.Status, &w.AssignedWorkerRef,
-			&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
-			&w.Priority, &w.Budgets, &w.ContextWindow, &w.SortOrder, &w.Results,
-			&w.PromptContext,
-			&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ContextFiles,
-			&w.Version, &w.CreatedAt, &w.UpdatedAt,
-		); err != nil {
+		if err := rows.Scan(WorkItemScanPtrs(&w)...); err != nil {
 			return nil, fmt.Errorf("db: scan direct child: %w", err)
 		}
 		out = append(out, w)
@@ -295,7 +301,9 @@ func ListSequenceActiveParents(ctx context.Context, tx pgx.Tx, tenantID string) 
 		acceptance_criteria, acceptance_review, w.status, assigned_worker_ref, workflow_id,
 		workflow_run_id, workflow_step_id,
 		priority, budgets, context_window, sort_order, results, prompt_context,
-		scheduled_start_at, auto_start_workflow, runtime_image, context_files, version, created_at, updated_at
+		scheduled_start_at, auto_start_workflow, runtime_image, context_files,
+		recurring_schedule, next_run_at,
+		version, created_at, updated_at
 		FROM work_items w
 		WHERE w.tenant_id = $1
 		  AND w.status IN ('running', 'failed')
@@ -311,15 +319,7 @@ func ListSequenceActiveParents(ctx context.Context, tx pgx.Tx, tenantID string) 
 	var out []WorkItemRow
 	for rows.Next() {
 		var w WorkItemRow
-		if err := rows.Scan(
-			&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
-			&w.Description, &w.AcceptanceCriteria, &w.AcceptanceReview, &w.Status, &w.AssignedWorkerRef,
-			&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
-			&w.Priority, &w.Budgets, &w.ContextWindow, &w.SortOrder, &w.Results,
-			&w.PromptContext,
-			&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ContextFiles,
-			&w.Version, &w.CreatedAt, &w.UpdatedAt,
-		); err != nil {
+		if err := rows.Scan(WorkItemScanPtrs(&w)...); err != nil {
 			return nil, fmt.Errorf("db: scan sequence active parent: %w", err)
 		}
 		out = append(out, w)
@@ -334,19 +334,14 @@ func ListSequenceActiveParents(ctx context.Context, tx pgx.Tx, tenantID string) 
 func ListSiblingsForReorder(ctx context.Context, tx pgx.Tx, tenantID, projectID, parentID string) ([]WorkItemRow, error) {
 	var q string
 	var args []any
-	cols := `id, tenant_id, project_id, parent_id, kind, title, description,
-		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
-		workflow_run_id, workflow_step_id,
-		priority, budgets, context_window, sort_order, results, prompt_context,
-		scheduled_start_at, auto_start_workflow, runtime_image, context_files, version, created_at, updated_at`
 	if parentID == "" {
-		q = `SELECT ` + cols + `
+		q = `SELECT ` + WorkItemSelectCols + `
 		FROM work_items
 		WHERE tenant_id = $1 AND project_id = $2 AND parent_id IS NULL
 		ORDER BY sort_order NULLS LAST, created_at, id`
 		args = []any{tenantID, projectID}
 	} else {
-		q = `SELECT ` + cols + `
+		q = `SELECT ` + WorkItemSelectCols + `
 		FROM work_items
 		WHERE tenant_id = $1 AND project_id = $2 AND parent_id = $3
 		ORDER BY sort_order NULLS LAST, created_at, id`
@@ -360,15 +355,7 @@ func ListSiblingsForReorder(ctx context.Context, tx pgx.Tx, tenantID, projectID,
 	var out []WorkItemRow
 	for rows.Next() {
 		var w WorkItemRow
-		if err := rows.Scan(
-			&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
-			&w.Description, &w.AcceptanceCriteria, &w.AcceptanceReview, &w.Status, &w.AssignedWorkerRef,
-			&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
-			&w.Priority, &w.Budgets, &w.ContextWindow, &w.SortOrder, &w.Results,
-			&w.PromptContext,
-			&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ContextFiles,
-			&w.Version, &w.CreatedAt, &w.UpdatedAt,
-		); err != nil {
+		if err := rows.Scan(WorkItemScanPtrs(&w)...); err != nil {
 			return nil, fmt.Errorf("db: scan sibling for reorder: %w", err)
 		}
 		out = append(out, w)
@@ -439,6 +426,17 @@ type UpdateWorkItemFields struct {
 	// mutates it. The sequence cursor is derived from sort_order at
 	// reconcile time, so a mid-run drag only shifts future arming.
 	SortOrder *float64
+	// RecurringSchedule is the JSONB recurrence definition
+	// {frequency, interval, days[], start_date, start_time}. nil =
+	// unchanged (field-mask semantics).
+	RecurringSchedule *[]byte
+	// NextRunAt is the computed next occurrence timestamp for a
+	// recurring item. nil = unchanged (field-mask semantics).
+	NextRunAt *time.Time
+	// ClearRecurringSchedule, when true, sets recurring_schedule = NULL
+	// and next_run_at = NULL. Used when status changes to non-recurring
+	// or when the kind switches to a non-schedulable kind.
+	ClearRecurringSchedule bool
 }
 
 // UpdateWorkItem applies a partial update with optimistic concurrency.
@@ -574,22 +572,24 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 		args = append(args, *f.SortOrder)
 		setIdx++
 	}
+	if f.ClearRecurringSchedule {
+		q += `, recurring_schedule = NULL, next_run_at = NULL`
+	} else {
+		if f.RecurringSchedule != nil {
+			q += fmt.Sprintf(`, recurring_schedule = $%d`, setIdx)
+			args = append(args, *f.RecurringSchedule)
+			setIdx++
+		}
+		if f.NextRunAt != nil {
+			q += fmt.Sprintf(`, next_run_at = $%d`, setIdx)
+			args = append(args, *f.NextRunAt)
+			setIdx++
+		}
+	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
-	q += ` RETURNING id, tenant_id, project_id, parent_id, kind, title, description,
-		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
-		workflow_run_id, workflow_step_id,
-		priority, budgets, context_window, sort_order, results, prompt_context,
-		scheduled_start_at, auto_start_workflow, runtime_image, context_files, version, created_at, updated_at`
+	q += ` RETURNING ` + WorkItemSelectCols
 	var w WorkItemRow
-	err := tx.QueryRow(ctx, q, args...).Scan(
-		&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
-		&w.Description, &w.AcceptanceCriteria, &w.AcceptanceReview, &w.Status, &w.AssignedWorkerRef,
-		&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
-		&w.Priority, &w.Budgets, &w.ContextWindow, &w.SortOrder, &w.Results,
-		&w.PromptContext,
-		&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ContextFiles,
-		&w.Version, &w.CreatedAt, &w.UpdatedAt,
-	)
+	err := tx.QueryRow(ctx, q, args...).Scan(WorkItemScanPtrs(&w)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkItemRow{}, ErrNotFound
 	}
