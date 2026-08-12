@@ -54,7 +54,7 @@ The project's model spend is rising. Be economical but **never at the expense of
 > context you are in, treat yourself as a human-facing session and ask.
 
 - ALWAYS create a new branch before starting work. NEVER commit to `main` or `develop`.
-- **Branch off `develop`**, never `main` (the repo default branch is `develop`). If you
+- **Branch off `develop`**, never `main` (the repo default branch is `main`, but the integration branch is `develop`). If you
   find yourself on a branch created from `main`, rebase it onto `develop` before PRing.
 - A local pre-commit hook (`.git/hooks/pre-commit`) rejects any commit on `main`, `master`, or `develop`. If the hook is missing, re-create it:
 
