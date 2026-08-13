@@ -493,7 +493,7 @@ function WorkItemDetailPage() {
                     setStatus(next);
                     // Switching away from recurring clears the schedule
                     if (next !== WorkItemStatus.RECURRING && editRecurringSchedule) {
-                      setEditRecurringSchedule(new RecurringSchedule());
+                      setEditRecurringSchedule(undefined);
                     }
                   }}
                   className="rounded-md border bg-background px-2 py-1 text-sm"

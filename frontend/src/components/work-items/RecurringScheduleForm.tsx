@@ -21,7 +21,7 @@ export interface RecurringScheduleFormProps {
   readOnly?: boolean;
 }
 
-function isSchedulePopulated(s: RecurringSchedule | undefined): boolean {
+function isSchedulePopulated(s: RecurringSchedule | undefined): s is RecurringSchedule {
   if (!s) return false;
   return !!s.frequency || s.interval > 0 || s.days.length > 0 || !!s.startDate || !!s.startTime;
 }
