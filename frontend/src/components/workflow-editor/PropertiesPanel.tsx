@@ -250,7 +250,10 @@ export function PropertiesPanel({
               disabled={readOnly}
               onChange={(e) => {
                 const next = { ...cfg, reviewer: e.target.value };
-                onChange({ config: JSON.stringify(next) });
+                // A human-review gate never dispatches a worker — clear any
+                // stale worker ref left over from a previous Worker setting
+                // so it isn't misread as a worker-backed approval.
+                onChange({ config: JSON.stringify(next), ref: e.target.value === "human" ? "" : d.ref });
               }}
             >
               <option value="human">Human</option>
