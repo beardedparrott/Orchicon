@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -184,13 +185,16 @@ func reconcileParent(ctx context.Context, tx pgx.Tx, tenantID, parentID string, 
 		// RecurringFireReconciler can fire the next cycle; the
 		// next_run_at was pre-advanced before the fire.
 		status := domain.WorkItemSucceeded
-		if parent.RecurringSchedule != nil && parent.NextRunAt != nil {
+		fields := db.UpdateWorkItemFields{}
+		if len(parent.RecurringSchedule) > 0 {
 			status = domain.WorkItemRecurring
+			// If the cursor was cleared mid-cycle, recompute it so the
+			// next occurrence still fires on schedule.
+			fields.NextRunAt = ensureRecurringNextRun(parent.RecurringSchedule, parent.NextRunAt, time.Now().UTC())
 		}
-		if _, err := db.UpdateWorkItem(ctx, tx, tenantID, parentID, parent.Version, db.UpdateWorkItemFields{
-			Status: &status,
-		}); err != nil {
-			return nil, fmt.Errorf("mark sequence parent succeeded: %w", err)
+		fields.Status = &status
+		if _, err := db.UpdateWorkItem(ctx, tx, tenantID, parentID, parent.Version, fields); err != nil {
+			return nil, fmt.Errorf("complete sequence parent: %w", err)
 		}
 		return nil, nil
 	}
@@ -349,12 +353,19 @@ func failSequenceChain(ctx context.Context, tx pgx.Tx, tenantID string, failed d
 			children, err := db.ListDirectChildren(ctx, tx, tenantID, parent.ID)
 			if err == nil && len(children) > 0 {
 				status := domain.WorkItemFailed
-				fields := db.UpdateWorkItemFields{Status: &status}
-				// Recurring sequence parents: clear recurring schedule on
-				// failure so the RecurringFireReconciler won't re-fire.
-				if parent.RecurringSchedule != nil {
-					fields.ClearRecurringSchedule = true
+				fields := db.UpdateWorkItemFields{}
+				if len(parent.RecurringSchedule) > 0 {
+					// Recurring sequence parents: a failed cycle does NOT
+					// kill the schedule — the parent stays "recurring" with
+					// next_run_at intact so the RecurringFireReconciler
+					// fires the next occurrence, which resets the subtree
+					// and re-runs the chain fresh.
+					status = domain.WorkItemRecurring
+					// If the cursor was cleared mid-cycle, recompute it so
+					// the next occurrence still fires on schedule.
+					fields.NextRunAt = ensureRecurringNextRun(parent.RecurringSchedule, parent.NextRunAt, time.Now().UTC())
 				}
+				fields.Status = &status
 				if _, err := db.UpdateWorkItem(ctx, tx, tenantID, parent.ID, parent.Version, fields); err != nil {
 					return fmt.Errorf("fail sequence ancestor: %w", err)
 				}

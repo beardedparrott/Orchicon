@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { RecurringSchedule } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -21,13 +21,24 @@ export interface RecurringScheduleFormProps {
   readOnly?: boolean;
 }
 
+function isSchedulePopulated(s: RecurringSchedule | undefined): s is RecurringSchedule {
+  if (!s) return false;
+  return !!s.frequency || s.interval > 0 || s.days.length > 0 || !!s.startDate || !!s.startTime;
+}
+
 export function RecurringScheduleForm({
   value,
   onChange,
   disabled = false,
   readOnly = false,
 }: RecurringScheduleFormProps) {
-  const [enabled, setEnabled] = useState(!!value);
+  const [enabled, setEnabled] = useState(isSchedulePopulated(value));
+
+  // Sync checkbox with value content — an empty proto RecurringSchedule
+  // (emitted on uncheck) is truthy but should show as disabled.
+  useEffect(() => {
+    setEnabled(isSchedulePopulated(value));
+  }, [value]);
 
   const frequency = value?.frequency ?? "daily";
   const interval = value?.interval ?? 1;
@@ -221,7 +232,7 @@ export function RecurringScheduleForm({
  * Used by the schedules page recurrenceBadge() stub.
  */
 export function formatRecurrence(schedule: RecurringSchedule | undefined): string {
-  if (!schedule) return "One-time";
+  if (!isSchedulePopulated(schedule)) return "One-time";
   const parts: string[] = [];
   parts.push(schedule.frequency);
   if (schedule.interval > 1) parts.push(`every ${schedule.interval}`);

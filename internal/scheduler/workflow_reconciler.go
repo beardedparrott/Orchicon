@@ -797,10 +797,14 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				// transient status — StartWorkflow sets status="running" at
 				// fire time, so at completion the item is never "recurring".
 				status := domain.WorkItemSucceeded
-				if wi.RecurringSchedule != nil && wi.NextRunAt != nil {
+				fields := db.UpdateWorkItemFields{}
+				if len(wi.RecurringSchedule) > 0 {
 					status = domain.WorkItemRecurring
+					// If the cursor was cleared mid-run, recompute it so the
+					// next occurrence still fires on schedule.
+					fields.NextRunAt = ensureRecurringNextRun(wi.RecurringSchedule, wi.NextRunAt, time.Now().UTC())
 				}
-				fields := db.UpdateWorkItemFields{Status: &status}
+				fields.Status = &status
 				if narrative, err := r.buildRunNarrative(ctx, ttx.Tx, tenantID, run, stepRuns, domain.WorkflowRunCompleted); err != nil {
 					r.log.Warn("build run narrative", "run", runID, "error", err)
 				} else if narrative != nil {
@@ -840,16 +844,21 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		if run.WorkItemID != "" {
 			if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID); err == nil {
 				status := domain.WorkItemFailed
-				fields := db.UpdateWorkItemFields{Status: &status}
-				// Recurring items: clear next_run_at on failure so the
-				// schedule stops. The user must re-arm it manually or
-				// the RecurringFireReconciler won't pick it up again.
-				// KEY: check the persistent RecurringSchedule field, NOT the
-				// transient status — same reason as the success path above.
-				if wi.RecurringSchedule != nil {
-					clearRecurring := true
-					fields.ClearRecurringSchedule = clearRecurring
+				fields := db.UpdateWorkItemFields{}
+				if len(wi.RecurringSchedule) > 0 {
+					// Failure semantics for recurring items: the failed
+					// occurrence is recoverable (the per-step recovery flow
+					// already ran) but the cycle lives on — the item returns
+					// to "recurring" with schedule + next_run_at intact so
+					// the RecurringFireReconciler fires the NEXT occurrence
+					// on schedule. A recurring item whose occurrence failed
+					// is never terminal.
+					status = domain.WorkItemRecurring
+					// If the cursor was cleared mid-run, recompute it so the
+					// next occurrence still fires on schedule.
+					fields.NextRunAt = ensureRecurringNextRun(wi.RecurringSchedule, wi.NextRunAt, time.Now().UTC())
 				}
+				fields.Status = &status
 				if narrative, err := r.buildRunNarrative(ctx, ttx.Tx, tenantID, run, stepRuns, domain.WorkflowRunFailed); err != nil {
 					r.log.Warn("build run narrative", "run", runID, "error", err)
 				} else if narrative != nil {
@@ -859,8 +868,10 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				fields.AcceptanceReview = &review
 				_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, fields)
 				// Sequence wiring: a bound child failing halts its
-				// parent's chain.
-				if wi.ParentID != nil {
+				// parent's chain. A recurring item that stays recurring is
+				// not terminal and never halts the parent (mirrors the
+				// success path, where recurring items never advance it).
+				if wi.ParentID != nil && status == domain.WorkItemFailed {
 					terminalParent = *wi.ParentID
 				}
 			}
@@ -968,15 +979,25 @@ func (r *WorkflowReconciler) failRunAtStart(ctx context.Context, tx pgx.Tx, tena
 	if run.WorkItemID != "" {
 		if wi, err := db.GetWorkItem(ctx, tx, tenantID, run.WorkItemID); err == nil {
 			status := domain.WorkItemFailed
+			fields := db.UpdateWorkItemFields{}
+			// Same failure semantics as reconcileRun: a recurring item whose
+			// run fails at start stays "recurring" — the cycle lives on and
+			// the RecurringFireReconciler fires the next occurrence. A
+			// recurring item is never terminal on a failed occurrence.
+			if len(wi.RecurringSchedule) > 0 {
+				status = domain.WorkItemRecurring
+				// If the cursor was cleared mid-cycle, recompute it so the
+				// next occurrence still fires on schedule.
+				fields.NextRunAt = ensureRecurringNextRun(wi.RecurringSchedule, wi.NextRunAt, time.Now().UTC())
+			}
 			narrative, _ := json.Marshal(map[string]any{"_run_narrative": map[string]any{
 				"run_id": run.ID, "status": domain.WorkflowRunFailed, "error": reason,
 			}})
 			review := fmt.Sprintf("## Acceptance Review\n\n**Run:** `%s` · **Status:** failed\n\nNo work was delivered — the run failed to start: %s", run.ID, reason)
-			_, _ = db.UpdateWorkItem(ctx, tx, tenantID, run.WorkItemID, wi.Version, db.UpdateWorkItemFields{
-				Status:           &status,
-				Results:          &narrative,
-				AcceptanceReview: &review,
-			})
+			fields.Status = &status
+			fields.Results = &narrative
+			fields.AcceptanceReview = &review
+			_, _ = db.UpdateWorkItem(ctx, tx, tenantID, run.WorkItemID, wi.Version, fields)
 		}
 	}
 	_ = r.enqueueRunEvent(ctx, tx, domain.WorkflowEventRunFailed, run, reason)

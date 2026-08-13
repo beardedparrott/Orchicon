@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/workflow"
@@ -306,6 +308,103 @@ func TestSequenceCompletion(t *testing.T) {
 	}
 	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemSucceeded {
 		t.Errorf("parent status = %q, want succeeded", got.Status)
+	}
+}
+
+// TestSequenceRecurringCompletionReturnsToRecurring: when every child of a
+// recurring sequence parent succeeds, the parent returns to "recurring"
+// (not "succeeded") so the RecurringFireReconciler fires the next cycle.
+func TestSequenceRecurringCompletionReturnsToRecurring(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createRecurringParent(t, env.pool, env.proj.ID, "Recurring Parent")
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C2", &parent.ID, &wf)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID})
+
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatal(err)
+	}
+	// The last child succeeds → the sequence completes.
+	setStatus(t, env.pool, c1.ID, domain.WorkItemSucceeded)
+	setStatus(t, env.pool, c2.ID, domain.WorkItemSucceeded)
+
+	rec := NewSequenceReconciler(env.pool, nil, env.startFn())
+	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	got := mustGet(t, env.pool, parent.ID)
+	if got.Status != domain.WorkItemRecurring {
+		t.Errorf("parent status = %q, want recurring (a recurring parent must not end succeeded)", got.Status)
+	}
+	if len(got.RecurringSchedule) == 0 {
+		t.Error("parent recurring_schedule was cleared, want intact")
+	}
+	if got.NextRunAt == nil {
+		t.Error("parent next_run_at is nil, want preserved for the next cycle")
+	}
+}
+
+// TestSequenceRecurringFailureKeepsSchedule: a failed child in a recurring
+// sequence parent's cycle halts the CURRENT chain (later siblings never
+// arm) but does NOT kill the schedule — the parent stays "recurring" with
+// next_run_at intact, so the next occurrence re-fires the chain fresh.
+func TestSequenceRecurringFailureKeepsSchedule(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createRecurringParent(t, env.pool, env.proj.ID, "Recurring Parent")
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C2", &parent.ID, &wf)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID})
+
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatal(err)
+	}
+	setStatus(t, env.pool, c1.ID, domain.WorkItemFailed)
+
+	rec := NewSequenceReconciler(env.pool, nil, env.startFn())
+	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	got := mustGet(t, env.pool, parent.ID)
+	if got.Status != domain.WorkItemRecurring {
+		t.Errorf("parent status = %q, want recurring (a failed cycle must not kill the recurring schedule)", got.Status)
+	}
+	if len(got.RecurringSchedule) == 0 {
+		t.Error("parent recurring_schedule was cleared, want intact")
+	}
+	if got.NextRunAt == nil {
+		t.Error("parent next_run_at is nil, want preserved for the next cycle")
+	}
+	// The failed cycle halts: the later sibling never arms.
+	if gotC2 := mustGet(t, env.pool, c2.ID); gotC2.Status != domain.WorkItemPending {
+		t.Errorf("later sibling status = %q, want pending (never arms in the failed cycle)", gotC2.Status)
+	}
+
+	// The NEXT occurrence still fires: make the still-recurring parent due
+	// and run the RecurringFireReconciler — it must re-fire the sequence.
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	due := time.Now().Add(-2 * time.Minute)
+	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, approvalTestTenant, parent.ID, got.Version,
+		db.UpdateWorkItemFields{NextRunAt: &due}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rec2 := &recurringFireRecorder{}
+	fireRec := NewRecurringFireReconciler(env.pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), rec2.startFn())
+	fireRec.SetSequenceStarter(rec2.sequenceFn())
+	if res := fireRec.Reconcile(ctx, ""); res.Error != nil {
+		t.Fatalf("fire reconciler (next occurrence): %v", res.Error)
+	}
+	if rec2.sequenceCalls != 1 {
+		t.Errorf("sequence calls = %d, want 1 (next occurrence must re-fire the sequence)", rec2.sequenceCalls)
 	}
 }
 
@@ -846,4 +945,41 @@ func reorder(t *testing.T, pool *db.Pool, projectID, parentID string, ordered []
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// createRecurringParent creates a sequence parent with a recurring schedule
+// and a FUTURE next_run_at — mirroring the RecurringFireReconciler, which
+// pre-advances the cursor before it fires an occurrence. A future cursor
+// also keeps tests isolated: no test leaves a still-due recurring item in
+// the shared test DB that a later fire-reconciler invocation would pick up.
+func createRecurringParent(t *testing.T, pool *db.Pool, projID, title string) db.WorkItemRow {
+	t.Helper()
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ttx.Rollback(ctx)
+	scheduleJSON, err := json.Marshal(&apiv1.RecurringSchedule{
+		Frequency: "daily",
+		Interval:  1,
+		StartDate: "2026-08-12",
+		StartTime: "09:00",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(24 * time.Hour)
+	w, err := db.CreateWorkItem(ctx, ttx.Tx, db.WorkItemRow{
+		ID: db.NewID(), TenantID: approvalTestTenant, ProjectID: projID,
+		Kind: domain.WorkItemKindEpic, Title: title, Status: domain.WorkItemRecurring,
+		RecurringSchedule: scheduleJSON, NextRunAt: &future,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return w
 }
