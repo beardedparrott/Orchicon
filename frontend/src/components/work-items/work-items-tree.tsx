@@ -48,11 +48,12 @@ import { ChevronRight, GripVertical, SearchX } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
-import { KindBadge, PositionBadge, StatusPill } from "@/components/work-items/work-item-badges";
+import { KindBadge, PositionBadge, RecurringBadge, StatusPill } from "@/components/work-items/work-item-badges";
 import type { BlockState } from "@/components/work-items/dependency-utils";
 import { computeSequencePositions, sortByChainOrder } from "@/components/work-items/sequence-utils";
 import { SequenceControls } from "@/components/work-items/sequence-controls";
 import { BlockedChip } from "@/components/work-items/work-item-card";
+import { isRecurringItem } from "@/components/work-items/work-item-meta";
 import { subtreeSelectionState } from "@/components/work-items/use-work-item-selection";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -537,6 +538,7 @@ function SortableTreeRow({
             className="hidden sm:inline-flex"
           />
         ) : null}
+        {isRecurringItem(item) && <RecurringBadge className="hidden sm:inline-flex" />}
         <BlockedChip
           blockedBy={blockState.blockedBy}
           id={item.id}

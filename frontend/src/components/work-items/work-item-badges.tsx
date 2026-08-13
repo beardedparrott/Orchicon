@@ -146,3 +146,31 @@ export function PositionBadge({
     </span>
   );
 }
+
+/** Compact "recurring" badge — a fuchsia marker for work items that carry a
+ *  recurring schedule, so they read distinct from the gray sequential badge
+ *  and the status pills. Rendered next to the sequential-order badge on
+ *  recurring sequence parents/children and on ordinary recurring cards.
+ *  Shares the fuchsia hue of the RECURRING status pill (work-item-meta.ts)
+ *  so the badge and the pill read as one recurring concept. */
+export function RecurringBadge({
+  label = "recurring",
+  className,
+}: {
+  label?: string;
+  className?: string;
+}) {
+  const isDark = useDarkPalette();
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
+        isDark ? "bg-fuchsia-500/15 text-fuchsia-300" : "bg-fuchsia-500/15 text-fuchsia-800",
+        className,
+      )}
+    >
+      <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-fuchsia-500" />
+      {label}
+    </span>
+  );
+}
