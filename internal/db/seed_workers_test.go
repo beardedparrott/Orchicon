@@ -302,7 +302,7 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 	}
 	if _, err := ttx.Exec(ctx,
 		`UPDATE worker_versions
-		    SET agents_md = replace(agents_md, 'orchicon.safety=v14', 'orchicon.safety=v0')
+		    SET agents_md = replace(agents_md, 'orchicon.safety=v15', 'orchicon.safety=v0')
 		  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`, userID); err != nil {
 		t.Fatalf("stale marker: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 		userID).Scan(&agents); err != nil {
 		t.Fatalf("query adopted agents: %v", err)
 	}
-	if !strings.Contains(agents, "orchicon.safety=v14") {
+	if !strings.Contains(agents, "orchicon.safety=v15") {
 		t.Errorf("adopted worker should have been rolled forward to the current marker, got %q", agents[len(agents)-40:])
 	}
 }
@@ -353,8 +353,8 @@ func TestSeedVisionWorkersCarryVisionModelAndPlaywright(t *testing.T) {
 		for _, want := range []string{
 			"Browser automation (Playwright) — VISUAL verification",
 			"read the screenshot back with your Read tool",
-			"Branch off `develop`",
-			"orchicon.safety=v14",
+			"integration branch where all work lands",
+			"orchicon.safety=v15",
 		} {
 			if !strings.Contains(agents, want) {
 				t.Errorf("%s agents_md missing %q", canned.id, want)
@@ -386,8 +386,8 @@ func TestSeedCannedWorkersCarryDevOnlyGuard(t *testing.T) {
 	if !strings.Contains(agents, "orchicon-cnt-prod") || !strings.Contains(agents, "orchicon-cnt-dev") {
 		t.Errorf("DEV-ONLY guard must name both instances so the rule is unambiguous")
 	}
-	if !strings.Contains(agents, "orchicon.safety=v14") {
-		t.Errorf("canned worker must carry the current safety marker (orchicon.safety=v14)")
+	if !strings.Contains(agents, "orchicon.safety=v15") {
+		t.Errorf("canned worker must carry the current safety marker (orchicon.safety=v15)")
 	}
 }
 
@@ -467,7 +467,7 @@ func TestSeedDesignApproverCarriesDesignReviewContract(t *testing.T) {
 		t.Fatalf("query canned Design Approver agents: %v", err)
 	}
 	checks := []string{
-		"orchicon.safety=v14",
+		"orchicon.safety=v15",
 		"review the design/architecture PLAN only",
 		"plan is sound and complete; implementation may begin",
 		"plan does not meet the bar",
@@ -507,7 +507,7 @@ func TestSeedCodeApproverCarriesCodeReviewContract(t *testing.T) {
 		t.Fatalf("query canned Code Approver agents: %v", err)
 	}
 	checks := []string{
-		"orchicon.safety=v14",
+		"orchicon.safety=v15",
 		"review the completed IMPLEMENTATION",
 		"do not re-review it",
 		"implementation is done and meets the acceptance criteria",
