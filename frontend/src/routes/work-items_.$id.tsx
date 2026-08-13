@@ -611,12 +611,16 @@ function WorkItemDetailPage() {
             </CardHeader>
           </Card>
         ) : null}
-        {item.scheduledStartAt && (
+        {(item.nextRunAt || item.scheduledStartAt) && (
           <Card>
             <CardHeader>
               <CardDescription>Next Run</CardDescription>
               <CardTitle className="text-sm font-normal">
-                {new Date(Number(item.scheduledStartAt.seconds) * 1000).toLocaleString()}
+                {new Date(
+                  Number(
+                    (item.nextRunAt ?? item.scheduledStartAt).seconds,
+                  ) * 1000,
+                ).toLocaleString()}
               </CardTitle>
             </CardHeader>
           </Card>

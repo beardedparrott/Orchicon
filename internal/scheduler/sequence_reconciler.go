@@ -180,7 +180,13 @@ func reconcileParent(ctx context.Context, tx pgx.Tx, tenantID, parentID string, 
 	idx := deriveNextChild(children)
 	if idx < 0 {
 		// Every child terminal-success → the sequence is complete.
+		// Recurring sequence parents stay "recurring" so the
+		// RecurringFireReconciler can fire the next cycle; the
+		// next_run_at was pre-advanced before the fire.
 		status := domain.WorkItemSucceeded
+		if parent.RecurringSchedule != nil && parent.NextRunAt != nil {
+			status = domain.WorkItemRecurring
+		}
 		if _, err := db.UpdateWorkItem(ctx, tx, tenantID, parentID, parent.Version, db.UpdateWorkItemFields{
 			Status: &status,
 		}); err != nil {
@@ -343,9 +349,13 @@ func failSequenceChain(ctx context.Context, tx pgx.Tx, tenantID string, failed d
 			children, err := db.ListDirectChildren(ctx, tx, tenantID, parent.ID)
 			if err == nil && len(children) > 0 {
 				status := domain.WorkItemFailed
-				if _, err := db.UpdateWorkItem(ctx, tx, tenantID, parent.ID, parent.Version, db.UpdateWorkItemFields{
-					Status: &status,
-				}); err != nil {
+				fields := db.UpdateWorkItemFields{Status: &status}
+				// Recurring sequence parents: clear recurring schedule on
+				// failure so the RecurringFireReconciler won't re-fire.
+				if parent.RecurringSchedule != nil {
+					fields.ClearRecurringSchedule = true
+				}
+				if _, err := db.UpdateWorkItem(ctx, tx, tenantID, parent.ID, parent.Version, fields); err != nil {
 					return fmt.Errorf("fail sequence ancestor: %w", err)
 				}
 			}

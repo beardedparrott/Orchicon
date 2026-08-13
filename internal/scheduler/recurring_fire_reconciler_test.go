@@ -505,3 +505,117 @@ func TestRecurringFireBothLeafAndSequenceParent(t *testing.T) {
 		t.Errorf("started = %v, want [%s:%s:%s]", rec.started, approvalTestTenant, wfID, bound.ID)
 	}
 }
+
+// TestRecurringFireLifecycle_CompletionReturnsToRecurring verifies the
+// critical lifecycle: fire a recurring item → run completes → item returns
+// to "recurring" status (not "succeeded"). This catches the bug where the
+// completion handler checked wi.Status == "recurring" but StartWorkflow
+// had already set it to "running".
+func TestRecurringFireLifecycle_CompletionReturnsToRecurring(t *testing.T) {
+	pool := approvalTestPool(t)
+	ctx := context.Background()
+
+	// Setup: project + workflow with one step.
+	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err := db.CreateProject(ctx, ttx.Tx, db.ProjectRow{
+		ID: db.NewID(), TenantID: approvalTestTenant, Name: "recur-lifecycle",
+		Slug: "recur-lifecycle-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
+		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	wfID := seedPublishedWorkflow(t, pool, proj.ID)
+	schedule := &apiv1.RecurringSchedule{
+		Frequency: "daily",
+		Interval:  1,
+		StartDate: "2026-08-12",
+		StartTime: "09:00",
+	}
+
+	// Create recurring leaf item with a due next_run_at.
+	item := createRecurringItem(t, pool, proj.ID, domain.WorkItemKindTask,
+		"Lifecycle Item", nil, &wfID, schedule)
+
+	// Step 1: Fire the item via RecurringFireReconciler.
+	rec := &recurringFireRecorder{}
+	fireRec := NewRecurringFireReconciler(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), rec.startFn())
+
+	if res := fireRec.Reconcile(ctx, ""); res.Error != nil {
+		t.Fatalf("fire reconciler: %v", res.Error)
+	}
+	if rec.startCalls != 1 {
+		t.Fatalf("expected 1 start call, got %d", rec.startCalls)
+	}
+
+	// After fire: next_run_at advanced, item still "recurring" (fire
+	// reconciler doesn't change status — it only advances next_run_at).
+	fired := mustGet(t, pool, item.ID)
+	if fired.Status != domain.WorkItemRecurring {
+		t.Fatalf("after fire: status=%s, want recurring", fired.Status)
+	}
+	if fired.NextRunAt == nil || !fired.NextRunAt.After(time.Now().Add(-1*time.Minute)) {
+		t.Fatalf("after fire: next_run_at=%v, want future", fired.NextRunAt)
+	}
+
+	// Step 2: Simulate what StartWorkflowDirect does — create a run and
+	// transition the item to "running" (the bug trigger: status is no
+	// longer "recurring" when the completion handler fires).
+	ttx2, err := pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := db.CreateWorkflowRun(ctx, ttx2.Tx, db.WorkflowRunRow{
+		ID: db.NewID(), TenantID: approvalTestTenant,
+		WorkflowID: wfID, WorkflowVersion: 1,
+		ProjectID: proj.ID, Status: domain.WorkflowRunRunning,
+		RunContext: []byte("{}"), WorkItemID: item.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Create a step run for the workflow.
+	stepRun, err := db.CreateWorkflowStepRun(ctx, ttx2.Tx, db.WorkflowStepRunRow{
+		ID: db.NewID(), TenantID: approvalTestTenant,
+		WorkflowRunID: run.ID, StepID: "step-1",
+		StepName: "Do work", StepKind: domain.StepKindTask,
+		Status: domain.StepRunSucceeded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Transition the item to "running" (mimics StartWorkflow behavior).
+	runningStatus := domain.WorkItemRunning
+	if _, err := db.UpdateWorkItem(ctx, ttx2.Tx, approvalTestTenant, item.ID, fired.Version,
+		db.UpdateWorkItemFields{Status: &runningStatus, WorkflowRunID: &run.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ttx2.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 3: Run the WorkflowReconciler — it should see all steps
+	// succeeded and transition the item back to "recurring" (not "succeeded").
+	wfRec := NewWorkflowReconciler(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), nil, nil, nil, nil)
+	if res := wfRec.Reconcile(ctx, run.ID); res.Error != nil {
+		t.Fatalf("workflow reconciler: %v", res.Error)
+	}
+
+	// Verify: item must be "recurring" with next_run_at intact.
+	final := mustGet(t, pool, item.ID)
+	if final.Status != domain.WorkItemRecurring {
+		t.Errorf("after completion: status=%s, want recurring (bug: StartWorkflow sets running, completion must not override to succeeded)", final.Status)
+	}
+	if final.NextRunAt == nil {
+		t.Error("after completion: next_run_at is nil, want it preserved for next cycle")
+	}
+
+	_ = stepRun // used in setup; verified via allSucceeded path
+}
