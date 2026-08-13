@@ -2205,7 +2205,34 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		}
 	}
 	if myPos >= 0 && len(activeMeta) > 0 {
-		fmt.Fprintf(&sb, "This workflow has %d steps and you are step %d — %s. Follow your role for this step.\n\n", len(activeMeta), myPos+1, myName)
+		// Render the live step lineup from the workflow's ACTUAL steps (names
+		// and topological order, worker-facing kinds only). The worker sees
+		// the division of labor instead of having to infer it, so it knows
+		// which steps own which work and where it sits. Duplicate step names
+		// (e.g. the DevOps Engineer appearing for repo setup and again for
+		// PR/merge) are disambiguated with the step id.
+		nameCount := make(map[string]int)
+		for _, s := range activeMeta {
+			nameCount[s.name]++
+		}
+		var parts []string
+		for i, s := range activeMeta {
+			label := s.name
+			if nameCount[s.name] > 1 {
+				label = fmt.Sprintf("%s (%s)", s.name, s.id)
+			}
+			marker := ""
+			if i == myPos {
+				marker = " — you"
+			}
+			parts = append(parts, fmt.Sprintf("%d. %s%s", s.idx+1, label, marker))
+		}
+		fmt.Fprintf(&sb, "This workflow has %d steps and you are step %d of %d — %s.\n", len(activeMeta), myPos+1, len(activeMeta), myName)
+		sb.WriteString("The steps, in order:\n")
+		for _, p := range parts {
+			sb.WriteString("- " + p + "\n")
+		}
+		sb.WriteString("Follow your role for this step. Work that belongs to another step in this list is that step's job, not yours.\n\n")
 	}
 
 	// Iteration context: tell the worker if this is a re-do (loop-back).
@@ -2252,7 +2279,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		fmt.Fprintf(&sb, "- `.orchicon/%s/worker` — which worker produced the previous results\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/attachments/` — files/screenshots the human attached to an approval decision (read them!)\n\n", wi.WorkflowRunID)
 	}
-	sb.WriteString("Complete the work the task requires and see it through to a state that passes review — do not stop at the edge of your specialty or hand incomplete work downstream to \"the next step\". When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — either `success` or `failure` — and a short paragraph summarizing what you did.\n\n")
+	sb.WriteString("Complete the work this step requires of you and bring it to a state that passes review before handing it off. Do not push your step's work downstream incomplete, and do not take on work that belongs to another step in this workflow — each step has its own role and deliverable, and doing another step's job for it breaks the division of labor. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — either `success` or `failure` — and a short paragraph summarizing what you did.\n\n")
 	sb.WriteString("Format:\n")
 	sb.WriteString("```\nORCHICON WORKER SUMMARY: success — Implemented the feature.\n```\n")
 	sb.WriteString("or\n")

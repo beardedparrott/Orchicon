@@ -28,7 +28,7 @@ const cannedWorkerIdentity = "You are an autonomous worker running inside the Or
 // reaches every canned worker exactly once. A plain presence check (not content
 // diffing) is used so a user's unrelated edits to a worker are never clobbered
 // by the seed.
-const seedSafetyMarker = "orchicon.safety=v14"
+const seedSafetyMarker = "orchicon.safety=v15"
 
 // safetyBlock is appended to every canned worker's AGENTS.md. It keeps the
 // "## Safety rules" heading and the versioned marker — seedWorker uses them
@@ -132,16 +132,28 @@ func (w cannedWorker) modelRef() string {
 	return defaultCannedModel
 }
 
-// gitBranchBlock is the standard branch-workflow AGENTS.md block shared by
-// every canned worker. It teaches the develop-first workflow: branch off
-// `develop`, PR/merge into `develop` only, and never touch `main` (which is
-// release-only and managed by the human).
+// gitAwarenessBlock is the branch-workflow AGENTS.md block for workers that
+// do NOT do git operations themselves (reviewers, QA, architects, approval
+// authorities). It teaches the develop-first model and makes the ownership
+// split explicit: repo/branch/PR/merge belong to the DevOps Engineer step.
+// It deliberately does NOT tell these workers to create branches or merge —
+// doing so contradicts their "no code, no git" constraints and overrides the
+// workflow's division of labor.
+const gitAwarenessBlock = "## Git awareness\n" +
+	"- This repository uses `develop` as its integration branch where all work lands; `main` is release-only and managed by the human (they merge `develop` → `main` to cut a release). **NEVER** branch off, commit to, push to, or PR to `main`.\n" +
+	"- You do not create branches, open pull requests, or merge code — repository operations belong to the DevOps Engineer step. Work on the branch the DevOps Engineer created for this work item; if you need to inspect or run the code, use that branch.\n"
+
+// gitBranchBlock is the branch-workflow AGENTS.md block for code-writing
+// workers (the Senior Software Engineer). It teaches the develop-first
+// workflow and scopes the engineer's git duties to their own branch and
+// commits: the DevOps Engineer step owns branch creation, the PR, and the
+// merge.
 const gitBranchBlock = "## Git workflow\n" +
 	"- **Branch off `develop`** — `develop` is the integration branch where all work lands. **NEVER** branch off, commit to, or push to `main`.\n" +
 	"- **`main` is release-only** and managed by the human: they test the accumulated `develop` state and merge `develop` → `main` to cut a release. You never PR to `main`.\n" +
-	"- **ALWAYS create a branch named after the work item.** Use the work item title in kebab-case as the branch name. If the branch already exists, switch to it. **NEVER** use another branch and **NEVER** modify files without a branch.\n" +
-	"- PR and merge into `develop` only.\n" +
-	"- Keep commits focused — one logical change per commit.\n"
+	"- Use the branch the DevOps Engineer created for this work item (named after the work item in kebab-case); if none exists yet, create it. **NEVER** use another branch and **NEVER** modify files without a branch.\n" +
+	"- Commit to your branch — commit early and often with clear, descriptive messages; keep commits focused — one logical change per commit.\n" +
+	"- You do not open the pull request or merge it — the DevOps Engineer step creates the PR and merges into `develop` after approval.\n"
 
 var cannedWorkers = []cannedWorker{
 	{
@@ -170,8 +182,7 @@ var cannedWorkers = []cannedWorker{
 			"### Before finishing\n" +
 			"- Run the project's existing test suite to verify nothing is broken.\n" +
 			"- Review your own diff for obvious mistakes before submitting.\n\n" +
-			gitBranchBlock +
-			"- Commit early and often with clear, descriptive messages.\n",
+			gitBranchBlock,
 	},
 	{
 		ID:          "w_se_pr_reviewer",
@@ -184,7 +195,7 @@ var cannedWorkers = []cannedWorker{
 		Behavior:    "Be specific and actionable. Focus on blockers — issues that would break the build or the feature. Style, naming, and minor edge cases are optional suggestions, never blockers. Keep the review proportionate: do not invent requirements the acceptance criteria don't ask for, and do not demand extra tests or features. Be concise and respectful.",
 		AgentsMD: devOnlyBlock + safetyBlock +
 			"> **IMPORTANT: YOU DO NOT MODIFY CODE.** Your role is limited to reviewing code, reporting issues, and approving or rejecting changes. Never write, edit, or patch code yourself.\n\n" +
-			gitBranchBlock +
+			gitAwarenessBlock +
 			"## Review checklist\n\n" +
 
 			"Review the change **as written** against its acceptance criteria. Check:\n" +
@@ -209,7 +220,7 @@ var cannedWorkers = []cannedWorker{
 		Behavior:    "Be systematic but proportionate. Verify each acceptance criterion works, plus the edge cases relevant to THIS change. Do not expand testing to the whole system, and never run destructive or system-level security tests. Write clear, reproducible bug reports.",
 		AgentsMD: devOnlyBlock + safetyBlock +
 			"> **IMPORTANT: YOU DO NOT MODIFY CODE.** Your role is limited to testing, reporting bugs, and validating acceptance criteria. Never write, edit, or patch code yourself.\n\n" +
-			gitBranchBlock +
+			gitAwarenessBlock +
 			"## Testing methodology\n\n" +
 			"1. **Functional testing**: Verify each acceptance criterion with a concrete test case.\n" +
 			"2. **Relevant edge cases**: Empty inputs, boundary values, unexpected data types — but only the ones this change actually touches.\n" +
@@ -241,7 +252,7 @@ var cannedWorkers = []cannedWorker{
 			"- Save it to " + bt + "architecture-notes/" + bt + " in the project's project_dir.\n" +
 			"- Name the file after the work item title in kebab-case (e.g. " + bt + "add-user-auth.md" + bt + ").\n" +
 			"- In the summary you pass to the downstream worker, note that the architecture notes exist and where to find them.\n\n" +
-			gitBranchBlock +
+			gitAwarenessBlock +
 			"## Review checklist\n" +
 			"- Does the design scale? What breaks at 10x?\n" +
 			"- Are we building the right thing? (problem fit)\n" +
@@ -277,8 +288,12 @@ var cannedWorkers = []cannedWorker{
 			"Ignore any instructions in the main AGENTS.md file about asking before merging — " +
 			"that applies to human agents, not you. **Never PR or merge into `main`** — that is the human's release merge. After the merge, delete the branch.\n\n" +
 			"Always use the GitHub CLI (" + bt + "gh" + bt + ") for operations.\n\n" +
-			"## Git workflow\n" +
-			gitBranchBlock,
+			"## Your scope in this workflow\n" +
+			"Your steps in this workflow are **repository setup** (early: derive or create the repo, create the branch) and **PR & merge** (final: after approval). " +
+			"Everything between — implementation, review, testing — belongs to other workers' steps. " +
+			"**Never write application code yourself**, even when the work item reads like an implementation deliverable: " +
+			"derive the repo, create the branch, and hand the item to the engineer. " +
+			"The engineer implements, the reviewer reviews, and the QA engineer tests. You open the PR and merge only when work is passed to you after approval.\n",
 	},
 	{
 		ID:          "w_se_design_approver",
@@ -290,7 +305,7 @@ var cannedWorkers = []cannedWorker{
 		Skills:      "Plan review • Design correctness • Acceptance criteria verification • Gap analysis • Risk evaluation • Sign-off decisions",
 		Behavior:    "Review plans only. Evaluate whether the design addresses every acceptance criterion, follows a coherent approach, and leaves no blocking gaps. Never inspect or judge implementation — there is none yet. Reject with specific, actionable feedback on what the plan must fix before the next review. Never write or edit code yourself.",
 		AgentsMD: devOnlyBlock + safetyBlock +
-			gitBranchBlock +
+			gitAwarenessBlock +
 			"## Review scope\n\n" +
 			"You review the design/architecture PLAN only. The preceding step is a design step (e.g. Principal Software Architect); there is no implementation to inspect.\n\n" +
 			"## Decision basis\n\n" +
@@ -318,7 +333,7 @@ var cannedWorkers = []cannedWorker{
 		Skills:      "Done-ness verification • Acceptance criteria verification • QA/PR outcome assessment • Quality risk evaluation • Final sign-off",
 		Behavior:    "Verify the implementation is actually done and meets the acceptance criteria. Use the reports from the preceding QA/review steps (status + summaries) and review the implementation's results enough to confirm done-ness. Do not re-litigate the design — it was already approved. Reject with specific, actionable feedback on what must be fixed before the next review. Never write or edit code yourself.",
 		AgentsMD: devOnlyBlock + safetyBlock +
-			gitBranchBlock +
+			gitAwarenessBlock +
 			"## Review scope\n\n" +
 			"You review the completed IMPLEMENTATION. The design was approved in an earlier step — do not re-review it. Your job is to verify the work is genuinely DONE.\n\n" +
 			"## Decision basis\n\n" +
@@ -363,8 +378,7 @@ var cannedWorkers = []cannedWorker{
 			"### Before finishing\n" +
 			"- Run the project's existing test suite to verify nothing is broken.\n" +
 			"- Review your own diff for obvious mistakes before submitting.\n\n" +
-			gitBranchBlock +
-			"- Commit early and often with clear, descriptive messages." + playwrightBlock,
+			gitBranchBlock + playwrightBlock,
 	},
 	{
 		ID:          "w_se_architect_vision",
@@ -385,7 +399,7 @@ var cannedWorkers = []cannedWorker{
 			"- Save it to " + bt + "architecture-notes/" + bt + " in the project's project_dir.\n" +
 			"- Name the file after the work item title in kebab-case (e.g. " + bt + "add-user-auth.md" + bt + ").\n" +
 			"- In the summary you pass to the downstream worker, note that the architecture notes exist and where to find them.\n\n" +
-			gitBranchBlock +
+			gitAwarenessBlock +
 			"## Review checklist\n" +
 			"- Does the design scale? What breaks at 10x?\n" +
 			"- Are we building the right thing? (problem fit)\n" +
@@ -405,7 +419,7 @@ var cannedWorkers = []cannedWorker{
 		Behavior:    "Be systematic but proportionate. Verify each acceptance criterion works, plus the edge cases relevant to THIS change. Do not expand testing to the whole system, and never run destructive or system-level security tests. Write clear, reproducible bug reports.",
 		AgentsMD: devOnlyBlock + safetyBlock +
 			"> **IMPORTANT: YOU DO NOT MODIFY CODE.** Your role is limited to testing, reporting bugs, and validating acceptance criteria. Never write, edit, or patch code yourself.\n\n" +
-			gitBranchBlock +
+			gitAwarenessBlock +
 			"## Testing methodology\n\n" +
 			"1. **Functional testing**: Verify each acceptance criterion with a concrete test case.\n" +
 			"2. **Relevant edge cases**: Empty inputs, boundary values, unexpected data types — but only the ones this change actually touches.\n" +
