@@ -101,7 +101,7 @@ graph TB
         Connect[Connect-ES Handlers]
         Auth[Auth Middleware<br/>OIDC / API Keys / RBAC]
         Tenant[Tenant Resolution]
-        Reconcilers[Reconciler Manager<br/>Task / Workflow / Recovery / ScheduledRun]
+        Reconcilers[Reconciler Manager<br/>Task / Workflow / Recovery / ScheduledRun / Sequence / RecurringFire]
         OutboxRelay[Outbox Relay]
         WebhookDispatch[Webhook Dispatcher]
         Policy[OPA Policy Engine]
@@ -212,7 +212,7 @@ sequenceDiagram
 
 ### Key Architectural Patterns
 
-1. **Kubernetes-style Reconcilers** — Four reconcilers (Task, Workflow, Recovery, ScheduledRun) run in a shared manager with per-kind PostgreSQL advisory locks for leader election. Each has a work queue with exponential backoff and a scan pass for discovering work. The work-queue `dequeue` is bounded to one rotation pass (a single not-ready key returns `ok=false` instead of busy-looping — a field incident pinned a core at ~150% CPU and froze the reconciler), and the workflow DAG-progression loop is capped (`maxDAGPasses`) so a pathological run can never wedge a reconcile goroutine. A step-dispatch failure that can't be resolved (e.g. a missing/corrupted worker-version lookup) fails that **step** rather than erroring the whole pass, so completed upstream steps are not rolled back with it.
+1. **Kubernetes-style Reconcilers** — Six reconcilers (Task, Workflow, Recovery, ScheduledRun, Sequence, RecurringFire) run in a shared manager with per-kind PostgreSQL advisory locks for leader election. Each has a work queue with exponential backoff and a scan pass for discovering work. The work-queue `dequeue` is bounded to one rotation pass (a single not-ready key returns `ok=false` instead of busy-looping — a field incident pinned a core at ~150% CPU and froze the reconciler), and the workflow DAG-progression loop is capped (`maxDAGPasses`) so a pathological run can never wedge a reconcile goroutine. A step-dispatch failure that can't be resolved (e.g. a missing/corrupted worker-version lookup) fails that **step** rather than erroring the whole pass, so completed upstream steps are not rolled back with it.
 
 2. **Transactional Outbox** — Every mutation writes an outbox row in the same database transaction as the state change. A background relay polls unpublished rows every 500ms and publishes to NATS JetStream for at-least-once delivery.
 
@@ -267,8 +267,10 @@ erDiagram
         string tenant_id
         string project_id
         string kind "Epic|Feature|Task|Subtask"
-        string status "draft|ready|assigned|running|done|failed|cancelled"
+        string status "pending|ready|assigned|running|checkpointing|succeeded|failed|cancelled|recovering|scheduled|recurring"
         string assigned_worker_ref
+        json recurring_schedule "NULL or {frequency, interval, days[], start_date, start_time}"
+        timestamp next_run_at "computed next occurrence of a recurring item"
     }
     Worker {
         string id ULID
@@ -364,7 +366,7 @@ Orchicon/
 │   ├── rbac/                    # RBAC Connect interceptor
 │   ├── reconciler/              # Reconciler framework (work queue, leader election)
 │   ├── recovery/                # Recovery engine + RecoveryService
-│   ├── scheduler/               # TaskReconciler, WorkflowReconciler, ScheduledRunReconciler, SequenceReconciler
+│   ├── scheduler/               # TaskReconciler, WorkflowReconciler, ScheduledRunReconciler, SequenceReconciler, RecurringFireReconciler
 │   ├── server/                  # Composition root (wires all dependencies)
 │   ├── telemetry/               # OTel setup, Grafana-stack query client, telemetry service
 │   ├── tenant/                  # Tenant context plumbing
@@ -501,6 +503,7 @@ Orchicon/
 | **Reconciler framework** | `internal/reconciler/` |
 | **Task dispatch logic** | `internal/scheduler/reconciler.go` |
 | **Workflow step DAG progression** | `internal/scheduler/workflow_reconciler.go` |
+| **Recurring schedules fire loop** | `internal/scheduler/recurring_fire_reconciler.go` (due scan + fire + `next_run_at` advance) |
 | **Recovery engine** | `internal/recovery/engine.go` |
 | **Policy engine** (OPA/Rego) | `internal/policy/engine.go` |
 | **Auth (OIDC, API keys, JWT)** | `internal/auth/` |
@@ -716,7 +719,7 @@ The UI confirms the consequences before saving ("N child items will move under t
 The **Work Items** list page has two views sharing one filter bar, selection set, and auto-refresh loop:
 
 - **Tree** — the Epic → Feature → Task → Subtask hierarchy with cascade (subtree) selection, tri-state parent checkboxes, indent guides, and file-explorer auto-expand when filters are active (ancestors of matches are shown so filtered results stay reachable). Rows surface **blocked** state from the dependency DAG (chain chip + tooltip listing the blocking items).
-- **Board** — a Jira-style kanban with one column per server status (Pending/Ready/Assigned/Running/Succeeded/Failed/Cancelled; checkpointing/recovering render in Running, scheduled in Pending). Cards drag & drop between columns via dnd-kit (`@dnd-kit/core` + `sortable` + `utilities`); drops are **server-confirmed** (no optimistic transitions) with a transient "moving…" state and toasts. Two advisory gates reject obviously-wrong moves before the mutation: a **blocked** item cannot be dropped on Ready, and Epics/Features accept only pending/succeeded/cancelled. A per-card **"Move to…"** menu performs the identical mutation for keyboard/touch users.
+- **Board** — a Jira-style kanban with one column per server status (Pending/Ready/Assigned/Running/Succeeded/Failed/Cancelled; checkpointing/recovering render in Running, scheduled/recurring in Pending). Cards drag & drop between columns via dnd-kit (`@dnd-kit/core` + `sortable` + `utilities`); drops are **server-confirmed** (no optimistic transitions) with a transient "moving…" state and toasts. Two advisory gates reject obviously-wrong moves before the mutation: a **blocked** item cannot be dropped on Ready, and Epics/Features accept only pending/succeeded/cancelled. A per-card **"Move to…"** menu performs the identical mutation for keyboard/touch users.
 - **Expand / Collapse all** — the filter bar carries an Expand all / Collapse all pair (ADR-WIT-4) that acts on every row with children in the currently loaded project, in both views. Each view stores its state in a different persisted set (board collapsed set, tree expanded set when unfiltered, tree collapsed set while a filter is active), so the buttons stay consistent with the per-item chevrons and survive reload.
 - **Filtering** — search, kind, and status all compose **client-side** over the full fetched set (pageSize 1000); only sort goes server-side. (Search is client-side deliberately: a server-side search returns only the matching rows, orphaning a searched task from its epic and emptying the tree.) Select-all is tri-state over the visible filtered set — it selects only the items that pass the filters, never the dimmed ancestor container rows — and the selection clears on any filter change.
  - **Drag-to-reorder (tree)** — siblings under a parent can be dragged into a new **chain order** (sequential multi-workflow runs, below). The drop calls `ReorderWorkItems` → `sort_order` is renumbered for the sibling group in ONE server-side transaction. The post-drag click is suppressed so the drop never navigates into the item's detail page, and `project_id` is derived from the items being reordered, so drag works in the **All projects** view too. The filter bar's sort/filter dropdowns never call the RPC — they only change display order. Because the sequence cursor is derived from `sort_order` at reconcile time, a mid-sequence drag shifts only *future* arming.
@@ -739,6 +742,20 @@ Shared presentation lives in `frontend/src/components/work-items/` (meta, badges
 7. A live clock and countdown chips are driven by a single page-level timer (paused while the tab is hidden)
 
 **Saving a schedule on a work item** flips that item's status to `scheduled` — setting `scheduled_start_at` in the work-item edit form switches it to `scheduled` no matter its current status (so it appears in Upcoming and fires via `ScheduledRunReconciler`). The flip is scoped to the edited item only, never a bulk change, and is skipped while the item is `running`/`checkpointing`/`recovering` (an in-flight run must not be re-armed) or when the same edit switches it to a non-schedulable kind (which clears the schedule).
+
+**Recurring schedules** — instead of a one-time scheduled start, a work item can carry a **recurrence pattern** and re-fire on a schedule. Setting a `recurring_schedule` on create/update flips the item's status to `recurring` (mirroring the `scheduled` flip for `scheduled_start_at`); the item appears in Schedules → Upcoming (with `next_run_at` as its effective fire time, driving its position in the agenda) and fires via the `RecurringFireReconciler` (`internal/scheduler/recurring_fire_reconciler.go`). The pattern is defined by five fields:
+
+- `frequency` — `minute | hourly | daily | weekly | monthly`
+- `interval` — how many frequency periods between occurrences (`>= 1`, e.g. every 2 hours)
+- `days` — a subset of `Mon, Tue, Wed, Thu, Fri, Sat, Sun` (weekly cadence; empty = every day)
+- `start_date` — `YYYY-MM-DD` anchor date of the first occurrence
+- `start_time` — `HH:MM` time of day occurrences fire
+
+These are stored as JSONB on `work_items.recurring_schedule` (NULL = not recurring) alongside `next_run_at` — the computed next occurrence that doubles as the due-scan cursor (a partial index on `(tenant_id, next_run_at) WHERE next_run_at IS NOT NULL` keeps the scan small; migration `20260812040000_work_items_recurring_schedule.sql`). The edit page's **Recurring schedule** card and the Schedules card's recurrence slot (e.g. "daily", "every 2 days") render the pattern via `formatRecurrence`. Behavior:
+
+- **Firing** — when `next_run_at` enters the due window (a 5-minute lookback covering reconcile-loop jitter), the reconciler fires the item **immediately** and **advances `next_run_at` to the next occurrence in the same pass** (optimistic version locking makes the fire idempotent per due window). A leaf fires its bound workflow via `StartWorkflowDirect`; a **parent with children** fires through the sequence engine (`StartSequence`, so its children run **sequentially**, one after another). **No new items are spawned** — the same item (or subtree) is re-armed each occurrence, never cloned.
+- **Leaving recurring clears the schedule** — switching status to anything other than `recurring`, or sending an empty `recurring_schedule` (proto clear semantics), clears the pattern and `next_run_at` and demotes the item to `pending`. The edit page's Status dropdown clears the recurring-schedule card when you switch away from `recurring`.
+- **Completion returns the item to `recurring`** — a recurring item **never goes terminal on a completed occurrence**: after its bound run or sequence cycle completes — success **or** failure — it returns to `recurring` (never `succeeded`/`failed`) with schedule and `next_run_at` intact (the cursor is recomputed from the schedule if it was cleared mid-cycle). A **failure of one occurrence does not stop future cycles** — the failed occurrence is recoverable through the normal per-step recovery flow, and the next occurrence still fires on schedule. See "Recurring items" under Sequential multi-workflow runs for the sequence-parent case.
 
 **Sequential multi-workflow runs** — a parent work item (epic/feature/task) **with children** can be scheduled (or run-instantly) to run its children **one after another, depth-first**. The parent *is* the sequence run (no separate entity): its own status plus its children's statuses fully describe state, and "who's next" is **derived, never stored** — every reconcile pass recomputes the first direct child in `sort_order` whose status is not terminal-success, so a crash/restart mid-chain resumes correctly. Children keep their **own** bound workflows and runtime images (no config copy). **"Has children" is the sequence determinant**: a parent with children is a sequence run regardless of whether it still carries a workflow binding (a stale binding from before the item became a parent is ignored at fire time — the routing branches on children, never on the parent's `workflow_id`).
 
@@ -904,7 +921,7 @@ Every field the Connect API lets a client set on a work item is settable through
 | `runtime_image` | ✓ | ✓ | empty = base image |
 | `context_files` | ✓ | ✓ | absolute file OR directory paths (same model as projects); empty list on update clears |
 | `workflow_run_id` | ✗ | ✓ | update-only (create starts empty) |
-| `status` | ✗ (derived) | ✓ | `pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering` |
+| `status` | ✗ (derived) | ✓ | `pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering, recurring` |
 | `assigned_worker_ref` | via `assign_worker`/`unassign_worker` tools | same | mirrors the `AssignWorker`/`UnassignWorker` RPCs (`worker_id` + `version`) |
 | `sort_order` | via `reorder_work_items` tool | same | reorders a sibling group (sequence chain order) in ONE transaction; mirrors the `ReorderWorkItems` RPC — display sort never mutates it |
 
