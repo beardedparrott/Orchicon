@@ -2184,7 +2184,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		}
 	}
 	if myPos >= 0 && len(activeMeta) > 0 {
-		fmt.Fprintf(&sb, "This workflow has %d steps and you are step %d — %s. Your step's role is your PRIMARY focus, but you OWN this work item end to end: you are responsible for it passing every acceptance criterion. If you find that earlier or later steps left the work incomplete, fix it yourself rather than deferring to a step that may never run — the workflow only reaches the next step when your output is accepted. Address a reviewer's or approver's feedback directly even when it touches code or tests outside your specialty.\n\n", len(activeMeta), myPos+1, myName)
+		fmt.Fprintf(&sb, "This workflow has %d steps and you are step %d — %s. Follow your role for this step.\n\n", len(activeMeta), myPos+1, myName)
 	}
 
 	// Iteration context: tell the worker if this is a re-do (loop-back).
