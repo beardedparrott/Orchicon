@@ -82,10 +82,16 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 
 	// OTel telemetry pipeline (tracer + meter + OTLP exporter → Grafana stack).
 	// If the collector is unreachable, telemetry is dropped with bounded
-	// in-process buffering; control flow is not blocked (docs/08 §8).
-	otelShutdown, err := telemetry.Setup(context.Background(), cfg, log)
-	if err != nil {
-		log.Warn("otel setup failed (telemetry disabled)", "error", err)
+	// in-process buffering; control flow is not blocked (docs/08 §8). The
+	// runtime-container sandbox plane sets ORCHICON_TELEMETRY=none (no
+	// Grafana stack in the sandbox) — the pipeline is skipped entirely.
+	var otelShutdown *telemetry.Shutdowner
+	var err error
+	if cfg.Telemetry != "none" {
+		otelShutdown, err = telemetry.Setup(context.Background(), cfg, log)
+		if err != nil {
+			log.Warn("otel setup failed (telemetry disabled)", "error", err)
+		}
 	}
 
 	pool, err := db.Open(context.Background(), cfg.PostgresDSN)
@@ -349,7 +355,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	var runtimeLifecycle scheduler.RuntimeLifecycle
 	if rtClient != nil {
 		if rtClient.Ready(context.Background()) {
-			runtimeLifecycle = runtime.NewLifecycle(rtClient, pool, log, opencode.RuntimeServeConfig())
+			runtimeLifecycle = runtime.NewLifecycle(rtClient, pool, log, opencode.RuntimeServeConfig)
 			// Route executions that belong to a workflow run into that
 			// workflow's runtime container instead of a local subprocess.
 			adapterBridge.SetRuntimeClient(rtClient)

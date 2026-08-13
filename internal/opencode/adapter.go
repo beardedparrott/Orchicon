@@ -141,7 +141,7 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 			WorkflowID:  manifest.RuntimeWorkflowID,
 			Image:       manifest.RuntimeImage,
 			Mounts:      projectMount(manifest.ProjectDir),
-			ServeConfig: RuntimeServeConfig(),
+			ServeConfig: RuntimeServeConfig(manifest.RuntimeImage),
 			ProjectDir:  manifest.ProjectDir,
 		})
 		if err != nil {
@@ -168,21 +168,39 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 }
 
 // RuntimeServeConfig builds the OPENCODE_CONFIG_CONTENT for a runtime
-// container's serve: the permission rules only, with the operator's MCP
-// servers omitted — a SERVE eagerly connects to every configured MCP
-// server at startup, and the operator's entries (an `orchicon` MCP that
-// docker execs, a local Playwright MCP) cannot run inside the sandbox,
-// which would hang the serve (the one-shot run path tolerates MCP
-// failures and keeps them). Worker system prompts ride the per-message
-// `system` field instead.
-func RuntimeServeConfig() string {
-	return BuildConfigContent(ConfigOptions{
+// container's serve given its runtime image tag: the permission rules only,
+// with the operator's MCP servers omitted — a SERVE eagerly connects to
+// every configured MCP server at startup, and the operator's entries (an
+// `orchicon` MCP that docker execs, a local Playwright MCP) cannot run
+// inside the sandbox, which would hang the serve (the one-shot run path
+// tolerates MCP failures and keeps them). Worker system prompts ride the
+// per-message `system` field instead.
+//
+// For DEV images (which boot the sandbox plane — Postgres + NATS +
+// `orchicon serve` in-container), the serve ALSO registers the built-in
+// Orchicon MCP against the sandbox DB: the `orchicon mcp` sidecar is
+// pointed at the container-local Postgres via the entry's environment map
+// (ORCHICON_POSTGRES_DSN), so workers get the `orchicon_*` tools natively
+// against their own sandbox — never the host plane's DB. Base/gui images
+// get no MCP (no sandbox plane), behavior identical to today.
+func RuntimeServeConfig(imageTag string) string {
+	opts := ConfigOptions{
 		AgentName:   workerAgent,
 		AgentPrompt: "",
 		ModelRef:    "",
-		OrchiconMCP: false,
 		SkipUserMCP: true,
-	})
+	}
+	if runtime.IsDevImageTag(imageTag) {
+		opts.TenantID = serveTenantID()
+		opts.OrchiconMCP = true
+		opts.MCPEnv = map[string]string{"ORCHICON_POSTGRES_DSN": runtime.SandboxPostgresDSN}
+		// The MCP sidecar spawns inside the runtime container. Force the
+		// command to the daemon's bind-mount (guaranteed present in every
+		// runtime container) — the plane's own executable path, which
+		// builds this config, is not necessarily present there.
+		opts.MCPBinaryPath = runtimeContainerBinaryPath
+	}
+	return BuildConfigContent(opts)
 }
 
 // startViaSession runs an execution through a persistent opencode session
@@ -257,6 +275,12 @@ func (a *Adapter) SetSessionStore(fn SessionStoreFunc) { a.sessionStore = fn }
 // workerAgent is the opencode agent name the adapter injects the worker's
 // composed system prompt under (selected with --agent).
 const workerAgent = "orchicon-worker"
+
+// runtimeContainerBinaryPath is where the runtime daemon bind-mounts its
+// own executable in every runtime container (internal/runtime/daemon.go).
+// The sandbox Orchicon MCP sidecar spawns there, never at the plane's
+// (host) executable path.
+const runtimeContainerBinaryPath = "/usr/local/bin/orchicon"
 
 // New creates an OpenCode adapter bridge.
 func New(log *slog.Logger) *Adapter {

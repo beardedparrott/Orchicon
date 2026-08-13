@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,18 +25,24 @@ const devTenantID = "tnt_dev"
 // — headless `orchicon serve`) makes every operation a no-op so the
 // control plane degrades to in-process execution.
 type Lifecycle struct {
-	client      *Client
-	pool        *db.Pool
-	log         *slog.Logger
-	serveConfig string // OPENCODE_CONFIG_CONTENT for the container's serve
+	client *Client
+	pool   *db.Pool
+	log    *slog.Logger
+	// serveConfigFor builds the OPENCODE_CONFIG_CONTENT for a run's
+	// container serve from its runtime image tag. The Orchicon MCP is
+	// registered only for dev images (which boot the sandbox plane against
+	// a sandbox DB); base/gui images get a config identical to today.
+	serveConfigFor func(image string) string
 }
 
 // NewLifecycle creates a workflow runtime lifecycle. client may be nil to
-// disable per-workflow runtime containers. serveConfig is the
-// OPENCODE_CONFIG_CONTENT the container's opencode serve boots with (built
-// by the opencode package — permission rules only, user MCPs omitted).
-func NewLifecycle(client *Client, pool *db.Pool, log *slog.Logger, serveConfig string) *Lifecycle {
-	return &Lifecycle{client: client, pool: pool, log: log, serveConfig: serveConfig}
+// disable per-workflow runtime containers. serveConfigFor builds the
+// OPENCODE_CONFIG_CONTENT the container's opencode serve boots with from
+// the run's runtime image tag (permission rules only for base/gui images,
+// plus the sandbox-scoped Orchicon MCP for dev images — built by the
+// opencode package).
+func NewLifecycle(client *Client, pool *db.Pool, log *slog.Logger, serveConfigFor func(image string) string) *Lifecycle {
+	return &Lifecycle{client: client, pool: pool, log: log, serveConfigFor: serveConfigFor}
 }
 
 // Enabled reports whether a daemon is configured.
@@ -52,7 +59,7 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 	req := CreateRequest{
 		WorkflowID:  run.ID,
 		Image:       run.RuntimeImage,
-		ServeConfig: l.serveConfig,
+		ServeConfig: l.serveConfigFor(run.RuntimeImage),
 	}
 	if run.ProjectID == "" {
 		return req, nil
@@ -109,10 +116,14 @@ func (l *Lifecycle) EnsureForRun(ctx context.Context, run db.WorkflowRunRow) err
 // runtime container exists with its opencode serve brought up, then blocks
 // until the serve is proven USABLE (L1: /global/health AND a real
 // session-create round-trip), bounded by ORCHICON_RUNTIME_SERVE_READY_TIMEOUT
-// (default 120s). The WorkflowReconciler must NOT dispatch any execution for
-// the run until this returns nil — a cold-starting serve that would
-// previously fail the first dispatch's 30s window now gets the full window
-// at run start, off the dispatch hot path.
+// (default 120s). When the container's image boots the sandbox plane
+// (dev images; CreateResponse.PlaneURL set), the gate ALSO requires the
+// plane's /healthz to answer on the container bridge IP — a half-initialized
+// plane can't pass, so no execution dispatches against a run whose sandbox
+// environment isn't ready. The WorkflowReconciler must NOT dispatch any
+// execution for the run until this returns nil — a cold-starting serve that
+// would previously fail the first dispatch's 30s window now gets the full
+// window at run start, off the dispatch hot path.
 func (l *Lifecycle) EnsureServing(ctx context.Context, run db.WorkflowRunRow) error {
 	if l.client == nil {
 		return nil
@@ -133,11 +144,16 @@ func (l *Lifecycle) EnsureServing(ctx context.Context, run db.WorkflowRunRow) er
 			if base == "" {
 				base = fmt.Sprintf("http://127.0.0.1:%d", resp.ServePort)
 			}
-			if serveUsableAt(base, resp.ServePassword) {
-				l.log.Info("workflow runtime serve usable", "run", run.ID, "serve", base)
+			serveOK := serveUsableAt(base, resp.ServePassword)
+			planeOK := true
+			if resp.PlaneURL != "" {
+				planeOK = planeHealthyAt(resp.PlaneURL)
+			}
+			if serveOK && planeOK {
+				l.log.Info("workflow runtime serve usable", "run", run.ID, "serve", base, "plane", resp.PlaneURL)
 				return nil
 			}
-			lastErr = fmt.Errorf("serve %s not usable yet", base)
+			lastErr = fmt.Errorf("serve %s not usable yet (plane %s: %v)", base, resp.PlaneURL, planeOK)
 		} else if cerr != nil {
 			lastErr = cerr
 		} else {
@@ -152,6 +168,21 @@ func (l *Lifecycle) EnsureServing(ctx context.Context, run db.WorkflowRunRow) er
 		case <-time.After(2 * time.Second):
 		}
 	}
+}
+
+// planeHealthyAt reports whether the run's sandbox plane answers /healthz
+// at the given base URL (the container bridge IP :8080). The handler only
+// mounts once the plane has finished constructing, so a half-initialized
+// plane can't pass. No auth: the plane lives inside an isolated runtime
+// container reachable only at the bridge IP.
+func planeHealthyAt(baseURL string) bool {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(baseURL + "/healthz")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 // serveReadyTimeout resolves the run-start serve gate window. Overridable

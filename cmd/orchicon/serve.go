@@ -28,7 +28,16 @@ import (
 // killOrphans kills any leftover opencode and orchicon mcp processes from
 // a prior crash. These can accumulate when the server is killed before the
 // ChatStream subprocess exits (e.g. during a forced binary replacement).
+//
+// Skipped in the runtime-container sandbox plane (ORCHICON_SANDBOX_PLANE=1):
+// there the opencode serve is a LIVE child of the runtime supervisor, not
+// an orphan of a crashed plane — pgrep would match and SIGTERM it (plus any
+// live `orchicon mcp` sidecars serving worker sessions). The supervisor's
+// own serve watchdog owns that process's lifecycle.
 func killOrphans() {
+	if os.Getenv("ORCHICON_SANDBOX_PLANE") != "" {
+		return
+	}
 	pgrep, err := exec.LookPath("pgrep")
 	if err != nil {
 		return
