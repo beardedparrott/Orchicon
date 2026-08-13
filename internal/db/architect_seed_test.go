@@ -29,8 +29,11 @@ func TestArchitectSeedWorkflowsJSON(t *testing.T) {
 		if err := json.Unmarshal([]byte(wf.StepsJSON), &steps); err != nil {
 			t.Fatalf("%s: steps not valid JSON: %v", name, err)
 		}
-		if len(steps) != 10 {
-			t.Errorf("%s: expected 10 steps, got %d", name, len(steps))
+		// Both Architect templates parallelize PR review + QA under a
+		// single fan-in gate (loop-2 removed), so each has 9 steps.
+		const wantSteps = 9
+		if len(steps) != wantSteps {
+			t.Errorf("%s: expected %d steps, got %d", name, wantSteps, len(steps))
 		}
 		for _, s := range steps {
 			if s["id"] == nil || s["name"] == nil || s["kind"] == nil {

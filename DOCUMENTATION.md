@@ -814,6 +814,12 @@ Workers now receive full execution context including:
 - The execution history timeline of all prior steps and their results
 - Previous issues found by reviewers
 
+**Facts learned ledger:**
+A run carries a facts ledger so later steps inherit established facts instead of re-deriving them. Each worker records facts it established (root causes, environment gotchas, decisions) as `FACTS LEARNED:` lines inside its `ORCHICON WORKER SUMMARY`. The composite prompt aggregates every recorded fact into a `## Facts learned (this run)` section near the top and instructs workers to read `.orchicon/<run_id>/facts_learned` first (the `.orchicon/` file is also appended per step by the TaskReconciler). A fact already recorded is treated as established — workers are told not to re-verify or re-derive it, and to append a correcting `FACTS LEARNED:` line rather than re-investigate. This directly counters the observed over-verification pattern in review/QA steps (re-confirming the same environmental conditions 3–4× per session).
+
+**Fan-in loop decisions (parallel review/QA):**
+A `loop_decision` step may depend on **multiple** upstream steps. The gate waits until **all** upstreams are terminal, then aggregates their decisions: failure is decisive — if ANY upstream failed (or reported `_decision: failure`) the whole chain loops back to `loop_branch`; otherwise it proceeds forward only when every upstream succeeded. The non-human coding templates use this to run PR Reviewer and QA Engineer **in parallel** after the implementation step and fan both into a single gate before the Code Approver — the approval step then receives both review and QA results in its execution history, and a rejection by either loops the implementer's step and re-runs both. On re-entry both upstream steps are re-created (the chain between `loop_branch` and the gate), so QA always validates the final code state.
+
 #### Viewing Execution Results
 1. Navigate to **Executions** for the full list
 2. Click an execution to see: streaming output, conversation, cost, duration
