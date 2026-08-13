@@ -151,3 +151,68 @@ func TestCountReaskRuns(t *testing.T) {
 		t.Fatalf("countReaskRuns = %d, want 0 (loop-backs are not re-asks)", got)
 	}
 }
+
+// TestAggregateLoopDecisions verifies the fan-in gate aggregation: ANY
+// upstream failure loops back (failure is decisive), otherwise the gate
+// proceeds only when ALL upstreams succeeded; empty means no decision.
+func TestAggregateLoopDecisions(t *testing.T) {
+	const (
+		fail = "failure"
+		ok   = "success"
+	)
+	cases := []struct {
+		name      string
+		decisions []string
+		want      string
+	}{
+		{"single success", []string{"success"}, "success"},
+		{"single failure", []string{"failure"}, "failure"},
+		{"both success (parallel PR + QA)", []string{"success", "success"}, "success"},
+		{"one failure wins over success", []string{"success", "failure"}, "failure"},
+		{"failure wins regardless of order", []string{"failure", "success"}, "failure"},
+		{"no decisions -> empty (re-ask)", []string{"", ""}, ""},
+		{"empty inputs", nil, ""},
+		{"mixed unknown and success", []string{"", "success"}, "success"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := aggregateLoopDecisions(tc.decisions, fail, ok); got != tc.want {
+				t.Errorf("aggregateLoopDecisions(%v) = %q, want %q", tc.decisions, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestExtractFactsLearned verifies the facts-ledger extraction: only
+// FACTS LEARNED lines are captured, case-insensitively, with bullet and
+// marker prefixes stripped, while other lines are ignored.
+func TestExtractFactsLearned(t *testing.T) {
+	summary := "Verified the boot sequence live.\n" +
+		"FACTS LEARNED: the supervisor runs the pre-feature daemon self-copy (old binary), so the sandbox plane does not auto-boot until the daemon rebuilds.\n" +
+		"Also ran build + tests.\n" +
+		"- FACTS LEARNED: /tmp is noexec so guard tests fail there.\n" +
+		"FACTS learned: gofmt drift is pre-existing at base.\n"
+	got := extractFactsLearned(summary)
+	want := []string{
+		"the supervisor runs the pre-feature daemon self-copy (old binary), so the sandbox plane does not auto-boot until the daemon rebuilds.",
+		"/tmp is noexec so guard tests fail there.",
+		"gofmt drift is pre-existing at base.",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("extractFactsLearned = %d facts, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("fact[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+
+	// No facts -> empty slice.
+	if got := extractFactsLearned("just a plain summary with no markers"); len(got) != 0 {
+		t.Errorf("expected no facts, got %v", got)
+	}
+	// Empty summary -> empty.
+	if got := extractFactsLearned(""); len(got) != 0 {
+		t.Errorf("expected no facts for empty summary, got %v", got)
+	}
+}

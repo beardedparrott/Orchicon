@@ -1031,6 +1031,30 @@ func (r *TaskReconciler) writeOrchiconFiles(ctx context.Context, exec db.Executi
 
 	if summary, ok := results["_summary"].(string); ok && summary != "" {
 		write("summary", summary)
+		// Facts ledger: persist the FACTS LEARNED lines this step recorded
+		// so later steps can read them from disk (the composite prompt
+		// points the next worker at .orchicon/<run>/facts_learned first).
+		// Append to any facts earlier steps already recorded.
+		facts := extractFactsLearned(summary)
+		if len(facts) > 0 {
+			existing := ""
+			if b, err := os.ReadFile(filepath.Join(orchDir, "facts_learned")); err == nil {
+				existing = string(b)
+			}
+			var sb strings.Builder
+			if existing != "" {
+				sb.WriteString(existing)
+				if !strings.HasSuffix(existing, "\n") {
+					sb.WriteString("\n")
+				}
+			}
+			for _, f := range facts {
+				sb.WriteString("FACTS LEARNED: ")
+				sb.WriteString(f)
+				sb.WriteString("\n")
+			}
+			write("facts_learned", strings.TrimSpace(sb.String()))
+		}
 	}
 	// The `issues` file is the feedback channel the composite prompt points
 	// the next worker at ("read .orchicon/<run>/issues"). It must ALWAYS be

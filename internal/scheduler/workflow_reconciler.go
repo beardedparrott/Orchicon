@@ -1585,53 +1585,79 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 					step.Name, cfg.LoopBranch, cfg.MaxIterations))
 		}
 
-		// Find the upstream step run (the one we branch from).
-		var upResult struct {
-			WorkItemID string `json:"_work_item_id"`
-			Decision   string `json:"_decision"`
+		// Fan-in: collect terminal runs for EVERY dependency. A loop
+		// decision may gate on multiple upstream steps (e.g. PR Reviewer
+		// and QA Engineer running in parallel after the implementation):
+		// it proceeds forward only when ALL upstreams succeeded, and
+		// loop-backs when ANY is failed or ANY reports a failure decision.
+		type upInfo struct {
+			run      db.WorkflowStepRunRow
+			wid      string
+			decision string
 		}
-		var upRun db.WorkflowStepRunRow
-		var upstreamStatus string
+		var upInfos []upInfo
 		for _, dep := range step.DependsOn {
-			if s, ok := runs[dep]; ok {
-				upRun = s
-				upstreamStatus = s.Status
-				json.Unmarshal(s.Result, &upResult)
-				break
+			s, ok := runs[dep]
+			if !ok {
+				continue
 			}
+			var upResult struct {
+				WorkItemID string `json:"_work_item_id"`
+				Decision   string `json:"_decision"`
+			}
+			json.Unmarshal(s.Result, &upResult)
+			upInfos = append(upInfos, upInfo{run: s, wid: upResult.WorkItemID, decision: upResult.Decision})
 		}
-		if upstreamStatus == "" {
+		if len(upInfos) == 0 {
 			return r.failStep(ctx, tx, tenantID, run, sr, runs,
 				fmt.Errorf("loop_decision step %q: no upstream step result found", step.Name))
 		}
+		// Wait until every upstream reaches a terminal state before deciding.
+		allTerminal := true
+		for _, u := range upInfos {
+			if u.run.Status != domain.StepRunSucceeded && u.run.Status != domain.StepRunFailed {
+				allTerminal = false
+				break
+			}
+		}
+		if !allTerminal {
+			break
+		}
 
-		// If upstream failed (crash, stall, tool error), trigger recovery
-		// and create a new loop decision iteration so downstream steps
-		// (e.g. QA Engineer) block until the recovery cycle completes
-		// and the re-dispatched reviewer produces a valid decision.
-		// The old code marked the loop decision SUCCEEDED here, which
-		// satisfied downstream deps and let them run in parallel with
-		// the recovery — wrong.
-		if upstreamStatus != domain.StepRunSucceeded {
-			if r.recovery != nil && upResult.WorkItemID != "" {
+		// If any upstream failed (crash, stall, tool error), trigger
+		// recovery for each failed step and create a new loop decision
+		// iteration so downstream steps block until the recovery cycle
+		// completes and the re-dispatched reviewer produces a valid
+		// decision. The old code marked the loop decision SUCCEEDED here,
+		// which satisfied downstream deps and let them run in parallel
+		// with the recovery — wrong.
+		anyFailed := false
+		for _, u := range upInfos {
+			if u.run.Status == domain.StepRunSucceeded {
+				continue
+			}
+			anyFailed = true
+			if r.recovery != nil && u.wid != "" {
 				// The failed execution + step run are the upstream step
 				// run's own (not GetLatestExecutionForTask — on a shared
 				// work item that could resolve to a different step's run).
-				failedExecID := upRun.WorkerExecutionID
+				failedExecID := u.run.WorkerExecutionID
 				// Defer the trigger to post-commit (see reconcileRun):
 				// TriggerOnFailure opens its own transaction, which would
 				// block on this pass's locks on the same work item.
 				if recoveryTriggers != nil {
 					*recoveryTriggers = append(*recoveryTriggers, recoveryTriggerReq{
 						tenantID:     tenantID,
-						workItemID:   upResult.WorkItemID,
+						workItemID:   u.wid,
 						failedExecID: failedExecID,
-						stepRunID:    upRun.ID,
+						stepRunID:    u.run.ID,
 						reason:       "loop_decision:upstream_failed",
 					})
 				}
 			}
-			// Guard against runaway iteration generation: when the upstream
+		}
+		if anyFailed {
+			// Guard against runaway iteration generation: when an upstream
 			// reviewer is FAILED, depsSatisfied treats the failed upstream as
 			// satisfied for THIS loop decision, so the freshly-created pending
 			// iteration re-dispatches on the next DAG pass and (upstream still
@@ -1664,24 +1690,30 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			break
 		}
 
-		// Upstream succeeded. Prefer the decision from the upstream STEP
-		// RUN's result (the ticket is a shared input reference — its
-		// results are the run-level narrative, not per-step decisions).
-		// Fall back to the ticket for legacy/custom decision fields.
-		var decision string
-		if upResult.Decision != "" {
-			decision = upResult.Decision
-		} else if upResult.WorkItemID != "" {
-			wi, err := db.GetWorkItem(ctx, tx, tenantID, upResult.WorkItemID)
-			if err == nil && len(wi.Results) > 0 {
-				var wiResult map[string]any
-				if json.Unmarshal(wi.Results, &wiResult) == nil {
-					if v, ok := wiResult[cfg.DecisionField]; ok {
-						decision, _ = v.(string)
+		// All upstreams succeeded. Aggregate their decisions: failure is
+		// decisive — if ANY upstream reports failure, loop back; proceed
+		// forward only when every upstream reports success. Prefer the
+		// decision from each upstream STEP RUN's result (the ticket is a
+		// shared input reference — its results are the run-level
+		// narrative, not per-step decisions). Fall back to the ticket for
+		// legacy/custom decision fields.
+		decisions := make([]string, 0, len(upInfos))
+		for _, u := range upInfos {
+			d := u.decision
+			if d == "" && u.wid != "" {
+				wi, err := db.GetWorkItem(ctx, tx, tenantID, u.wid)
+				if err == nil && len(wi.Results) > 0 {
+					var wiResult map[string]any
+					if json.Unmarshal(wi.Results, &wiResult) == nil {
+						if v, ok := wiResult[cfg.DecisionField]; ok {
+							d, _ = v.(string)
+						}
 					}
 				}
 			}
+			decisions = append(decisions, d)
 		}
+		decision := aggregateLoopDecisions(decisions, cfg.FailureValue, cfg.SuccessValue)
 
 		switch decision {
 		case cfg.SuccessValue:
@@ -2136,6 +2168,11 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	// summary text — that is the only way the workflow routes to a loop.
 	sb.WriteString("The workflow routes on exactly one signal: the word after `ORCHICON WORKER SUMMARY:` — `success` or `failure`. There is no `_issues:` failure channel. If work genuinely cannot be accepted, end with `ORCHICON WORKER SUMMARY: failure` and say what needs fixing in the summary text. Non-blocking observations belong in the summary text only and never affect the routing.\n\n")
 
+	// Facts ledger: every step appends the facts it established so later
+	// steps inherit them instead of re-deriving them (the observed
+	// over-verification and re-investigation pattern in review/QA steps).
+	sb.WriteString("**Facts ledger.** When you establish a fact, root cause, environment gotcha, or decision that later steps should not have to re-derive, record it as a `FACTS LEARNED:` line inside your final summary — one fact per line, each starting with `FACTS LEARNED:`. Example: `FACTS LEARNED: the runtime container's supervisor runs the pre-feature daemon self-copy (old binary), so the sandbox plane does not auto-boot until the daemon rebuilds.` Do not record obvious or transient details. Never re-verify a fact already recorded by an earlier step — if you believe one is wrong, append a correcting `FACTS LEARNED:` line rather than silently re-deriving it.\n\n")
+
 	// Workflow-aware role context: tell the worker where they fit in the
 	// overall workflow so they don't perform work meant for other steps.
 	// Count worker-facing steps (task and approval) in topological order
@@ -2272,6 +2309,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	}
 	if hasPriorSteps {
 		sb.WriteString("**Before you begin:** read this run's `.orchicon/` files from the working directory to see what earlier steps produced and what they require of you. They are the authoritative feedback — do not start until you have read them:\n\n")
+		fmt.Fprintf(&sb, "- `.orchicon/%s/facts_learned` — a running ledger of facts, root causes, environment gotchas, and decisions established by earlier steps. **A fact already recorded here is established — do not re-verify or re-derive it.** If you establish something new, append a `FACTS LEARNED:` line (see below)\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/status` — `success` or `failure` from the previous step\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/summary` — what the previous worker did\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/issues` — issues found by the previous reviewer (read these; they are blocking unless stated otherwise)\n", wi.WorkflowRunID)
@@ -2287,15 +2325,45 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	sb.WriteString("The first word (`success` or `failure`) is used to route the workflow. The text after `—` is passed to the next stage as the summary of your work.\n\n")
 	sb.WriteString("**Important:** The workflow routes on the single word after `ORCHICON WORKER SUMMARY:` — `success` or `failure`. There is no `_issues:` failure channel: any `_issues:` block in your response is informational only and never changes the routing. If you find blocking problems, end with `failure` and explain them in the summary text. If you have only minor suggestions, keep the routing `success` and mention them in your summary text.\n\n")
 
+	// Facts learned: aggregate every `FACTS LEARNED:` line recorded by
+	// completed steps in this run, so later steps inherit established
+	// facts instead of re-deriving them.
+	var runFacts []string
+	stepNameByID := make(map[string]string)
+	for _, s := range allSteps {
+		stepNameByID[s.ID] = s.Name
+	}
+	for stepID, sr := range runs {
+		if _, ok := stepNameByID[stepID]; !ok {
+			continue
+		}
+		if sr.Status != domain.StepRunSucceeded && sr.Status != domain.StepRunFailed {
+			continue
+		}
+		var rData struct {
+			Summary string `json:"_summary"`
+		}
+		json.Unmarshal(sr.Result, &rData)
+		for _, f := range extractFactsLearned(rData.Summary) {
+			runFacts = append(runFacts, fmt.Sprintf("- **%s** — %s", stepNameByID[stepID], f))
+		}
+	}
+	if len(runFacts) > 0 {
+		sb.WriteString("## Facts learned (this run)\n\n")
+		sb.WriteString("The following facts were established by earlier steps in this run. Treat them as established: **do not re-verify or re-derive them.** If a fact proves wrong, append a correction as a new `FACTS LEARNED:` line rather than repeating the investigation.\n\n")
+		for _, f := range runFacts {
+			sb.WriteString(f)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+
 	// Prior execution timeline: show what each completed step produced,
 	// so the worker understands the full context including loop-backs.
 	sb.WriteString("## Execution history\n\n")
 	sb.WriteString("The following steps have completed in this workflow run. If a step ran multiple times (loop-back), each iteration is listed.\n")
 	// Build a step-ID→name lookup from allSteps.
-	stepNameByID := make(map[string]string)
-	for _, s := range allSteps {
-		stepNameByID[s.ID] = s.Name
-	}
+
 	type histEntry struct {
 		stepName, status, summary, issues, reason, iteration string
 		attachments                                          []string
@@ -3835,4 +3903,44 @@ func (r *WorkflowReconciler) writeApprovalInitFiles(ctx context.Context, tx pgx.
 	writeFile("worker", "human_approval")
 	writeFile("status", "pending")
 	writeFile("summary", upstreamSummary)
+}
+
+// extractFactsLearned pulls the text after each `FACTS LEARNED:` line out
+// of a worker's summary. The marker must start the line (optionally after
+// a "- " bullet); matching is case-insensitive and byte-safe (no rune
+// normalization, so non-ASCII summary text can't skew the index).
+func extractFactsLearned(summary string) []string {
+	const marker = "facts learned:"
+	var facts []string
+	for _, line := range strings.Split(summary, "\n") {
+		s := strings.TrimSpace(line)
+		s = strings.TrimLeft(s, "-")
+		s = strings.TrimLeft(s, " ")
+		if len(s) < len(marker) || !strings.EqualFold(s[:len(marker)], marker) {
+			continue
+		}
+		rest := strings.TrimSpace(s[len(marker):])
+		if rest != "" {
+			facts = append(facts, rest)
+		}
+	}
+	return facts
+}
+
+// aggregateLoopDecisions evaluates the routing decision across multiple
+// upstream steps of a fan-in loop decision. Failure is decisive: if ANY
+// upstream reports failure the gate loops back. Otherwise it proceeds
+// only when every upstream reports success; an empty string means no
+// upstream reported a decision (caller re-asks).
+func aggregateLoopDecisions(decisions []string, failureValue, successValue string) string {
+	decision := ""
+	for _, d := range decisions {
+		switch d {
+		case failureValue:
+			return failureValue
+		case successValue:
+			decision = successValue
+		}
+	}
+	return decision
 }

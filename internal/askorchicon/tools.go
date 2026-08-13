@@ -387,6 +387,17 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Required:    []string{"id"},
 		},
 		{
+			Name:        "get_workflow_version",
+			Description: "Get a single workflow version by workflow_id and optional version number (defaults to the latest published). Returns the steps JSON array verbatim — use it to adopt a UI-built workflow configuration as the seed template (bake the steps into internal/db/seed_workflows.go).",
+			Mutating:    false,
+			Fn:          toolGetWorkflowVersion,
+			Properties:  map[string]PropertySchema{
+				"workflow_id": {Type: "string", Description: "Workflow ID"},
+				"version":     {Type: "number", Description: "Optional version number (defaults to latest published)"},
+			},
+			Required: []string{"workflow_id"},
+		},
+		{
 			Name:        "create_workflow",
 			Description: "Create a new workflow with a name and optional template.",
 			Mutating:    true,
@@ -536,10 +547,18 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 		},
 		{
 			Name:        "update_settings",
-			Description: "Update tenant settings (default models, stall parameters).",
+			Description: "Update tenant settings (default models, stall parameters). All fields are optional — zero/empty fields are left unchanged.",
 			Mutating:    true,
 			Fn:          toolUpdateSettings,
-			Properties:  map[string]PropertySchema{"default_worker_model": {Type: "string", Description: "Default model for workers"}, "default_ask_orchicon_model": {Type: "string", Description: "Default model for Ask Orchicon"}},
+			Properties: map[string]PropertySchema{
+				"default_worker_model":              {Type: "string", Description: "Default model for workers"},
+				"default_ask_orchicon_model":        {Type: "string", Description: "Default model for Ask Orchicon"},
+				"stall_no_progress_window_seconds":  {Type: "number", Description: "Seconds without token progress before a session is considered stalled (0 = leave unchanged)"},
+				"stall_no_file_diff_window_seconds": {Type: "number", Description: "Seconds without file modifications before an advisory liveness probe is sent (0 = leave unchanged)"},
+				"stall_text_loop_window_seconds":    {Type: "number", Description: "Seconds window for text-loop detection (0 = leave unchanged)"},
+				"stall_repetition_count":            {Type: "number", Description: "Same tool-call signature repeated this many times within the repetition window before aborting (0 = leave unchanged)"},
+				"stall_repetition_window_seconds":   {Type: "number", Description: "Seconds window for repetition detection (0 = leave unchanged)"},
+			},
 		},
 	}
 }
