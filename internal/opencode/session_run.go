@@ -63,11 +63,11 @@ type sessionRun struct {
 // Nudge tuning (env-overridable; default matches the advisory no-file
 // window being a real probe opportunity rather than a silent notice).
 const (
-	defaultMaxNudges          = 2
-	defaultNudgeReplyWindow   = 300 * time.Second
-	defaultNudgeCooldown      = 60 * time.Second
-	defaultSettleAfterIdle    = 1 * time.Second
-	defaultSSEReconnectMax    = 10 * time.Second
+	defaultMaxNudges        = 2
+	defaultNudgeReplyWindow = 300 * time.Second
+	defaultNudgeCooldown    = 60 * time.Second
+	defaultSettleAfterIdle  = 1 * time.Second
+	defaultSSEReconnectMax  = 10 * time.Second
 )
 
 func nudgeMax() int {
@@ -248,6 +248,9 @@ func (r *sessionRun) run() error {
 	}
 	if r.sessionID != "" {
 		_ = client.Abort(r.parentCtx, r.sessionID)
+	}
+	if r.stats != nil && len(r.stats.writtenFiles) > 0 {
+		r.callbacks.OnWrittenFiles(r.parentCtx, r.execRow.ID, r.stats.writtenFiles)
 	}
 	r.callbacks.OnResult(r.parentCtx, r.execRow.ID, ok, r.output.String(), strings.Join(parts, "; "))
 	return nil

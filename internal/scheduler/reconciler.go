@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
@@ -47,8 +48,16 @@ type TaskReconciler struct {
 	pool             *db.Pool
 	log              *slog.Logger
 	bridge           AdapterBridge
-	eventPub         eventbus.Publisher // direct NATS publisher for low-latency streaming (bypasses outbox relay)
+	eventPub         eventbus.Publisher                      // direct NATS publisher for low-latency streaming (bypasses outbox relay)
 	workflowNotifier func(ctx context.Context, runID string) // enqueues run for WorkflowReconciler on task completion
+
+	// pendingWrittenFiles holds the file paths a running execution's
+	// session actually wrote (OnWrittenFiles), keyed by execution ID. They
+	// are folded into the execution's _touched_files when it terminates so
+	// the next worker is told to read exactly what was produced. Guarded
+	// by writtenMu.
+	writtenMu           sync.Mutex
+	pendingWrittenFiles map[string][]string
 }
 
 // NewTaskReconciler creates a TaskReconciler.
@@ -388,8 +397,8 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 // approval steps) when the step run carries none.
 func (r *TaskReconciler) workerVersionForStepRun(ctx context.Context, tx pgx.Tx, tenantID string, sr db.WorkflowStepRunRow) (db.WorkerVersionRow, error) {
 	var meta struct {
-		WorkerID     string `json:"_worker_id"`
-		WorkerVer    int    `json:"_worker_version"`
+		WorkerID  string `json:"_worker_id"`
+		WorkerVer int    `json:"_worker_version"`
 	}
 	_ = json.Unmarshal(sr.Result, &meta)
 	if meta.WorkerID != "" {
@@ -538,27 +547,27 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	budgetsJSON := mergeBudgets(defaultBudgetOverrides, version.BudgetOverrides)
 
 	manifest := ExecutionManifest{
-		ExecutionID:                 exec.ID,
-		TaskID:                      exec.TaskID,
-		ProjectID:                   exec.ProjectID,
-		WorkerID:                    version.WorkerID,
-		WorkerVersion:               version.Version,
-		SystemPrompt:                systemPrompt,
-		Goal:                        task.Title,
-		AcceptanceCriteria:          task.AcceptanceCriteria,
-		ModelRef:                    version.ModelRef,
-		DefaultModelRef:             defaultModelRef,
-		ContextSources:              version.ContextSources,
-		Budgets:                     budgetsJSON,
-		Permissions:                 version.Permissions,
-		ProjectDir:                  projectDir,
-		RuntimeWorkflowID:           task.WorkflowRunID,
-		RuntimeImage:                runtimeImage,
-		StallNoProgressWindowSeconds:  stallNoProgress,
-		StallNoFileDiffWindowSeconds:  stallNoFileDiff,
-		StallTextLoopWindowSeconds:    stallTextLoop,
-		StallRepetitionCount:          stallRepCount,
-		StallRepetitionWindowSeconds:  stallRepWindow,
+		ExecutionID:                  exec.ID,
+		TaskID:                       exec.TaskID,
+		ProjectID:                    exec.ProjectID,
+		WorkerID:                     version.WorkerID,
+		WorkerVersion:                version.Version,
+		SystemPrompt:                 systemPrompt,
+		Goal:                         task.Title,
+		AcceptanceCriteria:           task.AcceptanceCriteria,
+		ModelRef:                     version.ModelRef,
+		DefaultModelRef:              defaultModelRef,
+		ContextSources:               version.ContextSources,
+		Budgets:                      budgetsJSON,
+		Permissions:                  version.Permissions,
+		ProjectDir:                   projectDir,
+		RuntimeWorkflowID:            task.WorkflowRunID,
+		RuntimeImage:                 runtimeImage,
+		StallNoProgressWindowSeconds: stallNoProgress,
+		StallNoFileDiffWindowSeconds: stallNoFileDiff,
+		StallTextLoopWindowSeconds:   stallTextLoop,
+		StallRepetitionCount:         stallRepCount,
+		StallRepetitionWindowSeconds: stallRepWindow,
 	}
 	if err := r.bridge.Start(ctx, exec, manifest, r); err != nil {
 		r.log.Error("adapter start failed", "execution", exec.ID, "error", err)
@@ -695,6 +704,42 @@ func (r *TaskReconciler) selectAdapter(ctx context.Context, tx pgx.Tx, tenantID,
 // execution has started (docs/03 §6: assigned → running).
 func (r *TaskReconciler) OnStarted(ctx context.Context, execID string) {
 	r.updateExecStatus(ctx, execID, domain.ExecutionRunning, domain.HealthHealthy, "")
+}
+
+// OnWrittenFiles is called by the adapter when the worker's session reports
+// files it wrote or edited (opencode file_diff telemetry). The paths are
+// stashed keyed by execution and folded into _touched_files when the
+// execution terminates, so the next worker is told exactly which files to
+// read before starting.
+func (r *TaskReconciler) OnWrittenFiles(ctx context.Context, execID string, files []string) {
+	if execID == "" || len(files) == 0 {
+		return
+	}
+	r.writtenMu.Lock()
+	defer r.writtenMu.Unlock()
+	if r.pendingWrittenFiles == nil {
+		r.pendingWrittenFiles = make(map[string][]string)
+	}
+	seen := make(map[string]bool, len(r.pendingWrittenFiles[execID]))
+	for _, f := range r.pendingWrittenFiles[execID] {
+		seen[f] = true
+	}
+	for _, f := range files {
+		if f != "" && !seen[f] {
+			seen[f] = true
+			r.pendingWrittenFiles[execID] = append(r.pendingWrittenFiles[execID], f)
+		}
+	}
+}
+
+// writtenFilesFor returns (and clears) the pending written files for an
+// execution, so the terminal transition can fold them into _touched_files.
+func (r *TaskReconciler) writtenFilesFor(execID string) []string {
+	r.writtenMu.Lock()
+	defer r.writtenMu.Unlock()
+	files := r.pendingWrittenFiles[execID]
+	delete(r.pendingWrittenFiles, execID)
+	return files
 }
 
 // OnResult is called by the adapter bridge when the execution reaches a
@@ -840,6 +885,32 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 			results["_touched_files"] = files
 		}
 	}
+	// Fold in the files the session itself reported as written (opencode
+	// file_diff telemetry). This is the authoritative set — it catches
+	// files the model wrote without echoing a diff (e.g. .orchicon/ review
+	// notes). Merge with any diff-marker files, deduped.
+	if written := r.writtenFilesFor(execID); len(written) > 0 {
+		merged := make([]any, 0, len(written))
+		seen := make(map[string]bool, len(written))
+		for _, f := range written {
+			if f == "" || seen[f] {
+				continue
+			}
+			seen[f] = true
+			merged = append(merged, f)
+		}
+		if existing, ok := results["_touched_files"].([]any); ok {
+			for _, e := range existing {
+				if s, ok := e.(string); ok && !seen[s] {
+					seen[s] = true
+					merged = append(merged, s)
+				}
+			}
+		}
+		if len(merged) > 0 {
+			results["_touched_files"] = merged
+		}
+	}
 	resultsJSON, _ := json.Marshal(results)
 	// A work item bound to an ACTIVE workflow run tracks the RUN, not any
 	// single step execution: the ticket is a shared input reference and
@@ -961,9 +1032,19 @@ func (r *TaskReconciler) writeOrchiconFiles(ctx context.Context, exec db.Executi
 	if summary, ok := results["_summary"].(string); ok && summary != "" {
 		write("summary", summary)
 	}
+	// The `issues` file is the feedback channel the composite prompt points
+	// the next worker at ("read .orchicon/<run>/issues"). It must ALWAYS be
+	// written when there is anything to communicate — a reviewer that
+	// reports problems via _summary (rather than a separate _issues block)
+	// would otherwise leave the file missing and the next worker blind.
+	// Prefer _issues; fall back to _summary.
 	if issues, ok := results["_issues"].(string); ok && issues != "" {
 		write("issues", issues)
+	} else if summary, ok := results["_summary"].(string); ok && summary != "" {
+		write("issues", summary)
 	}
+	// The `files` file lists every path the session wrote (opencode
+	// file_diff telemetry) so the next worker knows exactly what to read.
 	if files, ok := results["_touched_files"].([]any); ok && len(files) > 0 {
 		var sb strings.Builder
 		for _, f := range files {
@@ -1310,18 +1391,18 @@ func (r *TaskReconciler) publishExecEvent(ctx context.Context, eventType string,
 		return
 	}
 	evt := map[string]any{
-		"event_type":      eventType,
-		"tenant_id":       e.TenantID,
-		"execution_id":    e.ID,
-		"task_id":         e.TaskID,
-		"project_id":      e.ProjectID,
-		"worker_id":       e.WorkerID,
-		"worker_version":  e.WorkerVersion,
-		"status":          e.Status,
-		"health_state":    e.HealthState,
-		"aggregate_type":  "execution",
-		"aggregate_id":    e.ID,
-		"occurred_at":     time.Now().UTC().Format(time.RFC3339Nano),
+		"event_type":     eventType,
+		"tenant_id":      e.TenantID,
+		"execution_id":   e.ID,
+		"task_id":        e.TaskID,
+		"project_id":     e.ProjectID,
+		"worker_id":      e.WorkerID,
+		"worker_version": e.WorkerVersion,
+		"status":         e.Status,
+		"health_state":   e.HealthState,
+		"aggregate_type": "execution",
+		"aggregate_id":   e.ID,
+		"occurred_at":    time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	for k, v := range extra {
 		evt[k] = v
@@ -1345,18 +1426,18 @@ func (r *TaskReconciler) publishExecEvent(ctx context.Context, eventType string,
 
 func enqueueExecEvent(ctx context.Context, tx pgx.Tx, eventType string, e db.ExecutionRow, extra map[string]any) error {
 	evt := map[string]any{
-		"event_type":      eventType,
-		"tenant_id":       e.TenantID,
-		"execution_id":    e.ID,
-		"task_id":         e.TaskID,
-		"project_id":      e.ProjectID,
-		"worker_id":       e.WorkerID,
-		"worker_version":  e.WorkerVersion,
-		"status":          e.Status,
-		"health_state":    e.HealthState,
-		"aggregate_type":  "execution",
-		"aggregate_id":    e.ID,
-		"occurred_at":     time.Now().UTC().Format(time.RFC3339Nano),
+		"event_type":     eventType,
+		"tenant_id":      e.TenantID,
+		"execution_id":   e.ID,
+		"task_id":        e.TaskID,
+		"project_id":     e.ProjectID,
+		"worker_id":      e.WorkerID,
+		"worker_version": e.WorkerVersion,
+		"status":         e.Status,
+		"health_state":   e.HealthState,
+		"aggregate_type": "execution",
+		"aggregate_id":   e.ID,
+		"occurred_at":    time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	for k, v := range extra {
 		evt[k] = v
