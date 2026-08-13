@@ -5,10 +5,11 @@ import {
   activeSequenceParentIds,
   isHistoryItem,
   queuedSequenceChildren,
+  upcomingSortTime,
 } from "@/lib/schedules-model";
 
 // Helper to build a work item with only the fields the predicates read.
-// status: 1 pending, 4 running, 6 succeeded, 10 scheduled.
+// status: 1 pending, 4 running, 6 succeeded, 10 scheduled, 11 recurring.
 function wi(
   id: string,
   status: number,
@@ -16,6 +17,8 @@ function wi(
     parentId?: string;
     workflowRunId?: string;
     hasScheduledStart?: boolean;
+    hasNextRunAt?: boolean;
+    nextRunAtSeconds?: number;
     hasChildren?: boolean;
   } = {},
 ): WorkItem {
@@ -26,6 +29,9 @@ function wi(
     workflowRunId: opts.workflowRunId ?? "",
     scheduledStartAt: opts.hasScheduledStart
       ? { seconds: BigInt(1000), nanos: 0 }
+      : undefined,
+    nextRunAt: opts.hasNextRunAt
+      ? { seconds: BigInt(opts.nextRunAtSeconds ?? 3000), nanos: 0 }
       : undefined,
     updatedAt: { seconds: BigInt(2000), nanos: 0 },
     createdAt: { seconds: BigInt(1000), nanos: 0 },
@@ -124,5 +130,37 @@ describe("isHistoryItem", () => {
   it("excludes non-terminal items", () => {
     const running = wi("single", 4, { workflowRunId: "run1" });
     expect(isHistoryItem(running, [running])).toBe(false);
+  });
+});
+
+describe("upcomingSortTime", () => {
+  it("uses scheduled_start_at for a scheduled item", () => {
+    const item = wi("sched", 10, { hasScheduledStart: true });
+    expect(upcomingSortTime(item)).toBe(1_000_000);
+  });
+
+  it("uses next_run_at for a recurring item, not scheduled_start_at", () => {
+    const item = wi("recur", 11, { hasScheduledStart: true, hasNextRunAt: true });
+    expect(upcomingSortTime(item)).toBe(3_000_000);
+  });
+
+  it("uses next_run_at even when the recurring item has no scheduled start", () => {
+    const item = wi("recur", 11, { hasNextRunAt: true });
+    expect(upcomingSortTime(item)).toBe(3_000_000);
+  });
+
+  it("returns 0 when neither time is set", () => {
+    const item = wi("bare", 1);
+    expect(upcomingSortTime(item)).toBe(0);
+  });
+
+  it("orders recurring and scheduled items chronologically by fire time", () => {
+    const recurringLater = wi("recur-later", 11, { hasNextRunAt: true, nextRunAtSeconds: 5000 });
+    const scheduledSoon = wi("sched-soon", 10, { hasScheduledStart: true }); // 1_000_000
+    const recurringSoon = wi("recur-soon", 11, { hasScheduledStart: true, hasNextRunAt: true, nextRunAtSeconds: 3000 });
+    const sorted = [recurringLater, scheduledSoon, recurringSoon].sort(
+      (a, b) => upcomingSortTime(a) - upcomingSortTime(b),
+    );
+    expect(sorted.map((i) => i.id)).toEqual(["sched-soon", "recur-soon", "recur-later"]);
   });
 });

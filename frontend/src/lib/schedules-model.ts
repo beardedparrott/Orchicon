@@ -8,11 +8,34 @@
 // fire and arms one child at a time. Only the parent carries
 // scheduled_start_at, so the children never match a SCHEDULED query; the
 // predicates here recover them from the full project list.
-import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
+import type { Timestamp } from "@bufbuild/protobuf";
+import {
+  WorkItemStatus,
+  type WorkItem,
+} from "@/api/gen/orchicon/api/v1/work_item_pb";
 import {
   sequenceParentIds,
   sortByChainOrder,
 } from "@/components/work-items/sequence-utils";
+
+function tsToMs(ts?: Timestamp): number {
+  if (!ts) return 0;
+  return Number(ts.seconds) * 1000;
+}
+
+/**
+ * Effective fire time (ms) for an Upcoming-view item: recurring items use
+ * next_run_at (the computed next occurrence), everything else uses
+ * scheduled_start_at. Schedules.tsx sorts and groups upcoming items by
+ * this value, so a recurring item's next occurrence time drives its
+ * position in the agenda.
+ */
+export function upcomingSortTime(item: WorkItem): number {
+  if (item.status === WorkItemStatus.RECURRING) {
+    return tsToMs(item.nextRunAt);
+  }
+  return tsToMs(item.scheduledStartAt);
+}
 
 // Active statuses that count as "currently running" for the Running view:
 // work items whose bound workflow run is in flight (RUNNING /
