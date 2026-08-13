@@ -237,12 +237,16 @@ const STATUS_META: Record<number, StatusMeta> = {
     pillDark: "bg-purple-500/15 text-purple-300",
     dot: "bg-purple-500",
   },
+  // Fuchsia — visually distinct from every other status hue (the earlier
+  // teal collided with the SUCCEEDED emerald family at a glance). Same
+  // hue as the RecurringBadge so the pill and the badge read as one
+  // recurring concept.
   [WorkItemStatus.RECURRING]: {
     label: "recurring",
     titleLabel: "Recurring",
-    pill: "bg-teal-500/15 text-teal-800",
-    pillDark: "bg-teal-500/15 text-teal-300",
-    dot: "bg-teal-500",
+    pill: "bg-fuchsia-500/15 text-fuchsia-800",
+    pillDark: "bg-fuchsia-500/15 text-fuchsia-300",
+    dot: "bg-fuchsia-500",
   },
 };
 
@@ -379,6 +383,14 @@ export function allowedStatusesForKind(kind: number): number[] {
 /** "P3" for priority > 0, otherwise a muted "—" (rendered by the card). */
 export function priorityLabel(priority: number): string {
   return priority > 0 ? `P${priority}` : "";
+}
+
+/** True when a work item participates in a recurring schedule. The
+ *  persistent `recurringSchedule` field is the stable signal — the status
+ *  flips to `running` (and back to `recurring`) while an occurrence fires,
+ *  so a status-only check would make the badge blink off mid-run. */
+export function isRecurringItem(item: WorkItem): boolean {
+  return item.recurringSchedule != null || item.status === WorkItemStatus.RECURRING;
 }
 
 /** Relative age of a work item from its created_at ("just now", "2d ago"). */

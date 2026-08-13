@@ -14,6 +14,8 @@ import { describe, expect, it } from "vitest";
 import {
   WorkItemKind,
   WorkItemStatus,
+  WorkItem,
+  RecurringSchedule,
 } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import {
   kindMeta,
@@ -21,6 +23,7 @@ import {
   columnForStatus,
   allowedStatusesForKind,
   isTerminal,
+  isRecurringItem,
 } from "@/components/work-items/work-item-meta";
 
 describe("kind meta palette variants", () => {
@@ -83,6 +86,39 @@ describe("status meta palette variants", () => {
     expect(statusMeta(WorkItemStatus.PENDING).titleLabel).toBe("Pending");
     expect(statusMeta(WorkItemStatus.SUCCEEDED).titleLabel).toBe("Succeeded");
     expect(statusMeta(WorkItemStatus.READY).label).toBe("ready");
+  });
+});
+
+describe("recurring status meta", () => {
+  it("uses fuchsia (distinct from every other status hue)", () => {
+    const recurring = statusMeta(WorkItemStatus.RECURRING);
+    expect(recurring.pill).toContain("text-fuchsia-800");
+    expect(recurring.pillDark).toContain("text-fuchsia-300");
+    expect(recurring.pill).toContain("bg-fuchsia-500/15");
+    // The RecurringBadge shares the same hue family — they must not drift.
+    expect(recurring.pill).not.toContain("teal");
+  });
+});
+
+describe("isRecurringItem", () => {
+  const base = { id: "wi_1", kind: WorkItemKind.TASK } as const;
+
+  it("is true for an item in the recurring status", () => {
+    expect(isRecurringItem(new WorkItem({ ...base, status: WorkItemStatus.RECURRING }))).toBe(true);
+  });
+
+  it("stays true while an occurrence fires (running status keeps the schedule)", () => {
+    const firing = new WorkItem({
+      ...base,
+      status: WorkItemStatus.RUNNING,
+      recurringSchedule: new RecurringSchedule({ frequency: "daily", interval: 1 }),
+    });
+    expect(isRecurringItem(firing)).toBe(true);
+  });
+
+  it("is false for ordinary items", () => {
+    expect(isRecurringItem(new WorkItem({ ...base, status: WorkItemStatus.PENDING }))).toBe(false);
+    expect(isRecurringItem(new WorkItem({ ...base, status: WorkItemStatus.SCHEDULED }))).toBe(false);
   });
 });
 
