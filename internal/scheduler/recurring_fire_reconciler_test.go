@@ -10,9 +10,10 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
-	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/workflow"
 )
 
 // Recurring-fire reconciler tests: the fire path that scans for
@@ -440,9 +441,12 @@ func TestRecurringAdvanceNextRunAt(t *testing.T) {
 	if updated.NextRunAt == nil {
 		t.Fatal("next_run_at is nil after advance")
 	}
-	// The next occurrence should be at least 1 hour from now (hourly, interval 2).
-	if updated.NextRunAt.Before(time.Now().Add(30 * time.Minute)) {
-		t.Errorf("next_run_at %v should be >30min in the future for 2-hourly schedule", updated.NextRunAt)
+	// The next occurrence must be strictly in the future — the whole
+	// point of advanceNextRunAt. (Asserting ">30min in the future" would
+	// be time-of-day flaky: for an hourly/interval-2 schedule the next
+	// occurrence can land as little as ~1 minute from now.)
+	if !updated.NextRunAt.After(time.Now()) {
+		t.Errorf("next_run_at %v should be in the future after advance", updated.NextRunAt)
 	}
 }
 
@@ -532,7 +536,15 @@ func TestRecurringFireLifecycle_CompletionReturnsToRecurring(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wfID := seedPublishedWorkflow(t, pool, proj.ID)
+	// Seed a workflow with a REAL task step (not the empty step DAG that
+	// seedPublishedWorkflow publishes) so reconcileRun can actually
+	// complete the run below — an empty DAG fails the run at start
+	// (workflow_reconciler.go:258) and the item would end "failed".
+	steps := []workflow.StepWire{
+		{ID: "step-1", Name: "Do work", Kind: domain.StepKindTask, DependsOn: []string{}},
+	}
+	stepsJSON, _ := json.Marshal(steps)
+	wfID := seedPublishedWorkflowSteps(t, pool, proj.ID, string(stepsJSON))
 	schedule := &apiv1.RecurringSchedule{
 		Frequency: "daily",
 		Interval:  1,
@@ -579,6 +591,15 @@ func TestRecurringFireLifecycle_CompletionReturnsToRecurring(t *testing.T) {
 		RunContext: []byte("{}"), WorkItemID: item.ID,
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Flip the runtime-serve readiness gate (what the headless
+	// reconcileRun path does) so the reconciler doesn't bump the run's
+	// version mid-pass and leave the completion update with a stale
+	// version ("db: not found").
+	if _, err := db.UpdateWorkflowRun(ctx, ttx2.Tx, approvalTestTenant, run.ID, run.Version, db.UpdateWorkflowRunFields{
+		RuntimeReady: boolPtr(true),
+	}); err != nil {
 		t.Fatal(err)
 	}
 	// Create a step run for the workflow.
