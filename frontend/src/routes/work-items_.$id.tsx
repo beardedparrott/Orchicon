@@ -611,20 +611,19 @@ function WorkItemDetailPage() {
             </CardHeader>
           </Card>
         ) : null}
-        {(item.nextRunAt || item.scheduledStartAt) && (
-          <Card>
-            <CardHeader>
-              <CardDescription>Next Run</CardDescription>
-              <CardTitle className="text-sm font-normal">
-                {new Date(
-                  Number(
-                    (item.nextRunAt ?? item.scheduledStartAt).seconds,
-                  ) * 1000,
-                ).toLocaleString()}
-              </CardTitle>
-            </CardHeader>
-          </Card>
-        )}
+        {(() => {
+          const nextRunTs = item.nextRunAt ?? item.scheduledStartAt;
+          return nextRunTs ? (
+            <Card>
+              <CardHeader>
+                <CardDescription>Next Run</CardDescription>
+                <CardTitle className="text-sm font-normal">
+                  {new Date(Number(nextRunTs.seconds) * 1000).toLocaleString()}
+                </CardTitle>
+              </CardHeader>
+            </Card>
+          ) : null;
+        })()}
         {item.recurringSchedule && (
           <Card>
             <CardHeader>
