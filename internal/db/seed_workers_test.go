@@ -116,7 +116,7 @@ func resetWorker(t *testing.T, pool *db.Pool, workerID string) {
 // draft — never force-published.
 func TestSeedLeavesUserDraftUntouched(t *testing.T) {
 	pool := seedTestPool(t)
-	const workerID = "w_ui_developer"
+	const workerID = "w_se_senior_software_engineer"
 	resetWorker(t, pool, workerID)
 
 	insertDraftVersion(t, pool, workerID, 2)
@@ -139,7 +139,7 @@ func TestSeedLeavesUserDraftUntouched(t *testing.T) {
 func TestSeedPublishesLatestDraftWhenNoPublishedVersion(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
-	const workerID = "w_ui_design_architect"
+	const workerID = "w_se_principal_architect"
 	resetWorker(t, pool, workerID)
 
 	// Remove the seed's published v1 so the worker has no published version.
@@ -324,45 +324,42 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 	}
 }
 
-// TestSeedRecreatesUISlugOwner: a stale ULID worker owning a UI canned slug
-// (RecreateSlugOwner) is DELETED and recreated fresh under the canned ID —
-// the user explicitly wants leftover UUID canned workers gone. The recreated
-// worker also carries its own seed model (opencode-go/mimo-v2.5).
-func TestSeedRecreatesUISlugOwner(t *testing.T) {
+// TestSeedVisionWorkersCarryVisionModelAndPlaywright: the Vision canned
+// workers must default to the vision-capable model (opencode-go/mimo-v2.5),
+// carry the Playwright visual-verification block, and keep the develop-first
+// git workflow.
+func TestSeedVisionWorkersCarryVisionModelAndPlaywright(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
-	const cannedID = "w_ui_developer"
-	const slug = "ui-developer"
-	userID := replaceCannedWorkerWithUserShell(t, pool, cannedID, slug, true)
 
-	if err := db.SeedDevWorkers(ctx, pool); err != nil {
-		t.Fatalf("re-seed: %v", err)
-	}
-
-	// The stale slug owner is gone.
-	var exists string
-	if err := pool.QueryRow(ctx,
-		`SELECT id FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev'`, userID).Scan(&exists); err == nil {
-		t.Errorf("stale slug owner %s should have been deleted", userID)
-	}
-	// The canned worker exists fresh with the mimo model and the develop
-	// branch context.
-	var modelRef, agents string
-	if err := pool.QueryRow(ctx,
-		`SELECT model_ref FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
-		cannedID).Scan(&modelRef); err != nil {
-		t.Fatalf("query canned model_ref: %v", err)
-	}
-	if modelRef != "opencode-go/mimo-v2.5" {
-		t.Errorf("UI worker should default to opencode-go/mimo-v2.5, got %q", modelRef)
-	}
-	if err := pool.QueryRow(ctx,
-		`SELECT agents_md FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
-		cannedID).Scan(&agents); err != nil {
-		t.Fatalf("query canned agents: %v", err)
-	}
-	if !strings.Contains(agents, "Branch off `develop`") {
-		t.Errorf("UI worker agents_md should carry the develop-first git workflow")
+	for _, canned := range []struct{ id string }{
+		{"w_se_sse_vision"},
+		{"w_se_architect_vision"},
+		{"w_se_qa_vision"},
+	} {
+		if err := db.SeedDevWorkers(ctx, pool); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		var modelRef, agents string
+		if err := pool.QueryRow(ctx,
+			`SELECT model_ref, agents_md FROM worker_versions
+			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+			canned.id).Scan(&modelRef, &agents); err != nil {
+			t.Fatalf("query %s: %v", canned.id, err)
+		}
+		if modelRef != "opencode-go/mimo-v2.5" {
+			t.Errorf("%s should default to the vision-capable model mimo-v2.5, got %q", canned.id, modelRef)
+		}
+		for _, want := range []string{
+			"Browser automation (Playwright) — VISUAL verification",
+			"read the screenshot back with your Read tool",
+			"Branch off `develop`",
+			"orchicon.safety=v14",
+		} {
+			if !strings.Contains(agents, want) {
+				t.Errorf("%s agents_md missing %q", canned.id, want)
+			}
+		}
 	}
 }
 
@@ -394,19 +391,19 @@ func TestSeedCannedWorkersCarryDevOnlyGuard(t *testing.T) {
 	}
 }
 
-// TestSeedUIWorkersAreFullStack: the UI canned workers must be full-stack
-// engineers to whom UI is a strength — never a "UI-only specialist" identity
-// that gates them out of backend work. Their seed content must claim the full
-// stack, explicitly refuse to gate work on being UI, and NOT carry the old
-// limiting identity ("specializes in UI", "X first — you also happen to be").
-func TestSeedUIWorkersAreFullStack(t *testing.T) {
+// TestSeedVisionWorkersAreFullStack: the Vision canned workers are copies of
+// their non-UI counterparts (senior SSE, principal architect, QA engineer) —
+// they must NOT carry the old UI-only specialist identity that gated them out
+// of backend work (the "UI Developer"-style limiting framing is retired along
+// with the UI workers).
+func TestSeedVisionWorkersAreFullStack(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
 
 	for _, canned := range []struct{ id string }{
-		{"w_ui_design_architect"},
-		{"w_ui_developer"},
-		{"w_ui_qa_engineer"},
+		{"w_se_sse_vision"},
+		{"w_se_architect_vision"},
+		{"w_se_qa_vision"},
 	} {
 		if err := db.SeedDevWorkers(ctx, pool); err != nil {
 			t.Fatalf("seed: %v", err)
@@ -419,16 +416,6 @@ func TestSeedUIWorkersAreFullStack(t *testing.T) {
 			t.Fatalf("query %s: %v", canned.id, err)
 		}
 		blob := role + "\n" + skills + "\n" + agents
-
-		// Full-stack framing + explicit refusal to gate on UI.
-		for _, want := range []string{
-			"full stack",
-			"Never refuse or gate work because it isn't 'UI'",
-		} {
-			if !strings.Contains(strings.ToLower(blob), strings.ToLower(want)) {
-				t.Errorf("%s seed missing %q", canned.id, want)
-			}
-		}
 
 		// The old limiting identity is gone.
 		for _, gone := range []string{

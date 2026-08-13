@@ -413,6 +413,15 @@ type execStreamState struct {
 	stepStarts   int
 	stepFinishes int
 
+	// writtenFiles accumulates the paths opencode reported as file
+	// modifications (file_diff events). Unlike diff markers parsed out of
+	// the worker's text output, this is the telemetry the runtime itself
+	// emits for every file the session writes or edits — including files
+	// the model saves without echoing a diff (e.g. .orchicon/ review
+	// notes written via the Write tool). Surfaced to the next worker so
+	// it can read what the previous step actually produced.
+	writtenFiles []string
+
 	// truncatedFinish marks a FINAL step_finish that indicates the model
 	// turn was interrupted rather than completed: reason "unknown" with
 	// zero tokens (the signature of a truncated/aborted response — the
@@ -615,6 +624,27 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		}
 		a.log.Info("opencode step finished", "execution", execID, "cost", cost, "tokens", tokens)
 		a.recordUsage(ctx, execRow, manifest, tokens, cost)
+	case evtFileDiff:
+		// A file_diff event carries the path of a file the session wrote
+		// or edited (part["path"]). Capture it so the worker's written
+		// files — including ones written via the Write tool without a
+		// diff echoed in the output text — can be passed to the next
+		// worker as explicit context to read. Dedup: a file edited many
+		// times in one run is listed once.
+		if stats != nil {
+			if p, ok := part["path"].(string); ok && p != "" {
+				for _, existing := range stats.writtenFiles {
+					if existing == p {
+						ok = false
+						break
+					}
+				}
+				if ok {
+					stats.writtenFiles = append(stats.writtenFiles, p)
+					a.log.Debug("opencode file modified", "execution", execID, "path", p)
+				}
+			}
+		}
 	case evtHealth:
 		if state, ok := evt["state"].(string); ok {
 			callbacks.OnHealth(ctx, execID, state)
@@ -774,7 +804,9 @@ func (a *Adapter) recordUsage(ctx context.Context, execRow db.ExecutionRow, mani
 
 // extractErrorMessage pulls the human-readable message out of an opencode
 // error event. The shape is
-//   {"type":"error","error":{"name":"...","data":{"message":"..."}}}
+//
+//	{"type":"error","error":{"name":"...","data":{"message":"..."}}}
+//
 // The `data.message` field can be a JSON-stringified payload (e.g. when
 // the upstream provider returned a structured error), so we try to
 // unquote it for readability. Falls back to whatever it can find.
@@ -913,13 +945,14 @@ const textStreamingChunkDelay = 60 * time.Millisecond
 // Keep them as named constants so the dispatch table in parseEvent
 // reads like the schema.
 const (
-	evtStepStart    = "step_start"
-	evtStepFinish   = "step_finish"
-	evtText         = "text"
-	evtToolUse      = "tool_use"  // v1.x: input + output in one event
-	evtReasoning    = "reasoning" // v1.x: only when --thinking is enabled
-	evtError        = "error"
-	evtHealth       = "health"
+	evtStepStart  = "step_start"
+	evtStepFinish = "step_finish"
+	evtText       = "text"
+	evtToolUse    = "tool_use"  // v1.x: input + output in one event
+	evtReasoning  = "reasoning" // v1.x: only when --thinking is enabled
+	evtFileDiff   = "file_diff"
+	evtError      = "error"
+	evtHealth     = "health"
 )
 
 // sessionErrorRecycleThreshold is the number of CONSECUTIVE model-layer

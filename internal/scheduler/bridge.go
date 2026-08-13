@@ -36,11 +36,11 @@ type ExecutionManifest struct {
 	RuntimeImage string
 	// Stall detection thresholds from tenant settings. Zero means "use
 	// env-var or built-in default".
-	StallNoProgressWindowSeconds  int64
-	StallNoFileDiffWindowSeconds  int64
-	StallTextLoopWindowSeconds    int64
-	StallRepetitionCount          int32
-	StallRepetitionWindowSeconds  int64
+	StallNoProgressWindowSeconds int64
+	StallNoFileDiffWindowSeconds int64
+	StallTextLoopWindowSeconds   int64
+	StallRepetitionCount         int32
+	StallRepetitionWindowSeconds int64
 }
 
 // ExecutionCallbacks are the status callbacks the adapter bridge uses to
@@ -60,6 +60,16 @@ type ExecutionCallbacks interface {
 	// adapter didn't accumulate any text (e.g. the worker errored
 	// before producing output).
 	OnResult(ctx context.Context, execID string, succeeded bool, output string, errorMessage string)
+	// OnWrittenFiles carries the paths of files the worker's session
+	// actually wrote or edited during the run (opencode file_diff
+	// telemetry). More reliable than parsing diff markers out of the
+	// worker's text output: it includes files the model saved without
+	// echoing a diff (e.g. .orchicon/ review notes written via the Write
+	// tool). The receiver folds these into the step run's _touched_files
+	// so the next worker is told exactly what to read before it starts.
+	// Called before the terminal OnResult; may be called once with the
+	// full set, or incrementally.
+	OnWrittenFiles(ctx context.Context, execID string, files []string)
 	OnHealth(ctx context.Context, execID, healthState string)
 	// OnStall signals a detected stall (the reason carries which signal
 	// tripped: stalled:no_progress | stalled:no_file_progress |

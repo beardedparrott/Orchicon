@@ -10,21 +10,21 @@
 //  3. Progresses the step DAG: for each step whose depends_on are all
 //     satisfied (succeeded), mark it ready; for each ready step,
 //     evaluate its gate (gate_policy_ref) then dispatch by kind:
-//       - task: create a WorkItem (kind=task) with the step's Worker ref
-//         and hand it to the TaskReconciler for dispatch (only the
-//         TaskReconciler creates WorkerExecutions — docs/03 §8
-//         invariant #1). After the workflow transaction commits,
-//         the reconciler calls DispatchTask inline so the execution
-//         appears immediately (no wait for the TaskReconciler
-//         heartbeat). The step run polls the WorkItem to completion.
-//       - decision: evaluate the branch (v0.1: default-true) and mark
-//         succeeded; downstream branches that don't match are skipped.
-//       - approval: block at approval_pending (human approval wiring
-//         arrives with the Policy engine, Phase 7).
-//       - parallel: mark succeeded; downstream fan-out steps become
-//         ready as their deps complete.
-//       - recover: invoke the recovery workflow (v0.1: mark succeeded;
-//         full recovery arrives Phase 7).
+//     - task: create a WorkItem (kind=task) with the step's Worker ref
+//     and hand it to the TaskReconciler for dispatch (only the
+//     TaskReconciler creates WorkerExecutions — docs/03 §8
+//     invariant #1). After the workflow transaction commits,
+//     the reconciler calls DispatchTask inline so the execution
+//     appears immediately (no wait for the TaskReconciler
+//     heartbeat). The step run polls the WorkItem to completion.
+//     - decision: evaluate the branch (v0.1: default-true) and mark
+//     succeeded; downstream branches that don't match are skipped.
+//     - approval: block at approval_pending (human approval wiring
+//     arrives with the Policy engine, Phase 7).
+//     - parallel: mark succeeded; downstream fan-out steps become
+//     ready as their deps complete.
+//     - recover: invoke the recovery workflow (v0.1: mark succeeded;
+//     full recovery arrives Phase 7).
 //  4. When all steps are terminal-success, mark the run completed. If
 //     any step failed with no recovery path, mark the run failed.
 //
@@ -61,9 +61,9 @@ import (
 type WorkflowReconciler struct {
 	pool           *db.Pool
 	log            *slog.Logger
-	policy         PolicyEvaluator // Phase 7: Rego gate evaluation (docs/02 §2.5)
-	taskDispatcher TaskDispatcher  // inline dispatch so executions appear immediately
-	recovery       RecoveryTrigger // triggers recovery on explicit `recover` steps
+	policy         PolicyEvaluator  // Phase 7: Rego gate evaluation (docs/02 §2.5)
+	taskDispatcher TaskDispatcher   // inline dispatch so executions appear immediately
+	recovery       RecoveryTrigger  // triggers recovery on explicit `recover` steps
 	runtime        RuntimeLifecycle // per-workflow runtime container lifecycle (may be nil)
 	// sequenceNotifier is called after a bound work item reaches a terminal
 	// state AND it has a parent: the sequence engine advances the parent's
@@ -448,8 +448,8 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 
 			// Check step run result for _decision (human approval).
 			var srResult struct {
-				Decision    string `json:"_decision"`
-				WorkItemID  string `json:"_work_item_id"`
+				Decision   string `json:"_decision"`
+				WorkItemID string `json:"_work_item_id"`
 			}
 			json.Unmarshal(sr.Result, &srResult)
 
@@ -789,17 +789,17 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		// reaches "succeeded" when every step of the run has succeeded.
 		if run.WorkItemID != "" {
 			if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID); err == nil {
-			// Recurring items stay "recurring" after a successful run:
-			// the next_run_at was pre-computed by RecurringFireReconciler
-			// and the item should be re-scanned on the next occurrence.
-			// Non-recurring items transition to "succeeded".
-			// KEY: check the persistent RecurringSchedule field, NOT the
-			// transient status — StartWorkflow sets status="running" at
-			// fire time, so at completion the item is never "recurring".
-			status := domain.WorkItemSucceeded
-			if wi.RecurringSchedule != nil && wi.NextRunAt != nil {
-				status = domain.WorkItemRecurring
-			}
+				// Recurring items stay "recurring" after a successful run:
+				// the next_run_at was pre-computed by RecurringFireReconciler
+				// and the item should be re-scanned on the next occurrence.
+				// Non-recurring items transition to "succeeded".
+				// KEY: check the persistent RecurringSchedule field, NOT the
+				// transient status — StartWorkflow sets status="running" at
+				// fire time, so at completion the item is never "recurring".
+				status := domain.WorkItemSucceeded
+				if wi.RecurringSchedule != nil && wi.NextRunAt != nil {
+					status = domain.WorkItemRecurring
+				}
 				fields := db.UpdateWorkItemFields{Status: &status}
 				if narrative, err := r.buildRunNarrative(ctx, ttx.Tx, tenantID, run, stepRuns, domain.WorkflowRunCompleted); err != nil {
 					r.log.Warn("build run narrative", "run", runID, "error", err)
@@ -1997,30 +1997,30 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 // when this work item is dispatched (PR B — context propagation). It
 // has the following sections:
 //
-//   0. # Worker — the worker's identity (Role / Skills / Behavior /
-//      AGENTS.md). Prepended so the visible prompt the operator
-//      inspects in the execution detail page is the full context
-//      the model actually sees. The runtime delivers the same
-//      content as the system prompt via OPENCODE_CONFIG_CONTENT
-//      (see the opencode adapter) so the worker identity lands on
-//      every conversation turn, not just the first.
-//   1. # Task — the work item itself: title, description, acceptance
-//      criteria. This is THE task; everything else is context.
-//   2. # Project context — the project directory (working dir) + the
-//      project's `context_files`, rendered by the shared
-//      internal/contextfiles renderer. A context path may be a file
-//      (inlined, capped) or a directory (expanded into a bounded
-//      listing with explicit "read every file, do NOT open the
-//      directory as a file" instructions).
-//   3. # Work item context — the work item's own `context_files`,
-//      rendered exactly like the project's (same renderer, resolved
-//      against the same project_dir).
-//   4. # Instructions — the worker's contract: emit the
-//      ORCHICON WORKER SUMMARY marker at the end of the response so
-//      the next stage can read it as upstream context. Also carries
-//      the workflow-aware role context, iteration/git-branch notes,
-//      the per-step recovery summary, the `.orchicon/` files to read,
-//      and the execution-history timeline.
+//  0. # Worker — the worker's identity (Role / Skills / Behavior /
+//     AGENTS.md). Prepended so the visible prompt the operator
+//     inspects in the execution detail page is the full context
+//     the model actually sees. The runtime delivers the same
+//     content as the system prompt via OPENCODE_CONFIG_CONTENT
+//     (see the opencode adapter) so the worker identity lands on
+//     every conversation turn, not just the first.
+//  1. # Task — the work item itself: title, description, acceptance
+//     criteria. This is THE task; everything else is context.
+//  2. # Project context — the project directory (working dir) + the
+//     project's `context_files`, rendered by the shared
+//     internal/contextfiles renderer. A context path may be a file
+//     (inlined, capped) or a directory (expanded into a bounded
+//     listing with explicit "read every file, do NOT open the
+//     directory as a file" instructions).
+//  3. # Work item context — the work item's own `context_files`,
+//     rendered exactly like the project's (same renderer, resolved
+//     against the same project_dir).
+//  4. # Instructions — the worker's contract: emit the
+//     ORCHICON WORKER SUMMARY marker at the end of the response so
+//     the next stage can read it as upstream context. Also carries
+//     the workflow-aware role context, iteration/git-branch notes,
+//     the per-step recovery summary, the `.orchicon/` files to read,
+//     and the execution-history timeline.
 //
 // (The ancestor-chain and recovery sections historically described
 // below are now part of the workflow timeline rendered inside the
@@ -2121,8 +2121,12 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	// (execution flow determined by depends_on edges, not canvas position).
 	// Routing nodes like loop_decision, decision, parallel, project, and
 	// work_item are excluded from the count.
-	type stepMeta struct{ idx int; name string; id string }
-	var allMeta []stepMeta // all steps, used to build the dependency graph
+	type stepMeta struct {
+		idx  int
+		name string
+		id   string
+	}
+	var allMeta []stepMeta    // all steps, used to build the dependency graph
 	var activeMeta []stepMeta // only task + approval
 	myPos := -1
 	myName := ""
@@ -2180,7 +2184,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		}
 	}
 	if myPos >= 0 && len(activeMeta) > 0 {
-		fmt.Fprintf(&sb, "This workflow has %d steps. You are step %d — %s. Focus on your specific role and let other workers handle their steps.\n\n", len(activeMeta), myPos+1, myName)
+		fmt.Fprintf(&sb, "This workflow has %d steps and you are step %d — %s. Your step's role is your PRIMARY focus, but you OWN this work item end to end: you are responsible for it passing every acceptance criterion. If you find that earlier or later steps left the work incomplete, fix it yourself rather than deferring to a step that may never run — the workflow only reaches the next step when your output is accepted. Address a reviewer's or approver's feedback directly even when it touches code or tests outside your specialty.\n\n", len(activeMeta), myPos+1, myName)
 	}
 
 	// Iteration context: tell the worker if this is a re-do (loop-back).
@@ -2219,14 +2223,15 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		}
 	}
 	if hasPriorSteps {
-		sb.WriteString("Read this run's `.orchicon/` files from the working directory to see the previous step's results:\n\n")
+		sb.WriteString("**Before you begin:** read this run's `.orchicon/` files from the working directory to see what earlier steps produced and what they require of you. They are the authoritative feedback — do not start until you have read them:\n\n")
 		fmt.Fprintf(&sb, "- `.orchicon/%s/status` — `success` or `failure` from the previous step\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/summary` — what the previous worker did\n", wi.WorkflowRunID)
-		fmt.Fprintf(&sb, "- `.orchicon/%s/issues` — issues found by the previous reviewer (if any)\n", wi.WorkflowRunID)
+		fmt.Fprintf(&sb, "- `.orchicon/%s/issues` — issues found by the previous reviewer (read these; they are blocking unless stated otherwise)\n", wi.WorkflowRunID)
+		fmt.Fprintf(&sb, "- `.orchicon/%s/touched_files` — files the previous worker wrote or edited (read the ones relevant to your task)\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/worker` — which worker produced the previous results\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/attachments/` — files/screenshots the human attached to an approval decision (read them!)\n\n", wi.WorkflowRunID)
 	}
-	sb.WriteString("Review the task above, but only complete the work that matches your Role and the step you are assigned to. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — either `success` or `failure` — and a short paragraph summarizing what you did.\n\n")
+	sb.WriteString("Complete the work the task requires and see it through to a state that passes review — do not stop at the edge of your specialty or hand incomplete work downstream to \"the next step\". When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — either `success` or `failure` — and a short paragraph summarizing what you did.\n\n")
 	sb.WriteString("Format:\n")
 	sb.WriteString("```\nORCHICON WORKER SUMMARY: success — Implemented the feature.\n```\n")
 	sb.WriteString("or\n")
@@ -2243,7 +2248,10 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	for _, s := range allSteps {
 		stepNameByID[s.ID] = s.Name
 	}
-	type histEntry struct{ stepName, status, summary, issues, reason, iteration string; attachments []string }
+	type histEntry struct {
+		stepName, status, summary, issues, reason, iteration string
+		attachments                                          []string
+	}
 	var history []histEntry
 	seen := make(map[string]bool)
 	for stepID, sr := range runs {
@@ -2255,9 +2263,9 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 			continue
 		}
 		var rData struct {
-			Summary     string   `json:"_summary"`
-			Issues      string   `json:"_issues"`
-			Reason      string   `json:"_reason"`
+			Summary     string `json:"_summary"`
+			Issues      string `json:"_issues"`
+			Reason      string `json:"_reason"`
 			Attachments []struct {
 				Filename string `json:"filename"`
 				Path     string `json:"path"`
@@ -2290,8 +2298,12 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	sort.SliceStable(history, func(i, j int) bool {
 		var pi, pj int
 		for _, s := range allSteps {
-			if s.Name == history[i].stepName { pi = topoPos[s.ID] }
-			if s.Name == history[j].stepName { pj = topoPos[s.ID] }
+			if s.Name == history[i].stepName {
+				pi = topoPos[s.ID]
+			}
+			if s.Name == history[j].stepName {
+				pj = topoPos[s.ID]
+			}
 		}
 		return pi < pj
 	})
@@ -2308,16 +2320,10 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 				sb.WriteString(" failed")
 			}
 			if h.summary != "" {
-				if len(h.summary) > 120 {
-					h.summary = h.summary[:120] + "…"
-				}
 				fmt.Fprintf(&sb, ": %s", h.summary)
 			}
 			sb.WriteString("\n")
 			if h.issues != "" {
-				if len(h.issues) > 120 {
-					h.issues = h.issues[:120] + "…"
-				}
 				fmt.Fprintf(&sb, "  - Issues: %s\n", h.issues)
 			}
 			// Human review feedback (approval step) + any attached files /
@@ -3295,14 +3301,14 @@ func (r *WorkflowReconciler) enqueueStepEvent(ctx context.Context, tx pgx.Tx, ev
 
 // loopDecisionConfig is the step config for a loop_decision node.
 type loopDecisionConfig struct {
-	BranchFrom     string `json:"branch_from"`
-	SuccessBranch  string `json:"success_branch"`
-	LoopBranch     string `json:"loop_branch"`
-	MaxIterations  int    `json:"max_iterations"`
-	DecisionField  string `json:"decision_field"`  // field name in work item results to check; default "_decision"
-	SuccessValue   string `json:"success_value"`   // value meaning success; default "success"
-	FailureValue   string `json:"failure_value"`   // value meaning failure; default "failure"
-	MaxReask       int    `json:"max_reask"`        // max re-ask attempts when no decision field found; default 3
+	BranchFrom    string `json:"branch_from"`
+	SuccessBranch string `json:"success_branch"`
+	LoopBranch    string `json:"loop_branch"`
+	MaxIterations int    `json:"max_iterations"`
+	DecisionField string `json:"decision_field"` // field name in work item results to check; default "_decision"
+	SuccessValue  string `json:"success_value"`  // value meaning success; default "success"
+	FailureValue  string `json:"failure_value"`  // value meaning failure; default "failure"
+	MaxReask      int    `json:"max_reask"`      // max re-ask attempts when no decision field found; default 3
 }
 
 func parseLoopDecisionConfig(config string) loopDecisionConfig {
@@ -3602,8 +3608,8 @@ func (r *WorkflowReconciler) loopDecisionReenter(ctx context.Context, tx pgx.Tx,
 	// steps (QA Engineer). The poll phase checks whether the
 	// re-entered chain completed.
 	updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-		Status:  strPtr(domain.StepRunRunning),
-		Result:  func() *[]byte { r := []byte(`{"loop":"re-entered"}`); return &r }(),
+		Status: strPtr(domain.StepRunRunning),
+		Result: func() *[]byte { r := []byte(`{"loop":"re-entered"}`); return &r }(),
 	})
 	if err != nil {
 		return fmt.Errorf("loop_decision step %q: mark running: %w", step.Name, err)
@@ -3729,7 +3735,7 @@ func (r *WorkflowReconciler) pollLoopDecisionChain(ctx context.Context, tx pgx.T
 			return false, fmt.Errorf("list chain %s: %w", cid, err)
 		}
 		// Find the active (non-superseded) run.
-			var active db.WorkflowStepRunRow
+		var active db.WorkflowStepRunRow
 		for _, s := range srList {
 			if s.SupersededBy == "" {
 				active = s
