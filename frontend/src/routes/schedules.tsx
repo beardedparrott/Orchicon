@@ -24,10 +24,11 @@
 // History includes terminal items with workflow_run_id so completed
 // children (and single runs started without a schedule) are not dropped.
 //
-// Recurring scheduled tasks are a future backend feature (design §5).
-// Every card reserves a right-aligned frequency slot that today renders
-// a muted "One-time" chip; when recurrence lands, only `recurrenceBadge`
-// changes — the slot already exists so the card layout does not reflow.
+// Recurring work items (status = RECURRING, next_run_at set) are fetched
+// alongside scheduled items and merged into the Upcoming view. The
+// recurrenceBadge already renders the schedule's frequency; recurring
+// items use next_run_at as their effective fire time instead of
+// scheduled_start_at.
 import { useEffect, useMemo, useState } from "react";
 import { Link, createRoute } from "@tanstack/react-router";
 import { z } from "zod";
@@ -397,10 +398,19 @@ function UpcomingView({
 }) {
   const {
     data: scheduled,
-    isLoading,
-    error,
+    isLoading: scheduledLoading,
+    error: scheduledError,
   } = useListWorkItems(projectId, {
     status: WorkItemStatus.SCHEDULED,
+    search: search || undefined,
+    refetchInterval: 5_000,
+  });
+  const {
+    data: recurring,
+    isLoading: recurringLoading,
+    error: recurringError,
+  } = useListWorkItems(projectId, {
+    status: WorkItemStatus.RECURRING,
     search: search || undefined,
     refetchInterval: 5_000,
   });
@@ -434,24 +444,32 @@ function UpcomingView({
 
   // Kind filter + chronological sort are client-side (the server sort_by
   // only supports title/priority/created_at; scheduled_start_at is not
-  // one of them).
+  // one of them). Recurring items use next_run_at as their effective
+  // fire time.
   const items = useMemo(() => {
-    const base = kindFilter
+    const scheduledFiltered = kindFilter
       ? (scheduled ?? []).filter((i) => i.kind === Number(kindFilter))
       : (scheduled ?? []);
-    const sorted = [...base].sort(
-      (a, b) => tsToMs(a.scheduledStartAt) - tsToMs(b.scheduledStartAt),
+    const recurringFiltered = kindFilter
+      ? (recurring ?? []).filter((i) => i.kind === Number(kindFilter))
+      : (recurring ?? []);
+    const all = [...scheduledFiltered, ...recurringFiltered];
+    const sorted = [...all].sort(
+      (a, b) => upcomingSortTime(a) - upcomingSortTime(b),
     );
     return sortOrder === "asc" ? sorted : sorted.reverse();
-  }, [scheduled, kindFilter, sortOrder]);
+  }, [scheduled, recurring, kindFilter, sortOrder]);
+
+  const isLoading = scheduledLoading || recurringLoading;
+  const loadError = scheduledError || recurringError;
 
   if (isLoading || allLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
   }
-  if (error || allError) {
+  if (loadError || allError) {
     return (
       <p className="text-sm text-destructive">
-        Failed to load schedules: {String(error || allError)}
+        Failed to load schedules: {String(loadError || allError)}
       </p>
     );
   }
@@ -677,7 +695,7 @@ function AgendaGroup({
           return (
             <li key={item.id} className="flex gap-3">
               <div className="hidden w-16 shrink-0 pt-4 text-right font-mono text-xs tabular-nums text-muted-foreground sm:block">
-                {formatTime(tsToMs(item.scheduledStartAt))}
+                {formatTime(upcomingSortTime(item))}
               </div>
               <div className="relative flex flex-col items-center">
                 <KindDot
@@ -725,7 +743,7 @@ function ScheduleCard({
   isSequenceParent: boolean;
 }) {
   const projectName = projects?.find((p) => p.id === item.projectId)?.name;
-  const scheduledAt = tsToMs(item.scheduledStartAt);
+  const fireTime = upcomingSortTime(item);
   return (
     <div className="group flex items-center gap-2">
       <input
@@ -762,9 +780,9 @@ function ScheduleCard({
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:shrink-0">
               <span className="inline-flex items-center gap-1 font-mono tabular-nums">
                 <Clock className="h-3 w-3" />
-                {formatTime(scheduledAt)}
+                {formatTime(fireTime)}
               </span>
-              <CountdownChip target={scheduledAt} now={now} />
+              <CountdownChip target={fireTime} now={now} />
               <span className="rounded-full border border-input px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                 {recurrenceBadge(item)}
               </span>
@@ -1252,9 +1270,9 @@ function LiveClock({ now }: { now: number }) {
 // Optional polish strip: upcoming count, next run + countdown, due today.
 function StatsStrip({ items, now }: { items: WorkItemProto[]; now: number }) {
   if (items.length === 0) return null;
-  const nextMs = tsToMs(items[0].scheduledStartAt);
+  const nextMs = upcomingSortTime(items[0]);
   const dueToday = items.filter((i) =>
-    isSameLocalDay(tsToMs(i.scheduledStartAt), now),
+    isSameLocalDay(upcomingSortTime(i), now),
   ).length;
   return (
     <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-lg border bg-card px-4 py-2.5 text-xs text-muted-foreground">
@@ -1349,6 +1367,16 @@ function tsToMs(ts?: Timestamp): number {
   return Number(ts.seconds) * 1000;
 }
 
+// upcomingSortTime returns the effective fire time for an Upcoming-view
+// item. Scheduled items use scheduled_start_at; recurring items use
+// next_run_at (the computed next occurrence).
+function upcomingSortTime(item: WorkItemProto): number {
+  if (item.status === WorkItemStatus.RECURRING) {
+    return tsToMs(item.nextRunAt);
+  }
+  return tsToMs(item.scheduledStartAt);
+}
+
 // runningStartedAt is the effective start time for a Running-view item. A
 // running ticket started without a schedule has no scheduled_start_at, so
 // fall back to updatedAt (the reconciler bumps it while the run is in
@@ -1439,7 +1467,7 @@ function groupByDay(items: WorkItemProto[], now: number) {
   const today = startOfDay(now);
   const groups: { key: string; label: string; items: WorkItemProto[] }[] = [];
   for (const item of items) {
-    const ts = tsToMs(item.scheduledStartAt);
+    const ts = upcomingSortTime(item);
     const day = startOfDay(ts);
     const diffDays = Math.round((day - today) / 86_400_000);
     let label: string;

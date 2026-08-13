@@ -789,7 +789,17 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		// reaches "succeeded" when every step of the run has succeeded.
 		if run.WorkItemID != "" {
 			if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID); err == nil {
-				status := domain.WorkItemSucceeded
+			// Recurring items stay "recurring" after a successful run:
+			// the next_run_at was pre-computed by RecurringFireReconciler
+			// and the item should be re-scanned on the next occurrence.
+			// Non-recurring items transition to "succeeded".
+			// KEY: check the persistent RecurringSchedule field, NOT the
+			// transient status — StartWorkflow sets status="running" at
+			// fire time, so at completion the item is never "recurring".
+			status := domain.WorkItemSucceeded
+			if wi.RecurringSchedule != nil && wi.NextRunAt != nil {
+				status = domain.WorkItemRecurring
+			}
 				fields := db.UpdateWorkItemFields{Status: &status}
 				if narrative, err := r.buildRunNarrative(ctx, ttx.Tx, tenantID, run, stepRuns, domain.WorkflowRunCompleted); err != nil {
 					r.log.Warn("build run narrative", "run", runID, "error", err)
@@ -802,8 +812,10 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 					return fmt.Errorf("mark bound work item succeeded: %w", err)
 				}
 				// Sequence wiring: a bound child reaching terminal-success
-				// must advance its parent's chain.
-				if wi.ParentID != nil {
+				// must advance its parent's chain. Recurring items that
+				// stay recurring do NOT trigger sequence advance — they
+				// are standalone recurring tickets, not sequence children.
+				if wi.ParentID != nil && status == domain.WorkItemSucceeded {
 					terminalParent = *wi.ParentID
 				}
 			}
@@ -829,6 +841,15 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID); err == nil {
 				status := domain.WorkItemFailed
 				fields := db.UpdateWorkItemFields{Status: &status}
+				// Recurring items: clear next_run_at on failure so the
+				// schedule stops. The user must re-arm it manually or
+				// the RecurringFireReconciler won't pick it up again.
+				// KEY: check the persistent RecurringSchedule field, NOT the
+				// transient status — same reason as the success path above.
+				if wi.RecurringSchedule != nil {
+					clearRecurring := true
+					fields.ClearRecurringSchedule = clearRecurring
+				}
 				if narrative, err := r.buildRunNarrative(ctx, ttx.Tx, tenantID, run, stepRuns, domain.WorkflowRunFailed); err != nil {
 					r.log.Warn("build run narrative", "run", runID, "error", err)
 				} else if narrative != nil {
