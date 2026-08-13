@@ -75,6 +75,7 @@ import {
   ACTIVE_RUNNING_STATUSES,
   isHistoryItem,
   queuedSequenceChildren,
+  upcomingSortTime,
 } from "@/lib/schedules-model";
 
 const schedulesSearchSchema = z.object({
@@ -1170,6 +1171,7 @@ function HistoryCard({
                     {item.title}
                   </span>
                   <KindBadge kind={item.kind} />
+                  {isRecurringItem(item) && <RecurringBadge />}
                   <StatusPill status={item.status} />
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -1371,15 +1373,10 @@ function tsToMs(ts?: Timestamp): number {
   return Number(ts.seconds) * 1000;
 }
 
-// upcomingSortTime returns the effective fire time for an Upcoming-view
-// item. Scheduled items use scheduled_start_at; recurring items use
-// next_run_at (the computed next occurrence).
-function upcomingSortTime(item: WorkItemProto): number {
-  if (item.status === WorkItemStatus.RECURRING) {
-    return tsToMs(item.nextRunAt);
-  }
-  return tsToMs(item.scheduledStartAt);
-}
+// upcomingSortTime lives in schedules-model.ts (unit-tested): it returns
+// the effective fire time for an Upcoming-view item. Scheduled items use
+// scheduled_start_at; recurring items use next_run_at (the computed next
+// occurrence).
 
 // runningStartedAt is the effective start time for a Running-view item. A
 // running ticket started without a schedule has no scheduled_start_at, so
