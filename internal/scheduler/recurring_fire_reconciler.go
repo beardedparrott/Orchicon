@@ -161,16 +161,9 @@ func (r *RecurringFireReconciler) scanAndFire(ctx context.Context) reconciler.Re
 func (r *RecurringFireReconciler) advanceNextRunAt(ctx context.Context,
 	tenantID, itemID string, expectedVersion int, scheduleJSON []byte) error {
 
-	if len(scheduleJSON) == 0 {
-		return nil // no schedule → nothing to advance
-	}
-	var rs apiv1.RecurringSchedule
-	if err := json.Unmarshal(scheduleJSON, &rs); err != nil {
-		return err
-	}
-	next := workitem.ComputeNextRunAt(&rs, time.Now().UTC())
+	next := computeRecurringNextRunAt(scheduleJSON, time.Now().UTC())
 	if next == nil {
-		return nil // compute failed → leave next_run_at unchanged
+		return nil // no schedule / compute failed → leave next_run_at unchanged
 	}
 
 	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
@@ -184,4 +177,30 @@ func (r *RecurringFireReconciler) advanceNextRunAt(ctx context.Context,
 		return err // version mismatch → already fired; harmless
 	}
 	return ttx.Commit(ctx)
+}
+
+// computeRecurringNextRunAt parses a raw recurring_schedule JSONB value and
+// returns the next occurrence at-or-after now. Returns nil when the schedule
+// is empty or unparseable (the caller keeps whatever next_run_at it has).
+func computeRecurringNextRunAt(scheduleJSON []byte, now time.Time) *time.Time {
+	if len(scheduleJSON) == 0 {
+		return nil
+	}
+	var rs apiv1.RecurringSchedule
+	if err := json.Unmarshal(scheduleJSON, &rs); err != nil {
+		return nil
+	}
+	return workitem.ComputeNextRunAt(&rs, now)
+}
+
+// ensureRecurringNextRun returns a recomputed next_run_at for a recurring
+// item whose cursor was cleared mid-run/cycle (nil next_run_at), so the
+// RecurringFireReconciler always has a due date to pick the item up again.
+// Returns nil when the item is not recurring or the schedule can't be
+// re-computed (the caller keeps whatever it has — field-mask semantics).
+func ensureRecurringNextRun(scheduleJSON []byte, nextRunAt *time.Time, now time.Time) *time.Time {
+	if len(scheduleJSON) == 0 || nextRunAt != nil {
+		return nil
+	}
+	return computeRecurringNextRunAt(scheduleJSON, now)
 }
