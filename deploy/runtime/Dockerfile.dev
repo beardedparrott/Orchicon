@@ -5,12 +5,15 @@
 # test the Orchicon repo in-sandbox:
 #   - Go 1.26.x (control plane) + Node 22.x (frontend)
 #   - buf (protobuf codegen) + atlas (migrations)
-#   - PostgreSQL 15 server + client: a worker can boot a DISPOSABLE
-#     in-sandbox Postgres (initdb + pg_ctl run fine as the non-root user)
-#     and run the full `make ci` DB path (migrations, RLS gate, DB unit
-#     tests) against localhost:5432. It dies with the container and never
-#     touches the plane's Postgres, so the no-DB-route sandbox invariant
-#     is preserved.
+#   - PostgreSQL 15 server + client + nats-server: the runtime
+#     supervisor boots a FULL, disposable Orchicon control plane in the
+#     container at start (Postgres -> NATS -> `orchicon serve` on
+#     container-local ports), so a worker gets a consistent environment —
+#     curl http://localhost:8080/healthz, DB-backed tests against
+#     localhost:5432, and the `orchicon_*` MCP tools against the sandbox
+#     DB. It dies with the container (pool reset recreates pristine) and
+#     never touches the plane's Postgres, so the no-DB-route sandbox
+#     invariant is preserved.
 #
 # Built FROM the base image so it inherits the toolchain, the chowned-
 # rootfs security model, and the org.orchicon.runtime-base label — the
@@ -24,11 +27,21 @@ FROM ${BASE_IMAGE}
 
 USER root
 # Postgres 15 (baked so deps resolve; runs as the non-root worker via
-# initdb/pg_ctl into the ephemeral tmpfs) + the Orchicon toolchain.
+# initdb/pg_ctl) + the Orchicon toolchain.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       postgresql-15 postgresql-client-15 \
  && rm -rf /var/lib/apt/lists/*
+
+# NATS JetStream server (the sandbox plane's in-container event bus).
+# Pinned to the 2.10 line the single-container image ships (nats:2.10-alpine)
+# so the sandbox behaves like the real stack. Fetched via curl (not a
+# multi-stage COPY) so the daemon's Dockerfile-rewrite path — which strips
+# every FROM line and injects the base — still builds this template verbatim.
+RUN curl -fsSL https://github.com/nats-io/nats-server/releases/download/v2.10.29/nats-server-v2.10.29-linux-amd64.tar.gz -o /tmp/nats.tgz \
+ && tar -C /tmp -xzf /tmp/nats.tgz \
+ && install /tmp/nats-server-v2.10.29-linux-amd64/nats-server /usr/local/bin/nats-server \
+ && rm -rf /tmp/nats.tgz /tmp/nats-server-v2.10.29-linux-amd64
 
 # Go toolchain (control plane) into /usr/local (on PATH).
 RUN curl -fsSL https://go.dev/dl/go1.26.4.linux-amd64.tar.gz -o /tmp/go.tgz \

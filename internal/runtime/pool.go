@@ -53,8 +53,11 @@ type poolEntry struct {
 	servePort     int
 	servePassword string
 	serveURL      string
-	leasedBy      string // run id; "" = available
-	lastUsed      time.Time
+	// planeURL is the sandbox plane /healthz base URL (empty on base/gui
+	// images — no plane boot).
+	planeURL  string
+	leasedBy  string // run id; "" = available
+	lastUsed  time.Time
 }
 
 func newDaemonPool(d *Daemon) *daemonPool {
@@ -181,6 +184,7 @@ func (p *daemonPool) checkout(ctx context.Context, runID string, req CreateReque
 		servePort:     resp.ServePort,
 		servePassword: resp.ServePassword,
 		serveURL:      resp.ServeURL,
+		planeURL:      resp.PlaneURL,
 		leasedBy:      runID,
 		lastUsed:      time.Now(),
 	}
@@ -242,6 +246,7 @@ func (p *daemonPool) resetAndPool(old *poolEntry) {
 		servePort:     resp.ServePort,
 		servePassword: resp.ServePassword,
 		serveURL:      resp.ServeURL,
+		planeURL:      resp.PlaneURL,
 		lastUsed:      time.Now(),
 	}
 	p.mu.Lock()
@@ -267,6 +272,7 @@ func (e *poolEntry) response() *CreateResponse {
 		ServePort:     e.servePort,
 		ServePassword: e.servePassword,
 		ServeURL:      e.serveURL,
+		PlaneURL:      e.planeURL,
 	}
 }
 

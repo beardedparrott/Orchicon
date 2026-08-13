@@ -56,6 +56,12 @@ type Config struct {
 	PostgresDSN  string
 	NATSURL       string
 	OTelEndpoint string
+	// Telemetry selects the OTel pipeline mode. "none" skips telemetry
+	// entirely (no exporters, no OTLP dial) — used by the runtime-container
+	// sandbox plane, which has no Grafana stack. Empty/"embedded"/"remote"
+	// keep the default pipeline (the same env the single-container
+	// supervisor reads for the embedded stack decision).
+	Telemetry string
 	// Grafana stack backends (docs/08 §5). GrafanaURL is the Grafana UI
 	// root (proxied same-origin under /grafana); TempoURL/LokiURL/VMURL
 	// are the query endpoints the control plane reads tenant-scoped
@@ -109,6 +115,7 @@ func Default() Config {
 		PostgresDSN:       env("ORCHICON_POSTGRES_DSN", "postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable"),
 		NATSURL:           env("ORCHICON_NATS_URL", "nats://localhost:4222"),
 		OTelEndpoint:      env("ORCHICON_OTEL_ENDPOINT", "localhost:4317"),
+		Telemetry:         env("ORCHICON_TELEMETRY", ""),
 		GrafanaURL:        env("ORCHICON_GRAFANA_URL", "http://localhost:3002"),
 		TempoURL:          env("ORCHICON_TEMPO_URL", "http://localhost:3200"),
 		LokiURL:           env("ORCHICON_LOKI_URL", "http://localhost:3100"),
