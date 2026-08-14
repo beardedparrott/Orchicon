@@ -69,6 +69,7 @@ import {
   sequenceParentIds,
 } from "@/components/work-items/sequence-utils";
 import { cn } from "@/lib/utils";
+import { LiveDuration } from "@/components/ui/live-duration";
 import { formatRecurrence } from "@/components/work-items/RecurringScheduleForm";
 import { Route as rootRoute } from "@/routes/__root";
 import {
@@ -354,6 +355,7 @@ function SchedulesPage() {
           selected={selected}
           onToggleSelect={toggleSelect}
           onToggleSelectAll={toggleSelectAll}
+          now={now}
         />
       )}
 
@@ -811,6 +813,7 @@ function RunningView({
   selected,
   onToggleSelect,
   onToggleSelectAll,
+  now,
 }: {
   projectId: string;
   search: string;
@@ -820,6 +823,7 @@ function RunningView({
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
   onToggleSelectAll: (items: WorkItemProto[]) => void;
+  now: number;
 }) {
   const {
     data: allItems,
@@ -925,6 +929,7 @@ function RunningView({
                 isSequenceParent={parentIds.has(item.id)}
                 position={positions.get(item.id)}
                 isSequenceChild={!!item.parentId && parentIds.has(item.parentId)}
+                now={now}
               />
             </div>
           </li>
@@ -942,6 +947,7 @@ function RunningCard({
   isSequenceParent,
   position,
   isSequenceChild,
+  now,
 }: {
   item: WorkItemProto;
   projects?: Project[];
@@ -950,6 +956,7 @@ function RunningCard({
   isSequenceParent: boolean;
   position?: number;
   isSequenceChild: boolean;
+  now: number;
 }) {
   const projectName = projects?.find((p) => p.id === item.projectId)?.name;
   const startedAt = runningStartedAt(item);
@@ -992,6 +999,7 @@ function RunningCard({
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:shrink-0">
+              <LiveDuration startedAt={startedAt} now={now} className="font-mono text-xs tabular-nums text-muted-foreground" />
               {!isSequenceParent && <WorkflowChip workflowId={item.workflowId} />}
               {item.workflowId && item.workflowRunId && (
                 <RunChip
@@ -1178,12 +1186,13 @@ function HistoryCard({
                   {projectName && <span>{projectName}</span>}
                   <span className="inline-flex items-center gap-1">
                     <Clock className="h-3 w-3" />
-                    Ran {formatDate(ranAt)}
+                    Started {formatDate(ranAt)}
                   </span>
                 </div>
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:shrink-0">
+              <LiveDuration startedAt={ranAt} endedAt={tsToMs(item.updatedAt) || undefined} className="font-mono text-xs tabular-nums text-muted-foreground" />
               <WorkflowChip workflowId={item.workflowId} />
               {item.workflowId && item.workflowRunId && (
                 <RunChip
@@ -1390,14 +1399,13 @@ function runningStartedAt(item: WorkItemProto): number {
   );
 }
 
-// historyRanAt is the effective "ran" time for a History-view item.
+// historyRanAt is the effective start time for a History-view item.
 // Sequence children and single runs started without a schedule have no
 // scheduled_start_at (only the sequence parent is scheduled), so fall
-// back to updatedAt (the terminal transition) and then createdAt.
+// back to createdAt (the item creation time).
 function historyRanAt(item: WorkItemProto): number {
   return (
     tsToMs(item.scheduledStartAt) ||
-    tsToMs(item.updatedAt) ||
     tsToMs(item.createdAt)
   );
 }
