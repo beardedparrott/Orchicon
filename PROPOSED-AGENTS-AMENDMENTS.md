@@ -36,7 +36,7 @@ a header one.
 ```diff
 --- a/AGENTS.md
 +++ b/AGENTS.md
-@@ -6,6 +6,15 @@
+@@ -6,7 +6,17 @@
  ## Project
  
  - **Repo**: https://github.com/beardedparrott/Orchicon.git
@@ -80,7 +80,7 @@ between README.md, LICENSE, and AGENTS.md.
 ```diff
 --- a/AGENTS.md
 +++ b/AGENTS.md
-@@ -157,7 +157,7 @@
+@@ -156,6 +156,6 @@
  ### Secrets & credentials
  
  - **No secrets in code or commits.** DSNs, API keys, tokens, and passwords come from the environment (`internal/config`) or a secret store — never hardcoded, never committed. The `.env.example` file documents the variables without containing real values.
