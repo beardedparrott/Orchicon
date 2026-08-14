@@ -36,6 +36,20 @@ type AuthConfig struct {
 	AccessTTL     time.Duration
 	RefreshTTL    time.Duration
 	DevLoginAllowed bool // local mode: allow the synthetic /auth/dev-login endpoint
+
+	// EmbeddedOP enables the in-process OpenID Provider (zitadel/oidc v3,
+	// pkg/op) mounted on the plane origin. Defaults to true; a strict
+	// production plane that only trusts its BYO IdP can disable the
+	// surface entirely.
+	EmbeddedOP bool
+	// OPRedirectURIs are the registered redirect URIs for the OP's
+	// built-in public client, comma-separated. Empty derives the default:
+	// the auth RedirectURL plus the plane-origin /auth/callback when
+	// OPIssuer is pinned.
+	OPRedirectURIs string
+	// OPIssuer pins the OP issuer URL (ORCHICON_OP_ISSUER). Empty derives
+	// the issuer from the request Host on every request.
+	OPIssuer string
 }
 
 // BlobStoreConfig selects the object-storage backend (docs/01 §2).
@@ -134,6 +148,9 @@ func Default() Config {
 			AccessTTL:       15 * time.Minute,
 			RefreshTTL:      24 * time.Hour,
 			DevLoginAllowed: envBool("ORCHICON_DEV_LOGIN", true),
+			EmbeddedOP:      envBool("ORCHICON_OP_ENABLED", true),
+			OPRedirectURIs:  env("ORCHICON_OP_REDIRECT_URIS", ""),
+			OPIssuer:        env("ORCHICON_OP_ISSUER", ""),
 		},
 		BlobStore: BlobStoreConfig{
 			Kind:     env("ORCHICON_BLOB_STORE", "local"),

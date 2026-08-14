@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/auth/op"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 )
@@ -38,6 +39,7 @@ type Handler struct {
 	issuer    *TokenIssuer
 	resolver  *Resolver
 	oidc      *OIDCVerifier
+	op        *op.Provider
 	pool      *db.Pool
 	log       *slog.Logger
 }
@@ -57,6 +59,11 @@ func NewHandler(cfg config.Config, pool *db.Pool, log *slog.Logger) *Handler {
 	if cfg.Auth.Issuer != "local" && cfg.Auth.Issuer != "" {
 		h.oidc = NewOIDCVerifier(cfg.Auth.Issuer, cfg.Auth.ClientID, cfg.Auth.ClientSecret, cfg.Auth.RedirectURL)
 	}
+	if cfg.Auth.EmbeddedOP {
+		if err := h.buildEmbeddedOP(); err != nil {
+			h.log.Warn("embedded OpenID Provider disabled (construction failed)", "error", err)
+		}
+	}
 	return h
 }
 
@@ -73,6 +80,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/auth/oidc/login", h.oidcLogin)
 	mux.HandleFunc("/auth/oidc/callback", h.oidcCallback)
 	mux.HandleFunc("/auth/session", h.session)
+	h.registerEmbeddedOP(mux)
 }
 
 // devLoginRequest is the body for POST /auth/dev-login.
@@ -225,7 +233,10 @@ func (h *Handler) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing code", http.StatusBadRequest)
 		return
 	}
-	out, err := h.oidc.Exchange(r.Context(), code)
+	// state round-trips the PKCE verifier on the PKCE path; a no-op on the
+	// byte-for-byte-unchanged no-PKCE path.
+	state := r.URL.Query().Get("state")
+	out, err := h.oidc.Exchange(r.Context(), state, code)
 	if err != nil {
 		h.log.Error("oidc callback: exchange", "error", err)
 		http.Error(w, "oidc exchange failed", http.StatusBadGateway)

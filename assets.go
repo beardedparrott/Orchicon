@@ -59,3 +59,10 @@ var ContainerFS embed.FS
 //
 //go:embed deploy/runtime/Dockerfile deploy/runtime/Dockerfile.gui deploy/runtime/Dockerfile.dev
 var RuntimeImageTemplatesFS embed.FS
+
+// ThirdPartyFS embeds third-party license + notice text so the Apache-2.0
+// obligations of vendored libraries ship inside the distribution (the
+// binary IS the distribution). `orchicon notices` prints them.
+//
+//go:embed all:third_party/oidc
+var ThirdPartyFS embed.FS

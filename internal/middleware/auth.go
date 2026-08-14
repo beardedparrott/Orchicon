@@ -28,13 +28,25 @@ const AuthHeader = "Authorization"
 
 // publicPaths are not tenant-scoped and require no authentication.
 var publicPaths = map[string]bool{
-	"/healthz": true,
-	"/versionz": true,
-	"/auth/dev-login":   true,
-	"/auth/refresh":     true,
-	"/auth/oidc/login":  true,
+	"/healthz":            true,
+	"/versionz":           true,
+	"/auth/dev-login":     true,
+	"/auth/refresh":       true,
+	"/auth/oidc/login":    true,
 	"/auth/oidc/callback": true,
-	"/auth/session":     true,
+	"/auth/session":       true,
+	// Embedded OpenID Provider endpoints (internal/auth/op). These are NOT
+	// /auth/*-prefixed so they must be listed here explicitly: discovery,
+	// authorize + callback, token, userinfo, and jwks are all reached by
+	// unauthenticated RPs/browsers. The login bridge /auth/op/login inherits
+	// the /auth/* bypass.
+	"/.well-known/openid-configuration": true,
+	"/authorize":                        true,
+	"/authorize/callback":               true,
+	"/token":                            true,
+	"/userinfo":                         true,
+	"/jwks":                             true,
+	"/auth/op/login":                    true,
 }
 
 // ResolveAuth wraps h with auth-resolution middleware. It resolves the
