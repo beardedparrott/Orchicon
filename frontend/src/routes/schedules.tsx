@@ -43,11 +43,12 @@ import {
 import type { Timestamp } from "@bufbuild/protobuf";
 
 import {
-  useBatchDeleteWorkItems,
   useDeleteWorkItem,
   useListWorkItems,
+  useRemoveSchedule,
 } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
+import { useGetWorkflowRun } from "@/api/workflows";
 import {
   WorkItemStatus,
   type WorkItem as WorkItemProto,
@@ -120,7 +121,7 @@ function SchedulesPage() {
 
   const hasProjects = projects && projects.length > 0;
   const cancelScheduled = useDeleteWorkItem(projectId);
-  const batchDelete = useBatchDeleteWorkItems();
+  const removeSchedule = useRemoveSchedule(projectId);
 
   const goView = (nextView: "upcoming" | "running" | "history") => {
     navigate({ search: (prev) => ({ ...prev, view: nextView }) });
@@ -161,19 +162,18 @@ function SchedulesPage() {
     setSelected(new Set());
   };
 
-  const handleBatchDelete = () => {
+  const handleRemoveSchedule = () => {
     if (selected.size === 0) return;
     const count = selected.size;
     if (
       !window.confirm(
-        `Permanently delete ${count} work item${count === 1 ? "" : "s"}? This cannot be undone.`,
+        `Remove ${count} schedule${count === 1 ? "" : "s"}? The work items will remain unchanged.`,
       )
     ) {
       return;
     }
-    batchDelete.mutate(Array.from(selected), {
-      onSuccess: () => setSelected(new Set()),
-    });
+    Array.from(selected).forEach((id) => removeSchedule.mutate(id));
+    setSelected(new Set());
   };
 
   return (
@@ -301,11 +301,11 @@ function SchedulesPage() {
             <Button
               variant="destructive"
               size="sm"
-              onClick={handleBatchDelete}
-              disabled={batchDelete.isPending}
+              onClick={handleRemoveSchedule}
+              disabled={removeSchedule.isPending}
             >
               <Trash2 className="mr-1 h-3.5 w-3.5" />
-              Delete {selected.size} selected
+              Remove {selected.size} schedule{selected.size === 1 ? "" : "s"}
             </Button>
           ) : (
             <Button
@@ -1155,6 +1155,11 @@ function HistoryCard({
 }) {
   const projectName = projects?.find((p) => p.id === item.projectId)?.name;
   const ranAt = historyRanAt(item);
+  const { data: workflowRun } = useGetWorkflowRun(
+    item.workflowRunId || "",
+  );
+  const startedAt = workflowRun?.startedAt ?? ranAt;
+  const endedAt = workflowRun?.endedAt ?? (tsToMs(item.updatedAt) || undefined);
   return (
     <div className="group flex items-center gap-2">
       <input
@@ -1192,7 +1197,7 @@ function HistoryCard({
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:shrink-0">
-              <LiveDuration startedAt={ranAt} endedAt={tsToMs(item.updatedAt) || undefined} className="font-mono text-xs tabular-nums text-muted-foreground" />
+              <LiveDuration startedAt={startedAt} endedAt={endedAt} className="font-mono text-xs tabular-nums text-muted-foreground" />
               <WorkflowChip workflowId={item.workflowId} />
               {item.workflowId && item.workflowRunId && (
                 <RunChip

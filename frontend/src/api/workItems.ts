@@ -12,6 +12,7 @@ import { projectKeys } from "@/api/projects";
 import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import type { DependencyGraph } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import type { WorkItemStatus } from "@/api/gen/orchicon/api/v1/work_item_pb";
+import { RecurringSchedule } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import type { CreateWorkItemRequest } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import type { UpdateWorkItemRequest } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import { SequenceAction } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
@@ -198,6 +199,28 @@ export function useBatchDeleteWorkItems() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: workItemKeys.all });
+    },
+  });
+}
+
+// useRemoveSchedule removes the schedule from a work item without
+// changing its status. It clears recurring_schedule and unbinds the
+// workflow_run_id using proto3 clear semantics.
+export function useRemoveSchedule(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const res = await workItemClient.updateWorkItem({
+        id,
+        recurringSchedule: new RecurringSchedule(),
+        workflowRunId: "",
+      });
+      return res.workItem as WorkItem;
+    },
+    onSuccess: (item) => {
+      qc.invalidateQueries({ queryKey: workItemKeys.list(projectId) });
+      qc.invalidateQueries({ queryKey: workItemKeys.detail(item.id) });
+      qc.invalidateQueries({ queryKey: workItemKeys.graph(projectId) });
     },
   });
 }
