@@ -10,7 +10,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AssignRoleRequest, AssignRoleResponse, CreateApiKeyRequest, CreateApiKeyResponse, CreateRoleRequest, CreateRoleResponse, CreateTenantRequest, CreateTenantResponse, GetApiKeyRequest, GetApiKeyResponse, GetIdentityRequest, GetIdentityResponse, ListApiKeysRequest, ListApiKeysResponse, ListAuditEntriesRequest, ListAuditEntriesResponse, ListEntitlementsRequest, ListEntitlementsResponse, ListIdentitiesRequest, ListIdentitiesResponse, ListRoleBindingsRequest, ListRoleBindingsResponse, ListRolesRequest, ListRolesResponse, ListTenantsRequest, ListTenantsResponse, RevokeApiKeyRequest, RevokeApiKeyResponse, RevokeRoleRequest, RevokeRoleResponse, RotateApiKeyRequest, RotateApiKeyResponse } from "./auth_service_pb.js";
+import { AssignRoleRequest, AssignRoleResponse, CreateApiKeyRequest, CreateApiKeyResponse, CreateRoleRequest, CreateRoleResponse, CreateTenantRequest, CreateTenantResponse, GetApiKeyRequest, GetApiKeyResponse, GetIdentityRequest, GetIdentityResponse, ListApiKeysRequest, ListApiKeysResponse, ListAuditEntriesRequest, ListAuditEntriesResponse, ListEntitlementsRequest, ListEntitlementsResponse, ListIdentitiesRequest, ListIdentitiesResponse, ListRoleBindingsRequest, ListRoleBindingsResponse, ListRolesRequest, ListRolesResponse, ListTenantsRequest, ListTenantsResponse, RevokeApiKeyRequest, RevokeApiKeyResponse, RevokeRoleRequest, RevokeRoleResponse, RotateApiKeyRequest, RotateApiKeyResponse, SetLocalCredentialRequest, SetLocalCredentialResponse } from "./auth_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -160,6 +160,17 @@ export const AuthService = {
       name: "CreateTenant",
       I: CreateTenantRequest,
       O: CreateTenantResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * --- Local-account credentials (embedded IdP boundary) ---
+     *
+     * @generated from rpc orchicon.api.v1.AuthService.SetLocalCredential
+     */
+    setLocalCredential: {
+      name: "SetLocalCredential",
+      I: SetLocalCredentialRequest,
+      O: SetLocalCredentialResponse,
       kind: MethodKind.Unary,
     },
     /**

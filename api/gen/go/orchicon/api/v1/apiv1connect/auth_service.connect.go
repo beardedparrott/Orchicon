@@ -77,6 +77,9 @@ const (
 	// AuthServiceCreateTenantProcedure is the fully-qualified name of the AuthService's CreateTenant
 	// RPC.
 	AuthServiceCreateTenantProcedure = "/orchicon.api.v1.AuthService/CreateTenant"
+	// AuthServiceSetLocalCredentialProcedure is the fully-qualified name of the AuthService's
+	// SetLocalCredential RPC.
+	AuthServiceSetLocalCredentialProcedure = "/orchicon.api.v1.AuthService/SetLocalCredential"
 	// AuthServiceListAuditEntriesProcedure is the fully-qualified name of the AuthService's
 	// ListAuditEntries RPC.
 	AuthServiceListAuditEntriesProcedure = "/orchicon.api.v1.AuthService/ListAuditEntries"
@@ -103,6 +106,8 @@ type AuthServiceClient interface {
 	// --- Tenants (admin) ---
 	ListTenants(context.Context, *connect.Request[v1.ListTenantsRequest]) (*connect.Response[v1.ListTenantsResponse], error)
 	CreateTenant(context.Context, *connect.Request[v1.CreateTenantRequest]) (*connect.Response[v1.CreateTenantResponse], error)
+	// --- Local-account credentials (embedded IdP boundary) ---
+	SetLocalCredential(context.Context, *connect.Request[v1.SetLocalCredentialRequest]) (*connect.Response[v1.SetLocalCredentialResponse], error)
 	// --- Audit ---
 	ListAuditEntries(context.Context, *connect.Request[v1.ListAuditEntriesRequest]) (*connect.Response[v1.ListAuditEntriesResponse], error)
 }
@@ -208,6 +213,12 @@ func NewAuthServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(authServiceMethods.ByName("CreateTenant")),
 			connect.WithClientOptions(opts...),
 		),
+		setLocalCredential: connect.NewClient[v1.SetLocalCredentialRequest, v1.SetLocalCredentialResponse](
+			httpClient,
+			baseURL+AuthServiceSetLocalCredentialProcedure,
+			connect.WithSchema(authServiceMethods.ByName("SetLocalCredential")),
+			connect.WithClientOptions(opts...),
+		),
 		listAuditEntries: connect.NewClient[v1.ListAuditEntriesRequest, v1.ListAuditEntriesResponse](
 			httpClient,
 			baseURL+AuthServiceListAuditEntriesProcedure,
@@ -219,22 +230,23 @@ func NewAuthServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 
 // authServiceClient implements AuthServiceClient.
 type authServiceClient struct {
-	createApiKey     *connect.Client[v1.CreateApiKeyRequest, v1.CreateApiKeyResponse]
-	revokeApiKey     *connect.Client[v1.RevokeApiKeyRequest, v1.RevokeApiKeyResponse]
-	rotateApiKey     *connect.Client[v1.RotateApiKeyRequest, v1.RotateApiKeyResponse]
-	listApiKeys      *connect.Client[v1.ListApiKeysRequest, v1.ListApiKeysResponse]
-	getApiKey        *connect.Client[v1.GetApiKeyRequest, v1.GetApiKeyResponse]
-	getIdentity      *connect.Client[v1.GetIdentityRequest, v1.GetIdentityResponse]
-	listIdentities   *connect.Client[v1.ListIdentitiesRequest, v1.ListIdentitiesResponse]
-	listEntitlements *connect.Client[v1.ListEntitlementsRequest, v1.ListEntitlementsResponse]
-	createRole       *connect.Client[v1.CreateRoleRequest, v1.CreateRoleResponse]
-	listRoles        *connect.Client[v1.ListRolesRequest, v1.ListRolesResponse]
-	assignRole       *connect.Client[v1.AssignRoleRequest, v1.AssignRoleResponse]
-	revokeRole       *connect.Client[v1.RevokeRoleRequest, v1.RevokeRoleResponse]
-	listRoleBindings *connect.Client[v1.ListRoleBindingsRequest, v1.ListRoleBindingsResponse]
-	listTenants      *connect.Client[v1.ListTenantsRequest, v1.ListTenantsResponse]
-	createTenant     *connect.Client[v1.CreateTenantRequest, v1.CreateTenantResponse]
-	listAuditEntries *connect.Client[v1.ListAuditEntriesRequest, v1.ListAuditEntriesResponse]
+	createApiKey       *connect.Client[v1.CreateApiKeyRequest, v1.CreateApiKeyResponse]
+	revokeApiKey       *connect.Client[v1.RevokeApiKeyRequest, v1.RevokeApiKeyResponse]
+	rotateApiKey       *connect.Client[v1.RotateApiKeyRequest, v1.RotateApiKeyResponse]
+	listApiKeys        *connect.Client[v1.ListApiKeysRequest, v1.ListApiKeysResponse]
+	getApiKey          *connect.Client[v1.GetApiKeyRequest, v1.GetApiKeyResponse]
+	getIdentity        *connect.Client[v1.GetIdentityRequest, v1.GetIdentityResponse]
+	listIdentities     *connect.Client[v1.ListIdentitiesRequest, v1.ListIdentitiesResponse]
+	listEntitlements   *connect.Client[v1.ListEntitlementsRequest, v1.ListEntitlementsResponse]
+	createRole         *connect.Client[v1.CreateRoleRequest, v1.CreateRoleResponse]
+	listRoles          *connect.Client[v1.ListRolesRequest, v1.ListRolesResponse]
+	assignRole         *connect.Client[v1.AssignRoleRequest, v1.AssignRoleResponse]
+	revokeRole         *connect.Client[v1.RevokeRoleRequest, v1.RevokeRoleResponse]
+	listRoleBindings   *connect.Client[v1.ListRoleBindingsRequest, v1.ListRoleBindingsResponse]
+	listTenants        *connect.Client[v1.ListTenantsRequest, v1.ListTenantsResponse]
+	createTenant       *connect.Client[v1.CreateTenantRequest, v1.CreateTenantResponse]
+	setLocalCredential *connect.Client[v1.SetLocalCredentialRequest, v1.SetLocalCredentialResponse]
+	listAuditEntries   *connect.Client[v1.ListAuditEntriesRequest, v1.ListAuditEntriesResponse]
 }
 
 // CreateApiKey calls orchicon.api.v1.AuthService.CreateApiKey.
@@ -312,6 +324,11 @@ func (c *authServiceClient) CreateTenant(ctx context.Context, req *connect.Reque
 	return c.createTenant.CallUnary(ctx, req)
 }
 
+// SetLocalCredential calls orchicon.api.v1.AuthService.SetLocalCredential.
+func (c *authServiceClient) SetLocalCredential(ctx context.Context, req *connect.Request[v1.SetLocalCredentialRequest]) (*connect.Response[v1.SetLocalCredentialResponse], error) {
+	return c.setLocalCredential.CallUnary(ctx, req)
+}
+
 // ListAuditEntries calls orchicon.api.v1.AuthService.ListAuditEntries.
 func (c *authServiceClient) ListAuditEntries(ctx context.Context, req *connect.Request[v1.ListAuditEntriesRequest]) (*connect.Response[v1.ListAuditEntriesResponse], error) {
 	return c.listAuditEntries.CallUnary(ctx, req)
@@ -338,6 +355,8 @@ type AuthServiceHandler interface {
 	// --- Tenants (admin) ---
 	ListTenants(context.Context, *connect.Request[v1.ListTenantsRequest]) (*connect.Response[v1.ListTenantsResponse], error)
 	CreateTenant(context.Context, *connect.Request[v1.CreateTenantRequest]) (*connect.Response[v1.CreateTenantResponse], error)
+	// --- Local-account credentials (embedded IdP boundary) ---
+	SetLocalCredential(context.Context, *connect.Request[v1.SetLocalCredentialRequest]) (*connect.Response[v1.SetLocalCredentialResponse], error)
 	// --- Audit ---
 	ListAuditEntries(context.Context, *connect.Request[v1.ListAuditEntriesRequest]) (*connect.Response[v1.ListAuditEntriesResponse], error)
 }
@@ -439,6 +458,12 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(authServiceMethods.ByName("CreateTenant")),
 		connect.WithHandlerOptions(opts...),
 	)
+	authServiceSetLocalCredentialHandler := connect.NewUnaryHandler(
+		AuthServiceSetLocalCredentialProcedure,
+		svc.SetLocalCredential,
+		connect.WithSchema(authServiceMethods.ByName("SetLocalCredential")),
+		connect.WithHandlerOptions(opts...),
+	)
 	authServiceListAuditEntriesHandler := connect.NewUnaryHandler(
 		AuthServiceListAuditEntriesProcedure,
 		svc.ListAuditEntries,
@@ -477,6 +502,8 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 			authServiceListTenantsHandler.ServeHTTP(w, r)
 		case AuthServiceCreateTenantProcedure:
 			authServiceCreateTenantHandler.ServeHTTP(w, r)
+		case AuthServiceSetLocalCredentialProcedure:
+			authServiceSetLocalCredentialHandler.ServeHTTP(w, r)
 		case AuthServiceListAuditEntriesProcedure:
 			authServiceListAuditEntriesHandler.ServeHTTP(w, r)
 		default:
@@ -546,6 +573,10 @@ func (UnimplementedAuthServiceHandler) ListTenants(context.Context, *connect.Req
 
 func (UnimplementedAuthServiceHandler) CreateTenant(context.Context, *connect.Request[v1.CreateTenantRequest]) (*connect.Response[v1.CreateTenantResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.CreateTenant is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) SetLocalCredential(context.Context, *connect.Request[v1.SetLocalCredentialRequest]) (*connect.Response[v1.SetLocalCredentialResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.SetLocalCredential is not implemented"))
 }
 
 func (UnimplementedAuthServiceHandler) ListAuditEntries(context.Context, *connect.Request[v1.ListAuditEntriesRequest]) (*connect.Response[v1.ListAuditEntriesResponse], error) {

@@ -70,6 +70,40 @@ export async function devLogin(subject: string): Promise<SessionInfo> {
   };
 }
 
+// localLogin authenticates a local account against the embedded IdP with a
+// username + password. The server verifies the stored argon2id/bcrypt hash,
+// mints the token pair, sets the HttpOnly refresh cookie, and — when `next`
+// is the OP login-bridge path the browser came from — completes the pending
+// authorize request. The returned server-constructed `next` (if any) is the
+// same-origin path to full-page-load so the OIDC flow finishes.
+export async function localLogin(
+  username: string,
+  password: string,
+  next?: string,
+): Promise<{ session: SessionInfo; next?: string }> {
+  const res = await fetch("/auth/local-login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ username, password, next: next ?? "" }),
+  });
+  if (!res.ok) {
+    throw new Error(res.status === 401 ? "Invalid username or password" : `local-login failed: ${res.status}`);
+  }
+  const body = await res.json();
+  setAccessToken(body.access_token);
+  return {
+    session: {
+      authenticated: true,
+      identity_id: body.identity_id,
+      tenant_id: body.tenant_id,
+      is_admin: body.is_admin,
+      expires_at: Date.now() + body.expires_in * 1000,
+    },
+    next: body.next ?? undefined,
+  };
+}
+
 // oidcLogin returns the IdP authorize URL (the browser navigates there).
 export function oidcLoginURL(): string {
   return "/auth/oidc/login";

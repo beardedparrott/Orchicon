@@ -1,4 +1,4 @@
-h1:4uW7IM62cssgAp4YJlgMOBxY+jMX2y07K5Y/J/tYx1E=
+h1:igC8+IiwBZpEbg18CBNOG34MiOWczMyQzOEsI1DbXWE=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712192105_initial_schema_down.sql h1:RDSZVdJtR8DJx9HvT6WrBdEOEoJpM/46JutUdlPs5wU=
 20260712223028_add_outbox.sql h1:+idZYfVIjOHjGIluT5JM5M0dMF6L1+VmeHeGy66DLEI=
@@ -87,3 +87,4 @@ h1:4uW7IM62cssgAp4YJlgMOBxY+jMX2y07K5Y/J/tYx1E=
 20260811010000_workflow_runs_runtime_ready.sql h1:r702eX7Rk3Phjbfn4yvVBJ4zegeWRR8OhyES3NXQY5I=
 20260812000000_ask_orchicon_conversation_mode.sql h1:xF28YZ2vAGkep4FVbsZUYO5eShxjK20UGEcqIF7a6Dk=
 20260812040000_work_items_recurring_schedule.sql h1:0ErJFHIYwOlASH9IhTvfcZ4cVinSF+nsl4xYxEIyrWE=
+20260814000000_local_credentials.sql h1:EP0jiD4yYNHK96NFax+DvCTpi54H2HSFNHBqHukE/6E=

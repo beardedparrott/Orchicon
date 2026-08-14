@@ -16,6 +16,7 @@ import {
   loadStashedToken,
   logout as doLogout,
   devLogin,
+  localLogin,
   oidcLoginURL,
   useSessionStore,
   type SessionInfo,
@@ -81,6 +82,20 @@ export async function startDevLogin(subject: string): Promise<SessionInfo> {
   const s = await devLogin(subject);
   useSessionStore.getState().setSession(s);
   return s;
+}
+
+// startLocalLogin authenticates a local account (embedded IdP) with a
+// username + password. Returns the server-constructed `next` path to
+// full-page-load (set when a pending embedded-OP authorize request was
+// completed) so the OIDC flow returns the browser to the relying party.
+export async function startLocalLogin(
+  username: string,
+  password: string,
+  next?: string,
+): Promise<{ session: SessionInfo; next?: string }> {
+  const out = await localLogin(username, password, next);
+  useSessionStore.getState().setSession(out.session);
+  return out;
 }
 
 // startOIDCLogin redirects the browser to the IdP authorize URL.

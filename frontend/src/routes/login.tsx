@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { createRoute, useNavigate, useSearch } from "@tanstack/react-router";
 
-import { startDevLogin, startOIDCLogin } from "@/auth/auth";
+import { startDevLogin, startLocalLogin, startOIDCLogin } from "@/auth/auth";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -14,8 +14,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Route as rootRoute } from "@/routes/__root";
 
-// Login page (docs/10 §7). In local mode the dev IdP synthetic login is
-// shown; OIDC SSO is the production path. The access token lands in
+// Login page (docs/10 §7). Local accounts of the embedded IdP sign in with
+// a username + password; the dev IdP synthetic login is the local-mode dev
+// fallback; OIDC SSO is the production path. The access token lands in
 // memory; the refresh token in an HttpOnly cookie.
 //
 // The embedded OpenID Provider's login bridge redirects unauthenticated
@@ -45,6 +46,8 @@ function safeNext(raw: string | undefined): string | null {
 function LoginPage() {
   const navigate = useNavigate();
   const search = useSearch({ from: "/login" });
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [subject, setSubject] = useState("dev@orchicon.local");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -52,12 +55,30 @@ function LoginPage() {
   const next = safeNext(search.next);
 
   function continueTo(target: string) {
-    if (next) {
-      // Full page load: /auth/op/login has no SPA route, so the router
-      // cannot navigate there — the browser must hit the bridge directly.
+    if (target && target !== "/") {
+      // Full page load: the OP bridge paths have no SPA route, so the
+      // router cannot navigate there — the browser must hit them directly.
       window.location.assign(target);
     } else {
+      // Same-origin home after a plain (non-OP) login: SPA-side navigate so
+      // the in-memory access token set by the login response survives.
       navigate({ to: "/" });
+    }
+  }
+
+  async function handleLocalLogin() {
+    setBusy(true);
+    setError("");
+    try {
+      // `next` (the URL the OP bridge bounced us from) is passed through so
+      // the server can complete the pending authorize request; the response
+      // carries the server-constructed path to continue the OIDC flow.
+      const out = await startLocalLogin(username, password, next ?? undefined);
+      continueTo(out.next ?? next ?? "/");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -80,22 +101,35 @@ function LoginPage() {
         <CardHeader>
           <CardTitle>Sign in to Orchicon</CardTitle>
           <CardDescription>
-            Authenticate to access the control plane. In local mode the
-            dev identity provider mints a short-lived token.
+            Authenticate to access the control plane.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="subject">Subject (dev IdP)</Label>
+            <Label htmlFor="username">Username</Label>
             <Input
-              id="subject"
-              value={subject}
-              onChange={(e) => setSubject(e.target.value)}
+              id="username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
               placeholder="you@example.com"
+              autoComplete="username"
             />
           </div>
-          <Button className="w-full" onClick={handleDevLogin} disabled={busy}>
-            {busy ? "Signing in…" : "Dev sign in"}
+          <div className="space-y-2">
+            <Label htmlFor="password">Password</Label>
+            <Input
+              id="password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleLocalLogin();
+              }}
+            />
+          </div>
+          <Button className="w-full" onClick={handleLocalLogin} disabled={busy}>
+            {busy ? "Signing in…" : "Sign in"}
           </Button>
           <div className="relative py-2">
             <div className="absolute inset-0 flex items-center">
@@ -105,6 +139,18 @@ function LoginPage() {
               <span className="bg-card px-2 text-muted-foreground">or</span>
             </div>
           </div>
+          <div className="space-y-2">
+            <Label htmlFor="subject">Subject (dev IdP)</Label>
+            <Input
+              id="subject"
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              placeholder="you@example.com"
+            />
+          </div>
+          <Button variant="outline" className="w-full" onClick={handleDevLogin} disabled={busy}>
+            {busy ? "Signing in…" : "Dev sign in"}
+          </Button>
           <Button
             variant="outline"
             className="w-full"

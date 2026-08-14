@@ -34,6 +34,9 @@ service AuthService {
   rpc ListTenants(ListTenantsRequest) returns (ListTenantsResponse);
   rpc CreateTenant(CreateTenantRequest) returns (CreateTenantResponse);
 
+  // --- Local-account credentials (embedded IdP boundary) ---
+  rpc SetLocalCredential(SetLocalCredentialRequest) returns (SetLocalCredentialResponse);
+
   // --- Audit ---
   rpc ListAuditEntries(ListAuditEntriesRequest) returns (ListAuditEntriesResponse);
 }
@@ -182,6 +185,32 @@ message CreateTenantRequest {
 }
 message CreateTenantResponse {
   Tenant tenant = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Local-account credentials (embedded IdP boundary)
+// ---------------------------------------------------------------------------
+
+// SetLocalCredential creates or updates the local-account credential bound
+// to an identity (upsert by tenant + identity). Admin-only path: the caller
+// must hold auth:write (enforced by the RBAC interceptor). The plaintext
+// password is hashed with argon2id at the boundary and the stored hash is
+// never returned by any RPC or API response.
+message SetLocalCredentialRequest {
+  // Required. The identity the local credential binds to.
+  string identity_id = 1;
+  // Required. The login handle the human types (unique per tenant).
+  string username = 2;
+  // Required. The plaintext password. Hashed at the boundary; never
+  // stored, logged, or returned.
+  string password = 3;
+}
+message SetLocalCredentialResponse {
+  // The stored credential status ("active"). The hash is intentionally
+  // absent.
+  string status = 1;
+  // The normalized username.
+  string username = 2;
 }
 
 // ---------------------------------------------------------------------------

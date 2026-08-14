@@ -1336,6 +1336,116 @@ export class CreateTenantResponse extends Message<CreateTenantResponse> {
 }
 
 /**
+ * SetLocalCredential creates or updates the local-account credential bound
+ * to an identity (upsert by tenant + identity). Admin-only path: the caller
+ * must hold auth:write (enforced by the RBAC interceptor). The plaintext
+ * password is hashed with argon2id at the boundary and the stored hash is
+ * never returned by any RPC or API response.
+ *
+ * @generated from message orchicon.api.v1.SetLocalCredentialRequest
+ */
+export class SetLocalCredentialRequest extends Message<SetLocalCredentialRequest> {
+  /**
+   * Required. The identity the local credential binds to.
+   *
+   * @generated from field: string identity_id = 1;
+   */
+  identityId = "";
+
+  /**
+   * Required. The login handle the human types (unique per tenant).
+   *
+   * @generated from field: string username = 2;
+   */
+  username = "";
+
+  /**
+   * Required. The plaintext password. Hashed at the boundary; never
+   * stored, logged, or returned.
+   *
+   * @generated from field: string password = 3;
+   */
+  password = "";
+
+  constructor(data?: PartialMessage<SetLocalCredentialRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SetLocalCredentialRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "identity_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "username", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "password", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetLocalCredentialRequest {
+    return new SetLocalCredentialRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetLocalCredentialRequest {
+    return new SetLocalCredentialRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetLocalCredentialRequest {
+    return new SetLocalCredentialRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetLocalCredentialRequest | PlainMessage<SetLocalCredentialRequest> | undefined, b: SetLocalCredentialRequest | PlainMessage<SetLocalCredentialRequest> | undefined): boolean {
+    return proto3.util.equals(SetLocalCredentialRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.SetLocalCredentialResponse
+ */
+export class SetLocalCredentialResponse extends Message<SetLocalCredentialResponse> {
+  /**
+   * The stored credential status ("active"). The hash is intentionally
+   * absent.
+   *
+   * @generated from field: string status = 1;
+   */
+  status = "";
+
+  /**
+   * The normalized username.
+   *
+   * @generated from field: string username = 2;
+   */
+  username = "";
+
+  constructor(data?: PartialMessage<SetLocalCredentialResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SetLocalCredentialResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "username", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetLocalCredentialResponse {
+    return new SetLocalCredentialResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetLocalCredentialResponse {
+    return new SetLocalCredentialResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetLocalCredentialResponse {
+    return new SetLocalCredentialResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetLocalCredentialResponse | PlainMessage<SetLocalCredentialResponse> | undefined, b: SetLocalCredentialResponse | PlainMessage<SetLocalCredentialResponse> | undefined): boolean {
+    return proto3.util.equals(SetLocalCredentialResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.ListAuditEntriesRequest
  */
 export class ListAuditEntriesRequest extends Message<ListAuditEntriesRequest> {
