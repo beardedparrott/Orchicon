@@ -197,10 +197,10 @@ function WorkItemDetailPage() {
             <span className="ml-1 hidden sm:inline">Back</span>
           </Button>
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               <KindPill kind={item.kind} />
                   {showRecurringBadge(item) && <RecurringBadge />}
-              <h1 className="text-lg font-semibold tracking-tight sm:text-2xl">
+              <h1 className="min-w-0 break-words [overflow-wrap:anywhere] text-lg font-semibold tracking-tight sm:text-2xl">
                 {item.title}
               </h1>
             </div>
@@ -589,11 +589,11 @@ function WorkItemDetailPage() {
                   <Link
                     to="/work-items/$id"
                     params={{ id: item.parentId }}
-                    className="inline-flex items-center gap-2 font-medium hover:underline"
+                    className="inline-flex min-w-0 max-w-full items-center gap-2 font-medium hover:underline"
                     title={parentItem.title}
                   >
                     <KindPill kind={parentItem.kind} />
-                    <span className="truncate">{parentItem.title}</span>
+                    <span className="min-w-0 truncate">{parentItem.title}</span>
                   </Link>
                 ) : (
                   item.parentId
@@ -621,7 +621,7 @@ function WorkItemDetailPage() {
             <Card>
               <CardHeader>
                 <CardDescription>Next Run</CardDescription>
-                <CardTitle className="text-sm font-normal">
+                <CardTitle className="break-words text-sm font-normal [overflow-wrap:anywhere]">
                   {new Date(Number(nextRunTs.seconds) * 1000).toLocaleString()}
                 </CardTitle>
               </CardHeader>
@@ -632,7 +632,7 @@ function WorkItemDetailPage() {
           <Card>
             <CardHeader>
               <CardDescription>Recurrence</CardDescription>
-              <CardTitle className="text-sm font-normal">
+              <CardTitle className="break-words text-sm font-normal [overflow-wrap:anywhere]">
                 {formatRecurrence(item.recurringSchedule)}
               </CardTitle>
             </CardHeader>
@@ -679,7 +679,7 @@ function WorkItemDetailPage() {
         <Card>
           <CardHeader>
             <CardDescription>Workflow template</CardDescription>
-            <CardTitle className="text-base">
+            <CardTitle className="break-words text-base [overflow-wrap:anywhere]">
               {editing ? (
                 <select
                   value={editWorkflowId}
@@ -717,7 +717,7 @@ function WorkItemDetailPage() {
         <Card>
           <CardHeader>
             <CardDescription>Runtime image</CardDescription>
-            <CardTitle className="text-base">
+            <CardTitle className="break-words text-base [overflow-wrap:anywhere]">
               {editing ? (
                 <RuntimeImageSelect
                   value={editRuntimeImage}

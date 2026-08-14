@@ -119,7 +119,7 @@ export function WorkItemCard({
   return (
     <div
       className={cn(
-        "group relative rounded-md border border-l-4 bg-card p-3 transition-all",
+        "group relative min-w-0 rounded-md border border-l-4 bg-card p-3 transition-all",
         "hover:-translate-y-0.5 hover:shadow-md motion-reduce:translate-y-0 motion-reduce:transition-none",
         meta.accentBar,
         selected && "border-l-indigo-500 bg-accent/60 ring-1 ring-ring",
@@ -154,16 +154,16 @@ export function WorkItemCard({
       <Link
         to="/work-items/$id"
         params={{ id: item.id }}
-        className="mt-2 block text-sm font-medium leading-snug line-clamp-2 text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 hover:underline"
+        className="mt-2 block min-w-0 break-words [overflow-wrap:anywhere] text-sm font-medium leading-snug line-clamp-2 text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 hover:underline"
       >
         {item.title}
       </Link>
       {(priority || age || actions) && (
-        <div className="mt-1.5 flex items-center gap-1.5 text-xs text-muted-foreground">
-          {priority && <span className="font-mono tabular-nums">{priority}</span>}
-          {priority && age && <span aria-hidden>·</span>}
-          {age && <span>{age}</span>}
-          {actions && <span className="ml-auto">{actions}</span>}
+        <div className="mt-1.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+          {priority && <span className="shrink-0 font-mono tabular-nums">{priority}</span>}
+          {priority && age && <span aria-hidden className="shrink-0">·</span>}
+          {age && <span className="min-w-0 truncate">{age}</span>}
+          {actions && <span className="ml-auto shrink-0">{actions}</span>}
         </div>
       )}
     </div>
