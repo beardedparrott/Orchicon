@@ -40,7 +40,7 @@ const SEED_CATEGORY: Category = {
   order: 0,
 };
 
-export type CategoryPage = "workers" | "workflows";
+export type CategoryPage = "workers" | "workflows" | "conversations";
 
 // ---------------------------------------------------------------------------
 // Low-level safe storage helpers
@@ -86,7 +86,19 @@ function writeEnvelope(key: string, value: object): void {
 // Pure serialize/parse — exported for unit tests
 // ---------------------------------------------------------------------------
 
-export function loadCategoryState(page: CategoryPage): CategoryState {
+export function loadCategoryState(page: CategoryPage, noSeed?: boolean): CategoryState {
+  if (noSeed) {
+    const parsed = parseEnvelope<CategoryState>(`${PREFIX}${page}`);
+    if (!parsed || !Array.isArray(parsed.categories)) {
+      return { categories: [], assignments: {} };
+    }
+    return {
+      categories: parsed.categories,
+      assignments: parsed.assignments && typeof parsed.assignments === "object"
+        ? parsed.assignments
+        : {},
+    };
+  }
   const parsed = parseEnvelope<CategoryState>(`${PREFIX}${page}`);
   if (!parsed || !Array.isArray(parsed.categories)) {
     return { categories: [SEED_CATEGORY], assignments: {} };
@@ -103,13 +115,13 @@ export function saveCategoryState(page: CategoryPage, state: CategoryState): voi
   writeEnvelope(`${PREFIX}${page}`, state);
 }
 
-export function loadCollapsedState(page: CategoryPage): Set<string> {
+export function loadCollapsedState(page: CategoryPage, noSeed?: boolean): Set<string> {
   const parsed = parseEnvelope<{ ids: string[] }>(`${PREFIX}${page}.collapsed`);
   if (Array.isArray(parsed?.ids)) {
     return new Set(parsed!.ids.filter((id) => typeof id === "string"));
   }
   // First load (no saved collapsed state): default ALL categories to collapsed.
-  const categoryState = loadCategoryState(page);
+  const categoryState = loadCategoryState(page, noSeed);
   return new Set(categoryState.categories.map((c) => c.id));
 }
 
@@ -158,15 +170,18 @@ export interface CategoryPreferences {
   ensureSeeded: (entityIds: string[]) => void;
 }
 
-export function useCategoryPreferences(page: CategoryPage): CategoryPreferences {
-  const [state, setState] = useState<CategoryState>(() => loadCategoryState(page));
-  const [collapsed, setCollapsedState] = useState<Set<string>>(() => loadCollapsedState(page));
+export function useCategoryPreferences(
+  page: CategoryPage,
+  options?: { noSeed?: boolean },
+): CategoryPreferences {
+  const [state, setState] = useState<CategoryState>(() => loadCategoryState(page, options?.noSeed));
+  const [collapsed, setCollapsedState] = useState<Set<string>>(() => loadCollapsedState(page, options?.noSeed));
 
   // Reload when page changes
   useEffect(() => {
-    setState(loadCategoryState(page));
-    setCollapsedState(loadCollapsedState(page));
-  }, [page]);
+    setState(loadCategoryState(page, options?.noSeed));
+    setCollapsedState(loadCollapsedState(page, options?.noSeed));
+  }, [page, options?.noSeed]);
 
   const toggleCollapsed = useCallback(
     (categoryId: string) => {
@@ -270,10 +285,11 @@ export function useCategoryPreferences(page: CategoryPage): CategoryPreferences 
 
   const ensureSeeded = useCallback(
     (entityIds: string[]) => {
+      if (options?.noSeed) return;
       const seeded = seedAssignments(page, entityIds);
       setState(seeded);
     },
-    [page],
+    [page, options?.noSeed],
   );
 
   return {
