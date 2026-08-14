@@ -9,6 +9,10 @@ import {
   RefreshCw,
   Settings2,
   Brain,
+  Pencil,
+  FolderPlus,
+  ChevronRight,
+  GripVertical,
 } from "lucide-react";
 
 import { Route as rootRoute } from "@/routes/__root";
@@ -21,6 +25,7 @@ import {
   useListConversations,
   useCreateConversation,
   useDeleteConversation,
+  useUpdateConversationTitle,
   useListMessages,
   useGetConversation,
   useAbortConversationTurn,
@@ -40,6 +45,20 @@ import {
   ReasoningBubble,
   ChatScrollContainer,
 } from "@/components/chat";
+import { useCategoryPreferences, getItemsForCategory } from "@/lib/category-store";
+import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
+import {
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragOverEvent,
+} from "@dnd-kit/core";
+import { useDroppable } from "@dnd-kit/core";
+import { useDraggable } from "@dnd-kit/core";
+import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
@@ -169,6 +188,24 @@ function AskOrchiconPage() {
   // two streams can overlap for a conversation.
   const dispatchGenRef = useRef<Record<string, number>>({});
 
+  // Conversation rename state
+  const [renamingConvId, setRenamingConvId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  // Folder dialog state
+  const [folderDialogOpen, setFolderDialogOpen] = useState(false);
+  const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
+  const [folderRenameValue, setFolderRenameValue] = useState("");
+  const folderRenameInputRef = useRef<HTMLInputElement>(null);
+
+  // Drag-and-drop state
+  const [activeDragId, setActiveDragId] = useState<string | null>(null);
+  const [overFolderId, setOverFolderId] = useState<string | null>(null);
+
+  // Category preferences for conversations (no auto-seed)
+  const convPrefs = useCategoryPreferences("conversations", { noSeed: true });
+
   // Update one conversation's stream slot with a functional updater so
   // async chunk handlers never read stale state (append via the previous
   // value, not a captured `streams`).
@@ -201,6 +238,7 @@ function AskOrchiconPage() {
   const { data: settings } = useGetSettings();
   const createConv = useCreateConversation();
   const deleteConv = useDeleteConversation();
+  const updateTitle = useUpdateConversationTitle();
   const abortTurn = useAbortConversationTurn();
   const setMode = useSetConversationMode();
   const qc = useQueryClient();
@@ -271,6 +309,69 @@ function AskOrchiconPage() {
     },
     [deleteConv, activeConvId, toast],
   );
+
+  // Start renaming a conversation
+  const startRenameConv = useCallback(
+    (convId: string, currentTitle: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      setRenamingConvId(convId);
+      setRenameValue(currentTitle || "");
+      requestAnimationFrame(() => renameInputRef.current?.select());
+    },
+    [],
+  );
+
+  // Save conversation rename
+  const saveRenameConv = useCallback(
+    async (convId: string) => {
+      const trimmed = renameValue.trim();
+      if (trimmed && trimmed !== conversations?.find((c) => c.id === convId)?.title) {
+        try {
+          await updateTitle.mutateAsync({ id: convId, title: trimmed });
+        } catch {
+          toast.error("Failed to rename conversation", { title: "Error" });
+        }
+      }
+      setRenamingConvId(null);
+      setRenameValue("");
+    },
+    [renameValue, conversations, updateTitle, toast],
+  );
+
+  // Cancel conversation rename
+  const cancelRenameConv = useCallback(() => {
+    setRenamingConvId(null);
+    setRenameValue("");
+  }, []);
+
+  // Start renaming a folder
+  const startRenameFolder = useCallback(
+    (folderId: string, currentName: string) => {
+      setRenamingFolderId(folderId);
+      setFolderRenameValue(currentName);
+      requestAnimationFrame(() => folderRenameInputRef.current?.select());
+    },
+    [],
+  );
+
+  // Save folder rename
+  const saveRenameFolder = useCallback(
+    (folderId: string) => {
+      const trimmed = folderRenameValue.trim();
+      if (trimmed) {
+        convPrefs.renameCategory(folderId, trimmed);
+      }
+      setRenamingFolderId(null);
+      setFolderRenameValue("");
+    },
+    [folderRenameValue, convPrefs],
+  );
+
+  // Cancel folder rename
+  const cancelRenameFolder = useCallback(() => {
+    setRenamingFolderId(null);
+    setFolderRenameValue("");
+  }, []);
 
   const handleStopStreaming = useCallback(async () => {
     if (!activeConvId) return;
@@ -494,6 +595,68 @@ function AskOrchiconPage() {
     },
     [localMode, activeConvId, setMode, toast],
   );
+
+  // DnD sensors
+  const dndSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+  );
+
+  // Handle drag start
+  const handleDragStart = useCallback(
+    (event: { active: { id: string | number } }) => {
+      setActiveDragId(String(event.active.id));
+      setOverFolderId(null);
+    },
+    [],
+  );
+
+  // Handle drag over (for visual feedback on folder drop targets)
+  const handleDragOver = useCallback(
+    (event: DragOverEvent) => {
+      const { over } = event;
+      if (over?.id) {
+        setOverFolderId(String(over.id));
+      } else {
+        setOverFolderId(null);
+      }
+    },
+    [],
+  );
+
+  // Handle drag end (assign conversation to folder)
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      setActiveDragId(null);
+      setOverFolderId(null);
+      if (!over) return;
+      const convId = String(active.id);
+      const targetId = String(over.id);
+      // Drop on "uncategorized" = remove assignment
+      if (targetId === "__uncategorized__") {
+        convPrefs.assignItem(convId, "");
+      } else {
+        // Drop on a folder
+        const targetFolder = convPrefs.state.categories.find((c) => c.id === targetId);
+        if (targetFolder) {
+          convPrefs.assignItem(convId, targetId);
+        }
+      }
+    },
+    [convPrefs],
+  );
+
+  // Build categorized conversation groups
+  const categorizedConversations = useMemo(() => {
+    if (!conversations) return { categorized: new Map<string, string[]>(), uncategorized: [] as string[] };
+    return getItemsForCategory(convPrefs.state, conversations.map((c) => c.id));
+  }, [conversations, convPrefs.state]);
+
+  // Map for quick lookup of conversations by id
+  const convById = useMemo(() => {
+    if (!conversations) return new Map<string, { id: string; title: string; lastMessagePreview?: string }>();
+    return new Map(conversations.map((c) => [c.id, c]));
+  }, [conversations]);
 
   // Group streaming items into coalesced bubbles.
   const groupedStream = useMemo(
@@ -736,13 +899,23 @@ function AskOrchiconPage() {
       <aside className="hidden lg:flex w-80 shrink-0 flex-col border-l bg-card overflow-y-auto">
         <div className="flex items-center justify-between border-b px-4 py-3">
           <span className="text-sm font-medium">Conversations</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={handleNewChat}
-          >
-            <Plus className="h-4 w-4" />
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setFolderDialogOpen(true)}
+              title="New folder"
+            >
+              <FolderPlus className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleNewChat}
+            >
+              <Plus className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {convsLoading && (
@@ -755,37 +928,91 @@ function AskOrchiconPage() {
               No conversations yet
             </p>
           )}
-          {conversations?.map((conv) => (
-            <button
-              key={conv.id}
-              onClick={() => setActiveConvId(conv.id)}
-              className={cn(
-                "w-full text-left rounded-md px-3 py-2 text-sm transition-colors group",
-                activeConvId === conv.id
-                  ? "bg-accent text-accent-foreground"
-                  : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground",
-              )}
+
+          <DndContext
+            sensors={dndSensors}
+            onDragStart={handleDragStart}
+            onDragOver={handleDragOver}
+            onDragEnd={handleDragEnd}
+          >
+            <SortableContext
+              items={conversations?.map((c) => c.id) ?? []}
+              strategy={verticalListSortingStrategy}
             >
-              <div className="flex items-start justify-between gap-2">
-                <span className="truncate flex-1">
-                  {conv.title || "New conversation"}
-                </span>
-                <button
-                  onClick={(e) => handleDeleteConv(conv.id, e)}
-                  className="shrink-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive"
-                >
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              </div>
-              {conv.lastMessagePreview && (
-                <p className="mt-0.5 text-xs text-muted-foreground truncate">
-                  {conv.lastMessagePreview}
-                </p>
-              )}
-            </button>
-          ))}
+              {/* Folders */}
+              {convPrefs.state.categories.map((category) => {
+                const folderConvIds = categorizedConversations.categorized.get(category.id) ?? [];
+                const isCollapsed = convPrefs.collapsed.has(category.id);
+                const isOver = overFolderId === category.id;
+                const isRenaming = renamingFolderId === category.id;
+
+                return (
+                  <FolderItem
+                    key={category.id}
+                    id={category.id}
+                    name={category.name}
+                    isCollapsed={isCollapsed}
+                    isOver={isOver}
+                    isRenaming={isRenaming}
+                    renameValue={folderRenameValue}
+                    renameInputRef={folderRenameInputRef}
+                    onToggle={() => convPrefs.toggleCollapsed(category.id)}
+                    onStartRename={() => startRenameFolder(category.id, category.name)}
+                    onSaveRename={() => saveRenameFolder(category.id)}
+                    onCancelRename={cancelRenameFolder}
+                    onRenameChange={setFolderRenameValue}
+                    onDelete={() => convPrefs.deleteCategory(category.id)}
+                    convIds={folderConvIds}
+                    convById={convById}
+                    activeConvId={activeConvId}
+                    renamingConvId={renamingConvId}
+                    convRenameValue={renameValue}
+                    convRenameInputRef={renameInputRef}
+                    onSelectConv={setActiveConvId}
+                    onStartRenameConv={startRenameConv}
+                    onSaveRenameConv={saveRenameConv}
+                    onCancelRenameConv={cancelRenameConv}
+                    onRenameConvChange={setRenameValue}
+                    onDeleteConv={handleDeleteConv}
+                    activeDragId={activeDragId}
+                  />
+                );
+              })}
+
+              {/* Uncategorized section — drop target for removing assignments */}
+              <UncategorizedDropZone
+                id="__uncategorized__"
+                convIds={categorizedConversations.uncategorized}
+                convById={convById}
+                activeConvId={activeConvId}
+                renamingConvId={renamingConvId}
+                renameValue={renameValue}
+                renameInputRef={renameInputRef}
+                onSelectConv={setActiveConvId}
+                onStartRenameConv={startRenameConv}
+                onSaveRenameConv={saveRenameConv}
+                onCancelRenameConv={cancelRenameConv}
+                onRenameConvChange={setRenameValue}
+                onDeleteConv={handleDeleteConv}
+                activeDragId={activeDragId}
+                isOver={overFolderId === "__uncategorized__"}
+                hasFolders={convPrefs.state.categories.length > 0}
+              />
+            </SortableContext>
+          </DndContext>
         </div>
       </aside>
+
+      {/* Create Category Dialog */}
+      <CreateCategoryDialog
+        open={folderDialogOpen}
+        onOpenChange={setFolderDialogOpen}
+        onCreate={(name) => {
+          convPrefs.createCategory(name);
+          setFolderDialogOpen(false);
+        }}
+        existingNames={convPrefs.state.categories.map((c) => c.name)}
+      />
     </div>
   );
 }
@@ -1124,6 +1351,352 @@ function ChatInputField({
         className="hidden"
         onChange={handleFileSelect}
       />
+    </div>
+  );
+}
+
+// --- Conversation sidebar components ---
+
+interface ConversationItemProps {
+  convId: string;
+  title: string;
+  lastMessagePreview?: string;
+  isActive: boolean;
+  isRenaming: boolean;
+  renameValue: string;
+  renameInputRef: React.MutableRefObject<HTMLInputElement | null>;
+  onSelect: () => void;
+  onStartRename: (e: React.MouseEvent) => void;
+  onSaveRename: () => void;
+  onCancelRename: () => void;
+  onRenameChange: (value: string) => void;
+  onDelete: (e: React.MouseEvent) => void;
+  isDragging?: boolean;
+}
+
+function ConversationItem({
+  convId,
+  title,
+  lastMessagePreview,
+  isActive,
+  isRenaming,
+  renameValue,
+  renameInputRef,
+  onSelect,
+  onStartRename,
+  onSaveRename,
+  onCancelRename,
+  onRenameChange,
+  onDelete,
+  isDragging,
+}: ConversationItemProps) {
+  const { attributes, listeners, setNodeRef, transform, isDragging: isDndDragging } =
+    useDraggable({ id: convId });
+
+  const style = transform
+    ? { transform: CSS.Transform.toString(transform) }
+    : undefined;
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={cn(
+        "rounded-md transition-colors group",
+        isDndDragging && "z-10 opacity-50",
+        isDragging && "opacity-50",
+      )}
+    >
+      <button
+        onClick={onSelect}
+        className={cn(
+          "w-full text-left rounded-md px-3 py-2 text-sm transition-colors",
+          isActive
+            ? "bg-accent text-accent-foreground"
+            : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground",
+        )}
+      >
+        <div className="flex items-start gap-2">
+          {/* Drag handle */}
+          <span
+            {...attributes}
+            {...listeners}
+            className="shrink-0 mt-0.5 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 text-muted-foreground"
+          >
+            <GripVertical className="h-3 w-3" />
+          </span>
+          <div className="flex-1 min-w-0">
+            {isRenaming ? (
+              <input
+                ref={renameInputRef}
+                value={renameValue}
+                onChange={(e) => onRenameChange(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") onSaveRename();
+                  if (e.key === "Escape") onCancelRename();
+                }}
+                onBlur={onSaveRename}
+                onClick={(e) => e.stopPropagation()}
+                className="w-full bg-background border rounded px-1 py-0.5 text-sm outline-none focus:ring-1 focus:ring-ring"
+              />
+            ) : (
+              <span className="truncate block">{title || "New conversation"}</span>
+            )}
+            {lastMessagePreview && (
+              <p className="mt-0.5 text-xs text-muted-foreground truncate">
+                {lastMessagePreview}
+              </p>
+            )}
+          </div>
+          {!isRenaming && (
+            <span className="shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
+              <button
+                onClick={onStartRename}
+                className="text-muted-foreground hover:text-foreground"
+                title="Rename"
+              >
+                <Pencil className="h-3 w-3" />
+              </button>
+              <button
+                onClick={onDelete}
+                className="text-muted-foreground hover:text-destructive"
+                title="Delete"
+              >
+                <Trash2 className="h-3 w-3" />
+              </button>
+            </span>
+          )}
+        </div>
+      </button>
+    </div>
+  );
+}
+
+interface FolderItemProps {
+  id: string;
+  name: string;
+  isCollapsed: boolean;
+  isOver: boolean;
+  isRenaming: boolean;
+  renameValue: string;
+  renameInputRef: React.MutableRefObject<HTMLInputElement | null>;
+  onToggle: () => void;
+  onStartRename: () => void;
+  onSaveRename: () => void;
+  onCancelRename: () => void;
+  onRenameChange: (value: string) => void;
+  onDelete: () => void;
+  convIds: string[];
+  convById: Map<string, { id: string; title: string; lastMessagePreview?: string }>;
+  activeConvId: string | null;
+  renamingConvId: string | null;
+  convRenameValue: string;
+  convRenameInputRef: React.MutableRefObject<HTMLInputElement | null>;
+  onSelectConv: (id: string) => void;
+  onStartRenameConv: (id: string, title: string, e: React.MouseEvent) => void;
+  onSaveRenameConv: (id: string) => void;
+  onCancelRenameConv: () => void;
+  onRenameConvChange: (value: string) => void;
+  onDeleteConv: (id: string, e: React.MouseEvent) => void;
+  activeDragId: string | null;
+}
+
+function FolderItem({
+  id,
+  name,
+  isCollapsed,
+  isOver,
+  isRenaming,
+  renameValue,
+  renameInputRef,
+  onToggle,
+  onStartRename,
+  onSaveRename,
+  onCancelRename,
+  onRenameChange,
+  onDelete,
+  convIds,
+  convById,
+  activeConvId,
+  renamingConvId,
+  convRenameValue,
+  convRenameInputRef,
+  onSelectConv,
+  onStartRenameConv,
+  onSaveRenameConv,
+  onCancelRenameConv,
+  onRenameConvChange,
+  onDeleteConv,
+  activeDragId,
+}: FolderItemProps) {
+  const { setNodeRef } = useDroppable({ id });
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={cn(
+        "rounded-md transition-colors",
+        isOver && "bg-accent/50 ring-1 ring-ring",
+      )}
+    >
+      {/* Folder header */}
+      <div className="flex items-center gap-1 px-2 py-1.5 group">
+        <button
+          onClick={onToggle}
+          className="shrink-0 p-0.5 text-muted-foreground hover:text-foreground"
+        >
+          <ChevronRight
+            className={cn(
+              "h-3 w-3 transition-transform",
+              !isCollapsed && "rotate-90",
+            )}
+          />
+        </button>
+        {isRenaming ? (
+          <input
+            ref={renameInputRef}
+            value={renameValue}
+            onChange={(e) => onRenameChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") onSaveRename();
+              if (e.key === "Escape") onCancelRename();
+            }}
+            onBlur={onSaveRename}
+            className="flex-1 bg-background border rounded px-1 py-0.5 text-xs outline-none focus:ring-1 focus:ring-ring"
+          />
+        ) : (
+          <span className="flex-1 text-xs font-medium truncate">{name}</span>
+        )}
+        {!isRenaming && (
+          <span className="shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
+            <button
+              onClick={onStartRename}
+              className="text-muted-foreground hover:text-foreground"
+              title="Rename folder"
+            >
+              <Pencil className="h-3 w-3" />
+            </button>
+            <button
+              onClick={onDelete}
+              className="text-muted-foreground hover:text-destructive"
+              title="Delete folder"
+            >
+              <Trash2 className="h-3 w-3" />
+            </button>
+          </span>
+        )}
+      </div>
+
+      {/* Folder contents — conversations inside the folder */}
+      {!isCollapsed && convIds.length > 0 && (
+        <div className="pl-4 space-y-0.5">
+          {convIds.map((convId) => {
+            const conv = convById.get(convId);
+            if (!conv) return null;
+            return (
+              <ConversationItem
+                key={convId}
+                convId={convId}
+                title={conv.title}
+                lastMessagePreview={conv.lastMessagePreview}
+                isActive={activeConvId === convId}
+                isRenaming={renamingConvId === convId}
+                renameValue={convRenameValue}
+                renameInputRef={convRenameInputRef}
+                onSelect={() => onSelectConv(convId)}
+                onStartRename={(e) => onStartRenameConv(convId, conv.title, e)}
+                onSaveRename={() => onSaveRenameConv(convId)}
+                onCancelRename={onCancelRenameConv}
+                onRenameChange={onRenameConvChange}
+                onDelete={(e) => onDeleteConv(convId, e)}
+                isDragging={activeDragId === convId}
+              />
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface UncategorizedDropZoneProps {
+  id: string;
+  convIds: string[];
+  convById: Map<string, { id: string; title: string; lastMessagePreview?: string }>;
+  activeConvId: string | null;
+  renamingConvId: string | null;
+  renameValue: string;
+  renameInputRef: React.MutableRefObject<HTMLInputElement | null>;
+  onSelectConv: (id: string) => void;
+  onStartRenameConv: (id: string, title: string, e: React.MouseEvent) => void;
+  onSaveRenameConv: (id: string) => void;
+  onCancelRenameConv: () => void;
+  onRenameConvChange: (value: string) => void;
+  onDeleteConv: (id: string, e: React.MouseEvent) => void;
+  activeDragId: string | null;
+  isOver: boolean;
+  hasFolders: boolean;
+}
+
+function UncategorizedDropZone({
+  id,
+  convIds,
+  convById,
+  activeConvId,
+  renamingConvId,
+  renameValue,
+  renameInputRef,
+  onSelectConv,
+  onStartRenameConv,
+  onSaveRenameConv,
+  onCancelRenameConv,
+  onRenameConvChange,
+  onDeleteConv,
+  activeDragId,
+  isOver,
+  hasFolders,
+}: UncategorizedDropZoneProps) {
+  const { setNodeRef } = useDroppable({ id });
+
+  // Only show the "Uncategorized" label when there are folders (otherwise it's redundant)
+  if (convIds.length === 0 && !hasFolders) return null;
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={cn(
+        "rounded-md transition-colors",
+        isOver && "bg-accent/50 ring-1 ring-ring",
+      )}
+    >
+      {hasFolders && (
+        <div className="px-2 py-1.5">
+          <span className="text-xs text-muted-foreground">Uncategorized</span>
+        </div>
+      )}
+      {convIds.map((convId) => {
+        const conv = convById.get(convId);
+        if (!conv) return null;
+        return (
+          <ConversationItem
+            key={convId}
+            convId={convId}
+            title={conv.title}
+            lastMessagePreview={conv.lastMessagePreview}
+            isActive={activeConvId === convId}
+            isRenaming={renamingConvId === convId}
+            renameValue={renameValue}
+            renameInputRef={renameInputRef}
+            onSelect={() => onSelectConv(convId)}
+            onStartRename={(e) => onStartRenameConv(convId, conv.title, e)}
+            onSaveRename={() => onSaveRenameConv(convId)}
+            onCancelRename={onCancelRenameConv}
+            onRenameChange={onRenameConvChange}
+            onDelete={(e) => onDeleteConv(convId, e)}
+            isDragging={activeDragId === convId}
+          />
+        );
+      })}
     </div>
   );
 }
