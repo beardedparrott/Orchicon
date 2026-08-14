@@ -55,11 +55,13 @@ function LoginPage() {
   const next = safeNext(search.next);
 
   function continueTo(target: string) {
-    if (target) {
+    if (target && target !== "/") {
       // Full page load: the OP bridge paths have no SPA route, so the
       // router cannot navigate there — the browser must hit them directly.
       window.location.assign(target);
     } else {
+      // Same-origin home after a plain (non-OP) login: SPA-side navigate so
+      // the in-memory access token set by the login response survives.
       navigate({ to: "/" });
     }
   }

@@ -230,6 +230,13 @@ func (h *Handler) verifyLocalCredential(ctx context.Context, tenantID, username,
 	defer ttx.Rollback(ctx)
 	row, err := db.GetLocalCredentialByUsername(ctx, ttx.Tx, tenantID, username)
 	if err != nil {
+		// Unknown username is a normal login failure, not an error: return it
+		// as a plain not-ok so the caller produces the identical generic
+		// rejection (and no log line) it does for a wrong password. Only a
+		// real DB failure surfaces as an error.
+		if errors.Is(err, db.ErrNotFound) {
+			return "", false, nil
+		}
 		return "", false, err
 	}
 	if row.Status != "active" {
