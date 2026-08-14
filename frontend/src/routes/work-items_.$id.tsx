@@ -34,7 +34,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { KindPill, PositionBadge, RecurringBadge } from "@/components/work-items/work-item-badges";
 import { WorkItemParentSelect } from "@/components/work-items/work-item-parent-select";
 import { computeSequencePositions } from "@/components/work-items/sequence-utils";
-import { kindLabel, kindMeta, statusMeta, isTerminal, isRecurringItem, MANUALLY_UNMOVABLE_STATUSES } from "@/components/work-items/work-item-meta";
+import { kindLabel, kindMeta, statusMeta, isTerminal, showRecurringBadge, MANUALLY_UNMOVABLE_STATUSES } from "@/components/work-items/work-item-meta";
 import { cn } from "@/lib/utils";
 import { Timestamp } from "@bufbuild/protobuf";
 import { RecurringSchedule, WorkItemKind, WorkItemStatus } from "@/api/gen/orchicon/api/v1/work_item_pb";
@@ -199,7 +199,7 @@ function WorkItemDetailPage() {
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <KindPill kind={item.kind} />
-              {isRecurringItem(item) && <RecurringBadge />}
+                  {showRecurringBadge(item) && <RecurringBadge />}
               <h1 className="text-lg font-semibold tracking-tight sm:text-2xl">
                 {item.title}
               </h1>
@@ -609,7 +609,7 @@ function WorkItemDetailPage() {
               <CardTitle className="text-base">
                 <span className="inline-flex items-center gap-1.5">
                   <PositionBadge position={chainPosition} />
-                  {isRecurringItem(item) && <RecurringBadge />}
+              {showRecurringBadge(item) && <RecurringBadge />}
                 </span>
               </CardTitle>
             </CardHeader>

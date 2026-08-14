@@ -811,6 +811,140 @@ func TestUpdateWorkItemScheduleFlipsStatusDB(t *testing.T) {
 	}
 }
 
+// TestUpdateWorkItemDisableRecurringDemotesToPendingDB verifies the
+// recurring-status invariant (AC: disabling recurring on a work item and
+// saving cancels upcoming schedules AND returns the status to pending).
+// The edit form unchecks the Recurring schedule toggle — an empty-but-present
+// RecurringSchedule, proto clear semantics — while its status dropdown still
+// reports "recurring", so the clear and the explicit recurring status arrive
+// in the SAME request and the clear wins. Also covered: the inverse hole
+// (a manual status=recurring pick with no schedule → pending), the keep path
+// (setting a new schedule stays recurring), the echo path (a recurring item
+// saved with status=recurring + schedule intact stays recurring), and the
+// explicit-other-status path (clear schedule + status=scheduled → scheduled).
+func TestUpdateWorkItemDisableRecurringDemotesToPendingDB(t *testing.T) {
+	pool := validateParentTestPool(t)
+	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
+	s := New(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	projectA := validateParentProject(t, ctx, pool)
+	epic := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindEpic, nil)
+
+	update := func(item db.WorkItemRow, mutate func(req *apiv1.UpdateWorkItemRequest)) error {
+		req := connect.NewRequest(&apiv1.UpdateWorkItemRequest{Id: item.ID})
+		mutate(req.Msg)
+		_, err := s.UpdateWorkItem(ctx, req)
+		return err
+	}
+	// seedRecurring creates a task with a recurring schedule + a computed
+	// next_run_at and status recurring (mirrors the Create path's flip).
+	seedRecurring := func() db.WorkItemRow {
+		t.Helper()
+		item := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
+		scheduleJSON, err := ValidateRecurringSchedule(&apiv1.RecurringSchedule{
+			Frequency: "daily",
+			Interval:  1,
+			StartDate: "2026-08-12",
+			StartTime: "09:00",
+		})
+		if err != nil {
+			t.Fatalf("validate recurring schedule: %v", err)
+		}
+		future := time.Now().Add(24 * time.Hour)
+		writeItem(t, pool, item.ID, item.Version, db.UpdateWorkItemFields{
+			Status:            strPtr(domain.WorkItemRecurring),
+			RecurringSchedule: &scheduleJSON,
+			NextRunAt:         &future,
+		})
+		return readItem(t, pool, item.ID)
+	}
+
+	// 1. The reported bug: disable the toggle while the dropdown still says
+	// "recurring" → empty-but-present schedule + status=recurring. The clear
+	// must win: status → pending, schedule + cursor NULL.
+	item := seedRecurring()
+	if err := update(item, func(m *apiv1.UpdateWorkItemRequest) {
+		m.Status = statusPtr(apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECURRING)
+		m.RecurringSchedule = &apiv1.RecurringSchedule{}
+	}); err != nil {
+		t.Fatalf("disable recurring: %v", err)
+	}
+	cur := readItem(t, pool, item.ID)
+	if cur.Status != domain.WorkItemPending {
+		t.Fatalf("status after disable = %q, want pending", cur.Status)
+	}
+	if len(cur.RecurringSchedule) != 0 {
+		t.Fatalf("recurring_schedule after disable should be NULL, got %q", string(cur.RecurringSchedule))
+	}
+	if cur.NextRunAt != nil {
+		t.Fatalf("next_run_at after disable = %v, want NULL", cur.NextRunAt)
+	}
+
+	// 2. Inverse hole: a manual status=recurring pick on an item with NO
+	// schedule → demoted to pending ("recurring" is derived, not settable).
+	item2 := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
+	if err := update(item2, func(m *apiv1.UpdateWorkItemRequest) {
+		m.Status = statusPtr(apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECURRING)
+	}); err != nil {
+		t.Fatalf("status=recurring without schedule: %v", err)
+	}
+	if cur := readItem(t, pool, item2.ID); cur.Status != domain.WorkItemPending {
+		t.Fatalf("status=recurring without schedule = %q, want pending", cur.Status)
+	}
+
+	// 3. Keep path: setting a NEW schedule keeps the item recurring.
+	item3 := seedRecurring()
+	if err := update(item3, func(m *apiv1.UpdateWorkItemRequest) {
+		m.RecurringSchedule = &apiv1.RecurringSchedule{
+			Frequency: "weekly",
+			Interval:  1,
+			Days:      []string{"Mon", "Fri"},
+			StartDate: "2026-08-14",
+			StartTime: "10:30",
+		}
+	}); err != nil {
+		t.Fatalf("set new recurring schedule: %v", err)
+	}
+	cur3 := readItem(t, pool, item3.ID)
+	if cur3.Status != domain.WorkItemRecurring {
+		t.Fatalf("new schedule status = %q, want recurring", cur3.Status)
+	}
+	if len(cur3.RecurringSchedule) == 0 {
+		t.Fatal("recurring_schedule should be persisted for the new schedule")
+	}
+
+	// 4. Echo path: the form always sends the dropdown status. A recurring
+	// item saved with status=recurring and its schedule intact stays
+	// recurring — the disable flow only demotes when the clear is present.
+	item4 := seedRecurring()
+	if err := update(item4, func(m *apiv1.UpdateWorkItemRequest) {
+		m.Status = statusPtr(apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECURRING)
+		m.Title = strPtr("Renamed, still recurring")
+	}); err != nil {
+		t.Fatalf("echo status=recurring on recurring item: %v", err)
+	}
+	if cur := readItem(t, pool, item4.ID); cur.Status != domain.WorkItemRecurring {
+		t.Fatalf("echoed recurring save = %q, want recurring (schedule intact)", cur.Status)
+	}
+
+	// 5. Explicit other status: clear the schedule AND pick "scheduled" →
+	// the explicit status is honored, stays scheduled (no zombie).
+	item5 := seedRecurring()
+	if err := update(item5, func(m *apiv1.UpdateWorkItemRequest) {
+		m.Status = statusPtr(apiv1.WorkItemStatus_WORK_ITEM_STATUS_SCHEDULED)
+		m.RecurringSchedule = &apiv1.RecurringSchedule{}
+	}); err != nil {
+		t.Fatalf("clear schedule + status=scheduled: %v", err)
+	}
+	cur5 := readItem(t, pool, item5.ID)
+	if cur5.Status != domain.WorkItemScheduled {
+		t.Fatalf("clear + scheduled status = %q, want scheduled", cur5.Status)
+	}
+	if len(cur5.RecurringSchedule) != 0 {
+		t.Fatalf("recurring_schedule should be NULL, got %q", string(cur5.RecurringSchedule))
+	}
+}
+
 // TestBindingWorkflowClearsOneShotWorkerRef verifies the one-shot stale-data
 // self-heal + the post-update validation:
 //   - a leaf carrying a stale assigned_worker_ref (leftover from the one-shot

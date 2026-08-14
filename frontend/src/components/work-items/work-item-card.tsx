@@ -18,7 +18,7 @@ import {
   RecurringBadge,
   StatusPill,
 } from "@/components/work-items/work-item-badges";
-import { isRecurringItem, kindMeta, priorityLabel, relativeAge } from "@/components/work-items/work-item-meta";
+import { showRecurringBadge, kindMeta, priorityLabel, relativeAge } from "@/components/work-items/work-item-meta";
 import { useDarkPalette } from "@/components/work-items/use-dark-palette";
 import {
   Tooltip,
@@ -141,7 +141,7 @@ export function WorkItemCard({
         />
         <KindBadge kind={item.kind} />
         {badge}
-        {isRecurringItem(item) && <RecurringBadge />}
+        {showRecurringBadge(item) && <RecurringBadge />}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           <BlockedChip blockedBy={blockedBy} id={item.id} depsCount={depsCount} />
           {moving ? (

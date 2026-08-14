@@ -920,6 +920,39 @@ func TestStopSequenceInFlightChildInert(t *testing.T) {
 	}
 }
 
+// TestStopSequenceRecurringParentKeepsCadence: STOP on a RECURRING sequence
+// parent parks it "recurring" (not "pending"), so the cadence stays armed and
+// the RecurringFireReconciler re-fires the next occurrence on schedule — a
+// pending parent with a schedule would be a dead state nothing ever re-fires.
+func TestStopSequenceRecurringParentKeepsCadence(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createRecurringParent(t, env.pool, env.proj.ID, "Recurring Parent")
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID})
+
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatal(err)
+	}
+	if err := StopSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID); err != nil {
+		t.Fatalf("StopSequence: %v", err)
+	}
+	got := mustGet(t, env.pool, parent.ID)
+	if got.Status != domain.WorkItemRecurring {
+		t.Fatalf("parent status after stop = %q, want recurring (cadence stays armed)", got.Status)
+	}
+	if len(got.RecurringSchedule) == 0 {
+		t.Error("parent recurring_schedule was cleared, want intact")
+	}
+	if got.NextRunAt == nil {
+		t.Error("parent next_run_at is nil, want preserved for the next occurrence")
+	}
+	if got.ScheduledStartAt != nil {
+		t.Errorf("parent scheduled_start_at after stop = %v, want cleared", got.ScheduledStartAt)
+	}
+}
+
 // reorder sets sort_order on the given sibling ids in order, mirroring
 // ReorderWorkItems' 1..N numbering (test helper).
 func reorder(t *testing.T, pool *db.Pool, projectID, parentID string, ordered []string) {
