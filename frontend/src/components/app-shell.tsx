@@ -32,7 +32,7 @@ const NAV: NavItem[] = [
   { label: "Recovery", to: "/recovery" },
   { label: "Executions", to: "/executions" },
   { label: "Approvals", to: "/approvals" },
-  { label: "Telemetry", to: "/telemetry" },
+  { label: "Telemetry + Costs", to: "/telemetry" },
   { label: "Adapters", to: "/adapters" },
   { label: "Webhooks", to: "/webhooks" },
   { label: "Settings", to: "/settings" },

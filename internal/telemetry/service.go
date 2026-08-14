@@ -183,10 +183,12 @@ func (s *Service) GetDashboard(ctx context.Context, req *connect.Request[apiv1.G
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	// The default window is all-time: a zero start flows to the SQL
+	// unbounded sentinel (`$n::timestamptz <= 'epoch'::timestamptz`),
+	// exactly like AIGateway.GetCost, so the Overview total matches the
+	// Cost Explorer's per-model sum. Only `end` defaults to now so a nil
+	// end still means "up to now".
 	start, end := tsToTime(req.Msg.Start), tsToTime(req.Msg.End)
-	if start.IsZero() {
-		start = time.Now().Add(-24 * time.Hour)
-	}
 	if end.IsZero() {
 		end = time.Now()
 	}

@@ -118,8 +118,9 @@ function OverviewPanel() {
         <CardHeader>
           <CardTitle>Cost by model</CardTitle>
           <CardDescription>
-            Per-model USD spend in the dashboard window (custom Orchicon
-            roll-up from Postgres usage_records — source of truth).
+            Per-model USD spend over the lifetime of the workspace (custom
+            Orchicon roll-up from Postgres usage_records — source of
+            truth).
           </CardDescription>
         </CardHeader>
         <CardContent>

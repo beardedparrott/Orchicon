@@ -841,11 +841,12 @@ A `loop_decision` step may depend on **multiple** upstream steps. The gate waits
 4. Full Rego traces available for `ExplainDecision`
 
 #### Telemetry & Cost
-1. Navigate to **Telemetry** for: traces, metrics, logs dashboard
+1. Navigate to **Telemetry + Costs** (sidebar) for: traces, metrics, logs dashboard, and the cost explorer
 2. Embedded Grafana UI available at `/grafana` (Tempo / Loki / VictoriaMetrics)
-3. Cost Explorer: per-provider/model spend with drill-down (Project → Task → Execution → Model)
-4. **By Workflow** tab: cost broken down per workflow run with per-step detail. Each run row's primary label is the bound work item's name (when the run is bound to a ticket), with the raw run ID demoted to a muted secondary — one-shot runs with no bound work item fall back to the truncated run ID.
-5. Credits tab showing tenant-level usage
+3. **Overview** (default tab): total tokens / total cost / executions, plus a per-model spend panel. The Overview totals are **all-time** by default (no window is applied when none is requested), matching the Cost Explorer's per-model sum — the two surfaces always agree.
+4. Cost Explorer: per-provider/model spend with drill-down (Project → Task → Execution → Model)
+5. **By Workflow** tab: cost broken down per workflow run with per-step detail. Each run row's primary label is the bound work item's name (when the run is bound to a ticket), with the raw run ID demoted to a muted secondary — one-shot runs with no bound work item fall back to the truncated run ID.
+6. Credits tab showing tenant-level usage
 
 #### Settings
 1. Navigate to **Settings** (replaces the former Preferences page)
