@@ -5,6 +5,7 @@ import { Moon, Sun, Palette, Menu, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useSession, logout } from "@/auth/auth";
+import { useSessionStore } from "@/auth/session";
 import { useThemeStore } from "@/lib/theme-store";
 
 // Application layout shell (docs/10_Frontend_Architecture.md §5).
@@ -42,6 +43,21 @@ const NAV: NavItem[] = [
 export function AppShell({ children }: { children: ReactNode }) {
   const path = useRouterState({ select: (s) => s.location.pathname });
   const isAskOrchicon = path === "/ask-orchicon" || path.startsWith("/ask-orchicon/");
+  const session = useSession();
+  const loading = useSessionStore((s) => s.loading);
+  const navigate = useNavigate();
+
+  // Unauthenticated redirect: once the session has finished loading and no
+  // identity resolved, bounce to /login. /login and /auth/callback are
+  // exempt (the login page + the OIDC callback route, which lands here with
+  // a token in the fragment before fetchSession completes). This replaces
+  // the pre-login ghost dashboard: every protected page requires a real
+  // credential (the server 401s without one).
+  useEffect(() => {
+    if (loading || session.authenticated) return;
+    if (path === "/login" || path === "/auth/callback") return;
+    navigate({ to: "/login" });
+  }, [loading, session.authenticated, path, navigate]);
 
   return (
     <div className="flex min-h-screen bg-background">

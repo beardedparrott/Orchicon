@@ -28,11 +28,6 @@ import { SettingsService } from "@/api/gen/orchicon/api/v1/settings_service_conn
 import { RuntimeImageService } from "@/api/gen/orchicon/api/v1/runtime_image_service_connect";
 import { getAccessToken, refreshAccessToken } from "@/auth/session";
 
-// TenantHeader is retained for the dev pre-login fallback (when the
-// backend has not yet minted a token, it accepts the dev tenant header).
-export const TenantHeader = "x-orchicon-tenant-id";
-export const DEFAULT_TENANT_ID = "tnt_dev";
-
 // Refreshing is a module-level guard so concurrent 401s share one
 // refresh promise (avoiding a refresh storm).
 let refreshInFlight: Promise<boolean> | null = null;
@@ -52,15 +47,12 @@ async function doRefresh(): Promise<boolean> {
 
 // authInterceptor injects the bearer access token on every RPC. On a
 // 401 it transparently refreshes via the HttpOnly cookie and retries
-// the call once (docs/10 §7). Dev pre-login (no token) falls back to
-// the dev tenant header so the UI works before authentication.
+// the call once (docs/10 §7). There is no pre-login fallback: without a
+// token the call 401s and the app shell redirects the user to /login.
 const authInterceptor: Interceptor = (next) => async (req) => {
   const token = getAccessToken();
   if (token) {
     req.header.set("Authorization", `Bearer ${token}`);
-  } else {
-    // Dev pre-login fallback: the backend resolves the dev tenant.
-    req.header.set(TenantHeader, DEFAULT_TENANT_ID);
   }
   try {
     return await next(req);

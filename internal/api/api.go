@@ -109,7 +109,7 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 
 	// The RBAC interceptor applies the per-RPC entitlement check on
 	// top of the identity resolved by the auth middleware (docs/07 §6.2).
-	rbacInterceptor := middleware.NewRBACInterceptor(deps.Mode)
+	rbacInterceptor := middleware.NewRBACInterceptor()
 	interceptorOpt := connect.WithInterceptors(rbacInterceptor)
 
 	// ProjectService (docs/07 §3.1).
@@ -249,7 +249,7 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	// key) and stores identity + tenant in the context (docs/07 §6.3).
 	var h http.Handler = mux
 	if deps.AuthHandler != nil {
-		h = middleware.ResolveAuth(h, deps.AuthHandler.Issuer(), deps.AuthHandler.Resolver(), deps.Mode, deps.Log)
+		h = middleware.ResolveAuth(h, deps.AuthHandler.Issuer(), deps.AuthHandler.Resolver(), deps.Log)
 	} else {
 		// Dev fallback when auth is not configured: resolve tenant only.
 		h = middleware.ResolveTenant(mux)

@@ -32,11 +32,12 @@ type LocalCredentialVerifier func(ctx context.Context, tenantID, username, passw
 // Handler exposes the out-of-band auth HTTP endpoints (docs/07 §6.1):
 //
 //	POST /auth/local-login    Local-account login (embedded IdP, username+password)
-//	POST /auth/dev-login      Local-mode synthetic login (subject → tokens)
+//	POST /auth/dev-login      Local-mode synthetic login (subject → tokens; flag-gated)
 //	POST /auth/refresh        Exchange a refresh token for a new access token
 //	GET  /auth/oidc/login     Redirect to the IdP authorize URL
 //	GET  /auth/oidc/callback  IdP callback: exchange code, issue tokens
 //	GET  /auth/session        Return the current resolved identity
+//	GET  /auth/config         Capability flags for the pre-login SPA (public)
 //
 // The access token is returned in the JSON body (kept in memory by the
 // frontend); the refresh token is set as an HttpOnly cookie so JS cannot
@@ -103,7 +104,36 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/auth/oidc/login", h.oidcLogin)
 	mux.HandleFunc("/auth/oidc/callback", h.oidcCallback)
 	mux.HandleFunc("/auth/session", h.session)
+	mux.HandleFunc("/auth/config", h.authConfig)
 	h.registerEmbeddedOP(mux)
+}
+
+// authConfigResponse is the capability-flags payload the pre-login SPA
+// login page reads (docs/07 §6.1). Public and secret-free: it mirrors the
+// plane's auth configuration (which IdPs are reachable) so the UI renders
+// exactly the sign-in affordances the running plane supports. It never
+// carries the issuer URL, client id, or any signing material — those stay
+// server-side (AGENTS.md: the frontend reflects server state, never makes
+// policy).
+type authConfigResponse struct {
+	Mode         string `json:"mode"`
+	EmbeddedOP   bool   `json:"embedded_op"`
+	ExternalOIDC bool   `json:"external_oidc"`
+	DevLogin     bool   `json:"dev_login"`
+}
+
+// authConfig returns the plane's auth capability flags.
+func (h *Handler) authConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, authConfigResponse{
+		Mode:         string(h.mode),
+		EmbeddedOP:   h.cfg.EmbeddedOP,
+		ExternalOIDC: h.oidc != nil,
+		DevLogin:     h.mode == config.ModeLocal && h.cfg.DevLoginAllowed,
+	})
 }
 
 // devLoginRequest is the body for POST /auth/dev-login.
