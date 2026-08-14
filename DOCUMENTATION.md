@@ -974,8 +974,20 @@ MCP work item mutations honor the transactional outbox pattern (invariant #3): `
   Provisioning is the admin-only `AuthService.SetLocalCredential` RPC
   (`auth:write`), which hashes at the boundary and never returns the hash.
   The SPA `/login` route shows the username+password form.
-- **Local dev**: Built-in dev IdP (HS256 synthetic `/auth/dev-login`) + the
-  embedded OpenID Provider — no external IdP needed
+- **Local dev**: The embedded OpenID Provider is the default IdP — no
+  external IdP needed. OIDC is the base auth path in **every** mode: there
+  is no anonymous dev bypass (a request without a credential is 401
+  everywhere) and the synthetic `/auth/dev-login` is a flag-gated escape
+  hatch (`ORCHICON_DEV_LOGIN`, default **off**, returns 403 when disabled).
+  A fresh local plane seeds a first admin for the embedded-OP login
+  (local mode + embedded OP only, `ORCHICON_LOCAL_ADMIN_SEED=0` to opt
+  out; username/password pinned via `ORCHICON_LOCAL_ADMIN_USERNAME` /
+  `ORCHICON_LOCAL_ADMIN_PASSWORD`, random + logged once at boot when
+  unpinned) so the UI is usable out of the box. Config validation requires
+  an issuer (embedded OP **or** external IdP) in every mode. The public
+  `GET /auth/config` endpoint mirrors the plane's auth capabilities
+  (`embedded_op` / `external_oidc` / `dev_login`) for the honest login
+  page; the unauthenticated SPA redirects to `/login`.
 - **Production**: Real OIDC issuer with authorization-code flow (BYO IdP);
   the embedded OP can be disabled with `ORCHICON_OP_ENABLED=false`
 - **API keys**: SHA-256 hashed, least-privilege scopes for headless/CI clients

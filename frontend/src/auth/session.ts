@@ -154,6 +154,27 @@ export function logout(): void {
   clearAccessToken();
 }
 
+// AuthConfig carries the plane's auth capability flags (GET /auth/config,
+// public). The login page renders exactly the sign-in affordances the
+// running plane supports; the values are server-driven capability mirrors,
+// never client-side policy (AGENTS.md invariant #1).
+export type AuthConfig = {
+  mode: string;
+  embedded_op: boolean;
+  external_oidc: boolean;
+  dev_login: boolean;
+};
+
+// fetchAuthConfig reads the plane's auth capability flags for the
+// pre-login login page. Public endpoint — no credentials required.
+export async function fetchAuthConfig(): Promise<AuthConfig> {
+  const res = await fetch("/auth/config", { credentials: "include" });
+  if (!res.ok) {
+    throw new Error(`auth/config failed: ${res.status}`);
+  }
+  return (await res.json()) as AuthConfig;
+}
+
 // useSessionStore is a thin Zustand store for UI-only session state
 // (docs/10 §6: UI-only state lives in Zustand). The server state (the
 // resolved identity) is fetched via fetchSession and cached here.

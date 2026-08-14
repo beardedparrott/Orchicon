@@ -23,19 +23,26 @@ const (
 )
 
 // AuthConfig holds OIDC + token-issuance configuration (docs/07 §6.1).
-// In local mode, Issuer="local" enables the built-in dev IdP that mints
-// short-lived HS256 access tokens + refresh tokens (no external IdP
-// required). In production, the control plane validates OIDC ID tokens
-// from the configured issuer and issues its own access tokens.
+// OIDC is the base authentication path in every mode: the embedded
+// OpenID Provider (EmbeddedOP, default on) is the default IdP in
+// local/non-prod; production validates ID tokens from the configured
+// external issuer. Issuer="local" is the vestigial "no external IdP"
+// marker — it is NOT an issuer and only boots when the embedded OP is
+// enabled (Validate enforces this in every mode).
 type AuthConfig struct {
-	Issuer        string // OIDC issuer URL, or "local" for the dev IdP
+	Issuer        string // OIDC issuer URL; "local" = no external IdP (embedded OP is the issuer)
 	ClientID      string // OIDC client id
 	ClientSecret  string // OIDC client secret (only for confidential flows)
 	RedirectURL   string // OIDC redirect URL (e.g. http://localhost:5173/auth/callback)
 	SigningKey    string // HMAC key for minting/verifying Orchicon access tokens
 	AccessTTL     time.Duration
 	RefreshTTL    time.Duration
-	DevLoginAllowed bool // local mode: allow the synthetic /auth/dev-login endpoint
+	// DevLoginAllowed enables the synthetic /auth/dev-login endpoint
+	// (local mode only). Default false: it is a dev escape hatch, not
+	// the default path — a fresh plane authenticates through the
+	// embedded OP (or an external IdP), and the local-mode first-admin
+	// bootstrap seed (internal/auth/bootstrap.go) makes that usable.
+	DevLoginAllowed bool
 
 	// EmbeddedOP enables the in-process OpenID Provider (zitadel/oidc v3,
 	// pkg/op) mounted on the plane origin. Defaults to true; a strict
@@ -147,7 +154,7 @@ func Default() Config {
 			SigningKey:      env("ORCHICON_AUTH_SIGNING_KEY", "orchicon-dev-signing-key-change-in-production"),
 			AccessTTL:       15 * time.Minute,
 			RefreshTTL:      24 * time.Hour,
-			DevLoginAllowed: envBool("ORCHICON_DEV_LOGIN", true),
+			DevLoginAllowed: envBool("ORCHICON_DEV_LOGIN", false),
 			EmbeddedOP:      envBool("ORCHICON_OP_ENABLED", true),
 			OPRedirectURIs:  env("ORCHICON_OP_REDIRECT_URIS", ""),
 			OPIssuer:        env("ORCHICON_OP_ISSUER", ""),
@@ -191,8 +198,9 @@ func envBool(key string, fallback bool) bool {
 }
 
 // Validate reports configuration errors before the process starts serving.
-// Production mode requires an OIDC issuer (not "local") and a real
-// signing key; local mode relaxes these for the dev experience.
+// Every mode requires a real IdP (the embedded OP or an external issuer);
+// production additionally requires a real external issuer and signing key
+// (BYO-IdP posture), which local mode relaxes for the dev experience.
 func (c Config) Validate() error {
 	if c.HTTPAddr == "" {
 		return fmt.Errorf("config: HTTPAddr must be set")
@@ -208,7 +216,19 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("config: Mode must be %q or %q", ModeLocal, ModeProduction)
 	}
+	// OIDC is the base auth path in every mode: a plane must have a real
+	// IdP — the embedded OP or an external issuer. Issuer="local" is the
+	// vestigial "no external IdP" marker, not an issuer; with the embedded
+	// OP disabled it would leave the plane with no way to authenticate
+	// (the old local-mode anonymous bypass is gone), so it is a config
+	// error, not a runtime surprise.
+	if !c.Auth.EmbeddedOP && (c.Auth.Issuer == "" || c.Auth.Issuer == "local") {
+		return fmt.Errorf("config: an OIDC issuer is required in every mode: enable the embedded OP (ORCHICON_OP_ENABLED) or set ORCHICON_OIDC_ISSUER to an external IdP")
+	}
 	if c.Mode == ModeProduction {
+		// Production keeps its stricter BYO-IdP posture: a real external
+		// issuer is required even when the embedded OP is enabled — the
+		// embedded OP alone is not a production trust surface.
 		if c.Auth.Issuer == "" || c.Auth.Issuer == "local" {
 			return fmt.Errorf("config: production mode requires ORCHICON_OIDC_ISSUER (not local)")
 		}
