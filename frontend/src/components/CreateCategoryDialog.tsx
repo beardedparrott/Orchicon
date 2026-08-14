@@ -78,7 +78,7 @@ export function CreateCategoryDialog({
       ref={dialogRef}
       onClose={handleClose}
       className={cn(
-        "rounded-lg border bg-background p-0 shadow-lg backdrop:bg-black/50",
+        "rounded-lg border bg-background text-foreground p-0 shadow-lg backdrop:bg-black/50",
         "w-full max-w-md",
       )}
       onClick={(e) => {
