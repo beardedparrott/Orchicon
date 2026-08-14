@@ -3740,28 +3740,71 @@ func (r *WorkflowReconciler) loopDecisionReenter(ctx context.Context, tx pgx.Tx,
 	return nil
 }
 
-// chainStepIDs returns the IDs of every step from `fromID` (inclusive)
-// to `toID` (exclusive) in DAG order. allSteps is the workflow
-// version's step list in canvas order, which for a linear chain is
-// DAG order. Returns nil if either step is not found or the range
-// is inverted.
+// chainStepIDs returns the IDs of every step strictly between `fromID`
+// and `toID` in DAG order (fromID inclusive, toID exclusive): the set of
+// steps reachable downstream from `fromID` (via depends_on) that are also
+// ancestors of `toID`. Computed by graph traversal, NOT by slicing the
+// canvas-ordered step array — the canvas order of a non-linear workflow
+// (parallel gates, fan-in loops) does not match DAG order, and an
+// index-slice would include the wrong steps (e.g. a parallel gate whose
+// canvas index sits beyond the loop decision, letting its stale
+// succeeded run satisfy the re-entered chain's dependencies and fan out
+// siblings concurrently). Returns nil if either step is not found or
+// there is no path between them.
 func chainStepIDs(allSteps []workflow.StepWire, fromID, toID string) []string {
-	start, end := -1, -1
-	for i, s := range allSteps {
-		if s.ID == fromID {
-			start = i
-		}
-		if s.ID == toID {
-			end = i
-			break
+	// Adjacency: step -> its dependents (reverse of depends_on).
+	dependents := make(map[string][]string, len(allSteps))
+	index := make(map[string]workflow.StepWire, len(allSteps))
+	for _, s := range allSteps {
+		index[s.ID] = s
+		for _, dep := range s.DependsOn {
+			dependents[dep] = append(dependents[dep], s.ID)
 		}
 	}
-	if start < 0 || end < 0 || start >= end {
+	if _, ok := index[fromID]; !ok {
 		return nil
 	}
-	ids := make([]string, 0, end-start)
-	for i := start; i < end; i++ {
-		ids = append(ids, allSteps[i].ID)
+	if _, ok := index[toID]; !ok {
+		return nil
+	}
+
+	// Every step reachable downstream from fromID (inclusive).
+	downstream := map[string]bool{}
+	queue := []string{fromID}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		if downstream[id] {
+			continue
+		}
+		downstream[id] = true
+		queue = append(queue, dependents[id]...)
+	}
+
+	// Every step that is an ancestor of toID (inclusive), walking
+	// depends_on upward.
+	upstream := map[string]bool{}
+	queue = []string{toID}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		if upstream[id] {
+			continue
+		}
+		upstream[id] = true
+		queue = append(queue, index[id].DependsOn...)
+	}
+
+	// The chain is the intersection, in canvas order for determinism,
+	// excluding the loop decision itself.
+	var ids []string
+	for _, s := range allSteps {
+		if s.ID == toID {
+			continue
+		}
+		if downstream[s.ID] && upstream[s.ID] {
+			ids = append(ids, s.ID)
+		}
 	}
 	return ids
 }
