@@ -49,6 +49,7 @@ import { useCategoryPreferences, getItemsForCategory } from "@/lib/category-stor
 import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
 import {
   DndContext,
+  DragOverlay,
   PointerSensor,
   useSensor,
   useSensors,
@@ -58,7 +59,6 @@ import {
 import { useDroppable } from "@dnd-kit/core";
 import { useDraggable } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
 
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
@@ -999,6 +999,13 @@ function AskOrchiconPage() {
                 hasFolders={convPrefs.state.categories.length > 0}
               />
             </SortableContext>
+            <DragOverlay dropAnimation={null}>
+              {activeDragId ? (
+                <div className="rounded-md bg-background border shadow-md px-3 py-2 text-sm text-foreground max-w-[200px] truncate">
+                  {convById.get(activeDragId)?.title || "New conversation"}
+                </div>
+              ) : null}
+            </DragOverlay>
           </DndContext>
         </div>
       </aside>
@@ -1390,17 +1397,12 @@ function ConversationItem({
   onDelete,
   isDragging,
 }: ConversationItemProps) {
-  const { attributes, listeners, setNodeRef, transform, isDragging: isDndDragging } =
+  const { attributes, listeners, setNodeRef, isDragging: isDndDragging } =
     useDraggable({ id: convId });
-
-  const style = transform
-    ? { transform: CSS.Transform.toString(transform) }
-    : undefined;
 
   return (
     <div
       ref={setNodeRef}
-      style={style}
       className={cn(
         "rounded-md transition-colors group",
         isDndDragging && "z-10 opacity-50",
