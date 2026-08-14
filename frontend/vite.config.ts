@@ -25,6 +25,36 @@ export default defineConfig({
         target: "http://localhost:8080",
         changeOrigin: true,
       },
+      // Auth endpoints (dev-login/refresh/oidc/session) + the embedded
+      // OpenID Provider login bridge — proxied so the SPA login flow
+      // works under make fe-dev.
+      "/auth": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+      },
+      // Embedded OpenID Provider endpoints (internal/auth/op): a dev
+      // RP pointed at the plane origin needs these to reach the Go
+      // control plane during development.
+      "/.well-known/openid-configuration": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+      },
+      "/authorize": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+      },
+      "/token": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+      },
+      "/userinfo": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+      },
+      "/jwks": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+      },
       // Grafana UI proxy (docs/10 §11): seamless embedding — the Grafana
       // iframe is served same-origin under /grafana so it shares the
       // Orchicon shell's auth + visual language, not a separate tool.

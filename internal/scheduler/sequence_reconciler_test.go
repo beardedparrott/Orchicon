@@ -714,8 +714,8 @@ func TestStopSequenceCascadesAndAborts(t *testing.T) {
 	// only picks up running/failed parents, and the auto-revive path only
 	// resurrects a FAILED parent. Assert a fresh reconcile pass does nothing.
 	rec := NewSequenceReconciler(env.pool, logger, env.startFn())
-	if err := rec.Reconcile(ctx, parent.ID); err != nil {
-		t.Fatalf("reconcile after stop: %v", err)
+	if res := rec.Reconcile(ctx, parent.ID); res.Error != nil {
+		t.Fatalf("reconcile after stop: %v", res.Error)
 	}
 	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemPending {
 		t.Errorf("parent status after post-stop reconcile = %s, want pending (must not auto-revive)", got.Status)

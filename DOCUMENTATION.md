@@ -44,7 +44,8 @@ The frontend is a TypeScript/React SPA with a visual React Flow workflow editor,
 | github.com/open-policy-agent/opa | latest | Open Policy Agent v1 (Rego policy engine) |
 | go.opentelemetry.io/otel | latest | OpenTelemetry SDK (traces, metrics, logs) |
 | go.opentelemetry.io/otel/exporters/otlp/... | latest | OTLP gRPC exporters |
-| github.com/coreos/go-oidc/v3 | latest | OIDC authentication |
+| github.com/coreos/go-oidc/v3 | latest | OIDC relying-party verification (BYO IdP) |
+| github.com/zitadel/oidc/v3 | v3.49.2 | Embedded OpenID Provider (`internal/auth/op`, Apache-2.0) |
 | github.com/oklog/ulid/v2 | latest | ULID generation for IDs |
 | github.com/aws/aws-sdk-go-v2 | latest | AWS SDK v2 (S3 blob store) |
 | github.com/lestrrat-go/jwx/v3 | latest | JWT signing/verification |
@@ -938,8 +939,25 @@ MCP work item mutations honor the transactional outbox pattern (invariant #3): `
 
 ### Authentication
 
-- **Local dev**: Built-in OIDC provider (HS256) — no external IdP needed
-- **Production**: Real OIDC issuer with authorization-code flow
+- **Embedded OpenID Provider** (`internal/auth/op`): the plane serves a real
+  OIDC authorization-code + PKCE flow on its own origin via zitadel/oidc v3
+  (`pkg/op`). Endpoints: `/.well-known/openid-configuration`, `/authorize`
+  (+ `/authorize/callback`), `/token`, `/userinfo`, `/jwks`. ID tokens are
+  signed **ES256** with a keypair deterministically derived from
+  `ORCHICON_AUTH_SIGNING_KEY` (HKDF-SHA256 → P-256 scalar base mult) so the
+  JWKS publishes only the public point — never the HMAC access-token secret.
+  The login bridge (`/auth/op/login`) authenticates the caller's existing
+  Orchicon session cookie and marks the authorize request done; without a
+  session it bounces to the SPA `/login?next=...` (same-origin paths only).
+  Env: `ORCHICON_OP_ENABLED` (default true), `ORCHICON_OP_REDIRECT_URIS`,
+  `ORCHICON_OP_ISSUER` (empty = dynamic from the request Host). The existing
+  BYO-IdP RP (`internal/auth/oidc.go`) is unchanged: PKCE is capability-gated
+  on the IdP advertising `S256` in discovery, so non-PKCE IdPs get the same
+  byte-for-byte flow as before.
+- **Local dev**: Built-in dev IdP (HS256 synthetic `/auth/dev-login`) + the
+  embedded OpenID Provider — no external IdP needed
+- **Production**: Real OIDC issuer with authorization-code flow (BYO IdP);
+  the embedded OP can be disabled with `ORCHICON_OP_ENABLED=false`
 - **API keys**: SHA-256 hashed, least-privilege scopes for headless/CI clients
 - **Frontend**: Access tokens in memory; refresh tokens in HttpOnly cookies
 
@@ -1472,3 +1490,13 @@ fi
 Copyright © 2026 beardedparrott. All rights reserved.
 
 This software is provided free of charge for personal and non-commercial use. You may use, copy, and modify it for your own non-commercial purposes. Redistribution, sublicensing, or integration into commercial products that generate revenue requires explicit written permission from the owner. See the [LICENSE](./LICENSE) file for the full terms.
+
+### Third-party notices
+
+The binary embeds the Apache-2.0 license + notice for the vendored
+`github.com/zitadel/oidc/v3` library (`third_party/oidc/`), so the license
+obligation ships in the distribution. Print them with:
+
+```bash
+orchicon notices
+```

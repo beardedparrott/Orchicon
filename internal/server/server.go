@@ -19,13 +19,13 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/beardedparrott/orchicon/internal/api"
 	"github.com/beardedparrott/orchicon/internal/aigateway"
+	"github.com/beardedparrott/orchicon/internal/api"
 	"github.com/beardedparrott/orchicon/internal/auth"
+	"github.com/beardedparrott/orchicon/internal/backup"
 	"github.com/beardedparrott/orchicon/internal/blobstore"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
-	"github.com/beardedparrott/orchicon/internal/backup"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/logging"
@@ -39,9 +39,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/runtimeimage"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
-	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/beardedparrott/orchicon/internal/version"
 	"github.com/beardedparrott/orchicon/internal/webhook"
+	"github.com/beardedparrott/orchicon/internal/workflow"
 )
 
 // Server owns the running control plane process and its dependencies.
@@ -612,6 +612,7 @@ func (s *Server) Run(ctx context.Context) error {
 		if s.webhookD != nil {
 			s.webhookD.Stop()
 		}
+		s.authH.CloseEmbeddedOP()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
 		defer cancel()
 		if err := s.httpSrv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -623,6 +624,7 @@ func (s *Server) Run(ctx context.Context) error {
 		s.shutdownOTel()
 		return nil
 	case err := <-errCh:
+		s.authH.CloseEmbeddedOP()
 		s.pool.Close()
 		s.shutdownOTel()
 		if errors.Is(err, http.ErrServerClosed) {
