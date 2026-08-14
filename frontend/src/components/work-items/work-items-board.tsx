@@ -683,9 +683,7 @@ function SortableCard({
         moving={moving}
         actions={
           <div className="flex items-center gap-1">
-            {hasChildren && (
-              <SequenceControls item={item} />
-            )}
+            <SequenceControls item={item} hasChildren={hasChildren} />
             {hasChildren && (
               <button
                 type="button"

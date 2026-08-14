@@ -1,19 +1,22 @@
-// SequenceControls — manual Start / Resume / Stop buttons for a sequence
-// parent (a work item with children IS a sequence run; see
-// sequence-utils.ts). Display-only gating from the parent's derived
-// status — the server does the real validation (ControlSequence RPC), so
-// a stale render can never fire an invalid gesture:
-//   - START re-fires the chain from child #1 (destructive — confirm-gated,
-//     wipes prior child successes); enabled when not actively sequencing.
-//   - RESUME continues from the first non-succeeded child (keeps state);
-//     enabled when halted (failed chain) or parked (pending with children).
-//   - STOP parks the chain (parent → pending, schedule cleared) so
-//     children can be run standalone; an in-flight child finishes
-//     naturally; enabled when running/failed.
+// SequenceControls — manual Start / Resume / Stop buttons for ANY work
+// item, shown on the board, tree, and detail page. The buttons are a pure
+// function of the item's server-reported status + whether it has children
+// (the server does the real validation via ControlSequence, so a stale
+// render can never fire an invalid gesture):
+//
+//   - PARENT (has children — a sequence run): START re-fires the chain from
+//     child #1 (destructive — confirm-gated, wipes prior child successes);
+//     RESUME continues from the first non-succeeded child (keeps state);
+//     STOP halts the WHOLE subtree — every descendant parks to pending and
+//     any in-flight workflow run is aborted, so a stopped chain stays
+//     stopped until started/resumed again.
+//   - LEAF (no children — runs its own bound workflow): START fires the
+//     item's bound workflow immediately; RESUME re-arms a failed/cancelled
+//     leaf; STOP parks the leaf and aborts its run.
 //
 // Invariant #1: no business logic in the frontend — the visible buttons
-// are a pure function of the parent's server-reported status, and every
-// click goes through the generated ControlSequence client.
+// are a pure function of server-reported state, and every click goes
+// through the generated ControlSequence client.
 
 import { Loader2, Pause, Play, RotateCcw } from "lucide-react";
 import { useState } from "react";
@@ -30,17 +33,32 @@ const ACTIVE = new Set([
   WorkItemStatus.RECOVERING,
 ]);
 
-const isActiveRun = (status: WorkItemStatus) => ACTIVE.has(status);
+const QUEUED = new Set([WorkItemStatus.READY, WorkItemStatus.ASSIGNED]);
 
-/** Which gestures are available for a parent's current status. */
-function availableActions(status: WorkItemStatus): SequenceAction[] {
+const isActiveRun = (status: WorkItemStatus) => ACTIVE.has(status);
+const isQueued = (status: WorkItemStatus) => QUEUED.has(status);
+
+/** Which gestures are available for an item's current status + shape. */
+export function availableActions(status: WorkItemStatus, hasChildren: boolean): SequenceAction[] {
   const out: SequenceAction[] = [];
-  if (!isActiveRun(status)) out.push(SequenceAction.START);
-  if (status === WorkItemStatus.FAILED || status === WorkItemStatus.PENDING) {
-    out.push(SequenceAction.RESUME);
-  }
-  if (status === WorkItemStatus.RUNNING || status === WorkItemStatus.FAILED) {
-    out.push(SequenceAction.STOP);
+  if (hasChildren) {
+    // Sequence parent.
+    if (!isActiveRun(status)) out.push(SequenceAction.START);
+    if (status === WorkItemStatus.FAILED || status === WorkItemStatus.PENDING) {
+      out.push(SequenceAction.RESUME);
+    }
+    if (status !== WorkItemStatus.PENDING && status !== WorkItemStatus.SUCCEEDED) {
+      out.push(SequenceAction.STOP);
+    }
+  } else {
+    // Leaf — runs its own bound workflow.
+    if (!isActiveRun(status) && !isQueued(status)) out.push(SequenceAction.START);
+    if (status === WorkItemStatus.FAILED || status === WorkItemStatus.CANCELLED) {
+      out.push(SequenceAction.RESUME);
+    }
+    if (status !== WorkItemStatus.SUCCEEDED && status !== WorkItemStatus.CANCELLED) {
+      out.push(SequenceAction.STOP);
+    }
   }
   return out;
 }
@@ -53,29 +71,32 @@ const ACTION_META: Record<
     label: "Start",
     icon: Play,
     title:
-      "Re-fire the chain from child #1. Destructive: every descendant resets to pending, wiping prior successes.",
+      "Fire this work item now. For a parent (has children): re-fires the chain from child #1 — destructive, wipes prior successes. For a leaf: starts its bound workflow.",
   },
   [SequenceAction.RESUME]: {
     label: "Resume",
     icon: RotateCcw,
     title:
-      "Continue from the first non-succeeded child, keeping prior results.",
+      "Re-arm this work item. For a parent: continues from the first non-succeeded child, keeping prior results. For a leaf: re-runs its workflow.",
   },
   [SequenceAction.STOP]: {
     label: "Stop",
     icon: Pause,
     title:
-      "Park the chain (parent → pending, schedule cleared). An in-flight child finishes naturally.",
+      "Halt this work item. For a parent: stops the whole subtree and aborts in-flight runs. For a leaf: stops just this item and aborts its run.",
   },
   [SequenceAction.UNSPECIFIED]: { label: "", icon: Play, title: "" },
 };
 
 export function SequenceControls({
   item,
+  hasChildren,
   className,
 }: {
-  /** the sequence parent (an item with children) */
+  /** the work item to control (parent or leaf) */
   item: WorkItem;
+  /** whether the item has children — the sequence-parent determinant */
+  hasChildren: boolean;
   className?: string;
 }) {
   const { mutate, isPending } = useControlSequence();
@@ -96,23 +117,23 @@ export function SequenceControls({
             {
               title:
                 action === SequenceAction.START
-                  ? "Sequence started"
+                  ? "Started"
                   : action === SequenceAction.RESUME
-                    ? "Sequence resumed"
-                    : "Sequence stopped",
+                    ? "Resumed"
+                    : "Stopped",
             },
           );
         },
         onError: (err) => {
           toast.error(err instanceof Error ? err.message : String(err), {
-            title: "Could not control sequence",
+            title: "Could not control work item",
           });
         },
       },
     );
   };
 
-  const actions = availableActions(item.status);
+  const actions = availableActions(item.status, hasChildren);
   if (actions.length === 0) return null;
 
   return (
@@ -131,7 +152,7 @@ export function SequenceControls({
             key={action}
             type="button"
             disabled={isPending}
-            aria-label={`${meta.label} sequence "${item.title}"`}
+            aria-label={`${meta.label} "${item.title}"`}
             title={meta.title}
             onClick={() => {
               if (destructive) {

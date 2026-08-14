@@ -1183,9 +1183,14 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("action must be one of START, RESUME, STOP"))
 	}
 
-	// Load the item and confirm it IS a sequence parent (has children, no
-	// bound workflow run). The engine's reconcileParent guard uses the
-	// same predicate, so this can never drift.
+	// Load the item and determine whether it is a sequence parent (has
+	// children) or a leaf (bound to a workflow run / standalone). The
+	// engine's reconcileParent guard uses the same predicate, so this can
+	// never drift. Controls work on BOTH kinds:
+	//   - parent (has children): START/RESUME re-fire/continue the chain;
+	//     STOP cascades — parks the whole subtree and aborts in-flight runs.
+	//   - leaf (no children): START/RESUME fire the item's own bound
+	//     workflow; STOP parks just the leaf and aborts its run.
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -1195,71 +1200,110 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	if current.WorkflowRunID != "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("work item %q is bound to a workflow run — not a sequence parent", msg.Id))
-	}
 	children, err := db.ListDirectChildren(ctx, ttx.Tx, tenantID, msg.Id)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	if len(children) == 0 {
-		return nil, connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("work item %q has no children — only sequence parents (work items with children) can be started/resumed/stopped", msg.Id))
-	}
+	isParent := len(children) > 0
 
 	switch msg.Action {
 	case apiv1.SequenceAction_SEQUENCE_ACTION_START:
-		// START is destructive (wipes prior child successes). Reject while
-		// the parent is running/checkpointing/recovering — an active chain
-		// must be STOPped (parked) before it can be re-fired.
-		if IsActiveRunStatus(current.Status) {
-			return nil, connect.NewError(connect.CodeFailedPrecondition,
-				errors.New("cannot START a sequence that is already running — STOP it first"))
-		}
-		// Subtree validation (workflows bound, no one-shots) before the
-		// destructive fire, mirroring the schedule-time path.
-		if err := ValidateSequenceSchedule(ctx, ttx.Tx, tenantID, current); err != nil {
-			return nil, err
-		}
-		if s.sequenceStartFn == nil {
-			return nil, connect.NewError(connect.CodeUnavailable, errors.New("sequence starter not wired"))
-		}
-		if err := ttx.Commit(ctx); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
-		}
-		if err := s.sequenceStartFn(ctx, tenantID, msg.Id); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
+		if isParent {
+			// START is destructive (wipes prior child successes). Reject while
+			// the parent is running/checkpointing/recovering — an active chain
+			// must be STOPped (parked) before it can be re-fired.
+			if IsActiveRunStatus(current.Status) {
+				return nil, connect.NewError(connect.CodeFailedPrecondition,
+					errors.New("cannot START a sequence that is already running — STOP it first"))
+			}
+			// Subtree validation (workflows bound, no one-shots) before the
+			// destructive fire, mirroring the schedule-time path.
+			if err := ValidateSequenceSchedule(ctx, ttx.Tx, tenantID, current); err != nil {
+				return nil, err
+			}
+			if s.sequenceStartFn == nil {
+				return nil, connect.NewError(connect.CodeUnavailable, errors.New("sequence starter not wired"))
+			}
+			if err := ttx.Commit(ctx); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+			}
+			if err := s.sequenceStartFn(ctx, tenantID, msg.Id); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
+		} else {
+			// Leaf START: fire the item's own bound workflow immediately.
+			if current.WorkflowID == nil || *current.WorkflowID == "" {
+				return nil, connect.NewError(connect.CodeInvalidArgument,
+					errors.New("cannot START a leaf work item with no workflow bound"))
+			}
+			if current.WorkflowRunID != "" || IsActiveRunStatus(current.Status) ||
+				current.Status == domain.WorkItemReady || current.Status == domain.WorkItemAssigned {
+				return nil, connect.NewError(connect.CodeFailedPrecondition,
+					errors.New("cannot START a work item that is already running or queued for dispatch — STOP it first"))
+			}
+			if s.startWorkflowFn == nil {
+				return nil, connect.NewError(connect.CodeUnavailable, errors.New("workflow starter not wired"))
+			}
+			if err := ttx.Commit(ctx); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+			}
+			if err := s.startWorkflowFn(ctx, tenantID, *current.WorkflowID, current.ProjectID, msg.Id); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
 		}
 	case apiv1.SequenceAction_SEQUENCE_ACTION_RESUME:
-		// RESUME is enabled when the chain is halted (parent failed) or
-		// parked (parent pending with children). A running chain has
-		// nothing to resume — the derived cursor is already advancing it.
-		if current.Status != domain.WorkItemFailed && current.Status != domain.WorkItemPending {
-			return nil, connect.NewError(connect.CodeFailedPrecondition,
-				errors.New("cannot RESUME a sequence that is not halted (failed) or parked (pending)"))
-		}
-		// The subtree must still be schedulable (a failed child's workflow
-		// may have been unbound); validate before re-arming.
-		if err := ValidateSequenceSchedule(ctx, ttx.Tx, tenantID, current); err != nil {
-			return nil, err
-		}
-		if s.sequenceResumeFn == nil {
-			return nil, connect.NewError(connect.CodeUnavailable, errors.New("sequence resume not wired"))
-		}
-		if err := ttx.Commit(ctx); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
-		}
-		if err := s.sequenceResumeFn(ctx, tenantID, msg.Id); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
+		if isParent {
+			// RESUME is enabled when the chain is halted (parent failed) or
+			// parked (parent pending with children). A running chain has
+			// nothing to resume — the derived cursor is already advancing it.
+			if current.Status != domain.WorkItemFailed && current.Status != domain.WorkItemPending {
+				return nil, connect.NewError(connect.CodeFailedPrecondition,
+					errors.New("cannot RESUME a sequence that is not halted (failed) or parked (pending)"))
+			}
+			// The subtree must still be schedulable (a failed child's workflow
+			// may have been unbound); validate before re-arming.
+			if err := ValidateSequenceSchedule(ctx, ttx.Tx, tenantID, current); err != nil {
+				return nil, err
+			}
+			if s.sequenceResumeFn == nil {
+				return nil, connect.NewError(connect.CodeUnavailable, errors.New("sequence resume not wired"))
+			}
+			if err := ttx.Commit(ctx); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+			}
+			if err := s.sequenceResumeFn(ctx, tenantID, msg.Id); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
+		} else {
+			// Leaf RESUME: re-arm a halted/parked leaf — reset to pending and
+			// fire its bound workflow.
+			if current.WorkflowID == nil || *current.WorkflowID == "" {
+				return nil, connect.NewError(connect.CodeInvalidArgument,
+					errors.New("cannot RESUME a leaf work item with no workflow bound"))
+			}
+			if current.WorkflowRunID != "" || IsActiveRunStatus(current.Status) ||
+				current.Status == domain.WorkItemReady || current.Status == domain.WorkItemAssigned {
+				return nil, connect.NewError(connect.CodeFailedPrecondition,
+					errors.New("cannot RESUME a work item that is already running or queued for dispatch"))
+			}
+			if s.startWorkflowFn == nil {
+				return nil, connect.NewError(connect.CodeUnavailable, errors.New("workflow starter not wired"))
+			}
+			if err := ttx.Commit(ctx); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+			}
+			if err := s.startWorkflowFn(ctx, tenantID, *current.WorkflowID, current.ProjectID, msg.Id); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
 		}
 	case apiv1.SequenceAction_SEQUENCE_ACTION_STOP:
-		// STOP parks the chain: parent → pending, schedule cleared. An
-		// in-flight child finishes naturally; its completion is inert
-		// because the engine only advances running/failed parents.
-		if current.Status != domain.WorkItemRunning && current.Status != domain.WorkItemFailed {
+		// STOP halts the item: a parent parks its whole subtree (every
+		// descendant → pending, in-flight runs aborted), a leaf parks just
+		// itself and aborts its run. Idempotent — stopping a parked item is a
+		// no-op. Works from running, failed, ready, scheduled, or pending.
+		if current.Status == domain.WorkItemSucceeded {
 			return nil, connect.NewError(connect.CodeFailedPrecondition,
-				errors.New("cannot STOP a sequence that is not running or failed"))
+				errors.New("cannot STOP a work item that has already succeeded"))
 		}
 		if s.sequenceStopFn == nil {
 			return nil, connect.NewError(connect.CodeUnavailable, errors.New("sequence stop not wired"))
