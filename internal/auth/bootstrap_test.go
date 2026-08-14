@@ -240,6 +240,141 @@ func TestBootstrapLocalAdminGuards(t *testing.T) {
 	}
 }
 
+// TestBootstrapLocalAdminReset verifies the lockout-recovery override
+// (ORCHICON_LOCAL_ADMIN_RESET=1): on a plane that already has an admin, the
+// seed re-arms and overwrites the admin credential while preserving the
+// identity and the admin role binding.
+func TestBootstrapLocalAdminReset(t *testing.T) {
+	pool := testBootstrapEnv(t)
+	t.Setenv(localAdminUsernameEnv, "reset-admin")
+	t.Setenv(localAdminPasswordEnv, "first-password")
+	t.Setenv(localAdminSeedEnv, "")
+	t.Setenv(localAdminResetEnv, "")
+	ctx := context.Background()
+	cfg := bootstrapConfig("", "", "")
+	log := slog.New(slog.DiscardHandler)
+	if err := BootstrapLocalAdmin(ctx, pool, log, cfg); err != nil {
+		t.Fatalf("first seed: %v", err)
+	}
+	t.Cleanup(func() { cleanupBootstrap(ctx, pool, "reset-admin") })
+
+	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	first, err := db.GetLocalCredentialByUsername(ctx, ttx.Tx, "tnt_dev", "reset-admin")
+	if err != nil {
+		t.Fatalf("first credential: %v", err)
+	}
+	firstIdent, err := db.GetIdentity(ctx, ttx.Tx, "tnt_dev", first.IdentityID)
+	if err != nil {
+		t.Fatalf("first identity: %v", err)
+	}
+	bindings, err := db.ListRoleBindings(ctx, ttx.Tx, "tnt_dev", first.IdentityID, 1000, "")
+	if err != nil {
+		t.Fatalf("list bindings: %v", err)
+	}
+	_ = ttx.Rollback(ctx)
+	if len(bindings) == 0 {
+		t.Fatal("no admin role binding after first seed")
+	}
+
+	// The operator lost the password: set the reset override + a new
+	// pinned password and boot again.
+	t.Setenv(localAdminResetEnv, "1")
+	t.Setenv(localAdminPasswordEnv, "second-password")
+	if err := BootstrapLocalAdmin(ctx, pool, log, cfg); err != nil {
+		t.Fatalf("reset seed: %v", err)
+	}
+
+	ttx2, err := pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		t.Fatalf("begin tx2: %v", err)
+	}
+	defer ttx2.Rollback(ctx)
+	second, err := db.GetLocalCredentialByUsername(ctx, ttx2.Tx, "tnt_dev", "reset-admin")
+	if err != nil {
+		t.Fatalf("credential after reset: %v", err)
+	}
+	// The identity and credential row are the SAME ones — only the hash
+	// was overwritten.
+	if second.IdentityID != first.IdentityID {
+		t.Fatalf("reset replaced the identity (want %s, got %s); want credential overwrite only", first.IdentityID, second.IdentityID)
+	}
+	if second.ID != first.ID {
+		t.Fatal("reset replaced the credential row; want in-place overwrite")
+	}
+	// The old password no longer verifies; the new one does.
+	if valid, _ := VerifyPassword("first-password", second.PasswordHash); valid {
+		t.Fatal("old password still verifies after reset")
+	}
+	valid, err := VerifyPassword("second-password", second.PasswordHash)
+	if err != nil || !valid {
+		t.Fatalf("new password does not verify after reset (err=%v)", err)
+	}
+	// The admin role binding survived the reset.
+	bindings2, err := db.ListRoleBindings(ctx, ttx2.Tx, "tnt_dev", first.IdentityID, 1000, "")
+	if err != nil {
+		t.Fatalf("list bindings after reset: %v", err)
+	}
+	if len(bindings2) != len(bindings) {
+		t.Fatalf("admin binding count changed across reset (%d → %d)", len(bindings), len(bindings2))
+	}
+	// Identity subject/type unchanged.
+	secondIdent, err := db.GetIdentity(ctx, ttx2.Tx, "tnt_dev", second.IdentityID)
+	if err != nil {
+		t.Fatalf("identity after reset: %v", err)
+	}
+	if secondIdent.Subject != firstIdent.Subject || secondIdent.IdentityType != firstIdent.IdentityType {
+		t.Fatal("reset mutated the identity beyond the credential")
+	}
+}
+
+// TestBootstrapLocalAdminResetOverridesSeedOptOut verifies the no-lockout
+// guarantee: an explicit reset override still re-arms the credential on a
+// plane configured with ORCHICON_LOCAL_ADMIN_SEED=0 (e.g. the prod
+// dogfooding container), so a locked-out operator always has a path back in.
+func TestBootstrapLocalAdminResetOverridesSeedOptOut(t *testing.T) {
+	pool := testBootstrapEnv(t)
+	t.Setenv(localAdminUsernameEnv, "optout-admin")
+	t.Setenv(localAdminPasswordEnv, "optout-password")
+	t.Setenv(localAdminSeedEnv, "0")
+	t.Setenv(localAdminResetEnv, "1")
+	ctx := context.Background()
+	cfg := bootstrapConfig("", "", "")
+	if err := BootstrapLocalAdmin(ctx, pool, slog.New(slog.DiscardHandler), cfg); err != nil {
+		t.Fatalf("BootstrapLocalAdmin: %v", err)
+	}
+	t.Cleanup(func() { cleanupBootstrap(ctx, pool, "optout-admin") })
+	exists, err := tenantAdminExists(ctx, pool, "tnt_dev")
+	if err != nil {
+		t.Fatalf("tenantAdminExists: %v", err)
+	}
+	if !exists {
+		t.Fatal("reset override did not re-arm the admin on a SEED=0 plane")
+	}
+}
+
+// TestBootstrapLocalAdminResetGuards pins the reset override's guards: it
+// must never fire in production mode or with the embedded OP disabled (nil
+// pool would panic if it tried to run).
+func TestBootstrapLocalAdminResetGuards(t *testing.T) {
+	t.Setenv(localAdminSeedEnv, "")
+	t.Setenv(localAdminResetEnv, "1")
+
+	prod := bootstrapConfig("", "", "")
+	prod.Mode = config.ModeProduction
+	if err := BootstrapLocalAdmin(context.Background(), nil, slog.New(slog.DiscardHandler), prod); err != nil {
+		t.Fatalf("production mode must be a no-op for reset, got %v", err)
+	}
+
+	noOP := bootstrapConfig("", "", "")
+	noOP.Auth.EmbeddedOP = false
+	if err := BootstrapLocalAdmin(context.Background(), nil, slog.New(slog.DiscardHandler), noOP); err != nil {
+		t.Fatalf("disabled embedded OP must be a no-op for reset, got %v", err)
+	}
+}
+
 func containsPlaintext(hash, plaintext string) bool {
 	for i := 0; i+len(plaintext) <= len(hash); i++ {
 		if hash[i:i+len(plaintext)] == plaintext {

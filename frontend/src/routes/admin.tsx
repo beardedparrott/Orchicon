@@ -13,6 +13,7 @@ import {
   useCreateApiKey,
   useRevokeApiKey,
   useRotateApiKey,
+  useSetLocalCredential,
 } from "@/api/auth";
 import { useToast } from "@/components/ui/toast";
 import { useIsAdmin } from "@/auth/auth";
@@ -178,32 +179,93 @@ function TenantsTab() {
 
 function IdentitiesTab() {
   const { data, isLoading, error } = useListIdentities();
+  const setCredential = useSetLocalCredential();
+  const toast = useToast();
+  const [identityId, setIdentityId] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+
+  async function handleSetCredential() {
+    if (!identityId || !username || !password) return;
+    try {
+      await setCredential.mutateAsync({ identityId, username, password });
+      toast.success(`Local credential set for ${username}.`);
+      setPassword("");
+    } catch {
+      /* error already toasted by global handler */
+    }
+  }
+
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>;
   if (error) return <p className="text-sm text-destructive">{String(error)}</p>;
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b text-left text-muted-foreground">
-            <th className="py-2 pr-4">ID</th>
-            <th className="py-2 pr-4">Subject</th>
-            <th className="py-2 pr-4">Name</th>
-            <th className="py-2 pr-4">Type</th>
-            <th className="py-2 pr-4">Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {data?.map((i) => (
-            <tr key={i.id} className="border-b">
-              <td className="py-2 pr-4 font-mono text-xs">{i.id}</td>
-              <td className="py-2 pr-4 font-mono text-xs">{i.subject}</td>
-              <td className="py-2 pr-4">{i.displayName}</td>
-              <td className="py-2 pr-4">{i.identityType}</td>
-              <td className="py-2 pr-4">{i.status}</td>
+    <div className="space-y-6">
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b text-left text-muted-foreground">
+              <th className="py-2 pr-4">ID</th>
+              <th className="py-2 pr-4">Subject</th>
+              <th className="py-2 pr-4">Name</th>
+              <th className="py-2 pr-4">Type</th>
+              <th className="py-2 pr-4">Status</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {data?.map((i) => (
+              <tr key={i.id} className="border-b">
+                <td className="py-2 pr-4 font-mono text-xs">{i.id}</td>
+                <td className="py-2 pr-4 font-mono text-xs">{i.subject}</td>
+                <td className="py-2 pr-4">{i.displayName}</td>
+                <td className="py-2 pr-4">{i.identityType}</td>
+                <td className="py-2 pr-4">{i.status}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="space-y-2 border-t pt-4">
+        <h3 className="text-sm font-semibold">Set local password</h3>
+        <p className="text-xs text-muted-foreground">
+          Create or change the embedded-IdP login credential for an identity
+          (admin-only, auth:write). Use this to change the default admin's
+          password after first boot.
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={identityId}
+            onChange={(e) => setIdentityId(e.target.value)}
+            className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+            aria-label="Identity"
+          >
+            <option value="">Select identity…</option>
+            {data?.map((i) => (
+              <option key={i.id} value={i.id}>
+                {i.subject}
+              </option>
+            ))}
+          </select>
+          <Input
+            className="w-40"
+            placeholder="username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+          />
+          <Input
+            className="w-56"
+            type="password"
+            placeholder="new password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          <Button
+            onClick={handleSetCredential}
+            disabled={!identityId || !username || !password || setCredential.isPending}
+          >
+            {setCredential.isPending ? "Setting…" : "Set password"}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

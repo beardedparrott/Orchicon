@@ -983,11 +983,22 @@ MCP work item mutations honor the transactional outbox pattern (invariant #3): `
   (local mode + embedded OP only, `ORCHICON_LOCAL_ADMIN_SEED=0` to opt
   out; username/password pinned via `ORCHICON_LOCAL_ADMIN_USERNAME` /
   `ORCHICON_LOCAL_ADMIN_PASSWORD`, random + logged once at boot when
-  unpinned) so the UI is usable out of the box. Config validation requires
+  unpinned) so the UI is usable out of the box. The seed is idempotent
+  and never clobbers an existing admin; to re-arm it as lockout recovery
+  (lost the admin password), set `ORCHICON_LOCAL_ADMIN_RESET=1` — same
+  guards (local mode + embedded OP only, explicit opt-in, never a
+  default), it overwrites the admin credential on next boot while keeping
+  the identity and admin role binding, and it works even on a plane with
+  `ORCHICON_LOCAL_ADMIN_SEED=0`. Config validation requires
   an issuer (embedded OP **or** external IdP) in every mode. The public
   `GET /auth/config` endpoint mirrors the plane's auth capabilities
   (`embedded_op` / `external_oidc` / `dev_login`) for the honest login
   page; the unauthenticated SPA redirects to `/login`.
+- **Changing a local-account password** — Admin → Identities → "Set
+  local password" (calls the admin-only `SetLocalCredential` RPC,
+  `auth:write`; the plaintext is argon2id-hashed at the boundary and the
+  hash is never returned). This is the documented way to change the
+  default admin's credentials after first boot.
 - **Production**: Real OIDC issuer with authorization-code flow (BYO IdP);
   the embedded OP can be disabled with `ORCHICON_OP_ENABLED=false`
 - **API keys**: SHA-256 hashed, least-privilege scopes for headless/CI clients
@@ -1445,6 +1456,21 @@ volume cannot grow unbounded:
 | `"/healthz"` returns non-200 | Missing handler | Check `internal/api/api.go` mounts healthz before Connect handlers |
 | Migrations fail | Non-idempotent migration | Every `ADD COLUMN` must use `IF NOT EXISTS` |
 | RLS check fails | New table lacks RLS | Add `CREATE POLICY tenant_isolation` to the migration |
+
+### Admin Access & Lockout Recovery
+
+The plane guarantees there is **always at least one admin path in** (AC of
+the first-boot admin bootstrap): a fresh install seeds an admin for the
+embedded-OP login, and a locked-out operator can always re-arm the credential
+at boot.
+
+| Task | How |
+|---|---|
+| Find the first-boot admin password | Read the boot log line `local-mode bootstrap admin created: username ..., password ...` (shown once on first boot; only when unpinned — `ORCHICON_LOCAL_ADMIN_PASSWORD` skips it). |
+| Change the admin password (you are logged in) | **Admin → Identities → "Set local password"**: pick the identity, set username + new password. This calls the admin-only `SetLocalCredential` RPC (`auth:write`); the password is argon2id-hashed at the boundary and the hash is never returned. Equivalent API call: `POST /orchicon.api.v1.AuthService/SetLocalCredential` with `{identity_id, username, password}`. |
+| Lost the admin password (locked out) | Stop the plane, set `ORCHICON_LOCAL_ADMIN_RESET=1` (pin the new one with `ORCHICON_LOCAL_ADMIN_PASSWORD`, or leave it unset for a random one logged once), start it again, sign in with the new credential, then unset the env so the next boot is normal. The reset overwrites only the credential — the admin identity and role binding are preserved. It is local mode + embedded OP only and works even when `ORCHICON_LOCAL_ADMIN_SEED=0`, so a locked-out operator always has a path back in. |
+| No admin was ever seeded | Either the plane is in production mode (external IdP owns auth) or `ORCHICON_LOCAL_ADMIN_SEED=0` was set. In local mode with the embedded OP enabled, set `ORCHICON_LOCAL_ADMIN_RESET=1` to force the seed to run. |
+| Dev escape hatch | `ORCHICON_DEV_LOGIN=true` (local mode only) enables the synthetic `/auth/dev-login` — a dev convenience, not the auth path; the prod dogfooding container runs it disabled. |
 
 ### Frontend Issues
 

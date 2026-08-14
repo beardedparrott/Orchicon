@@ -23,7 +23,11 @@ import (
 //
 // It is strictly local-mode, explicit-opt-out, and idempotent: it never
 // runs outside local mode, never touches an existing admin, and never
-// overwrites an existing credential.
+// overwrites an existing credential. The one exception is the explicit
+// reset override (ORCHICON_LOCAL_ADMIN_RESET=1), a manual maintenance
+// action that re-arms the seed on a plane that already has an admin — the
+// operator lost the credential and would otherwise be locked out. It keeps
+// the same local-mode + embedded-OP guards and is never a default.
 func BootstrapLocalAdmin(ctx context.Context, pool *db.Pool, log *slog.Logger, cfg config.Config) error {
 	// Guard 1: local mode only — never in production.
 	if cfg.Mode != config.ModeLocal {
@@ -34,10 +38,22 @@ func BootstrapLocalAdmin(ctx context.Context, pool *db.Pool, log *slog.Logger, c
 	if !cfg.Auth.EmbeddedOP {
 		return nil
 	}
+	// Reset override (ORCHICON_LOCAL_ADMIN_RESET=1): explicit, manual
+	// lockout recovery. The operator sets it in the plane env before boot
+	// when they lost the admin credential; the seed then runs even though
+	// an admin binding already exists, overwriting the credential (identity
+	// + role binding preserved). It can only fire under guards 1+2, so a
+	// production plane is unaffected, and it requires a deliberate env
+	// change + restart — never a default.
+	reset := os.Getenv(localAdminResetEnv) == "1"
+
 	// Guard 3: explicit opt-out (ORCHICON_LOCAL_ADMIN_SEED=0). The
 	// container prod dogfooding instance also boots in local mode, so the
-	// opt-out is the documented escape hatch there.
-	if os.Getenv(localAdminSeedEnv) == "0" {
+	// opt-out is the documented escape hatch there. An explicit reset
+	// override is NOT disabled by it: the no-lockout guarantee requires a
+	// locked-out operator to be able to re-arm the credential even on a
+	// plane configured to never auto-provision.
+	if !reset && os.Getenv(localAdminSeedEnv) == "0" {
 		return nil
 	}
 
@@ -53,13 +69,17 @@ func BootstrapLocalAdmin(ctx context.Context, pool *db.Pool, log *slog.Logger, c
 
 	// Guard 4 (idempotence / don't-clobber): skip when the tenant admin
 	// role already has a binding to ANY identity — a human has provisioned
-	// an admin, so the seed never touches the DB.
-	exists, err := tenantAdminExists(ctx, pool, tenantID)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return nil
+	// an admin, so the seed never touches the DB. The reset override
+	// bypasses this by design: the operator explicitly asked for the admin
+	// credential to be overwritten.
+	if !reset {
+		exists, err := tenantAdminExists(ctx, pool, tenantID)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return nil
+		}
 	}
 
 	// Credential from env, never a baked-in default: a generated
@@ -110,8 +130,12 @@ func BootstrapLocalAdmin(ctx context.Context, pool *db.Pool, log *slog.Logger, c
 		return err
 	}
 
-	log.Warn("local-mode bootstrap admin created: username "+username+", password "+password,
-		"hint", "sign in at /login via the embedded OP local login; pin ORCHICON_LOCAL_ADMIN_PASSWORD to make it deterministic, ORCHICON_LOCAL_ADMIN_SEED=0 to skip")
+	action := "created"
+	if reset {
+		action = "reset"
+	}
+	log.Warn("local-mode bootstrap admin "+action+": username "+username+", password "+password,
+		"hint", "sign in at /login via the embedded OP local login; pin ORCHICON_LOCAL_ADMIN_PASSWORD to make it deterministic, ORCHICON_LOCAL_ADMIN_SEED=0 to disable the auto-seed (the explicit reset override still works)")
 	if generated {
 		log.Warn("local-mode bootstrap admin password was auto-generated — set ORCHICON_LOCAL_ADMIN_PASSWORD to pin it")
 	}
@@ -213,6 +237,12 @@ const (
 	// localAdminPasswordEnv pins the bootstrap password. When unset a
 	// random password is generated and logged once at boot.
 	localAdminPasswordEnv = "ORCHICON_LOCAL_ADMIN_PASSWORD"
+	// localAdminResetEnv is the explicit lockout-recovery override. When
+	// set to "1", the seed re-arms on a plane that already has an admin
+	// and overwrites the admin credential (identity + role binding kept).
+	// Local mode + embedded OP only, same guards as the seed; it is never
+	// a default and is not disabled by ORCHICON_LOCAL_ADMIN_SEED=0.
+	localAdminResetEnv = "ORCHICON_LOCAL_ADMIN_RESET"
 	// localAdminDefaultUsername is the default bootstrap username.
 	localAdminDefaultUsername = "admin"
 	// maxUsernameLen bounds the username at the boundary (mirrors the

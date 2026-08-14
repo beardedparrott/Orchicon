@@ -117,6 +117,18 @@ export function useListEntitlements(identityId: string) {
   });
 }
 
+export function useSetLocalCredential() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      identityId: string;
+      username: string;
+      password: string;
+    }) => (await authClient.setLocalCredential(input)).username,
+    onSuccess: () => qc.invalidateQueries({ queryKey: authKeys.identities() }),
+  });
+}
+
 export function useListAuditEntries() {
   return useQuery({
     queryKey: authKeys.audit(),
