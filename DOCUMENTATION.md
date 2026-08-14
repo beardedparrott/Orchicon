@@ -954,6 +954,26 @@ MCP work item mutations honor the transactional outbox pattern (invariant #3): `
   BYO-IdP RP (`internal/auth/oidc.go`) is unchanged: PKCE is capability-gated
   on the IdP advertising `S256` in discovery, so non-PKCE IdPs get the same
   byte-for-byte flow as before.
+- **Local accounts (embedded IdP passwords)** — `local_credentials` table
+  (tenant-scoped, `tenant_isolation` RLS), one row per (tenant, identity),
+  keyed to `identities.id` (FK `ON DELETE CASCADE`). Only the **password
+  hash** is stored — argon2id (RFC 9106 m=64 MiB/t=3/p=4) PHC strings by
+  default, bcrypt (`$2a$`/`$2b$`/`$2y$`) accepted on verify via prefix
+  dispatch; plaintext is never persisted, logged, or returned. This is a
+  deliberate, narrow amendment to the AGENTS.md "passwords are never stored
+  by the control plane" standard: human passwords live **only inside the
+  identity-provider boundary** (`internal/auth` + `internal/auth/op`), never
+  in control-plane business logic — no service, RPC, or Ask Orchicon tool
+  outside the auth boundary touches a credential row. Login is `POST
+  /auth/local-login` (`{username, password, next?}`, gated on
+  `ORCHICON_OP_ENABLED`): it verifies the hash, mints the Orchicon token pair
+  (HttpOnly refresh cookie), and — when `next` is the OP login-bridge path —
+  completes the pending authorize request so the local account finishes a
+  full OIDC flow without a prior session. Failures return a generic 401 (no
+  user-enumeration hint); no identity is auto-provisioned by a login.
+  Provisioning is the admin-only `AuthService.SetLocalCredential` RPC
+  (`auth:write`), which hashes at the boundary and never returns the hash.
+  The SPA `/login` route shows the username+password form.
 - **Local dev**: Built-in dev IdP (HS256 synthetic `/auth/dev-login`) + the
   embedded OpenID Provider — no external IdP needed
 - **Production**: Real OIDC issuer with authorization-code flow (BYO IdP);

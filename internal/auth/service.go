@@ -502,6 +502,77 @@ func (s *Service) CreateTenant(ctx context.Context, req *connect.Request[apiv1.C
 	return connect.NewResponse(&apiv1.CreateTenantResponse{Tenant: tenantRowToProto(row)}), nil
 }
 
+// --- Local-account credentials (embedded IdP boundary) ---------------------
+
+// localUsernameRE bounds the login handle charset. Lowercase alphanumerics
+// plus the separators common to email-style handles (. _ @ + -); the
+// display surface mirrors the slug convention so login identifiers stay
+// predictable.
+var localUsernameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._@+-]*$`)
+
+// SetLocalCredential creates or updates the local-account credential bound
+// to an identity (upsert by tenant + identity). It is the admin write path
+// for the embedded IdP's local accounts and stays inside the identity-
+// provider boundary: the plaintext password is hashed with argon2id here and
+// the stored hash is never returned. The RBAC interceptor gates this to
+// auth:write (admin). No control-plane service or Ask Orchicon tool has a
+// credential write path.
+func (s *Service) SetLocalCredential(ctx context.Context, req *connect.Request[apiv1.SetLocalCredentialRequest]) (*connect.Response[apiv1.SetLocalCredentialResponse], error) {
+	msg := req.Msg
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if msg.IdentityId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("identity_id must not be empty"))
+	}
+	username := strings.TrimSpace(msg.Username)
+	if username == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("username must not be empty"))
+	}
+	if len(username) > 255 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("username too long"))
+	}
+	if !localUsernameRE.MatchString(username) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("username must match ^[a-z0-9][a-z0-9._@+-]*$"))
+	}
+	if msg.Password == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("password must not be empty"))
+	}
+	if len(msg.Password) > MaxPasswordLen {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("password too long"))
+	}
+	hash, err := HashPassword(msg.Password)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	// The identity must exist; the FK would reject it anyway, this gives a
+	// clean NotFound instead of a raw constraint error.
+	if _, err := db.GetIdentity(ctx, ttx.Tx, tenantID, msg.IdentityId); err != nil {
+		return nil, mapDBError(err)
+	}
+	row, err := db.UpsertLocalCredential(ctx, ttx.Tx, tenantID, msg.IdentityId, username, hash)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("username already in use by another identity"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("local credential set", "identity", msg.IdentityId, "tenant", tenantID)
+	return connect.NewResponse(&apiv1.SetLocalCredentialResponse{
+		Status:   row.Status,
+		Username: row.Username,
+	}), nil
+}
+
 // --- Audit -----------------------------------------------------------------
 
 // ListAuditEntries returns a page of policy decisions (the audit view).

@@ -22,26 +22,38 @@ import (
 // survives the non-TLS connection.
 const RefreshCookie = "orchicon_refresh"
 
+// LocalCredentialVerifier verifies a username + password pair for a local
+// account within a tenant, returning the identity id on success. It is the
+// credential-boundary function the local-login path (and, in principle, the
+// embedded-OP flow) consumes, so credential logic never touches OP protocol
+// code and OP protocol code never touches SQL (docs/07 §6.1).
+type LocalCredentialVerifier func(ctx context.Context, tenantID, username, password string) (identityID string, ok bool, err error)
+
 // Handler exposes the out-of-band auth HTTP endpoints (docs/07 §6.1):
 //
-//	POST /auth/dev-login    Local-mode synthetic login (subject → tokens)
-//	POST /auth/refresh      Exchange a refresh token for a new access token
-//	GET  /auth/oidc/login   Redirect to the IdP authorize URL
+//	POST /auth/local-login    Local-account login (embedded IdP, username+password)
+//	POST /auth/dev-login      Local-mode synthetic login (subject → tokens)
+//	POST /auth/refresh        Exchange a refresh token for a new access token
+//	GET  /auth/oidc/login     Redirect to the IdP authorize URL
 //	GET  /auth/oidc/callback  IdP callback: exchange code, issue tokens
-//	GET  /auth/session      Return the current resolved identity
+//	GET  /auth/session        Return the current resolved identity
 //
 // The access token is returned in the JSON body (kept in memory by the
 // frontend); the refresh token is set as an HttpOnly cookie so JS cannot
 // read it (docs/10 §7).
 type Handler struct {
-	cfg       config.AuthConfig
-	mode      config.DeploymentMode
-	issuer    *TokenIssuer
-	resolver  *Resolver
-	oidc      *OIDCVerifier
-	op        *op.Provider
-	pool      *db.Pool
-	log       *slog.Logger
+	cfg      config.AuthConfig
+	mode     config.DeploymentMode
+	issuer   *TokenIssuer
+	resolver *Resolver
+	oidc     *OIDCVerifier
+	op       *op.Provider
+	pool     *db.Pool
+	log      *slog.Logger
+	// verifyCred is the injected LocalCredentialVerifier (the credential
+	// boundary). Defaults to the DB-backed lookup + hash check; a test or
+	// future OP wiring can replace it.
+	verifyCred LocalCredentialVerifier
 }
 
 // NewHandler constructs the auth HTTP handler.
@@ -56,6 +68,7 @@ func NewHandler(cfg config.Config, pool *db.Pool, log *slog.Logger) *Handler {
 		pool:     pool,
 		log:      log,
 	}
+	h.verifyCred = h.verifyLocalCredential
 	if cfg.Auth.Issuer != "local" && cfg.Auth.Issuer != "" {
 		h.oidc = NewOIDCVerifier(cfg.Auth.Issuer, cfg.Auth.ClientID, cfg.Auth.ClientSecret, cfg.Auth.RedirectURL)
 	}
@@ -67,6 +80,15 @@ func NewHandler(cfg config.Config, pool *db.Pool, log *slog.Logger) *Handler {
 	return h
 }
 
+// SetLocalCredentialVerifier overrides the default DB-backed credential
+// verifier. Intended for the embedded-OP wiring and tests; never call from
+// control-plane business logic.
+func (h *Handler) SetLocalCredentialVerifier(v LocalCredentialVerifier) {
+	if v != nil {
+		h.verifyCred = v
+	}
+}
+
 // Issuer returns the token issuer (for the middleware to verify tokens).
 func (h *Handler) Issuer() *TokenIssuer { return h.issuer }
 
@@ -75,6 +97,7 @@ func (h *Handler) Resolver() *Resolver { return h.resolver }
 
 // Register mounts the auth HTTP endpoints on the mux.
 func (h *Handler) Register(mux *http.ServeMux) {
+	mux.HandleFunc("/auth/local-login", h.localLogin)
 	mux.HandleFunc("/auth/dev-login", h.devLogin)
 	mux.HandleFunc("/auth/refresh", h.refresh)
 	mux.HandleFunc("/auth/oidc/login", h.oidcLogin)
@@ -95,9 +118,152 @@ type tokenResponse struct {
 	AccessToken string `json:"access_token"`
 	TokenType   string `json:"token_type"`
 	ExpiresIn   int64  `json:"expires_in"`
-	IdentityID   string `json:"identity_id"`
-	TenantID     string `json:"tenant_id"`
-	IsAdmin      bool   `json:"is_admin"`
+	IdentityID  string `json:"identity_id"`
+	TenantID    string `json:"tenant_id"`
+	IsAdmin     bool   `json:"is_admin"`
+	// Next is the same-origin path the SPA should full-page-load after a
+	// local login (set only when a pending embedded-OP authorize request
+	// was completed). Always server-constructed — never echoes the client.
+	Next string `json:"next,omitempty"`
+}
+
+// localLoginRequest is the body for POST /auth/local-login.
+type localLoginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	// Next is the OP login-bridge path the browser was redirected from
+	// (/auth/op/login?id=<id>); its id completes the pending authorize
+	// request. Only same-origin OP bridge paths are honored.
+	Next string `json:"next"`
+}
+
+// localLogin authenticates a local account (embedded IdP) by username +
+// password. Flow: look up the local_credentials row, verify the stored
+// argon2id/bcrypt hash, mint the Orchicon token pair, set the HttpOnly
+// refresh cookie, and — when `next` carries an embedded-OP auth-request id —
+// complete the pending authorize request so the browser returns to the
+// relying party with a code. Any failure returns the same generic 401 (no
+// user-enumeration hint); no identity is auto-provisioned by a login.
+func (h *Handler) localLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// The embedded IdP is the local-account surface; without it there is no
+	// OP to complete and the endpoint is dead weight.
+	if !h.cfg.EmbeddedOP {
+		http.Error(w, "local login is disabled", http.StatusNotFound)
+		return
+	}
+	var req localLoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	if req.Username == "" || req.Password == "" {
+		http.Error(w, "username and password are required", http.StatusBadRequest)
+		return
+	}
+	if len(req.Username) > 255 {
+		http.Error(w, "username too long", http.StatusBadRequest)
+		return
+	}
+	if len(req.Password) > MaxPasswordLen {
+		http.Error(w, "password too long", http.StatusBadRequest)
+		return
+	}
+	// The embedded OP is single-tenant for the auth flow; local accounts
+	// resolve within the default tenant (op.DefaultTenantID).
+	tenantID := op.DefaultTenantID
+	identityID, ok, err := h.verifyCred(r.Context(), tenantID, req.Username, req.Password)
+	if err != nil || !ok {
+		if err != nil {
+			h.log.Error("local-login: verify credential", "error", err)
+		}
+		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		return
+	}
+	ents, isAdmin, err := h.resolver.ResolveIdentity(r.Context(), tenantID, identityID)
+	if err != nil {
+		// The credential exists but the identity was deleted or disabled:
+		// same generic rejection, no enumeration hint.
+		h.log.Warn("local-login: resolve identity", "error", err)
+		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		return
+	}
+	pair, err := h.issuer.IssuePair(identityID, tenantID, ents, isAdmin)
+	if err != nil {
+		http.Error(w, "failed to issue tokens", http.StatusInternalServerError)
+		return
+	}
+	h.setRefreshCookie(w, pair.RefreshToken)
+	resp := tokenResponse{
+		AccessToken: pair.AccessToken,
+		TokenType:   "Bearer",
+		ExpiresIn:   pair.ExpiresIn,
+		IdentityID:  identityID,
+		TenantID:    tenantID,
+		IsAdmin:     isAdmin,
+	}
+	// Complete a pending embedded-OP authorize request (the login bridge
+	// redirects unauthenticated browsers here with next=/auth/op/login?id=…).
+	if id, ok := opAuthRequestID(req.Next); ok && h.op != nil {
+		if err := h.op.MarkAuthenticated(r.Context(), id, identityID, tenantID); err != nil {
+			h.log.Warn("local-login: complete op auth request", "error", err)
+		} else {
+			resp.Next = "/authorize/callback?id=" + url.QueryEscape(id)
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// verifyLocalCredential is the default LocalCredentialVerifier: it looks up
+// the tenant-scoped local_credentials row by username and verifies the
+// stored hash against the plaintext in constant time. It is the only path
+// that reads credential rows from internal/auth.
+func (h *Handler) verifyLocalCredential(ctx context.Context, tenantID, username, password string) (identityID string, ok bool, err error) {
+	ttx, err := h.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return "", false, err
+	}
+	defer ttx.Rollback(ctx)
+	row, err := db.GetLocalCredentialByUsername(ctx, ttx.Tx, tenantID, username)
+	if err != nil {
+		return "", false, err
+	}
+	if row.Status != "active" {
+		return "", false, nil
+	}
+	valid, err := VerifyPassword(password, row.PasswordHash)
+	if err != nil || !valid {
+		return "", false, nil
+	}
+	return row.IdentityID, true, nil
+}
+
+// opAuthRequestID extracts a same-origin embedded-OP auth-request id from a
+// `next` value. Only the two OP bridge paths are accepted, only when the
+// value is a same-origin path, and only when `id` is the sole query
+// parameter — so a malicious `next` can never redirect the browser to an
+// external host or smuggle extra parameters into the completed request.
+func opAuthRequestID(next string) (string, bool) {
+	u, err := url.Parse(next)
+	if err != nil || u.IsAbs() || u.Host != "" || !strings.HasPrefix(u.Path, "/") ||
+		strings.HasPrefix(u.Path, "//") || strings.HasPrefix(u.Path, "/\\") {
+		return "", false
+	}
+	switch u.Path {
+	case "/auth/op/login", "/authorize/callback":
+		q := u.Query()
+		if len(q) != 1 {
+			return "", false
+		}
+		if id := q.Get("id"); id != "" {
+			return id, true
+		}
+	}
+	return "", false
 }
 
 // devLogin mints tokens for a synthetic subject. Local dev only — gated
@@ -158,9 +324,9 @@ func (h *Handler) devLogin(w http.ResponseWriter, r *http.Request) {
 		AccessToken: pair.AccessToken,
 		TokenType:   "Bearer",
 		ExpiresIn:   pair.ExpiresIn,
-		IdentityID:   ident.ID,
-		TenantID:     tenantID,
-		IsAdmin:      isAdmin,
+		IdentityID:  ident.ID,
+		TenantID:    tenantID,
+		IsAdmin:     isAdmin,
 	})
 }
 
@@ -198,9 +364,9 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 		AccessToken: access,
 		TokenType:   "Bearer",
 		ExpiresIn:   int64(h.cfg.AccessTTL / time.Second),
-		IdentityID:   claims.Subject,
-		TenantID:     claims.TenantID,
-		IsAdmin:      isAdmin,
+		IdentityID:  claims.Subject,
+		TenantID:    claims.TenantID,
+		IsAdmin:     isAdmin,
 	})
 }
 
@@ -292,10 +458,10 @@ func (h *Handler) session(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"authenticated": true,
-		"identity_id":  claims.Subject,
-		"tenant_id":    claims.TenantID,
-		"is_admin":     claims.IsAdmin,
-		"expires_at":   claims.ExpiresAt,
+		"identity_id":   claims.Subject,
+		"tenant_id":     claims.TenantID,
+		"is_admin":      claims.IsAdmin,
+		"expires_at":    claims.ExpiresAt,
 	})
 }
 

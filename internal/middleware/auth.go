@@ -30,6 +30,7 @@ const AuthHeader = "Authorization"
 var publicPaths = map[string]bool{
 	"/healthz":            true,
 	"/versionz":           true,
+	"/auth/local-login":   true,
 	"/auth/dev-login":     true,
 	"/auth/refresh":       true,
 	"/auth/oidc/login":    true,
