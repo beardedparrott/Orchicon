@@ -46,6 +46,12 @@ instance_info() {
       COMPOSE_STACK_SCRIPT="dev.sh"
       PORTS="-p 8080:8080 -p 3002:3000"
       GRAFANA_URL="http://localhost:8080/grafana"
+      # Dev instance: keep the synthetic /auth/dev-login escape hatch ON so
+      # a pre-existing dev data volume (admin role bindings but no
+      # local_credentials row — dev-login never created one) stays loggable
+      # after the default flipped to off. OIDC remains the base path; the
+      # embedded OP local login + first-admin bootstrap are still available.
+      AUTH_ENV=("-e" "ORCHICON_DEV_LOGIN=true")
       ;;
     prod)
       NAME="orchicon-cnt-prod"
@@ -55,6 +61,10 @@ instance_info() {
       COMPOSE_STACK_SCRIPT="dev-prod.sh"
       PORTS="-p 8091:8080 -p 3003:3000"
       GRAFANA_URL="http://localhost:8091/grafana"
+      # Prod (dogfooding) instance: no dev escape hatch, and no auto-seeded
+      # first-admin credential — the operator provisions one (or an external
+      # IdP) as .env.example documents.
+      AUTH_ENV=("-e" "ORCHICON_DEV_LOGIN=false" "-e" "ORCHICON_LOCAL_ADMIN_SEED=0")
       ;;
     *)
       echo "Unknown instance: $inst (use dev|prod)" >&2
@@ -402,6 +412,7 @@ up_instance() {
     -e "ORCHICON_HOST_HOME=$HOME" \
     -e "ORCHICON_INSTANCE=$inst" \
     ${GH_TOKEN_ENV:-} \
+    "${AUTH_ENV[@]:-}" \
     "${MOUNTS[@]}" \
     "$IMAGE" >/dev/null
   log_ok "$inst instance started:"
