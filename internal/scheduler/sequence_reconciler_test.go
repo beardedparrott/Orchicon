@@ -634,6 +634,130 @@ func setField(t *testing.T, pool *db.Pool, id string, apply func(f *db.UpdateWor
 	}
 }
 
+// TestStopSequenceCascadesAndAborts is the regression test for the
+// "stop didn't stop" bug. StopSequence previously parked ONLY the node it
+// was called on: a sequence parent's descendant containers stayed
+// running/failed and kept arming children (and a FAILED parent auto-revived
+// on the next scan), so stopping an epic left the whole chain running.
+//
+// The fix: STOP is recursive. Stopping a parent parks the ENTIRE subtree —
+// every descendant → pending, scheduled starts cleared, stale run bindings
+// cleared, and any in-flight workflow run bound to a descendant is ABORTED
+// (run → aborted, step runs → failed, linked executions → terminated).
+// This test seeds a parent with a running child (real workflow run) and a
+// running grandchild, stops the parent, and asserts:
+//   - the child's bound run is aborted and its work item parked to pending,
+//   - the grandchild is parked to pending,
+//   - no member of the subtree is running or failed (so the scan and the
+//     auto-revive path have nothing to pick up).
+func TestStopSequenceCascadesAndAborts(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
+	child := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Child", &parent.ID, &wf)
+	grandchild := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Grandchild", &child.ID, &wf)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{child.ID})
+	reorder(t, env.pool, env.proj.ID, child.ID, []string{grandchild.ID})
+
+	// Fire the child's REAL workflow so it has an in-flight bound run, then
+	// give the grandchild a live run to prove recursion aborts deeper nodes.
+	realStart := func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
+		return workflow.StartWorkflowDirect(ctx, env.pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), tenantID, workflowID, projectID, workItemID)
+	}
+	if err := StartSequence(ctx, env.pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), approvalTestTenant, parent.ID, realStart); err != nil {
+		t.Fatalf("StartSequence: %v", err)
+	}
+	setField(t, env.pool, grandchild.ID, func(f *db.UpdateWorkItemFields) {
+		runID := db.NewID()
+		f.WorkflowRunID = &runID
+		status := domain.WorkItemRunning
+		f.Status = &status
+	})
+
+	// Stop the PARENT — must cascade to the whole subtree and abort runs.
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := StopSequence(ctx, env.pool, logger, approvalTestTenant, parent.ID); err != nil {
+		t.Fatalf("StopSequence: %v", err)
+	}
+
+	for name, id := range map[string]string{
+		"parent":     parent.ID,
+		"child":      child.ID,
+		"grandchild": grandchild.ID,
+	} {
+		got := mustGet(t, env.pool, id)
+		if got.Status == domain.WorkItemRunning || got.Status == domain.WorkItemFailed {
+			t.Errorf("%s status = %s after stop, want parked (not running/failed)", name, got.Status)
+		}
+		if got.WorkflowRunID != "" {
+			t.Errorf("%s still has workflow_run_id %s after stop", name, got.WorkflowRunID)
+		}
+	}
+
+	// The child's bound run must be ABORTED.
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childRun, err := db.GetWorkflowRun(ctx, ttx.Tx, approvalTestTenant, child.WorkflowRunID)
+	ttx.Rollback(ctx)
+	if err != nil {
+		t.Fatalf("get child run after stop: %v", err)
+	}
+	if childRun.Status != domain.WorkflowRunAborted {
+		t.Errorf("child run status = %s after stop, want aborted", childRun.Status)
+	}
+
+	// A stopped chain must NOT auto-revive on a reconcile pass: the scan
+	// only picks up running/failed parents, and the auto-revive path only
+	// resurrects a FAILED parent. Assert a fresh reconcile pass does nothing.
+	rec := NewSequenceReconciler(env.pool, logger, env.startFn())
+	if err := rec.Reconcile(ctx, parent.ID); err != nil {
+		t.Fatalf("reconcile after stop: %v", err)
+	}
+	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemPending {
+		t.Errorf("parent status after post-stop reconcile = %s, want pending (must not auto-revive)", got.Status)
+	}
+	if armed := env.armedWorkItems(); len(armed) != 0 {
+		t.Errorf("stop should not arm anything; got %v", armed)
+	}
+}
+
+// TestStopLeafIsIndividual verifies STOP on a leaf (no children) parks
+// only that item and aborts its run — it must NOT touch the parent.
+func TestStopLeafIsIndividual(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
+	leaf := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Leaf", &parent.ID, &wf)
+
+	realStart := func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
+		return workflow.StartWorkflowDirect(ctx, env.pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), tenantID, workflowID, projectID, workItemID)
+	}
+	if err := realStart(ctx, approvalTestTenant, wf, env.proj.ID, leaf.ID); err != nil {
+		t.Fatalf("start leaf: %v", err)
+	}
+	if got := mustGet(t, env.pool, leaf.ID); got.WorkflowRunID == "" {
+		t.Fatal("leaf has no run after start")
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := StopSequence(ctx, env.pool, logger, approvalTestTenant, leaf.ID); err != nil {
+		t.Fatalf("StopSequence leaf: %v", err)
+	}
+	// Leaf parked; parent untouched (stays pending, no run binding).
+	if got := mustGet(t, env.pool, leaf.ID); got.Status != domain.WorkItemPending || got.WorkflowRunID != "" {
+		t.Errorf("leaf after stop = status %s run %q, want pending + no run", got.Status, got.WorkflowRunID)
+	}
+	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemPending {
+		t.Errorf("parent status after leaf stop = %s, want pending (leaf stop is individual)", got.Status)
+	}
+}
+
 // TestReconcileParentNoOpForNonSequenceParents is the regression test for
 // the notifier-path guard: reconcileParent must only advance a work item
 // that IS a sequence run (status running/failed, no bound workflow run,

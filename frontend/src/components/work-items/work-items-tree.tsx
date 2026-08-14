@@ -545,7 +545,7 @@ function SortableTreeRow({
           depsCount={depsCountOf(item.id, blockState)}
         />
         <StatusPill status={item.status} className="hidden sm:inline-flex" />
-        {hasChildren && <SequenceControls item={item} />}
+        <SequenceControls item={item} hasChildren={hasChildren} />
       </span>
     </div>
   );

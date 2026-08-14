@@ -10,6 +10,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
+	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -517,14 +518,19 @@ func ResumeSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenant
 	return nil
 }
 
-// StopSequence parks a sequence parent: parent → pending (a RECURRING
-// parent → recurring, so its cadence stays armed) AND clears
-// scheduled_start_at, nothing else. An in-flight child finishes naturally;
-// its completion is inert because the engine only advances running/failed
-// parents (reconcileParent's sequence-parent guard). This is how a chain
-// is halted without destroying history — children can then be run
-// standalone, and Resume re-enters the chain from the first non-succeeded
-// child.
+// StopSequence halts a work item and, when it is a sequence parent, its
+// whole subtree: every descendant → pending (a RECURRING item keeps its
+// cadence), scheduled starts cleared, and any in-flight workflow run bound
+// to a descendant aborted (run → aborted, step runs → failed, worker
+// executions → terminated). A leaf (no children) is halted on its own —
+// its bound run (if any) is aborted and it is parked to pending.
+//
+// The parked state is deliberately NOT running/failed: the sequence scan
+// only advances running/failed parents and the auto-revive path only
+// resurrects a FAILED parent, so a stopped chain (or leaf) stays stopped
+// until explicitly STARTed/RESUMEd. This is how a chain is halted without
+// destroying history — children can then be run standalone, and Resume
+// re-enters from the first non-succeeded child.
 func StopSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantID, parentID string) error {
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -532,34 +538,58 @@ func StopSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantID
 	}
 	defer ttx.Rollback(ctx)
 
-	parent, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, parentID)
+	if err := haltWorkItem(ctx, ttx.Tx, tenantID, parentID); err != nil {
+		return err
+	}
+	return ttx.Commit(ctx)
+}
+
+// haltWorkItem parks a single work item (pending, schedule cleared) and,
+// for a sequence parent, recursively halts every descendant. Any in-flight
+// workflow run bound to the item or a descendant is aborted via
+// AbortRunInTx (run → aborted, step runs → failed, executions →
+// terminated) with the bound work item left pending so it can be re-run.
+func haltWorkItem(ctx context.Context, tx pgx.Tx, tenantID, itemID string) error {
+	item, err := db.GetWorkItem(ctx, tx, tenantID, itemID)
 	if err != nil {
 		return err
 	}
-	children, err := db.ListDirectChildren(ctx, ttx.Tx, tenantID, parentID)
+	// Abort any in-flight bound run on this item (a leaf task with a live
+	// run, or a bound container). Idempotent: terminal runs are skipped.
+	// The bound work item is left PENDING so it can be re-run standalone.
+	if item.WorkflowRunID != "" {
+		if err := workflow.AbortRunInTx(ctx, tx, tenantID, item.WorkflowRunID,
+			domain.WorkItemPending); err != nil {
+			return fmt.Errorf("abort bound run %s: %w", item.WorkflowRunID, err)
+		}
+	}
+	// Recurse into children (a parent IS a sequence container).
+	children, err := db.ListDirectChildren(ctx, tx, tenantID, itemID)
 	if err != nil {
 		return fmt.Errorf("list children: %w", err)
 	}
-	if len(children) == 0 {
-		return errors.New("cannot stop a sequence on a work item with no children")
+	for _, c := range children {
+		if err := haltWorkItem(ctx, tx, tenantID, c.ID); err != nil {
+			return err
+		}
 	}
 
+	// Park this item: pending (a RECURRING item keeps its cadence armed),
+	// schedule cleared, stale run binding cleared so a later START/RESUME
+	// can dispatch fresh.
 	status := domain.WorkItemPending
-	if len(parent.RecurringSchedule) > 0 {
-		// A recurring parent keeps its cadence armed: STOP halts the
-		// CURRENT cycle, not the recurrence. Parking it "recurring" (with
-		// scheduled_start_at cleared) lets the RecurringFireReconciler
-		// re-fire the next occurrence on schedule — a pending parent with a
-		// schedule would be a dead state the reconciler never re-fires.
+	if len(item.RecurringSchedule) > 0 {
 		status = domain.WorkItemRecurring
 	}
-	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, parentID, parent.Version, db.UpdateWorkItemFields{
+	empty := ""
+	if _, err := db.UpdateWorkItem(ctx, tx, tenantID, itemID, item.Version, db.UpdateWorkItemFields{
 		Status:                &status,
 		ClearScheduledStartAt: true,
+		WorkflowRunID:         &empty,
 	}); err != nil {
-		return fmt.Errorf("park sequence parent: %w", err)
+		return fmt.Errorf("park work item %s: %w", itemID, err)
 	}
-	return ttx.Commit(ctx)
+	return nil
 }
 
 // fireLeafStarts starts the armed leaf workflows after the reconciler

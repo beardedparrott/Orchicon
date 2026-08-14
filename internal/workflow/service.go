@@ -661,54 +661,12 @@ func (s *Service) AbortWorkflow(ctx context.Context, req *connect.Request[apiv1.
 	if current.Status == domain.WorkflowRunCompleted || current.Status == domain.WorkflowRunFailed || current.Status == domain.WorkflowRunAborted {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("run is already terminal (status=%s)", current.Status))
 	}
-	now := time.Now().UTC()
-	updated, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, req.Msg.RunId, current.Version, db.UpdateWorkflowRunFields{
-		Status:  strPtr(domain.WorkflowRunAborted),
-		EndedAt: &now,
-	})
-	if err != nil {
+	if err := AbortRunInTx(ctx, ttx.Tx, tenantID, req.Msg.RunId, domain.WorkItemCancelled); err != nil {
 		return nil, mapDBError(err)
 	}
-	// Cancel any in-flight step runs and terminate linked worker executions.
-	stepRuns, err := db.ListWorkflowStepRuns(ctx, ttx.Tx, tenantID, req.Msg.RunId)
+	updated, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, req.Msg.RunId)
 	if err != nil {
 		return nil, mapDBError(err)
-	}
-	for _, sr := range stepRuns {
-		if sr.Status == domain.StepRunPending || sr.Status == domain.StepRunReady || sr.Status == domain.StepRunRunning || sr.Status == domain.StepRunApprovalPending {
-			if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-				Status:  strPtr(domain.StepRunFailed),
-				EndedAt: &now,
-			}); err != nil {
-				return nil, mapDBError(err)
-			}
-		}
-		// Terminate linked worker executions.
-		if sr.WorkerExecutionID != "" {
-			if exec, err := db.GetExecution(ctx, ttx.Tx, tenantID, sr.WorkerExecutionID); err == nil {
-				if exec.Status == domain.ExecutionRunning || exec.Status == domain.ExecutionDispatching {
-					termStatus := domain.ExecutionTerminated
-					termHealth := domain.HealthUnhealthy
-					if _, err := db.UpdateExecution(ctx, ttx.Tx, tenantID, exec.ID, exec.Version, db.UpdateExecutionFields{
-						Status:       &termStatus,
-						HealthState:  &termHealth,
-						EndedAt:      &now,
-						ErrorMessage: strPtr("workflow run aborted"),
-					}); err != nil {
-						return nil, mapDBError(err)
-					}
-				}
-			}
-		}
-	}
-	// Update the linked work item to cancelled.
-	if updated.WorkItemID != "" {
-		if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, updated.WorkItemID); err == nil {
-			status := domain.WorkItemCancelled
-			_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, updated.WorkItemID, wi.Version, db.UpdateWorkItemFields{
-				Status: &status,
-			})
-		}
 	}
 	wf, _ := db.GetWorkflow(ctx, ttx.Tx, tenantID, updated.WorkflowID)
 	if err := enqueueWorkflowEvent(ctx, ttx.Tx, domain.WorkflowEventRunAborted, wf, db.WorkflowVersionRow{}, updated, reason); err != nil {
@@ -719,6 +677,72 @@ func (s *Service) AbortWorkflow(ctx context.Context, req *connect.Request[apiv1.
 	}
 	s.log.Info("workflow run aborted", "run_id", updated.ID, "reason", reason)
 	return connect.NewResponse(&apiv1.AbortWorkflowResponse{Run: runRowToProto(updated)}), nil
+}
+
+// abortRunInTx aborts a workflow run and everything in flight in the
+// given tenant transaction: run → aborted, in-flight step runs → failed,
+// linked running worker executions → terminated, and the bound work item
+// → the given status (typically cancelled for a direct abort, pending for
+// a sequence-stop so the item can be re-run). This is the shared core used
+// by the AbortWorkflow RPC and the sequence engine's StopSequence — a
+// single abort path so behavior can't drift. It is intentionally NOT a
+// method: the sequence reconciler calls it inside its own transaction.
+func AbortRunInTx(ctx context.Context, tx pgx.Tx, tenantID, runID, workItemStatus string) error {
+	now := time.Now().UTC()
+	current, err := db.GetWorkflowRun(ctx, tx, tenantID, runID)
+	if err != nil {
+		return err
+	}
+	if current.Status == domain.WorkflowRunCompleted || current.Status == domain.WorkflowRunFailed || current.Status == domain.WorkflowRunAborted {
+		return nil // already terminal — nothing to abort
+	}
+	if _, err := db.UpdateWorkflowRun(ctx, tx, tenantID, runID, current.Version, db.UpdateWorkflowRunFields{
+		Status:  strPtr(domain.WorkflowRunAborted),
+		EndedAt: &now,
+	}); err != nil {
+		return err
+	}
+	// Cancel any in-flight step runs and terminate linked worker executions.
+	stepRuns, err := db.ListWorkflowStepRuns(ctx, tx, tenantID, runID)
+	if err != nil {
+		return err
+	}
+	for _, sr := range stepRuns {
+		if sr.Status == domain.StepRunPending || sr.Status == domain.StepRunReady || sr.Status == domain.StepRunRunning || sr.Status == domain.StepRunApprovalPending {
+			if _, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:  strPtr(domain.StepRunFailed),
+				EndedAt: &now,
+			}); err != nil {
+				return err
+			}
+		}
+		// Terminate linked worker executions.
+		if sr.WorkerExecutionID != "" {
+			if exec, err := db.GetExecution(ctx, tx, tenantID, sr.WorkerExecutionID); err == nil {
+				if exec.Status == domain.ExecutionRunning || exec.Status == domain.ExecutionDispatching {
+					termStatus := domain.ExecutionTerminated
+					termHealth := domain.HealthUnhealthy
+					if _, err := db.UpdateExecution(ctx, tx, tenantID, exec.ID, exec.Version, db.UpdateExecutionFields{
+						Status:       &termStatus,
+						HealthState:  &termHealth,
+						EndedAt:      &now,
+						ErrorMessage: strPtr("workflow run aborted"),
+					}); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	// Update the linked work item to the requested status.
+	if current.WorkItemID != "" {
+		if wi, err := db.GetWorkItem(ctx, tx, tenantID, current.WorkItemID); err == nil {
+			_, _ = db.UpdateWorkItem(ctx, tx, tenantID, current.WorkItemID, wi.Version, db.UpdateWorkItemFields{
+				Status: &workItemStatus,
+			})
+		}
+	}
+	return nil
 }
 
 // GetWorkflowRun returns a single WorkflowRun by id.
