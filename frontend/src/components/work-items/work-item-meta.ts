@@ -393,6 +393,14 @@ export function isRecurringItem(item: WorkItem): boolean {
   return item.recurringSchedule != null || item.status === WorkItemStatus.RECURRING;
 }
 
+/** Recurring marker — rendered only when the status pill is NOT already
+ *  "recurring" (i.e. mid-run, where the pill reads "running"). At rest the
+ *  fuchsia RECURRING status pill is the single recurrence signal, so the
+ *  badge would only duplicate it. */
+export function showRecurringBadge(item: WorkItem): boolean {
+  return isRecurringItem(item) && item.status !== WorkItemStatus.RECURRING;
+}
+
 /** Relative age of a work item from its created_at ("just now", "2d ago"). */
 export function relativeAge(createdAt?: WorkItem["createdAt"], now = Date.now()): string {
   if (!createdAt) return "";

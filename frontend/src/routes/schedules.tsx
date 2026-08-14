@@ -63,7 +63,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { KindBadge, KindDot, StatusPill, MultiWorkflowChip, PositionBadge, RecurringBadge } from "@/components/work-items/work-item-badges";
-import { isRecurringItem } from "@/components/work-items/work-item-meta";
+import { showRecurringBadge } from "@/components/work-items/work-item-meta";
 import {
   computeSequencePositions,
   sequenceParentIds,
@@ -642,7 +642,7 @@ function QueuedCard({
                   <KindBadge kind={item.kind} />
                   {isSequenceChild && <MultiWorkflowChip />}
                   {position ? <PositionBadge position={position} /> : null}
-                  {isRecurringItem(item) && <RecurringBadge />}
+                  {showRecurringBadge(item) && <RecurringBadge />}
                   <StatusPill status={item.status} />
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -772,7 +772,7 @@ function ScheduleCard({
                   </span>
                   <KindBadge kind={item.kind} />
                   {isSequenceParent && <MultiWorkflowChip />}
-                  {isRecurringItem(item) && <RecurringBadge />}
+                  {showRecurringBadge(item) && <RecurringBadge />}
                   <StatusPill status={item.status} />
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -979,7 +979,7 @@ function RunningCard({
                   <KindBadge kind={item.kind} />
                   {(isSequenceParent || isSequenceChild) && <MultiWorkflowChip />}
                   {isSequenceChild && position ? <PositionBadge position={position} /> : null}
-                  {isRecurringItem(item) && <RecurringBadge />}
+                  {showRecurringBadge(item) && <RecurringBadge />}
                   <StatusPill status={item.status} />
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -1171,7 +1171,7 @@ function HistoryCard({
                     {item.title}
                   </span>
                   <KindBadge kind={item.kind} />
-                  {isRecurringItem(item) && <RecurringBadge />}
+                  {showRecurringBadge(item) && <RecurringBadge />}
                   <StatusPill status={item.status} />
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">

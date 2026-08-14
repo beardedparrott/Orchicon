@@ -640,20 +640,28 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if fields.Status != nil && *fields.Status != domain.WorkItemRecurring && current.RecurringSchedule != nil {
 		fields.ClearRecurringSchedule = true
 	}
-	// Demote to pending when the recurring schedule is cleared (via empty
-	// message) and the item is currently recurring, and no explicit status
-	// is being set in this request. Mirrors ClearScheduledStartAt handling.
-	if fields.ClearRecurringSchedule &&
-		current.Status == domain.WorkItemRecurring &&
-		fields.Status == nil {
+	// Final-state invariant: "recurring" is derived state — it is only
+	// valid while a recurring_schedule is present. The edit form unchecks
+	// the Recurring schedule toggle while its status dropdown still reports
+	// "recurring", so the clear (empty-but-present message) and the
+	// explicit recurring status arrive in the SAME request — the clear
+	// wins: demote to pending (AC: disabling recurring cancels upcoming
+	// schedules AND returns the status to pending). The same final-state
+	// guard closes the inverse hole (a manual status=recurring pick with
+	// no schedule present), which would otherwise persist a zombie the
+	// RecurringFireReconciler never re-fires (its scan requires
+	// status='recurring' AND next_run_at IS NOT NULL). An explicit
+	// NON-recurring status in the same request (e.g. clear the schedule
+	// and pick "scheduled") is honored as-is.
+	schedulePresent := !fields.ClearRecurringSchedule &&
+		(fields.RecurringSchedule != nil || current.RecurringSchedule != nil)
+	wouldBeRecurring := current.Status == domain.WorkItemRecurring ||
+		(fields.Status != nil && *fields.Status == domain.WorkItemRecurring)
+	explicitOtherStatus := fields.Status != nil && *fields.Status != domain.WorkItemRecurring
+	if wouldBeRecurring && !schedulePresent && !explicitOtherStatus {
 		s := domain.WorkItemPending
 		fields.Status = &s
 	}
-	// Also clear recurring schedule when status is not being set at all
-	// but the request explicitly clears it via empty RecurringSchedule.
-	// The empty-message detection above sets ClearRecurringSchedule; this
-	// block catches the case where status is not changing but the schedule
-	// still needs to be cleared.
 	// Schedule-time validation (architecture-notes §3): scheduling or
 	// auto-starting runs the subtree validation — a parent WITH children is
 	// a sequence (the subtree must be executable: every leaf bound to a

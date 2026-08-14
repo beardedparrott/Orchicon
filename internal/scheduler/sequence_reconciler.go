@@ -517,7 +517,8 @@ func ResumeSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenant
 	return nil
 }
 
-// StopSequence parks a sequence parent: parent → pending AND clears
+// StopSequence parks a sequence parent: parent → pending (a RECURRING
+// parent → recurring, so its cadence stays armed) AND clears
 // scheduled_start_at, nothing else. An in-flight child finishes naturally;
 // its completion is inert because the engine only advances running/failed
 // parents (reconcileParent's sequence-parent guard). This is how a chain
@@ -544,6 +545,14 @@ func StopSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantID
 	}
 
 	status := domain.WorkItemPending
+	if len(parent.RecurringSchedule) > 0 {
+		// A recurring parent keeps its cadence armed: STOP halts the
+		// CURRENT cycle, not the recurrence. Parking it "recurring" (with
+		// scheduled_start_at cleared) lets the RecurringFireReconciler
+		// re-fire the next occurrence on schedule — a pending parent with a
+		// schedule would be a dead state the reconciler never re-fires.
+		status = domain.WorkItemRecurring
+	}
 	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, parentID, parent.Version, db.UpdateWorkItemFields{
 		Status:                &status,
 		ClearScheduledStartAt: true,

@@ -485,6 +485,9 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		if kindSwitchPlan.ClearScheduledStartAt {
 			update.ClearScheduledStartAt = true
 		}
+		if kindSwitchPlan.ClearRecurringSchedule {
+			update.ClearRecurringSchedule = true
+		}
 	}
 	// Saving a scheduled start flips the item to "scheduled" (ADR-001 in
 	// architecture-notes/running-workflows-not-showing-in-schedules.md).
@@ -497,6 +500,20 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		!workitem.IsActiveRunStatus(current.Status) &&
 		!(kindSwitchPlan != nil && kindSwitchPlan.ClearScheduledStartAt) {
 		status := domain.WorkItemScheduled
+		update.Status = &status
+	}
+	// Final-state invariant mirror of the Connect Update handler: switching
+	// status to anything other than "recurring" clears the schedule, and a
+	// resulting "recurring" status without a schedule is impossible — demote
+	// to pending (an empty-but-present recurring_schedule from the edit form
+	// would otherwise leave the row recurring with a NULL schedule). The
+	// tool cannot SET a schedule, so only the clear/demote direction applies.
+	if update.Status != nil && *update.Status != domain.WorkItemRecurring && current.RecurringSchedule != nil {
+		update.ClearRecurringSchedule = true
+	}
+	if update.Status != nil && *update.Status == domain.WorkItemRecurring &&
+		!(current.RecurringSchedule != nil && !update.ClearRecurringSchedule) {
+		status := domain.WorkItemPending
 		update.Status = &status
 	}
 	// Schedule-time validation (architecture-notes §3): scheduling or

@@ -53,7 +53,7 @@ import type { BlockState } from "@/components/work-items/dependency-utils";
 import { computeSequencePositions, sortByChainOrder } from "@/components/work-items/sequence-utils";
 import { SequenceControls } from "@/components/work-items/sequence-controls";
 import { BlockedChip } from "@/components/work-items/work-item-card";
-import { isRecurringItem } from "@/components/work-items/work-item-meta";
+import { showRecurringBadge } from "@/components/work-items/work-item-meta";
 import { subtreeSelectionState } from "@/components/work-items/use-work-item-selection";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -538,7 +538,7 @@ function SortableTreeRow({
             className="hidden sm:inline-flex"
           />
         ) : null}
-        {isRecurringItem(item) && <RecurringBadge className="hidden sm:inline-flex" />}
+        {showRecurringBadge(item) && <RecurringBadge className="hidden sm:inline-flex" />}
         <BlockedChip
           blockedBy={blockState.blockedBy}
           id={item.id}

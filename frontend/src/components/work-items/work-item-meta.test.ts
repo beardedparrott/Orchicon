@@ -24,6 +24,7 @@ import {
   allowedStatusesForKind,
   isTerminal,
   isRecurringItem,
+  showRecurringBadge,
 } from "@/components/work-items/work-item-meta";
 
 describe("kind meta palette variants", () => {
@@ -119,6 +120,34 @@ describe("isRecurringItem", () => {
   it("is false for ordinary items", () => {
     expect(isRecurringItem(new WorkItem({ ...base, status: WorkItemStatus.PENDING }))).toBe(false);
     expect(isRecurringItem(new WorkItem({ ...base, status: WorkItemStatus.SCHEDULED }))).toBe(false);
+  });
+});
+
+describe("showRecurringBadge", () => {
+  const base = { id: "wi_1", kind: WorkItemKind.TASK } as const;
+
+  it("is false at rest — the RECURRING status pill is the single recurrence signal", () => {
+    const recurring = new WorkItem({
+      ...base,
+      status: WorkItemStatus.RECURRING,
+      recurringSchedule: new RecurringSchedule({ frequency: "daily", interval: 1 }),
+    });
+    expect(showRecurringBadge(recurring)).toBe(false);
+  });
+
+  it("is true mid-run — the pill reads 'running', so the badge is the only marker", () => {
+    const firing = new WorkItem({
+      ...base,
+      status: WorkItemStatus.RUNNING,
+      recurringSchedule: new RecurringSchedule({ frequency: "daily", interval: 1 }),
+    });
+    expect(showRecurringBadge(firing)).toBe(true);
+  });
+
+  it("is false for ordinary items", () => {
+    expect(showRecurringBadge(new WorkItem({ ...base, status: WorkItemStatus.PENDING }))).toBe(false);
+    expect(showRecurringBadge(new WorkItem({ ...base, status: WorkItemStatus.SCHEDULED }))).toBe(false);
+    expect(showRecurringBadge(new WorkItem({ ...base, status: WorkItemStatus.RUNNING }))).toBe(false);
   });
 });
 
