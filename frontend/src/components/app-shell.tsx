@@ -106,6 +106,17 @@ function MobileNav({ open, onOpenChange }: { open: boolean; onOpenChange: (open:
     onOpenChange(false);
   }, [path, onOpenChange]);
 
+  // Close on Escape (the drawer is a div, not a native dialog, so it has
+  // no built-in Escape behavior).
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onOpenChange(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open, onOpenChange]);
+
   return (
     <>
       <button
