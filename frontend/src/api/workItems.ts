@@ -204,8 +204,10 @@ export function useBatchDeleteWorkItems() {
 }
 
 // useRemoveSchedule removes the schedule from a work item without
-// changing its status. It clears recurring_schedule and unbinds the
-// workflow_run_id using proto3 clear semantics.
+// changing its status. It clears recurring_schedule, unbinds the
+// workflow_run_id, and disables auto_start_workflow using proto3 clear
+// semantics. auto_start_workflow must be set to false to prevent the
+// backend from re-firing a new run after the workflow_run_id is cleared.
 export function useRemoveSchedule(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -214,6 +216,7 @@ export function useRemoveSchedule(projectId: string) {
         id,
         recurringSchedule: new RecurringSchedule(),
         workflowRunId: "",
+        autoStartWorkflow: false,
       });
       return res.workItem as WorkItem;
     },
