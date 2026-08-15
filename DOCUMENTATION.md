@@ -1013,7 +1013,12 @@ MCP work item mutations honor the transactional outbox pattern (invariant #3): `
   load the guard and `AuthProvider` share one `ensureSession()` bootstrap
   that exchanges the HttpOnly refresh cookie for a new access token, so a
   live session survives reloads without re-login; the AppShell effect
-  remains as the reactive mid-session safety net.
+  remains as the reactive mid-session safety net. Sign-out clears the
+  in-memory token, fires `POST /auth/logout` to expire the HttpOnly refresh
+  cookie server-side, and arms a signed-out flag (`session.ts`) that stops
+  the guard from silently re-authenticating via a still-valid cookie — a
+  signed-out user stays signed out across reloads and SPA navigations
+  (AC1).
 
 ### Tenancy model
 

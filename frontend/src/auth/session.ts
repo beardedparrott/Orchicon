@@ -15,13 +15,20 @@ const ACCESS_TOKEN_KEY = "orchicon_access_token";
 // In-memory access token. Set on login/refresh; cleared on logout.
 let accessToken = "";
 
+// True once the user explicitly signs out in this page session. The router
+// guard must never silently refresh a signed-out user back in via the
+// still-valid HttpOnly refresh cookie — the server clears that cookie on
+// logout too, but this flag covers the in-page case where the logout request
+// failed or is still in flight. Any token acquisition resets it.
+let signedOut = false;
+
 // Load a token stashed by the OIDC callback route (URL fragment) so it
 // survives the redirect into the SPA. The callback writes to
 // sessionStorage then redirects to /, where this loads it into memory.
 export function loadStashedToken(): boolean {
   const stashed = sessionStorage.getItem(ACCESS_TOKEN_KEY);
   if (stashed) {
-    accessToken = stashed;
+    setAccessToken(stashed);
     sessionStorage.removeItem(ACCESS_TOKEN_KEY);
     return true;
   }
@@ -33,6 +40,7 @@ export function getAccessToken(): string {
 }
 
 export function setAccessToken(t: string): void {
+  signedOut = false;
   accessToken = t;
 }
 
@@ -170,6 +178,15 @@ export function ensureSession(): Promise<SessionInfo> {
         // The OIDC callback route stashes a token in sessionStorage on its
         // way in; load it into memory before deciding how to resolve.
         loadStashedToken();
+        if (signedOut) {
+          // Explicit sign-out earlier in this page session: never silently
+          // re-authenticate via the refresh cookie (the server cleared it,
+          // but don't depend on that request having landed).
+          const unauth: SessionInfo = { authenticated: false };
+          useSessionStore.getState().setSession(unauth);
+          useSessionStore.getState().setLoading(false);
+          return unauth;
+        }
         const s = getAccessToken()
           ? await fetchSession()
           : ((await refreshAccessToken()) ?? { authenticated: false });
@@ -191,11 +208,20 @@ export function ensureSession(): Promise<SessionInfo> {
   return sessionPromise;
 }
 
-// logout clears the in-memory token. The refresh cookie is allowed to
-// expire naturally (or the user clears cookies). A v0.2 could add a
-// server-side revocation endpoint.
+// logout ends the session. The in-memory token is cleared and the signedOut
+// flag prevents the router guard from silently re-authenticating via the
+// refresh cookie for the rest of this page session. A best-effort
+// POST /auth/logout clears the HttpOnly refresh cookie server-side too, so a
+// reload stays signed out as well (the request failing — offline, etc. — is
+// not fatal; the in-page flag still holds).
 export function logout(): void {
+  signedOut = true;
   clearAccessToken();
+  void fetch("/auth/logout", { method: "POST", credentials: "include" }).catch(
+    () => {
+      /* best-effort: the in-page flag still prevents re-authentication */
+    },
+  );
 }
 
 // AuthConfig carries the plane's auth capability flags (GET /auth/config,

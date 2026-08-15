@@ -28,6 +28,10 @@ describe("requireAuth", () => {
   beforeEach(() => {
     storage.clear();
     logout();
+    // logout() also arms the signed-out flag (the sign-out regression guard);
+    // setAccessToken("") resets it so each test starts as a fresh page load —
+    // no in-memory token and not signed out.
+    setAccessToken("");
     useSessionStore.setState({ session: { authenticated: false }, loading: false });
   });
 
@@ -35,6 +39,7 @@ describe("requireAuth", () => {
     vi.unstubAllGlobals();
     storage.clear();
     logout();
+    setAccessToken("");
     useSessionStore.setState({ session: { authenticated: false }, loading: false });
   });
 

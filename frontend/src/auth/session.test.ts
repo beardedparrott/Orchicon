@@ -51,6 +51,10 @@ describe("ensureSession", () => {
   beforeEach(() => {
     storage.clear();
     logout();
+    // logout() also arms the signed-out flag (the sign-out regression guard);
+    // setAccessToken("") resets it so each test starts as a fresh page load —
+    // no in-memory token and not signed out.
+    setAccessToken("");
     useSessionStore.setState({ session: { authenticated: false }, loading: false });
   });
 
@@ -58,13 +62,16 @@ describe("ensureSession", () => {
     vi.unstubAllGlobals();
     storage.clear();
     logout();
+    setAccessToken("");
     useSessionStore.setState({ session: { authenticated: false }, loading: false });
   });
 
   it("exchanges the HttpOnly refresh cookie for a session on a fresh load (no in-memory token)", async () => {
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
-      okResponse(sessionBody()),
-    );
+    let requestedUrl = "";
+    const fetchMock = vi.fn(async (url: string) => {
+      requestedUrl = url;
+      return okResponse(sessionBody());
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const s = await ensureSession();
@@ -73,7 +80,7 @@ describe("ensureSession", () => {
     expect(s.identity_id).toBe("usr_test");
     // The refresh endpoint was used, not /auth/session (no bearer to send).
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0][0])).toBe("/auth/refresh");
+    expect(requestedUrl).toBe("/auth/refresh");
     // The resolved session is published to the store for the UI.
     expect(useSessionStore.getState().session.authenticated).toBe(true);
   });
@@ -89,9 +96,7 @@ describe("ensureSession", () => {
   });
 
   it("dedups concurrent callers onto a single bootstrap fetch", async () => {
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
-      okResponse(sessionBody()),
-    );
+    const fetchMock = vi.fn(async () => okResponse(sessionBody()));
     vi.stubGlobal("fetch", fetchMock);
 
     const [a, b] = await Promise.all([ensureSession(), ensureSession()]);
@@ -157,6 +162,60 @@ describe("ensureSession", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const s = await ensureSession();
+    expect(s.authenticated).toBe(true);
+    expect(String(fetchMock.mock.calls[0][0])).toBe("/auth/session");
+  });
+
+  it("never re-authenticates a signed-out user via the still-valid refresh cookie", async () => {
+    // The user signed out; the HttpOnly refresh cookie may still be valid.
+    logout();
+    const fetchMock = vi.fn(async () => okResponse(sessionBody()));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const s = await ensureSession();
+
+    expect(s.authenticated).toBe(false);
+    expect(useSessionStore.getState().session.authenticated).toBe(false);
+    // No /auth/refresh round-trip: the signed-out flag short-circuits the
+    // bootstrap, so the guard redirects to /login (AC1 holds for sign-out).
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("logout() asks the server to clear the HttpOnly refresh cookie", async () => {
+    let calledUrl = "";
+    let calledInit: RequestInit | undefined;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      calledUrl = url;
+      calledInit = init;
+      return new Response(null, { status: 204 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    logout();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(calledUrl).toBe("/auth/logout");
+    expect(calledInit?.method).toBe("POST");
+    expect(calledInit?.credentials).toBe("include");
+  });
+
+  it("a fresh login resets the signed-out flag (refresh-on-boot works again)", async () => {
+    logout();
+    setAccessToken("token-after-re-login");
+    const fetchMock = vi.fn(async (url: string) =>
+      url === "/auth/session"
+        ? okResponse({
+            authenticated: true,
+            identity_id: "usr_relogin",
+            tenant_id: "tnt_test",
+            is_admin: false,
+          })
+        : new Response(null, { status: 401 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const s = await ensureSession();
+
     expect(s.authenticated).toBe(true);
     expect(String(fetchMock.mock.calls[0][0])).toBe("/auth/session");
   });
