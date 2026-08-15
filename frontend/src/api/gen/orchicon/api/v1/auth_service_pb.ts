@@ -613,6 +613,360 @@ export class ListIdentitiesResponse extends Message<ListIdentitiesResponse> {
 }
 
 /**
+ * CreateIdentityRequest provisions a new identity (a user or service
+ * account) in the caller's tenant. Admin-only path: the RBAC interceptor
+ * gates this to auth:write. For identity_type "user" the subject is the
+ * login handle (matching the local-account username charset); for
+ * "service" it is optional — when omitted the server generates a
+ * synthetic "sa-<ULID>" subject.
+ *
+ * @generated from message orchicon.api.v1.CreateIdentityRequest
+ */
+export class CreateIdentityRequest extends Message<CreateIdentityRequest> {
+  /**
+   * Required. "user" | "service".
+   *
+   * @generated from field: string identity_type = 1;
+   */
+  identityType = "";
+
+  /**
+   * Required for "user", optional for "service" (see above).
+   *
+   * @generated from field: string subject = 2;
+   */
+  subject = "";
+
+  /**
+   * Required. Human-readable name, <= 200 runes.
+   *
+   * @generated from field: string display_name = 3;
+   */
+  displayName = "";
+
+  constructor(data?: PartialMessage<CreateIdentityRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.CreateIdentityRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "identity_type", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "subject", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "display_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateIdentityRequest {
+    return new CreateIdentityRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateIdentityRequest {
+    return new CreateIdentityRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateIdentityRequest {
+    return new CreateIdentityRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateIdentityRequest | PlainMessage<CreateIdentityRequest> | undefined, b: CreateIdentityRequest | PlainMessage<CreateIdentityRequest> | undefined): boolean {
+    return proto3.util.equals(CreateIdentityRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.CreateIdentityResponse
+ */
+export class CreateIdentityResponse extends Message<CreateIdentityResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.Identity identity = 1;
+   */
+  identity?: Identity;
+
+  constructor(data?: PartialMessage<CreateIdentityResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.CreateIdentityResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "identity", kind: "message", T: Identity },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateIdentityResponse {
+    return new CreateIdentityResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateIdentityResponse {
+    return new CreateIdentityResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateIdentityResponse {
+    return new CreateIdentityResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateIdentityResponse | PlainMessage<CreateIdentityResponse> | undefined, b: CreateIdentityResponse | PlainMessage<CreateIdentityResponse> | undefined): boolean {
+    return proto3.util.equals(CreateIdentityResponse, a, b);
+  }
+}
+
+/**
+ * UpdateIdentityRequest edits an identity's display_name. The optional
+ * version enables optimistic concurrency: when present and mismatched the
+ * update fails with NotFound.
+ *
+ * @generated from message orchicon.api.v1.UpdateIdentityRequest
+ */
+export class UpdateIdentityRequest extends Message<UpdateIdentityRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * @generated from field: string display_name = 2;
+   */
+  displayName = "";
+
+  /**
+   * @generated from field: optional int32 version = 3;
+   */
+  version?: number;
+
+  constructor(data?: PartialMessage<UpdateIdentityRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.UpdateIdentityRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "display_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */, opt: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateIdentityRequest {
+    return new UpdateIdentityRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UpdateIdentityRequest {
+    return new UpdateIdentityRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UpdateIdentityRequest {
+    return new UpdateIdentityRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: UpdateIdentityRequest | PlainMessage<UpdateIdentityRequest> | undefined, b: UpdateIdentityRequest | PlainMessage<UpdateIdentityRequest> | undefined): boolean {
+    return proto3.util.equals(UpdateIdentityRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.UpdateIdentityResponse
+ */
+export class UpdateIdentityResponse extends Message<UpdateIdentityResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.Identity identity = 1;
+   */
+  identity?: Identity;
+
+  constructor(data?: PartialMessage<UpdateIdentityResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.UpdateIdentityResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "identity", kind: "message", T: Identity },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateIdentityResponse {
+    return new UpdateIdentityResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UpdateIdentityResponse {
+    return new UpdateIdentityResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UpdateIdentityResponse {
+    return new UpdateIdentityResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: UpdateIdentityResponse | PlainMessage<UpdateIdentityResponse> | undefined, b: UpdateIdentityResponse | PlainMessage<UpdateIdentityResponse> | undefined): boolean {
+    return proto3.util.equals(UpdateIdentityResponse, a, b);
+  }
+}
+
+/**
+ * SetIdentityStatusRequest flips an identity between "active" and
+ * "disabled". Only those two values are writable; anything else is
+ * InvalidArgument. The optional version enables optimistic concurrency.
+ *
+ * @generated from message orchicon.api.v1.SetIdentityStatusRequest
+ */
+export class SetIdentityStatusRequest extends Message<SetIdentityStatusRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * "active" | "disabled"
+   *
+   * @generated from field: string status = 2;
+   */
+  status = "";
+
+  /**
+   * @generated from field: optional int32 version = 3;
+   */
+  version?: number;
+
+  constructor(data?: PartialMessage<SetIdentityStatusRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SetIdentityStatusRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */, opt: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetIdentityStatusRequest {
+    return new SetIdentityStatusRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetIdentityStatusRequest {
+    return new SetIdentityStatusRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetIdentityStatusRequest {
+    return new SetIdentityStatusRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetIdentityStatusRequest | PlainMessage<SetIdentityStatusRequest> | undefined, b: SetIdentityStatusRequest | PlainMessage<SetIdentityStatusRequest> | undefined): boolean {
+    return proto3.util.equals(SetIdentityStatusRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.SetIdentityStatusResponse
+ */
+export class SetIdentityStatusResponse extends Message<SetIdentityStatusResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.Identity identity = 1;
+   */
+  identity?: Identity;
+
+  constructor(data?: PartialMessage<SetIdentityStatusResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SetIdentityStatusResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "identity", kind: "message", T: Identity },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetIdentityStatusResponse {
+    return new SetIdentityStatusResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetIdentityStatusResponse {
+    return new SetIdentityStatusResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetIdentityStatusResponse {
+    return new SetIdentityStatusResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetIdentityStatusResponse | PlainMessage<SetIdentityStatusResponse> | undefined, b: SetIdentityStatusResponse | PlainMessage<SetIdentityStatusResponse> | undefined): boolean {
+    return proto3.util.equals(SetIdentityStatusResponse, a, b);
+  }
+}
+
+/**
+ * DeleteIdentityRequest hard-deletes an identity plus its role bindings,
+ * API keys, and local credentials in one tenant-scoped transaction.
+ * Guarded server-side: the caller cannot delete their own identity, and
+ * an "active" identity must be disabled first.
+ *
+ * @generated from message orchicon.api.v1.DeleteIdentityRequest
+ */
+export class DeleteIdentityRequest extends Message<DeleteIdentityRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  constructor(data?: PartialMessage<DeleteIdentityRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DeleteIdentityRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteIdentityRequest {
+    return new DeleteIdentityRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteIdentityRequest {
+    return new DeleteIdentityRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteIdentityRequest {
+    return new DeleteIdentityRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteIdentityRequest | PlainMessage<DeleteIdentityRequest> | undefined, b: DeleteIdentityRequest | PlainMessage<DeleteIdentityRequest> | undefined): boolean {
+    return proto3.util.equals(DeleteIdentityRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.DeleteIdentityResponse
+ */
+export class DeleteIdentityResponse extends Message<DeleteIdentityResponse> {
+  constructor(data?: PartialMessage<DeleteIdentityResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DeleteIdentityResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteIdentityResponse {
+    return new DeleteIdentityResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteIdentityResponse {
+    return new DeleteIdentityResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteIdentityResponse {
+    return new DeleteIdentityResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteIdentityResponse | PlainMessage<DeleteIdentityResponse> | undefined, b: DeleteIdentityResponse | PlainMessage<DeleteIdentityResponse> | undefined): boolean {
+    return proto3.util.equals(DeleteIdentityResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.ListEntitlementsRequest
  */
 export class ListEntitlementsRequest extends Message<ListEntitlementsRequest> {

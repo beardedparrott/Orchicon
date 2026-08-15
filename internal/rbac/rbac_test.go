@@ -14,6 +14,10 @@ func TestEntitlementForReadAndWrite(t *testing.T) {
 		{"/orchicon.api.v1.PolicyService/SupersedePolicy", "policy:supersede"},
 		{"/orchicon.api.v1.WebhookService/ListSubscriptions", "webhook:read"},
 		{"/orchicon.api.v1.AuthService/CreateApiKey", "auth:write"},
+		{"/orchicon.api.v1.AuthService/CreateIdentity", "auth:write"},
+		{"/orchicon.api.v1.AuthService/UpdateIdentity", "auth:write"},
+		{"/orchicon.api.v1.AuthService/SetIdentityStatus", "auth:write"},
+		{"/orchicon.api.v1.AuthService/DeleteIdentity", "auth:write"},
 	}
 	for _, tt := range tests {
 		got := EntitlementFor(tt.procedure)

@@ -251,6 +251,202 @@ func (s *Service) ListIdentities(ctx context.Context, req *connect.Request[apiv1
 	return connect.NewResponse(resp), nil
 }
 
+// serviceAccountSubjectRE bounds an explicitly-supplied service-account
+// subject to the slug charset (mirrors the project/tenant slug rule so
+// machine identifiers stay URL-safe and predictable).
+var serviceAccountSubjectRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+
+// CreateIdentity provisions a new identity (user or service account) in
+// the caller's tenant. The RBAC interceptor gates this to auth:write.
+// For identity_type "user" the subject is the login handle and must match
+// the local-account username charset so the identity can immediately get
+// a SetLocalCredential whose username matches its subject. For "service"
+// the subject is optional; when omitted the server generates a synthetic
+// "sa-<ULID>" subject.
+func (s *Service) CreateIdentity(ctx context.Context, req *connect.Request[apiv1.CreateIdentityRequest]) (*connect.Response[apiv1.CreateIdentityResponse], error) {
+	msg := req.Msg
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	displayName := strings.TrimSpace(msg.DisplayName)
+	if displayName == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("display_name must not be empty"))
+	}
+	if utf8.RuneCountInString(displayName) > 200 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("display_name too long"))
+	}
+	identityType := msg.IdentityType
+	if identityType == "" {
+		identityType = "user"
+	}
+	if identityType != "user" && identityType != "service" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("identity_type must be \"user\" or \"service\""))
+	}
+	subject := strings.TrimSpace(msg.Subject)
+	switch identityType {
+	case "user":
+		if subject == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("subject must not be empty for user identities"))
+		}
+		if len(subject) > 255 {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("subject too long"))
+		}
+		if !localUsernameRE.MatchString(subject) {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("subject must match ^[a-z0-9][a-z0-9._@+-]*$"))
+		}
+	case "service":
+		if subject != "" {
+			if len(subject) > 63 {
+				return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("subject too long"))
+			}
+			if !serviceAccountSubjectRE.MatchString(subject) {
+				return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("subject must match ^[a-z0-9]+(?:-[a-z0-9]+)*$"))
+			}
+		} else {
+			subject = "sa-" + db.NewID()
+		}
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	row, err := db.CreateIdentity(ctx, ttx.Tx, db.IdentityRow{
+		TenantID:     tenantID,
+		Subject:      subject,
+		DisplayName:  displayName,
+		IdentityType: identityType,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("subject %q already in use", subject))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("identity created", "id", row.ID, "subject", row.Subject, "type", row.IdentityType, "tenant", tenantID)
+	return connect.NewResponse(&apiv1.CreateIdentityResponse{Identity: identityRowToProto(row)}), nil
+}
+
+// UpdateIdentity edits an identity's display_name with optional
+// optimistic concurrency. A version supplied on the request must match
+// the current row or the update fails with NotFound (mirrors
+// UpdateApiKeyStatus semantics).
+func (s *Service) UpdateIdentity(ctx context.Context, req *connect.Request[apiv1.UpdateIdentityRequest]) (*connect.Response[apiv1.UpdateIdentityResponse], error) {
+	msg := req.Msg
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	displayName := strings.TrimSpace(msg.DisplayName)
+	if displayName == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("display_name must not be empty"))
+	}
+	if utf8.RuneCountInString(displayName) > 200 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("display_name too long"))
+	}
+	expectedVersion := expectedVersion(msg.Version)
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	row, err := db.UpdateIdentityDisplayName(ctx, ttx.Tx, tenantID, msg.Id, displayName, expectedVersion)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("identity updated", "id", row.ID, "tenant", tenantID)
+	return connect.NewResponse(&apiv1.UpdateIdentityResponse{Identity: identityRowToProto(row)}), nil
+}
+
+// SetIdentityStatus flips an identity between "active" and "disabled".
+// Only those two values are writable; the column is unconstrained text
+// so the handler validates the enum even though the schema does not. A
+// version supplied on the request must match the current row or the
+// update fails with NotFound.
+func (s *Service) SetIdentityStatus(ctx context.Context, req *connect.Request[apiv1.SetIdentityStatusRequest]) (*connect.Response[apiv1.SetIdentityStatusResponse], error) {
+	msg := req.Msg
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	if msg.Status != "active" && msg.Status != "disabled" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("status must be \"active\" or \"disabled\""))
+	}
+	expectedVersion := expectedVersion(msg.Version)
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	row, err := db.SetIdentityStatus(ctx, ttx.Tx, tenantID, msg.Id, msg.Status, expectedVersion)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("identity status set", "id", row.ID, "status", row.Status, "tenant", tenantID)
+	return connect.NewResponse(&apiv1.SetIdentityStatusResponse{Identity: identityRowToProto(row)}), nil
+}
+
+// DeleteIdentity hard-deletes an identity plus its role bindings, API
+// keys, and local credentials in one tenant-scoped transaction. Two
+// guards protect the admin surface: the caller may not delete their own
+// identity (self-lockout), and an "active" identity must be disabled
+// first (two-phase delete, matching the AC's disable-then-delete flow and
+// preventing accidental mass deletion).
+func (s *Service) DeleteIdentity(ctx context.Context, req *connect.Request[apiv1.DeleteIdentityRequest]) (*connect.Response[apiv1.DeleteIdentityResponse], error) {
+	msg := req.Msg
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	// Guard A: never let the caller delete the identity they are
+	// authenticated as (would strand the session mid-request and can lock
+	// an admin out of the plane).
+	if ident, ok := FromContext(ctx); ok && ident.IdentityID == msg.Id {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("cannot delete your own identity"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetIdentity(ctx, ttx.Tx, tenantID, msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	// Guard B: two-phase delete — an active identity must be disabled
+	// before it can be deleted.
+	if current.Status != "disabled" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("identity must be disabled before it can be deleted"))
+	}
+	if err := db.DeleteIdentity(ctx, ttx.Tx, tenantID, msg.Id); err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("identity deleted", "id", msg.Id, "tenant", tenantID)
+	return connect.NewResponse(&apiv1.DeleteIdentityResponse{}), nil
+}
+
 // ListEntitlements returns the entitlements granted to an identity.
 func (s *Service) ListEntitlements(ctx context.Context, req *connect.Request[apiv1.ListEntitlementsRequest]) (*connect.Response[apiv1.ListEntitlementsResponse], error) {
 	tenantID, err := requireTenant(ctx)
@@ -640,6 +836,18 @@ func requireTenant(ctx context.Context) (string, error) {
 		return "", errors.New("no tenant in context")
 	}
 	return id, nil
+}
+
+// expectedVersion converts the optional version field on an identity
+// mutation request into the data-access sentinel: nil (caller supplied
+// no version) → -1 disables the optimistic-concurrency check; a present
+// value must match the current row version or the update is a no-op
+// (NotFound). The proto field is int32; the data-access layer uses int.
+func expectedVersion(v *int32) int {
+	if v == nil {
+		return -1
+	}
+	return int(*v)
 }
 
 func mapDBError(err error) error {
