@@ -1,0 +1,22 @@
+# Semgrep ignore file — written by the Orchicon control plane into each
+# project root so the worker safety lint (semgrep) skips dependency,
+# build, and orchestration directories. Same semantics as .gitignore;
+# respected by semgrep when scanning from the project root.
+#
+# .orchicon/ is the control plane's own scratch dir (run artifacts +
+# the lint ruleset itself — scanning it would self-match the rules).
+.git/
+.orchicon/
+node_modules/
+vendor/
+dist/
+build/
+target/
+__pycache__/
+.venv/
+venv/
+.tox/
+.nox/
+.next/
+.nuxt/
+coverage/

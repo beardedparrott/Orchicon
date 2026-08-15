@@ -11,6 +11,8 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/audit"
+	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -80,6 +82,9 @@ func (s *Service) CreateProject(ctx context.Context, req *connect.Request[apiv1.
 	}
 	if err := enqueueProjectEvent(ctx, ttx.Tx, "project.created", created); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, "project.created", "project", created.ID, nil, audit.Snapshot(projectAuditSnapshot(created))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit project.created: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -236,6 +241,10 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 	if err := enqueueProjectEvent(ctx, ttx.Tx, "project.updated", updated); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, "project.updated", "project", updated.ID,
+		audit.Snapshot(projectAuditSnapshot(current)), audit.Snapshot(projectAuditSnapshot(updated))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit project.updated: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -273,6 +282,10 @@ func (s *Service) ArchiveProject(ctx context.Context, req *connect.Request[apiv1
 	if err := enqueueProjectEvent(ctx, ttx.Tx, "project.archived", archived); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, "project.archived", "project", archived.ID,
+		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(archived.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit project.archived: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -296,11 +309,16 @@ func (s *Service) DeleteProject(ctx context.Context, req *connect.Request[apiv1.
 	}
 	defer ttx.Rollback(ctx)
 	// Check project exists before deleting
-	if _, err := db.GetProject(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
+	current, err := db.GetProject(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
 		return nil, mapDBError(err)
 	}
 	if err := db.DeleteProject(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, "project.deleted", "project", current.ID,
+		audit.Snapshot(projectAuditSnapshot(current)), nil); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit project.deleted: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -350,6 +368,10 @@ func (s *Service) PauseProject(ctx context.Context, req *connect.Request[apiv1.P
 	if err := enqueueProjectEvent(ctx, ttx.Tx, "project.paused", p); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, "project.paused", "project", p.ID,
+		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(p.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit project.paused: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -398,6 +420,10 @@ func (s *Service) ActivateProject(ctx context.Context, req *connect.Request[apiv
 	}
 	if err := enqueueProjectEvent(ctx, ttx.Tx, "project.activated", p); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, "project.activated", "project", p.ID,
+		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(p.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit project.activated: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -584,6 +610,32 @@ func buildEventPayload(eventType string, p db.ProjectRow) ([]byte, error) {
 		return nil, fmt.Errorf("marshal event payload: %w", err)
 	}
 	return b, nil
+}
+
+// recordAudit writes an actor-based audit row in the caller's tx,
+// resolving the actor from the request context. Must be called in the
+// same transaction as the mutation so the row commits atomically.
+func recordAudit(ctx context.Context, tx pgx.Tx, action, targetType, targetID string, before, after json.RawMessage) error {
+	e := auth.ActorFromContext(ctx)
+	e.Action = action
+	e.TargetType = targetType
+	e.TargetID = targetID
+	e.Before = before
+	e.After = after
+	return audit.Record(ctx, tx, e)
+}
+
+// projectAuditSnapshot is the non-secret projection of a project row
+// for the audit trail. Goals and context_files can embed secrets;
+// excluded here (keep the trail compact and credential-free).
+func projectAuditSnapshot(p db.ProjectRow) map[string]any {
+	return map[string]any{
+		"id":      p.ID,
+		"name":    p.Name,
+		"slug":    p.Slug,
+		"status":  p.Status,
+		"version": p.Version,
+	}
 }
 
 // mapDBError translates a data-access error into a Connect error code.

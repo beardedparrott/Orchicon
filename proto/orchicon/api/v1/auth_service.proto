@@ -8,6 +8,7 @@ syntax = "proto3";
 
 package orchicon.api.v1;
 
+import "google/protobuf/timestamp.proto";
 import "orchicon/api/v1/auth.proto";
 
 service AuthService {
@@ -43,6 +44,7 @@ service AuthService {
 
   // --- Audit ---
   rpc ListAuditEntries(ListAuditEntriesRequest) returns (ListAuditEntriesResponse);
+  rpc ListAuditEvents(ListAuditEventsRequest) returns (ListAuditEventsResponse);
 }
 
 // ---------------------------------------------------------------------------
@@ -277,5 +279,37 @@ message ListAuditEntriesRequest {
 }
 message ListAuditEntriesResponse {
   repeated AuditEntry entries = 1;
+  string next_page_token = 2;
+}
+
+// AuditEvent is one row from the audit_events trail (the actor-based
+// audit of user actions — the transactional-outbox writer in
+// internal/audit). Distinct from AuditEntry (policy decisions): this is
+// the "who did what" trail, AuditEntry is the "what did the policy say".
+message AuditEvent {
+  string id = 1;
+  string tenant_id = 2;
+  string actor_identity_id = 3; // null when actor_type = system
+  string actor_type = 4; // "user" | "system"
+  string auth_method = 5; // "oidc"|"apikey"|"local"|"signup"|"dev"|"refresh"|"system"; "" legacy
+  string action = 6; // e.g. "work_item.created"
+  string target_type = 7; // e.g. "work_item"
+  string target_id = 8; // entity ULID
+  string before = 9; // JSON snapshot (pre-mutation); "{}" for creates
+  string after = 10; // JSON snapshot (post-mutation); "{}" for deletes
+  string trace_id = 11;
+  google.protobuf.Timestamp occurred_at = 12;
+}
+
+message ListAuditEventsRequest {
+  string action = 1; // optional exact filter
+  string actor_id = 2; // optional filter (actor_identity_id)
+  string target_type = 3; // optional exact filter
+  string target_id = 4; // optional exact filter
+  string page_token = 5; // keyset on (occurred_at, id)
+  int32 page_size = 6;
+}
+message ListAuditEventsResponse {
+  repeated AuditEvent events = 1;
   string next_page_token = 2;
 }

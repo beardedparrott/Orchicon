@@ -11,7 +11,7 @@
 // @ts-nocheck
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
-import { Message, proto3 } from "@bufbuild/protobuf";
+import { Message, proto3, Timestamp } from "@bufbuild/protobuf";
 import { ApiKey, ApiKeySecret, AuditEntry, Entitlement, Identity, Role, RoleBinding, Tenant } from "./auth_pb.js";
 
 /**
@@ -1904,6 +1904,250 @@ export class ListAuditEntriesResponse extends Message<ListAuditEntriesResponse> 
 
   static equals(a: ListAuditEntriesResponse | PlainMessage<ListAuditEntriesResponse> | undefined, b: ListAuditEntriesResponse | PlainMessage<ListAuditEntriesResponse> | undefined): boolean {
     return proto3.util.equals(ListAuditEntriesResponse, a, b);
+  }
+}
+
+/**
+ * AuditEvent is one row from the audit_events trail (the actor-based
+ * audit of user actions — the transactional-outbox writer in
+ * internal/audit). Distinct from AuditEntry (policy decisions): this is
+ * the "who did what" trail, AuditEntry is the "what did the policy say".
+ *
+ * @generated from message orchicon.api.v1.AuditEvent
+ */
+export class AuditEvent extends Message<AuditEvent> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * @generated from field: string tenant_id = 2;
+   */
+  tenantId = "";
+
+  /**
+   * null when actor_type = system
+   *
+   * @generated from field: string actor_identity_id = 3;
+   */
+  actorIdentityId = "";
+
+  /**
+   * "user" | "system"
+   *
+   * @generated from field: string actor_type = 4;
+   */
+  actorType = "";
+
+  /**
+   * "oidc"|"apikey"|"local"|"signup"|"dev"|"refresh"|"system"; "" legacy
+   *
+   * @generated from field: string auth_method = 5;
+   */
+  authMethod = "";
+
+  /**
+   * e.g. "work_item.created"
+   *
+   * @generated from field: string action = 6;
+   */
+  action = "";
+
+  /**
+   * e.g. "work_item"
+   *
+   * @generated from field: string target_type = 7;
+   */
+  targetType = "";
+
+  /**
+   * entity ULID
+   *
+   * @generated from field: string target_id = 8;
+   */
+  targetId = "";
+
+  /**
+   * JSON snapshot (pre-mutation); "{}" for creates
+   *
+   * @generated from field: string before = 9;
+   */
+  before = "";
+
+  /**
+   * JSON snapshot (post-mutation); "{}" for deletes
+   *
+   * @generated from field: string after = 10;
+   */
+  after = "";
+
+  /**
+   * @generated from field: string trace_id = 11;
+   */
+  traceId = "";
+
+  /**
+   * @generated from field: google.protobuf.Timestamp occurred_at = 12;
+   */
+  occurredAt?: Timestamp;
+
+  constructor(data?: PartialMessage<AuditEvent>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.AuditEvent";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "tenant_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "actor_identity_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "actor_type", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "auth_method", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "action", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 7, name: "target_type", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 8, name: "target_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 9, name: "before", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 10, name: "after", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 11, name: "trace_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 12, name: "occurred_at", kind: "message", T: Timestamp },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): AuditEvent {
+    return new AuditEvent().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): AuditEvent {
+    return new AuditEvent().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): AuditEvent {
+    return new AuditEvent().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: AuditEvent | PlainMessage<AuditEvent> | undefined, b: AuditEvent | PlainMessage<AuditEvent> | undefined): boolean {
+    return proto3.util.equals(AuditEvent, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ListAuditEventsRequest
+ */
+export class ListAuditEventsRequest extends Message<ListAuditEventsRequest> {
+  /**
+   * optional exact filter
+   *
+   * @generated from field: string action = 1;
+   */
+  action = "";
+
+  /**
+   * optional filter (actor_identity_id)
+   *
+   * @generated from field: string actor_id = 2;
+   */
+  actorId = "";
+
+  /**
+   * optional exact filter
+   *
+   * @generated from field: string target_type = 3;
+   */
+  targetType = "";
+
+  /**
+   * optional exact filter
+   *
+   * @generated from field: string target_id = 4;
+   */
+  targetId = "";
+
+  /**
+   * keyset on (occurred_at, id)
+   *
+   * @generated from field: string page_token = 5;
+   */
+  pageToken = "";
+
+  /**
+   * @generated from field: int32 page_size = 6;
+   */
+  pageSize = 0;
+
+  constructor(data?: PartialMessage<ListAuditEventsRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListAuditEventsRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "action", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "actor_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "target_type", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "target_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "page_size", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListAuditEventsRequest {
+    return new ListAuditEventsRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListAuditEventsRequest {
+    return new ListAuditEventsRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListAuditEventsRequest {
+    return new ListAuditEventsRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListAuditEventsRequest | PlainMessage<ListAuditEventsRequest> | undefined, b: ListAuditEventsRequest | PlainMessage<ListAuditEventsRequest> | undefined): boolean {
+    return proto3.util.equals(ListAuditEventsRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ListAuditEventsResponse
+ */
+export class ListAuditEventsResponse extends Message<ListAuditEventsResponse> {
+  /**
+   * @generated from field: repeated orchicon.api.v1.AuditEvent events = 1;
+   */
+  events: AuditEvent[] = [];
+
+  /**
+   * @generated from field: string next_page_token = 2;
+   */
+  nextPageToken = "";
+
+  constructor(data?: PartialMessage<ListAuditEventsResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListAuditEventsResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "events", kind: "message", T: AuditEvent, repeated: true },
+    { no: 2, name: "next_page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListAuditEventsResponse {
+    return new ListAuditEventsResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListAuditEventsResponse {
+    return new ListAuditEventsResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListAuditEventsResponse {
+    return new ListAuditEventsResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListAuditEventsResponse | PlainMessage<ListAuditEventsResponse> | undefined, b: ListAuditEventsResponse | PlainMessage<ListAuditEventsResponse> | undefined): boolean {
+    return proto3.util.equals(ListAuditEventsResponse, a, b);
   }
 }
 

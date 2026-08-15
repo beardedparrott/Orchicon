@@ -95,6 +95,9 @@ const (
 	// AuthServiceListAuditEntriesProcedure is the fully-qualified name of the AuthService's
 	// ListAuditEntries RPC.
 	AuthServiceListAuditEntriesProcedure = "/orchicon.api.v1.AuthService/ListAuditEntries"
+	// AuthServiceListAuditEventsProcedure is the fully-qualified name of the AuthService's
+	// ListAuditEvents RPC.
+	AuthServiceListAuditEventsProcedure = "/orchicon.api.v1.AuthService/ListAuditEvents"
 )
 
 // AuthServiceClient is a client for the orchicon.api.v1.AuthService service.
@@ -126,6 +129,7 @@ type AuthServiceClient interface {
 	SetLocalCredential(context.Context, *connect.Request[v1.SetLocalCredentialRequest]) (*connect.Response[v1.SetLocalCredentialResponse], error)
 	// --- Audit ---
 	ListAuditEntries(context.Context, *connect.Request[v1.ListAuditEntriesRequest]) (*connect.Response[v1.ListAuditEntriesResponse], error)
+	ListAuditEvents(context.Context, *connect.Request[v1.ListAuditEventsRequest]) (*connect.Response[v1.ListAuditEventsResponse], error)
 }
 
 // NewAuthServiceClient constructs a client for the orchicon.api.v1.AuthService service. By default,
@@ -265,6 +269,12 @@ func NewAuthServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(authServiceMethods.ByName("ListAuditEntries")),
 			connect.WithClientOptions(opts...),
 		),
+		listAuditEvents: connect.NewClient[v1.ListAuditEventsRequest, v1.ListAuditEventsResponse](
+			httpClient,
+			baseURL+AuthServiceListAuditEventsProcedure,
+			connect.WithSchema(authServiceMethods.ByName("ListAuditEvents")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -291,6 +301,7 @@ type authServiceClient struct {
 	createTenant       *connect.Client[v1.CreateTenantRequest, v1.CreateTenantResponse]
 	setLocalCredential *connect.Client[v1.SetLocalCredentialRequest, v1.SetLocalCredentialResponse]
 	listAuditEntries   *connect.Client[v1.ListAuditEntriesRequest, v1.ListAuditEntriesResponse]
+	listAuditEvents    *connect.Client[v1.ListAuditEventsRequest, v1.ListAuditEventsResponse]
 }
 
 // CreateApiKey calls orchicon.api.v1.AuthService.CreateApiKey.
@@ -398,6 +409,11 @@ func (c *authServiceClient) ListAuditEntries(ctx context.Context, req *connect.R
 	return c.listAuditEntries.CallUnary(ctx, req)
 }
 
+// ListAuditEvents calls orchicon.api.v1.AuthService.ListAuditEvents.
+func (c *authServiceClient) ListAuditEvents(ctx context.Context, req *connect.Request[v1.ListAuditEventsRequest]) (*connect.Response[v1.ListAuditEventsResponse], error) {
+	return c.listAuditEvents.CallUnary(ctx, req)
+}
+
 // AuthServiceHandler is an implementation of the orchicon.api.v1.AuthService service.
 type AuthServiceHandler interface {
 	// --- API keys (machine credentials) ---
@@ -427,6 +443,7 @@ type AuthServiceHandler interface {
 	SetLocalCredential(context.Context, *connect.Request[v1.SetLocalCredentialRequest]) (*connect.Response[v1.SetLocalCredentialResponse], error)
 	// --- Audit ---
 	ListAuditEntries(context.Context, *connect.Request[v1.ListAuditEntriesRequest]) (*connect.Response[v1.ListAuditEntriesResponse], error)
+	ListAuditEvents(context.Context, *connect.Request[v1.ListAuditEventsRequest]) (*connect.Response[v1.ListAuditEventsResponse], error)
 }
 
 // NewAuthServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -562,6 +579,12 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(authServiceMethods.ByName("ListAuditEntries")),
 		connect.WithHandlerOptions(opts...),
 	)
+	authServiceListAuditEventsHandler := connect.NewUnaryHandler(
+		AuthServiceListAuditEventsProcedure,
+		svc.ListAuditEvents,
+		connect.WithSchema(authServiceMethods.ByName("ListAuditEvents")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/orchicon.api.v1.AuthService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case AuthServiceCreateApiKeyProcedure:
@@ -606,6 +629,8 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 			authServiceSetLocalCredentialHandler.ServeHTTP(w, r)
 		case AuthServiceListAuditEntriesProcedure:
 			authServiceListAuditEntriesHandler.ServeHTTP(w, r)
+		case AuthServiceListAuditEventsProcedure:
+			authServiceListAuditEventsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -697,4 +722,8 @@ func (UnimplementedAuthServiceHandler) SetLocalCredential(context.Context, *conn
 
 func (UnimplementedAuthServiceHandler) ListAuditEntries(context.Context, *connect.Request[v1.ListAuditEntriesRequest]) (*connect.Response[v1.ListAuditEntriesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.ListAuditEntries is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) ListAuditEvents(context.Context, *connect.Request[v1.ListAuditEventsRequest]) (*connect.Response[v1.ListAuditEventsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.ListAuditEvents is not implemented"))
 }

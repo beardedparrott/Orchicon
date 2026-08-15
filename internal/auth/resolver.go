@@ -1,6 +1,10 @@
 package auth
 
-import "context"
+import (
+	"context"
+
+	"github.com/beardedparrott/orchicon/internal/audit"
+)
 
 // ResolvedIdentity is the authenticated identity context the middleware
 // resolves per request and stores in the request context. Handlers and
@@ -28,6 +32,24 @@ func WithIdentity(ctx context.Context, id ResolvedIdentity) context.Context {
 func FromContext(ctx context.Context) (ResolvedIdentity, bool) {
 	v, ok := ctx.Value(ctxKey{}).(ResolvedIdentity)
 	return v, ok
+}
+
+// ActorFromContext returns the audit actor fields for the resolved
+// identity in the context. actor_type is "user" for any real actor
+// (including API-key callers and self-service signups), "system" when no
+// identity is attributable — the migration's DEFAULT 'system' is the
+// fallback for FK-nulled legacy rows, never for live user actions.
+func ActorFromContext(ctx context.Context) audit.Entry {
+	id, ok := FromContext(ctx)
+	if !ok {
+		return audit.Entry{ActorType: "system", AuthMethod: "system"}
+	}
+	return audit.Entry{
+		TenantID:        id.TenantID,
+		ActorIdentityID: id.IdentityID,
+		ActorType:       "user",
+		AuthMethod:      id.AuthMethod,
+	}
 }
 
 // HasEntitlement reports whether the identity holds the given

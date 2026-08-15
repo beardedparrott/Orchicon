@@ -12,6 +12,8 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/audit"
+	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/jackc/pgx/v5"
@@ -206,6 +208,13 @@ func (s *Service) CreateWorker(ctx context.Context, req *connect.Request[apiv1.C
 	if err := enqueueWorkerEvent(ctx, ttx.Tx, "worker.created", created, createdVersion); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, "worker.created", "worker", created.ID,
+		nil, audit.Snapshot(map[string]any{
+			"id": created.ID, "name": created.Name, "slug": created.Slug, "status": created.Status,
+			"version": createdVersion.Version, "model_ref": createdVersion.ModelRef,
+		})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit worker.created: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -254,6 +263,10 @@ func (s *Service) PublishWorkerVersion(ctx context.Context, req *connect.Request
 	if err := enqueueWorkerEvent(ctx, ttx.Tx, "worker.published", updated, published); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, "worker.published", "worker", updated.ID,
+		audit.SnapshotStatus(current.Status), audit.Snapshot(workerVersionAuditSnapshot(published))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit worker.published: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -301,6 +314,10 @@ func (s *Service) DeprecateWorker(ctx context.Context, req *connect.Request[apiv
 	if err := enqueueWorkerEvent(ctx, ttx.Tx, "worker.deprecated", updated, deprecatedVer); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, "worker.deprecated", "worker", updated.ID,
+		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(updated.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit worker.deprecated: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -341,6 +358,10 @@ func (s *Service) RetireWorker(ctx context.Context, req *connect.Request[apiv1.R
 	}
 	if err := enqueueWorkerEvent(ctx, ttx.Tx, "worker.retired", updated, db.WorkerVersionRow{}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, "worker.retired", "worker", updated.ID,
+		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(updated.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit worker.retired: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -398,6 +419,10 @@ func (s *Service) UpdateWorker(ctx context.Context, req *connect.Request[apiv1.U
 	if err != nil {
 		return nil, mapDBError(err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, "worker.updated", "worker", updated.ID,
+		audit.Snapshot(workerAuditSnapshot(current)), audit.Snapshot(workerAuditSnapshot(updated))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit worker.updated: %w", err))
+	}
 
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -421,11 +446,16 @@ func (s *Service) DeleteWorker(ctx context.Context, req *connect.Request[apiv1.D
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
-	if _, err := db.GetWorker(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
+	current, err := db.GetWorker(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
 		return nil, mapDBError(err)
 	}
 	if err := db.DeleteWorker(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, mapDBError(err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, "worker.deleted", "worker", current.ID,
+		audit.Snapshot(workerAuditSnapshot(current)), nil); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit worker.deleted: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -449,8 +479,16 @@ func (s *Service) DeleteWorkerVersion(ctx context.Context, req *connect.Request[
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
+	current, err := db.GetWorkerVersionByID(ctx, ttx.Tx, tenantID, req.Msg.WorkerId, req.Msg.VersionId)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
 	if err := db.DeleteWorkerVersion(ctx, ttx.Tx, tenantID, req.Msg.WorkerId, req.Msg.VersionId); err != nil {
 		return nil, mapDBError(err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, "worker.version_deleted", "worker", req.Msg.WorkerId,
+		audit.Snapshot(workerVersionAuditSnapshot(current)), nil); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit worker.version_deleted: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -479,6 +517,11 @@ func (s *Service) SetActiveWorkerVersion(ctx context.Context, req *connect.Reque
 	if _, err := db.SetActiveWorkerVersion(ctx, ttx.Tx, tenantID, req.Msg.WorkerId, current.Version, int(req.Msg.Version)); err != nil {
 		return nil, mapDBError(err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, "worker.active_version_set", "worker", current.ID,
+		audit.Snapshot(workerAuditSnapshot(current)),
+		audit.Snapshot(map[string]any{"current_version": int(req.Msg.Version)})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit worker.active_version_set: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -500,8 +543,24 @@ func (s *Service) RevertWorkerVersionToDraft(ctx context.Context, req *connect.R
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
+	// The request only carries the version_id; resolve the owning worker
+	// for the audit target. RevertWorkerVersionToDraft updates by version
+	// id only.
+	workerID, err := db.GetWorkerIDForVersion(ctx, ttx.Tx, tenantID, req.Msg.VersionId)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	current, err := db.GetWorkerVersionByID(ctx, ttx.Tx, tenantID, workerID, req.Msg.VersionId)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
 	if err := db.RevertWorkerVersionToDraft(ctx, ttx.Tx, tenantID, req.Msg.VersionId); err != nil {
 		return nil, mapDBError(err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, "worker.version_reverted_to_draft", "worker", workerID,
+		audit.Snapshot(workerVersionAuditSnapshot(current)),
+		audit.Snapshot(map[string]any{"status": domain.WorkerVersionDraft})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit worker.version_reverted_to_draft: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -715,6 +774,10 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 	if err != nil {
 		return nil, mapDBError(err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, "worker.version_updated", "worker", msg.WorkerId,
+		audit.Snapshot(workerVersionAuditSnapshot(current)), audit.Snapshot(workerVersionAuditSnapshot(updated))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit worker.version_updated: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -842,6 +905,10 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create worker version: %w", err))
 	}
+	if err := recordAudit(ctx, ttx.Tx, "worker.version_created", "worker", msg.WorkerId,
+		nil, audit.Snapshot(workerVersionAuditSnapshot(created))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit worker.version_created: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -875,6 +942,12 @@ func (s *Service) AcquireEditLock(ctx context.Context, req *connect.Request[apiv
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if acquired {
+		if err := recordAudit(ctx, ttx.Tx, "worker.edit_lock_acquired", "worker", req.Msg.WorkerId,
+			nil, audit.Snapshot(map[string]any{"held_by": lock.HeldBy, "expires_at": lock.ExpiresAt})); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit worker.edit_lock_acquired: %w", err))
+		}
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -906,6 +979,10 @@ func (s *Service) ReleaseEditLock(ctx context.Context, req *connect.Request[apiv
 	defer ttx.Rollback(ctx)
 	if err := db.ReleaseEditLock(ctx, ttx.Tx, tenantID, req.Msg.WorkerId, domain.EditLockResourceWorker, actor); err != nil {
 		return nil, mapDBError(err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, "worker.edit_lock_released", "worker", req.Msg.WorkerId,
+		audit.Snapshot(map[string]any{"held_by": actor}), nil); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit worker.edit_lock_released: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -939,6 +1016,44 @@ func (s *Service) GetEditLock(ctx context.Context, req *connect.Request[apiv1.Ge
 }
 
 // --- helpers ---------------------------------------------------------------
+
+// recordAudit writes an actor-based audit row in the caller's tx,
+// resolving the actor from the request context. Must be called in the
+// same transaction as the mutation so the row commits atomically.
+func recordAudit(ctx context.Context, tx pgx.Tx, action, targetType, targetID string, before, after json.RawMessage) error {
+	e := auth.ActorFromContext(ctx)
+	e.Action = action
+	e.TargetType = targetType
+	e.TargetID = targetID
+	e.Before = before
+	e.After = after
+	return audit.Record(ctx, tx, e)
+}
+
+// workerAuditSnapshot is the non-secret projection of a worker header
+// for the audit trail.
+func workerAuditSnapshot(w db.WorkerRow) map[string]any {
+	return map[string]any{
+		"id":        w.ID,
+		"name":      w.Name,
+		"slug":      w.Slug,
+		"status":    w.Status,
+		"version":   w.Version,
+	}
+}
+
+// workerVersionAuditSnapshot is the non-secret projection of a worker
+// version for the audit trail. The composed system_prompt can embed
+// secrets (workers carry repo secrets); exclude it from snapshots.
+func workerVersionAuditSnapshot(v db.WorkerVersionRow) map[string]any {
+	return map[string]any{
+		"id":      v.ID,
+		"worker_id": v.WorkerID,
+		"version": v.Version,
+		"status":  v.Status,
+		"model_ref": v.ModelRef,
+	}
+}
 
 // enqueueWorkerEvent builds a worker event envelope, encodes it as
 // JSON, and enqueues it in the outbox within the current transaction

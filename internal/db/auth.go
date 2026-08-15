@@ -260,11 +260,13 @@ func ListTenants(ctx context.Context, p *Pool, pageSize int, afterID string) ([]
 	return out, rows.Err()
 }
 
-// CreateTenant inserts a new tenant row. The id is server-assigned (a
-// ULID) and the version starts at 1. Returns the persisted row. The
-// tenants table has no tenant_id column so this is an admin-only path
-// (the API enforces auth:write / tenant:create entitlement).
-func CreateTenant(ctx context.Context, p *Pool, slug, name, budgetEnvelopeJSON string) (TenantRow, error) {
+// CreateTenant inserts a new tenant row within the caller's transaction.
+// The id is server-assigned (a ULID) and the version starts at 1. Returns
+// the persisted row. The tenants table has no tenant_id column and no RLS
+// so this is an admin-only path (the API enforces auth:write /
+// tenant:create entitlement); taking a pgx.Tx lets the caller commit the
+// audit row atomically with the tenant creation.
+func CreateTenant(ctx context.Context, tx pgx.Tx, slug, name, budgetEnvelopeJSON string) (TenantRow, error) {
 	if budgetEnvelopeJSON == "" {
 		budgetEnvelopeJSON = "{}"
 	}
@@ -272,7 +274,7 @@ func CreateTenant(ctx context.Context, p *Pool, slug, name, budgetEnvelopeJSON s
 		VALUES ($1, $2, $3, 'active', $4::jsonb, 1)
 		RETURNING id, slug, name, status, version, created_at, updated_at`
 	id := newULID()
-	row := p.QueryRow(ctx, q, id, slug, name, budgetEnvelopeJSON)
+	row := tx.QueryRow(ctx, q, id, slug, name, budgetEnvelopeJSON)
 	var r TenantRow
 	if err := row.Scan(&r.ID, &r.Slug, &r.Name, &r.Status, &r.Version, &r.CreatedAt, &r.UpdatedAt); err != nil {
 		return TenantRow{}, fmt.Errorf("db: insert tenant: %w", err)
@@ -427,6 +429,24 @@ func DeleteRoleBinding(ctx context.Context, tx pgx.Tx, tenantID, id string) erro
 		return ErrNotFound
 	}
 	return nil
+}
+
+// GetRoleBinding fetches a single role binding by id within the tenant
+// scope (used to snapshot before/after for the audit trail).
+func GetRoleBinding(ctx context.Context, tx pgx.Tx, tenantID, id string) (RoleBindingRow, error) {
+	const q = `SELECT id, tenant_id, identity_id, role_id, scope, scope_ref, created_at
+		FROM role_bindings WHERE id = $1 AND tenant_id = $2`
+	var b RoleBindingRow
+	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
+		&b.ID, &b.TenantID, &b.IdentityID, &b.RoleID, &b.Scope, &b.ScopeRef, &b.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RoleBindingRow{}, ErrNotFound
+	}
+	if err != nil {
+		return RoleBindingRow{}, fmt.Errorf("db: get role binding: %w", err)
+	}
+	return b, nil
 }
 
 // ListRoleBindings returns a page of role bindings for the tenant,

@@ -632,6 +632,24 @@ func CreateDependency(ctx context.Context, tx pgx.Tx, d DependencyRow) (Dependen
 	return row, nil
 }
 
+// GetDependency fetches a single DAG edge by id within the tenant scope
+// (used to snapshot before/after for the audit trail).
+func GetDependency(ctx context.Context, tx pgx.Tx, tenantID, id string) (DependencyRow, error) {
+	const q = `SELECT id, tenant_id, project_id, from_id, to_id, type, created_at
+		FROM work_item_dependencies WHERE tenant_id = $1 AND id = $2`
+	var d DependencyRow
+	err := tx.QueryRow(ctx, q, tenantID, id).Scan(
+		&d.ID, &d.TenantID, &d.ProjectID, &d.FromID, &d.ToID, &d.Type, &d.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DependencyRow{}, ErrNotFound
+	}
+	if err != nil {
+		return DependencyRow{}, fmt.Errorf("db: get dependency: %w", err)
+	}
+	return d, nil
+}
+
 // DeleteDependency removes a DAG edge by id within the tenant scope.
 func DeleteDependency(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
 	const q = `DELETE FROM work_item_dependencies WHERE tenant_id = $1 AND id = $2`
