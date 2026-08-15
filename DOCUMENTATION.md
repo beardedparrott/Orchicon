@@ -1004,6 +1004,18 @@ MCP work item mutations honor the transactional outbox pattern (invariant #3): `
 - **API keys**: SHA-256 hashed, least-privilege scopes for headless/CI clients
 - **Frontend**: Access tokens in memory; refresh tokens in HttpOnly cookies
 
+### Tenancy model
+
+**Decision (org-groups / deployment-scoped): each Orchicon deployment owns exactly one tenant.** The deployment is the isolation boundary; all identities, projects, work items, executions, and audit records are tenant-scoped to the seeded deployment tenant (today `tnt_dev`) through the RLS machinery. This **formalizes the existing behavior** — the codebase already runs single-tenant (`tenants` table + `tenant_id`/RLS on every scoped table, admin-only `CreateTenant`/`ListTenants`, OIDC callback and dev-login converging on `tnt_dev`).
+
+Consequences for the three features gated on this decision:
+
+1. **Sign-up tenant targeting** — no public self-serve signup in this phase; identities are operator-provisioned (embedded-OP local accounts or BYO IdP). The hardcoded `tnt_dev` literal is to be replaced by a **config-driven deployment tenant id** (e.g. `ORCHICON_DEPLOYMENT_TENANT_ID`, default `tnt_dev`) so each installed deployment has a stable, distinct tenant. No subject→tenant routing rules.
+2. **Audit-trail scoping** — by construction: the audit table (when added) carries `tenant_id` + the standard `tenant_isolation` RLS policy, so a deployment's audit trail is its own and cross-tenant audit reads are impossible via RLS.
+3. **Identity provisioning** — per-tenant `EnsureIdentityForSubject` upsert is kept; the OIDC callback resolves the tenant from deployment config, not a code literal. Within-tenant access control stays with tenant/project RBAC scopes.
+
+The multi-tenant schema (`tenants` table, RLS, admin `CreateTenant`/`ListTenants`) is **retained unchanged** as the forward-compatible foundation for a future SaaS phase — a SaaS pivot would be additive (subject→tenant routing at the OIDC callback, self-serve tenant provisioning), not a rewrite. The tenants admin surface stays admin-only and is not productized in this phase. Full discussion (options, trade-offs, alternatives) lives in the work-item architecture note `architecture-notes/discuss-tenant-architecture-with-architecture-worker.md` (ephemeral, per-work-item).
+
 ---
 
 ## Development Guide
