@@ -544,7 +544,8 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Description: "Get the current tenant settings (default models, stall parameters).",
 			Mutating:    false,
 			Fn:          toolGetSettings,
-		},		{
+		},
+		{
 			Name:        "update_settings",
 			Description: "Update tenant settings (default models, stall parameters). All fields are optional — zero/empty fields are left unchanged.",
 			Mutating:    true,

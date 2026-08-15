@@ -9,7 +9,8 @@ import (
 	assets "github.com/beardedparrott/orchicon"
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
-	"github.com/beardedparrott/orchicon/internal/migrate")
+	"github.com/beardedparrott/orchicon/internal/migrate"
+)
 
 // openTestPool opens a DB pool against ORCHICON_TEST_DSN (mirrors the
 // other DB-backed tests) and applies migrations so the audit_events
