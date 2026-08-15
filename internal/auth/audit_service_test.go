@@ -16,6 +16,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	assets "github.com/beardedparrott/orchicon"
@@ -23,6 +24,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/migrate"
 	"github.com/beardedparrott/orchicon/internal/tenant"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func auditTestPool(t *testing.T) *db.Pool {
@@ -76,7 +78,7 @@ func auditServiceEnv(t *testing.T, tenantID string) (*db.Pool, *Service, context
 
 func auditEventCount(t *testing.T, pool *db.Pool, tenantID, action, targetType, targetID string) int {
 	t.Helper()
-	rows, err := pool.ListAuditEvents(context.Background(), tenantID, action, "", targetType, targetID, "", 100)
+	rows, err := pool.ListAuditEvents(context.Background(), tenantID, action, "", targetType, targetID, "", 100, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}
@@ -102,7 +104,7 @@ func TestAuditServiceAuthMutations(t *testing.T) {
 	if n := auditEventCount(t, pool, tenantID, "api_key.created", "api_key", keyID); n != 1 {
 		t.Fatalf("api_key.created rows = %d, want 1", n)
 	}
-	keyRows, err := pool.ListAuditEvents(context.Background(), tenantID, "api_key.created", "", "api_key", keyID, "", 10)
+	keyRows, err := pool.ListAuditEvents(context.Background(), tenantID, "api_key.created", "", "api_key", keyID, "", 10, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}
@@ -168,7 +170,7 @@ func TestAuditServiceAuthMutations(t *testing.T) {
 	if n := auditEventCount(t, pool, tenantID, "role_binding.assigned", "role_binding", bindID); n != 1 {
 		t.Fatalf("role_binding.assigned rows = %d, want 1", n)
 	}
-	bindRows, err := pool.ListAuditEvents(context.Background(), tenantID, "role_binding.assigned", "", "role_binding", bindID, "", 10)
+	bindRows, err := pool.ListAuditEvents(context.Background(), tenantID, "role_binding.assigned", "", "role_binding", bindID, "", 10, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}
@@ -215,4 +217,104 @@ func TestAuditServiceCreateTenant(t *testing.T) {
 	if n := auditEventCount(t, pool, tenantID, "tenant.created", "tenant", tntID); n != 1 {
 		t.Fatalf("tenant.created rows = %d, want 1 in the actor's tenant", n)
 	}
+}
+
+// TestAuditServiceTimeRangeFilter covers the ListAuditEvents time window:
+// start_time is an inclusive lower bound, end_time an exclusive upper bound
+// on occurred_at, and absent bounds select all rows. Rows are written with
+// explicit occurred_at timestamps so the window assertions are exact.
+func TestAuditServiceTimeRangeFilter(t *testing.T) {
+	tenantID := "tnt_audit_tr_" + strings.ToLower(db.NewID())
+	pool, svc, ctx, _, actorID := auditServiceEnv(t, tenantID)
+	now := time.Now().UTC()
+
+	write := func(targetID string, at time.Time) {
+		t.Helper()
+		ttx, err := pool.BeginTenantTx(ctx, tenantID)
+		if err != nil {
+			t.Fatalf("begin tx: %v", err)
+		}
+		defer ttx.Rollback(context.Background())
+		if err := db.CreateAuditEvent(ctx, ttx.Tx, db.AuditEventRow{
+			TenantID:        tenantID,
+			ActorIdentityID: actorID,
+			ActorType:       "user",
+			AuthMethod:      "oidc",
+			Action:          "audit.filter.seeded",
+			TargetType:      "audit_filter_test",
+			TargetID:        targetID,
+			Before:          []byte("{}"),
+			After:           []byte(`{"t":1}`),
+			OccurredAt:      at,
+		}); err != nil {
+			t.Fatalf("create audit event: %v", err)
+		}
+		if err := ttx.Commit(context.Background()); err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+	}
+
+	write("row-early", now.Add(-2*time.Hour))
+	write("row-mid", now.Add(-1*time.Hour))
+	write("row-late", now.Add(-5*time.Minute))
+
+	list := func(start, end *timestamppb.Timestamp) []*apiv1.AuditEvent {
+		t.Helper()
+		resp, err := svc.ListAuditEvents(ctx, connect.NewRequest(&apiv1.ListAuditEventsRequest{
+			Action:    "audit.filter.seeded",
+			StartTime: start,
+			EndTime:   end,
+		}))
+		if err != nil {
+			t.Fatalf("ListAuditEvents: %v", err)
+		}
+		return resp.Msg.Events
+	}
+
+	// No bounds → all three rows.
+	if got := list(nil, nil); len(got) != 3 {
+		t.Fatalf("unbounded list = %d rows, want 3", len(got))
+	}
+
+	// [now-90m, now-30m) → only the -1h row.
+	got := list(timestamppb.New(now.Add(-90*time.Minute)), timestamppb.New(now.Add(-30*time.Minute)))
+	if len(got) != 1 || got[0].TargetId != "row-mid" {
+		t.Fatalf("window [now-90m, now-30m) = %d rows (%v), want 1 row-mid", len(got), targetIDs(got))
+	}
+
+	// start_time only (>= now-90m) → the -1h and -5m rows.
+	got = list(timestamppb.New(now.Add(-90*time.Minute)), nil)
+	if len(got) != 2 {
+		t.Fatalf("start-only list = %d rows, want 2", len(got))
+	}
+
+	// end_time only (< now-30m) → the -2h and -1h rows.
+	got = list(nil, timestamppb.New(now.Add(-30*time.Minute)))
+	if len(got) != 2 {
+		t.Fatalf("end-only list = %d rows, want 2", len(got))
+	}
+
+	// Window entirely before the rows → empty.
+	if got = list(timestamppb.New(now.Add(-5*time.Hour)), timestamppb.New(now.Add(-4*time.Hour))); len(got) != 0 {
+		t.Fatalf("past window = %d rows, want 0", len(got))
+	}
+
+	// Inclusive start: row at exactly the start bound is included.
+	got = list(timestamppb.New(now.Add(-1*time.Hour)), timestamppb.New(now.Add(-30*time.Minute)))
+	if len(got) != 1 || got[0].TargetId != "row-mid" {
+		t.Fatalf("inclusive-start window = %d rows (%v), want 1 row-mid", len(got), targetIDs(got))
+	}
+
+	// Exclusive end: row at exactly the end bound is excluded.
+	if got = list(timestamppb.New(now.Add(-2*time.Hour)), timestamppb.New(now.Add(-1*time.Hour))); len(got) != 1 || got[0].TargetId != "row-early" {
+		t.Fatalf("exclusive-end window = %d rows (%v), want 1 row-early", len(got), targetIDs(got))
+	}
+}
+
+func targetIDs(events []*apiv1.AuditEvent) []string {
+	out := make([]string, 0, len(events))
+	for _, e := range events {
+		out = append(out, e.TargetId)
+	}
+	return out
 }

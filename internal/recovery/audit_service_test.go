@@ -202,7 +202,7 @@ func seedAuditBlockedRecovery(t *testing.T, pool *db.Pool, tenantID, taskID, exe
 // (idempotent across shared-DB runs: unique target ids per test).
 func auditEventCount(t *testing.T, pool *db.Pool, tenantID, action, targetType, targetID string) int {
 	t.Helper()
-	rows, err := pool.ListAuditEvents(context.Background(), tenantID, action, "", targetType, targetID, "", 100)
+	rows, err := pool.ListAuditEvents(context.Background(), tenantID, action, "", targetType, targetID, "", 100, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestAuditServiceTriggerRecovery(t *testing.T) {
 	if n := auditEventCount(t, pool, tenantID, "recovery.triggered", "recovery", task.ID); n != 1 {
 		t.Fatalf("recovery.triggered rows = %d, want 1", n)
 	}
-	rows, err := pool.ListAuditEvents(context.Background(), tenantID, "recovery.triggered", "", "recovery", task.ID, "", 10)
+	rows, err := pool.ListAuditEvents(context.Background(), tenantID, "recovery.triggered", "", "recovery", task.ID, "", 10, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestAuditServiceMarkTaskSucceeded(t *testing.T) {
 	if n := auditEventCount(t, pool, tenantID, "recovery.task_marked_succeeded", "recovery", task.ID); n != 1 {
 		t.Fatalf("recovery.task_marked_succeeded rows = %d, want 1", n)
 	}
-	rows, err := pool.ListAuditEvents(context.Background(), tenantID, "recovery.task_marked_succeeded", "", "recovery", task.ID, "", 10)
+	rows, err := pool.ListAuditEvents(context.Background(), tenantID, "recovery.task_marked_succeeded", "", "recovery", task.ID, "", 10, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}

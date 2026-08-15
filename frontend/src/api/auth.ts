@@ -1,5 +1,6 @@
 // AuthService query + mutation hooks (TanStack Query + Connect-ES).
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { Timestamp } from "@bufbuild/protobuf";
 
 import { authClient } from "@/api/clients";
 
@@ -10,7 +11,17 @@ export const authKeys = {
   apiKeys: () => ["auth", "apiKeys"] as const,
   entitlements: (id: string) => ["auth", "entitlements", id] as const,
   audit: () => ["auth", "audit"] as const,
-  auditEvents: () => ["auth", "auditEvents"] as const,
+  auditEvents: (filters?: AuditEventFilters) =>
+    [
+      "auth",
+      "auditEvents",
+      filters?.action ?? "",
+      filters?.actorId ?? "",
+      filters?.targetType ?? "",
+      filters?.targetId ?? "",
+      filters?.startTime ? Number(filters.startTime.seconds) : "",
+      filters?.endTime ? Number(filters.endTime.seconds) : "",
+    ] as const,
 };
 
 export function useListTenants() {
@@ -184,13 +195,36 @@ export function useListAuditEntries() {
   });
 }
 
+// AuditEventFilters scopes useListAuditEvents. All fields optional;
+// startTime is an inclusive lower bound, endTime an exclusive upper
+// bound on occurred_at (absent = unbounded).
+export interface AuditEventFilters {
+  action?: string;
+  actorId?: string;
+  targetType?: string;
+  targetId?: string;
+  startTime?: Timestamp;
+  endTime?: Timestamp;
+}
+
 // useListAuditEvents fetches a page of audit_events rows (the
 // actor-based trail written by internal/audit.Record — distinct from the
-// policy-decision AuditEntry view).
-export function useListAuditEvents() {
+// policy-decision AuditEntry view). The query is keyed on the filters so
+// each filter combination refetches independently.
+export function useListAuditEvents(filters?: AuditEventFilters) {
   return useQuery({
-    queryKey: authKeys.auditEvents(),
+    queryKey: authKeys.auditEvents(filters),
     queryFn: async () =>
-      (await authClient.listAuditEvents({ pageSize: 200 })).events ?? [],
+      (
+        await authClient.listAuditEvents({
+          pageSize: 200,
+          action: filters?.action ?? undefined,
+          actorId: filters?.actorId ?? undefined,
+          targetType: filters?.targetType ?? undefined,
+          targetId: filters?.targetId ?? undefined,
+          startTime: filters?.startTime,
+          endTime: filters?.endTime,
+        })
+      ).events ?? [],
   });
 }

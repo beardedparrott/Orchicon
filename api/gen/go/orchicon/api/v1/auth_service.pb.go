@@ -2403,13 +2403,17 @@ func (x *AuditEvent) GetOccurredAt() *timestamppb.Timestamp {
 }
 
 type ListAuditEventsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Action        string                 `protobuf:"bytes,1,opt,name=action,proto3" json:"action,omitempty"`                           // optional exact filter
-	ActorId       string                 `protobuf:"bytes,2,opt,name=actor_id,json=actorId,proto3" json:"actor_id,omitempty"`          // optional filter (actor_identity_id)
-	TargetType    string                 `protobuf:"bytes,3,opt,name=target_type,json=targetType,proto3" json:"target_type,omitempty"` // optional exact filter
-	TargetId      string                 `protobuf:"bytes,4,opt,name=target_id,json=targetId,proto3" json:"target_id,omitempty"`       // optional exact filter
-	PageToken     string                 `protobuf:"bytes,5,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`    // keyset on (occurred_at, id)
-	PageSize      int32                  `protobuf:"varint,6,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Action     string                 `protobuf:"bytes,1,opt,name=action,proto3" json:"action,omitempty"`                           // optional exact filter
+	ActorId    string                 `protobuf:"bytes,2,opt,name=actor_id,json=actorId,proto3" json:"actor_id,omitempty"`          // optional filter (actor_identity_id)
+	TargetType string                 `protobuf:"bytes,3,opt,name=target_type,json=targetType,proto3" json:"target_type,omitempty"` // optional exact filter
+	TargetId   string                 `protobuf:"bytes,4,opt,name=target_id,json=targetId,proto3" json:"target_id,omitempty"`       // optional exact filter
+	PageToken  string                 `protobuf:"bytes,5,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`    // keyset on (occurred_at, id)
+	PageSize   int32                  `protobuf:"varint,6,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	// Optional inclusive lower bound on occurred_at; absent = unbounded.
+	StartTime *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=start_time,json=startTime,proto3" json:"start_time,omitempty"`
+	// Optional exclusive upper bound on occurred_at; absent = unbounded.
+	EndTime       *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=end_time,json=endTime,proto3" json:"end_time,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2484,6 +2488,20 @@ func (x *ListAuditEventsRequest) GetPageSize() int32 {
 		return x.PageSize
 	}
 	return 0
+}
+
+func (x *ListAuditEventsRequest) GetStartTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StartTime
+	}
+	return nil
+}
+
+func (x *ListAuditEventsRequest) GetEndTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.EndTime
+	}
+	return nil
 }
 
 type ListAuditEventsResponse struct {
@@ -2707,7 +2725,7 @@ const file_orchicon_api_v1_auth_service_proto_rawDesc = "" +
 	" \x01(\tR\x05after\x12\x19\n" +
 	"\btrace_id\x18\v \x01(\tR\atraceId\x12;\n" +
 	"\voccurred_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"occurredAt\"\xc5\x01\n" +
+	"occurredAt\"\xb7\x02\n" +
 	"\x16ListAuditEventsRequest\x12\x16\n" +
 	"\x06action\x18\x01 \x01(\tR\x06action\x12\x19\n" +
 	"\bactor_id\x18\x02 \x01(\tR\aactorId\x12\x1f\n" +
@@ -2716,7 +2734,10 @@ const file_orchicon_api_v1_auth_service_proto_rawDesc = "" +
 	"\ttarget_id\x18\x04 \x01(\tR\btargetId\x12\x1d\n" +
 	"\n" +
 	"page_token\x18\x05 \x01(\tR\tpageToken\x12\x1b\n" +
-	"\tpage_size\x18\x06 \x01(\x05R\bpageSize\"v\n" +
+	"\tpage_size\x18\x06 \x01(\x05R\bpageSize\x129\n" +
+	"\n" +
+	"start_time\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tstartTime\x125\n" +
+	"\bend_time\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\aendTime\"v\n" +
 	"\x17ListAuditEventsResponse\x123\n" +
 	"\x06events\x18\x01 \x03(\v2\x1b.orchicon.api.v1.AuditEventR\x06events\x12&\n" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken2\xc4\x10\n" +
@@ -2839,56 +2860,58 @@ var file_orchicon_api_v1_auth_service_proto_depIdxs = []int32{
 	51, // 18: orchicon.api.v1.CreateTenantResponse.tenant:type_name -> orchicon.api.v1.Tenant
 	52, // 19: orchicon.api.v1.ListAuditEntriesResponse.entries:type_name -> orchicon.api.v1.AuditEntry
 	53, // 20: orchicon.api.v1.AuditEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	42, // 21: orchicon.api.v1.ListAuditEventsResponse.events:type_name -> orchicon.api.v1.AuditEvent
-	0,  // 22: orchicon.api.v1.AuthService.CreateApiKey:input_type -> orchicon.api.v1.CreateApiKeyRequest
-	2,  // 23: orchicon.api.v1.AuthService.RevokeApiKey:input_type -> orchicon.api.v1.RevokeApiKeyRequest
-	4,  // 24: orchicon.api.v1.AuthService.RotateApiKey:input_type -> orchicon.api.v1.RotateApiKeyRequest
-	6,  // 25: orchicon.api.v1.AuthService.ListApiKeys:input_type -> orchicon.api.v1.ListApiKeysRequest
-	8,  // 26: orchicon.api.v1.AuthService.GetApiKey:input_type -> orchicon.api.v1.GetApiKeyRequest
-	10, // 27: orchicon.api.v1.AuthService.GetIdentity:input_type -> orchicon.api.v1.GetIdentityRequest
-	12, // 28: orchicon.api.v1.AuthService.ListIdentities:input_type -> orchicon.api.v1.ListIdentitiesRequest
-	14, // 29: orchicon.api.v1.AuthService.CreateIdentity:input_type -> orchicon.api.v1.CreateIdentityRequest
-	16, // 30: orchicon.api.v1.AuthService.UpdateIdentity:input_type -> orchicon.api.v1.UpdateIdentityRequest
-	18, // 31: orchicon.api.v1.AuthService.SetIdentityStatus:input_type -> orchicon.api.v1.SetIdentityStatusRequest
-	20, // 32: orchicon.api.v1.AuthService.DeleteIdentity:input_type -> orchicon.api.v1.DeleteIdentityRequest
-	22, // 33: orchicon.api.v1.AuthService.ListEntitlements:input_type -> orchicon.api.v1.ListEntitlementsRequest
-	24, // 34: orchicon.api.v1.AuthService.CreateRole:input_type -> orchicon.api.v1.CreateRoleRequest
-	26, // 35: orchicon.api.v1.AuthService.ListRoles:input_type -> orchicon.api.v1.ListRolesRequest
-	28, // 36: orchicon.api.v1.AuthService.AssignRole:input_type -> orchicon.api.v1.AssignRoleRequest
-	30, // 37: orchicon.api.v1.AuthService.RevokeRole:input_type -> orchicon.api.v1.RevokeRoleRequest
-	32, // 38: orchicon.api.v1.AuthService.ListRoleBindings:input_type -> orchicon.api.v1.ListRoleBindingsRequest
-	34, // 39: orchicon.api.v1.AuthService.ListTenants:input_type -> orchicon.api.v1.ListTenantsRequest
-	36, // 40: orchicon.api.v1.AuthService.CreateTenant:input_type -> orchicon.api.v1.CreateTenantRequest
-	38, // 41: orchicon.api.v1.AuthService.SetLocalCredential:input_type -> orchicon.api.v1.SetLocalCredentialRequest
-	40, // 42: orchicon.api.v1.AuthService.ListAuditEntries:input_type -> orchicon.api.v1.ListAuditEntriesRequest
-	43, // 43: orchicon.api.v1.AuthService.ListAuditEvents:input_type -> orchicon.api.v1.ListAuditEventsRequest
-	1,  // 44: orchicon.api.v1.AuthService.CreateApiKey:output_type -> orchicon.api.v1.CreateApiKeyResponse
-	3,  // 45: orchicon.api.v1.AuthService.RevokeApiKey:output_type -> orchicon.api.v1.RevokeApiKeyResponse
-	5,  // 46: orchicon.api.v1.AuthService.RotateApiKey:output_type -> orchicon.api.v1.RotateApiKeyResponse
-	7,  // 47: orchicon.api.v1.AuthService.ListApiKeys:output_type -> orchicon.api.v1.ListApiKeysResponse
-	9,  // 48: orchicon.api.v1.AuthService.GetApiKey:output_type -> orchicon.api.v1.GetApiKeyResponse
-	11, // 49: orchicon.api.v1.AuthService.GetIdentity:output_type -> orchicon.api.v1.GetIdentityResponse
-	13, // 50: orchicon.api.v1.AuthService.ListIdentities:output_type -> orchicon.api.v1.ListIdentitiesResponse
-	15, // 51: orchicon.api.v1.AuthService.CreateIdentity:output_type -> orchicon.api.v1.CreateIdentityResponse
-	17, // 52: orchicon.api.v1.AuthService.UpdateIdentity:output_type -> orchicon.api.v1.UpdateIdentityResponse
-	19, // 53: orchicon.api.v1.AuthService.SetIdentityStatus:output_type -> orchicon.api.v1.SetIdentityStatusResponse
-	21, // 54: orchicon.api.v1.AuthService.DeleteIdentity:output_type -> orchicon.api.v1.DeleteIdentityResponse
-	23, // 55: orchicon.api.v1.AuthService.ListEntitlements:output_type -> orchicon.api.v1.ListEntitlementsResponse
-	25, // 56: orchicon.api.v1.AuthService.CreateRole:output_type -> orchicon.api.v1.CreateRoleResponse
-	27, // 57: orchicon.api.v1.AuthService.ListRoles:output_type -> orchicon.api.v1.ListRolesResponse
-	29, // 58: orchicon.api.v1.AuthService.AssignRole:output_type -> orchicon.api.v1.AssignRoleResponse
-	31, // 59: orchicon.api.v1.AuthService.RevokeRole:output_type -> orchicon.api.v1.RevokeRoleResponse
-	33, // 60: orchicon.api.v1.AuthService.ListRoleBindings:output_type -> orchicon.api.v1.ListRoleBindingsResponse
-	35, // 61: orchicon.api.v1.AuthService.ListTenants:output_type -> orchicon.api.v1.ListTenantsResponse
-	37, // 62: orchicon.api.v1.AuthService.CreateTenant:output_type -> orchicon.api.v1.CreateTenantResponse
-	39, // 63: orchicon.api.v1.AuthService.SetLocalCredential:output_type -> orchicon.api.v1.SetLocalCredentialResponse
-	41, // 64: orchicon.api.v1.AuthService.ListAuditEntries:output_type -> orchicon.api.v1.ListAuditEntriesResponse
-	44, // 65: orchicon.api.v1.AuthService.ListAuditEvents:output_type -> orchicon.api.v1.ListAuditEventsResponse
-	44, // [44:66] is the sub-list for method output_type
-	22, // [22:44] is the sub-list for method input_type
-	22, // [22:22] is the sub-list for extension type_name
-	22, // [22:22] is the sub-list for extension extendee
-	0,  // [0:22] is the sub-list for field type_name
+	53, // 21: orchicon.api.v1.ListAuditEventsRequest.start_time:type_name -> google.protobuf.Timestamp
+	53, // 22: orchicon.api.v1.ListAuditEventsRequest.end_time:type_name -> google.protobuf.Timestamp
+	42, // 23: orchicon.api.v1.ListAuditEventsResponse.events:type_name -> orchicon.api.v1.AuditEvent
+	0,  // 24: orchicon.api.v1.AuthService.CreateApiKey:input_type -> orchicon.api.v1.CreateApiKeyRequest
+	2,  // 25: orchicon.api.v1.AuthService.RevokeApiKey:input_type -> orchicon.api.v1.RevokeApiKeyRequest
+	4,  // 26: orchicon.api.v1.AuthService.RotateApiKey:input_type -> orchicon.api.v1.RotateApiKeyRequest
+	6,  // 27: orchicon.api.v1.AuthService.ListApiKeys:input_type -> orchicon.api.v1.ListApiKeysRequest
+	8,  // 28: orchicon.api.v1.AuthService.GetApiKey:input_type -> orchicon.api.v1.GetApiKeyRequest
+	10, // 29: orchicon.api.v1.AuthService.GetIdentity:input_type -> orchicon.api.v1.GetIdentityRequest
+	12, // 30: orchicon.api.v1.AuthService.ListIdentities:input_type -> orchicon.api.v1.ListIdentitiesRequest
+	14, // 31: orchicon.api.v1.AuthService.CreateIdentity:input_type -> orchicon.api.v1.CreateIdentityRequest
+	16, // 32: orchicon.api.v1.AuthService.UpdateIdentity:input_type -> orchicon.api.v1.UpdateIdentityRequest
+	18, // 33: orchicon.api.v1.AuthService.SetIdentityStatus:input_type -> orchicon.api.v1.SetIdentityStatusRequest
+	20, // 34: orchicon.api.v1.AuthService.DeleteIdentity:input_type -> orchicon.api.v1.DeleteIdentityRequest
+	22, // 35: orchicon.api.v1.AuthService.ListEntitlements:input_type -> orchicon.api.v1.ListEntitlementsRequest
+	24, // 36: orchicon.api.v1.AuthService.CreateRole:input_type -> orchicon.api.v1.CreateRoleRequest
+	26, // 37: orchicon.api.v1.AuthService.ListRoles:input_type -> orchicon.api.v1.ListRolesRequest
+	28, // 38: orchicon.api.v1.AuthService.AssignRole:input_type -> orchicon.api.v1.AssignRoleRequest
+	30, // 39: orchicon.api.v1.AuthService.RevokeRole:input_type -> orchicon.api.v1.RevokeRoleRequest
+	32, // 40: orchicon.api.v1.AuthService.ListRoleBindings:input_type -> orchicon.api.v1.ListRoleBindingsRequest
+	34, // 41: orchicon.api.v1.AuthService.ListTenants:input_type -> orchicon.api.v1.ListTenantsRequest
+	36, // 42: orchicon.api.v1.AuthService.CreateTenant:input_type -> orchicon.api.v1.CreateTenantRequest
+	38, // 43: orchicon.api.v1.AuthService.SetLocalCredential:input_type -> orchicon.api.v1.SetLocalCredentialRequest
+	40, // 44: orchicon.api.v1.AuthService.ListAuditEntries:input_type -> orchicon.api.v1.ListAuditEntriesRequest
+	43, // 45: orchicon.api.v1.AuthService.ListAuditEvents:input_type -> orchicon.api.v1.ListAuditEventsRequest
+	1,  // 46: orchicon.api.v1.AuthService.CreateApiKey:output_type -> orchicon.api.v1.CreateApiKeyResponse
+	3,  // 47: orchicon.api.v1.AuthService.RevokeApiKey:output_type -> orchicon.api.v1.RevokeApiKeyResponse
+	5,  // 48: orchicon.api.v1.AuthService.RotateApiKey:output_type -> orchicon.api.v1.RotateApiKeyResponse
+	7,  // 49: orchicon.api.v1.AuthService.ListApiKeys:output_type -> orchicon.api.v1.ListApiKeysResponse
+	9,  // 50: orchicon.api.v1.AuthService.GetApiKey:output_type -> orchicon.api.v1.GetApiKeyResponse
+	11, // 51: orchicon.api.v1.AuthService.GetIdentity:output_type -> orchicon.api.v1.GetIdentityResponse
+	13, // 52: orchicon.api.v1.AuthService.ListIdentities:output_type -> orchicon.api.v1.ListIdentitiesResponse
+	15, // 53: orchicon.api.v1.AuthService.CreateIdentity:output_type -> orchicon.api.v1.CreateIdentityResponse
+	17, // 54: orchicon.api.v1.AuthService.UpdateIdentity:output_type -> orchicon.api.v1.UpdateIdentityResponse
+	19, // 55: orchicon.api.v1.AuthService.SetIdentityStatus:output_type -> orchicon.api.v1.SetIdentityStatusResponse
+	21, // 56: orchicon.api.v1.AuthService.DeleteIdentity:output_type -> orchicon.api.v1.DeleteIdentityResponse
+	23, // 57: orchicon.api.v1.AuthService.ListEntitlements:output_type -> orchicon.api.v1.ListEntitlementsResponse
+	25, // 58: orchicon.api.v1.AuthService.CreateRole:output_type -> orchicon.api.v1.CreateRoleResponse
+	27, // 59: orchicon.api.v1.AuthService.ListRoles:output_type -> orchicon.api.v1.ListRolesResponse
+	29, // 60: orchicon.api.v1.AuthService.AssignRole:output_type -> orchicon.api.v1.AssignRoleResponse
+	31, // 61: orchicon.api.v1.AuthService.RevokeRole:output_type -> orchicon.api.v1.RevokeRoleResponse
+	33, // 62: orchicon.api.v1.AuthService.ListRoleBindings:output_type -> orchicon.api.v1.ListRoleBindingsResponse
+	35, // 63: orchicon.api.v1.AuthService.ListTenants:output_type -> orchicon.api.v1.ListTenantsResponse
+	37, // 64: orchicon.api.v1.AuthService.CreateTenant:output_type -> orchicon.api.v1.CreateTenantResponse
+	39, // 65: orchicon.api.v1.AuthService.SetLocalCredential:output_type -> orchicon.api.v1.SetLocalCredentialResponse
+	41, // 66: orchicon.api.v1.AuthService.ListAuditEntries:output_type -> orchicon.api.v1.ListAuditEntriesResponse
+	44, // 67: orchicon.api.v1.AuthService.ListAuditEvents:output_type -> orchicon.api.v1.ListAuditEventsResponse
+	46, // [46:68] is the sub-list for method output_type
+	24, // [24:46] is the sub-list for method input_type
+	24, // [24:24] is the sub-list for extension type_name
+	24, // [24:24] is the sub-list for extension extendee
+	0,  // [0:24] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_auth_service_proto_init() }

@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/net/publicsuffix"
 
@@ -29,7 +30,7 @@ import (
 
 func auditHTTPCount(t *testing.T, pool *db.Pool, tenantID, action, actorID string) int {
 	t.Helper()
-	rows, err := pool.ListAuditEvents(context.Background(), tenantID, action, actorID, "", "", "", 100)
+	rows, err := pool.ListAuditEvents(context.Background(), tenantID, action, actorID, "", "", "", 100, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}
@@ -81,7 +82,7 @@ func TestAuditHTTPLoginSignupLogoutRefresh(t *testing.T) {
 		t.Fatalf("auth.login rows = %d, want 1", n)
 	}
 	// The login row carries the real auth method.
-	rows, err := pool.ListAuditEvents(context.Background(), tenantID, "auth.login", out.IdentityID, "", "", "", 10)
+	rows, err := pool.ListAuditEvents(context.Background(), tenantID, "auth.login", out.IdentityID, "", "", "", 10, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}

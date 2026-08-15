@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
@@ -91,7 +92,7 @@ func seedAuditProject(t *testing.T, pool *db.Pool, tenantID string) string {
 // (idempotent across shared-DB runs: unique target ids per test).
 func auditEventCount(t *testing.T, pool *db.Pool, tenantID, action, targetType, targetID string) int {
 	t.Helper()
-	rows, err := pool.ListAuditEvents(context.Background(), tenantID, action, "", targetType, targetID, "", 100)
+	rows, err := pool.ListAuditEvents(context.Background(), tenantID, action, "", targetType, targetID, "", 100, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestAuditServiceWorkItemMutations(t *testing.T) {
 	}
 
 	// The row carries the actor: user + oidc + the identity id.
-	rows, err := pool.ListAuditEvents(context.Background(), tenantID, "work_item.created", "", "work_item", wiID, "", 10)
+	rows, err := pool.ListAuditEvents(context.Background(), tenantID, "work_item.created", "", "work_item", wiID, "", 10, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}
@@ -155,7 +156,7 @@ func TestAuditServiceWorkItemMutations(t *testing.T) {
 	if n := auditEventCount(t, pool, tenantID, "work_item.updated", "work_item", wiID); n != 1 {
 		t.Fatalf("work_item.updated rows = %d, want 1", n)
 	}
-	updRows, err := pool.ListAuditEvents(context.Background(), tenantID, "work_item.updated", "", "work_item", wiID, "", 10)
+	updRows, err := pool.ListAuditEvents(context.Background(), tenantID, "work_item.updated", "", "work_item", wiID, "", 10, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}
@@ -188,7 +189,7 @@ func TestAuditServiceWorkItemAtomicRollback(t *testing.T) {
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("over-long title: err = %v, want InvalidArgument", err)
 	}
-	rows, err := pool.ListAuditEvents(context.Background(), tenantID, "", "", "", "", "", 100)
+	rows, err := pool.ListAuditEvents(context.Background(), tenantID, "", "", "", "", "", 100, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}

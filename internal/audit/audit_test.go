@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
+	"time"
 
 	assets "github.com/beardedparrott/orchicon"
 	"github.com/beardedparrott/orchicon/internal/audit"
@@ -68,7 +69,7 @@ func TestAuditRecordCommitted(t *testing.T) {
 		t.Fatalf("commit: %v", err)
 	}
 
-	rows, err := pool.ListAuditEvents(ctx, "tnt_audit_commit", "", "", "work_item", targetID, "", 10)
+	rows, err := pool.ListAuditEvents(ctx, "tnt_audit_commit", "", "", "work_item", targetID, "", 10, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -114,7 +115,7 @@ func TestAuditRecordRollback(t *testing.T) {
 		t.Fatalf("rollback: %v", err)
 	}
 
-	rows, err := pool.ListAuditEvents(ctx, "tnt_audit_rollback", "", "", "", "", "", 10)
+	rows, err := pool.ListAuditEvents(ctx, "tnt_audit_rollback", "", "", "", "", "", 10, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -147,7 +148,7 @@ func TestAuditSystemRowNullActorScan(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
-	rows, err := pool.ListAuditEvents(ctx, "tnt_sys", "", "", "x", targetID, "", 10)
+	rows, err := pool.ListAuditEvents(ctx, "tnt_sys", "", "", "x", targetID, "", 10, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}
@@ -199,7 +200,7 @@ func TestAuditCrossTenantRLS(t *testing.T) {
 	}
 
 	// Read from tnt_b: RLS must hide the tnt_a row.
-	rows, err := pool.ListAuditEvents(ctx, "tnt_b", "", "", "", "", "", 10)
+	rows, err := pool.ListAuditEvents(ctx, "tnt_b", "", "", "", "", "", 10, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}

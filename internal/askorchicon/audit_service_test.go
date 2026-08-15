@@ -29,7 +29,7 @@ import (
 
 func auditEventCount(t *testing.T, pool *db.Pool, tenantID, action, targetType, targetID string) int {
 	t.Helper()
-	rows, err := pool.ListAuditEvents(context.Background(), tenantID, action, "", targetType, targetID, "", 100)
+	rows, err := pool.ListAuditEvents(context.Background(), tenantID, action, "", targetType, targetID, "", 100, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestAuditServiceChatStreamMessageSent(t *testing.T) {
 	if n := auditEventCount(t, pool, tenantID, "conversation.message_sent", "conversation", convID); n != 1 {
 		t.Fatalf("conversation.message_sent rows = %d, want 1", n)
 	}
-	rows, err := pool.ListAuditEvents(context.Background(), tenantID, "conversation.message_sent", "", "conversation", convID, "", 10)
+	rows, err := pool.ListAuditEvents(context.Background(), tenantID, "conversation.message_sent", "", "conversation", convID, "", 10, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestAuditServiceInterjectMessageSent(t *testing.T) {
 	if n := auditEventCount(t, pool, tenantID, "conversation.message_sent", "conversation", convID); n != 1 {
 		t.Fatalf("conversation.message_sent rows = %d, want 1", n)
 	}
-	rows, err := pool.ListAuditEvents(context.Background(), tenantID, "conversation.message_sent", "", "conversation", convID, "", 10)
+	rows, err := pool.ListAuditEvents(context.Background(), tenantID, "conversation.message_sent", "", "conversation", convID, "", 10, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}

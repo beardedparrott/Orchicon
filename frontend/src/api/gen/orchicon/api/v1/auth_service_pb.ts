@@ -2075,6 +2075,20 @@ export class ListAuditEventsRequest extends Message<ListAuditEventsRequest> {
    */
   pageSize = 0;
 
+  /**
+   * Optional inclusive lower bound on occurred_at; absent = unbounded.
+   *
+   * @generated from field: google.protobuf.Timestamp start_time = 7;
+   */
+  startTime?: Timestamp;
+
+  /**
+   * Optional exclusive upper bound on occurred_at; absent = unbounded.
+   *
+   * @generated from field: google.protobuf.Timestamp end_time = 8;
+   */
+  endTime?: Timestamp;
+
   constructor(data?: PartialMessage<ListAuditEventsRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -2089,6 +2103,8 @@ export class ListAuditEventsRequest extends Message<ListAuditEventsRequest> {
     { no: 4, name: "target_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 5, name: "page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 6, name: "page_size", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 7, name: "start_time", kind: "message", T: Timestamp },
+    { no: 8, name: "end_time", kind: "message", T: Timestamp },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListAuditEventsRequest {
