@@ -38,6 +38,52 @@ export function useListIdentities() {
   });
 }
 
+export function useCreateIdentity() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      identityType: string;
+      subject?: string;
+      displayName: string;
+    }) => (await authClient.createIdentity(input)).identity,
+    onSuccess: () => qc.invalidateQueries({ queryKey: authKeys.identities() }),
+  });
+}
+
+export function useUpdateIdentity() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      id: string;
+      displayName: string;
+      version?: number;
+    }) => (await authClient.updateIdentity(input)).identity,
+    onSuccess: () => qc.invalidateQueries({ queryKey: authKeys.identities() }),
+  });
+}
+
+export function useSetIdentityStatus() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      id: string;
+      status: string;
+      version?: number;
+    }) => (await authClient.setIdentityStatus(input)).identity,
+    onSuccess: () => qc.invalidateQueries({ queryKey: authKeys.identities() }),
+  });
+}
+
+export function useDeleteIdentity() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      await authClient.deleteIdentity({ id });
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: authKeys.identities() }),
+  });
+}
+
 export function useListRoles() {
   return useQuery({
     queryKey: authKeys.roles(),

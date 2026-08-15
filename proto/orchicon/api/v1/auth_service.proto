@@ -21,6 +21,10 @@ service AuthService {
   // --- Identity + entitlements ---
   rpc GetIdentity(GetIdentityRequest) returns (GetIdentityResponse);
   rpc ListIdentities(ListIdentitiesRequest) returns (ListIdentitiesResponse);
+  rpc CreateIdentity(CreateIdentityRequest) returns (CreateIdentityResponse);
+  rpc UpdateIdentity(UpdateIdentityRequest) returns (UpdateIdentityResponse);
+  rpc SetIdentityStatus(SetIdentityStatusRequest) returns (SetIdentityStatusResponse);
+  rpc DeleteIdentity(DeleteIdentityRequest) returns (DeleteIdentityResponse);
   rpc ListEntitlements(ListEntitlementsRequest) returns (ListEntitlementsResponse);
 
   // --- RBAC roles + bindings ---
@@ -104,6 +108,53 @@ message ListIdentitiesResponse {
   repeated Identity identities = 1;
   string next_page_token = 2;
 }
+// CreateIdentityRequest provisions a new identity (a user or service
+// account) in the caller's tenant. Admin-only path: the RBAC interceptor
+// gates this to auth:write. For identity_type "user" the subject is the
+// login handle (matching the local-account username charset); for
+// "service" it is optional — when omitted the server generates a
+// synthetic "sa-<ULID>" subject.
+message CreateIdentityRequest {
+  // Required. "user" | "service".
+  string identity_type = 1;
+  // Required for "user", optional for "service" (see above).
+  string subject = 2;
+  // Required. Human-readable name, <= 200 runes.
+  string display_name = 3;
+}
+message CreateIdentityResponse {
+  Identity identity = 1;
+}
+// UpdateIdentityRequest edits an identity's display_name. The optional
+// version enables optimistic concurrency: when present and mismatched the
+// update fails with NotFound.
+message UpdateIdentityRequest {
+  string id = 1;
+  string display_name = 2;
+  optional int32 version = 3;
+}
+message UpdateIdentityResponse {
+  Identity identity = 1;
+}
+// SetIdentityStatusRequest flips an identity between "active" and
+// "disabled". Only those two values are writable; anything else is
+// InvalidArgument. The optional version enables optimistic concurrency.
+message SetIdentityStatusRequest {
+  string id = 1;
+  string status = 2; // "active" | "disabled"
+  optional int32 version = 3;
+}
+message SetIdentityStatusResponse {
+  Identity identity = 1;
+}
+// DeleteIdentityRequest hard-deletes an identity plus its role bindings,
+// API keys, and local credentials in one tenant-scoped transaction.
+// Guarded server-side: the caller cannot delete their own identity, and
+// an "active" identity must be disabled first.
+message DeleteIdentityRequest {
+  string id = 1;
+}
+message DeleteIdentityResponse {}
 message ListEntitlementsRequest {
   string identity_id = 1;
 }

@@ -1,10 +1,14 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { createRoute } from "@tanstack/react-router";
 
 import {
   useListTenants,
   useCreateTenant,
   useListIdentities,
+  useCreateIdentity,
+  useUpdateIdentity,
+  useSetIdentityStatus,
+  useDeleteIdentity,
   useListRoles,
   useListApiKeys,
   useListAuditEntries,
@@ -179,11 +183,167 @@ function TenantsTab() {
 
 function IdentitiesTab() {
   const { data, isLoading, error } = useListIdentities();
+  const create = useCreateIdentity();
+  const update = useUpdateIdentity();
+  const setStatus = useSetIdentityStatus();
+  const remove = useDeleteIdentity();
   const setCredential = useSetLocalCredential();
   const toast = useToast();
+
+  // Create form state.
+  const [createType, setCreateType] = useState<"user" | "service">("user");
+  const [createSubject, setCreateSubject] = useState("");
+  const [createName, setCreateName] = useState("");
+
+  // "Set local password" state (unchanged surface).
   const [identityId, setIdentityId] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+
+  // List-page pattern: search + status filter + selection.
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  // Inline row edit.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return (data ?? []).filter((i) => {
+      if (statusFilter !== "all" && i.status !== statusFilter) return false;
+      if (!q) return true;
+      return (
+        (i.displayName || "").toLowerCase().includes(q) ||
+        i.subject.toLowerCase().includes(q)
+      );
+    });
+  }, [data, search, statusFilter]);
+
+  const toggleSelect = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    setSelected((prev) =>
+      prev.size === filtered.length && filtered.length > 0
+        ? new Set()
+        : new Set(filtered.map((i) => i.id))
+    );
+  };
+
+  async function handleCreate() {
+    const name = createName.trim();
+    const subject = createSubject.trim();
+    if (!name) return;
+    if (createType === "user" && !subject) return;
+    try {
+      const i = await create.mutateAsync({
+        identityType: createType,
+        subject: subject || undefined,
+        displayName: name,
+      });
+      toast.success(`Identity "${i?.displayName ?? name}" created.`);
+      setCreateName("");
+      setCreateSubject("");
+    } catch {
+      // global onError already toasted the error
+    }
+  }
+
+  function handleEditStart(id: string) {
+    const i = data?.find((x) => x.id === id);
+    setEditingId(id);
+    setEditName(i?.displayName ?? "");
+  }
+
+  async function handleEditSave(id: string) {
+    const name = editName.trim();
+    if (!name) return;
+    try {
+      await update.mutateAsync({ id, displayName: name });
+      toast.success("Identity updated.");
+      setEditingId(null);
+      setEditName("");
+    } catch {
+      // error already toasted
+    }
+  }
+
+  async function handleToggleStatus(id: string, subject: string, current: string) {
+    const next = current === "disabled" ? "active" : "disabled";
+    try {
+      await setStatus.mutateAsync({ id, status: next });
+      toast.success(`Identity "${subject}" ${next === "disabled" ? "disabled" : "enabled"}.`);
+      setSelected((prev) => {
+        const s = new Set(prev);
+        s.delete(id);
+        return s;
+      });
+    } catch {
+      // error already toasted
+    }
+  }
+
+  async function handleDelete(id: string, subject: string) {
+    if (!window.confirm(`Delete identity "${subject}"? This removes its role bindings, API keys, and local credential and cannot be undone.`)) return;
+    try {
+      await remove.mutateAsync(id);
+      toast.success(`Identity "${subject}" deleted.`);
+      setSelected((prev) => {
+        const s = new Set(prev);
+        s.delete(id);
+        return s;
+      });
+    } catch {
+      // error already toasted
+    }
+  }
+
+  async function handleBulkDisable() {
+    const targets = filtered.filter((i) => selected.has(i.id) && i.status === "active");
+    if (targets.length === 0) {
+      toast.error("No active identities selected to disable.");
+      return;
+    }
+    if (!window.confirm(`Disable ${targets.length} selected active identit${targets.length === 1 ? "y" : "ies"}?`)) return;
+    try {
+      await Promise.all(targets.map((i) => setStatus.mutateAsync({ id: i.id, status: "disabled" })));
+      toast.success(`${targets.length} identity${targets.length === 1 ? "" : "ies"} disabled.`);
+      setSelected(new Set());
+    } catch {
+      // error already toasted
+    }
+  }
+
+  async function handleBulkDelete() {
+    const targets = filtered.filter((i) => selected.has(i.id) && i.status === "disabled");
+    const blocked = filtered.filter((i) => selected.has(i.id) && i.status !== "disabled");
+    if (targets.length === 0) {
+      toast.error(blocked.length > 0 ? "Only disabled identities can be deleted; disable them first." : "No disabled identities selected.");
+      return;
+    }
+    if (!window.confirm(`Delete ${targets.length} selected disabled identit${targets.length === 1 ? "y" : "ies"}? This cannot be undone.`)) return;
+    try {
+      await Promise.all(targets.map((i) => remove.mutateAsync(i.id)));
+      toast.success(`${targets.length} identity${targets.length === 1 ? "" : "ies"} deleted.`);
+      if (blocked.length > 0) {
+        toast.error(`${blocked.length} active identit${blocked.length === 1 ? "y" : "ies"} skipped — disable them before deleting.`);
+      }
+      setSelected(new Set());
+    } catch {
+      // error already toasted
+    }
+  }
 
   async function handleSetCredential() {
     if (!identityId || !username || !password) return;
@@ -200,30 +360,191 @@ function IdentitiesTab() {
   if (error) return <p className="text-sm text-destructive">{String(error)}</p>;
   return (
     <div className="space-y-6">
+      {/* Create form */}
+      <div className="space-y-2">
+        <h3 className="text-sm font-semibold">Create identity</h3>
+        <div className="grid gap-2 md:grid-cols-[auto_1fr_1fr_auto]">
+          <select
+            value={createType}
+            onChange={(e) => setCreateType(e.target.value as "user" | "service")}
+            className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+            aria-label="Identity type"
+          >
+            <option value="user">User</option>
+            <option value="service">Service account</option>
+          </select>
+          <Input
+            placeholder={createType === "user" ? "subject (login handle)" : "subject (slug, optional)"}
+            value={createSubject}
+            onChange={(e) => setCreateSubject(e.target.value)}
+            disabled={create.isPending}
+          />
+          <Input
+            placeholder="Display name"
+            value={createName}
+            onChange={(e) => setCreateName(e.target.value)}
+            disabled={create.isPending}
+          />
+          <Button
+            onClick={handleCreate}
+            disabled={!createName.trim() || (createType === "user" && !createSubject.trim()) || create.isPending}
+          >
+            {create.isPending ? "Creating…" : "Create"}
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {createType === "user"
+            ? "Subject is the login handle and must match "
+            : "Subject is optional; when omitted a synthetic sa-… subject is generated. Must match "}
+          <code className="font-mono">{createType === "user" ? "^[a-z0-9][a-z0-9._@+-]*$" : "^[a-z0-9]+(?:-[a-z0-9]+)*$"}</code>.
+        </p>
+      </div>
+
+      {/* Filter bar */}
+      <div className="flex flex-wrap items-center gap-3">
+        <Input
+          placeholder="Search identities…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="max-w-xs"
+        />
+        <select
+          className="h-9 rounded-md border bg-background px-2 text-sm"
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          aria-label="Status filter"
+        >
+          <option value="all">All statuses</option>
+          <option value="active">Active</option>
+          <option value="disabled">Disabled</option>
+        </select>
+        {selected.size > 0 && (
+          <>
+            <Button size="sm" variant="outline" onClick={handleBulkDisable} disabled={setStatus.isPending}>
+              Disable {selected.size} selected
+            </Button>
+            <Button size="sm" variant="destructive" onClick={handleBulkDelete} disabled={remove.isPending}>
+              Delete {selected.size} selected
+            </Button>
+          </>
+        )}
+      </div>
+
+      {/* Select-all header */}
+      {filtered.length > 0 && (
+        <div className="flex items-center gap-2 px-1">
+          <input
+            type="checkbox"
+            checked={filtered.length > 0 && selected.size === filtered.length}
+            onChange={toggleSelectAll}
+            className="h-4 w-4 rounded border-input"
+            aria-label="Select all identities"
+          />
+          <span className="text-xs text-muted-foreground">
+            {selected.size > 0
+              ? `${selected.size} of ${filtered.length} selected`
+              : `${filtered.length} identit${filtered.length === 1 ? "y" : "ies"}`}
+          </span>
+        </div>
+      )}
+
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b text-left text-muted-foreground">
+              <th className="py-2 pr-4" />
               <th className="py-2 pr-4">ID</th>
               <th className="py-2 pr-4">Subject</th>
               <th className="py-2 pr-4">Name</th>
               <th className="py-2 pr-4">Type</th>
               <th className="py-2 pr-4">Status</th>
+              <th className="py-2 pr-4">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {data?.map((i) => (
+            {filtered.length === 0 && (
+              <tr>
+                <td colSpan={7} className="py-3 text-muted-foreground">
+                  No identities match.
+                </td>
+              </tr>
+            )}
+            {filtered.map((i) => (
               <tr key={i.id} className="border-b">
+                <td className="py-2 pr-4">
+                  <input
+                    type="checkbox"
+                    checked={selected.has(i.id)}
+                    onChange={() => toggleSelect(i.id)}
+                    className="h-4 w-4 rounded border-input"
+                    aria-label={`Select ${i.subject}`}
+                  />
+                </td>
                 <td className="py-2 pr-4 font-mono text-xs">{i.id}</td>
                 <td className="py-2 pr-4 font-mono text-xs">{i.subject}</td>
-                <td className="py-2 pr-4">{i.displayName}</td>
+                <td className="py-2 pr-4">
+                  {editingId === i.id ? (
+                    <div className="flex items-center gap-2">
+                      <Input
+                        className="h-8 w-56"
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        autoFocus
+                      />
+                      <Button size="sm" onClick={() => handleEditSave(i.id)} disabled={update.isPending || !editName.trim()}>
+                        Save
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => { setEditingId(null); setEditName(""); }}>
+                        Cancel
+                      </Button>
+                    </div>
+                  ) : (
+                    i.displayName
+                  )}
+                </td>
                 <td className="py-2 pr-4">{i.identityType}</td>
-                <td className="py-2 pr-4">{i.status}</td>
+                <td className="py-2 pr-4">
+                  <span className={cn(
+                    "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
+                    i.status === "active" ? "bg-green-100 text-green-800 dark:bg-green-950/50 dark:text-green-300"
+                      : "bg-muted text-muted-foreground"
+                  )}>
+                    {i.status}
+                  </span>
+                </td>
+                <td className="py-2 pr-4 space-x-2 whitespace-nowrap">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleEditStart(i.id)}
+                    disabled={editingId === i.id}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleToggleStatus(i.id, i.subject, i.status)}
+                    disabled={setStatus.isPending || editingId === i.id}
+                  >
+                    {i.status === "disabled" ? "Enable" : "Disable"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => handleDelete(i.id, i.subject)}
+                    disabled={remove.isPending || i.status !== "disabled"}
+                    title={i.status === "disabled" ? "Delete identity" : "Disable the identity before deleting"}
+                  >
+                    Delete
+                  </Button>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
       <div className="space-y-2 border-t pt-4">
         <h3 className="text-sm font-semibold">Set local password</h3>
         <p className="text-xs text-muted-foreground">

@@ -119,6 +119,105 @@ func ListIdentities(ctx context.Context, tx pgx.Tx, f ListIdentitiesFilter) ([]I
 	return out, rows.Err()
 }
 
+// CreateIdentity inserts a new identity row for the tenant. The id is
+// server-assigned and the version starts at 1. A duplicate
+// (tenant_id, subject) surfaces as a unique-constraint error the
+// caller maps to CodeAlreadyExists.
+func CreateIdentity(ctx context.Context, tx pgx.Tx, r IdentityRow) (IdentityRow, error) {
+	if r.ID == "" {
+		r.ID = NewID()
+	}
+	if r.Status == "" {
+		r.Status = "active"
+	}
+	if r.IdentityType == "" {
+		r.IdentityType = "user"
+	}
+	const q = `INSERT INTO identities (id, tenant_id, subject, display_name, identity_type, status)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, tenant_id, subject, display_name, identity_type, status, version, created_at, updated_at`
+	err := tx.QueryRow(ctx, q, r.ID, r.TenantID, r.Subject, nullableStr(r.DisplayName),
+		r.IdentityType, r.Status).Scan(
+		&r.ID, &r.TenantID, &r.Subject, &r.DisplayName, &r.IdentityType, &r.Status,
+		&r.Version, &r.CreatedAt, &r.UpdatedAt,
+	)
+	if err != nil {
+		return IdentityRow{}, fmt.Errorf("db: create identity: %w", err)
+	}
+	return r, nil
+}
+
+// UpdateIdentityDisplayName edits an identity's display name with
+// optimistic concurrency. expectedVersion < 0 disables the version
+// check (the caller supplied none); a non-negative value must match the
+// current row version or the update touches nothing and ErrNotFound is
+// returned. The version column is bumped on every successful update.
+func UpdateIdentityDisplayName(ctx context.Context, tx pgx.Tx, tenantID, id, displayName string, expectedVersion int) (IdentityRow, error) {
+	const q = `UPDATE identities SET display_name = $1, updated_at = now(), version = version + 1
+		WHERE tenant_id = $2 AND id = $3 AND ($4 < 0 OR version = $4)
+		RETURNING id, tenant_id, subject, display_name, identity_type, status, version, created_at, updated_at`
+	var r IdentityRow
+	err := tx.QueryRow(ctx, q, nullableStr(displayName), tenantID, id, expectedVersion).Scan(
+		&r.ID, &r.TenantID, &r.Subject, &r.DisplayName, &r.IdentityType, &r.Status,
+		&r.Version, &r.CreatedAt, &r.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return IdentityRow{}, ErrNotFound
+	}
+	if err != nil {
+		return IdentityRow{}, fmt.Errorf("db: update identity display name: %w", err)
+	}
+	return r, nil
+}
+
+// SetIdentityStatus flips an identity between "active" and "disabled"
+// with optimistic concurrency (expectedVersion < 0 disables the check).
+// The service validates the status value before this is reached; the
+// column is unconstrained text so the data-access layer stores it as-is.
+func SetIdentityStatus(ctx context.Context, tx pgx.Tx, tenantID, id, status string, expectedVersion int) (IdentityRow, error) {
+	const q = `UPDATE identities SET status = $1, updated_at = now(), version = version + 1
+		WHERE tenant_id = $2 AND id = $3 AND ($4 < 0 OR version = $4)
+		RETURNING id, tenant_id, subject, display_name, identity_type, status, version, created_at, updated_at`
+	var r IdentityRow
+	err := tx.QueryRow(ctx, q, status, tenantID, id, expectedVersion).Scan(
+		&r.ID, &r.TenantID, &r.Subject, &r.DisplayName, &r.IdentityType, &r.Status,
+		&r.Version, &r.CreatedAt, &r.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return IdentityRow{}, ErrNotFound
+	}
+	if err != nil {
+		return IdentityRow{}, fmt.Errorf("db: set identity status: %w", err)
+	}
+	return r, nil
+}
+
+// DeleteIdentity hard-deletes an identity plus the dependent rows that
+// reference it. role_bindings and api_keys carry no FK to identities
+// (only local_credentials does, with ON DELETE CASCADE), so the cleanup
+// is explicit and tenant-scoped — the whole delete happens in the
+// caller's transaction. 0 rows affected on the identity row → ErrNotFound.
+func DeleteIdentity(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
+	for _, q := range []string{
+		`DELETE FROM role_bindings WHERE tenant_id = $1 AND identity_id = $2`,
+		`DELETE FROM api_keys WHERE tenant_id = $1 AND identity_id = $2`,
+		`DELETE FROM local_credentials WHERE tenant_id = $1 AND identity_id = $2`,
+	} {
+		if _, err := tx.Exec(ctx, q, tenantID, id); err != nil {
+			return fmt.Errorf("db: delete identity dependents: %w", err)
+		}
+	}
+	const q = `DELETE FROM identities WHERE tenant_id = $1 AND id = $2`
+	ct, err := tx.Exec(ctx, q, tenantID, id)
+	if err != nil {
+		return fmt.Errorf("db: delete identity: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // --- tenants (no tenant_id; admin reads cross-tenant via a BYPASSRLS-free
 // direct read on the tenants table which has no RLS by design) ---------
 

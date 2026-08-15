@@ -1012,6 +1012,38 @@ MCP work item mutations honor the transactional outbox pattern (invariant #3): `
   `auth:write`; the plaintext is argon2id-hashed at the boundary and the
   hash is never returned). This is the documented way to change the
   default admin's credentials after first boot.
+- **Identity lifecycle (create / edit / disable / delete)** — Admin →
+  Identities (the same tab, not a new surface) drives four admin-only
+  `AuthService` RPCs, all gated to `auth:write` by the RBAC interceptor:
+  - `CreateIdentity` (`{identity_type, subject, display_name}`) provisions a
+    `user` or `service` identity in the caller's tenant. For `user` the
+    subject is the login handle and must match the local-account username
+    charset `^[a-z0-9][a-z0-9._@+-]*$` so the identity can immediately get a
+    `SetLocalCredential` whose username matches its subject; for `service`
+    the subject is optional (slug charset, ≤63) and a synthetic `sa-<ULID>`
+    is generated when omitted — the natural flow for a machine account is
+    create identity → create an API key bound to it. Duplicate
+    `(tenant_id, subject)` → 409 AlreadyExists.
+  - `UpdateIdentity` (`{id, display_name, version?}`) renames an identity
+    with optional optimistic concurrency (`version` mismatch → 404).
+  - `SetIdentityStatus` (`{id, status}`) flips between `active` and
+    `disabled` (the only writable values; anything else → 400). Disabling
+    is reversible (enable) and is the UI's Disable/Enable toggle. Note: a
+    disabled identity's **API keys are not yet blocked at resolution time** —
+    key-level enforcement is a documented follow-up; disable revokes
+    nothing credential-wise on its own.
+  - `DeleteIdentity` (`{id}`) hard-deletes the identity plus its role
+    bindings, API keys, and local credentials in one tenant-scoped
+    transaction. Two server-side guards protect the admin surface: the
+    caller cannot delete the identity they are authenticated as (400), and
+    an `active` identity must be disabled first (412 FailedPrecondition) —
+    the UI only ever deletes disabled rows.
+  There is no schema migration (the `status` column already exists, default
+  `active`) and no outbox event emission (consistent with the sibling
+  AuthService mutations); identity lifecycle webhook events are a follow-up.
+  The SPA list follows the standard list-page pattern (search, status
+  filter, select-all + per-row checkboxes, selection count, bulk
+  Disable/Delete on ≥1 selected).
 - **Production**: Real OIDC issuer with authorization-code flow (BYO IdP);
   the embedded OP can be disabled with `ORCHICON_OP_ENABLED=false`
 - **API keys**: SHA-256 hashed, least-privilege scopes for headless/CI clients

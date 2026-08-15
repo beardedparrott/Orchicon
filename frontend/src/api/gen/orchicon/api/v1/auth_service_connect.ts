@@ -10,7 +10,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AssignRoleRequest, AssignRoleResponse, CreateApiKeyRequest, CreateApiKeyResponse, CreateRoleRequest, CreateRoleResponse, CreateTenantRequest, CreateTenantResponse, GetApiKeyRequest, GetApiKeyResponse, GetIdentityRequest, GetIdentityResponse, ListApiKeysRequest, ListApiKeysResponse, ListAuditEntriesRequest, ListAuditEntriesResponse, ListEntitlementsRequest, ListEntitlementsResponse, ListIdentitiesRequest, ListIdentitiesResponse, ListRoleBindingsRequest, ListRoleBindingsResponse, ListRolesRequest, ListRolesResponse, ListTenantsRequest, ListTenantsResponse, RevokeApiKeyRequest, RevokeApiKeyResponse, RevokeRoleRequest, RevokeRoleResponse, RotateApiKeyRequest, RotateApiKeyResponse, SetLocalCredentialRequest, SetLocalCredentialResponse } from "./auth_service_pb.js";
+import { AssignRoleRequest, AssignRoleResponse, CreateApiKeyRequest, CreateApiKeyResponse, CreateIdentityRequest, CreateIdentityResponse, CreateRoleRequest, CreateRoleResponse, CreateTenantRequest, CreateTenantResponse, DeleteIdentityRequest, DeleteIdentityResponse, GetApiKeyRequest, GetApiKeyResponse, GetIdentityRequest, GetIdentityResponse, ListApiKeysRequest, ListApiKeysResponse, ListAuditEntriesRequest, ListAuditEntriesResponse, ListEntitlementsRequest, ListEntitlementsResponse, ListIdentitiesRequest, ListIdentitiesResponse, ListRoleBindingsRequest, ListRoleBindingsResponse, ListRolesRequest, ListRolesResponse, ListTenantsRequest, ListTenantsResponse, RevokeApiKeyRequest, RevokeApiKeyResponse, RevokeRoleRequest, RevokeRoleResponse, RotateApiKeyRequest, RotateApiKeyResponse, SetIdentityStatusRequest, SetIdentityStatusResponse, SetLocalCredentialRequest, SetLocalCredentialResponse, UpdateIdentityRequest, UpdateIdentityResponse } from "./auth_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -84,6 +84,42 @@ export const AuthService = {
       name: "ListIdentities",
       I: ListIdentitiesRequest,
       O: ListIdentitiesResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc orchicon.api.v1.AuthService.CreateIdentity
+     */
+    createIdentity: {
+      name: "CreateIdentity",
+      I: CreateIdentityRequest,
+      O: CreateIdentityResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc orchicon.api.v1.AuthService.UpdateIdentity
+     */
+    updateIdentity: {
+      name: "UpdateIdentity",
+      I: UpdateIdentityRequest,
+      O: UpdateIdentityResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc orchicon.api.v1.AuthService.SetIdentityStatus
+     */
+    setIdentityStatus: {
+      name: "SetIdentityStatus",
+      I: SetIdentityStatusRequest,
+      O: SetIdentityStatusResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc orchicon.api.v1.AuthService.DeleteIdentity
+     */
+    deleteIdentity: {
+      name: "DeleteIdentity",
+      I: DeleteIdentityRequest,
+      O: DeleteIdentityResponse,
       kind: MethodKind.Unary,
     },
     /**
