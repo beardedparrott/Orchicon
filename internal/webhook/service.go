@@ -13,6 +13,7 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
@@ -45,6 +46,38 @@ func NewService(pool *db.Pool, log *slog.Logger, dispatcher *Dispatcher, sub eve
 const maxURLLen = 2048
 
 // CreateSubscription validates + creates a webhook subscription.
+// --- helpers ---------------------------------------------------------------
+
+// recordAudit writes an actor-based audit row in the caller's tx,
+// resolving the actor from the request context. Must be called in the
+// same transaction as the mutation so the row commits atomically.
+func recordAudit(ctx context.Context, tx pgx.Tx, action, targetType, targetID string, before, after json.RawMessage) error {
+	e := auth.ActorFromContext(ctx)
+	e.Action = action
+	e.TargetType = targetType
+	e.TargetID = targetID
+	e.Before = before
+	e.After = after
+	return audit.Record(ctx, tx, e)
+}
+
+// subAuditSnapshot is the non-secret projection of a webhook
+// subscription for the audit trail. The HMAC secret is NEVER included
+// (only the hint is safe); target_url can embed credentials — excluded.
+func subAuditSnapshot(r db.EventSubscriptionRow) map[string]any {
+	return map[string]any{
+		"id":           r.ID,
+		"name":         r.Name,
+		"event_filter": r.EventFilter,
+		"scope":        r.Scope,
+		"scope_ref":    r.ScopeRef,
+		"secret_hint":  r.SecretHint,
+		"status":       r.Status,
+		"max_retries":  r.MaxRetries,
+		"version":      r.Version,
+	}
+}
+
 func (s *Service) CreateSubscription(ctx context.Context, req *connect.Request[apiv1.CreateSubscriptionRequest]) (*connect.Response[apiv1.CreateSubscriptionResponse], error) {
 	msg := req.Msg
 	tenantID, err := requireTenant(ctx)
@@ -106,14 +139,16 @@ func (s *Service) CreateSubscription(ctx context.Context, req *connect.Request[a
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, "webhook_subscription.created", "webhook_subscription", row.ID,
+		nil, audit.Snapshot(subAuditSnapshot(row))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit webhook_subscription.created: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
 	s.log.Info("webhook subscription created", "id", row.ID, "tenant", tenantID)
 	return connect.NewResponse(&apiv1.CreateSubscriptionResponse{Subscription: subRowToProto(row)}), nil
-}
-
-// GetSubscription returns a single subscription by id.
+}// GetSubscription returns a single subscription by id.
 func (s *Service) GetSubscription(ctx context.Context, req *connect.Request[apiv1.GetSubscriptionRequest]) (*connect.Response[apiv1.GetSubscriptionResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -211,6 +246,10 @@ func (s *Service) UpdateSubscription(ctx context.Context, req *connect.Request[a
 	if err != nil {
 		return nil, mapDBError(err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, "webhook_subscription.updated", "webhook_subscription", updated.ID,
+		audit.Snapshot(subAuditSnapshot(current)), audit.Snapshot(subAuditSnapshot(updated))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit webhook_subscription.updated: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -237,6 +276,10 @@ func (s *Service) DeleteSubscription(ctx context.Context, req *connect.Request[a
 	}
 	if err := db.SoftDeleteSubscription(ctx, ttx.Tx, tenantID, req.Msg.Id, current.Version); err != nil {
 		return nil, mapDBError(err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, "webhook_subscription.deleted", "webhook_subscription", current.ID,
+		audit.Snapshot(subAuditSnapshot(current)), nil); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit webhook_subscription.deleted: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -294,6 +337,8 @@ func (s *Service) TestSubscription(ctx context.Context, req *connect.Request[api
 		_ = db.UpdateDeliveryResult(ctx, s.pool, delivery.ID, statusCode, "dead_letter", errMsg, nil)
 	}
 	updated, _ := db.GetDelivery(ctx, ttx.Tx, tenantID, delivery.ID)
+	s.recordAuditShort(ctx, tenantID, "webhook_subscription.tested", sub.ID,
+		nil, audit.Snapshot(map[string]any{"delivery_id": delivery.ID, "status_code": statusCode}))
 	return connect.NewResponse(&apiv1.TestSubscriptionResponse{Delivery: deliveryRowToProto(updated)}), nil
 }
 
@@ -345,7 +390,29 @@ func (s *Service) ReplayDelivery(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	s.recordAuditShort(ctx, tenantID, "webhook_delivery.replayed", orig.SubscriptionID,
+		audit.Snapshot(map[string]any{"delivery_id": orig.ID, "status": orig.Status}),
+		audit.Snapshot(map[string]any{"delivery_id": replayed.ID, "status": replayed.Status}))
 	return connect.NewResponse(&apiv1.ReplayDeliveryResponse{Delivery: deliveryRowToProto(replayed)}), nil
+}
+
+// recordAuditShort writes an audit row in its own short tenant tx. Used
+// for mutations that commit through the pool rather than a tenant tx
+// (TestSubscription / ReplayDelivery create deliveries directly).
+func (s *Service) recordAuditShort(ctx context.Context, tenantID, action, targetID string, before, after json.RawMessage) {
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		s.log.Error("audit: begin tx", "error", err, "action", action)
+		return
+	}
+	defer ttx.Rollback(ctx)
+	if err := recordAudit(ctx, ttx.Tx, action, "webhook_subscription", targetID, before, after); err != nil {
+		s.log.Error("audit: record", "error", err, "action", action)
+		return
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		s.log.Error("audit: commit", "error", err, "action", action)
+	}
 }
 
 // StreamSubscriptionDeliveries streams delivery events for a subscription.

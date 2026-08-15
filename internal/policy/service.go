@@ -21,6 +21,8 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/audit"
+	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
@@ -130,6 +132,10 @@ func (s *Service) CreatePolicy(ctx context.Context, req *connect.Request[apiv1.C
 	if err := enqueuePolicyLifecycleEvent(ctx, ttx.Tx, domain.PolicyEventCreated, created, createdVersion); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, "policy.created", "policy", created.ID,
+		nil, audit.Snapshot(policyVersionAuditSnapshot(createdVersion))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit policy.created: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -182,6 +188,10 @@ func (s *Service) PublishPolicy(ctx context.Context, req *connect.Request[apiv1.
 	if err := enqueuePolicyLifecycleEvent(ctx, ttx.Tx, domain.PolicyEventPublished, updated, published); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, "policy.published", "policy", updated.ID,
+		audit.SnapshotStatus(current.Status), audit.Snapshot(policyVersionAuditSnapshot(published))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit policy.published: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -219,6 +229,10 @@ func (s *Service) SupersedePolicy(ctx context.Context, req *connect.Request[apiv
 	}
 	if err := enqueuePolicyLifecycleEvent(ctx, ttx.Tx, domain.PolicyEventSuperseded, updated, db.PolicyVersionRow{}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, "policy.superseded", "policy", updated.ID,
+		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(updated.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit policy.superseded: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -355,6 +369,10 @@ func (s *Service) UpdatePolicyVersion(ctx context.Context, req *connect.Request[
 	if err != nil {
 		return nil, mapDBError(err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, "policy.version_updated", "policy", req.Msg.PolicyId,
+		audit.Snapshot(policyVersionAuditSnapshot(latest)), audit.Snapshot(policyVersionAuditSnapshot(updated))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit policy.version_updated: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -480,6 +498,44 @@ func (s *Service) GetDecision(ctx context.Context, req *connect.Request[apiv1.Ge
 }
 
 // --- helpers + mappers -----------------------------------------------------
+
+// recordAudit writes an actor-based audit row in the caller's tx,
+// resolving the actor from the request context. Must be called in the
+// same transaction as the mutation so the row commits atomically.
+func recordAudit(ctx context.Context, tx pgx.Tx, action, targetType, targetID string, before, after json.RawMessage) error {
+	e := auth.ActorFromContext(ctx)
+	e.Action = action
+	e.TargetType = targetType
+	e.TargetID = targetID
+	e.Before = before
+	e.After = after
+	return audit.Record(ctx, tx, e)
+}
+
+// policyAuditSnapshot is the non-secret projection of a policy header.
+func policyAuditSnapshot(p db.PolicyRow) map[string]any {
+	return map[string]any{
+		"id":     p.ID,
+		"name":   p.Name,
+		"status": p.Status,
+		"version": p.Version,
+	}
+}
+
+// policyVersionAuditSnapshot is the non-secret projection of a policy
+// version. The rego module + query can embed secrets (policy bodies are
+// tenant-authored); excluded here.
+func policyVersionAuditSnapshot(v db.PolicyVersionRow) map[string]any {
+	return map[string]any{
+		"id":             v.ID,
+		"policy_id":      v.PolicyID,
+		"version":        v.Version,
+		"status":         v.Status,
+		"decision_point": v.DecisionPoint,
+		"scope":          v.Scope,
+		"effect":         v.Effect,
+	}
+}
 
 func validateName(name string) (string, error) {
 	name = strings.TrimSpace(name)

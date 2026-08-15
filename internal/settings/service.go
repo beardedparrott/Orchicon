@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -10,9 +11,12 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/audit"
+	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/backup"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/tenant"
+	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -63,12 +67,52 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, "settings.updated", "settings", tenantID,
+		nil, audit.Snapshot(map[string]any{"default_worker_model": row.DefaultWorkerModel, "default_ask_orchicon_model": row.DefaultAskOrchiconModel})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit settings.updated: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(&apiv1.UpdateSettingsResponse{
 		Settings: settingsRowToProto(&row),
 	}), nil
+}
+
+// recordAudit writes an actor-based audit row in the caller's tx,
+// resolving the actor from the request context. Must be called in the
+// same transaction as the mutation so the row commits atomically.
+func recordAudit(ctx context.Context, tx pgx.Tx, action, targetType, targetID string, before, after json.RawMessage) error {
+	e := auth.ActorFromContext(ctx)
+	e.Action = action
+	e.TargetType = targetType
+	e.TargetID = targetID
+	e.Before = before
+	e.After = after
+	return audit.Record(ctx, tx, e)
+}
+
+// recordAuditShort writes an audit row in its own short tenant tx. Used
+// for backup/restore ops that mutate the filesystem/DB outside a tenant
+// tx (CreateBackup / RestoreBackup / DeleteBackup).
+func (s *Service) recordAuditShort(ctx context.Context, action string, before, after json.RawMessage) {
+	tenantID := tenant.FromContext(ctx)
+	if tenantID == "" {
+		return
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		s.log.Error("audit: begin tx", "error", err, "action", action)
+		return
+	}
+	defer ttx.Rollback(ctx)
+	if err := recordAudit(ctx, ttx.Tx, action, "settings", tenantID, before, after); err != nil {
+		s.log.Error("audit: record", "error", err, "action", action)
+		return
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		s.log.Error("audit: commit", "error", err, "action", action)
+	}
 }
 
 func requireTenant(ctx context.Context) (string, error) {
@@ -164,6 +208,7 @@ func (s *Service) CreateBackup(ctx context.Context, req *connect.Request[apiv1.C
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("backup: %w", err))
 	}
+	s.recordAuditShort(ctx, "backup.created", nil, audit.Snapshot(map[string]any{"name": info.Name, "size_bytes": info.SizeBytes}))
 	return connect.NewResponse(&apiv1.CreateBackupResponse{
 		Name:      info.Name,
 		SizeBytes: info.SizeBytes,
@@ -203,6 +248,7 @@ func (s *Service) RestoreBackup(ctx context.Context, req *connect.Request[apiv1.
 	if err := backup.Restore(ctx, s.dsn, path); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("restore: %w", err))
 	}
+	s.recordAuditShort(ctx, "backup.restored", nil, audit.Snapshot(map[string]any{"name": req.Msg.Name, "path": path}))
 	return connect.NewResponse(&apiv1.RestoreBackupResponse{}), nil
 }
 
@@ -214,6 +260,7 @@ func (s *Service) DeleteBackup(ctx context.Context, req *connect.Request[apiv1.D
 	if err := backup.Delete(dir, req.Msg.Name); err != nil {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("delete backup: %w", err))
 	}
+	s.recordAuditShort(ctx, "backup.deleted", audit.Snapshot(map[string]any{"name": req.Msg.Name}), nil)
 	return connect.NewResponse(&apiv1.DeleteBackupResponse{}), nil
 }
 
