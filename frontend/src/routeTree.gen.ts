@@ -14,6 +14,7 @@ import { Route as WorkersRouteImport } from './routes/workers'
 import { Route as WorkItemsRouteImport } from './routes/work-items'
 import { Route as WebhooksRouteImport } from './routes/webhooks'
 import { Route as TelemetryRouteImport } from './routes/telemetry'
+import { Route as SignupRouteImport } from './routes/signup'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SchedulesRouteImport } from './routes/schedules'
 import { Route as RuntimeImagesRouteImport } from './routes/runtime-images'
@@ -68,6 +69,11 @@ const WebhooksRoute = WebhooksRouteImport.update({
 const TelemetryRoute = TelemetryRouteImport.update({
   id: '/telemetry',
   path: '/telemetry',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SignupRoute = SignupRouteImport.update({
+  id: '/signup',
+  path: '/signup',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsRoute = SettingsRouteImport.update({
@@ -236,6 +242,7 @@ export interface FileRoutesByFullPath {
   '/runtime-images': typeof RuntimeImagesRoute
   '/schedules': typeof SchedulesRoute
   '/settings': typeof SettingsRoute
+  '/signup': typeof SignupRoute
   '/telemetry': typeof TelemetryRoute
   '/webhooks': typeof WebhooksRoute
   '/work-items': typeof WorkItemsRoute
@@ -273,6 +280,7 @@ export interface FileRoutesByTo {
   '/runtime-images': typeof RuntimeImagesRoute
   '/schedules': typeof SchedulesRoute
   '/settings': typeof SettingsRoute
+  '/signup': typeof SignupRoute
   '/telemetry': typeof TelemetryRoute
   '/webhooks': typeof WebhooksRoute
   '/work-items': typeof WorkItemsRoute
@@ -311,6 +319,7 @@ export interface FileRoutesById {
   '/runtime-images': typeof RuntimeImagesRoute
   '/schedules': typeof SchedulesRoute
   '/settings': typeof SettingsRoute
+  '/signup': typeof SignupRoute
   '/telemetry': typeof TelemetryRoute
   '/webhooks': typeof WebhooksRoute
   '/work-items': typeof WorkItemsRoute
@@ -350,6 +359,7 @@ export interface FileRouteTypes {
     | '/runtime-images'
     | '/schedules'
     | '/settings'
+    | '/signup'
     | '/telemetry'
     | '/webhooks'
     | '/work-items'
@@ -387,6 +397,7 @@ export interface FileRouteTypes {
     | '/runtime-images'
     | '/schedules'
     | '/settings'
+    | '/signup'
     | '/telemetry'
     | '/webhooks'
     | '/work-items'
@@ -424,6 +435,7 @@ export interface FileRouteTypes {
     | '/runtime-images'
     | '/schedules'
     | '/settings'
+    | '/signup'
     | '/telemetry'
     | '/webhooks'
     | '/work-items'
@@ -462,6 +474,7 @@ export interface RootRouteChildren {
   RuntimeImagesRoute: typeof RuntimeImagesRoute
   SchedulesRoute: typeof SchedulesRoute
   SettingsRoute: typeof SettingsRoute
+  SignupRoute: typeof SignupRoute
   TelemetryRoute: typeof TelemetryRoute
   WebhooksRoute: typeof WebhooksRoute
   WorkItemsRoute: typeof WorkItemsRoute
@@ -520,6 +533,13 @@ declare module '@tanstack/react-router' {
       path: '/telemetry'
       fullPath: '/telemetry'
       preLoaderRoute: typeof TelemetryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/signup': {
+      id: '/signup'
+      path: '/signup'
+      fullPath: '/signup'
+      preLoaderRoute: typeof SignupRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings': {
@@ -750,6 +770,7 @@ const rootRouteChildren: RootRouteChildren = {
   RuntimeImagesRoute: RuntimeImagesRoute,
   SchedulesRoute: SchedulesRoute,
   SettingsRoute: SettingsRoute,
+  SignupRoute: SignupRoute,
   TelemetryRoute: TelemetryRoute,
   WebhooksRoute: WebhooksRoute,
   WorkItemsRoute: WorkItemsRoute,

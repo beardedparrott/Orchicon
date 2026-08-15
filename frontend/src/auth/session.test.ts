@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   ensureSession,
+  getAccessToken,
   logout,
   setAccessToken,
+  signup,
   useSessionStore,
   type SessionInfo,
 } from "@/auth/session";
@@ -215,8 +217,78 @@ describe("ensureSession", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const s = await ensureSession();
-
     expect(s.authenticated).toBe(true);
     expect(String(fetchMock.mock.calls[0][0])).toBe("/auth/session");
+  });
+});
+
+describe("signup", () => {
+  beforeEach(() => {
+    storage.clear();
+    logout();
+    setAccessToken("");
+    useSessionStore.setState({ session: { authenticated: false }, loading: false });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    storage.clear();
+    logout();
+    setAccessToken("");
+    useSessionStore.setState({ session: { authenticated: false }, loading: false });
+  });
+
+  it("creates an account and starts a session (token in memory, next passed through)", async () => {
+    let calledUrl = "";
+    let calledBody = "";
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      calledUrl = url;
+      calledBody = String(init?.body);
+      return okResponse({
+        access_token: "signup-token",
+        token_type: "Bearer",
+        expires_in: 3600,
+        identity_id: "usr_signup",
+        tenant_id: "tnt_dev",
+        is_admin: false,
+        next: "/authorize/callback?id=abc",
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const out = await signup("newuser", "password-123", "/auth/op/login?id=abc");
+
+    expect(calledUrl).toBe("/auth/signup");
+    expect(calledBody).toContain('"username":"newuser"');
+    expect(calledBody).toContain('"password":"password-123"');
+    expect(calledBody).toContain('"next":"/auth/op/login?id=abc"');
+    expect(out.session.authenticated).toBe(true);
+    expect(out.session.identity_id).toBe("usr_signup");
+    expect(out.session.is_admin).toBe(false);
+    expect(out.next).toBe("/authorize/callback?id=abc");
+    // The access token is held in memory for the transport interceptor.
+    expect(getAccessToken()).toBe("signup-token");
+  });
+
+  it("maps a 409 to the duplicate-username message", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response("an account with this username already exists", { status: 409 }),
+      ),
+    );
+
+    await expect(signup("taken", "password-123")).rejects.toThrow(
+      "An account with this username already exists",
+    );
+  });
+
+  it("surfaces other failures generically", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("nope", { status: 500 })),
+    );
+
+    await expect(signup("newuser", "password-123")).rejects.toThrow(/signup failed/);
   });
 });

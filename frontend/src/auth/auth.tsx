@@ -16,6 +16,7 @@ import {
   logout as doLogout,
   devLogin,
   localLogin,
+  signup,
   oidcLoginURL,
   useSessionStore,
   type SessionInfo,
@@ -100,6 +101,20 @@ export async function startLocalLogin(
   next?: string,
 ): Promise<{ session: SessionInfo; next?: string }> {
   const out = await localLogin(username, password, next);
+  useSessionStore.getState().setSession(out.session);
+  return out;
+}
+
+// startSignup creates a self-service account (embedded IdP) and starts a
+// session, exactly like startLocalLogin: the response's server-constructed
+// `next` path (set when a pending embedded-OP authorize request was
+// completed) is what the caller full-page-loads to finish the OIDC flow.
+export async function startSignup(
+  username: string,
+  password: string,
+  next?: string,
+): Promise<{ session: SessionInfo; next?: string }> {
+  const out = await signup(username, password, next);
   useSessionStore.getState().setSession(out.session);
   return out;
 }

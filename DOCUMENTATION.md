@@ -971,6 +971,19 @@ MCP work item mutations honor the transactional outbox pattern (invariant #3): `
   completes the pending authorize request so the local account finishes a
   full OIDC flow without a prior session. Failures return a generic 401 (no
   user-enumeration hint); no identity is auto-provisioned by a login.
+  **Self-service sign-up** is `POST /auth/signup` (`{username, password,
+  next?}`, gated on the same `ORCHICON_OP_ENABLED` — sign-up availability
+  *is* the embedded IdP being on): it atomically creates a fresh identity +
+  argon2id-hashed local credential in the deployment tenant (duplicate
+  username or an already-existing identity → generic 409, which also blocks
+  identity squatting on BYO-IdP handles), then runs the local-login tail
+  verbatim — token pair + HttpOnly refresh cookie + OP authorize completion.
+  A signed-up account is a plain `user` identity with **zero entitlements**
+  (no admin grant on an open endpoint); the bootstrap admin stays the sole
+  initial admin and operators grant roles later via Admin → Identities.
+  The SPA `/signup` route (linked from `/login` only when the plane
+  advertises it) collects username + password and lands the user in the app
+  in one step.
   Provisioning is the admin-only `AuthService.SetLocalCredential` RPC
   (`auth:write`), which hashes at the boundary and never returns the hash.
   The SPA `/login` route shows the username+password form.
@@ -992,8 +1005,8 @@ MCP work item mutations honor the transactional outbox pattern (invariant #3): `
   `ORCHICON_LOCAL_ADMIN_SEED=0`. Config validation requires
   an issuer (embedded OP **or** external IdP) in every mode. The public
   `GET /auth/config` endpoint mirrors the plane's auth capabilities
-  (`embedded_op` / `external_oidc` / `dev_login`) for the honest login
-  page; the unauthenticated SPA redirects to `/login`.
+  (`embedded_op` / `external_oidc` / `dev_login` / `signup`) for the honest
+  login page; the unauthenticated SPA redirects to `/login`.
 - **Changing a local-account password** — Admin → Identities → "Set
   local password" (calls the admin-only `SetLocalCredential` RPC,
   `auth:write`; the plaintext is argon2id-hashed at the boundary and the
@@ -1008,8 +1021,8 @@ MCP work item mutations honor the transactional outbox pattern (invariant #3): `
   navigation time — unauthenticated visitors are redirected to `/login`
   before any protected component renders, with the intended destination
   preserved in `?next=` so a successful login returns there (SPA-side
-  navigate; only server-only OP-bridge paths full-page-load). `/login` and
-  `/auth/callback` are the explicit public-route allowlist. On a full page
+  navigate; only server-only OP-bridge paths full-page-load). `/login`,
+  `/signup` and `/auth/callback` are the explicit public-route allowlist. On a full page
   load the guard and `AuthProvider` share one `ensureSession()` bootstrap
   that exchanges the HttpOnly refresh cookie for a new access token, so a
   live session survives reloads without re-login; the AppShell effect
@@ -1031,7 +1044,7 @@ Every auth path resolves logins into the deployment tenant — the OIDC callback
 
 Consequences for the three features gated on this decision:
 
-1. **Sign-up tenant targeting** — no public self-serve signup; identities are operator-provisioned (embedded-OP local accounts or BYO IdP). **Tenant provisioning is idempotent boot-time seeding**: `db.SeedDevTenant` inserts the configured deployment tenant id (`tenants` row, slug mirrors the id so the unique slug index can never collide) before auth mounts, so a fresh install with `ORCHICON_DEPLOYMENT_TENANT_ID=acme` boots into `acme`. On the SaaS forward path this becomes self-serve + admin `CreateTenant`.
+1. **Sign-up tenant targeting** — self-serve sign-up over the embedded IdP (`POST /auth/signup`, `internal/auth/handlers.go`) creates identities + local credentials in the **deployment tenant** (no role grant); identities are otherwise operator-provisioned (embedded-OP local accounts via `SetLocalCredential`, or BYO IdP). **Tenant provisioning is idempotent boot-time seeding**: `db.SeedDevTenant` inserts the configured deployment tenant id (`tenants` row, slug mirrors the id so the unique slug index can never collide) before auth mounts, so a fresh install with `ORCHICON_DEPLOYMENT_TENANT_ID=acme` boots into `acme`. On the SaaS forward path this becomes self-serve tenant provisioning + admin `CreateTenant`.
 2. **Audit-trail scoping** — by construction: the audit table (when added) carries `tenant_id` + the standard `tenant_isolation` RLS policy, so a deployment's audit trail is its own and cross-tenant audit reads are impossible via RLS.
 3. **Identity provisioning & membership** — per-tenant `EnsureIdentityForSubject` upsert is kept; the OIDC callback resolves the tenant from deployment config, not a code literal. **Membership is the role-binding model**: an identity gains membership in the deployment tenant on first login by being upserted there and by holding the tenant `admin` role (first-login grant, idempotent); within-tenant access control stays with tenant/project RBAC scopes. Cross-tenant membership does not exist in a single-tenant-per-deployment install; the schema supports it later.
 

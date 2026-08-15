@@ -27,11 +27,14 @@ const AuthHeader = "Authorization"
 
 // publicPaths are not tenant-scoped and require no authentication.
 var publicPaths = map[string]bool{
-	"/healthz":            true,
-	"/versionz":           true,
-	"/auth/local-login":   true,
-	"/auth/dev-login":     true,
-	"/auth/refresh":       true,
+	"/healthz":          true,
+	"/versionz":         true,
+	"/auth/local-login": true,
+	// Self-service account creation (embedded IdP): happens before a
+	// session exists, exactly like local-login.
+	"/auth/signup":    true,
+	"/auth/dev-login": true,
+	"/auth/refresh":   true,
 	// /auth/logout is credential-free by design (cookie-based): it can only
 	// end the caller's own browser session, and requiring a bearer token
 	// here would 401 the sign-out request before the refresh cookie is

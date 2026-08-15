@@ -48,14 +48,15 @@ export function AppShell({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
 
   // Unauthenticated redirect: once the session has finished loading and no
-  // identity resolved, bounce to /login. /login and /auth/callback are
-  // exempt (the login page + the OIDC callback route, which lands here with
-  // a token in the fragment before fetchSession completes). This replaces
-  // the pre-login ghost dashboard: every protected page requires a real
-  // credential (the server 401s without one).
+  // identity resolved, bounce to /login. /login, /signup and /auth/callback
+  // are exempt (the login + sign-up pages and the OIDC callback route,
+  // which lands here with a token in the fragment before fetchSession
+  // completes). This replaces the pre-login ghost dashboard: every
+  // protected page requires a real credential (the server 401s without
+  // one).
   useEffect(() => {
     if (loading || session.authenticated) return;
-    if (path === "/login" || path === "/auth/callback") return;
+    if (path === "/login" || path === "/signup" || path === "/auth/callback") return;
     navigate({ to: "/login" });
   }, [loading, session.authenticated, path, navigate]);
 

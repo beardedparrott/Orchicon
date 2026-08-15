@@ -71,6 +71,16 @@ describe("requireAuth", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("treats /signup as public (self-service account creation)", async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new Error("no session resolve for the signup page");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(requireAuth(ctx("/signup"))).resolves.toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("fast-paths when the store is already authenticated (no fetch, no redirect)", async () => {
     useSessionStore.setState({ session: { authenticated: true, identity_id: "usr_a" } });
     const fetchMock = vi.fn(async () => {
