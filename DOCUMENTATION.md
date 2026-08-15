@@ -1018,7 +1018,10 @@ MCP work item mutations honor the transactional outbox pattern (invariant #3): `
   cookie server-side, and arms a signed-out flag (`session.ts`) that stops
   the guard from silently re-authenticating via a still-valid cookie — a
   signed-out user stays signed out across reloads and SPA navigations
-  (AC1).
+  (AC1). `POST /auth/logout` is credential-free by design, so it is on the
+  `ResolveAuth` public-path allowlist (`internal/middleware/auth.go`) —
+  the auth middleware would otherwise 401 the logout before the refresh
+  cookie could be cleared, letting a reload after sign-out re-authenticate.
 
 ### Tenancy model
 
