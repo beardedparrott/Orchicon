@@ -2,11 +2,11 @@
 // context. The data-access layer reads it to set app.tenant_id per
 // transaction (docs/09 §8.5).
 //
-// v0.1 resolves the tenant from the x-orchicon-tenant-id header in a
-// dev-only middleware (internal/middleware/tenant.go). When auth lands
-// in Phase 9, the tenant will be derived from the authenticated
-// identity's OIDC subject instead; the context plumbing here stays the
-// same.
+// The auth-resolution middleware (ResolveAuth in internal/middleware)
+// sets the tenant in the context from the resolved identity's TenantID
+// before any tenant-scoped handler runs — it is never taken from a
+// request header. Components with a fixed tenant scope (e.g. the MCP
+// server) set it directly with WithID.
 package tenant
 
 import "context"
