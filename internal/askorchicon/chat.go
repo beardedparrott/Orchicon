@@ -13,6 +13,7 @@ import (
 
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 )
@@ -441,6 +442,22 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 		}
 		db.UpdateConversationTitle(ctx, ttx.Tx, tenantID, convID, title)
 	}
+	// Audit the user send atomically with the message persistence (one
+	// row per user action — covers ChatStream and InterjectConversationTurn,
+	// which both dispatch through here). Message content is excluded from
+	// the snapshot (echo-privacy / compact trail); the message id refs the
+	// stored row.
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.message_sent", "conversation", convID,
+		nil, audit.Snapshot(map[string]any{
+			"message_id": userMsg.ID,
+			"role":       "user",
+			"mode":       conv.Mode,
+			"superseded": opts.supersede,
+		})); err != nil {
+		ttx.Rollback(ctx)
+		releaseTurn()
+		return "", nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.message_sent: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		releaseTurn()
 		return "", nil, connect.NewError(connect.CodeInternal, err)
@@ -591,6 +608,17 @@ func (s *Service) AbortConversationTurn(ctx context.Context, req *connect.Reques
 			_ = client.Abort(ctx, conv.SessionID)
 		}
 	}
+	// Audit the Stop action in its own short tx (Abort writes no row itself
+	// — the durable "turn stopped" message is persisted by the detached
+	// collector, which is excluded system churn).
+	attx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err == nil {
+		defer attx.Rollback(ctx)
+		if err := recordAudit(ctx, attx.Tx, tenantID, "conversation.turn_aborted", "conversation", req.Msg.ConversationId,
+			nil, audit.Snapshot(map[string]any{"stopped": true})); err == nil {
+			_ = attx.Commit(ctx)
+		}
+	}
 	return connect.NewResponse(&apiv1.AbortConversationTurnResponse{}), nil
 }
 
@@ -733,7 +761,7 @@ type turnCollectOpts struct {
 	// deferred remove(convID, token) can never clobber a replacement turn
 	// (token-guarded removal — the supersede race is eliminated by
 	// construction).
-	token uint64
+	token          uint64
 	assistantMsgID string
 	// sessionID is the persisted opencode session id (empty on a first
 	// message, recreated on serve loss when the serve no longer knows it).

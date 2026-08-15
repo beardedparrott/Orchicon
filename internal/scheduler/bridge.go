@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 
+	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
@@ -127,8 +128,12 @@ var _ ExecutionCallbacks = (*TaskReconciler)(nil)
 // ("" for standalone, non-workflow failures). Recovery is scoped per
 // failing step run so every step that fails gets its own recovery cycle,
 // and the work item (the ticket) stays untouched during a run.
+//
+// auditEntry, when non-nil, is recorded atomically with the recovery
+// creation inside the engine's own transaction (the RPC path passes the
+// resolved actor; the reconciler system path passes nil).
 type RecoveryTrigger interface {
-	TriggerOnFailure(ctx context.Context, tenantID, taskID, failedExecID, stepRunID, triggerReason string) error
+	TriggerOnFailure(ctx context.Context, tenantID, taskID, failedExecID, stepRunID, triggerReason string, auditEntry *audit.Entry) error
 }
 
 // PolicyEvaluator is the interface the WorkflowReconciler uses to

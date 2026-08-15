@@ -9,6 +9,7 @@ import (
 
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
@@ -61,6 +62,17 @@ func (s *Service) UploadAttachment(ctx context.Context, req *connect.Request[api
 	blob, err := s.blobStore.Put(ctx, blobRef, mimeType, bytes.NewReader(req.Msg.Data))
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("store attachment: %w", err))
+	}
+
+	// Audit the upload in a short tenant tx (the blob write itself has no
+	// DB row to share a tx with). The attachment content is never snapshotted.
+	attx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err == nil {
+		defer attx.Rollback(ctx)
+		if err := recordAudit(ctx, attx.Tx, tenantID, "conversation.attachment_uploaded", "conversation", req.Msg.ConversationId,
+			nil, audit.Snapshot(map[string]any{"attachment_id": blob.Ref, "name": name, "mime_type": mimeType})); err == nil {
+			_ = attx.Commit(ctx)
+		}
 	}
 
 	return connect.NewResponse(&apiv1.UploadAttachmentResponse{

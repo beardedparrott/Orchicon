@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/auth/op"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -191,6 +192,39 @@ type localLoginRequest struct {
 // complete the pending authorize request so the browser returns to the
 // relying party with a code. Any failure returns the same generic 401 (no
 // user-enumeration hint); no identity is auto-provisioned by a login.
+// auditAuthEvent writes an audit row for an auth HTTP endpoint in a short
+// tenant-scoped tx. These endpoints are public paths (no identity in the
+// request context) so the actor is resolved after credential validation
+// and passed in explicitly. A failed write logs and returns nil: the
+// auth action itself is not a DB mutation and must not be blocked by an
+// audit-side effect (login/logout/refresh have no state to roll back).
+func (h *Handler) auditAuthEvent(ctx context.Context, tenantID, identityID, action, authMethod string) {
+	if tenantID == "" {
+		return
+	}
+	ttx, err := h.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		h.log.Error("audit: begin tx", "error", err, "action", action)
+		return
+	}
+	defer ttx.Rollback(ctx)
+	if err := audit.Record(ctx, ttx.Tx, audit.Entry{
+		TenantID:        tenantID,
+		ActorIdentityID: identityID,
+		ActorType:       "user",
+		AuthMethod:      authMethod,
+		Action:          action,
+		TargetType:      "identity",
+		TargetID:        identityID,
+	}); err != nil {
+		h.log.Error("audit: record", "error", err, "action", action)
+		return
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		h.log.Error("audit: commit", "error", err, "action", action)
+	}
+}
+
 func (h *Handler) localLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -262,6 +296,7 @@ func (h *Handler) localLogin(w http.ResponseWriter, r *http.Request) {
 			resp.Next = "/authorize/callback?id=" + url.QueryEscape(id)
 		}
 	}
+	h.auditAuthEvent(r.Context(), tenantID, identityID, "auth.login", "local")
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -427,6 +462,23 @@ func (h *Handler) createLocalAccount(ctx context.Context, tenantID, username, ha
 		}
 		return db.IdentityRow{}, err
 	}
+	// Self-service account creation: actor == target (the fresh identity).
+	// The audit row commits atomically with the identity + credential
+	// insert. action = auth.signup (the signup act); identity.created is
+	// implied by the row's existence.
+	if err := audit.Record(ctx, ttx.Tx, audit.Entry{
+		TenantID:        tenantID,
+		ActorIdentityID: ident.ID,
+		ActorType:       "user",
+		AuthMethod:      "signup",
+		Action:          "auth.signup",
+		TargetType:      "identity",
+		TargetID:        ident.ID,
+		After:           audit.Snapshot(identityAuditSnapshot(ident)),
+	}); err != nil {
+		h.log.Error("audit: signup", "error", err)
+		return db.IdentityRow{}, err
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return db.IdentityRow{}, err
 	}
@@ -542,6 +594,7 @@ func (h *Handler) devLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.setRefreshCookie(w, pair.RefreshToken)
+	h.auditAuthEvent(r.Context(), tenantID, ident.ID, "auth.login", "dev")
 	writeJSON(w, http.StatusOK, tokenResponse{
 		AccessToken: pair.AccessToken,
 		TokenType:   "Bearer",
@@ -582,6 +635,7 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to issue access token", http.StatusInternalServerError)
 		return
 	}
+	h.auditAuthEvent(r.Context(), claims.TenantID, claims.Subject, "auth.refresh", "refresh")
 	writeJSON(w, http.StatusOK, tokenResponse{
 		AccessToken: access,
 		TokenType:   "Bearer",
@@ -603,6 +657,14 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
+	}
+	// Attribute the logout to the session owner when the refresh cookie is
+	// still present and valid; a missing/expired cookie writes no row
+	// (nothing can be attributed).
+	if raw := readRefreshToken(r); raw != "" {
+		if claims, err := h.issuer.VerifyRefresh(raw); err == nil {
+			h.auditAuthEvent(r.Context(), claims.TenantID, claims.Subject, "auth.logout", "refresh")
+		}
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     RefreshCookie,
@@ -668,6 +730,7 @@ func (h *Handler) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	if created {
 		_, _ = h.ensureDevAdminBinding(r.Context(), tenantID, ident.ID)
 	}
+	h.auditAuthEvent(r.Context(), tenantID, ident.ID, "auth.login", "oidc")
 	ents, isAdmin, err := h.resolver.ResolveIdentity(r.Context(), tenantID, ident.ID)
 	if err != nil {
 		ents = nil

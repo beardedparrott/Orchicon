@@ -10,6 +10,7 @@ export const authKeys = {
   apiKeys: () => ["auth", "apiKeys"] as const,
   entitlements: (id: string) => ["auth", "entitlements", id] as const,
   audit: () => ["auth", "audit"] as const,
+  auditEvents: () => ["auth", "auditEvents"] as const,
 };
 
 export function useListTenants() {
@@ -180,5 +181,16 @@ export function useListAuditEntries() {
     queryKey: authKeys.audit(),
     queryFn: async () =>
       (await authClient.listAuditEntries({ pageSize: 100 })).entries ?? [],
+  });
+}
+
+// useListAuditEvents fetches a page of audit_events rows (the
+// actor-based trail written by internal/audit.Record — distinct from the
+// policy-decision AuditEntry view).
+export function useListAuditEvents() {
+  return useQuery({
+    queryKey: authKeys.auditEvents(),
+    queryFn: async () =>
+      (await authClient.listAuditEvents({ pageSize: 200 })).events ?? [],
   });
 }

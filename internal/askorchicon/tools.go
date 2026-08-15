@@ -33,7 +33,7 @@ type ToolDefinition struct {
 
 // ToolRegistry holds all tools the agent can call.
 type ToolRegistry struct {
-	tools []ToolDefinition
+	tools  []ToolDefinition
 	byName map[string]ToolDefinition
 }
 
@@ -199,20 +199,20 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Mutating:    true,
 			Fn:          toolCreateWorkItem,
 			Properties: map[string]PropertySchema{
-				"title": {Type: "string", Description: "Work item title"},
-				"project_id": {Type: "string", Description: "Project ID"},
-				"parent_id": {Type: "string", Description: "Optional parent work item ID"},
-				"kind": {Type: "string", Description: "Work item kind (epic, feature, task, subtask)"},
-				"description": {Type: "string", Description: "Detailed description (markdown)"},
+				"title":               {Type: "string", Description: "Work item title"},
+				"project_id":          {Type: "string", Description: "Project ID"},
+				"parent_id":           {Type: "string", Description: "Optional parent work item ID"},
+				"kind":                {Type: "string", Description: "Work item kind (epic, feature, task, subtask)"},
+				"description":         {Type: "string", Description: "Detailed description (markdown)"},
 				"acceptance_criteria": {Type: "string", Description: "Acceptance criteria (markdown)"},
-				"priority": {Type: "number", Description: "Priority (1-5)"},
-				"budgets": {Type: "string", Description: "Budgets as a JSON object (e.g. {\"max_steps\": 10, \"max_cost_usd\": 5})"},
-				"context_window": {Type: "number", Description: "Context window size for the run"},
-				"workflow_id": {Type: "string", Description: "Workflow template ID to bind this item to (must be a published workflow in the project to run)"},
-				"scheduled_start_at": {Type: "string", Description: "Scheduled start time (ISO 8601 or 'N minutes from now'). Setting this marks the item scheduled."},
+				"priority":            {Type: "number", Description: "Priority (1-5)"},
+				"budgets":             {Type: "string", Description: "Budgets as a JSON object (e.g. {\"max_steps\": 10, \"max_cost_usd\": 5})"},
+				"context_window":      {Type: "number", Description: "Context window size for the run"},
+				"workflow_id":         {Type: "string", Description: "Workflow template ID to bind this item to (must be a published workflow in the project to run)"},
+				"scheduled_start_at":  {Type: "string", Description: "Scheduled start time (ISO 8601 or 'N minutes from now'). Setting this marks the item scheduled."},
 				"auto_start_workflow": {Type: "boolean", Description: "Start the bound workflow immediately on save (opt-in, default false). Only applies when workflow_id is set and no scheduled_start_at is given; conflicts with a schedule."},
-				"runtime_image": {Type: "string", Description: "Runtime container image tag; empty = base image"},
-				"context_files": {Type: "array", Description: "Absolute file or directory paths to include as worker context (same model as project context files)"},
+				"runtime_image":       {Type: "string", Description: "Runtime container image tag; empty = base image"},
+				"context_files":       {Type: "array", Description: "Absolute file or directory paths to include as worker context (same model as project context files)"},
 			},
 			Required: []string{"title", "project_id"},
 		},
@@ -222,24 +222,24 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Mutating:    true,
 			Fn:          toolUpdateWorkItem,
 			Properties: map[string]PropertySchema{
-				"id": {Type: "string", Description: "Work item ID"},
-				"title": {Type: "string", Description: "New title"},
-				"description": {Type: "string", Description: "New description (markdown)"},
+				"id":                  {Type: "string", Description: "Work item ID"},
+				"title":               {Type: "string", Description: "New title"},
+				"description":         {Type: "string", Description: "New description (markdown)"},
 				"acceptance_criteria": {Type: "string", Description: "New acceptance criteria (markdown)"},
-				"acceptance_review": {Type: "string", Description: "New acceptance review (markdown); empty string clears it (auto-populated by the WorkflowReconciler when a bound run completes)"},
-				"status": {Type: "string", Description: "New status (pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering)"},
-				"priority": {Type: "number", Description: "New priority (1-5)"},
-				"budgets": {Type: "string", Description: "Budgets as a JSON object (e.g. {\"max_steps\": 10, \"max_cost_usd\": 5})"},
-				"context_window": {Type: "number", Description: "Context window size for the run"},
-				"project_id": {Type: "string", Description: "Reassign to a different project (target must be active)"},
-				"workflow_id": {Type: "string", Description: "Bind/unbind to a workflow template ID (empty string clears the binding)"},
-				"parent_id": {Type: "string", Description: "New parent work item ID (reparent). Must be the same project and a strictly higher-level kind (epic > feature > task > subtask). Empty string clears the parent (epic only)."},
-				"scheduled_start_at": {Type: "string", Description: "Scheduled start time (ISO 8601 or 'N minutes from now'). Setting this flips the item to scheduled unless it has an active run."},
+				"acceptance_review":   {Type: "string", Description: "New acceptance review (markdown); empty string clears it (auto-populated by the WorkflowReconciler when a bound run completes)"},
+				"status":              {Type: "string", Description: "New status (pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering)"},
+				"priority":            {Type: "number", Description: "New priority (1-5)"},
+				"budgets":             {Type: "string", Description: "Budgets as a JSON object (e.g. {\"max_steps\": 10, \"max_cost_usd\": 5})"},
+				"context_window":      {Type: "number", Description: "Context window size for the run"},
+				"project_id":          {Type: "string", Description: "Reassign to a different project (target must be active)"},
+				"workflow_id":         {Type: "string", Description: "Bind/unbind to a workflow template ID (empty string clears the binding)"},
+				"parent_id":           {Type: "string", Description: "New parent work item ID (reparent). Must be the same project and a strictly higher-level kind (epic > feature > task > subtask). Empty string clears the parent (epic only)."},
+				"scheduled_start_at":  {Type: "string", Description: "Scheduled start time (ISO 8601 or 'N minutes from now'). Setting this flips the item to scheduled unless it has an active run."},
 				"auto_start_workflow": {Type: "boolean", Description: "Start the bound workflow immediately on save. true with no scheduled_start_at clears any existing schedule."},
-				"workflow_run_id": {Type: "string", Description: "The workflow run ID this item is bound to; empty string allows re-scheduling"},
-				"runtime_image": {Type: "string", Description: "Runtime container image tag; empty string resets to the base image"},
-				"context_files": {Type: "array", Description: "Absolute file or directory paths to include as worker context (same model as project context files); an empty list clears the selection"},
-				"kind": {Type: "string", Description: "New kind (epic, feature, task, subtask). The parent/child hierarchy is resolved automatically (see description)."},
+				"workflow_run_id":     {Type: "string", Description: "The workflow run ID this item is bound to; empty string allows re-scheduling"},
+				"runtime_image":       {Type: "string", Description: "Runtime container image tag; empty string resets to the base image"},
+				"context_files":       {Type: "array", Description: "Absolute file or directory paths to include as worker context (same model as project context files); an empty list clears the selection"},
+				"kind":                {Type: "string", Description: "New kind (epic, feature, task, subtask). The parent/child hierarchy is resolved automatically (see description)."},
 			},
 			Required: []string{"id"},
 		},
@@ -391,7 +391,7 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Description: "Get a single workflow version by workflow_id and optional version number (defaults to the latest published). Returns the steps JSON array verbatim — use it to adopt a UI-built workflow configuration as the seed template (bake the steps into internal/db/seed_workflows.go).",
 			Mutating:    false,
 			Fn:          toolGetWorkflowVersion,
-			Properties:  map[string]PropertySchema{
+			Properties: map[string]PropertySchema{
 				"workflow_id": {Type: "string", Description: "Workflow ID"},
 				"version":     {Type: "number", Description: "Optional version number (defaults to latest published)"},
 			},
@@ -558,6 +558,21 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 				"stall_text_loop_window_seconds":    {Type: "number", Description: "Seconds window for text-loop detection (0 = leave unchanged)"},
 				"stall_repetition_count":            {Type: "number", Description: "Same tool-call signature repeated this many times within the repetition window before aborting (0 = leave unchanged)"},
 				"stall_repetition_window_seconds":   {Type: "number", Description: "Seconds window for repetition detection (0 = leave unchanged)"},
+			},
+		},
+
+		// --- Audit ---
+		{
+			Name:        "list_audit_events",
+			Description: "List audit events for the current tenant — the actor-based 'who did what' trail (action, actor, auth method, target, before/after, trace id). Optional filters: action, actor_id, target_type, target_id. Read-only.",
+			Mutating:    false,
+			Fn:          toolListAuditEvents,
+			Properties: map[string]PropertySchema{
+				"action":      {Type: "string", Description: "Optional exact action filter (e.g. work_item.created)"},
+				"actor_id":    {Type: "string", Description: "Optional actor identity ID filter"},
+				"target_type": {Type: "string", Description: "Optional target type filter (e.g. work_item)"},
+				"target_id":   {Type: "string", Description: "Optional target ID filter"},
+				"page_size":   {Type: "number", Description: "Optional page size (max 1000, default 100)"},
 			},
 		},
 	}

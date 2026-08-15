@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -10,17 +11,20 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/audit"
+	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/backup"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/tenant"
+	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Service implements the SettingsService Connect handler.
 type Service struct {
-	pool      *db.Pool
-	log       *slog.Logger
-	dsn       string // Postgres DSN for backup/restore
+	pool *db.Pool
+	log  *slog.Logger
+	dsn  string // Postgres DSN for backup/restore
 	apiv1connect.UnimplementedSettingsServiceHandler
 }
 
@@ -63,12 +67,63 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "settings.updated", "settings", tenantID,
+		nil, audit.Snapshot(map[string]any{"default_worker_model": row.DefaultWorkerModel, "default_ask_orchicon_model": row.DefaultAskOrchiconModel})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit settings.updated: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(&apiv1.UpdateSettingsResponse{
 		Settings: settingsRowToProto(&row),
 	}), nil
+}
+
+// recordAudit writes an actor-based audit row in the caller's tx,
+// resolving the actor from the request context. Must be called in the
+// same transaction as the mutation so the row commits atomically.
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
+	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
+	e.Action = action
+	e.TargetType = targetType
+	e.TargetID = targetID
+	e.Before = before
+	e.After = after
+	return audit.Record(ctx, tx, e)
+}
+
+// recordAuditShort writes an audit row in its own short tenant tx.
+//
+// DELIBERATE DEVIATION from the transactional-outbox AC (audit row in the
+// same tx as the mutation): backup create/restore/delete have NO tenant
+// tx to join. CreateBackup/DeleteBackup mutate only the filesystem
+// (backup.Create/Delete); RestoreBackup re-runs a full DB restore over a
+// separate connection, so an audit row written "inside the restore"
+// would itself be wiped by the restore. The audit row is therefore
+// written best-effort in its own short tx after the filesystem/DB op
+// succeeds. A record failure here is logged, not fatal — there is no
+// state to roll back (the mutation already happened on the filesystem).
+func (s *Service) recordAuditShort(ctx context.Context, action string, before, after json.RawMessage) {
+	tenantID := tenant.FromContext(ctx)
+	if tenantID == "" {
+		return
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		s.log.Error("audit: begin tx", "error", err, "action", action)
+		return
+	}
+	defer ttx.Rollback(ctx)
+	if err := recordAudit(ctx, ttx.Tx, tenantID, action, "settings", tenantID, before, after); err != nil {
+		s.log.Error("audit: record", "error", err, "action", action)
+		return
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		s.log.Error("audit: commit", "error", err, "action", action)
+	}
 }
 
 func requireTenant(ctx context.Context) (string, error) {
@@ -81,26 +136,26 @@ func requireTenant(ctx context.Context) (string, error) {
 
 func settingsRowToProto(r *db.TenantSettingsRow) *apiv1.TenantSettings {
 	return &apiv1.TenantSettings{
-		DefaultWorkerModel:              r.DefaultWorkerModel,
-		DefaultAskOrchiconModel:         r.DefaultAskOrchiconModel,
-		StallNoProgressWindowSeconds:    r.StallNoProgressWindowSeconds,
-		StallNoFileDiffWindowSeconds:    r.StallNoFileDiffWindowSeconds,
-		StallTextLoopWindowSeconds:      r.StallTextLoopWindowSeconds,
-		StallRepetitionCount:            r.StallRepetitionCount,
-		StallRepetitionWindowSeconds:    r.StallRepetitionWindowSeconds,
-		DefaultBudgetOverrides:          string(r.DefaultBudgetOverrides),
-		ExecutionReapGraceSeconds:       r.ExecutionReapGraceSeconds,
+		DefaultWorkerModel:               r.DefaultWorkerModel,
+		DefaultAskOrchiconModel:          r.DefaultAskOrchiconModel,
+		StallNoProgressWindowSeconds:     r.StallNoProgressWindowSeconds,
+		StallNoFileDiffWindowSeconds:     r.StallNoFileDiffWindowSeconds,
+		StallTextLoopWindowSeconds:       r.StallTextLoopWindowSeconds,
+		StallRepetitionCount:             r.StallRepetitionCount,
+		StallRepetitionWindowSeconds:     r.StallRepetitionWindowSeconds,
+		DefaultBudgetOverrides:           string(r.DefaultBudgetOverrides),
+		ExecutionReapGraceSeconds:        r.ExecutionReapGraceSeconds,
 		ExecutionReapConsecutiveFailures: r.ExecutionReapConsecutiveFailures,
-		BackupSchedule:                  r.BackupSchedule,
-		BackupRetentionDays:             r.BackupRetentionDays,
-		BackupDirectory:                 r.BackupDirectory,
-		LogDirectory:                    r.LogDirectory,
-		LogMaxSizeMb:                    r.LogMaxSizeMB,
-		LogRollIntervalHours:            r.LogRollIntervalHours,
-		LogRetentionDays:                r.LogRetentionDays,
-		LogMaxFiles:                     r.LogMaxFiles,
-		CreatedAt:                       timestamppb.New(r.CreatedAt),
-		UpdatedAt:                       timestamppb.New(r.UpdatedAt),
+		BackupSchedule:                   r.BackupSchedule,
+		BackupRetentionDays:              r.BackupRetentionDays,
+		BackupDirectory:                  r.BackupDirectory,
+		LogDirectory:                     r.LogDirectory,
+		LogMaxSizeMb:                     r.LogMaxSizeMB,
+		LogRollIntervalHours:             r.LogRollIntervalHours,
+		LogRetentionDays:                 r.LogRetentionDays,
+		LogMaxFiles:                      r.LogMaxFiles,
+		CreatedAt:                        timestamppb.New(r.CreatedAt),
+		UpdatedAt:                        timestamppb.New(r.UpdatedAt),
 	}
 }
 
@@ -116,24 +171,24 @@ func settingsProtoToRow(s *apiv1.TenantSettings) db.TenantSettingsRow {
 		budget = "{}"
 	}
 	return db.TenantSettingsRow{
-		DefaultWorkerModel:          s.DefaultWorkerModel,
-		DefaultAskOrchiconModel:     s.DefaultAskOrchiconModel,
-		StallNoProgressWindowSeconds: s.StallNoProgressWindowSeconds,
-		StallNoFileDiffWindowSeconds: s.StallNoFileDiffWindowSeconds,
-		StallTextLoopWindowSeconds:   s.StallTextLoopWindowSeconds,
-		StallRepetitionCount:         s.StallRepetitionCount,
-		StallRepetitionWindowSeconds: s.StallRepetitionWindowSeconds,
-		DefaultBudgetOverrides:       []byte(budget),
-		ExecutionReapGraceSeconds:    s.ExecutionReapGraceSeconds,
+		DefaultWorkerModel:               s.DefaultWorkerModel,
+		DefaultAskOrchiconModel:          s.DefaultAskOrchiconModel,
+		StallNoProgressWindowSeconds:     s.StallNoProgressWindowSeconds,
+		StallNoFileDiffWindowSeconds:     s.StallNoFileDiffWindowSeconds,
+		StallTextLoopWindowSeconds:       s.StallTextLoopWindowSeconds,
+		StallRepetitionCount:             s.StallRepetitionCount,
+		StallRepetitionWindowSeconds:     s.StallRepetitionWindowSeconds,
+		DefaultBudgetOverrides:           []byte(budget),
+		ExecutionReapGraceSeconds:        s.ExecutionReapGraceSeconds,
 		ExecutionReapConsecutiveFailures: s.ExecutionReapConsecutiveFailures,
-		BackupSchedule:              s.BackupSchedule,
-		BackupRetentionDays:         s.BackupRetentionDays,
-		BackupDirectory:             s.BackupDirectory,
-		LogDirectory:                s.LogDirectory,
-		LogMaxSizeMB:                s.LogMaxSizeMb,
-		LogRollIntervalHours:        s.LogRollIntervalHours,
-		LogRetentionDays:            s.LogRetentionDays,
-		LogMaxFiles:                 s.LogMaxFiles,
+		BackupSchedule:                   s.BackupSchedule,
+		BackupRetentionDays:              s.BackupRetentionDays,
+		BackupDirectory:                  s.BackupDirectory,
+		LogDirectory:                     s.LogDirectory,
+		LogMaxSizeMB:                     s.LogMaxSizeMb,
+		LogRollIntervalHours:             s.LogRollIntervalHours,
+		LogRetentionDays:                 s.LogRetentionDays,
+		LogMaxFiles:                      s.LogMaxFiles,
 	}
 }
 
@@ -164,6 +219,7 @@ func (s *Service) CreateBackup(ctx context.Context, req *connect.Request[apiv1.C
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("backup: %w", err))
 	}
+	s.recordAuditShort(ctx, "backup.created", nil, audit.Snapshot(map[string]any{"name": info.Name, "size_bytes": info.SizeBytes}))
 	return connect.NewResponse(&apiv1.CreateBackupResponse{
 		Name:      info.Name,
 		SizeBytes: info.SizeBytes,
@@ -203,6 +259,7 @@ func (s *Service) RestoreBackup(ctx context.Context, req *connect.Request[apiv1.
 	if err := backup.Restore(ctx, s.dsn, path); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("restore: %w", err))
 	}
+	s.recordAuditShort(ctx, "backup.restored", nil, audit.Snapshot(map[string]any{"name": req.Msg.Name, "path": path}))
 	return connect.NewResponse(&apiv1.RestoreBackupResponse{}), nil
 }
 
@@ -214,6 +271,7 @@ func (s *Service) DeleteBackup(ctx context.Context, req *connect.Request[apiv1.D
 	if err := backup.Delete(dir, req.Msg.Name); err != nil {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("delete backup: %w", err))
 	}
+	s.recordAuditShort(ctx, "backup.deleted", audit.Snapshot(map[string]any{"name": req.Msg.Name}), nil)
 	return connect.NewResponse(&apiv1.DeleteBackupResponse{}), nil
 }
 

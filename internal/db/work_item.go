@@ -29,15 +29,15 @@ type WorkItemRow struct {
 	// done, auto-populated by the WorkflowReconciler when a bound
 	// workflow run reaches a terminal state (docs/02 §2.2). Markdown;
 	// mirrors acceptance_criteria (bounded, empty until a run completes).
-	AcceptanceReview string
-	Status           string
-	AssignedWorkerRef  []byte // jsonb: {worker_id, version}
-	WorkflowID         *string
-	WorkflowRunID      string
-	WorkflowStepID     string
-	Priority           int
-	Budgets            []byte // jsonb
-	ContextWindow      int
+	AcceptanceReview  string
+	Status            string
+	AssignedWorkerRef []byte // jsonb: {worker_id, version}
+	WorkflowID        *string
+	WorkflowRunID     string
+	WorkflowStepID    string
+	Priority          int
+	Budgets           []byte // jsonb
+	ContextWindow     int
 	// SortOrder is the sibling order within (parent_id) — the sequence
 	// engine's derived cursor (architecture-notes/
 	// sequential-multi-workflow-runs.md §1). Nullable; backfilled by
@@ -56,9 +56,9 @@ type WorkItemRow struct {
 	// before dispatch (PR B — context propagation). Read by the opencode
 	// adapter via the TaskReconciler → manifest Goal. JSONB shape:
 	//   {"composite": "# Task\n...\n# Project context\n...\n# Upstream context\n..."}
-	PromptContext   []byte // jsonb
-	ScheduledStartAt *time.Time // scheduled workflow start; nil = immediate
-	AutoStartWorkflow bool      // true = auto-start bound workflow on save
+	PromptContext     []byte     // jsonb
+	ScheduledStartAt  *time.Time // scheduled workflow start; nil = immediate
+	AutoStartWorkflow bool       // true = auto-start bound workflow on save
 	// RuntimeImage is the runtime container image tag for this item's
 	// workflow run (empty = base image). Stamped by the backend at
 	// create/update so the value always carries forward to the run.
@@ -372,13 +372,13 @@ type UpdateWorkItemFields struct {
 	AcceptanceCriteria *string
 	// AcceptanceReview sets the human-readable acceptance review. Empty
 	// string clears it; nil = unchanged (field-mask semantics).
-	AcceptanceReview *string
-	Status           *string
-	Priority           *int
-	Budgets            *[]byte
-	ContextWindow      *int
-	AssignedWorkerRef  *[]byte
-	ProjectID          *string
+	AcceptanceReview  *string
+	Status            *string
+	Priority          *int
+	Budgets           *[]byte
+	ContextWindow     *int
+	AssignedWorkerRef *[]byte
+	ProjectID         *string
 	// Kind switches the item's hierarchy kind (epic/feature/task/subtask).
 	// The CHECK constraint on kind is satisfied because the service
 	// normalizes via domain.NormalizeWorkItemKind before calling.
@@ -405,8 +405,8 @@ type UpdateWorkItemFields struct {
 	WorkflowStepID *string
 	// ScheduledStartAt and AutoStartWorkflow control template-bound
 	// runs (docs/11 §5.1). Set on create/update.
-	ScheduledStartAt   *time.Time
-	AutoStartWorkflow  *bool
+	ScheduledStartAt  *time.Time
+	AutoStartWorkflow *bool
 	// ClearScheduledStartAt, when true, sets scheduled_start_at = NULL.
 	// Used when auto_start_workflow is enabled to clear a prior schedule.
 	ClearScheduledStartAt bool
@@ -604,7 +604,7 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 type DependencyRow struct {
 	ID        string
 	TenantID  string
-	ProjectID  string
+	ProjectID string
 	FromID    string
 	ToID      string
 	Type      string
@@ -630,6 +630,24 @@ func CreateDependency(ctx context.Context, tx pgx.Tx, d DependencyRow) (Dependen
 		return DependencyRow{}, fmt.Errorf("db: create dependency: %w", err)
 	}
 	return row, nil
+}
+
+// GetDependency fetches a single DAG edge by id within the tenant scope
+// (used to snapshot before/after for the audit trail).
+func GetDependency(ctx context.Context, tx pgx.Tx, tenantID, id string) (DependencyRow, error) {
+	const q = `SELECT id, tenant_id, project_id, from_id, to_id, type, created_at
+		FROM work_item_dependencies WHERE tenant_id = $1 AND id = $2`
+	var d DependencyRow
+	err := tx.QueryRow(ctx, q, tenantID, id).Scan(
+		&d.ID, &d.TenantID, &d.ProjectID, &d.FromID, &d.ToID, &d.Type, &d.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DependencyRow{}, ErrNotFound
+	}
+	if err != nil {
+		return DependencyRow{}, fmt.Errorf("db: get dependency: %w", err)
+	}
+	return d, nil
 }
 
 // DeleteDependency removes a DAG edge by id within the tenant scope.

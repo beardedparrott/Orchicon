@@ -22,6 +22,8 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/audit"
+	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
@@ -136,9 +138,9 @@ func (s *Service) ListExecutions(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	f := db.ListExecutionsFilter{
-		TenantID:       tenantID,
-		PageSize:       int(req.Msg.PageSize),
-		AfterID:        req.Msg.PageToken,
+		TenantID:        tenantID,
+		PageSize:        int(req.Msg.PageSize),
+		AfterID:         req.Msg.PageToken,
 		ExcludeFollowUp: true, // hide follow-up executions from the main list
 	}
 	if req.Msg.ProjectId != nil {
@@ -210,6 +212,10 @@ func (s *Service) DeleteExecution(ctx context.Context, req *connect.Request[apiv
 	if err := db.DeleteExecution(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, mapDBError(err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.deleted", "execution", current.ID,
+		audit.SnapshotStatus(current.Status), nil); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.deleted: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -258,6 +264,10 @@ func (s *Service) BatchDeleteExecutions(ctx context.Context, req *connect.Reques
 			continue
 		}
 		deleted++
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.batch_deleted", "execution", tenantID,
+		nil, audit.Snapshot(map[string]any{"count": deleted, "ids": req.Msg.Ids})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.batch_deleted: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -343,6 +353,10 @@ func (s *Service) PauseExecution(ctx context.Context, req *connect.Request[apiv1
 	if err := enqueueExecEvent(ctx, ttx.Tx, "execution.control", updated, map[string]any{"action": "pause"}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.paused", "execution", updated.ID,
+		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(updated.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.paused: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -381,6 +395,10 @@ func (s *Service) ResumeExecution(ctx context.Context, req *connect.Request[apiv
 	}
 	if err := enqueueExecEvent(ctx, ttx.Tx, "execution.control", updated, map[string]any{"action": "resume"}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.resumed", "execution", updated.ID,
+		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(updated.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.resumed: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -426,6 +444,10 @@ func (s *Service) CancelExecution(ctx context.Context, req *connect.Request[apiv
 	if err := enqueueExecEvent(ctx, ttx.Tx, "execution.control", updated, map[string]any{"action": "cancel", "reason": reason}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.cancelled", "execution", updated.ID,
+		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(updated.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.cancelled: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -466,12 +488,16 @@ func (s *Service) CheckpointNow(ctx context.Context, req *connect.Request[apiv1.
 	if err := enqueueExecEvent(ctx, ttx.Tx, "execution.checkpoint", updated, map[string]any{"checkpoint_ref": checkpointRef}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.checkpointed", "execution", updated.ID,
+		nil, audit.Snapshot(map[string]any{"checkpoint_ref": checkpointRef})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.checkpointed: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
 	s.log.Info("execution checkpoint requested", "id", updated.ID, "checkpoint_ref", checkpointRef)
 	return connect.NewResponse(&apiv1.CheckpointNowResponse{
-		Execution:    rowToProto(updated),
+		Execution:     rowToProto(updated),
 		CheckpointRef: checkpointRef,
 	}), nil
 }
@@ -480,6 +506,10 @@ func (s *Service) CheckpointNow(ctx context.Context, req *connect.Request[apiv1.
 // (docs/05 §7.1, docs/07 §3.8). The decision is signaled to the
 // adapter's Execute stream via the pending approval registry.
 func (s *Service) ApproveToolCall(ctx context.Context, req *connect.Request[apiv1.ApproveToolCallRequest]) (*connect.Response[apiv1.ApproveToolCallResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	if req.Msg.RequestId == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("request_id must not be empty"))
 	}
@@ -506,8 +536,33 @@ func (s *Service) ApproveToolCall(ctx context.Context, req *connect.Request[apiv
 	s.mu.Lock()
 	delete(s.approvals, req.Msg.RequestId)
 	s.mu.Unlock()
+	s.recordApprovalAudit(ctx, tenantID, req.Msg.Approved, pending.request.ExecutionId)
 	s.log.Info("tool call approved", "request_id", req.Msg.RequestId, "approved", req.Msg.Approved)
 	return connect.NewResponse(&apiv1.ApproveToolCallResponse{Approval: pending.request}), nil
+}
+
+// recordApprovalAudit writes the tool-call approval/rejection row in a
+// short tenant tx (ApproveToolCall resolves an in-memory registry entry
+// and has no state mutation to share a tx with).
+func (s *Service) recordApprovalAudit(ctx context.Context, tenantID string, approved bool, executionID string) {
+	action := "execution.tool_call_rejected"
+	if approved {
+		action = "execution.tool_call_approved"
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		s.log.Error("audit: begin tx", "error", err, "action", action)
+		return
+	}
+	defer ttx.Rollback(ctx)
+	if err := recordAudit(ctx, ttx.Tx, tenantID, action, "execution", executionID,
+		nil, audit.Snapshot(map[string]any{"approved": approved})); err != nil {
+		s.log.Error("audit: record", "error", err, "action", action)
+		return
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		s.log.Error("audit: commit", "error", err, "action", action)
+	}
 }
 
 // ListPendingApprovals returns unresolved Tier 2 approval requests for
@@ -615,17 +670,17 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 		"_is_follow_up":        "true",
 	})
 	newWI := db.WorkItemRow{
-		ID:        db.NewID(),
-		TenantID:  tenantID,
-		ProjectID: task.ProjectID,
-		ParentID:  &task.ID,
-		Kind:      domain.WorkItemKindTask,
-		Title:     fmt.Sprintf("Follow-up: %s", strings.TrimSpace(task.Title)),
-		Status:    domain.WorkItemReady,
+		ID:                db.NewID(),
+		TenantID:          tenantID,
+		ProjectID:         task.ProjectID,
+		ParentID:          &task.ID,
+		Kind:              domain.WorkItemKindTask,
+		Title:             fmt.Sprintf("Follow-up: %s", strings.TrimSpace(task.Title)),
+		Status:            domain.WorkItemReady,
 		AssignedWorkerRef: task.AssignedWorkerRef,
-		Priority:  task.Priority,
-		PromptContext: promptCtx,
-		Results:   resultsJSON,
+		Priority:          task.Priority,
+		PromptContext:     promptCtx,
+		Results:           resultsJSON,
 	}
 	if _, err := db.CreateWorkItem(ctx, ttx.Tx, newWI); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create follow-up work item: %w", err))
@@ -659,6 +714,10 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update execution conversation: %w", err))
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.follow_up_created", "execution", msg.ExecutionId,
+		nil, audit.Snapshot(map[string]any{"work_item_id": newWI.ID})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.follow_up_created: %w", err))
+	}
 
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -689,21 +748,37 @@ func (s *Service) RegisterApproval(req *apiv1.ApprovalRequest) <-chan approvalDe
 
 // --- helpers ---------------------------------------------------------------
 
+// recordAudit writes an actor-based audit row in the caller's tx,
+// resolving the actor from the request context. Must be called in the
+// same transaction as the mutation so the row commits atomically.
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
+	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
+	e.Action = action
+	e.TargetType = targetType
+	e.TargetID = targetID
+	e.Before = before
+	e.After = after
+	return audit.Record(ctx, tx, e)
+}
+
 func enqueueExecEvent(ctx context.Context, tx pgx.Tx, eventType string, e db.ExecutionRow, extra map[string]any) error {
 	evt := map[string]any{
-		"event_type":      eventType,
-		"tenant_id":        e.TenantID,
-		"execution_id":     e.ID,
-		"task_id":          e.TaskID,
-		"project_id":       e.ProjectID,
-		"worker_id":        e.WorkerID,
-		"worker_version":   e.WorkerVersion,
-		"status":           e.Status,
-		"health_state":     e.HealthState,
-		"aggregate_type":   "execution",
-		"aggregate_id":     e.ID,
+		"event_type":        eventType,
+		"tenant_id":         e.TenantID,
+		"execution_id":      e.ID,
+		"task_id":           e.TaskID,
+		"project_id":        e.ProjectID,
+		"worker_id":         e.WorkerID,
+		"worker_version":    e.WorkerVersion,
+		"status":            e.Status,
+		"health_state":      e.HealthState,
+		"aggregate_type":    "execution",
+		"aggregate_id":      e.ID,
 		"aggregate_version": e.Version,
-		"occurred_at":      time.Now().UTC().Format(time.RFC3339Nano),
+		"occurred_at":       time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	for k, v := range extra {
 		evt[k] = v
@@ -728,13 +803,13 @@ func enqueueExecEvent(ctx context.Context, tx pgx.Tx, eventType string, e db.Exe
 // into an ExecutionEvent proto message.
 func parseExecutionEvent(data []byte) (*apiv1.ExecutionEvent, error) {
 	var env struct {
-		EventType    string `json:"event_type"`
-		TenantID     string `json:"tenant_id"`
-		ExecutionID  string `json:"execution_id"`
-		TaskID       string `json:"task_id"`
-		Status       string `json:"status"`
-		HealthState  string `json:"health_state"`
-		OccurredAt   string `json:"occurred_at"`
+		EventType   string `json:"event_type"`
+		TenantID    string `json:"tenant_id"`
+		ExecutionID string `json:"execution_id"`
+		TaskID      string `json:"task_id"`
+		Status      string `json:"status"`
+		HealthState string `json:"health_state"`
+		OccurredAt  string `json:"occurred_at"`
 	}
 	if err := json.Unmarshal(data, &env); err != nil {
 		return nil, fmt.Errorf("parse execution event: %w", err)
@@ -878,22 +953,22 @@ func eventTypeToProto(eventType string) apiv1.ExecutionEventType {
 
 func rowToProto(e db.ExecutionRow) *apiv1.WorkerExecution {
 	p := &apiv1.WorkerExecution{
-		Id:            e.ID,
-		TenantId:      e.TenantID,
-		ProjectId:     e.ProjectID,
-		TaskId:        e.TaskID,
-		WorkerId:      e.WorkerID,
-		WorkerVersion: int32(e.WorkerVersion),
-		Status:        execStatusToProto(e.Status),
-		HealthState:   healthStateToProto(e.HealthState),
-		TokenUsage:    e.TokenUsage,
-		CostUsd:       e.CostUSD,
-		Version:       int32(e.Version),
-		WorkflowRunId: e.WorkflowRunID,
+		Id:             e.ID,
+		TenantId:       e.TenantID,
+		ProjectId:      e.ProjectID,
+		TaskId:         e.TaskID,
+		WorkerId:       e.WorkerID,
+		WorkerVersion:  int32(e.WorkerVersion),
+		Status:         execStatusToProto(e.Status),
+		HealthState:    healthStateToProto(e.HealthState),
+		TokenUsage:     e.TokenUsage,
+		CostUsd:        e.CostUSD,
+		Version:        int32(e.Version),
+		WorkflowRunId:  e.WorkflowRunID,
 		WorkflowStepId: e.WorkflowStepID,
-		WorkflowName:  e.WorkflowName,
-		WorkerName:    e.WorkerName,
-		Iteration:     int32(e.Iteration),
+		WorkflowName:   e.WorkflowName,
+		WorkerName:     e.WorkerName,
+		Iteration:      int32(e.Iteration),
 	}
 	if e.AdapterID != nil {
 		p.AdapterId = *e.AdapterID
@@ -956,7 +1031,8 @@ func (s *Service) enrichSystemPrompt(ctx context.Context, tx pgx.Tx, tenantID st
 // execution has no live session (finished, legacy one-shot path, or the
 // plane restarted).
 func (s *Service) SendExecutionMessage(ctx context.Context, req *connect.Request[apiv1.SendExecutionMessageRequest]) (*connect.Response[apiv1.SendExecutionMessageResponse], error) {
-	if _, err := requireTenant(ctx); err != nil {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	msg := req.Msg
@@ -975,7 +1051,37 @@ func (s *Service) SendExecutionMessage(ctx context.Context, req *connect.Request
 	if err := s.sendExecMessage(ctx, msg.ExecutionId, msg.Message); err != nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 	}
+	s.recordMessageAudit(ctx, tenantID, msg.ExecutionId, "execution.message_sent")
 	return connect.NewResponse(&apiv1.SendExecutionMessageResponse{}), nil
+}
+
+// recordMessageAudit writes a session-message audit row in a short
+// tenant tx.
+//
+// DELIBERATE DEVIATION from the transactional-outbox AC (audit row in the
+// same tx as the mutation): SendExecutionMessage / ContinueExecutionSession
+// push the message into the adapter's LIVE session (or its durable
+// transcript via the adapter's best-effort session store) — there is no
+// control-plane DB mutation in the handler to share a tx with. The audit
+// row is therefore written best-effort in its own short tx after the
+// session write succeeds. A record failure is logged, not fatal.
+func (s *Service) recordMessageAudit(ctx context.Context, tenantID, executionID, action string) {
+	if tenantID == "" {
+		return
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		s.log.Error("audit: begin tx", "error", err, "action", action)
+		return
+	}
+	defer ttx.Rollback(ctx)
+	if err := recordAudit(ctx, ttx.Tx, tenantID, action, "execution", executionID, nil, nil); err != nil {
+		s.log.Error("audit: record", "error", err, "action", action)
+		return
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		s.log.Error("audit: commit", "error", err, "action", action)
+	}
 }
 
 // GetExecutionSession returns the durable session transcript for an
@@ -1097,6 +1203,7 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 	if err != nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 	}
+	s.recordMessageAudit(ctx, tenantID, msg.ExecutionId, "execution.session_continued")
 	return connect.NewResponse(&apiv1.ContinueExecutionSessionResponse{Reply: reply}), nil
 }
 

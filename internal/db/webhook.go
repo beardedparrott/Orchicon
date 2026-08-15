@@ -8,26 +8,36 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// deliveryWriter is the minimal SQL surface shared by *Pool (the
+// dispatcher's pool-direct writes) and pgx.Tx (the service's tenant
+// transaction), so delivery mutations can commit atomically with an
+// audit row when the caller owns a transaction.
+type deliveryWriter interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
 
 // EventSubscriptionRow is the data-access shape of an event_subscriptions
 // table row. SecretHash is the only secret material stored; the plaintext
 // secret is shown once on create and never persisted (AGENTS.md security).
 type EventSubscriptionRow struct {
-	ID         string
-	TenantID   string
-	Name       string
-	TargetURL  string
+	ID          string
+	TenantID    string
+	Name        string
+	TargetURL   string
 	EventFilter string
-	Scope      string
-	ScopeRef   string
-	SecretHint string
-	SecretHash string
-	MaxRetries int
-	Status     string
-	Version    int
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	Scope       string
+	ScopeRef    string
+	SecretHint  string
+	SecretHash  string
+	MaxRetries  int
+	Status      string
+	Version     int
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // CreateSubscription inserts a new webhook subscription.
@@ -241,8 +251,10 @@ type WebhookDeliveryRow struct {
 	OccurredAt     time.Time
 }
 
-// CreateDelivery inserts a new delivery attempt row.
-func CreateDelivery(ctx context.Context, p *Pool, r WebhookDeliveryRow) (WebhookDeliveryRow, error) {
+// CreateDelivery inserts a new delivery attempt row. w is either a *Pool
+// (pool-direct, e.g. the dispatcher) or a pgx.Tx (the service's tenant
+// transaction, so the row commits atomically with an audit entry).
+func CreateDelivery(ctx context.Context, w deliveryWriter, r WebhookDeliveryRow) (WebhookDeliveryRow, error) {
 	if r.ID == "" {
 		r.ID = NewID()
 	}
@@ -258,7 +270,7 @@ func CreateDelivery(ctx context.Context, p *Pool, r WebhookDeliveryRow) (Webhook
 	if r.NextAttemptAt != nil {
 		nextAny = *r.NextAttemptAt
 	}
-	err := p.QueryRow(ctx, q, r.ID, r.TenantID, r.SubscriptionID, r.EventID, r.EventType,
+	err := w.QueryRow(ctx, q, r.ID, r.TenantID, r.SubscriptionID, r.EventID, r.EventType,
 		r.Payload, r.Attempt, r.StatusCode, r.Status, r.Error, nextAny).Scan(
 		&r.ID, &r.TenantID, &r.SubscriptionID, &r.EventID, &r.EventType, &r.Payload, &r.Attempt,
 		&r.StatusCode, &r.Status, &r.Error, &r.NextAttemptAt, &r.OccurredAt,
@@ -270,15 +282,16 @@ func CreateDelivery(ctx context.Context, p *Pool, r WebhookDeliveryRow) (Webhook
 }
 
 // UpdateDeliveryResult records the outcome of a delivery attempt and
-// schedules the next attempt if retrying.
-func UpdateDeliveryResult(ctx context.Context, p *Pool, id string, statusCode int, status, errMsg string, nextAttempt *time.Time) error {
+// schedules the next attempt if retrying. w is either a *Pool or a
+// pgx.Tx (see CreateDelivery).
+func UpdateDeliveryResult(ctx context.Context, w deliveryWriter, id string, statusCode int, status, errMsg string, nextAttempt *time.Time) error {
 	var nextAny any
 	if nextAttempt != nil {
 		nextAny = *nextAttempt
 	}
 	const q = `UPDATE webhook_deliveries SET status_code = $1, status = $2, error = $3,
 		next_attempt_at = $4 WHERE id = $5`
-	_, err := p.Exec(ctx, q, statusCode, status, errMsg, nextAny, id)
+	_, err := w.Exec(ctx, q, statusCode, status, errMsg, nextAny, id)
 	if err != nil {
 		return fmt.Errorf("db: update delivery: %w", err)
 	}
@@ -336,24 +349,25 @@ func GetDelivery(ctx context.Context, tx pgx.Tx, tenantID, id string) (WebhookDe
 
 // ReenqueueDelivery creates a fresh delivery attempt for replay. The
 // original delivery's status is left intact (audit trail preserved).
-func ReenqueueDelivery(ctx context.Context, p *Pool, r WebhookDeliveryRow) (WebhookDeliveryRow, error) {
+// w is either a *Pool or a pgx.Tx (see CreateDelivery).
+func ReenqueueDelivery(ctx context.Context, w deliveryWriter, r WebhookDeliveryRow) (WebhookDeliveryRow, error) {
 	r.ID = NewID()
 	r.Attempt = 0
 	r.StatusCode = 0
 	r.Status = "retrying"
 	r.Error = ""
 	r.OccurredAt = time.Now().UTC()
-	return CreateDelivery(ctx, p, r)
+	return CreateDelivery(ctx, w, r)
 }
 
 // PayloadEnvelope is the JSON envelope POSTed to webhook targets. It
 // carries enough context for the receiver to identify and verify the
 // delivery.
 type PayloadEnvelope struct {
-	EventID   string          `json:"event_id"`
-	EventType string          `json:"event_type"`
-	TenantID  string          `json:"tenant_id"`
-	Subject   string          `json:"subject"`
-	OccurredAt time.Time      `json:"occurred_at"`
-	Data      json.RawMessage `json:"data"`
+	EventID    string          `json:"event_id"`
+	EventType  string          `json:"event_type"`
+	TenantID   string          `json:"tenant_id"`
+	Subject    string          `json:"subject"`
+	OccurredAt time.Time       `json:"occurred_at"`
+	Data       json.RawMessage `json:"data"`
 }

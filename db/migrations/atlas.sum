@@ -1,4 +1,4 @@
-h1:P+wJf7E1Tk0YmPEbOhSCVtAPzIDJaI9ZvGhY+Y5vc8U=
+h1:SI+k6U2hugA6GU7pWsUNRnG9f500hs/gBZcPJW0/8t8=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712192105_initial_schema_down.sql h1:RDSZVdJtR8DJx9HvT6WrBdEOEoJpM/46JutUdlPs5wU=
 20260712223028_add_outbox.sql h1:+idZYfVIjOHjGIluT5JM5M0dMF6L1+VmeHeGy66DLEI=
@@ -89,3 +89,4 @@ h1:P+wJf7E1Tk0YmPEbOhSCVtAPzIDJaI9ZvGhY+Y5vc8U=
 20260812040000_work_items_recurring_schedule.sql h1:0ErJFHIYwOlASH9IhTvfcZ4cVinSF+nsl4xYxEIyrWE=
 20260814000000_local_credentials.sql h1:EP0jiD4yYNHK96NFax+DvCTpi54H2HSFNHBqHukE/6E=
 20260815000000_audit_events.sql h1:qCHY6iL2WisbZRxS1GqlGaZiGdr9TeX5636vWlqxCSI=
+20260815010000_audit_events_auth_method.sql h1:2URh5J9rjZYU/eVKcVj2w3SjiNWG6NFMFdFx5rSRbqc=

@@ -14,6 +14,7 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/jackc/pgx/v5"
@@ -45,6 +46,7 @@ func NewService(pool *db.Pool, log *slog.Logger) *Service {
 // hash is persisted (AGENTS.md security standards: hashed at rest).
 func (s *Service) CreateApiKey(ctx context.Context, req *connect.Request[apiv1.CreateApiKeyRequest]) (*connect.Response[apiv1.CreateApiKeyResponse], error) {
 	msg := req.Msg
+	actor := ActorFromContext(ctx)
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -84,6 +86,18 @@ func (s *Service) CreateApiKey(ctx context.Context, req *connect.Request[apiv1.C
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := audit.Record(ctx, ttx.Tx, audit.Entry{
+		TenantID:        tenantID,
+		ActorIdentityID: actor.ActorIdentityID,
+		ActorType:       actor.ActorType,
+		AuthMethod:      actor.AuthMethod,
+		Action:          "api_key.created",
+		TargetType:      "api_key",
+		TargetID:        row.ID,
+		After:           audit.Snapshot(apiKeyAuditSnapshot(row)),
+	}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit api_key.created: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -96,6 +110,7 @@ func (s *Service) CreateApiKey(ctx context.Context, req *connect.Request[apiv1.C
 
 // RevokeApiKey transitions an API key to revoked status.
 func (s *Service) RevokeApiKey(ctx context.Context, req *connect.Request[apiv1.RevokeApiKeyRequest]) (*connect.Response[apiv1.RevokeApiKeyResponse], error) {
+	actor := ActorFromContext(ctx)
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -116,6 +131,19 @@ func (s *Service) RevokeApiKey(ctx context.Context, req *connect.Request[apiv1.R
 	if err != nil {
 		return nil, mapDBError(err)
 	}
+	if err := audit.Record(ctx, ttx.Tx, audit.Entry{
+		TenantID:        tenantID,
+		ActorIdentityID: actor.ActorIdentityID,
+		ActorType:       actor.ActorType,
+		AuthMethod:      actor.AuthMethod,
+		Action:          "api_key.revoked",
+		TargetType:      "api_key",
+		TargetID:        row.ID,
+		Before:          audit.SnapshotStatus(current.Status),
+		After:           audit.SnapshotStatus(row.Status),
+	}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit api_key.revoked: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -124,6 +152,7 @@ func (s *Service) RevokeApiKey(ctx context.Context, req *connect.Request[apiv1.R
 
 // RotateApiKey issues a new plaintext + hash for an existing key.
 func (s *Service) RotateApiKey(ctx context.Context, req *connect.Request[apiv1.RotateApiKeyRequest]) (*connect.Response[apiv1.RotateApiKeyResponse], error) {
+	actor := ActorFromContext(ctx)
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -144,6 +173,19 @@ func (s *Service) RotateApiKey(ctx context.Context, req *connect.Request[apiv1.R
 	row, err := db.RotateApiKeyHash(ctx, ttx.Tx, tenantID, req.Msg.Id, prefix, hash, current.Version)
 	if err != nil {
 		return nil, mapDBError(err)
+	}
+	if err := audit.Record(ctx, ttx.Tx, audit.Entry{
+		TenantID:        tenantID,
+		ActorIdentityID: actor.ActorIdentityID,
+		ActorType:       actor.ActorType,
+		AuthMethod:      actor.AuthMethod,
+		Action:          "api_key.rotated",
+		TargetType:      "api_key",
+		TargetID:        row.ID,
+		Before:          audit.SnapshotStatus(current.Status),
+		After:           audit.SnapshotStatus(row.Status),
+	}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit api_key.rotated: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -265,6 +307,7 @@ var serviceAccountSubjectRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 // "sa-<ULID>" subject.
 func (s *Service) CreateIdentity(ctx context.Context, req *connect.Request[apiv1.CreateIdentityRequest]) (*connect.Response[apiv1.CreateIdentityResponse], error) {
 	msg := req.Msg
+	actor := ActorFromContext(ctx)
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -324,6 +367,18 @@ func (s *Service) CreateIdentity(ctx context.Context, req *connect.Request[apiv1
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := audit.Record(ctx, ttx.Tx, audit.Entry{
+		TenantID:        tenantID,
+		ActorIdentityID: actor.ActorIdentityID,
+		ActorType:       actor.ActorType,
+		AuthMethod:      actor.AuthMethod,
+		Action:          "identity.created",
+		TargetType:      "identity",
+		TargetID:        row.ID,
+		After:           audit.Snapshot(identityAuditSnapshot(row)),
+	}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit identity.created: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -337,6 +392,7 @@ func (s *Service) CreateIdentity(ctx context.Context, req *connect.Request[apiv1
 // UpdateApiKeyStatus semantics).
 func (s *Service) UpdateIdentity(ctx context.Context, req *connect.Request[apiv1.UpdateIdentityRequest]) (*connect.Response[apiv1.UpdateIdentityResponse], error) {
 	msg := req.Msg
+	actor := ActorFromContext(ctx)
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -357,9 +413,26 @@ func (s *Service) UpdateIdentity(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
+	current, err := db.GetIdentity(ctx, ttx.Tx, tenantID, msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
 	row, err := db.UpdateIdentityDisplayName(ctx, ttx.Tx, tenantID, msg.Id, displayName, expectedVersion)
 	if err != nil {
 		return nil, mapDBError(err)
+	}
+	if err := audit.Record(ctx, ttx.Tx, audit.Entry{
+		TenantID:        tenantID,
+		ActorIdentityID: actor.ActorIdentityID,
+		ActorType:       actor.ActorType,
+		AuthMethod:      actor.AuthMethod,
+		Action:          "identity.updated",
+		TargetType:      "identity",
+		TargetID:        row.ID,
+		Before:          audit.Snapshot(identityAuditSnapshot(current)),
+		After:           audit.Snapshot(identityAuditSnapshot(row)),
+	}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit identity.updated: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -375,6 +448,7 @@ func (s *Service) UpdateIdentity(ctx context.Context, req *connect.Request[apiv1
 // update fails with NotFound.
 func (s *Service) SetIdentityStatus(ctx context.Context, req *connect.Request[apiv1.SetIdentityStatusRequest]) (*connect.Response[apiv1.SetIdentityStatusResponse], error) {
 	msg := req.Msg
+	actor := ActorFromContext(ctx)
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -391,9 +465,26 @@ func (s *Service) SetIdentityStatus(ctx context.Context, req *connect.Request[ap
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
+	current, err := db.GetIdentity(ctx, ttx.Tx, tenantID, msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
 	row, err := db.SetIdentityStatus(ctx, ttx.Tx, tenantID, msg.Id, msg.Status, expectedVersion)
 	if err != nil {
 		return nil, mapDBError(err)
+	}
+	if err := audit.Record(ctx, ttx.Tx, audit.Entry{
+		TenantID:        tenantID,
+		ActorIdentityID: actor.ActorIdentityID,
+		ActorType:       actor.ActorType,
+		AuthMethod:      actor.AuthMethod,
+		Action:          "identity.status_changed",
+		TargetType:      "identity",
+		TargetID:        row.ID,
+		Before:          audit.SnapshotStatus(current.Status),
+		After:           audit.SnapshotStatus(row.Status),
+	}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit identity.status_changed: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -410,6 +501,7 @@ func (s *Service) SetIdentityStatus(ctx context.Context, req *connect.Request[ap
 // preventing accidental mass deletion).
 func (s *Service) DeleteIdentity(ctx context.Context, req *connect.Request[apiv1.DeleteIdentityRequest]) (*connect.Response[apiv1.DeleteIdentityResponse], error) {
 	msg := req.Msg
+	actor := ActorFromContext(ctx)
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -439,6 +531,18 @@ func (s *Service) DeleteIdentity(ctx context.Context, req *connect.Request[apiv1
 	}
 	if err := db.DeleteIdentity(ctx, ttx.Tx, tenantID, msg.Id); err != nil {
 		return nil, mapDBError(err)
+	}
+	if err := audit.Record(ctx, ttx.Tx, audit.Entry{
+		TenantID:        tenantID,
+		ActorIdentityID: actor.ActorIdentityID,
+		ActorType:       actor.ActorType,
+		AuthMethod:      actor.AuthMethod,
+		Action:          "identity.deleted",
+		TargetType:      "identity",
+		TargetID:        msg.Id,
+		Before:          audit.Snapshot(identityAuditSnapshot(current)),
+	}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit identity.deleted: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -485,6 +589,7 @@ func (s *Service) ListEntitlements(ctx context.Context, req *connect.Request[api
 // CreateRole creates a new RBAC role.
 func (s *Service) CreateRole(ctx context.Context, req *connect.Request[apiv1.CreateRoleRequest]) (*connect.Response[apiv1.CreateRoleResponse], error) {
 	msg := req.Msg
+	actor := ActorFromContext(ctx)
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -517,6 +622,18 @@ func (s *Service) CreateRole(ctx context.Context, req *connect.Request[apiv1.Cre
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := audit.Record(ctx, ttx.Tx, audit.Entry{
+		TenantID:        tenantID,
+		ActorIdentityID: actor.ActorIdentityID,
+		ActorType:       actor.ActorType,
+		AuthMethod:      actor.AuthMethod,
+		Action:          "role.created",
+		TargetType:      "role",
+		TargetID:        row.ID,
+		After:           audit.Snapshot(roleAuditSnapshot(row)),
+	}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit role.created: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -552,6 +669,7 @@ func (s *Service) ListRoles(ctx context.Context, req *connect.Request[apiv1.List
 // AssignRole binds a role to an identity.
 func (s *Service) AssignRole(ctx context.Context, req *connect.Request[apiv1.AssignRoleRequest]) (*connect.Response[apiv1.AssignRoleResponse], error) {
 	msg := req.Msg
+	actor := ActorFromContext(ctx)
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -581,6 +699,18 @@ func (s *Service) AssignRole(ctx context.Context, req *connect.Request[apiv1.Ass
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := audit.Record(ctx, ttx.Tx, audit.Entry{
+		TenantID:        tenantID,
+		ActorIdentityID: actor.ActorIdentityID,
+		ActorType:       actor.ActorType,
+		AuthMethod:      actor.AuthMethod,
+		Action:          "role_binding.assigned",
+		TargetType:      "role_binding",
+		TargetID:        binding.ID,
+		After:           audit.Snapshot(bindingAuditSnapshot(binding)),
+	}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit role_binding.assigned: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -589,6 +719,7 @@ func (s *Service) AssignRole(ctx context.Context, req *connect.Request[apiv1.Ass
 
 // RevokeRole removes a role binding.
 func (s *Service) RevokeRole(ctx context.Context, req *connect.Request[apiv1.RevokeRoleRequest]) (*connect.Response[apiv1.RevokeRoleResponse], error) {
+	actor := ActorFromContext(ctx)
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -601,8 +732,24 @@ func (s *Service) RevokeRole(ctx context.Context, req *connect.Request[apiv1.Rev
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
+	current, err := db.GetRoleBinding(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
 	if err := db.DeleteRoleBinding(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, mapDBError(err)
+	}
+	if err := audit.Record(ctx, ttx.Tx, audit.Entry{
+		TenantID:        tenantID,
+		ActorIdentityID: actor.ActorIdentityID,
+		ActorType:       actor.ActorType,
+		AuthMethod:      actor.AuthMethod,
+		Action:          "role_binding.revoked",
+		TargetType:      "role_binding",
+		TargetID:        req.Msg.Id,
+		Before:          audit.Snapshot(bindingAuditSnapshot(current)),
+	}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit role_binding.revoked: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -663,6 +810,10 @@ func (s *Service) ListTenants(ctx context.Context, req *connect.Request[apiv1.Li
 // stay consistent across the codebase.
 func (s *Service) CreateTenant(ctx context.Context, req *connect.Request[apiv1.CreateTenantRequest]) (*connect.Response[apiv1.CreateTenantResponse], error) {
 	msg := req.Msg
+	actor := ActorFromContext(ctx)
+	if actor.TenantID == "" {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("no tenant in context"))
+	}
 	slug := strings.TrimSpace(msg.Slug)
 	if slug == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("slug must not be empty"))
@@ -686,7 +837,16 @@ func (s *Service) CreateTenant(ctx context.Context, req *connect.Request[apiv1.C
 	if budget != "" && !json.Valid([]byte(budget)) {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("budget_envelope_json is not valid JSON"))
 	}
-	row, err := db.CreateTenant(ctx, s.pool, slug, name, budget)
+	// The tenants table has no tenant_id column and no RLS, so the audit
+	// row is scoped to the ACTOR's tenant (the admin's own tenant). Begin
+	// the tx in the actor's tenant so the audit row + tenant insert commit
+	// atomically.
+	ttx, err := s.pool.BeginTenantTx(ctx, actor.TenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	row, err := db.CreateTenant(ctx, ttx.Tx, slug, name, budget)
 	if err != nil {
 		// Most likely a unique-constraint violation on slug.
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
@@ -694,8 +854,34 @@ func (s *Service) CreateTenant(ctx context.Context, req *connect.Request[apiv1.C
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := audit.Record(ctx, ttx.Tx, audit.Entry{
+		TenantID:        actor.TenantID,
+		ActorIdentityID: actor.ActorIdentityID,
+		ActorType:       actor.ActorType,
+		AuthMethod:      actor.AuthMethod,
+		Action:          "tenant.created",
+		TargetType:      "tenant",
+		TargetID:        row.ID,
+		After:           audit.Snapshot(tenantAuditSnapshot(row)),
+	}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit tenant.created: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
 	s.log.Info("tenant created", "id", row.ID, "slug", row.Slug, "name", row.Name)
 	return connect.NewResponse(&apiv1.CreateTenantResponse{Tenant: tenantRowToProto(row)}), nil
+}
+
+// tenantAuditSnapshot is the non-secret projection of a tenant row for
+// the audit trail.
+func tenantAuditSnapshot(r db.TenantRow) map[string]any {
+	return map[string]any{
+		"id":     r.ID,
+		"slug":   r.Slug,
+		"name":   r.Name,
+		"status": r.Status,
+	}
 }
 
 // --- Local-account credentials (embedded IdP boundary) ---------------------
@@ -715,6 +901,7 @@ var localUsernameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._@+-]*$`)
 // credential write path.
 func (s *Service) SetLocalCredential(ctx context.Context, req *connect.Request[apiv1.SetLocalCredentialRequest]) (*connect.Response[apiv1.SetLocalCredentialResponse], error) {
 	msg := req.Msg
+	actor := ActorFromContext(ctx)
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -758,6 +945,18 @@ func (s *Service) SetLocalCredential(ctx context.Context, req *connect.Request[a
 			return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("username already in use by another identity"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := audit.Record(ctx, ttx.Tx, audit.Entry{
+		TenantID:        tenantID,
+		ActorIdentityID: actor.ActorIdentityID,
+		ActorType:       actor.ActorType,
+		AuthMethod:      actor.AuthMethod,
+		Action:          "identity.credential_set",
+		TargetType:      "identity",
+		TargetID:        msg.IdentityId,
+		After:           audit.Snapshot(map[string]any{"username": row.Username, "status": row.Status}),
+	}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit identity.credential_set: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -826,6 +1025,48 @@ func (s *Service) ListAuditEntries(ctx context.Context, req *connect.Request[api
 		})
 	}
 	return connect.NewResponse(resp), rows.Err()
+}
+
+// ListAuditEvents returns a page of audit_events rows (the actor-based
+// trail written by internal/audit.Record). Distinct from ListAuditEntries
+// (policy decisions): this is "who did what", keyset-paginated on
+// (occurred_at, id), newest first. All filters are optional.
+func (s *Service) ListAuditEvents(ctx context.Context, req *connect.Request[apiv1.ListAuditEventsRequest]) (*connect.Response[apiv1.ListAuditEventsResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	pageSize := int(req.Msg.PageSize)
+	if pageSize <= 0 || pageSize > 1000 {
+		pageSize = 100
+	}
+	rows, err := s.pool.ListAuditEvents(ctx, tenantID,
+		req.Msg.Action, req.Msg.ActorId, req.Msg.TargetType, req.Msg.TargetId,
+		req.Msg.PageToken, pageSize)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	resp := &apiv1.ListAuditEventsResponse{}
+	for _, r := range rows {
+		resp.Events = append(resp.Events, &apiv1.AuditEvent{
+			Id:              r.ID,
+			TenantId:        r.TenantID,
+			ActorIdentityId: r.ActorIdentityID,
+			ActorType:       r.ActorType,
+			AuthMethod:      r.AuthMethod,
+			Action:          r.Action,
+			TargetType:      r.TargetType,
+			TargetId:        r.TargetID,
+			Before:          string(r.Before),
+			After:           string(r.After),
+			TraceId:         r.TraceID,
+			OccurredAt:      timestamppb.New(r.OccurredAt),
+		})
+	}
+	if len(rows) > 0 {
+		resp.NextPageToken = rows[len(rows)-1].ID
+	}
+	return connect.NewResponse(resp), nil
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -953,6 +1194,60 @@ func tenantRowToProto(r db.TenantRow) *apiv1.Tenant {
 		Version:   int32(r.Version),
 		CreatedAt: timestamppb.New(r.CreatedAt),
 		UpdatedAt: timestamppb.New(r.UpdatedAt),
+	}
+}
+
+// --- Audit snapshot helpers -------------------------------------------------
+//
+// These are the non-secret projections of db rows for audit before/after
+// JSON. D7 (architecture-notes): never snapshot password hashes, API-key
+// hashes/prefixes, tokens, or HMAC secrets. The ApiKeyRow carries
+// KeyHash + KeyPrefix — both are excluded here.
+
+// identityAuditSnapshot excludes nothing secret (identity rows hold no
+// credentials) but keeps the trail compact.
+func identityAuditSnapshot(r db.IdentityRow) map[string]any {
+	return map[string]any{
+		"id":            r.ID,
+		"subject":       r.Subject,
+		"display_name":  r.DisplayName,
+		"identity_type": r.IdentityType,
+		"status":        r.Status,
+		"version":       r.Version,
+	}
+}
+
+func roleAuditSnapshot(r db.RoleRow) map[string]any {
+	return map[string]any{
+		"id":           r.ID,
+		"name":         r.Name,
+		"scope":        r.Scope,
+		"scope_ref":    r.ScopeRef,
+		"entitlements": r.Entitlements,
+		"version":      r.Version,
+	}
+}
+
+func bindingAuditSnapshot(r db.RoleBindingRow) map[string]any {
+	return map[string]any{
+		"id":          r.ID,
+		"identity_id": r.IdentityID,
+		"role_id":     r.RoleID,
+		"scope":       r.Scope,
+		"scope_ref":   r.ScopeRef,
+	}
+}
+
+// apiKeyAuditSnapshot NEVER includes KeyHash or KeyPrefix (the only
+// fields an auditor could use to reconstruct or brute-force the key).
+func apiKeyAuditSnapshot(r db.ApiKeyRow) map[string]any {
+	return map[string]any{
+		"id":          r.ID,
+		"identity_id": r.IdentityID,
+		"name":        r.Name,
+		"scopes":      r.Scopes,
+		"status":      r.Status,
+		"version":     r.Version,
 	}
 }
 

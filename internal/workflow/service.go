@@ -11,6 +11,8 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/audit"
+	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
@@ -122,15 +124,15 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *connect.Request[apiv1
 
 	// First version is always version 1, in draft state (docs/02 §2.4).
 	versionRow := db.WorkflowVersionRow{
-		ID:                versionID,
-		TenantID:          tenantID,
-		WorkflowID:        workflowID,
-		Version:           1,
-		VersionNote:       versionNote,
-		Status:            domain.WorkflowVersionDraft,
-		Steps:             steps,
-		Inputs:            inputs,
-		Outputs:    outputs,
+		ID:          versionID,
+		TenantID:    tenantID,
+		WorkflowID:  workflowID,
+		Version:     1,
+		VersionNote: versionNote,
+		Status:      domain.WorkflowVersionDraft,
+		Steps:       steps,
+		Inputs:      inputs,
+		Outputs:     outputs,
 	}
 	createdVersion, err := db.CreateWorkflowVersion(ctx, ttx.Tx, versionRow)
 	if err != nil {
@@ -139,6 +141,10 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *connect.Request[apiv1
 
 	if err := enqueueWorkflowEvent(ctx, ttx.Tx, "workflow.created", created, createdVersion, db.WorkflowRunRow{}, ""); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.created", "workflow", created.ID,
+		nil, audit.Snapshot(workflowVersionAuditSnapshot(createdVersion))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.created: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -196,6 +202,10 @@ func (s *Service) PublishWorkflow(ctx context.Context, req *connect.Request[apiv
 	if err := enqueueWorkflowEvent(ctx, ttx.Tx, "workflow.published", updated, published, db.WorkflowRunRow{}, ""); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.published", "workflow", updated.ID,
+		audit.SnapshotStatus(current.Status), audit.Snapshot(workflowVersionAuditSnapshot(published))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.published: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -249,15 +259,15 @@ func (s *Service) CreateWorkflowVersion(ctx context.Context, req *connect.Reques
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("next version: %w", err))
 	}
 	versionRow := db.WorkflowVersionRow{
-		ID:                db.NewID(),
-		TenantID:          tenantID,
-		WorkflowID:        req.Msg.WorkflowId,
-		Version:           nextVersion,
-		VersionNote:       versionNote,
-		Status:            domain.WorkflowVersionDraft,
-		Steps:             latestPublished.Steps,
-		Inputs:    latestPublished.Inputs,
-		Outputs:   latestPublished.Outputs,
+		ID:          db.NewID(),
+		TenantID:    tenantID,
+		WorkflowID:  req.Msg.WorkflowId,
+		Version:     nextVersion,
+		VersionNote: versionNote,
+		Status:      domain.WorkflowVersionDraft,
+		Steps:       latestPublished.Steps,
+		Inputs:      latestPublished.Inputs,
+		Outputs:     latestPublished.Outputs,
 	}
 	created, err := db.CreateWorkflowVersion(ctx, ttx.Tx, versionRow)
 	if err != nil {
@@ -276,6 +286,10 @@ func (s *Service) CreateWorkflowVersion(ctx context.Context, req *connect.Reques
 
 	if err := enqueueWorkflowEvent(ctx, ttx.Tx, "workflow.version_created", updated, created, db.WorkflowRunRow{}, ""); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.version_created", "workflow", updated.ID,
+		nil, audit.Snapshot(workflowVersionAuditSnapshot(created))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.version_created: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -318,6 +332,10 @@ func (s *Service) DeprecateWorkflow(ctx context.Context, req *connect.Request[ap
 	if err := enqueueWorkflowEvent(ctx, ttx.Tx, "workflow.deprecated", updated, db.WorkflowVersionRow{}, db.WorkflowRunRow{}, ""); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.deprecated", "workflow", updated.ID,
+		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(updated.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.deprecated: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -341,11 +359,16 @@ func (s *Service) DeleteWorkflow(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
-	if _, err := db.GetWorkflow(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
+	current, err := db.GetWorkflow(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
 		return nil, mapDBError(err)
 	}
 	if err := db.DeleteWorkflow(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, mapDBError(err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.deleted", "workflow", current.ID,
+		audit.Snapshot(workflowAuditSnapshot(current)), nil); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.deleted: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -391,14 +414,14 @@ func (s *Service) ListWorkflows(ctx context.Context, req *connect.Request[apiv1.
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	f := db.ListWorkflowsFilter{
-		TenantID:     tenantID,
-		ProjectID:    req.Msg.ProjectId,
-		Type:         req.Msg.Type,
-		PageSize:     int(req.Msg.PageSize),
-		AfterID:      req.Msg.PageToken,
-		Search:       req.Msg.Search,
-		SortBy:       req.Msg.SortBy,
-		SortOrder:    req.Msg.SortOrder,
+		TenantID:  tenantID,
+		ProjectID: req.Msg.ProjectId,
+		Type:      req.Msg.Type,
+		PageSize:  int(req.Msg.PageSize),
+		AfterID:   req.Msg.PageToken,
+		Search:    req.Msg.Search,
+		SortBy:    req.Msg.SortBy,
+		SortOrder: req.Msg.SortOrder,
 	}
 	if req.Msg.Status != nil {
 		f.Status = workflowStatusFromProto(*req.Msg.Status)
@@ -517,6 +540,10 @@ func (s *Service) UpdateWorkflowVersion(ctx context.Context, req *connect.Reques
 	if err := enqueueWorkflowEvent(ctx, ttx.Tx, "workflow.updated", wf, v, db.WorkflowRunRow{}, ""); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.version_updated", "workflow", req.Msg.WorkflowId,
+		audit.Snapshot(workflowVersionAuditSnapshot(latest)), audit.Snapshot(workflowVersionAuditSnapshot(v))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.version_updated: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -628,6 +655,10 @@ func (s *Service) StartWorkflow(ctx context.Context, req *connect.Request[apiv1.
 	if err := enqueueWorkflowEvent(ctx, ttx.Tx, domain.WorkflowEventRunStarted, wf, version, createdRun, ""); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.run_started", "workflow", createdRun.WorkflowID,
+		nil, audit.Snapshot(map[string]any{"run_id": createdRun.ID, "version": createdRun.WorkflowVersion, "status": createdRun.Status})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.run_started: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -671,6 +702,10 @@ func (s *Service) AbortWorkflow(ctx context.Context, req *connect.Request[apiv1.
 	wf, _ := db.GetWorkflow(ctx, ttx.Tx, tenantID, updated.WorkflowID)
 	if err := enqueueWorkflowEvent(ctx, ttx.Tx, domain.WorkflowEventRunAborted, wf, db.WorkflowVersionRow{}, updated, reason); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.run_aborted", "workflow", updated.WorkflowID,
+		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(updated.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.run_aborted: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -888,6 +923,10 @@ func (s *Service) RetryStepRun(ctx context.Context, req *connect.Request[apiv1.R
 	if err := db.EnqueueOutbox(ctx, ttx.Tx, outboxRow); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("enqueue step_pending event: %w", err))
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.step_retried", "workflow", sr.WorkflowRunID,
+		audit.SnapshotStatus(sr.Status), audit.SnapshotStatus(domain.StepRunPending)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.step_retried: %w", err))
+	}
 
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -1067,6 +1106,10 @@ func (s *Service) ForceProgressWorkflowRun(ctx context.Context, req *connect.Req
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
 			errors.New("no stuck step runs to force — the run may already be advancing"))
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.run_force_progressed", "workflow", run.ID,
+		audit.SnapshotStatus(run.Status), audit.Snapshot(map[string]any{"forced_steps": forced})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.run_force_progressed: %w", err))
+	}
 
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -1175,6 +1218,10 @@ func (s *Service) RetryFailedWorkflowRun(ctx context.Context, req *connect.Reque
 	if err := enqueueWorkflowEvent(ctx, ttx.Tx, domain.WorkflowEventRunRetried, db.WorkflowRow{}, db.WorkflowVersionRow{}, updatedRun, ""); err != nil {
 		s.log.Warn("retry-failed: enqueue run_retried failed", "run", run.ID, "error", err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.run_retried", "workflow", updatedRun.ID,
+		audit.SnapshotStatus(run.Status), audit.SnapshotStatus(updatedRun.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.run_retried: %w", err))
+	}
 
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -1256,6 +1303,12 @@ func (s *Service) AcquireEditLock(ctx context.Context, req *connect.Request[apiv
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if acquired {
+		if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.edit_lock_acquired", "workflow", req.Msg.WorkflowId,
+			nil, audit.Snapshot(map[string]any{"held_by": lock.HeldBy, "expires_at": lock.ExpiresAt})); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.edit_lock_acquired: %w", err))
+		}
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -1287,6 +1340,10 @@ func (s *Service) ReleaseEditLock(ctx context.Context, req *connect.Request[apiv
 	defer ttx.Rollback(ctx)
 	if err := db.ReleaseEditLock(ctx, ttx.Tx, tenantID, req.Msg.WorkflowId, domain.EditLockResourceWorkflow, actor); err != nil {
 		return nil, mapDBError(err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.edit_lock_released", "workflow", req.Msg.WorkflowId,
+		audit.Snapshot(map[string]any{"held_by": actor}), nil); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.edit_lock_released: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
@@ -1344,6 +1401,10 @@ func (s *Service) DeleteWorkflowVersion(ctx context.Context, req *connect.Reques
 	if err := db.DeleteWorkflowVersion(ctx, ttx.Tx, tenantID, req.Msg.WorkflowId, req.Msg.VersionId); err != nil {
 		return nil, mapDBError(err)
 	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.version_deleted", "workflow", req.Msg.WorkflowId,
+		nil, audit.Snapshot(map[string]any{"version_id": req.Msg.VersionId})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.version_deleted: %w", err))
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -1352,6 +1413,46 @@ func (s *Service) DeleteWorkflowVersion(ctx context.Context, req *connect.Reques
 }
 
 // --- helpers ---------------------------------------------------------------
+
+// recordAudit writes an actor-based audit row in the caller's tx,
+// resolving the actor from the request context. Must be called in the
+// same transaction as the mutation so the row commits atomically.
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
+	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
+	e.Action = action
+	e.TargetType = targetType
+	e.TargetID = targetID
+	e.Before = before
+	e.After = after
+	return audit.Record(ctx, tx, e)
+}
+
+// workflowAuditSnapshot is the non-secret projection of a workflow
+// header for the audit trail.
+func workflowAuditSnapshot(w db.WorkflowRow) map[string]any {
+	return map[string]any{
+		"id":              w.ID,
+		"name":            w.Name,
+		"type":            w.Type,
+		"status":          w.Status,
+		"current_version": w.CurrentVersion,
+	}
+}
+
+// workflowVersionAuditSnapshot is the non-secret projection of a
+// workflow version for the audit trail. Steps/inputs/outputs can embed
+// secrets (workflow steps carry prompt context); exclude the bodies.
+func workflowVersionAuditSnapshot(v db.WorkflowVersionRow) map[string]any {
+	return map[string]any{
+		"id":          v.ID,
+		"workflow_id": v.WorkflowID,
+		"version":     v.Version,
+		"status":      v.Status,
+	}
+}
 
 // StepWire is the JSON shape of a Step stored in workflow_versions.steps
 // (mirrors the proto Step message — docs/02 §2.4). Used to parse the
@@ -1436,7 +1537,7 @@ func enqueueWorkflowEvent(ctx context.Context, tx pgx.Tx, eventType string, w db
 // re-parsing the full payload.
 func buildWorkflowEventPayload(eventType string, w db.WorkflowRow, v db.WorkflowVersionRow, r db.WorkflowRunRow, stepID string) ([]byte, error) {
 	evt := map[string]any{
-		"event_type": eventType,
+		"event_type":  eventType,
 		"occurred_at": time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	if w.ID != "" {
@@ -1467,27 +1568,27 @@ func buildWorkflowEventPayload(eventType string, w db.WorkflowRow, v db.Workflow
 // into a WorkflowEvent proto message.
 func parseWorkflowEvent(data []byte) (*apiv1.WorkflowEvent, error) {
 	var env struct {
-		EventType    string `json:"event_type"`
-		TenantID     string `json:"tenant_id"`
-		WorkflowID   string `json:"workflow_id"`
+		EventType     string `json:"event_type"`
+		TenantID      string `json:"tenant_id"`
+		WorkflowID    string `json:"workflow_id"`
 		WorkflowRunID string `json:"workflow_run_id"`
-		StepID       string `json:"step_id"`
-		RunStatus    string `json:"run_status"`
-		StepStatus   string `json:"step_status"`
-		OccurredAt   string `json:"occurred_at"`
+		StepID        string `json:"step_id"`
+		RunStatus     string `json:"run_status"`
+		StepStatus    string `json:"step_status"`
+		OccurredAt    string `json:"occurred_at"`
 	}
 	if err := json.Unmarshal(data, &env); err != nil {
 		return nil, fmt.Errorf("parse workflow event: %w", err)
 	}
 	evt := &apiv1.WorkflowEvent{
-		EventType:    env.EventType,
-		TenantId:     env.TenantID,
-		WorkflowId:   env.WorkflowID,
+		EventType:     env.EventType,
+		TenantId:      env.TenantID,
+		WorkflowId:    env.WorkflowID,
 		WorkflowRunId: env.WorkflowRunID,
-		StepId:       env.StepID,
-		RunStatus:   workflowRunStatusToProto(env.RunStatus),
-		StepStatus:   stepRunStatusToProto(env.StepStatus),
-		Payload:      data,
+		StepId:        env.StepID,
+		RunStatus:     workflowRunStatusToProto(env.RunStatus),
+		StepStatus:    stepRunStatusToProto(env.StepStatus),
+		Payload:       data,
 	}
 	if t, err := time.Parse(time.RFC3339Nano, env.OccurredAt); err == nil {
 		evt.OccurredAt = timestamppb.New(t)
@@ -1632,29 +1733,29 @@ func workflowRowToProto(w db.WorkflowRow) *apiv1.Workflow {
 	return &apiv1.Workflow{
 		Id:             w.ID,
 		TenantId:       w.TenantID,
-		ProjectId:       w.ProjectID,
-		Name:            w.Name,
-		Type:            w.Type,
-		Status:          workflowStatusToProto(w.Status),
+		ProjectId:      w.ProjectID,
+		Name:           w.Name,
+		Type:           w.Type,
+		Status:         workflowStatusToProto(w.Status),
 		CurrentVersion: int32(w.CurrentVersion),
-		Version:         int32(w.Version),
-		CreatedAt:       timestamppb.New(w.CreatedAt),
-		UpdatedAt:       timestamppb.New(w.UpdatedAt),
+		Version:        int32(w.Version),
+		CreatedAt:      timestamppb.New(w.CreatedAt),
+		UpdatedAt:      timestamppb.New(w.UpdatedAt),
 	}
 }
 
 func versionRowToProto(v db.WorkflowVersionRow) *apiv1.WorkflowVersion {
 	pv := &apiv1.WorkflowVersion{
-		Id:                v.ID,
-		TenantId:          v.TenantID,
-		WorkflowId:        v.WorkflowID,
-		Version:           int32(v.Version),
-		VersionNote:       v.VersionNote,
-		Status:            workflowVersionStatusToProto(v.Status),
-		Steps:             string(v.Steps),
-		Inputs:            string(v.Inputs),
-		Outputs:   string(v.Outputs),
-		CreatedAt: timestamppb.New(v.CreatedAt),
+		Id:          v.ID,
+		TenantId:    v.TenantID,
+		WorkflowId:  v.WorkflowID,
+		Version:     int32(v.Version),
+		VersionNote: v.VersionNote,
+		Status:      workflowVersionStatusToProto(v.Status),
+		Steps:       string(v.Steps),
+		Inputs:      string(v.Inputs),
+		Outputs:     string(v.Outputs),
+		CreatedAt:   timestamppb.New(v.CreatedAt),
 	}
 	if v.PublishedAt != nil {
 		pv.PublishedAt = timestamppb.New(*v.PublishedAt)
@@ -1731,10 +1832,10 @@ func strPtr(s string) *string { return &s }
 func StartWorkflowDirect(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantID, workflowID, projectID, workItemID string) error {
 	s := New(pool, log, nil)
 	req := connect.NewRequest(&apiv1.StartWorkflowRequest{
-		WorkflowId:  workflowID,
-		ProjectId:   projectID,
-		WorkItemId:  workItemID,
-		RunContext:  "{}",
+		WorkflowId: workflowID,
+		ProjectId:  projectID,
+		WorkItemId: workItemID,
+		RunContext: "{}",
 	})
 	// Set the tenant in context so requireTenant works (the reconciler
 	// context does not carry a tenant from the auth middleware).

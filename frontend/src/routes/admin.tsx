@@ -12,6 +12,7 @@ import {
   useListRoles,
   useListApiKeys,
   useListAuditEntries,
+  useListAuditEvents,
   useCreateRole,
   useAssignRole,
   useCreateApiKey,
@@ -809,6 +810,33 @@ function ApiKeysTab() {
 }
 
 function AuditTab() {
+  const [view, setView] = useState<"decisions" | "events">("events");
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-1 border-b">
+        {(["events", "decisions"] as const).map((v) => (
+          <button
+            key={v}
+            onClick={() => setView(v)}
+            className={cn(
+              "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+              view === v
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {v[0].toUpperCase() + v.slice(1)}
+          </button>
+        ))}
+      </div>
+      {view === "decisions" && <AuditDecisionsView />}
+      {view === "events" && <AuditEventsView />}
+    </div>
+  );
+}
+
+// AuditDecisionsView is the existing policy-decision trail (ListAuditEntries).
+function AuditDecisionsView() {
   const { data, isLoading } = useListAuditEntries();
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>;
   return (
@@ -840,5 +868,72 @@ function AuditTab() {
         </tbody>
       </table>
     </div>
+  );
+}
+
+// AuditEventsView is the actor-based audit_events trail (ListAuditEvents):
+// who did what, how they authenticated, and the before/after snapshot.
+function AuditEventsView() {
+  const { data, isLoading } = useListAuditEvents();
+  if (isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b text-left text-muted-foreground">
+            <th className="py-2 pr-4">Action</th>
+            <th className="py-2 pr-4">Actor</th>
+            <th className="py-2 pr-4">Auth</th>
+            <th className="py-2 pr-4">Target</th>
+            <th className="py-2 pr-4">Before/After</th>
+            <th className="py-2 pr-4">Trace</th>
+            <th className="py-2 pr-4">When</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data?.map((e) => (
+            <tr key={e.id} className="border-b">
+              <td className="py-2 pr-4 font-mono text-xs">{e.action}</td>
+              <td className="py-2 pr-4 font-mono text-xs">
+                {e.actorIdentityId || "-"}
+              </td>
+              <td className="py-2 pr-4 text-xs">{e.authMethod || "-"}</td>
+              <td className="py-2 pr-4 font-mono text-xs">
+                {e.targetType}:{e.targetId}
+              </td>
+              <td className="py-2 pr-4 text-xs">
+                <BeforeAfterCell before={e.before} after={e.after} />
+              </td>
+              <td className="py-2 pr-4 font-mono text-xs">{e.traceId}</td>
+              <td className="py-2 pr-4 text-xs">
+                {e.occurredAt?.toLocaleString()}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function BeforeAfterCell({ before, after }: { before?: string; after?: string }) {
+  const render = (v?: string) => {
+    if (!v || v === "{}" || v === "") return null;
+    let body = v;
+    try {
+      body = JSON.stringify(JSON.parse(v));
+    } catch {
+      // leave as-is for non-JSON snapshots
+    }
+    return body;
+  };
+  const beforeBody = render(before);
+  const afterBody = render(after);
+  if (!beforeBody && !afterBody) return <span>-</span>;
+  return (
+    <span className="whitespace-pre-wrap font-mono text-[11px]">
+      {beforeBody ? `→ ${beforeBody}` : ""}
+      {afterBody ? `${beforeBody ? " " : ""}→ ${afterBody}` : ""}
+    </span>
   );
 }

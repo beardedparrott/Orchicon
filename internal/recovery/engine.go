@@ -44,6 +44,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
@@ -69,9 +70,9 @@ func New(pool *db.Pool, log *slog.Logger) *Engine {
 // routes accordingly in progressRecovery.
 const (
 	RecoveryStrategySummarizeRestart = "summarize_restart" // default — 6-step flow
-	RecoveryStrategyStop              = "stop"               // PR C
-	RecoveryStrategyHumanEscalation   = "human_escalation"   // PR C — L3 block
-	RecoveryStrategyRetryN            = "retry_n"            // PR C
+	RecoveryStrategyStop             = "stop"              // PR C
+	RecoveryStrategyHumanEscalation  = "human_escalation"  // PR C — L3 block
+	RecoveryStrategyRetryN           = "retry_n"           // PR C
 
 	// Default retry budget: max 5 recovery attempts for the same task
 	// chain, with 10s delay between retries. These can be overridden via
@@ -106,19 +107,19 @@ func strategyForWorkItem(kind string) string {
 // recorded on the row. Returns true if the strategy was handled
 // directly (no need to advance the 6-step DAG). PR C.
 //
-//   summarize_restart — fall through, the 6-step default runs.
-//   stop              — mark the recovery failed; transition the task
-//                       back to pending (no re-dispatch) and mark its
-//                       owning workflow run failed if any.
-//   human_escalation  — block the recovery at L3 (needs_human_approval).
-//                       The run stays in recovering until the human
-//                       approves / rejects via the existing
-//                       ApproveContinuationPlan path.
-//   retry_n           — requeue the task immediately to ready so the
-//                       TaskReconciler dispatches a fresh execution.
-//                       No bounded auto-relax (docs/06 §11) — the
-//                       caller chooses the retry budget via the
-//                       work item's description / config.
+//	summarize_restart — fall through, the 6-step default runs.
+//	stop              — mark the recovery failed; transition the task
+//	                    back to pending (no re-dispatch) and mark its
+//	                    owning workflow run failed if any.
+//	human_escalation  — block the recovery at L3 (needs_human_approval).
+//	                    The run stays in recovering until the human
+//	                    approves / rejects via the existing
+//	                    ApproveContinuationPlan path.
+//	retry_n           — requeue the task immediately to ready so the
+//	                    TaskReconciler dispatches a fresh execution.
+//	                    No bounded auto-relax (docs/06 §11) — the
+//	                    caller chooses the retry budget via the
+//	                    work item's description / config.
 func (r *Reconciler) applyStrategy(ctx context.Context, tx pgx.Tx, tenantID string, rec *db.RecoveryExecutionRow) (bool, error) {
 	strategy := rec.Strategy
 	if strategy == "" {
@@ -224,8 +225,15 @@ func (r *Reconciler) applyStrategy(ctx context.Context, tx pgx.Tx, tenantID stri
 // step run itself is the unit that waits and re-dispatches. Standalone
 // recoveries keep the legacy task → recovering transition. Recovery is
 // opt-out, not opt-in (docs/06 §1).
-func (e *Engine) TriggerOnFailure(ctx context.Context, tenantID, taskID, failedExecID, stepRunID, triggerReason string) error {
-	return e.trigger(ctx, tenantID, taskID, failedExecID, stepRunID, triggerReason, domain.RecoveryLevelL1)
+//
+// auditEntry, when non-nil, is recorded in the engine's own transaction
+// right before commit so the recovery.triggered row commits atomically
+// with the recovery creation (transactional outbox — AC1). nil means no
+// audit row: the reconciler/scheduler system path has no user actor.
+// A nil entry also means the idempotent no-op (an active recovery already
+// exists) writes nothing — the first trigger's row already covers it.
+func (e *Engine) TriggerOnFailure(ctx context.Context, tenantID, taskID, failedExecID, stepRunID, triggerReason string, auditEntry *audit.Entry) error {
+	return e.trigger(ctx, tenantID, taskID, failedExecID, stepRunID, triggerReason, domain.RecoveryLevelL1, auditEntry)
 }
 
 // stepRunForFailedExecution resolves the workflow step run a failed
@@ -249,10 +257,31 @@ func stepRunForFailedExecution(ctx context.Context, tx pgx.Tx, tenantID, failedE
 	return &sr
 }
 
+// recordAuditEntry writes the audit entry into tx, filling nil
+// before/after snapshots from the pre/post states the engine observed
+// (the caller owns the actor/action/target; the engine owns the reads,
+// so the exact status transition lands in the trail — D4). A nil entry
+// writes nothing (system/reconciler path). A Record failure must fail
+// the mutation (D4): the audit row exists iff the mutation committed.
+func recordAuditEntry(ctx context.Context, tx pgx.Tx, entry *audit.Entry, before, after json.RawMessage) error {
+	if entry == nil {
+		return nil
+	}
+	e := *entry
+	if e.Before == nil {
+		e.Before = before
+	}
+	if e.After == nil {
+		e.After = after
+	}
+	return audit.Record(ctx, tx, e)
+}
+
 // trigger creates the RecoveryExecution + step runs (idempotent) and, for
 // standalone failures, transitions the task to recovering. Runs in its
-// own transaction.
-func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, stepRunID, triggerReason string, level int32) error {
+// own transaction. auditEntry (non-nil) is recorded atomically with the
+// commit; a nil entry writes no audit row (system/reconciler path).
+func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, stepRunID, triggerReason string, level int32, auditEntry *audit.Entry) error {
 	ttx, err := e.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return fmt.Errorf("recovery trigger: begin tx: %w", err)
@@ -413,6 +442,13 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 		return fmt.Errorf("recovery trigger: enqueue: %w", err)
 	}
 
+	// Audit row in the same transaction as the recovery creation: an
+	// audit row exists iff the mutation committed (AC1 transactional
+	// outbox). A Record failure fails the mutation (D4).
+	if err := recordAuditEntry(ctx, ttx.Tx, auditEntry, nil, nil); err != nil {
+		return fmt.Errorf("recovery trigger: audit: %w", err)
+	}
+
 	if err := ttx.Commit(ctx); err != nil {
 		return fmt.Errorf("recovery trigger: commit: %w", err)
 	}
@@ -426,7 +462,10 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 // recovery) or a human (docs/06 §11, docs/02 §4 #2). Emits an audit
 // event with the actor recorded. If an active recovery exists, it is
 // marked resumed (the recovery's job is done — the task is complete).
-func (e *Engine) MarkTaskSucceeded(ctx context.Context, tenantID, taskID, actorType, actorID, reason string) (string, error) {
+// auditEntry, when non-nil, is recorded in the engine's own transaction
+// right before commit (atomic with the task update — AC1); nil skips the
+// audit row.
+func (e *Engine) MarkTaskSucceeded(ctx context.Context, tenantID, taskID, actorType, actorID, reason string, auditEntry *audit.Entry) (string, error) {
 	ttx, err := e.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return "", fmt.Errorf("mark task succeeded: begin tx: %w", err)
@@ -484,6 +523,16 @@ func (e *Engine) MarkTaskSucceeded(ctx context.Context, tenantID, taskID, actorT
 		_ = enqueueRecoveryEvent(ctx, ttx.Tx, domain.RecoveryEventResumed, updated, "", "", rec.TriggerReason, "task marked succeeded by "+actorType+"/"+actorID, "")
 	}
 
+	// Audit row in the same transaction as the task update: the
+	// recovery.task_marked_succeeded row commits atomically with the
+	// mutation (AC1 transactional outbox); before/after reflect the
+	// task status transition the engine observed. A Record failure
+	// fails the mutation (D4).
+	if err := recordAuditEntry(ctx, ttx.Tx, auditEntry,
+		audit.SnapshotStatus(task.Status), audit.SnapshotStatus(domain.WorkItemSucceeded)); err != nil {
+		return "", fmt.Errorf("mark task succeeded: audit: %w", err)
+	}
+
 	if err := ttx.Commit(ctx); err != nil {
 		return "", fmt.Errorf("mark task succeeded: commit: %w", err)
 	}
@@ -492,8 +541,10 @@ func (e *Engine) MarkTaskSucceeded(ctx context.Context, tenantID, taskID, actorT
 }
 
 // ApproveContinuationPlan approves a pending continuation plan (L3 human
-// escalation, docs/06 §7, §8) and resumes the recovery.
-func (e *Engine) ApproveContinuationPlan(ctx context.Context, tenantID, recoveryID, actor string) (db.ContinuationPlanRow, db.RecoveryExecutionRow, error) {
+// escalation, docs/06 §7, §8) and resumes the recovery. auditEntry,
+// when non-nil, is recorded in the engine's own transaction right before
+// commit (atomic with the plan/recovery update — AC1); nil skips it.
+func (e *Engine) ApproveContinuationPlan(ctx context.Context, tenantID, recoveryID, actor string, auditEntry *audit.Entry) (db.ContinuationPlanRow, db.RecoveryExecutionRow, error) {
 	ttx, err := e.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return db.ContinuationPlanRow{}, db.RecoveryExecutionRow{}, fmt.Errorf("approve plan: begin tx: %w", err)
@@ -519,6 +570,14 @@ func (e *Engine) ApproveContinuationPlan(ctx context.Context, tenantID, recovery
 		return plan, rec, fmt.Errorf("approve plan: update recovery: %w", err)
 	}
 	_ = enqueueRecoveryEvent(ctx, ttx.Tx, domain.RecoveryEventPlanApproved, updated, "", "", rec.TriggerReason, "continuation plan approved by "+actor, "")
+	// Audit row in the same transaction as the plan/recovery update:
+	// before/after reflect the recovery status transition the engine
+	// observed (blocked → running). A Record failure fails the mutation
+	// (D4).
+	if err := recordAuditEntry(ctx, ttx.Tx, auditEntry,
+		audit.SnapshotStatus(rec.Status), audit.SnapshotStatus(updated.Status)); err != nil {
+		return plan, rec, fmt.Errorf("approve plan: audit: %w", err)
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return plan, rec, fmt.Errorf("approve plan: commit: %w", err)
 	}
@@ -526,8 +585,10 @@ func (e *Engine) ApproveContinuationPlan(ctx context.Context, tenantID, recovery
 }
 
 // RejectContinuationPlan rejects a pending plan; the recovery fails /
-// escalates (docs/06 §8).
-func (e *Engine) RejectContinuationPlan(ctx context.Context, tenantID, recoveryID, actor, reason string) (db.ContinuationPlanRow, db.RecoveryExecutionRow, error) {
+// escalates (docs/06 §8). auditEntry, when non-nil, is recorded in the
+// engine's own transaction right before commit (atomic with the
+// plan/recovery update — AC1); nil skips it.
+func (e *Engine) RejectContinuationPlan(ctx context.Context, tenantID, recoveryID, actor, reason string, auditEntry *audit.Entry) (db.ContinuationPlanRow, db.RecoveryExecutionRow, error) {
 	ttx, err := e.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return db.ContinuationPlanRow{}, db.RecoveryExecutionRow{}, fmt.Errorf("reject plan: begin tx: %w", err)
@@ -553,6 +614,14 @@ func (e *Engine) RejectContinuationPlan(ctx context.Context, tenantID, recoveryI
 		return plan, rec, fmt.Errorf("reject plan: update recovery: %w", err)
 	}
 	_ = enqueueRecoveryEvent(ctx, ttx.Tx, domain.RecoveryEventPlanRejected, updated, "", "", rec.TriggerReason, "continuation plan rejected by "+actor+": "+reason, "")
+	// Audit row in the same transaction as the plan/recovery update:
+	// before/after reflect the recovery status transition the engine
+	// observed (blocked → failed). A Record failure fails the mutation
+	// (D4).
+	if err := recordAuditEntry(ctx, ttx.Tx, auditEntry,
+		audit.SnapshotStatus(rec.Status), audit.SnapshotStatus(updated.Status)); err != nil {
+		return plan, rec, fmt.Errorf("reject plan: audit: %w", err)
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return plan, rec, fmt.Errorf("reject plan: commit: %w", err)
 	}
@@ -873,15 +942,15 @@ func (r *Reconciler) stepCapture(ctx context.Context, tx pgx.Tx, tenantID string
 		return nil, fmt.Errorf("get failed execution: %w", err)
 	}
 	snapshot := map[string]any{
-		"execution_id":  exec.ID,
-		"status":        exec.Status,
-		"health_state":  exec.HealthState,
-		"token_usage":   exec.TokenUsage,
-		"cost_usd":      exec.CostUSD,
-		"worker_id":     exec.WorkerID,
+		"execution_id":   exec.ID,
+		"status":         exec.Status,
+		"health_state":   exec.HealthState,
+		"token_usage":    exec.TokenUsage,
+		"cost_usd":       exec.CostUSD,
+		"worker_id":      exec.WorkerID,
 		"worker_version": exec.WorkerVersion,
-		"started_at":    exec.StartedAt,
-		"ended_at":      exec.EndedAt,
+		"started_at":     exec.StartedAt,
+		"ended_at":       exec.EndedAt,
 	}
 	result, _ := json.Marshal(snapshot)
 	r.log.Info("recovery capture", "recovery", rec.ID, "execution", exec.ID, "tokens", exec.TokenUsage, "cost", exec.CostUSD)
@@ -997,10 +1066,10 @@ func (r *Reconciler) stepPlan(ctx context.Context, tx pgx.Tx, tenantID string, r
 	*rec = updated
 
 	result, _ := json.Marshal(map[string]any{
-		"plan_id":            planID,
-		"needs_human":        needsHuman,
-		"budget_relax":       relaxFraction,
-		"remaining_work":     task.Title,
+		"plan_id":        planID,
+		"needs_human":    needsHuman,
+		"budget_relax":   relaxFraction,
+		"remaining_work": task.Title,
 	})
 	if needsHuman {
 		_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventBlocked, *rec, domain.RecoveryStepPlan, "", rec.TriggerReason, "budget exceeds 150% — human approval required", "")
@@ -1018,9 +1087,9 @@ func (r *Reconciler) stepPlan(ctx context.Context, tx pgx.Tx, tenantID string, r
 // allDone branch). v0.1: the resume step records the handoff.
 func (r *Reconciler) stepResume(ctx context.Context, tx pgx.Tx, tenantID string, rec db.RecoveryExecutionRow) ([]byte, error) {
 	result, _ := json.Marshal(map[string]string{
-		"handoff":   "task transitioned to ready; TaskReconciler will dispatch the replacement",
-		"plan_id":   rec.ContinuationPlanID,
-		"summary":   rec.Summary,
+		"handoff": "task transitioned to ready; TaskReconciler will dispatch the replacement",
+		"plan_id": rec.ContinuationPlanID,
+		"summary": rec.Summary,
 	})
 	return result, nil
 }
@@ -1035,8 +1104,8 @@ func (r *Reconciler) escalate(ctx context.Context, tx pgx.Tx, tenantID string, r
 	case domain.RecoveryLevelL1:
 		// L1 → L2: escalate with tighter budget + summary-only resume.
 		updated, err := db.UpdateRecoveryExecution(ctx, tx, tenantID, rec.ID, rec.Version, db.UpdateRecoveryExecutionFields{
-			Level:  int32Ptr(domain.RecoveryLevelL2),
-			Status: strPtr(domain.RecoveryEscalated),
+			Level:   int32Ptr(domain.RecoveryLevelL2),
+			Status:  strPtr(domain.RecoveryEscalated),
 			EndedAt: &now,
 		})
 		if err != nil {
