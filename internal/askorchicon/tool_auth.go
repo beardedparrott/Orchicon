@@ -46,5 +46,38 @@ func toolListAuditEvents(ctx context.Context, pool *db.Pool, args json.RawMessag
 	if rows == nil {
 		return json.RawMessage("[]"), nil
 	}
-	return json.Marshal(rows)
+	// Marshal into a readable shape: before/after as JSON text strings
+	// (the raw row carries []byte, which would marshal as base64).
+	type eventView struct {
+		ID              string `json:"id"`
+		TenantID        string `json:"tenant_id"`
+		ActorIdentityID string `json:"actor_identity_id"`
+		ActorType       string `json:"actor_type"`
+		AuthMethod      string `json:"auth_method"`
+		Action          string `json:"action"`
+		TargetType      string `json:"target_type"`
+		TargetID        string `json:"target_id"`
+		Before          string `json:"before"`
+		After           string `json:"after"`
+		TraceID         string `json:"trace_id"`
+		OccurredAt      string `json:"occurred_at"`
+	}
+	out := make([]eventView, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, eventView{
+			ID:              r.ID,
+			TenantID:        r.TenantID,
+			ActorIdentityID: r.ActorIdentityID,
+			ActorType:       r.ActorType,
+			AuthMethod:      r.AuthMethod,
+			Action:          r.Action,
+			TargetType:      r.TargetType,
+			TargetID:        r.TargetID,
+			Before:          string(r.Before),
+			After:           string(r.After),
+			TraceID:         r.TraceID,
+			OccurredAt:      r.OccurredAt.UTC().Format("2006-01-02T15:04:05Z"),
+		})
+	}
+	return json.Marshal(out)
 }

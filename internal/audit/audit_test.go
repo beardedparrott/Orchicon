@@ -9,8 +9,7 @@ import (
 	assets "github.com/beardedparrott/orchicon"
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
-	"github.com/beardedparrott/orchicon/internal/migrate"
-)
+	"github.com/beardedparrott/orchicon/internal/migrate")
 
 // openTestPool opens a DB pool against ORCHICON_TEST_DSN (mirrors the
 // other DB-backed tests) and applies migrations so the audit_events
@@ -120,6 +119,39 @@ func TestAuditRecordRollback(t *testing.T) {
 	}
 	if len(rows) != 0 {
 		t.Fatalf("expected 0 rows after rollback, got %d", len(rows))
+	}
+}
+
+// TestAuditSystemRowNullActorScan verifies a system-actor row (no
+// identity -> actor_identity_id stored NULL) lists cleanly: the read
+// path must scan the nullable column, not assume a non-null string.
+func TestAuditSystemRowNullActorScan(t *testing.T) {
+	pool := openTestPool(t)
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, "tnt_sys")
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	targetID := "sys-" + db.NewID()
+	if err := audit.Record(ctx, ttx.Tx, audit.Entry{
+		TenantID:   "tnt_sys",
+		ActorType:  "system",
+		AuthMethod: "system",
+		Action:     "x.system",
+		TargetType: "x",
+		TargetID:   targetID,
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	rows, err := pool.ListAuditEvents(ctx, "tnt_sys", "", "", "x", targetID, "", 10)
+	if err != nil {
+		t.Fatalf("ListAuditEvents: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ActorIdentityID != "" {
+		t.Fatalf("expected 1 system row with empty actor id, got %+v", rows)
 	}
 }
 

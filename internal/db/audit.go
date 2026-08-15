@@ -107,10 +107,14 @@ func (p *Pool) ListAuditEvents(ctx context.Context, tenantID, action, actorID, t
 	var out []AuditEventScanRow
 	for rows.Next() {
 		var r AuditEventScanRow
-		if err := rows.Scan(&r.ID, &r.TenantID, &r.ActorIdentityID, &r.ActorType,
+		var actorIdentityID *string
+		if err := rows.Scan(&r.ID, &r.TenantID, &actorIdentityID, &r.ActorType,
 			&r.AuthMethod, &r.Action, &r.TargetType, &r.TargetID,
 			&r.Before, &r.After, &r.TraceID, &r.OccurredAt); err != nil {
 			return nil, fmt.Errorf("db: scan audit event: %w", err)
+		}
+		if actorIdentityID != nil {
+			r.ActorIdentityID = *actorIdentityID
 		}
 		out = append(out, r)
 	}
