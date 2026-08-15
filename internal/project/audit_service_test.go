@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	assets "github.com/beardedparrott/orchicon"
@@ -77,7 +78,7 @@ func auditServiceEnv(t *testing.T, tenantID string) (*db.Pool, *Service, context
 
 func auditEventCount(t *testing.T, pool *db.Pool, tenantID, action, targetType, targetID string) int {
 	t.Helper()
-	rows, err := pool.ListAuditEvents(context.Background(), tenantID, action, "", targetType, targetID, "", 100)
+	rows, err := pool.ListAuditEvents(context.Background(), tenantID, action, "", targetType, targetID, "", 100, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}
@@ -146,7 +147,7 @@ func TestAuditServiceProjectCreateRollback(t *testing.T) {
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("over-long name: err = %v, want InvalidArgument", err)
 	}
-	rows, err := pool.ListAuditEvents(context.Background(), tenantID, "", "", "", "", "", 100)
+	rows, err := pool.ListAuditEvents(context.Background(), tenantID, "", "", "", "", "", 100, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}

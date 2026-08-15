@@ -83,9 +83,12 @@ type AuditEventScanRow struct {
 
 // ListAuditEvents returns a page of audit rows for the tenant, newest
 // first, keyset-paginated on (occurred_at, id). Every filter is optional;
-// the empty-string filter value selects all rows. RLS is the backstop for
-// tenant isolation even though the query also scopes on tenant_id.
-func (p *Pool) ListAuditEvents(ctx context.Context, tenantID, action, actorID, targetType, targetID, pageToken string, pageSize int) ([]AuditEventScanRow, error) {
+// the empty-string filter value selects all rows, and a zero startTime/
+// endTime means "no bound" (the 'epoch' sentinel pattern from usage.go).
+// startTime is an inclusive lower bound; endTime is an exclusive upper
+// bound on occurred_at. RLS is the backstop for tenant isolation even
+// though the query also scopes on tenant_id.
+func (p *Pool) ListAuditEvents(ctx context.Context, tenantID, action, actorID, targetType, targetID, pageToken string, pageSize int, startTime, endTime time.Time) ([]AuditEventScanRow, error) {
 	const q = `SELECT id, tenant_id, actor_identity_id, actor_type, auth_method, action,
 		target_type, target_id, before, after, trace_id, occurred_at
 		FROM audit_events
@@ -94,12 +97,15 @@ func (p *Pool) ListAuditEvents(ctx context.Context, tenantID, action, actorID, t
 			AND ($3 = '' OR actor_identity_id = $3)
 			AND ($4 = '' OR target_type = $4)
 			AND ($5 = '' OR target_id = $5)
-			AND ($6 = '' OR (occurred_at, id) < (
+			AND ($6::timestamptz <= 'epoch'::timestamptz OR occurred_at >= $6::timestamptz)
+			AND ($7::timestamptz <= 'epoch'::timestamptz OR occurred_at <  $7::timestamptz)
+			AND ($8 = '' OR (occurred_at, id) < (
 				SELECT occurred_at, id FROM audit_events
-				WHERE tenant_id = $1 AND id = $6))
+				WHERE tenant_id = $1 AND id = $8))
 		ORDER BY occurred_at DESC, id DESC
-		LIMIT $7`
-	rows, err := p.Query(ctx, q, tenantID, action, actorID, targetType, targetID, pageToken, pageSize)
+		LIMIT $9`
+	rows, err := p.Query(ctx, q, tenantID, action, actorID, targetType, targetID,
+		startTime, endTime, pageToken, pageSize)
 	if err != nil {
 		return nil, fmt.Errorf("db: list audit events: %w", err)
 	}

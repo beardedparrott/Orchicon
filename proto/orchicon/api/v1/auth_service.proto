@@ -308,6 +308,10 @@ message ListAuditEventsRequest {
   string target_id = 4; // optional exact filter
   string page_token = 5; // keyset on (occurred_at, id)
   int32 page_size = 6;
+  // Optional inclusive lower bound on occurred_at; absent = unbounded.
+  google.protobuf.Timestamp start_time = 7;
+  // Optional exclusive upper bound on occurred_at; absent = unbounded.
+  google.protobuf.Timestamp end_time = 8;
 }
 message ListAuditEventsResponse {
   repeated AuditEvent events = 1;

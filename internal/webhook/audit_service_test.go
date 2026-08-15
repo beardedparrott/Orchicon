@@ -17,6 +17,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	assets "github.com/beardedparrott/orchicon"
@@ -127,7 +128,7 @@ func webhookSeedDeadLetter(t *testing.T, pool *db.Pool, tenantID, subscriptionID
 
 func webhookAuditCount(t *testing.T, pool *db.Pool, tenantID, action, targetID string) int {
 	t.Helper()
-	rows, err := pool.ListAuditEvents(context.Background(), tenantID, action, "", "webhook_subscription", targetID, "", 100)
+	rows, err := pool.ListAuditEvents(context.Background(), tenantID, action, "", "webhook_subscription", targetID, "", 100, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}
@@ -180,7 +181,7 @@ func TestAuditServiceTestSubscription(t *testing.T) {
 	if n := webhookAuditCount(t, pool, tenantID, "webhook_subscription.tested", sub.ID); n != 1 {
 		t.Fatalf("webhook_subscription.tested rows = %d, want 1", n)
 	}
-	rows, err := pool.ListAuditEvents(context.Background(), tenantID, "webhook_subscription.tested", "", "webhook_subscription", sub.ID, "", 10)
+	rows, err := pool.ListAuditEvents(context.Background(), tenantID, "webhook_subscription.tested", "", "webhook_subscription", sub.ID, "", 10, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}

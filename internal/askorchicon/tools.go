@@ -564,7 +564,7 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 		// --- Audit ---
 		{
 			Name:        "list_audit_events",
-			Description: "List audit events for the current tenant — the actor-based 'who did what' trail (action, actor, auth method, target, before/after, trace id). Optional filters: action, actor_id, target_type, target_id. Read-only.",
+			Description: "List audit events for the current tenant — the actor-based 'who did what' trail (action, actor, auth method, target, before/after, trace id). Optional filters: action, actor_id, target_type, target_id, start_time, end_time. Read-only.",
 			Mutating:    false,
 			Fn:          toolListAuditEvents,
 			Properties: map[string]PropertySchema{
@@ -572,6 +572,8 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 				"actor_id":    {Type: "string", Description: "Optional actor identity ID filter"},
 				"target_type": {Type: "string", Description: "Optional target type filter (e.g. work_item)"},
 				"target_id":   {Type: "string", Description: "Optional target ID filter"},
+				"start_time":  {Type: "string", Description: "Optional RFC3339 inclusive lower bound on occurred_at (e.g. 2026-08-15T12:00:00Z)"},
+				"end_time":    {Type: "string", Description: "Optional RFC3339 exclusive upper bound on occurred_at (e.g. 2026-08-15T13:00:00Z)"},
 				"page_size":   {Type: "number", Description: "Optional page size (max 1000, default 100)"},
 			},
 		},

@@ -1030,7 +1030,9 @@ func (s *Service) ListAuditEntries(ctx context.Context, req *connect.Request[api
 // ListAuditEvents returns a page of audit_events rows (the actor-based
 // trail written by internal/audit.Record). Distinct from ListAuditEntries
 // (policy decisions): this is "who did what", keyset-paginated on
-// (occurred_at, id), newest first. All filters are optional.
+// (occurred_at, id), newest first. All filters are optional; start_time is
+// an inclusive lower bound, end_time an exclusive upper bound on
+// occurred_at (absent = unbounded, the 'epoch' sentinel convention).
 func (s *Service) ListAuditEvents(ctx context.Context, req *connect.Request[apiv1.ListAuditEventsRequest]) (*connect.Response[apiv1.ListAuditEventsResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -1042,7 +1044,8 @@ func (s *Service) ListAuditEvents(ctx context.Context, req *connect.Request[apiv
 	}
 	rows, err := s.pool.ListAuditEvents(ctx, tenantID,
 		req.Msg.Action, req.Msg.ActorId, req.Msg.TargetType, req.Msg.TargetId,
-		req.Msg.PageToken, pageSize)
+		req.Msg.PageToken, pageSize,
+		auditStartTime(req.Msg.StartTime), auditEndTime(req.Msg.EndTime))
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -1077,6 +1080,22 @@ func requireTenant(ctx context.Context) (string, error) {
 		return "", errors.New("no tenant in context")
 	}
 	return id, nil
+}
+
+// auditStartTime converts the optional lower time bound to a time.Time;
+// nil → zero time, which the data-access layer treats as unbounded via
+// the 'epoch' sentinel (same convention as usage.go's StartTime).
+func auditStartTime(ts *timestamppb.Timestamp) time.Time {
+	if ts == nil {
+		return time.Time{}
+	}
+	return ts.AsTime()
+}
+
+// auditEndTime converts the optional exclusive upper time bound. Nil →
+// zero time (unbounded); a present timestamp is passed through as-is.
+func auditEndTime(ts *timestamppb.Timestamp) time.Time {
+	return auditStartTime(ts)
 }
 
 // expectedVersion converts the optional version field on an identity

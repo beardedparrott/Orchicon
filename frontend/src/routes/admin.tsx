@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { createRoute } from "@tanstack/react-router";
+import { Timestamp } from "@bufbuild/protobuf";
 
 import {
   useListTenants,
@@ -13,6 +14,7 @@ import {
   useListApiKeys,
   useListAuditEntries,
   useListAuditEvents,
+  type AuditEventFilters,
   useCreateRole,
   useAssignRole,
   useCreateApiKey,
@@ -872,46 +874,153 @@ function AuditDecisionsView() {
 }
 
 // AuditEventsView is the actor-based audit_events trail (ListAuditEvents):
-// who did what, how they authenticated, and the before/after snapshot.
+// who did what, how they authenticated, and the before/after snapshot. A
+// filter bar (actor/action/target/time) scopes the query; time inputs are
+// browser-local datetime-local values converted to UTC timestamps before
+// they reach the RPC (occurred_at is stored/compared in UTC).
 function AuditEventsView() {
-  const { data, isLoading } = useListAuditEvents();
+  const [draft, setDraft] = useState({
+    action: "",
+    actorId: "",
+    targetType: "",
+    targetId: "",
+    from: "",
+    to: "",
+  });
+  const [applied, setApplied] = useState<AuditEventFilters>({});
+  const { data, isLoading } = useListAuditEvents(applied);
+
+  const set = (k: keyof typeof draft) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setDraft((d) => ({ ...d, [k]: e.target.value }));
+
+  const apply = () => {
+    const next: AuditEventFilters = {
+      action: draft.action || undefined,
+      actorId: draft.actorId || undefined,
+      targetType: draft.targetType || undefined,
+      targetId: draft.targetId || undefined,
+      startTime: draft.from
+        ? Timestamp.fromDate(new Date(draft.from))
+        : undefined,
+      endTime: draft.to ? Timestamp.fromDate(new Date(draft.to)) : undefined,
+    };
+    setApplied(next);
+  };
+
+  const clear = () => {
+    setDraft({ action: "", actorId: "", targetType: "", targetId: "", from: "", to: "" });
+    setApplied({});
+  };
+
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>;
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b text-left text-muted-foreground">
-            <th className="py-2 pr-4">Action</th>
-            <th className="py-2 pr-4">Actor</th>
-            <th className="py-2 pr-4">Auth</th>
-            <th className="py-2 pr-4">Target</th>
-            <th className="py-2 pr-4">Before/After</th>
-            <th className="py-2 pr-4">Trace</th>
-            <th className="py-2 pr-4">When</th>
-          </tr>
-        </thead>
-        <tbody>
-          {data?.map((e) => (
-            <tr key={e.id} className="border-b">
-              <td className="py-2 pr-4 font-mono text-xs">{e.action}</td>
-              <td className="py-2 pr-4 font-mono text-xs">
-                {e.actorIdentityId || "-"}
-              </td>
-              <td className="py-2 pr-4 text-xs">{e.authMethod || "-"}</td>
-              <td className="py-2 pr-4 font-mono text-xs">
-                {e.targetType}:{e.targetId}
-              </td>
-              <td className="py-2 pr-4 text-xs">
-                <BeforeAfterCell before={e.before} after={e.after} />
-              </td>
-              <td className="py-2 pr-4 font-mono text-xs">{e.traceId}</td>
-              <td className="py-2 pr-4 text-xs">
-                {e.occurredAt?.toLocaleString()}
-              </td>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-end gap-3">
+        <div>
+          <Label htmlFor="audit-action">Action</Label>
+          <Input
+            id="audit-action"
+            className="mt-1 h-9 w-44 font-mono text-xs"
+            placeholder="e.g. work_item.created"
+            value={draft.action}
+            onChange={set("action")}
+          />
+        </div>
+        <div>
+          <Label htmlFor="audit-actor">Actor</Label>
+          <Input
+            id="audit-actor"
+            className="mt-1 h-9 w-44 font-mono text-xs"
+            placeholder="identity id"
+            value={draft.actorId}
+            onChange={set("actorId")}
+          />
+        </div>
+        <div>
+          <Label htmlFor="audit-target-type">Target type</Label>
+          <Input
+            id="audit-target-type"
+            className="mt-1 h-9 w-36 font-mono text-xs"
+            placeholder="e.g. work_item"
+            value={draft.targetType}
+            onChange={set("targetType")}
+          />
+        </div>
+        <div>
+          <Label htmlFor="audit-target-id">Target ID</Label>
+          <Input
+            id="audit-target-id"
+            className="mt-1 h-9 w-44 font-mono text-xs"
+            placeholder="entity id"
+            value={draft.targetId}
+            onChange={set("targetId")}
+          />
+        </div>
+        <div>
+          <Label htmlFor="audit-from">From (local time)</Label>
+          <input
+            id="audit-from"
+            type="datetime-local"
+            value={draft.from}
+            onChange={set("from")}
+            className="mt-1 h-9 w-52 rounded-md border bg-background px-2 text-sm"
+          />
+        </div>
+        <div>
+          <Label htmlFor="audit-to">To (local time)</Label>
+          <input
+            id="audit-to"
+            type="datetime-local"
+            value={draft.to}
+            onChange={set("to")}
+            className="mt-1 h-9 w-52 rounded-md border bg-background px-2 text-sm"
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={apply}>
+            Apply filters
+          </Button>
+          <Button size="sm" variant="outline" onClick={clear}>
+            Clear
+          </Button>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b text-left text-muted-foreground">
+              <th className="py-2 pr-4">Action</th>
+              <th className="py-2 pr-4">Actor</th>
+              <th className="py-2 pr-4">Auth</th>
+              <th className="py-2 pr-4">Target</th>
+              <th className="py-2 pr-4">Before/After</th>
+              <th className="py-2 pr-4">Trace</th>
+              <th className="py-2 pr-4">When</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {data?.map((e) => (
+              <tr key={e.id} className="border-b">
+                <td className="py-2 pr-4 font-mono text-xs">{e.action}</td>
+                <td className="py-2 pr-4 font-mono text-xs">
+                  {e.actorIdentityId || "-"}
+                </td>
+                <td className="py-2 pr-4 text-xs">{e.authMethod || "-"}</td>
+                <td className="py-2 pr-4 font-mono text-xs">
+                  {e.targetType}:{e.targetId}
+                </td>
+                <td className="py-2 pr-4 text-xs">
+                  <BeforeAfterCell before={e.before} after={e.after} />
+                </td>
+                <td className="py-2 pr-4 font-mono text-xs">{e.traceId}</td>
+                <td className="py-2 pr-4 text-xs">
+                  {e.occurredAt?.toLocaleString()}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
