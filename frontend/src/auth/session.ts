@@ -112,6 +112,45 @@ export async function localLogin(
   };
 }
 
+// signup creates a self-service local account over the embedded IdP and
+// starts a session in one step. The server atomically provisions the
+// identity + argon2id-hashed credential, mints the token pair, sets the
+// HttpOnly refresh cookie, and — when `next` is the OP login-bridge path
+// the browser came from — completes the pending authorize request (same
+// contract as localLogin). A username that is already taken is rejected
+// with 409.
+export async function signup(
+  username: string,
+  password: string,
+  next?: string,
+): Promise<{ session: SessionInfo; next?: string }> {
+  const res = await fetch("/auth/signup", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ username, password, next: next ?? "" }),
+  });
+  if (!res.ok) {
+    throw new Error(
+      res.status === 409
+        ? "An account with this username already exists"
+        : `signup failed: ${res.status}`,
+    );
+  }
+  const body = await res.json();
+  setAccessToken(body.access_token);
+  return {
+    session: {
+      authenticated: true,
+      identity_id: body.identity_id,
+      tenant_id: body.tenant_id,
+      is_admin: body.is_admin,
+      expires_at: Date.now() + body.expires_in * 1000,
+    },
+    next: body.next ?? undefined,
+  };
+}
+
 // oidcLogin returns the IdP authorize URL (the browser navigates there).
 export function oidcLoginURL(): string {
   return "/auth/oidc/login";
@@ -233,6 +272,10 @@ export type AuthConfig = {
   embedded_op: boolean;
   external_oidc: boolean;
   dev_login: boolean;
+  // signup advertises self-service account creation over the embedded IdP
+  // (true exactly when the plane's embedded OP is enabled). The SPA shows
+  // the "Create an account" affordance only when it is advertised.
+  signup: boolean;
 };
 
 // fetchAuthConfig reads the plane's auth capability flags for the

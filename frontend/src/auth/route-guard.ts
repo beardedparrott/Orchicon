@@ -12,10 +12,11 @@ import { redirect } from "@tanstack/react-router";
 import { ensureSession, useSessionStore } from "@/auth/session";
 
 // Routes that render without authentication. /login is the sign-in page;
-// /auth/callback is the OIDC fragment-token landing route (it arrives here
-// with a token in the URL fragment before the session store resolves).
-// Add future public routes (e.g. a marketing landing under the SPA) here.
-export const PUBLIC_PATHS = new Set(["/login", "/auth/callback"]);
+// /signup is the self-service account-creation page; /auth/callback is the
+// OIDC fragment-token landing route (it arrives here with a token in the
+// URL fragment before the session store resolves). Add future public
+// routes (e.g. a marketing landing under the SPA) here.
+export const PUBLIC_PATHS = new Set(["/login", "/signup", "/auth/callback"]);
 
 // requireAuth is the root beforeLoad guard. It fast-paths on an
 // already-resolved session (SPA navigations are zero-cost) and only awaits

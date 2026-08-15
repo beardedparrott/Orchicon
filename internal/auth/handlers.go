@@ -14,6 +14,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/auth/op"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // RefreshCookie is the HttpOnly cookie name carrying the refresh token
@@ -32,6 +33,7 @@ type LocalCredentialVerifier func(ctx context.Context, tenantID, username, passw
 // Handler exposes the out-of-band auth HTTP endpoints (docs/07 §6.1):
 //
 //	POST /auth/local-login    Local-account login (embedded IdP, username+password)
+//	POST /auth/signup         Self-service account creation (embedded IdP, username+password)
 //	POST /auth/dev-login      Local-mode synthetic login (subject → tokens; flag-gated)
 //	POST /auth/refresh        Exchange a refresh token for a new access token
 //	POST /auth/logout         Clear the HttpOnly refresh cookie (end the browser session)
@@ -107,6 +109,7 @@ func (h *Handler) Resolver() *Resolver { return h.resolver }
 // Register mounts the auth HTTP endpoints on the mux.
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/auth/local-login", h.localLogin)
+	mux.HandleFunc("/auth/signup", h.signup)
 	mux.HandleFunc("/auth/dev-login", h.devLogin)
 	mux.HandleFunc("/auth/refresh", h.refresh)
 	mux.HandleFunc("/auth/logout", h.logout)
@@ -129,6 +132,10 @@ type authConfigResponse struct {
 	EmbeddedOP   bool   `json:"embedded_op"`
 	ExternalOIDC bool   `json:"external_oidc"`
 	DevLogin     bool   `json:"dev_login"`
+	// Signup advertises self-service account creation over the embedded IdP
+	// (true exactly when the embedded OP is enabled). The SPA shows the
+	// "Create an account" affordance only when the plane advertises it.
+	Signup bool `json:"signup"`
 }
 
 // authConfig returns the plane's auth capability flags.
@@ -142,6 +149,7 @@ func (h *Handler) authConfig(w http.ResponseWriter, r *http.Request) {
 		EmbeddedOP:   h.cfg.EmbeddedOP,
 		ExternalOIDC: h.oidc != nil,
 		DevLogin:     h.mode == config.ModeLocal && h.cfg.DevLoginAllowed,
+		Signup:       h.cfg.EmbeddedOP,
 	})
 }
 
@@ -255,6 +263,174 @@ func (h *Handler) localLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// signupRequest is the body for POST /auth/signup.
+type signupRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	// Next is the OP login-bridge path the browser was redirected from
+	// (/auth/op/login?id=<id>); its id completes the pending authorize
+	// request. Only same-origin OP bridge paths are honored (identical to
+	// localLoginRequest).
+	Next string `json:"next"`
+}
+
+// errAccountExists is the internal sentinel for the duplicate-username /
+// existing-identity rejection; the HTTP layer maps it to 409. Reusing one
+// error keeps the two indistinguishable client-facing (no enumeration
+// beyond the inherent duplicate-username signal).
+var errAccountExists = errors.New("auth: account already exists")
+
+// isUniqueViolation reports whether err is a Postgres unique-constraint
+// violation (SQLSTATE 23505). Used to map the concurrent signup races — the
+// identity insert and the credential upsert — to already-exists.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// signup creates a self-service local account over the embedded IdP: it
+// atomically provisions a fresh identity + argon2id-hashed local credential
+// in the deployment tenant, then runs the local-login tail verbatim — mint
+// the token pair, set the HttpOnly refresh cookie, complete a pending
+// embedded-OP authorize request when `next` carries one. No role binding is
+// created: a self-signed-up account is a plain user identity with zero
+// entitlements (least privilege for an open endpoint — the bootstrap admin
+// stays the sole initial admin).
+func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// The embedded IdP is the local-account surface; without it there is no
+	// OP to complete and sign-up is dead weight (same gate as local-login).
+	if !h.cfg.EmbeddedOP {
+		http.Error(w, "sign up is disabled", http.StatusNotFound)
+		return
+	}
+	var req signupRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	if req.Username == "" || req.Password == "" {
+		http.Error(w, "username and password are required", http.StatusBadRequest)
+		return
+	}
+	if len(req.Username) > 255 {
+		http.Error(w, "username too long", http.StatusBadRequest)
+		return
+	}
+	// The exact charset SetLocalCredential enforces, so email-style handles
+	// work and sign-up cannot mint a username the admin path would reject.
+	if !localUsernameRE.MatchString(req.Username) {
+		http.Error(w, "username must match ^[a-z0-9][a-z0-9._@+-]*$", http.StatusBadRequest)
+		return
+	}
+	if len(req.Password) > MaxPasswordLen {
+		http.Error(w, "password too long", http.StatusBadRequest)
+		return
+	}
+	// Hash at the boundary (argon2id PHC); plaintext never leaves this
+	// function for storage or logging.
+	hash, err := HashPassword(req.Password)
+	if err != nil {
+		h.log.Error("sign-up: hash password", "error", err)
+		http.Error(w, "failed to create account", http.StatusInternalServerError)
+		return
+	}
+	tenantID := h.deploymentTenantID
+	ident, err := h.createLocalAccount(r.Context(), tenantID, req.Username, hash)
+	if err != nil {
+		if errors.Is(err, errAccountExists) {
+			http.Error(w, "an account with this username already exists", http.StatusConflict)
+			return
+		}
+		h.log.Error("sign-up: create account", "error", err)
+		http.Error(w, "failed to create account", http.StatusInternalServerError)
+		return
+	}
+	h.log.Info("local account created", "identity", ident.ID, "tenant", tenantID)
+	// Local-login tail: resolve entitlements, mint the token pair, set the
+	// refresh cookie, and complete a pending OP authorize request.
+	ents, isAdmin, err := h.resolver.ResolveIdentity(r.Context(), tenantID, ident.ID)
+	if err != nil {
+		h.log.Error("sign-up: resolve identity", "error", err)
+		http.Error(w, "failed to create account", http.StatusInternalServerError)
+		return
+	}
+	pair, err := h.issuer.IssuePair(ident.ID, tenantID, ents, isAdmin)
+	if err != nil {
+		http.Error(w, "failed to issue tokens", http.StatusInternalServerError)
+		return
+	}
+	h.setRefreshCookie(w, pair.RefreshToken)
+	resp := tokenResponse{
+		AccessToken: pair.AccessToken,
+		TokenType:   "Bearer",
+		ExpiresIn:   pair.ExpiresIn,
+		IdentityID:  ident.ID,
+		TenantID:    tenantID,
+		IsAdmin:     isAdmin,
+	}
+	if id, ok := opAuthRequestID(req.Next); ok && h.op != nil {
+		if err := h.op.MarkAuthenticated(r.Context(), id, ident.ID, tenantID); err != nil {
+			h.log.Warn("sign-up: complete op auth request", "error", err)
+		} else {
+			resp.Next = "/authorize/callback?id=" + url.QueryEscape(id)
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// createLocalAccount atomically provisions a fresh identity + local
+// credential within a tenant. It rejects when either the username is
+// already bound to a credential (the standard duplicate-username signup
+// signal) or an identity with the same subject already exists (the
+// identity-squatting guard: a BYO-IdP provisioned identity must never get a
+// local password bound to it by a stranger signing up with the same
+// handle). Both insert sites race under concurrency; their unique
+// violations map to errAccountExists so exactly one concurrent signup for a
+// username succeeds.
+func (h *Handler) createLocalAccount(ctx context.Context, tenantID, username, hash string) (db.IdentityRow, error) {
+	ttx, err := h.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return db.IdentityRow{}, err
+	}
+	defer ttx.Rollback(ctx)
+	// Reject when the username already has a credential.
+	if _, err := db.GetLocalCredentialByUsername(ctx, ttx.Tx, tenantID, username); err == nil {
+		return db.IdentityRow{}, errAccountExists
+	} else if !errors.Is(err, db.ErrNotFound) {
+		return db.IdentityRow{}, err
+	}
+	// Create a fresh identity for the username (subject = handle). An
+	// existing identity under the same subject is the squatting case.
+	ident, created, err := db.GetOrCreateIdentity(ctx, ttx.Tx, tenantID, username, username, "user")
+	if err != nil {
+		if isUniqueViolation(err) {
+			return db.IdentityRow{}, errAccountExists
+		}
+		return db.IdentityRow{}, err
+	}
+	if !created {
+		return db.IdentityRow{}, errAccountExists
+	}
+	// Bind the credential to the fresh identity. A concurrent signup that
+	// won the identity insert can lose here on the username index; the
+	// unique violation maps to already-exists so only one succeeds.
+	if _, err := db.UpsertLocalCredential(ctx, ttx.Tx, tenantID, ident.ID, username, hash); err != nil {
+		if isUniqueViolation(err) {
+			return db.IdentityRow{}, errAccountExists
+		}
+		return db.IdentityRow{}, err
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return db.IdentityRow{}, err
+	}
+	return ident, nil
 }
 
 // verifyLocalCredential is the default LocalCredentialVerifier: it looks up

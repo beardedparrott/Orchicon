@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
-import { createRoute, useNavigate, useSearch } from "@tanstack/react-router";
+import {
+  Link,
+  createRoute,
+  useNavigate,
+  useSearch,
+} from "@tanstack/react-router";
 
 import { startDevLogin, startLocalLogin, startOIDCLogin } from "@/auth/auth";
 import { fetchAuthConfig, type AuthConfig } from "@/auth/session";
@@ -214,6 +219,18 @@ function LoginPage() {
           )}
           {error && (
             <p className="text-sm text-destructive">{error}</p>
+          )}
+          {cfg?.signup && (
+            <div className="text-center text-sm">
+              <span className="text-muted-foreground">New here? </span>
+              <Link
+                to="/signup"
+                search={next ? { next } : undefined}
+                className="text-primary hover:underline"
+              >
+                Create an account
+              </Link>
+            </div>
           )}
         </CardContent>
       </Card>
