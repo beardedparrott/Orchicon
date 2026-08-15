@@ -1,8 +1,9 @@
 // Package api wires Connect handlers for the public API surface
 // (docs/07_API_Specification.md). The generated connect-go service
 // handlers are mounted here onto a single mux, wrapped by the
-// auth-resolution middleware. Phase 9 adds AuthService + WebhookService
-// + the RBAC Connect interceptor.
+// auth-resolution middleware, with the RBAC Connect interceptor applied
+// per-RPC. Auth is mandatory in every mode: every non-public request
+// carries a resolved identity or is rejected 401.
 package api
 
 import (
@@ -55,7 +56,10 @@ type Dependencies struct {
 	// embedded iframe works same-origin (docs/10 §11). Grafana runs with
 	// serve_from_sub_path, so it generates every URL under /grafana.
 	GrafanaURL string
-	// Phase 9: auth + webhooks + blobstore.
+	// Phase 9: auth + webhooks + blobstore. AuthHandler is required in
+	// every mode: api.Mount resolves identity through it, so a plane
+	// without one is a programming error (config validation requires an
+	// IdP in every mode and auth.NewHandler never returns nil).
 	AuthHandler          *auth.Handler
 	WebhookDispatcher    *webhook.Dispatcher
 	Mode                 config.DeploymentMode
@@ -244,16 +248,14 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 		}
 	}
 
-	// Phase 9: wrap with the auth-resolution middleware. It resolves the
-	// caller's identity from the bearer token (OIDC access token or API
-	// key) and stores identity + tenant in the context (docs/07 §6.3).
-	var h http.Handler = mux
-	if deps.AuthHandler != nil {
-		h = middleware.ResolveAuth(h, deps.AuthHandler.Issuer(), deps.AuthHandler.Resolver(), deps.Log)
-	} else {
-		// Dev fallback when auth is not configured: resolve tenant only.
-		h = middleware.ResolveTenant(mux)
-	}
+	// Wrap the whole surface with the auth-resolution middleware
+	// (docs/07 §6.3). It resolves the caller's identity from the bearer
+	// token (OIDC access token or API key) and stores identity + tenant
+	// in the context. Auth is mandatory in every mode — a request without
+	// a valid credential is 401 and the tenant always comes from the
+	// resolved identity, never a request header. There is no tenant-only
+	// fallback and no anonymous path into tenant-scoped data.
+	h := middleware.ResolveAuth(mux, deps.AuthHandler.Issuer(), deps.AuthHandler.Resolver(), deps.Log)
 	_ = blobstore.ErrNotFound
 	return h
 }
