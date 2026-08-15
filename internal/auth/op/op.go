@@ -27,12 +27,18 @@ type Config struct {
 	// OPIssuer pins a static issuer; empty derives it from the request
 	// Host on every request.
 	OPIssuer string
+	// TenantID is the deployment tenant id (ORCHICON_DEPLOYMENT_TENANT_ID)
+	// identities resolve into when an auth/refresh request carries no
+	// explicit tenant. Empty falls back to DefaultTenantID ("tnt_dev"),
+	// which keeps standalone OP wiring and op-package tests unchanged.
+	TenantID string
 	// AllowInsecure permits an http:// issuer (local mode only).
 	AllowInsecure bool
 	// Identity resolves identity claims (sub = identity ULID).
 	Identity IdentityResolver
 	// Pool is the tenant-scoped DB pool used to resolve identities when
-	// Identity is nil (falls back to db.GetIdentity under tnt_dev).
+	// Identity is nil (falls back to db.GetIdentity in the deployment
+	// tenant).
 	Pool *db.Pool
 	// Log is the structured logger.
 	Log *slog.Logger
@@ -120,7 +126,7 @@ func NewProvider(cfg Config) (*Provider, error) {
 		opts = append(opts, zitadelop.WithAllowInsecure())
 	}
 
-	storage := NewStorage(key, resolve, log)
+	storage := NewStorage(key, resolve, log, cfg.TenantID)
 	builtin := &client{
 		id:           clientID,
 		redirectURIs: redirectURIs,

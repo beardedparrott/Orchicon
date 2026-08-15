@@ -10,10 +10,11 @@ import (
 // (the default). Tests override specific fields to exercise the rules.
 func baseConfig() Config {
 	return Config{
-		HTTPAddr:    ":8080",
-		PostgresDSN: "postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable",
-		NATSURL:     "nats://localhost:4222",
-		Mode:        ModeLocal,
+		HTTPAddr:           ":8080",
+		PostgresDSN:        "postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable",
+		NATSURL:            "nats://localhost:4222",
+		Mode:               ModeLocal,
+		DeploymentTenantID: "tnt_dev",
 		Auth: AuthConfig{
 			Issuer:      "local",
 			ClientID:    "orchicon",
@@ -113,6 +114,7 @@ func TestValidateAllModesRequireIssuer(t *testing.T) {
 func TestDevLoginDefaultsToFalse(t *testing.T) {
 	// Isolate the default from any ambient environment.
 	t.Setenv("ORCHICON_DEV_LOGIN", "")
+	t.Setenv("ORCHICON_DEPLOYMENT_TENANT_ID", "")
 	c := Default()
 	if c.Auth.DevLoginAllowed {
 		t.Fatal("DevLoginAllowed defaults to true; want false (dev-login must be flag-gated off)")
@@ -120,9 +122,57 @@ func TestDevLoginDefaultsToFalse(t *testing.T) {
 	if !c.Auth.EmbeddedOP {
 		t.Fatal("EmbeddedOP defaults to false; want true (the embedded OP is the local default IdP)")
 	}
+	if c.DeploymentTenantID != "tnt_dev" {
+		t.Fatalf("DeploymentTenantID defaults to %q, want %q", c.DeploymentTenantID, "tnt_dev")
+	}
 	// The default config is still valid: the embedded OP satisfies the
 	// all-modes issuer requirement.
 	if err := c.Validate(); err != nil {
 		t.Fatalf("Default() does not pass Validate(): %v", err)
+	}
+}
+
+// TestDeploymentTenantIDEnvOverrides pins that ORCHICON_DEPLOYMENT_TENANT_ID
+// overrides the default deployment tenant at load time.
+func TestDeploymentTenantIDEnvOverrides(t *testing.T) {
+	t.Setenv("ORCHICON_DEPLOYMENT_TENANT_ID", "acme")
+	c := Default()
+	if c.DeploymentTenantID != "acme" {
+		t.Fatalf("DeploymentTenantID = %q, want %q", c.DeploymentTenantID, "acme")
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("config with ORCHICON_DEPLOYMENT_TENANT_ID=acme does not validate: %v", err)
+	}
+}
+
+// TestDeploymentTenantIDValidation pins the boot-time tenant-id guards: a
+// misconfigured ORCHICON_DEPLOYMENT_TENANT_ID must fail boot, never
+// silently seed a second tenant.
+func TestDeploymentTenantIDValidation(t *testing.T) {
+	valid := []string{"tnt_dev", "acme", "prod-2", "my_tenant", "a", "a-b_c"}
+	for _, id := range valid {
+		c := baseConfig()
+		c.DeploymentTenantID = id
+		if err := c.Validate(); err != nil {
+			t.Errorf("DeploymentTenantID %q: Validate() = %v, want nil", id, err)
+		}
+	}
+	invalid := []string{
+		"",                      // empty
+		"Acme",                  // uppercase
+		"-acme",                 // leading separator
+		"acme-",                 // trailing separator
+		"a b",                   // space
+		"acme!x",                // punctuation
+		"a/b",                   // slash
+		"a.b",                   // dot
+		strings.Repeat("a", 64), // over-long
+	}
+	for _, id := range invalid {
+		c := baseConfig()
+		c.DeploymentTenantID = id
+		if err := c.Validate(); err == nil {
+			t.Errorf("DeploymentTenantID %q: Validate() = nil, want error", id)
+		}
 	}
 }

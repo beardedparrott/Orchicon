@@ -99,9 +99,10 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		return nil, fmt.Errorf("server: open db: %w", err)
 	}
 
-	// Seed the dev tenant so the control plane has a tenant context
-	// before auth (Phase 9) lands. Idempotent.
-	if err := db.SeedDevTenant(context.Background(), pool); err != nil {
+	// Seed the deployment tenant so the control plane has a tenant context
+	// before auth (Phase 9) lands. Idempotent. The tenant id comes from
+	// ORCHICON_DEPLOYMENT_TENANT_ID (default "tnt_dev").
+	if err := db.SeedDevTenant(context.Background(), pool, cfg.DeploymentTenantID); err != nil {
 		log.Warn("seed dev tenant failed (continuing)", "error", err)
 	}
 

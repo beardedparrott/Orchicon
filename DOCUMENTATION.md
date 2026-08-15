@@ -1006,15 +1006,19 @@ MCP work item mutations honor the transactional outbox pattern (invariant #3): `
 
 ### Tenancy model
 
-**Decision (org-groups / deployment-scoped): each Orchicon deployment owns exactly one tenant.** The deployment is the isolation boundary; all identities, projects, work items, executions, and audit records are tenant-scoped to the seeded deployment tenant (today `tnt_dev`) through the RLS machinery. This **formalizes the existing behavior** — the codebase already runs single-tenant (`tenants` table + `tenant_id`/RLS on every scoped table, admin-only `CreateTenant`/`ListTenants`, OIDC callback and dev-login converging on `tnt_dev`).
+**Decision (org-groups / deployment-scoped): each Orchicon deployment owns exactly one tenant.** The deployment is the isolation boundary; all identities, projects, work items, executions, and audit records are tenant-scoped to the seeded deployment tenant through the RLS machinery. The deployment tenant is **config-driven**: `ORCHICON_DEPLOYMENT_TENANT_ID` (default `tnt_dev`) is the single source of truth, validated at boot (non-empty, lowercase alphanumerics plus `-`/`_`, ≤63 chars — a misconfigured value fails boot, never seeds a second tenant).
+
+Every auth path resolves logins into the deployment tenant — the OIDC callback, dev-login, the embedded-OP local login, and the local-admin bootstrap all read `Config.DeploymentTenantID`, never a code literal. No subject→tenant routing rules: the IdP's identity claims (`org`, `groups`, `tenant`, …) are **not** consulted for tenant selection; claim-based routing and first-login assignment are deferred to the SaaS forward path.
 
 Consequences for the three features gated on this decision:
 
-1. **Sign-up tenant targeting** — no public self-serve signup in this phase; identities are operator-provisioned (embedded-OP local accounts or BYO IdP). The hardcoded `tnt_dev` literal is to be replaced by a **config-driven deployment tenant id** (e.g. `ORCHICON_DEPLOYMENT_TENANT_ID`, default `tnt_dev`) so each installed deployment has a stable, distinct tenant. No subject→tenant routing rules.
+1. **Sign-up tenant targeting** — no public self-serve signup; identities are operator-provisioned (embedded-OP local accounts or BYO IdP). **Tenant provisioning is idempotent boot-time seeding**: `db.SeedDevTenant` inserts the configured deployment tenant id (`tenants` row, slug mirrors the id so the unique slug index can never collide) before auth mounts, so a fresh install with `ORCHICON_DEPLOYMENT_TENANT_ID=acme` boots into `acme`. On the SaaS forward path this becomes self-serve + admin `CreateTenant`.
 2. **Audit-trail scoping** — by construction: the audit table (when added) carries `tenant_id` + the standard `tenant_isolation` RLS policy, so a deployment's audit trail is its own and cross-tenant audit reads are impossible via RLS.
-3. **Identity provisioning** — per-tenant `EnsureIdentityForSubject` upsert is kept; the OIDC callback resolves the tenant from deployment config, not a code literal. Within-tenant access control stays with tenant/project RBAC scopes.
+3. **Identity provisioning & membership** — per-tenant `EnsureIdentityForSubject` upsert is kept; the OIDC callback resolves the tenant from deployment config, not a code literal. **Membership is the role-binding model**: an identity gains membership in the deployment tenant on first login by being upserted there and by holding the tenant `admin` role (first-login grant, idempotent); within-tenant access control stays with tenant/project RBAC scopes. Cross-tenant membership does not exist in a single-tenant-per-deployment install; the schema supports it later.
 
-The multi-tenant schema (`tenants` table, RLS, admin `CreateTenant`/`ListTenants`) is **retained unchanged** as the forward-compatible foundation for a future SaaS phase — a SaaS pivot would be additive (subject→tenant routing at the OIDC callback, self-serve tenant provisioning), not a rewrite. The tenants admin surface stays admin-only and is not productized in this phase. Full discussion (options, trade-offs, alternatives) lives in the work-item architecture note `architecture-notes/discuss-tenant-architecture-with-architecture-worker.md` (ephemeral, per-work-item).
+The multi-tenant schema (`tenants` table, RLS, admin `CreateTenant`/`ListTenants`) is **retained unchanged** as the forward-compatible foundation for a future SaaS phase — a SaaS pivot would be additive (subject→tenant routing at the OIDC callback, self-serve tenant provisioning), not a rewrite. The tenants admin surface stays admin-only and is not productized in this phase.
+
+The remaining hardcoded `tnt_dev` literals outside auth (MCP / recovery / scheduler / sequence / runtime / seed paths) are swept to the same config value as documented follow-ups of decision #178; the auth surface above is the first consumer of the shared config field.
 
 ---
 
@@ -1340,6 +1344,7 @@ See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
 | `ORCHICON_LOKI_URL` | `http://localhost:3100` | Loki query API URL |
 | `ORCHICON_VM_URL` | `http://localhost:8428` | VictoriaMetrics query API URL |
 | `ORCHICON_MODE` | `local` | Operating mode: `local` or `production` |
+| `ORCHICON_DEPLOYMENT_TENANT_ID` | `tnt_dev` | The single tenant this deployment owns: OIDC callback, dev-login, embedded-OP local login, and the local-admin bootstrap all resolve logins into it; boot provisions it via the tenant seed. Must be lowercase alphanumerics plus `-`/`_` (≤63 chars); a misconfigured value fails boot. IdP identity claims are never consulted for tenant selection |
 | `ORCHICON_BLOB_STORE` | `local` | Blob store backend: `local` or `s3` |
 | `ORCHICON_OIDC_ISSUER` | `local` | OIDC issuer URL (or `local` for dev IdP) |
 | `ORCHICON_OIDC_CLIENT_ID` | (none) | OIDC client ID |

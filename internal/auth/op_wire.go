@@ -22,6 +22,7 @@ func (h *Handler) buildEmbeddedOP() error {
 		ClientID:      h.cfg.ClientID,
 		RedirectURIs:  opRedirectURIs(h.cfg),
 		OPIssuer:      h.cfg.OPIssuer,
+		TenantID:      h.deploymentTenantID,
 		AllowInsecure: h.mode == config.ModeLocal,
 		Pool:          h.pool,
 		Log:           h.log,

@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/beardedparrott/orchicon/internal/auth/op"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/jackc/pgx/v5"
@@ -57,7 +56,7 @@ func BootstrapLocalAdmin(ctx context.Context, pool *db.Pool, log *slog.Logger, c
 		return nil
 	}
 
-	tenantID := op.DefaultTenantID
+	tenantID := cfg.DeploymentTenantID
 	username := os.Getenv(localAdminUsernameEnv)
 	if username == "" {
 		username = localAdminDefaultUsername

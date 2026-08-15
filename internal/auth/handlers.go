@@ -51,6 +51,12 @@ type Handler struct {
 	op       *op.Provider
 	pool     *db.Pool
 	log      *slog.Logger
+	// deploymentTenantID is the single tenant this deployment owns
+	// (ORCHICON_DEPLOYMENT_TENANT_ID, default "tnt_dev"). Every auth path
+	// resolves logins into it — OIDC callback, dev-login, and the
+	// embedded-OP local login — so a non-default install never splits
+	// identities across tenants (decision #178).
+	deploymentTenantID string
 	// verifyCred is the injected LocalCredentialVerifier (the credential
 	// boundary). Defaults to the DB-backed lookup + hash check; a test or
 	// future OP wiring can replace it.
@@ -62,12 +68,13 @@ func NewHandler(cfg config.Config, pool *db.Pool, log *slog.Logger) *Handler {
 	issuer := NewTokenIssuer(cfg.Auth.SigningKey, "orchicon", "orchicon-api",
 		cfg.Auth.AccessTTL, cfg.Auth.RefreshTTL)
 	h := &Handler{
-		cfg:      cfg.Auth,
-		mode:     cfg.Mode,
-		issuer:   issuer,
-		resolver: NewResolver(pool),
-		pool:     pool,
-		log:      log,
+		cfg:                cfg.Auth,
+		mode:               cfg.Mode,
+		issuer:             issuer,
+		resolver:           NewResolver(pool),
+		pool:               pool,
+		log:                log,
+		deploymentTenantID: cfg.DeploymentTenantID,
 	}
 	h.verifyCred = h.verifyLocalCredential
 	if cfg.Auth.Issuer != "local" && cfg.Auth.Issuer != "" {
@@ -204,8 +211,8 @@ func (h *Handler) localLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The embedded OP is single-tenant for the auth flow; local accounts
-	// resolve within the default tenant (op.DefaultTenantID).
-	tenantID := op.DefaultTenantID
+	// resolve within the deployment tenant (ORCHICON_DEPLOYMENT_TENANT_ID).
+	tenantID := h.deploymentTenantID
 	identityID, ok, err := h.verifyCred(r.Context(), tenantID, req.Username, req.Password)
 	if err != nil || !ok {
 		if err != nil {
@@ -326,7 +333,7 @@ func (h *Handler) devLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	tenantID := req.TenantID
 	if tenantID == "" {
-		tenantID = "tnt_dev"
+		tenantID = h.deploymentTenantID
 	}
 	name := req.Name
 	if name == "" {
@@ -445,7 +452,7 @@ func (h *Handler) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "oidc exchange failed", http.StatusBadGateway)
 		return
 	}
-	tenantID := "tnt_dev"
+	tenantID := h.deploymentTenantID
 	display := out.DisplayName
 	if display == "" {
 		display = out.Email
