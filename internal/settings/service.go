@@ -95,9 +95,17 @@ func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, t
 	return audit.Record(ctx, tx, e)
 }
 
-// recordAuditShort writes an audit row in its own short tenant tx. Used
-// for backup/restore ops that mutate the filesystem/DB outside a tenant
-// tx (CreateBackup / RestoreBackup / DeleteBackup).
+// recordAuditShort writes an audit row in its own short tenant tx.
+//
+// DELIBERATE DEVIATION from the transactional-outbox AC (audit row in the
+// same tx as the mutation): backup create/restore/delete have NO tenant
+// tx to join. CreateBackup/DeleteBackup mutate only the filesystem
+// (backup.Create/Delete); RestoreBackup re-runs a full DB restore over a
+// separate connection, so an audit row written "inside the restore"
+// would itself be wiped by the restore. The audit row is therefore
+// written best-effort in its own short tx after the filesystem/DB op
+// succeeds. A record failure here is logged, not fatal — there is no
+// state to roll back (the mutation already happened on the filesystem).
 func (s *Service) recordAuditShort(ctx context.Context, action string, before, after json.RawMessage) {
 	tenantID := tenant.FromContext(ctx)
 	if tenantID == "" {

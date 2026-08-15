@@ -931,7 +931,9 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// return). Post-commit the locks are gone.
 	if r.recovery != nil {
 		for _, tr := range recoveryTriggers {
-			if err := r.recovery.TriggerOnFailure(context.Background(), tr.tenantID, tr.workItemID, tr.failedExecID, tr.stepRunID, tr.reason); err != nil {
+			// System path: no user actor, so no audit row (the reconciler
+			// is system churn, out of the audit scope — design D8).
+			if err := r.recovery.TriggerOnFailure(context.Background(), tr.tenantID, tr.workItemID, tr.failedExecID, tr.stepRunID, tr.reason, nil); err != nil {
 				r.log.Warn("post-commit recovery trigger failed",
 					"run", runID, "work_item", tr.workItemID, "error", err)
 			}

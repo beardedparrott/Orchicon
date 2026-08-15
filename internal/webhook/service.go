@@ -151,7 +151,9 @@ func (s *Service) CreateSubscription(ctx context.Context, req *connect.Request[a
 	}
 	s.log.Info("webhook subscription created", "id", row.ID, "tenant", tenantID)
 	return connect.NewResponse(&apiv1.CreateSubscriptionResponse{Subscription: subRowToProto(row)}), nil
-}// GetSubscription returns a single subscription by id.
+}
+
+// GetSubscription returns a single subscription by id.
 func (s *Service) GetSubscription(ctx context.Context, req *connect.Request[apiv1.GetSubscriptionRequest]) (*connect.Response[apiv1.GetSubscriptionResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -290,7 +292,11 @@ func (s *Service) DeleteSubscription(ctx context.Context, req *connect.Request[a
 	return connect.NewResponse(&apiv1.DeleteSubscriptionResponse{}), nil
 }
 
-// TestSubscription sends a test event to the subscription endpoint.
+// TestSubscription sends a test event to the subscription endpoint. The
+// delivery row, its result, and the audit row commit in ONE tenant
+// transaction (transactional outbox — AC1): the test POST is bounded by
+// the dispatcher's 15s client timeout, so the tx is never held open
+// across a hanging target.
 func (s *Service) TestSubscription(ctx context.Context, req *connect.Request[apiv1.TestSubscriptionRequest]) (*connect.Response[apiv1.TestSubscriptionResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -306,17 +312,17 @@ func (s *Service) TestSubscription(ctx context.Context, req *connect.Request[api
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	defer ttx.Rollback(ctx)
 	sub, err := db.GetSubscription(ctx, ttx.Tx, tenantID, req.Msg.Id)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	_ = ttx.Rollback(ctx)
 	testData, _ := json.Marshal(map[string]any{
 		"event_type": "webhook.test",
 		"tenant_id":  tenantID,
-		"message":   "Orchicon webhook test event",
+		"message":    "Orchicon webhook test event",
 	})
-	delivery, err := db.CreateDelivery(ctx, s.pool, db.WebhookDeliveryRow{
+	delivery, err := db.CreateDelivery(ctx, ttx.Tx, db.WebhookDeliveryRow{
 		TenantID:       tenantID,
 		SubscriptionID: sub.ID,
 		EventID:        "test-" + db.NewID(),
@@ -329,7 +335,7 @@ func (s *Service) TestSubscription(ctx context.Context, req *connect.Request[api
 	}
 	statusCode, derr := s.dispatcher.postOnce(ctx, sub, testData, delivery.ID)
 	if derr == nil && statusCode >= 200 && statusCode < 300 {
-		_ = db.UpdateDeliveryResult(ctx, s.pool, delivery.ID, statusCode, "delivered", "", nil)
+		_ = db.UpdateDeliveryResult(ctx, ttx.Tx, delivery.ID, statusCode, "delivered", "", nil)
 	} else {
 		errMsg := ""
 		if derr != nil {
@@ -337,11 +343,16 @@ func (s *Service) TestSubscription(ctx context.Context, req *connect.Request[api
 		} else {
 			errMsg = fmt.Sprintf("HTTP %d", statusCode)
 		}
-		_ = db.UpdateDeliveryResult(ctx, s.pool, delivery.ID, statusCode, "dead_letter", errMsg, nil)
+		_ = db.UpdateDeliveryResult(ctx, ttx.Tx, delivery.ID, statusCode, "dead_letter", errMsg, nil)
 	}
 	updated, _ := db.GetDelivery(ctx, ttx.Tx, tenantID, delivery.ID)
-	s.recordAuditShort(ctx, tenantID, "webhook_subscription.tested", sub.ID,
-		nil, audit.Snapshot(map[string]any{"delivery_id": delivery.ID, "status_code": statusCode}))
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "webhook_subscription.tested", "webhook_subscription", sub.ID,
+		nil, audit.Snapshot(map[string]any{"delivery_id": delivery.ID, "status_code": statusCode})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit webhook_subscription.tested: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
 	return connect.NewResponse(&apiv1.TestSubscriptionResponse{Delivery: deliveryRowToProto(updated)}), nil
 }
 
@@ -371,7 +382,9 @@ func (s *Service) ListDeliveries(ctx context.Context, req *connect.Request[apiv1
 	return connect.NewResponse(resp), nil
 }
 
-// ReplayDelivery re-enqueues a dead-lettered delivery.
+// ReplayDelivery re-enqueues a dead-lettered delivery. The replayed
+// delivery row and the audit row commit in ONE tenant transaction
+// (transactional outbox — AC1).
 func (s *Service) ReplayDelivery(ctx context.Context, req *connect.Request[apiv1.ReplayDeliveryRequest]) (*connect.Response[apiv1.ReplayDeliveryResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -384,38 +397,24 @@ func (s *Service) ReplayDelivery(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	defer ttx.Rollback(ctx)
 	orig, err := db.GetDelivery(ctx, ttx.Tx, tenantID, req.Msg.Id)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	_ = ttx.Rollback(ctx)
-	replayed, err := db.ReenqueueDelivery(ctx, s.pool, orig)
+	replayed, err := db.ReenqueueDelivery(ctx, ttx.Tx, orig)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	s.recordAuditShort(ctx, tenantID, "webhook_delivery.replayed", orig.SubscriptionID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "webhook_delivery.replayed", "webhook_subscription", orig.SubscriptionID,
 		audit.Snapshot(map[string]any{"delivery_id": orig.ID, "status": orig.Status}),
-		audit.Snapshot(map[string]any{"delivery_id": replayed.ID, "status": replayed.Status}))
-	return connect.NewResponse(&apiv1.ReplayDeliveryResponse{Delivery: deliveryRowToProto(replayed)}), nil
-}
-
-// recordAuditShort writes an audit row in its own short tenant tx. Used
-// for mutations that commit through the pool rather than a tenant tx
-// (TestSubscription / ReplayDelivery create deliveries directly).
-func (s *Service) recordAuditShort(ctx context.Context, tenantID, action, targetID string, before, after json.RawMessage) {
-	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		s.log.Error("audit: begin tx", "error", err, "action", action)
-		return
-	}
-	defer ttx.Rollback(ctx)
-	if err := recordAudit(ctx, ttx.Tx, tenantID, action, "webhook_subscription", targetID, before, after); err != nil {
-		s.log.Error("audit: record", "error", err, "action", action)
-		return
+		audit.Snapshot(map[string]any{"delivery_id": replayed.ID, "status": replayed.Status})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit webhook_delivery.replayed: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
-		s.log.Error("audit: commit", "error", err, "action", action)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
+	return connect.NewResponse(&apiv1.ReplayDeliveryResponse{Delivery: deliveryRowToProto(replayed)}), nil
 }
 
 // StreamSubscriptionDeliveries streams delivery events for a subscription.

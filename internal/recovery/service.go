@@ -80,11 +80,11 @@ func (s *Service) TriggerRecovery(ctx context.Context, req *connect.Request[apiv
 	if len(execs) > 0 {
 		failedExecID = execs[0].ID
 	}
-	if err := s.engine.TriggerOnFailure(ctx, tenantID, req.Msg.TaskId, failedExecID, "", triggerReason); err != nil {
+	entry := actorEntry(ctx, tenantID, "recovery.triggered", "recovery", req.Msg.TaskId,
+		nil, audit.Snapshot(map[string]any{"task_id": req.Msg.TaskId, "trigger_reason": triggerReason}))
+	if err := s.engine.TriggerOnFailure(ctx, tenantID, req.Msg.TaskId, failedExecID, "", triggerReason, &entry); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	s.recordAuditShort(ctx, tenantID, "recovery.triggered", "recovery", req.Msg.TaskId,
-		nil, audit.Snapshot(map[string]any{"task_id": req.Msg.TaskId, "trigger_reason": triggerReason}))
 	// Fetch the created recovery.
 	ttx2, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -319,12 +319,11 @@ func (s *Service) ApproveContinuationPlan(ctx context.Context, req *connect.Requ
 	if actor == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("actor must not be empty"))
 	}
-	plan, rec, err := s.engine.ApproveContinuationPlan(ctx, tenantID, req.Msg.RecoveryId, actor)
+	entry := actorEntry(ctx, tenantID, "recovery.continuation_plan_approved", "recovery", req.Msg.RecoveryId, nil, nil)
+	plan, rec, err := s.engine.ApproveContinuationPlan(ctx, tenantID, req.Msg.RecoveryId, actor, &entry)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	s.recordAuditShort(ctx, tenantID, "recovery.continuation_plan_approved", "recovery", req.Msg.RecoveryId,
-		audit.SnapshotStatus(rec.Status), nil)
 	return connect.NewResponse(&apiv1.ApproveContinuationPlanResponse{
 		Plan: planRowToProto(plan), Recovery: recoveryRowToProto(rec),
 	}), nil
@@ -350,12 +349,11 @@ func (s *Service) RejectContinuationPlan(ctx context.Context, req *connect.Reque
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	plan, rec, err := s.engine.RejectContinuationPlan(ctx, tenantID, req.Msg.RecoveryId, actor, reason)
+	entry := actorEntry(ctx, tenantID, "recovery.continuation_plan_rejected", "recovery", req.Msg.RecoveryId, nil, nil)
+	plan, rec, err := s.engine.RejectContinuationPlan(ctx, tenantID, req.Msg.RecoveryId, actor, reason, &entry)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	s.recordAuditShort(ctx, tenantID, "recovery.continuation_plan_rejected", "recovery", req.Msg.RecoveryId,
-		audit.SnapshotStatus(rec.Status), nil)
 	return connect.NewResponse(&apiv1.RejectContinuationPlanResponse{
 		Plan: planRowToProto(plan), Recovery: recoveryRowToProto(rec),
 	}), nil
@@ -410,12 +408,11 @@ func (s *Service) MarkTaskSucceeded(ctx context.Context, req *connect.Request[ap
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	auditID, err := s.engine.MarkTaskSucceeded(ctx, tenantID, req.Msg.TaskId, actorType, actorID, reason)
+	entry := actorEntry(ctx, tenantID, "recovery.task_marked_succeeded", "recovery", req.Msg.TaskId, nil, nil)
+	auditID, err := s.engine.MarkTaskSucceeded(ctx, tenantID, req.Msg.TaskId, actorType, actorID, reason, &entry)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	s.recordAuditShort(ctx, tenantID, "recovery.task_marked_succeeded", "recovery", req.Msg.TaskId,
-		nil, audit.Snapshot(map[string]any{"task_id": req.Msg.TaskId, "actor_type": actorType, "actor_id": actorID}))
 	return connect.NewResponse(&apiv1.MarkTaskSucceededResponse{
 		TaskId: req.Msg.TaskId, Status: domain.WorkItemSucceeded, AuditEventId: auditID,
 	}), nil
@@ -439,26 +436,22 @@ func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, t
 	return audit.Record(ctx, tx, e)
 }
 
-// recordAuditShort writes an audit row in its own short tenant tx. Used
-// where the mutation commits inside the engine's internal transaction
-// (TriggerRecovery / Approve/RejectContinuationPlan / MarkTaskSucceeded).
-func (s *Service) recordAuditShort(ctx context.Context, tenantID, action, targetType, targetID string, before, after json.RawMessage) {
-	if tenantID == "" {
-		return
+// actorEntry builds the audit entry for an engine-passed audit row:
+// actor resolved from the request context (user identity + auth method),
+// tenant defaulted to the handler's tenant, action/target/before/after
+// filled in. The engine records it inside its own transaction, so the
+// row commits atomically with the mutation (AC1).
+func actorEntry(ctx context.Context, tenantID, action, targetType, targetID string, before, after json.RawMessage) audit.Entry {
+	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
 	}
-	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		s.log.Error("audit: begin tx", "error", err, "action", action)
-		return
-	}
-	defer ttx.Rollback(ctx)
-	if err := recordAudit(ctx, ttx.Tx, tenantID, action, targetType, targetID, before, after); err != nil {
-		s.log.Error("audit: record", "error", err, "action", action)
-		return
-	}
-	if err := ttx.Commit(ctx); err != nil {
-		s.log.Error("audit: commit", "error", err, "action", action)
-	}
+	e.Action = action
+	e.TargetType = targetType
+	e.TargetID = targetID
+	e.Before = before
+	e.After = after
+	return e
 }
 
 func validateTextField(s string, max int, field string) (string, error) {

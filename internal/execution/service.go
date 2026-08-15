@@ -1056,9 +1056,15 @@ func (s *Service) SendExecutionMessage(ctx context.Context, req *connect.Request
 }
 
 // recordMessageAudit writes a session-message audit row in a short
-// tenant tx (SendExecutionMessage / ContinueExecutionSession push the
-// message into the adapter's session — no control-plane DB mutation to
-// share a tx with).
+// tenant tx.
+//
+// DELIBERATE DEVIATION from the transactional-outbox AC (audit row in the
+// same tx as the mutation): SendExecutionMessage / ContinueExecutionSession
+// push the message into the adapter's LIVE session (or its durable
+// transcript via the adapter's best-effort session store) — there is no
+// control-plane DB mutation in the handler to share a tx with. The audit
+// row is therefore written best-effort in its own short tx after the
+// session write succeeds. A record failure is logged, not fatal.
 func (s *Service) recordMessageAudit(ctx context.Context, tenantID, executionID, action string) {
 	if tenantID == "" {
 		return

@@ -869,6 +869,7 @@ The actor-based audit trail records **who did what** across the whole plane. Eve
 - Ask Orchicon can query the trail too (`orchicon_list_audit_events`, read-only).
 - **What is recorded:** login/logout/signup/refresh, work item / worker / workflow / project CRUD, assign/publish/deprecate/retire, API-key create/revoke/rotate, identity + role management, tenant create, policy create/publish/supersede, webhook subscription CRUD, execution pause/resume/cancel/delete, recovery trigger/cancel/approve, settings/backup changes, runtime-image create/build/delete, approval decisions, and Ask-Orchicon conversation actions (create/delete/rename/mode, message sent, turn aborted, attachment upload).
 - **Secrets never enter the trail:** before/after snapshots carry only non-secret fields — API-key hashes/prefixes, plaintext keys, tokens, passwords, worker/step prompt bodies, and policy bodies are excluded by construction.
+- **Documented best-effort exceptions** (no tenant tx to join; the audit row is written in its own short tx and a failure is logged, not fatal): backup create/restore/delete (filesystem + full-DB-restore ops) and execution session messages `SendExecutionMessage`/`ContinueExecutionSession` (push into the live adapter session, no control-plane DB mutation in the handler).
 - **Out of scope (by design):** reconciler/scheduler internal status flips (system churn without a user actor) and the detached Ask-Orchicon reply-collector persistence (agent output attributed to the model, not the user).
 
 #### Ask Orchicon
