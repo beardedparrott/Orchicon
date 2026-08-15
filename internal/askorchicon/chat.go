@@ -449,10 +449,10 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// stored row.
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.message_sent", "conversation", convID,
 		nil, audit.Snapshot(map[string]any{
-			"message_id":  userMsg.ID,
-			"role":        "user",
-			"mode":        conv.Mode,
-			"superseded":  opts.supersede,
+			"message_id": userMsg.ID,
+			"role":       "user",
+			"mode":       conv.Mode,
+			"superseded": opts.supersede,
 		})); err != nil {
 		ttx.Rollback(ctx)
 		releaseTurn()
@@ -761,7 +761,7 @@ type turnCollectOpts struct {
 	// deferred remove(convID, token) can never clobber a replacement turn
 	// (token-guarded removal — the supersede race is eliminated by
 	// construction).
-	token uint64
+	token          uint64
 	assistantMsgID string
 	// sessionID is the persisted opencode session id (empty on a first
 	// message, recreated on serve loss when the serve no longer knows it).

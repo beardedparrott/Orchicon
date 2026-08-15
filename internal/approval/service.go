@@ -109,8 +109,8 @@ func (s *Service) ApproveStep(ctx context.Context, req *connect.Request[apiv1.Ap
 	attPaths := make([]map[string]string, 0, len(attachments))
 	for i, a := range attachments {
 		attPaths = append(attPaths, map[string]string{
-			"filename": a.Filename,
-			"path":     filepath.Join(".orchicon", sr.WorkflowRunID, "attachments", a.Filename),
+			"filename":     a.Filename,
+			"path":         filepath.Join(".orchicon", sr.WorkflowRunID, "attachments", a.Filename),
 			"content_type": a.ContentType,
 		})
 		_ = i
@@ -127,9 +127,9 @@ func (s *Service) ApproveStep(ctx context.Context, req *connect.Request[apiv1.Ap
 
 	now := time.Now().UTC()
 	updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-		Status:    strPtr(domain.StepRunSucceeded),
-		Result:    &resultPayload,
-		EndedAt:   &now,
+		Status:  strPtr(domain.StepRunSucceeded),
+		Result:  &resultPayload,
+		EndedAt: &now,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update step run: %w", err))
@@ -459,20 +459,20 @@ func listApprovalItems(ctx context.Context, tx pgx.Tx, tenantID string, req *api
 		}
 
 		item := &apiv1.ApprovalItem{
-			StepRunId:         r.StepRunID,
-			WorkflowRunId:     r.WorkflowRunID,
-			WorkflowId:        r.WorkflowID,
-			ProjectName:       r.ProjectName,
-			WorkItemName:      r.WorkItemTitle,
-			WorkflowName:      r.WorkflowName,
-			UpstreamWorker:    r.UpstreamWorker,
-			UpstreamSummary:   r.UpstreamSummary,
-			TouchedFiles:      files,
+			StepRunId:          r.StepRunID,
+			WorkflowRunId:      r.WorkflowRunID,
+			WorkflowId:         r.WorkflowID,
+			ProjectName:        r.ProjectName,
+			WorkItemName:       r.WorkItemTitle,
+			WorkflowName:       r.WorkflowName,
+			UpstreamWorker:     r.UpstreamWorker,
+			UpstreamSummary:    r.UpstreamSummary,
+			TouchedFiles:       files,
 			AcceptanceCriteria: r.AcceptanceCrit,
-			Status:            mappedStatus,
-			Reason:            r.Reason,
-			AttachmentNames:   attNames,
-			CreatedAt:         timestamppb.New(r.CreatedAt),
+			Status:             mappedStatus,
+			Reason:             r.Reason,
+			AttachmentNames:    attNames,
+			CreatedAt:          timestamppb.New(r.CreatedAt),
 		}
 		out = append(out, item)
 	}

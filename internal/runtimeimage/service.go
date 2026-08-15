@@ -17,9 +17,9 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
-	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
-	apiv1connect 	"github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	assets "github.com/beardedparrott/orchicon"
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -44,10 +44,10 @@ var regexpSlug = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 // Service implements the RuntimeImageService Connect handler.
 type Service struct {
-	pool   *db.Pool
-	log    *slog.Logger
-	rt     *runtime.Client // nil in headless (no daemon)
-	base   string          // resolved base image ref from the daemon (cached at first Images call)
+	pool *db.Pool
+	log  *slog.Logger
+	rt   *runtime.Client // nil in headless (no daemon)
+	base string          // resolved base image ref from the daemon (cached at first Images call)
 	apiv1connect.UnimplementedRuntimeImageServiceHandler
 }
 

@@ -56,13 +56,13 @@ type RuntimeImageResolver func(ctx context.Context) string
 // (docs/09 §5). Dependency cycles are rejected at admission using a
 // recursive CTE (docs/09 §11).
 type Service struct {
-	pool            *db.Pool
-	log             *slog.Logger
-	startWorkflowFn StartWorkflowStarter
-	sequenceStartFn StartSequenceStarter
+	pool             *db.Pool
+	log              *slog.Logger
+	startWorkflowFn  StartWorkflowStarter
+	sequenceStartFn  StartSequenceStarter
 	sequenceResumeFn ResumeSequenceStarter
-	sequenceStopFn  StopSequenceStarter
-	runtimeImageFn  RuntimeImageResolver
+	sequenceStopFn   StopSequenceStarter
+	runtimeImageFn   RuntimeImageResolver
 	apiv1connect.UnimplementedWorkItemServiceHandler
 }
 
@@ -900,12 +900,12 @@ func (s *Service) AddDependency(ctx context.Context, req *connect.Request[apiv1.
 	}
 
 	dep := db.DependencyRow{
-		ID:       db.NewID(),
-		TenantID: tenantID,
+		ID:        db.NewID(),
+		TenantID:  tenantID,
 		ProjectID: msg.ProjectId,
-		FromID:   msg.FromId,
-		ToID:     msg.ToId,
-		Type:     depType,
+		FromID:    msg.FromId,
+		ToID:      msg.ToId,
+		Type:      depType,
 	}
 	created, err := db.CreateDependency(ctx, ttx.Tx, dep)
 	if err != nil {
@@ -1416,13 +1416,13 @@ func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, t
 // for the audit trail (no credentials or run artifacts).
 func workItemAuditSnapshot(w db.WorkItemRow) map[string]any {
 	return map[string]any{
-		"id":        w.ID,
+		"id":         w.ID,
 		"project_id": w.ProjectID,
-		"kind":      w.Kind,
-		"title":     w.Title,
-		"status":    w.Status,
-		"priority":  w.Priority,
-		"version":   w.Version,
+		"kind":       w.Kind,
+		"title":      w.Title,
+		"status":     w.Status,
+		"priority":   w.Priority,
+		"version":    w.Version,
 	}
 }
 
@@ -1454,7 +1454,7 @@ func enqueueWorkItemEvent(ctx context.Context, tx pgx.Tx, eventType string, w db
 		AggregateID:   w.ID,
 		AggregateVer:  w.Version,
 		Payload:       payload,
-		OccurredAt:     time.Now().UTC(),
+		OccurredAt:    time.Now().UTC(),
 	}
 	return db.EnqueueOutbox(ctx, tx, row)
 }
@@ -1481,16 +1481,16 @@ func enqueueKindChangedEvent(ctx context.Context, tx pgx.Tx, before, after db.Wo
 
 func enqueueDependencyEvent(ctx context.Context, tx pgx.Tx, eventType string, d db.DependencyRow) error {
 	evt := map[string]any{
-		"event_type":      eventType,
-		"tenant_id":        d.TenantID,
-		"project_id":       d.ProjectID,
-		"aggregate_type":   "work_item_dependency",
-		"aggregate_id":     d.ID,
-		"dependency_id":    d.ID,
-		"from_id":          d.FromID,
-		"to_id":            d.ToID,
-		"type":             d.Type,
-		"occurred_at":      time.Now().UTC().Format(time.RFC3339Nano),
+		"event_type":     eventType,
+		"tenant_id":      d.TenantID,
+		"project_id":     d.ProjectID,
+		"aggregate_type": "work_item_dependency",
+		"aggregate_id":   d.ID,
+		"dependency_id":  d.ID,
+		"from_id":        d.FromID,
+		"to_id":          d.ToID,
+		"type":           d.Type,
+		"occurred_at":    time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	payload, err := json.Marshal(evt)
 	if err != nil {
@@ -1777,27 +1777,27 @@ func kindForDepth(depth int) string {
 
 func rowToProto(w db.WorkItemRow) *apiv1.WorkItem {
 	p := &apiv1.WorkItem{
-		Id:                  w.ID,
-		TenantId:            w.TenantID,
-		ProjectId:           w.ProjectID,
-		Kind:                kindToProto(w.Kind),
-		Title:               w.Title,
-		Description:         w.Description,
-		AcceptanceCriteria:  w.AcceptanceCriteria,
-		AcceptanceReview:    w.AcceptanceReview,
-		Status:              statusToProto(w.Status),
-		Priority:            int32(w.Priority),
-		Budgets:             string(w.Budgets),
-		ContextWindow:       int32(w.ContextWindow),
-		Results:             string(w.Results),
-		ContextFiles:        contextFilesFromJSONOrEmpty(w.ContextFiles),
+		Id:                 w.ID,
+		TenantId:           w.TenantID,
+		ProjectId:          w.ProjectID,
+		Kind:               kindToProto(w.Kind),
+		Title:              w.Title,
+		Description:        w.Description,
+		AcceptanceCriteria: w.AcceptanceCriteria,
+		AcceptanceReview:   w.AcceptanceReview,
+		Status:             statusToProto(w.Status),
+		Priority:           int32(w.Priority),
+		Budgets:            string(w.Budgets),
+		ContextWindow:      int32(w.ContextWindow),
+		Results:            string(w.Results),
+		ContextFiles:       contextFilesFromJSONOrEmpty(w.ContextFiles),
 		// PR B (context propagation): carries the composite prompt.
 		// Stored as JSONB {"composite": "# Task\n..."} — extract the
 		// inner text so the frontend gets plain markdown.
-		PromptContext:       extractCompositePrompt(w.PromptContext),
-		Version:             int32(w.Version),
-		CreatedAt:           timestamppb.New(w.CreatedAt),
-		UpdatedAt:           timestamppb.New(w.UpdatedAt),
+		PromptContext: extractCompositePrompt(w.PromptContext),
+		Version:       int32(w.Version),
+		CreatedAt:     timestamppb.New(w.CreatedAt),
+		UpdatedAt:     timestamppb.New(w.UpdatedAt),
 	}
 	if w.ParentID != nil {
 		p.ParentId = *w.ParentID

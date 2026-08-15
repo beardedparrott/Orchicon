@@ -27,9 +27,9 @@ import (
 )
 
 const (
-	maxReasonLen   = 1000
-	maxActorLen    = 200
-	maxSummaryLen  = 1 << 14
+	maxReasonLen  = 1000
+	maxActorLen   = 200
+	maxSummaryLen = 1 << 14
 )
 
 // Service implements the RecoveryService Connect handler
@@ -489,10 +489,10 @@ func parseRecoveryEvent(data []byte) (*apiv1.RecoveryEvent, error) {
 		StepID         string `json:"step_id"`
 		StepRunID      string `json:"step_run_id"`
 		RecoveryStatus string `json:"recovery_status"`
-		StepStatus    string `json:"step_status"`
+		StepStatus     string `json:"step_status"`
 		TriggerReason  string `json:"trigger_reason"`
 		Action         string `json:"action"`
-		AdapterRef    string `json:"adapter_ref"`
+		AdapterRef     string `json:"adapter_ref"`
 		OccurredAt     string `json:"occurred_at"`
 	}
 	if err := json.Unmarshal(data, &env); err != nil {
@@ -602,7 +602,7 @@ func recoveryRowToProto(r db.RecoveryExecutionRow) *apiv1.RecoveryExecution {
 		FailedExecutionId: r.FailedExecutionID, RecoveryWorkflowId: r.RecoveryWorkflowID,
 		TriggerReason: r.TriggerReason, Level: recoveryLevelToProto(r.Level),
 		Status: recoveryStatusToProto(r.Status), CurrentStep: r.CurrentStep,
-		ResumptionPath: r.ResumptionPath,
+		ResumptionPath:    r.ResumptionPath,
 		BudgetTokensLimit: r.BudgetTokensLimit, BudgetTokensUsed: r.BudgetTokensUsed,
 		BudgetCostLimitUsd: r.BudgetCostLimitUSD, BudgetCostUsedUsd: r.BudgetCostUsedUSD,
 		BudgetRelaxFraction: r.BudgetRelaxFraction, NeedsHumanApproval: r.NeedsHumanApproval,

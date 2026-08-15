@@ -124,15 +124,15 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *connect.Request[apiv1
 
 	// First version is always version 1, in draft state (docs/02 §2.4).
 	versionRow := db.WorkflowVersionRow{
-		ID:                versionID,
-		TenantID:          tenantID,
-		WorkflowID:        workflowID,
-		Version:           1,
-		VersionNote:       versionNote,
-		Status:            domain.WorkflowVersionDraft,
-		Steps:             steps,
-		Inputs:            inputs,
-		Outputs:    outputs,
+		ID:          versionID,
+		TenantID:    tenantID,
+		WorkflowID:  workflowID,
+		Version:     1,
+		VersionNote: versionNote,
+		Status:      domain.WorkflowVersionDraft,
+		Steps:       steps,
+		Inputs:      inputs,
+		Outputs:     outputs,
 	}
 	createdVersion, err := db.CreateWorkflowVersion(ctx, ttx.Tx, versionRow)
 	if err != nil {
@@ -259,15 +259,15 @@ func (s *Service) CreateWorkflowVersion(ctx context.Context, req *connect.Reques
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("next version: %w", err))
 	}
 	versionRow := db.WorkflowVersionRow{
-		ID:                db.NewID(),
-		TenantID:          tenantID,
-		WorkflowID:        req.Msg.WorkflowId,
-		Version:           nextVersion,
-		VersionNote:       versionNote,
-		Status:            domain.WorkflowVersionDraft,
-		Steps:             latestPublished.Steps,
-		Inputs:    latestPublished.Inputs,
-		Outputs:   latestPublished.Outputs,
+		ID:          db.NewID(),
+		TenantID:    tenantID,
+		WorkflowID:  req.Msg.WorkflowId,
+		Version:     nextVersion,
+		VersionNote: versionNote,
+		Status:      domain.WorkflowVersionDraft,
+		Steps:       latestPublished.Steps,
+		Inputs:      latestPublished.Inputs,
+		Outputs:     latestPublished.Outputs,
 	}
 	created, err := db.CreateWorkflowVersion(ctx, ttx.Tx, versionRow)
 	if err != nil {
@@ -414,14 +414,14 @@ func (s *Service) ListWorkflows(ctx context.Context, req *connect.Request[apiv1.
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	f := db.ListWorkflowsFilter{
-		TenantID:     tenantID,
-		ProjectID:    req.Msg.ProjectId,
-		Type:         req.Msg.Type,
-		PageSize:     int(req.Msg.PageSize),
-		AfterID:      req.Msg.PageToken,
-		Search:       req.Msg.Search,
-		SortBy:       req.Msg.SortBy,
-		SortOrder:    req.Msg.SortOrder,
+		TenantID:  tenantID,
+		ProjectID: req.Msg.ProjectId,
+		Type:      req.Msg.Type,
+		PageSize:  int(req.Msg.PageSize),
+		AfterID:   req.Msg.PageToken,
+		Search:    req.Msg.Search,
+		SortBy:    req.Msg.SortBy,
+		SortOrder: req.Msg.SortOrder,
 	}
 	if req.Msg.Status != nil {
 		f.Status = workflowStatusFromProto(*req.Msg.Status)
@@ -1434,10 +1434,10 @@ func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, t
 // header for the audit trail.
 func workflowAuditSnapshot(w db.WorkflowRow) map[string]any {
 	return map[string]any{
-		"id":             w.ID,
-		"name":           w.Name,
-		"type":           w.Type,
-		"status":         w.Status,
+		"id":              w.ID,
+		"name":            w.Name,
+		"type":            w.Type,
+		"status":          w.Status,
 		"current_version": w.CurrentVersion,
 	}
 }
@@ -1447,10 +1447,10 @@ func workflowAuditSnapshot(w db.WorkflowRow) map[string]any {
 // secrets (workflow steps carry prompt context); exclude the bodies.
 func workflowVersionAuditSnapshot(v db.WorkflowVersionRow) map[string]any {
 	return map[string]any{
-		"id":         v.ID,
+		"id":          v.ID,
 		"workflow_id": v.WorkflowID,
-		"version":    v.Version,
-		"status":     v.Status,
+		"version":     v.Version,
+		"status":      v.Status,
 	}
 }
 
@@ -1537,7 +1537,7 @@ func enqueueWorkflowEvent(ctx context.Context, tx pgx.Tx, eventType string, w db
 // re-parsing the full payload.
 func buildWorkflowEventPayload(eventType string, w db.WorkflowRow, v db.WorkflowVersionRow, r db.WorkflowRunRow, stepID string) ([]byte, error) {
 	evt := map[string]any{
-		"event_type": eventType,
+		"event_type":  eventType,
 		"occurred_at": time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	if w.ID != "" {
@@ -1568,27 +1568,27 @@ func buildWorkflowEventPayload(eventType string, w db.WorkflowRow, v db.Workflow
 // into a WorkflowEvent proto message.
 func parseWorkflowEvent(data []byte) (*apiv1.WorkflowEvent, error) {
 	var env struct {
-		EventType    string `json:"event_type"`
-		TenantID     string `json:"tenant_id"`
-		WorkflowID   string `json:"workflow_id"`
+		EventType     string `json:"event_type"`
+		TenantID      string `json:"tenant_id"`
+		WorkflowID    string `json:"workflow_id"`
 		WorkflowRunID string `json:"workflow_run_id"`
-		StepID       string `json:"step_id"`
-		RunStatus    string `json:"run_status"`
-		StepStatus   string `json:"step_status"`
-		OccurredAt   string `json:"occurred_at"`
+		StepID        string `json:"step_id"`
+		RunStatus     string `json:"run_status"`
+		StepStatus    string `json:"step_status"`
+		OccurredAt    string `json:"occurred_at"`
 	}
 	if err := json.Unmarshal(data, &env); err != nil {
 		return nil, fmt.Errorf("parse workflow event: %w", err)
 	}
 	evt := &apiv1.WorkflowEvent{
-		EventType:    env.EventType,
-		TenantId:     env.TenantID,
-		WorkflowId:   env.WorkflowID,
+		EventType:     env.EventType,
+		TenantId:      env.TenantID,
+		WorkflowId:    env.WorkflowID,
 		WorkflowRunId: env.WorkflowRunID,
-		StepId:       env.StepID,
-		RunStatus:   workflowRunStatusToProto(env.RunStatus),
-		StepStatus:   stepRunStatusToProto(env.StepStatus),
-		Payload:      data,
+		StepId:        env.StepID,
+		RunStatus:     workflowRunStatusToProto(env.RunStatus),
+		StepStatus:    stepRunStatusToProto(env.StepStatus),
+		Payload:       data,
 	}
 	if t, err := time.Parse(time.RFC3339Nano, env.OccurredAt); err == nil {
 		evt.OccurredAt = timestamppb.New(t)
@@ -1733,29 +1733,29 @@ func workflowRowToProto(w db.WorkflowRow) *apiv1.Workflow {
 	return &apiv1.Workflow{
 		Id:             w.ID,
 		TenantId:       w.TenantID,
-		ProjectId:       w.ProjectID,
-		Name:            w.Name,
-		Type:            w.Type,
-		Status:          workflowStatusToProto(w.Status),
+		ProjectId:      w.ProjectID,
+		Name:           w.Name,
+		Type:           w.Type,
+		Status:         workflowStatusToProto(w.Status),
 		CurrentVersion: int32(w.CurrentVersion),
-		Version:         int32(w.Version),
-		CreatedAt:       timestamppb.New(w.CreatedAt),
-		UpdatedAt:       timestamppb.New(w.UpdatedAt),
+		Version:        int32(w.Version),
+		CreatedAt:      timestamppb.New(w.CreatedAt),
+		UpdatedAt:      timestamppb.New(w.UpdatedAt),
 	}
 }
 
 func versionRowToProto(v db.WorkflowVersionRow) *apiv1.WorkflowVersion {
 	pv := &apiv1.WorkflowVersion{
-		Id:                v.ID,
-		TenantId:          v.TenantID,
-		WorkflowId:        v.WorkflowID,
-		Version:           int32(v.Version),
-		VersionNote:       v.VersionNote,
-		Status:            workflowVersionStatusToProto(v.Status),
-		Steps:             string(v.Steps),
-		Inputs:            string(v.Inputs),
-		Outputs:   string(v.Outputs),
-		CreatedAt: timestamppb.New(v.CreatedAt),
+		Id:          v.ID,
+		TenantId:    v.TenantID,
+		WorkflowId:  v.WorkflowID,
+		Version:     int32(v.Version),
+		VersionNote: v.VersionNote,
+		Status:      workflowVersionStatusToProto(v.Status),
+		Steps:       string(v.Steps),
+		Inputs:      string(v.Inputs),
+		Outputs:     string(v.Outputs),
+		CreatedAt:   timestamppb.New(v.CreatedAt),
 	}
 	if v.PublishedAt != nil {
 		pv.PublishedAt = timestamppb.New(*v.PublishedAt)
@@ -1832,10 +1832,10 @@ func strPtr(s string) *string { return &s }
 func StartWorkflowDirect(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantID, workflowID, projectID, workItemID string) error {
 	s := New(pool, log, nil)
 	req := connect.NewRequest(&apiv1.StartWorkflowRequest{
-		WorkflowId:  workflowID,
-		ProjectId:   projectID,
-		WorkItemId:  workItemID,
-		RunContext:  "{}",
+		WorkflowId: workflowID,
+		ProjectId:  projectID,
+		WorkItemId: workItemID,
+		RunContext: "{}",
 	})
 	// Set the tenant in context so requireTenant works (the reconciler
 	// context does not carry a tenant from the auth middleware).

@@ -22,9 +22,9 @@ import (
 
 // Service implements the SettingsService Connect handler.
 type Service struct {
-	pool      *db.Pool
-	log       *slog.Logger
-	dsn       string // Postgres DSN for backup/restore
+	pool *db.Pool
+	log  *slog.Logger
+	dsn  string // Postgres DSN for backup/restore
 	apiv1connect.UnimplementedSettingsServiceHandler
 }
 
@@ -136,26 +136,26 @@ func requireTenant(ctx context.Context) (string, error) {
 
 func settingsRowToProto(r *db.TenantSettingsRow) *apiv1.TenantSettings {
 	return &apiv1.TenantSettings{
-		DefaultWorkerModel:              r.DefaultWorkerModel,
-		DefaultAskOrchiconModel:         r.DefaultAskOrchiconModel,
-		StallNoProgressWindowSeconds:    r.StallNoProgressWindowSeconds,
-		StallNoFileDiffWindowSeconds:    r.StallNoFileDiffWindowSeconds,
-		StallTextLoopWindowSeconds:      r.StallTextLoopWindowSeconds,
-		StallRepetitionCount:            r.StallRepetitionCount,
-		StallRepetitionWindowSeconds:    r.StallRepetitionWindowSeconds,
-		DefaultBudgetOverrides:          string(r.DefaultBudgetOverrides),
-		ExecutionReapGraceSeconds:       r.ExecutionReapGraceSeconds,
+		DefaultWorkerModel:               r.DefaultWorkerModel,
+		DefaultAskOrchiconModel:          r.DefaultAskOrchiconModel,
+		StallNoProgressWindowSeconds:     r.StallNoProgressWindowSeconds,
+		StallNoFileDiffWindowSeconds:     r.StallNoFileDiffWindowSeconds,
+		StallTextLoopWindowSeconds:       r.StallTextLoopWindowSeconds,
+		StallRepetitionCount:             r.StallRepetitionCount,
+		StallRepetitionWindowSeconds:     r.StallRepetitionWindowSeconds,
+		DefaultBudgetOverrides:           string(r.DefaultBudgetOverrides),
+		ExecutionReapGraceSeconds:        r.ExecutionReapGraceSeconds,
 		ExecutionReapConsecutiveFailures: r.ExecutionReapConsecutiveFailures,
-		BackupSchedule:                  r.BackupSchedule,
-		BackupRetentionDays:             r.BackupRetentionDays,
-		BackupDirectory:                 r.BackupDirectory,
-		LogDirectory:                    r.LogDirectory,
-		LogMaxSizeMb:                    r.LogMaxSizeMB,
-		LogRollIntervalHours:            r.LogRollIntervalHours,
-		LogRetentionDays:                r.LogRetentionDays,
-		LogMaxFiles:                     r.LogMaxFiles,
-		CreatedAt:                       timestamppb.New(r.CreatedAt),
-		UpdatedAt:                       timestamppb.New(r.UpdatedAt),
+		BackupSchedule:                   r.BackupSchedule,
+		BackupRetentionDays:              r.BackupRetentionDays,
+		BackupDirectory:                  r.BackupDirectory,
+		LogDirectory:                     r.LogDirectory,
+		LogMaxSizeMb:                     r.LogMaxSizeMB,
+		LogRollIntervalHours:             r.LogRollIntervalHours,
+		LogRetentionDays:                 r.LogRetentionDays,
+		LogMaxFiles:                      r.LogMaxFiles,
+		CreatedAt:                        timestamppb.New(r.CreatedAt),
+		UpdatedAt:                        timestamppb.New(r.UpdatedAt),
 	}
 }
 
@@ -171,24 +171,24 @@ func settingsProtoToRow(s *apiv1.TenantSettings) db.TenantSettingsRow {
 		budget = "{}"
 	}
 	return db.TenantSettingsRow{
-		DefaultWorkerModel:          s.DefaultWorkerModel,
-		DefaultAskOrchiconModel:     s.DefaultAskOrchiconModel,
-		StallNoProgressWindowSeconds: s.StallNoProgressWindowSeconds,
-		StallNoFileDiffWindowSeconds: s.StallNoFileDiffWindowSeconds,
-		StallTextLoopWindowSeconds:   s.StallTextLoopWindowSeconds,
-		StallRepetitionCount:         s.StallRepetitionCount,
-		StallRepetitionWindowSeconds: s.StallRepetitionWindowSeconds,
-		DefaultBudgetOverrides:       []byte(budget),
-		ExecutionReapGraceSeconds:    s.ExecutionReapGraceSeconds,
+		DefaultWorkerModel:               s.DefaultWorkerModel,
+		DefaultAskOrchiconModel:          s.DefaultAskOrchiconModel,
+		StallNoProgressWindowSeconds:     s.StallNoProgressWindowSeconds,
+		StallNoFileDiffWindowSeconds:     s.StallNoFileDiffWindowSeconds,
+		StallTextLoopWindowSeconds:       s.StallTextLoopWindowSeconds,
+		StallRepetitionCount:             s.StallRepetitionCount,
+		StallRepetitionWindowSeconds:     s.StallRepetitionWindowSeconds,
+		DefaultBudgetOverrides:           []byte(budget),
+		ExecutionReapGraceSeconds:        s.ExecutionReapGraceSeconds,
 		ExecutionReapConsecutiveFailures: s.ExecutionReapConsecutiveFailures,
-		BackupSchedule:              s.BackupSchedule,
-		BackupRetentionDays:         s.BackupRetentionDays,
-		BackupDirectory:             s.BackupDirectory,
-		LogDirectory:                s.LogDirectory,
-		LogMaxSizeMB:                s.LogMaxSizeMb,
-		LogRollIntervalHours:        s.LogRollIntervalHours,
-		LogRetentionDays:            s.LogRetentionDays,
-		LogMaxFiles:                 s.LogMaxFiles,
+		BackupSchedule:                   s.BackupSchedule,
+		BackupRetentionDays:              s.BackupRetentionDays,
+		BackupDirectory:                  s.BackupDirectory,
+		LogDirectory:                     s.LogDirectory,
+		LogMaxSizeMB:                     s.LogMaxSizeMb,
+		LogRollIntervalHours:             s.LogRollIntervalHours,
+		LogRetentionDays:                 s.LogRetentionDays,
+		LogMaxFiles:                      s.LogMaxFiles,
 	}
 }
 

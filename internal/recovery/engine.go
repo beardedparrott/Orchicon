@@ -70,9 +70,9 @@ func New(pool *db.Pool, log *slog.Logger) *Engine {
 // routes accordingly in progressRecovery.
 const (
 	RecoveryStrategySummarizeRestart = "summarize_restart" // default — 6-step flow
-	RecoveryStrategyStop              = "stop"               // PR C
-	RecoveryStrategyHumanEscalation   = "human_escalation"   // PR C — L3 block
-	RecoveryStrategyRetryN            = "retry_n"            // PR C
+	RecoveryStrategyStop             = "stop"              // PR C
+	RecoveryStrategyHumanEscalation  = "human_escalation"  // PR C — L3 block
+	RecoveryStrategyRetryN           = "retry_n"           // PR C
 
 	// Default retry budget: max 5 recovery attempts for the same task
 	// chain, with 10s delay between retries. These can be overridden via
@@ -107,19 +107,19 @@ func strategyForWorkItem(kind string) string {
 // recorded on the row. Returns true if the strategy was handled
 // directly (no need to advance the 6-step DAG). PR C.
 //
-//   summarize_restart — fall through, the 6-step default runs.
-//   stop              — mark the recovery failed; transition the task
-//                       back to pending (no re-dispatch) and mark its
-//                       owning workflow run failed if any.
-//   human_escalation  — block the recovery at L3 (needs_human_approval).
-//                       The run stays in recovering until the human
-//                       approves / rejects via the existing
-//                       ApproveContinuationPlan path.
-//   retry_n           — requeue the task immediately to ready so the
-//                       TaskReconciler dispatches a fresh execution.
-//                       No bounded auto-relax (docs/06 §11) — the
-//                       caller chooses the retry budget via the
-//                       work item's description / config.
+//	summarize_restart — fall through, the 6-step default runs.
+//	stop              — mark the recovery failed; transition the task
+//	                    back to pending (no re-dispatch) and mark its
+//	                    owning workflow run failed if any.
+//	human_escalation  — block the recovery at L3 (needs_human_approval).
+//	                    The run stays in recovering until the human
+//	                    approves / rejects via the existing
+//	                    ApproveContinuationPlan path.
+//	retry_n           — requeue the task immediately to ready so the
+//	                    TaskReconciler dispatches a fresh execution.
+//	                    No bounded auto-relax (docs/06 §11) — the
+//	                    caller chooses the retry budget via the
+//	                    work item's description / config.
 func (r *Reconciler) applyStrategy(ctx context.Context, tx pgx.Tx, tenantID string, rec *db.RecoveryExecutionRow) (bool, error) {
 	strategy := rec.Strategy
 	if strategy == "" {
@@ -942,15 +942,15 @@ func (r *Reconciler) stepCapture(ctx context.Context, tx pgx.Tx, tenantID string
 		return nil, fmt.Errorf("get failed execution: %w", err)
 	}
 	snapshot := map[string]any{
-		"execution_id":  exec.ID,
-		"status":        exec.Status,
-		"health_state":  exec.HealthState,
-		"token_usage":   exec.TokenUsage,
-		"cost_usd":      exec.CostUSD,
-		"worker_id":     exec.WorkerID,
+		"execution_id":   exec.ID,
+		"status":         exec.Status,
+		"health_state":   exec.HealthState,
+		"token_usage":    exec.TokenUsage,
+		"cost_usd":       exec.CostUSD,
+		"worker_id":      exec.WorkerID,
 		"worker_version": exec.WorkerVersion,
-		"started_at":    exec.StartedAt,
-		"ended_at":      exec.EndedAt,
+		"started_at":     exec.StartedAt,
+		"ended_at":       exec.EndedAt,
 	}
 	result, _ := json.Marshal(snapshot)
 	r.log.Info("recovery capture", "recovery", rec.ID, "execution", exec.ID, "tokens", exec.TokenUsage, "cost", exec.CostUSD)
@@ -1066,10 +1066,10 @@ func (r *Reconciler) stepPlan(ctx context.Context, tx pgx.Tx, tenantID string, r
 	*rec = updated
 
 	result, _ := json.Marshal(map[string]any{
-		"plan_id":            planID,
-		"needs_human":        needsHuman,
-		"budget_relax":       relaxFraction,
-		"remaining_work":     task.Title,
+		"plan_id":        planID,
+		"needs_human":    needsHuman,
+		"budget_relax":   relaxFraction,
+		"remaining_work": task.Title,
 	})
 	if needsHuman {
 		_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventBlocked, *rec, domain.RecoveryStepPlan, "", rec.TriggerReason, "budget exceeds 150% — human approval required", "")
@@ -1087,9 +1087,9 @@ func (r *Reconciler) stepPlan(ctx context.Context, tx pgx.Tx, tenantID string, r
 // allDone branch). v0.1: the resume step records the handoff.
 func (r *Reconciler) stepResume(ctx context.Context, tx pgx.Tx, tenantID string, rec db.RecoveryExecutionRow) ([]byte, error) {
 	result, _ := json.Marshal(map[string]string{
-		"handoff":   "task transitioned to ready; TaskReconciler will dispatch the replacement",
-		"plan_id":   rec.ContinuationPlanID,
-		"summary":   rec.Summary,
+		"handoff": "task transitioned to ready; TaskReconciler will dispatch the replacement",
+		"plan_id": rec.ContinuationPlanID,
+		"summary": rec.Summary,
 	})
 	return result, nil
 }
@@ -1104,8 +1104,8 @@ func (r *Reconciler) escalate(ctx context.Context, tx pgx.Tx, tenantID string, r
 	case domain.RecoveryLevelL1:
 		// L1 → L2: escalate with tighter budget + summary-only resume.
 		updated, err := db.UpdateRecoveryExecution(ctx, tx, tenantID, rec.ID, rec.Version, db.UpdateRecoveryExecutionFields{
-			Level:  int32Ptr(domain.RecoveryLevelL2),
-			Status: strPtr(domain.RecoveryEscalated),
+			Level:   int32Ptr(domain.RecoveryLevelL2),
+			Status:  strPtr(domain.RecoveryEscalated),
 			EndedAt: &now,
 		})
 		if err != nil {

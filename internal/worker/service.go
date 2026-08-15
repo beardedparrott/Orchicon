@@ -224,6 +224,7 @@ func (s *Service) CreateWorker(ctx context.Context, req *connect.Request[apiv1.C
 		Version: versionRowToProto(createdVersion),
 	}), nil
 }
+
 // making it dispatchable (docs/05 §4). The version becomes immutable
 // and the Worker transitions to published.
 func (s *Service) PublishWorkerVersion(ctx context.Context, req *connect.Request[apiv1.PublishWorkerVersionRequest]) (*connect.Response[apiv1.PublishWorkerVersionResponse], error) {
@@ -1037,11 +1038,11 @@ func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, t
 // for the audit trail.
 func workerAuditSnapshot(w db.WorkerRow) map[string]any {
 	return map[string]any{
-		"id":        w.ID,
-		"name":      w.Name,
-		"slug":      w.Slug,
-		"status":    w.Status,
-		"version":   w.Version,
+		"id":      w.ID,
+		"name":    w.Name,
+		"slug":    w.Slug,
+		"status":  w.Status,
+		"version": w.Version,
 	}
 }
 
@@ -1050,10 +1051,10 @@ func workerAuditSnapshot(w db.WorkerRow) map[string]any {
 // secrets (workers carry repo secrets); exclude it from snapshots.
 func workerVersionAuditSnapshot(v db.WorkerVersionRow) map[string]any {
 	return map[string]any{
-		"id":      v.ID,
+		"id":        v.ID,
 		"worker_id": v.WorkerID,
-		"version": v.Version,
-		"status":  v.Status,
+		"version":   v.Version,
+		"status":    v.Status,
 		"model_ref": v.ModelRef,
 	}
 }
@@ -1212,27 +1213,27 @@ func workerRowToProto(w db.WorkerRow) *apiv1.Worker {
 // uses string for JSON-typed fields).
 func versionRowToProto(v db.WorkerVersionRow) *apiv1.WorkerVersion {
 	pv := &apiv1.WorkerVersion{
-		Id:                 v.ID,
-		WorkerId:           v.WorkerID,
-		Version:            int32(v.Version),
-		VersionNote:        v.VersionNote,
-		Status:             workerVersionStatusToProto(v.Status),
-		RuntimeRef:         v.RuntimeRef,
-		ModelRef:           v.ModelRef,
-		SystemPrompt:       composeWorkerPrompt(v),
-		Role:               v.Role,
-		Skills:             v.Skills,
-		Behavior:           v.Behavior,
-		AgentsMd:           v.AgentsMD,
-		ContextSources:     string(v.ContextSources),
-		Permissions:        string(v.Permissions),
-		GatedTools:         string(v.GatedTools),
-		BudgetOverrides:    string(v.BudgetOverrides),
+		Id:                  v.ID,
+		WorkerId:            v.WorkerID,
+		Version:             int32(v.Version),
+		VersionNote:         v.VersionNote,
+		Status:              workerVersionStatusToProto(v.Status),
+		RuntimeRef:          v.RuntimeRef,
+		ModelRef:            v.ModelRef,
+		SystemPrompt:        composeWorkerPrompt(v),
+		Role:                v.Role,
+		Skills:              v.Skills,
+		Behavior:            v.Behavior,
+		AgentsMd:            v.AgentsMD,
+		ContextSources:      string(v.ContextSources),
+		Permissions:         string(v.Permissions),
+		GatedTools:          string(v.GatedTools),
+		BudgetOverrides:     string(v.BudgetOverrides),
 		ExecutionPolicyRef:  v.ExecutionPolicyRef,
-		ConcurrencyLimit:   int32(v.ConcurrencyLimit),
+		ConcurrencyLimit:    int32(v.ConcurrencyLimit),
 		RecoveryWorkflowRef: v.RecoveryWorkflowRef,
-		Labels:             string(v.Labels),
-		CreatedAt:          timestamppb.New(v.CreatedAt),
+		Labels:              string(v.Labels),
+		CreatedAt:           timestamppb.New(v.CreatedAt),
 	}
 	if v.PublishedAt != nil {
 		pv.PublishedAt = timestamppb.New(*v.PublishedAt)

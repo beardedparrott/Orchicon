@@ -594,16 +594,16 @@ func enqueueProjectEvent(ctx context.Context, tx pgx.Tx, eventType string, p db.
 // gets stored in the outbox and published to NATS.
 func buildEventPayload(eventType string, p db.ProjectRow) ([]byte, error) {
 	evt := map[string]any{
-		"event_type":      eventType,
-		"tenant_id":       p.TenantID,
-		"project_id":      p.ID,
-		"aggregate_type":  "project",
-		"aggregate_id":    p.ID,
+		"event_type":        eventType,
+		"tenant_id":         p.TenantID,
+		"project_id":        p.ID,
+		"aggregate_type":    "project",
+		"aggregate_id":      p.ID,
 		"aggregate_version": p.Version,
-		"status":          p.Status,
-		"name":            p.Name,
-		"slug":            p.Slug,
-		"occurred_at":     time.Now().UTC().Format(time.RFC3339Nano),
+		"status":            p.Status,
+		"name":              p.Name,
+		"slug":              p.Slug,
+		"occurred_at":       time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	b, err := json.Marshal(evt)
 	if err != nil {

@@ -35,29 +35,29 @@ type WorkerRow struct {
 // budget_overrides, etc.) are stored as raw []byte and validated at the
 // API boundary (AGENTS.md security standards).
 type WorkerVersionRow struct {
-	ID                 string
-	TenantID           string
-	WorkerID           string
-	Version            int
-	VersionNote        string
-	Status             string
-	RuntimeRef         string
-	ModelRef           string
-	SystemPrompt       string
-	Role               string
-	Skills             string
-	Behavior           string
-	AgentsMD           string
-	ContextSources     []byte // jsonb
-	Permissions        []byte // jsonb
-	GatedTools         []byte // jsonb
-	BudgetOverrides    []byte // jsonb
-	ExecutionPolicyRef string
-	ConcurrencyLimit   int
+	ID                  string
+	TenantID            string
+	WorkerID            string
+	Version             int
+	VersionNote         string
+	Status              string
+	RuntimeRef          string
+	ModelRef            string
+	SystemPrompt        string
+	Role                string
+	Skills              string
+	Behavior            string
+	AgentsMD            string
+	ContextSources      []byte // jsonb
+	Permissions         []byte // jsonb
+	GatedTools          []byte // jsonb
+	BudgetOverrides     []byte // jsonb
+	ExecutionPolicyRef  string
+	ConcurrencyLimit    int
 	RecoveryWorkflowRef string
-	Labels             []byte // jsonb
-	PublishedAt        *time.Time
-	CreatedAt          time.Time
+	Labels              []byte // jsonb
+	PublishedAt         *time.Time
+	CreatedAt           time.Time
 }
 
 // WorkerSlugExists reports whether a worker with the given slug already

@@ -24,20 +24,20 @@ type deliveryWriter interface {
 // table row. SecretHash is the only secret material stored; the plaintext
 // secret is shown once on create and never persisted (AGENTS.md security).
 type EventSubscriptionRow struct {
-	ID         string
-	TenantID   string
-	Name       string
-	TargetURL  string
+	ID          string
+	TenantID    string
+	Name        string
+	TargetURL   string
 	EventFilter string
-	Scope      string
-	ScopeRef   string
-	SecretHint string
-	SecretHash string
-	MaxRetries int
-	Status     string
-	Version    int
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	Scope       string
+	ScopeRef    string
+	SecretHint  string
+	SecretHash  string
+	MaxRetries  int
+	Status      string
+	Version     int
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // CreateSubscription inserts a new webhook subscription.
@@ -364,10 +364,10 @@ func ReenqueueDelivery(ctx context.Context, w deliveryWriter, r WebhookDeliveryR
 // carries enough context for the receiver to identify and verify the
 // delivery.
 type PayloadEnvelope struct {
-	EventID   string          `json:"event_id"`
-	EventType string          `json:"event_type"`
-	TenantID  string          `json:"tenant_id"`
-	Subject   string          `json:"subject"`
-	OccurredAt time.Time      `json:"occurred_at"`
-	Data      json.RawMessage `json:"data"`
+	EventID    string          `json:"event_id"`
+	EventType  string          `json:"event_type"`
+	TenantID   string          `json:"tenant_id"`
+	Subject    string          `json:"subject"`
+	OccurredAt time.Time       `json:"occurred_at"`
+	Data       json.RawMessage `json:"data"`
 }

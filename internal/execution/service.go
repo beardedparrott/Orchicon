@@ -138,9 +138,9 @@ func (s *Service) ListExecutions(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	f := db.ListExecutionsFilter{
-		TenantID:       tenantID,
-		PageSize:       int(req.Msg.PageSize),
-		AfterID:        req.Msg.PageToken,
+		TenantID:        tenantID,
+		PageSize:        int(req.Msg.PageSize),
+		AfterID:         req.Msg.PageToken,
 		ExcludeFollowUp: true, // hide follow-up executions from the main list
 	}
 	if req.Msg.ProjectId != nil {
@@ -497,7 +497,7 @@ func (s *Service) CheckpointNow(ctx context.Context, req *connect.Request[apiv1.
 	}
 	s.log.Info("execution checkpoint requested", "id", updated.ID, "checkpoint_ref", checkpointRef)
 	return connect.NewResponse(&apiv1.CheckpointNowResponse{
-		Execution:    rowToProto(updated),
+		Execution:     rowToProto(updated),
 		CheckpointRef: checkpointRef,
 	}), nil
 }
@@ -670,17 +670,17 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 		"_is_follow_up":        "true",
 	})
 	newWI := db.WorkItemRow{
-		ID:        db.NewID(),
-		TenantID:  tenantID,
-		ProjectID: task.ProjectID,
-		ParentID:  &task.ID,
-		Kind:      domain.WorkItemKindTask,
-		Title:     fmt.Sprintf("Follow-up: %s", strings.TrimSpace(task.Title)),
-		Status:    domain.WorkItemReady,
+		ID:                db.NewID(),
+		TenantID:          tenantID,
+		ProjectID:         task.ProjectID,
+		ParentID:          &task.ID,
+		Kind:              domain.WorkItemKindTask,
+		Title:             fmt.Sprintf("Follow-up: %s", strings.TrimSpace(task.Title)),
+		Status:            domain.WorkItemReady,
 		AssignedWorkerRef: task.AssignedWorkerRef,
-		Priority:  task.Priority,
-		PromptContext: promptCtx,
-		Results:   resultsJSON,
+		Priority:          task.Priority,
+		PromptContext:     promptCtx,
+		Results:           resultsJSON,
 	}
 	if _, err := db.CreateWorkItem(ctx, ttx.Tx, newWI); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create follow-up work item: %w", err))
@@ -766,19 +766,19 @@ func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, t
 
 func enqueueExecEvent(ctx context.Context, tx pgx.Tx, eventType string, e db.ExecutionRow, extra map[string]any) error {
 	evt := map[string]any{
-		"event_type":      eventType,
-		"tenant_id":        e.TenantID,
-		"execution_id":     e.ID,
-		"task_id":          e.TaskID,
-		"project_id":       e.ProjectID,
-		"worker_id":        e.WorkerID,
-		"worker_version":   e.WorkerVersion,
-		"status":           e.Status,
-		"health_state":     e.HealthState,
-		"aggregate_type":   "execution",
-		"aggregate_id":     e.ID,
+		"event_type":        eventType,
+		"tenant_id":         e.TenantID,
+		"execution_id":      e.ID,
+		"task_id":           e.TaskID,
+		"project_id":        e.ProjectID,
+		"worker_id":         e.WorkerID,
+		"worker_version":    e.WorkerVersion,
+		"status":            e.Status,
+		"health_state":      e.HealthState,
+		"aggregate_type":    "execution",
+		"aggregate_id":      e.ID,
 		"aggregate_version": e.Version,
-		"occurred_at":      time.Now().UTC().Format(time.RFC3339Nano),
+		"occurred_at":       time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	for k, v := range extra {
 		evt[k] = v
@@ -803,13 +803,13 @@ func enqueueExecEvent(ctx context.Context, tx pgx.Tx, eventType string, e db.Exe
 // into an ExecutionEvent proto message.
 func parseExecutionEvent(data []byte) (*apiv1.ExecutionEvent, error) {
 	var env struct {
-		EventType    string `json:"event_type"`
-		TenantID     string `json:"tenant_id"`
-		ExecutionID  string `json:"execution_id"`
-		TaskID       string `json:"task_id"`
-		Status       string `json:"status"`
-		HealthState  string `json:"health_state"`
-		OccurredAt   string `json:"occurred_at"`
+		EventType   string `json:"event_type"`
+		TenantID    string `json:"tenant_id"`
+		ExecutionID string `json:"execution_id"`
+		TaskID      string `json:"task_id"`
+		Status      string `json:"status"`
+		HealthState string `json:"health_state"`
+		OccurredAt  string `json:"occurred_at"`
 	}
 	if err := json.Unmarshal(data, &env); err != nil {
 		return nil, fmt.Errorf("parse execution event: %w", err)
@@ -953,22 +953,22 @@ func eventTypeToProto(eventType string) apiv1.ExecutionEventType {
 
 func rowToProto(e db.ExecutionRow) *apiv1.WorkerExecution {
 	p := &apiv1.WorkerExecution{
-		Id:            e.ID,
-		TenantId:      e.TenantID,
-		ProjectId:     e.ProjectID,
-		TaskId:        e.TaskID,
-		WorkerId:      e.WorkerID,
-		WorkerVersion: int32(e.WorkerVersion),
-		Status:        execStatusToProto(e.Status),
-		HealthState:   healthStateToProto(e.HealthState),
-		TokenUsage:    e.TokenUsage,
-		CostUsd:       e.CostUSD,
-		Version:       int32(e.Version),
-		WorkflowRunId: e.WorkflowRunID,
+		Id:             e.ID,
+		TenantId:       e.TenantID,
+		ProjectId:      e.ProjectID,
+		TaskId:         e.TaskID,
+		WorkerId:       e.WorkerID,
+		WorkerVersion:  int32(e.WorkerVersion),
+		Status:         execStatusToProto(e.Status),
+		HealthState:    healthStateToProto(e.HealthState),
+		TokenUsage:     e.TokenUsage,
+		CostUsd:        e.CostUSD,
+		Version:        int32(e.Version),
+		WorkflowRunId:  e.WorkflowRunID,
 		WorkflowStepId: e.WorkflowStepID,
-		WorkflowName:  e.WorkflowName,
-		WorkerName:    e.WorkerName,
-		Iteration:     int32(e.Iteration),
+		WorkflowName:   e.WorkflowName,
+		WorkerName:     e.WorkerName,
+		Iteration:      int32(e.Iteration),
 	}
 	if e.AdapterID != nil {
 		p.AdapterId = *e.AdapterID

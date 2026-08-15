@@ -27,9 +27,9 @@ import (
 type Service struct {
 	pool         *db.Pool
 	log          *slog.Logger
-	blobStore     blobstore.Store
-	modelDisc     *aigateway.ModelDiscoverer
-	toolRegistry  *ToolRegistry
+	blobStore    blobstore.Store
+	modelDisc    *aigateway.ModelDiscoverer
+	toolRegistry *ToolRegistry
 	// sendMessage injects a mid-run message into a live worker session
 	// (Stage 3). Wired by the server to the opencode adapter; nil when
 	// the session transport is unavailable.

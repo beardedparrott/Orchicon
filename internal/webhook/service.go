@@ -26,10 +26,10 @@ import (
 // (docs/07_API_Specification.md §3.11). Subscriptions are tenant-scoped;
 // deliveries are recorded per attempt with retry + dead-letter.
 type Service struct {
-	pool        *db.Pool
-	log         *slog.Logger
-	dispatcher  *Dispatcher
-	subscriber  eventbus.Subscriber
+	pool       *db.Pool
+	log        *slog.Logger
+	dispatcher *Dispatcher
+	subscriber eventbus.Subscriber
 	apiv1connect.UnimplementedWebhookServiceHandler
 }
 
@@ -448,11 +448,11 @@ func (s *Service) StreamSubscriptionDeliveries(ctx context.Context, req *connect
 			}
 			_ = json.Unmarshal(msg.Data, &env)
 			delivery := &apiv1.WebhookDelivery{
-				TenantId:    tenantID,
-				EventId:     env.EventID,
-				EventType:   env.EventType,
-				Status:      "delivered",
-				OccurredAt:  timestamppb.Now(),
+				TenantId:   tenantID,
+				EventId:    env.EventID,
+				EventType:  env.EventType,
+				Status:     "delivered",
+				OccurredAt: timestamppb.Now(),
 			}
 			if err := stream.Send(&apiv1.StreamSubscriptionDeliveriesResponse{
 				Delivery: delivery, Sequence: int64(msg.Seq),

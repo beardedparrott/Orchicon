@@ -32,12 +32,12 @@ import (
 )
 
 const (
-	maxNameLen         = 500
-	maxVersionNoteLen  = 1 << 14
-	maxRegoModuleLen   = 1 << 20 // 1 MiB
-	maxQueryLen        = 1000
-	maxInputLen        = 1 << 20
-	maxReasonLen       = 1000
+	maxNameLen        = 500
+	maxVersionNoteLen = 1 << 14
+	maxRegoModuleLen  = 1 << 20 // 1 MiB
+	maxQueryLen       = 1000
+	maxInputLen       = 1 << 20
+	maxReasonLen      = 1000
 )
 
 // Service implements the PolicyService Connect handler.
@@ -122,7 +122,7 @@ func (s *Service) CreatePolicy(ctx context.Context, req *connect.Request[apiv1.C
 		Scope:         scope,
 		ScopeRef:      scopeRef,
 		Effect:        effect,
-		RegoModule:     regoModule,
+		RegoModule:    regoModule,
 		Query:         query,
 	}
 	createdVersion, err := db.CreatePolicyVersion(ctx, ttx.Tx, versionRow)
@@ -141,7 +141,7 @@ func (s *Service) CreatePolicy(ctx context.Context, req *connect.Request[apiv1.C
 	}
 	s.log.Info("policy created", "id", created.ID, "tenant", tenantID, "name", name)
 	return connect.NewResponse(&apiv1.CreatePolicyResponse{
-		Policy: policyRowToProto(created),
+		Policy:  policyRowToProto(created),
 		Version: versionRowToProto(createdVersion),
 	}), nil
 }
@@ -197,7 +197,7 @@ func (s *Service) PublishPolicy(ctx context.Context, req *connect.Request[apiv1.
 	}
 	s.log.Info("policy version published", "id", updated.ID, "version", published.Version)
 	return connect.NewResponse(&apiv1.PublishPolicyResponse{
-		Policy: policyRowToProto(updated),
+		Policy:  policyRowToProto(updated),
 		Version: versionRowToProto(published),
 	}), nil
 }
@@ -409,12 +409,12 @@ func (s *Service) EvaluatePolicy(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(&apiv1.EvaluatePolicyResponse{
-		Effect:       effectToProto(dec.Effect),
-		PolicyId:     dec.PolicyID,
+		Effect:        effectToProto(dec.Effect),
+		PolicyId:      dec.PolicyID,
 		PolicyVersion: int32(dec.PolicyVersion),
-		Result:       string(dec.Result),
-		Trace:        string(dec.Trace),
-		Error:        dec.Err,
+		Result:        string(dec.Result),
+		Trace:         string(dec.Trace),
+		Error:         dec.Err,
 	}), nil
 }
 
@@ -518,9 +518,9 @@ func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, t
 // policyAuditSnapshot is the non-secret projection of a policy header.
 func policyAuditSnapshot(p db.PolicyRow) map[string]any {
 	return map[string]any{
-		"id":     p.ID,
-		"name":   p.Name,
-		"status": p.Status,
+		"id":      p.ID,
+		"name":    p.Name,
+		"status":  p.Status,
 		"version": p.Version,
 	}
 }
