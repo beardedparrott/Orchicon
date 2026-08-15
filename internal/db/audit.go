@@ -16,17 +16,17 @@ import (
 // mutation it records committed (transactional-outbox, AGENTS.md
 // invariant #3).
 type AuditEventRow struct {
-	ID              string    // ULID
-	TenantID        string    // scopes the row via RLS
-	ActorIdentityID string    // nullable (FK identities ON DELETE SET NULL)
-	ActorType       string    // "user" | "system"
-	AuthMethod      string    // "oidc"|"apikey"|"local"|"signup"|"dev"|"refresh"|"system"; "" legacy-only
-	Action          string    // e.g. "work_item.created"
-	TargetType      string    // e.g. "work_item"
-	TargetID        string    // entity ULID (tenant id for tenant-level ops)
-	Before          []byte    // JSON snapshot, "{}" for creates
-	After           []byte    // JSON snapshot, "{}" for deletes
-	TraceID         string    // OTel trace id, "" when telemetry is off
+	ID              string // ULID
+	TenantID        string // scopes the row via RLS
+	ActorIdentityID string // nullable (FK identities ON DELETE SET NULL)
+	ActorType       string // "user" | "system"
+	AuthMethod      string // "oidc"|"apikey"|"local"|"signup"|"dev"|"refresh"|"system"; "" legacy-only
+	Action          string // e.g. "work_item.created"
+	TargetType      string // e.g. "work_item"
+	TargetID        string // entity ULID (tenant id for tenant-level ops)
+	Before          []byte // JSON snapshot, "{}" for creates
+	After           []byte // JSON snapshot, "{}" for deletes
+	TraceID         string // OTel trace id, "" when telemetry is off
 	OccurredAt      time.Time
 }
 

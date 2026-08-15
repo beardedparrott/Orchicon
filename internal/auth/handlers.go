@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/beardedparrott/orchicon/internal/auth/op"
 	"github.com/beardedparrott/orchicon/internal/audit"
+	"github.com/beardedparrott/orchicon/internal/auth/op"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/jackc/pgx/v5/pgconn"
