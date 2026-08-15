@@ -1002,7 +1002,18 @@ MCP work item mutations honor the transactional outbox pattern (invariant #3): `
 - **Production**: Real OIDC issuer with authorization-code flow (BYO IdP);
   the embedded OP can be disabled with `ORCHICON_OP_ENABLED=false`
 - **API keys**: SHA-256 hashed, least-privilege scopes for headless/CI clients
-- **Frontend**: Access tokens in memory; refresh tokens in HttpOnly cookies
+- **Frontend**: Access tokens in memory; refresh tokens in HttpOnly cookies.
+  A router-level auth guard (`beforeLoad` on the root route,
+  `frontend/src/auth/route-guard.ts`) protects every app route at
+  navigation time — unauthenticated visitors are redirected to `/login`
+  before any protected component renders, with the intended destination
+  preserved in `?next=` so a successful login returns there (SPA-side
+  navigate; only server-only OP-bridge paths full-page-load). `/login` and
+  `/auth/callback` are the explicit public-route allowlist. On a full page
+  load the guard and `AuthProvider` share one `ensureSession()` bootstrap
+  that exchanges the HttpOnly refresh cookie for a new access token, so a
+  live session survives reloads without re-login; the AppShell effect
+  remains as the reactive mid-session safety net.
 
 ### Tenancy model
 

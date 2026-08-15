@@ -147,6 +147,50 @@ export async function fetchSession(): Promise<SessionInfo> {
   return body as SessionInfo;
 }
 
+// Module-level bootstrap promise so concurrent callers (the router guard
+// beforeLoad and the AuthProvider effect) share one session resolution
+// instead of racing two fetches on a full page load.
+let sessionPromise: Promise<SessionInfo> | null = null;
+
+// ensureSession resolves the session exactly once per bootstrap. It is the
+// single session-bootstrap path shared by the router auth guard (which runs
+// before React mounts) and AuthProvider (after mount).
+//
+// A fresh page load has no in-memory access token (memory is not
+// persistent), so the HttpOnly refresh cookie is exchanged for a new access
+// token — a live session survives a reload without forcing a re-login. A
+// genuinely logged-out visitor (no cookie) resolves unauthenticated and the
+// guard redirects to /login. Network/parse failures also resolve
+// unauthenticated (never throw) so the guard lands on /login rather than an
+// error boundary.
+export function ensureSession(): Promise<SessionInfo> {
+  if (!sessionPromise) {
+    sessionPromise = (async (): Promise<SessionInfo> => {
+      try {
+        // The OIDC callback route stashes a token in sessionStorage on its
+        // way in; load it into memory before deciding how to resolve.
+        loadStashedToken();
+        const s = getAccessToken()
+          ? await fetchSession()
+          : ((await refreshAccessToken()) ?? { authenticated: false });
+        useSessionStore.getState().setSession(s);
+        useSessionStore.getState().setLoading(false);
+        return s;
+      } catch {
+        // Network failure / unexpected error: treat as unauthenticated so
+        // the guard redirects to /login (never an error boundary).
+        const unauth: SessionInfo = { authenticated: false };
+        useSessionStore.getState().setSession(unauth);
+        useSessionStore.getState().setLoading(false);
+        return unauth;
+      }
+    })().finally(() => {
+      sessionPromise = null;
+    });
+  }
+  return sessionPromise;
+}
+
 // logout clears the in-memory token. The refresh cookie is allowed to
 // expire naturally (or the user clears cookies). A v0.2 could add a
 // server-side revocation endpoint.
