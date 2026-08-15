@@ -16,7 +16,8 @@ import (
 	"github.com/zitadel/oidc/v3/pkg/op"
 )
 
-// DefaultTenantID is the tenant an embedded-OP login binds identities to.
+// DefaultTenantID is the tenant an embedded-OP login binds identities to
+// when the provider is wired without an explicit deployment tenant id.
 // The OP is served by the control plane itself, which is single-tenant for
 // the auth flow; identities resolve within this tenant.
 const DefaultTenantID = "tnt_dev"
@@ -64,9 +65,14 @@ type Storage struct {
 	accessTokens map[string]*accessToken
 	refresh      map[string]*refreshToken
 
-	key      *ecdsa.PrivateKey
-	resolve  IdentityResolver
-	log      *slog.Logger
+	key     *ecdsa.PrivateKey
+	resolve IdentityResolver
+	log     *slog.Logger
+	// tenantID is the deployment tenant id (ORCHICON_DEPLOYMENT_TENANT_ID)
+	// identities resolve into when an auth/refresh request carries no
+	// explicit tenant; DefaultTenantID when the provider is wired without
+	// one (standalone op wiring / tests).
+	tenantID string
 	stop     chan struct{}
 	stopOnce sync.Once
 }
@@ -103,11 +109,16 @@ type refreshToken struct {
 }
 
 // NewStorage constructs the in-memory OP storage. resolve must be non-nil.
-func NewStorage(key *ecdsa.PrivateKey, resolve IdentityResolver, log *slog.Logger) *Storage {
+// tenantID is the deployment tenant id; an empty value falls back to
+// DefaultTenantID so standalone wiring and op-package tests keep working.
+func NewStorage(key *ecdsa.PrivateKey, resolve IdentityResolver, log *slog.Logger, tenantID string) *Storage {
 	if resolve == nil {
 		resolve = func(context.Context, string, string) (IdentityClaims, error) {
 			return IdentityClaims{}, errors.New("auth/op: identity resolver not configured")
 		}
+	}
+	if tenantID == "" {
+		tenantID = DefaultTenantID
 	}
 	return &Storage{
 		authRequests: make(map[string]*authRequest),
@@ -117,6 +128,7 @@ func NewStorage(key *ecdsa.PrivateKey, resolve IdentityResolver, log *slog.Logge
 		key:          key,
 		resolve:      resolve,
 		log:          log,
+		tenantID:     tenantID,
 		stop:         make(chan struct{}),
 	}
 }
@@ -261,7 +273,7 @@ func (s *Storage) CreateAccessToken(_ context.Context, req op.TokenRequest) (str
 	t := &accessToken{
 		ID:        randToken(16),
 		Subject:   req.GetSubject(),
-		TenantID:  tenantFor(req, DefaultTenantID),
+		TenantID:  tenantFor(req, s.tenantID),
 		Scopes:    req.GetScopes(),
 		ExpiresAt: exp,
 	}
@@ -289,7 +301,7 @@ func (s *Storage) CreateAccessAndRefreshTokens(ctx context.Context, req op.Token
 		s.refresh[newRefreshToken] = &refreshToken{
 			Token:     newRefreshToken,
 			Subject:   req.GetSubject(),
-			TenantID:  tenantFor(req, DefaultTenantID),
+			TenantID:  tenantFor(req, s.tenantID),
 			Scopes:    req.GetScopes(),
 			ExpiresAt: time.Now().Add(refreshTokenTTL),
 		}
@@ -384,7 +396,7 @@ func (s *Storage) SetUserinfoFromScopes(context.Context, *oidc.UserInfo, string,
 // SetUserinfoFromRequest fills ID-token user claims from the identity,
 // gated by the requested scopes.
 func (s *Storage) SetUserinfoFromRequest(ctx context.Context, info *oidc.UserInfo, req op.IDTokenRequest, scopes []string) error {
-	return s.setUserinfo(ctx, info, req.GetSubject(), tenantFor(req, DefaultTenantID), scopes)
+	return s.setUserinfo(ctx, info, req.GetSubject(), tenantFor(req, s.tenantID), scopes)
 }
 
 // SetUserinfoFromToken fills userinfo-endpoint claims from the opaque

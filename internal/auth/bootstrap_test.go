@@ -28,7 +28,7 @@ func testBootstrapEnv(t *testing.T) *db.Pool {
 	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
-	if err := db.SeedDevTenant(ctx, pool); err != nil {
+	if err := db.SeedDevTenant(ctx, pool, "tnt_dev"); err != nil {
 		t.Fatalf("seed dev tenant: %v", err)
 	}
 	return pool
