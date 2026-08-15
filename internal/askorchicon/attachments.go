@@ -69,7 +69,7 @@ func (s *Service) UploadAttachment(ctx context.Context, req *connect.Request[api
 	attx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err == nil {
 		defer attx.Rollback(ctx)
-		if err := recordAudit(ctx, attx.Tx, "conversation.attachment_uploaded", "conversation", req.Msg.ConversationId,
+		if err := recordAudit(ctx, attx.Tx, tenantID, "conversation.attachment_uploaded", "conversation", req.Msg.ConversationId,
 			nil, audit.Snapshot(map[string]any{"attachment_id": blob.Ref, "name": name, "mime_type": mimeType})); err == nil {
 			_ = attx.Commit(ctx)
 		}

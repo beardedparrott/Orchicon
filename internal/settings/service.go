@@ -67,7 +67,7 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "settings.updated", "settings", tenantID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "settings.updated", "settings", tenantID,
 		nil, audit.Snapshot(map[string]any{"default_worker_model": row.DefaultWorkerModel, "default_ask_orchicon_model": row.DefaultAskOrchiconModel})); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit settings.updated: %w", err))
 	}
@@ -82,8 +82,11 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 // recordAudit writes an actor-based audit row in the caller's tx,
 // resolving the actor from the request context. Must be called in the
 // same transaction as the mutation so the row commits atomically.
-func recordAudit(ctx context.Context, tx pgx.Tx, action, targetType, targetID string, before, after json.RawMessage) error {
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
 	e.Action = action
 	e.TargetType = targetType
 	e.TargetID = targetID
@@ -106,7 +109,7 @@ func (s *Service) recordAuditShort(ctx context.Context, action string, before, a
 		return
 	}
 	defer ttx.Rollback(ctx)
-	if err := recordAudit(ctx, ttx.Tx, action, "settings", tenantID, before, after); err != nil {
+	if err := recordAudit(ctx, ttx.Tx, tenantID, action, "settings", tenantID, before, after); err != nil {
 		s.log.Error("audit: record", "error", err, "action", action)
 		return
 	}

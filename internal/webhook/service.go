@@ -51,8 +51,11 @@ const maxURLLen = 2048
 // recordAudit writes an actor-based audit row in the caller's tx,
 // resolving the actor from the request context. Must be called in the
 // same transaction as the mutation so the row commits atomically.
-func recordAudit(ctx context.Context, tx pgx.Tx, action, targetType, targetID string, before, after json.RawMessage) error {
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
 	e.Action = action
 	e.TargetType = targetType
 	e.TargetID = targetID
@@ -139,7 +142,7 @@ func (s *Service) CreateSubscription(ctx context.Context, req *connect.Request[a
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "webhook_subscription.created", "webhook_subscription", row.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "webhook_subscription.created", "webhook_subscription", row.ID,
 		nil, audit.Snapshot(subAuditSnapshot(row))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit webhook_subscription.created: %w", err))
 	}
@@ -246,7 +249,7 @@ func (s *Service) UpdateSubscription(ctx context.Context, req *connect.Request[a
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "webhook_subscription.updated", "webhook_subscription", updated.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "webhook_subscription.updated", "webhook_subscription", updated.ID,
 		audit.Snapshot(subAuditSnapshot(current)), audit.Snapshot(subAuditSnapshot(updated))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit webhook_subscription.updated: %w", err))
 	}
@@ -277,7 +280,7 @@ func (s *Service) DeleteSubscription(ctx context.Context, req *connect.Request[a
 	if err := db.SoftDeleteSubscription(ctx, ttx.Tx, tenantID, req.Msg.Id, current.Version); err != nil {
 		return nil, mapDBError(err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "webhook_subscription.deleted", "webhook_subscription", current.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "webhook_subscription.deleted", "webhook_subscription", current.ID,
 		audit.Snapshot(subAuditSnapshot(current)), nil); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit webhook_subscription.deleted: %w", err))
 	}
@@ -406,7 +409,7 @@ func (s *Service) recordAuditShort(ctx context.Context, tenantID, action, target
 		return
 	}
 	defer ttx.Rollback(ctx)
-	if err := recordAudit(ctx, ttx.Tx, action, "webhook_subscription", targetID, before, after); err != nil {
+	if err := recordAudit(ctx, ttx.Tx, tenantID, action, "webhook_subscription", targetID, before, after); err != nil {
 		s.log.Error("audit: record", "error", err, "action", action)
 		return
 	}

@@ -254,7 +254,7 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 		}
 	}
 
-	if err := recordAudit(ctx, ttx.Tx, "conversation.created", "conversation", row.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.created", "conversation", row.ID,
 		nil, audit.Snapshot(map[string]any{"mode": mode, "model_ref": req.Msg.ModelRef})); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.created: %w", err))
 	}
@@ -296,7 +296,7 @@ func (s *Service) DeleteConversation(ctx context.Context, req *connect.Request[a
 	if err := db.DeleteConversation(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "conversation.deleted", "conversation", req.Msg.Id,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.deleted", "conversation", req.Msg.Id,
 		nil, nil); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.deleted: %w", err))
 	}
@@ -344,7 +344,7 @@ func (s *Service) UpdateConversationTitle(ctx context.Context, req *connect.Requ
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "conversation.title_updated", "conversation", row.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.title_updated", "conversation", row.ID,
 		nil, audit.Snapshot(map[string]any{"title": req.Msg.Title})); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.title_updated: %w", err))
 	}
@@ -387,7 +387,7 @@ func (s *Service) SetConversationMode(ctx context.Context, req *connect.Request[
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "conversation.mode_changed", "conversation", row.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.mode_changed", "conversation", row.ID,
 		nil, audit.Snapshot(map[string]any{"mode": mode})); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.mode_changed: %w", err))
 	}
@@ -476,7 +476,7 @@ func (s *Service) UpdateAgentConfig(ctx context.Context, req *connect.Request[ap
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "agent_config.updated", "settings", tenantID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "agent_config.updated", "settings", tenantID,
 		nil, audit.Snapshot(map[string]any{"updated_at": row.UpdatedAt})); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit agent_config.updated: %w", err))
 	}
@@ -537,8 +537,11 @@ func (s *Service) GetModelCapabilities(ctx context.Context, req *connect.Request
 // recordAudit writes an actor-based audit row in the caller's tx,
 // resolving the actor from the request context. Must be called in the
 // same transaction as the mutation so the row commits atomically.
-func recordAudit(ctx context.Context, tx pgx.Tx, action, targetType, targetID string, before, after json.RawMessage) error {
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
 	e.Action = action
 	e.TargetType = targetType
 	e.TargetID = targetID

@@ -175,7 +175,7 @@ func (s *Service) ApproveStep(ctx context.Context, req *connect.Request[apiv1.Ap
 	if msg.Approved {
 		approvalAction = "approval.step_approved"
 	}
-	if err := recordAudit(ctx, ttx.Tx, approvalAction, "approval", sr.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, approvalAction, "approval", sr.ID,
 		audit.SnapshotStatus(sr.Status), audit.Snapshot(map[string]any{"approved": msg.Approved, "reviewed_by": msg.ReviewedBy})); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit %s: %w", approvalAction, err))
 	}
@@ -484,8 +484,11 @@ func listApprovalItems(ctx context.Context, tx pgx.Tx, tenantID string, req *api
 // recordAudit writes an actor-based audit row in the caller's tx,
 // resolving the actor from the request context. Must be called in the
 // same transaction as the mutation so the row commits atomically.
-func recordAudit(ctx context.Context, tx pgx.Tx, action, targetType, targetID string, before, after json.RawMessage) error {
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
 	e.Action = action
 	e.TargetType = targetType
 	e.TargetID = targetID

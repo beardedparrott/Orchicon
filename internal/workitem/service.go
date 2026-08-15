@@ -262,7 +262,7 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.created", created); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "work_item.created", "work_item", created.ID, nil, audit.Snapshot(workItemAuditSnapshot(created))); err != nil {
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.created", "work_item", created.ID, nil, audit.Snapshot(workItemAuditSnapshot(created))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.created: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
@@ -724,7 +724,7 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	} else if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.updated", updated); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "work_item.updated", "work_item", updated.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.updated", "work_item", updated.ID,
 		audit.Snapshot(workItemAuditSnapshot(current)), audit.Snapshot(workItemAuditSnapshot(updated))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.updated: %w", err))
 	}
@@ -793,7 +793,7 @@ func (s *Service) DeleteWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.deleted", updated); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "work_item.deleted", "work_item", updated.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.deleted", "work_item", updated.ID,
 		audit.Snapshot(workItemAuditSnapshot(current)), audit.SnapshotStatus(updated.Status)); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.deleted: %w", err))
 	}
@@ -829,7 +829,7 @@ func (s *Service) HardDeleteWorkItem(ctx context.Context, req *connect.Request[a
 	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.purged", current); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "work_item.hard_deleted", "work_item", current.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.hard_deleted", "work_item", current.ID,
 		audit.Snapshot(workItemAuditSnapshot(current)), nil); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.hard_deleted: %w", err))
 	}
@@ -914,7 +914,7 @@ func (s *Service) AddDependency(ctx context.Context, req *connect.Request[apiv1.
 	if err := enqueueDependencyEvent(ctx, ttx.Tx, "work_item.dependency_added", created); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "work_item.dependency_added", "work_item", created.FromID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.dependency_added", "work_item", created.FromID,
 		nil, audit.Snapshot(map[string]any{"from_id": created.FromID, "to_id": created.ToID, "type": created.Type})); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.dependency_added: %w", err))
 	}
@@ -946,7 +946,7 @@ func (s *Service) RemoveDependency(ctx context.Context, req *connect.Request[api
 	if err := db.DeleteDependency(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, mapDBError(err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "work_item.dependency_removed", "work_item", current.FromID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.dependency_removed", "work_item", current.FromID,
 		audit.Snapshot(map[string]any{"from_id": current.FromID, "to_id": current.ToID, "type": current.Type}), nil); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.dependency_removed: %w", err))
 	}
@@ -1028,7 +1028,7 @@ func (s *Service) AssignWorker(ctx context.Context, req *connect.Request[apiv1.A
 	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.worker_assigned", updated); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "work_item.worker_assigned", "work_item", updated.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.worker_assigned", "work_item", updated.ID,
 		audit.Snapshot(workItemAuditSnapshot(current)), audit.Snapshot(workItemAuditSnapshot(updated))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.worker_assigned: %w", err))
 	}
@@ -1078,7 +1078,7 @@ func (s *Service) UnassignWorker(ctx context.Context, req *connect.Request[apiv1
 	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.worker_unassigned", updated); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "work_item.worker_unassigned", "work_item", updated.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.worker_unassigned", "work_item", updated.ID,
 		audit.Snapshot(workItemAuditSnapshot(current)), audit.Snapshot(workItemAuditSnapshot(updated))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.worker_unassigned: %w", err))
 	}
@@ -1184,7 +1184,7 @@ func (s *Service) ReorderWorkItems(ctx context.Context, req *connect.Request[api
 	for i, sib := range ordered {
 		ids[i] = sib.ID
 	}
-	if err := recordAudit(ctx, ttx.Tx, "work_item.reordered", "work_item", msg.ParentId,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.reordered", "work_item", msg.ParentId,
 		nil, audit.Snapshot(map[string]any{"parent_id": msg.ParentId, "child_ids": ids})); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.reordered: %w", err))
 	}
@@ -1269,7 +1269,7 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 			if s.sequenceStartFn == nil {
 				return nil, connect.NewError(connect.CodeUnavailable, errors.New("sequence starter not wired"))
 			}
-			if err := recordAudit(ctx, ttx.Tx, "work_item.sequence_started", "work_item", current.ID,
+			if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.sequence_started", "work_item", current.ID,
 				audit.SnapshotStatus(current.Status), nil); err != nil {
 				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.sequence_started: %w", err))
 			}
@@ -1293,7 +1293,7 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 			if s.startWorkflowFn == nil {
 				return nil, connect.NewError(connect.CodeUnavailable, errors.New("workflow starter not wired"))
 			}
-			if err := recordAudit(ctx, ttx.Tx, "work_item.started", "work_item", current.ID,
+			if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.started", "work_item", current.ID,
 				audit.SnapshotStatus(current.Status), nil); err != nil {
 				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.started: %w", err))
 			}
@@ -1321,7 +1321,7 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 			if s.sequenceResumeFn == nil {
 				return nil, connect.NewError(connect.CodeUnavailable, errors.New("sequence resume not wired"))
 			}
-			if err := recordAudit(ctx, ttx.Tx, "work_item.sequence_resumed", "work_item", current.ID,
+			if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.sequence_resumed", "work_item", current.ID,
 				audit.SnapshotStatus(current.Status), nil); err != nil {
 				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.sequence_resumed: %w", err))
 			}
@@ -1346,7 +1346,7 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 			if s.startWorkflowFn == nil {
 				return nil, connect.NewError(connect.CodeUnavailable, errors.New("workflow starter not wired"))
 			}
-			if err := recordAudit(ctx, ttx.Tx, "work_item.resumed", "work_item", current.ID,
+			if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.resumed", "work_item", current.ID,
 				audit.SnapshotStatus(current.Status), nil); err != nil {
 				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.resumed: %w", err))
 			}
@@ -1369,7 +1369,7 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 		if s.sequenceStopFn == nil {
 			return nil, connect.NewError(connect.CodeUnavailable, errors.New("sequence stop not wired"))
 		}
-		if err := recordAudit(ctx, ttx.Tx, "work_item.stopped", "work_item", current.ID,
+		if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.stopped", "work_item", current.ID,
 			audit.SnapshotStatus(current.Status), nil); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.stopped: %w", err))
 		}
@@ -1399,8 +1399,11 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 // recordAudit writes an actor-based audit row in the caller's tx,
 // resolving the actor from the request context. Must be called in the
 // same transaction as the mutation so the row commits atomically.
-func recordAudit(ctx context.Context, tx pgx.Tx, action, targetType, targetID string, before, after json.RawMessage) error {
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
 	e.Action = action
 	e.TargetType = targetType
 	e.TargetID = targetID

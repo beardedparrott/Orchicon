@@ -132,7 +132,7 @@ func (s *Service) CreatePolicy(ctx context.Context, req *connect.Request[apiv1.C
 	if err := enqueuePolicyLifecycleEvent(ctx, ttx.Tx, domain.PolicyEventCreated, created, createdVersion); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "policy.created", "policy", created.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "policy.created", "policy", created.ID,
 		nil, audit.Snapshot(policyVersionAuditSnapshot(createdVersion))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit policy.created: %w", err))
 	}
@@ -188,7 +188,7 @@ func (s *Service) PublishPolicy(ctx context.Context, req *connect.Request[apiv1.
 	if err := enqueuePolicyLifecycleEvent(ctx, ttx.Tx, domain.PolicyEventPublished, updated, published); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "policy.published", "policy", updated.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "policy.published", "policy", updated.ID,
 		audit.SnapshotStatus(current.Status), audit.Snapshot(policyVersionAuditSnapshot(published))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit policy.published: %w", err))
 	}
@@ -230,7 +230,7 @@ func (s *Service) SupersedePolicy(ctx context.Context, req *connect.Request[apiv
 	if err := enqueuePolicyLifecycleEvent(ctx, ttx.Tx, domain.PolicyEventSuperseded, updated, db.PolicyVersionRow{}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "policy.superseded", "policy", updated.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "policy.superseded", "policy", updated.ID,
 		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(updated.Status)); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit policy.superseded: %w", err))
 	}
@@ -369,7 +369,7 @@ func (s *Service) UpdatePolicyVersion(ctx context.Context, req *connect.Request[
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "policy.version_updated", "policy", req.Msg.PolicyId,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "policy.version_updated", "policy", req.Msg.PolicyId,
 		audit.Snapshot(policyVersionAuditSnapshot(latest)), audit.Snapshot(policyVersionAuditSnapshot(updated))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit policy.version_updated: %w", err))
 	}
@@ -502,8 +502,11 @@ func (s *Service) GetDecision(ctx context.Context, req *connect.Request[apiv1.Ge
 // recordAudit writes an actor-based audit row in the caller's tx,
 // resolving the actor from the request context. Must be called in the
 // same transaction as the mutation so the row commits atomically.
-func recordAudit(ctx context.Context, tx pgx.Tx, action, targetType, targetID string, before, after json.RawMessage) error {
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
 	e.Action = action
 	e.TargetType = targetType
 	e.TargetID = targetID

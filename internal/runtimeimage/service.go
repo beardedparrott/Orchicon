@@ -151,7 +151,7 @@ func (s *Service) CreateRuntimeImage(ctx context.Context, req *connect.Request[a
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create runtime image: %w", err))
 	}
-	if err := recordAudit(ctx, ttx.Tx, "runtime_image.created", "runtime_image", row.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "runtime_image.created", "runtime_image", row.ID,
 		nil, audit.Snapshot(runtimeImageAuditSnapshot(row))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit runtime_image.created: %w", err))
 	}
@@ -297,7 +297,7 @@ func (s *Service) UpdateRuntimeImage(ctx context.Context, req *connect.Request[a
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "runtime_image.updated", "runtime_image", row.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "runtime_image.updated", "runtime_image", row.ID,
 		audit.Snapshot(runtimeImageAuditSnapshot(cur)), audit.Snapshot(runtimeImageAuditSnapshot(row))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit runtime_image.updated: %w", err))
 	}
@@ -339,7 +339,7 @@ func (s *Service) DeleteRuntimeImage(ctx context.Context, req *connect.Request[a
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "runtime_image.deleted", "runtime_image", row.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "runtime_image.deleted", "runtime_image", row.ID,
 		audit.Snapshot(runtimeImageAuditSnapshot(row)), nil); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit runtime_image.deleted: %w", err))
 	}
@@ -467,7 +467,7 @@ func (s *Service) buildCore(ctx context.Context, tenantID, id string, onLog func
 		_ = ttx.Rollback(ctx)
 		return row, 1, connect.NewError(connect.CodeFailedPrecondition, errors.New("optimistic concurrency conflict — reload and retry"))
 	}
-	if err := recordAudit(ctx, ttx.Tx, "runtime_image.build_started", "runtime_image", row.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "runtime_image.build_started", "runtime_image", row.ID,
 		nil, audit.Snapshot(map[string]any{"tag": row.Tag, "status": "building"})); err != nil {
 		_ = ttx.Rollback(ctx)
 		return row, 1, connect.NewError(connect.CodeInternal, fmt.Errorf("audit runtime_image.build_started: %w", err))
@@ -795,8 +795,11 @@ func truncate(s string, max int) string {
 // recordAudit writes an actor-based audit row in the caller's tx,
 // resolving the actor from the request context. Must be called in the
 // same transaction as the mutation so the row commits atomically.
-func recordAudit(ctx context.Context, tx pgx.Tx, action, targetType, targetID string, before, after json.RawMessage) error {
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
 	e.Action = action
 	e.TargetType = targetType
 	e.TargetID = targetID

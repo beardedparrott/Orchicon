@@ -212,7 +212,7 @@ func (s *Service) DeleteExecution(ctx context.Context, req *connect.Request[apiv
 	if err := db.DeleteExecution(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, mapDBError(err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "execution.deleted", "execution", current.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.deleted", "execution", current.ID,
 		audit.SnapshotStatus(current.Status), nil); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.deleted: %w", err))
 	}
@@ -265,7 +265,7 @@ func (s *Service) BatchDeleteExecutions(ctx context.Context, req *connect.Reques
 		}
 		deleted++
 	}
-	if err := recordAudit(ctx, ttx.Tx, "execution.batch_deleted", "execution", tenantID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.batch_deleted", "execution", tenantID,
 		nil, audit.Snapshot(map[string]any{"count": deleted, "ids": req.Msg.Ids})); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.batch_deleted: %w", err))
 	}
@@ -353,7 +353,7 @@ func (s *Service) PauseExecution(ctx context.Context, req *connect.Request[apiv1
 	if err := enqueueExecEvent(ctx, ttx.Tx, "execution.control", updated, map[string]any{"action": "pause"}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "execution.paused", "execution", updated.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.paused", "execution", updated.ID,
 		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(updated.Status)); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.paused: %w", err))
 	}
@@ -396,7 +396,7 @@ func (s *Service) ResumeExecution(ctx context.Context, req *connect.Request[apiv
 	if err := enqueueExecEvent(ctx, ttx.Tx, "execution.control", updated, map[string]any{"action": "resume"}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "execution.resumed", "execution", updated.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.resumed", "execution", updated.ID,
 		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(updated.Status)); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.resumed: %w", err))
 	}
@@ -444,7 +444,7 @@ func (s *Service) CancelExecution(ctx context.Context, req *connect.Request[apiv
 	if err := enqueueExecEvent(ctx, ttx.Tx, "execution.control", updated, map[string]any{"action": "cancel", "reason": reason}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "execution.cancelled", "execution", updated.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.cancelled", "execution", updated.ID,
 		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(updated.Status)); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.cancelled: %w", err))
 	}
@@ -488,7 +488,7 @@ func (s *Service) CheckpointNow(ctx context.Context, req *connect.Request[apiv1.
 	if err := enqueueExecEvent(ctx, ttx.Tx, "execution.checkpoint", updated, map[string]any{"checkpoint_ref": checkpointRef}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "execution.checkpointed", "execution", updated.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.checkpointed", "execution", updated.ID,
 		nil, audit.Snapshot(map[string]any{"checkpoint_ref": checkpointRef})); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.checkpointed: %w", err))
 	}
@@ -555,7 +555,7 @@ func (s *Service) recordApprovalAudit(ctx context.Context, tenantID string, appr
 		return
 	}
 	defer ttx.Rollback(ctx)
-	if err := recordAudit(ctx, ttx.Tx, action, "execution", executionID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, action, "execution", executionID,
 		nil, audit.Snapshot(map[string]any{"approved": approved})); err != nil {
 		s.log.Error("audit: record", "error", err, "action", action)
 		return
@@ -714,7 +714,7 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update execution conversation: %w", err))
 	}
-	if err := recordAudit(ctx, ttx.Tx, "execution.follow_up_created", "execution", msg.ExecutionId,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "execution.follow_up_created", "execution", msg.ExecutionId,
 		nil, audit.Snapshot(map[string]any{"work_item_id": newWI.ID})); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit execution.follow_up_created: %w", err))
 	}
@@ -751,8 +751,11 @@ func (s *Service) RegisterApproval(req *apiv1.ApprovalRequest) <-chan approvalDe
 // recordAudit writes an actor-based audit row in the caller's tx,
 // resolving the actor from the request context. Must be called in the
 // same transaction as the mutation so the row commits atomically.
-func recordAudit(ctx context.Context, tx pgx.Tx, action, targetType, targetID string, before, after json.RawMessage) error {
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
 	e.Action = action
 	e.TargetType = targetType
 	e.TargetID = targetID
@@ -1066,7 +1069,7 @@ func (s *Service) recordMessageAudit(ctx context.Context, tenantID, executionID,
 		return
 	}
 	defer ttx.Rollback(ctx)
-	if err := recordAudit(ctx, ttx.Tx, action, "execution", executionID, nil, nil); err != nil {
+	if err := recordAudit(ctx, ttx.Tx, tenantID, action, "execution", executionID, nil, nil); err != nil {
 		s.log.Error("audit: record", "error", err, "action", action)
 		return
 	}

@@ -139,7 +139,7 @@ func (s *Service) CancelRecovery(ctx context.Context, req *connect.Request[apiv1
 		})
 	}
 	_ = enqueueRecoveryEvent(ctx, ttx.Tx, domain.RecoveryEventCancelled, updated, "", "", current.TriggerReason, "cancelled by operator: "+reason, "")
-	if err := recordAudit(ctx, ttx.Tx, "recovery.cancelled", "recovery", updated.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "recovery.cancelled", "recovery", updated.ID,
 		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(updated.Status)); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit recovery.cancelled: %w", err))
 	}
@@ -170,7 +170,7 @@ func (s *Service) DeleteRecovery(ctx context.Context, req *connect.Request[apiv1
 	if err := db.DeleteRecoveryExecution(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, mapDBError(err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "recovery.deleted", "recovery", current.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "recovery.deleted", "recovery", current.ID,
 		audit.SnapshotStatus(current.Status), nil); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit recovery.deleted: %w", err))
 	}
@@ -426,8 +426,11 @@ func (s *Service) MarkTaskSucceeded(ctx context.Context, req *connect.Request[ap
 // recordAudit writes an actor-based audit row in the caller's tx,
 // resolving the actor from the request context. Must be called in the
 // same transaction as the mutation so the row commits atomically.
-func recordAudit(ctx context.Context, tx pgx.Tx, action, targetType, targetID string, before, after json.RawMessage) error {
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
 	e.Action = action
 	e.TargetType = targetType
 	e.TargetID = targetID
@@ -449,7 +452,7 @@ func (s *Service) recordAuditShort(ctx context.Context, tenantID, action, target
 		return
 	}
 	defer ttx.Rollback(ctx)
-	if err := recordAudit(ctx, ttx.Tx, action, targetType, targetID, before, after); err != nil {
+	if err := recordAudit(ctx, ttx.Tx, tenantID, action, targetType, targetID, before, after); err != nil {
 		s.log.Error("audit: record", "error", err, "action", action)
 		return
 	}

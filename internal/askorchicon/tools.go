@@ -544,8 +544,7 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Description: "Get the current tenant settings (default models, stall parameters).",
 			Mutating:    false,
 			Fn:          toolGetSettings,
-		},
-		{
+		},		{
 			Name:        "update_settings",
 			Description: "Update tenant settings (default models, stall parameters). All fields are optional — zero/empty fields are left unchanged.",
 			Mutating:    true,
@@ -558,6 +557,21 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 				"stall_text_loop_window_seconds":    {Type: "number", Description: "Seconds window for text-loop detection (0 = leave unchanged)"},
 				"stall_repetition_count":            {Type: "number", Description: "Same tool-call signature repeated this many times within the repetition window before aborting (0 = leave unchanged)"},
 				"stall_repetition_window_seconds":   {Type: "number", Description: "Seconds window for repetition detection (0 = leave unchanged)"},
+			},
+		},
+
+		// --- Audit ---
+		{
+			Name:        "list_audit_events",
+			Description: "List audit events for the current tenant — the actor-based 'who did what' trail (action, actor, auth method, target, before/after, trace id). Optional filters: action, actor_id, target_type, target_id. Read-only.",
+			Mutating:    false,
+			Fn:          toolListAuditEvents,
+			Properties: map[string]PropertySchema{
+				"action":      {Type: "string", Description: "Optional exact action filter (e.g. work_item.created)"},
+				"actor_id":    {Type: "string", Description: "Optional actor identity ID filter"},
+				"target_type": {Type: "string", Description: "Optional target type filter (e.g. work_item)"},
+				"target_id":   {Type: "string", Description: "Optional target ID filter"},
+				"page_size":   {Type: "number", Description: "Optional page size (max 1000, default 100)"},
 			},
 		},
 	}

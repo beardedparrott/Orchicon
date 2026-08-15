@@ -83,7 +83,7 @@ func (s *Service) CreateProject(ctx context.Context, req *connect.Request[apiv1.
 	if err := enqueueProjectEvent(ctx, ttx.Tx, "project.created", created); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "project.created", "project", created.ID, nil, audit.Snapshot(projectAuditSnapshot(created))); err != nil {
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "project.created", "project", created.ID, nil, audit.Snapshot(projectAuditSnapshot(created))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit project.created: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
@@ -241,7 +241,7 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 	if err := enqueueProjectEvent(ctx, ttx.Tx, "project.updated", updated); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "project.updated", "project", updated.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "project.updated", "project", updated.ID,
 		audit.Snapshot(projectAuditSnapshot(current)), audit.Snapshot(projectAuditSnapshot(updated))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit project.updated: %w", err))
 	}
@@ -282,7 +282,7 @@ func (s *Service) ArchiveProject(ctx context.Context, req *connect.Request[apiv1
 	if err := enqueueProjectEvent(ctx, ttx.Tx, "project.archived", archived); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "project.archived", "project", archived.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "project.archived", "project", archived.ID,
 		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(archived.Status)); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit project.archived: %w", err))
 	}
@@ -316,7 +316,7 @@ func (s *Service) DeleteProject(ctx context.Context, req *connect.Request[apiv1.
 	if err := db.DeleteProject(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "project.deleted", "project", current.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "project.deleted", "project", current.ID,
 		audit.Snapshot(projectAuditSnapshot(current)), nil); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit project.deleted: %w", err))
 	}
@@ -368,7 +368,7 @@ func (s *Service) PauseProject(ctx context.Context, req *connect.Request[apiv1.P
 	if err := enqueueProjectEvent(ctx, ttx.Tx, "project.paused", p); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "project.paused", "project", p.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "project.paused", "project", p.ID,
 		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(p.Status)); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit project.paused: %w", err))
 	}
@@ -421,7 +421,7 @@ func (s *Service) ActivateProject(ctx context.Context, req *connect.Request[apiv
 	if err := enqueueProjectEvent(ctx, ttx.Tx, "project.activated", p); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, "project.activated", "project", p.ID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "project.activated", "project", p.ID,
 		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(p.Status)); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit project.activated: %w", err))
 	}
@@ -615,8 +615,11 @@ func buildEventPayload(eventType string, p db.ProjectRow) ([]byte, error) {
 // recordAudit writes an actor-based audit row in the caller's tx,
 // resolving the actor from the request context. Must be called in the
 // same transaction as the mutation so the row commits atomically.
-func recordAudit(ctx context.Context, tx pgx.Tx, action, targetType, targetID string, before, after json.RawMessage) error {
+func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
+	if e.TenantID == "" {
+		e.TenantID = tenantID
+	}
 	e.Action = action
 	e.TargetType = targetType
 	e.TargetID = targetID

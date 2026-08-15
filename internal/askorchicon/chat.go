@@ -447,7 +447,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// which both dispatch through here). Message content is excluded from
 	// the snapshot (echo-privacy / compact trail); the message id refs the
 	// stored row.
-	if err := recordAudit(ctx, ttx.Tx, "conversation.message_sent", "conversation", convID,
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.message_sent", "conversation", convID,
 		nil, audit.Snapshot(map[string]any{
 			"message_id":  userMsg.ID,
 			"role":        "user",
@@ -614,7 +614,7 @@ func (s *Service) AbortConversationTurn(ctx context.Context, req *connect.Reques
 	attx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err == nil {
 		defer attx.Rollback(ctx)
-		if err := recordAudit(ctx, attx.Tx, "conversation.turn_aborted", "conversation", req.Msg.ConversationId,
+		if err := recordAudit(ctx, attx.Tx, tenantID, "conversation.turn_aborted", "conversation", req.Msg.ConversationId,
 			nil, audit.Snapshot(map[string]any{"stopped": true})); err == nil {
 			_ = attx.Commit(ctx)
 		}

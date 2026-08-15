@@ -39,6 +39,9 @@ func openTestPool(t *testing.T) *db.Pool {
 func TestAuditRecordCommitted(t *testing.T) {
 	pool := openTestPool(t)
 	ctx := context.Background()
+	// Unique target id per run so the test is idempotent on a shared DB
+	// (the tenant accumulates rows across runs).
+	targetID := "wi-" + db.NewID()
 
 	ttx, err := pool.BeginTenantTx(ctx, "tnt_audit_commit")
 	if err != nil {
@@ -56,7 +59,7 @@ func TestAuditRecordCommitted(t *testing.T) {
 		AuthMethod:      "oidc",
 		Action:          "work_item.created",
 		TargetType:      "work_item",
-		TargetID:        "wi-1",
+		TargetID:        targetID,
 		After:           json.RawMessage(`{"title":"hi"}`),
 	}); err != nil {
 		t.Fatalf("Record: %v", err)
@@ -65,7 +68,7 @@ func TestAuditRecordCommitted(t *testing.T) {
 		t.Fatalf("commit: %v", err)
 	}
 
-	rows, err := pool.ListAuditEvents(ctx, "tnt_audit_commit", "", "", "", "", "", 10)
+	rows, err := pool.ListAuditEvents(ctx, "tnt_audit_commit", "", "", "work_item", targetID, "", 10)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -73,7 +76,7 @@ func TestAuditRecordCommitted(t *testing.T) {
 		t.Fatalf("expected 1 row after commit, got %d", len(rows))
 	}
 	r := rows[0]
-	if r.Action != "work_item.created" || r.TargetType != "work_item" || r.TargetID != "wi-1" {
+	if r.Action != "work_item.created" || r.TargetType != "work_item" || r.TargetID != targetID {
 		t.Fatalf("unexpected row: %+v", r)
 	}
 	if r.AuthMethod != "oidc" || r.ActorType != "user" || r.ActorIdentityID != ident.ID {
