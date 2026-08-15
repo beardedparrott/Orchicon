@@ -46,6 +46,31 @@ func TestResolveAuthPublicPathsSkipAuth(t *testing.T) {
 	}
 }
 
+// TestResolveAuthAdmitsCredentialFreeLogout pins the sign-out contract at
+// the middleware boundary: POST /auth/logout must reach its handler with NO
+// bearer token (it is cookie-based by design), otherwise ResolveAuth 401s
+// before the refresh-cookie clear runs and a reload after sign-out
+// re-authenticates via the still-valid HttpOnly cookie. The mux-level
+// handler test in internal/auth bypasses this wrapper; this test closes
+// that gap.
+func TestResolveAuthAdmitsCredentialFreeLogout(t *testing.T) {
+	var reached bool
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	wrapped := ResolveAuth(inner, nil, nil, testLog)
+	req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	rec := httptest.NewRecorder()
+	wrapped.ServeHTTP(rec, req)
+	if !reached {
+		t.Fatal("POST /auth/logout did not reach the handler (blocked by auth middleware)")
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
 // TestRBACInterceptorRejectsMissingIdentity pins the removal of the
 // RBAC dev fallback: no resolved identity is Unauthenticated.
 func TestRBACInterceptorRejectsMissingIdentity(t *testing.T) {

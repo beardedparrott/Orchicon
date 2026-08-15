@@ -34,6 +34,7 @@ type LocalCredentialVerifier func(ctx context.Context, tenantID, username, passw
 //	POST /auth/local-login    Local-account login (embedded IdP, username+password)
 //	POST /auth/dev-login      Local-mode synthetic login (subject → tokens; flag-gated)
 //	POST /auth/refresh        Exchange a refresh token for a new access token
+//	POST /auth/logout         Clear the HttpOnly refresh cookie (end the browser session)
 //	GET  /auth/oidc/login     Redirect to the IdP authorize URL
 //	GET  /auth/oidc/callback  IdP callback: exchange code, issue tokens
 //	GET  /auth/session        Return the current resolved identity
@@ -108,6 +109,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/auth/local-login", h.localLogin)
 	mux.HandleFunc("/auth/dev-login", h.devLogin)
 	mux.HandleFunc("/auth/refresh", h.refresh)
+	mux.HandleFunc("/auth/logout", h.logout)
 	mux.HandleFunc("/auth/oidc/login", h.oidcLogin)
 	mux.HandleFunc("/auth/oidc/callback", h.oidcCallback)
 	mux.HandleFunc("/auth/session", h.session)
@@ -412,6 +414,31 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 		TenantID:    claims.TenantID,
 		IsAdmin:     isAdmin,
 	})
+}
+
+// logout ends the browser session: it clears the HttpOnly refresh cookie
+// (empty value + MaxAge -1, matching the attributes setRefreshCookie uses).
+// The refresh token is a stateless JWT — there is no server-side session to
+// revoke, so clearing the cookie is the session's end; a subsequent
+// /auth/refresh has nothing to exchange and the app falls back to /login.
+// Idempotent and credential-free (it can only end the caller's own session,
+// never another browser's).
+func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     RefreshCookie,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   h.mode == config.ModeProduction,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+		Expires:  time.Unix(1, 0),
+	})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // oidcLogin redirects the browser to the IdP authorize URL.

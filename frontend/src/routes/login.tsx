@@ -14,6 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Route as rootRoute } from "@/routes/__root";
+import { router } from "@/router";
 
 // Login page (docs/10 §7). Local accounts of the embedded IdP sign in with
 // a username + password; OIDC SSO is the external-IdP path; the synthetic
@@ -76,11 +77,27 @@ function LoginPage() {
 
   const next = safeNext(search.next);
 
+  // isSpaRoute reports whether the target pathname has a router route (the
+  // discriminator between SPA destinations and server-only OP-bridge paths).
+  // getMatchedRoutes resolves dynamic routes too (e.g. /work-items/$id).
+  function isSpaRoute(p: string): boolean {
+    const pathname = p.split(/[?#]/)[0];
+    return !!router.getMatchedRoutes(pathname).foundRoute;
+  }
+
   function continueTo(target: string) {
     if (target && target !== "/") {
-      // Full page load: the OP bridge paths have no SPA route, so the
-      // router cannot navigate there — the browser must hit them directly.
-      window.location.assign(target);
+      if (isSpaRoute(target)) {
+        // SPA route: navigate in-place so the in-memory access token set by
+        // the login response survives (a full page load would wipe it and
+        // bounce the user straight back to /login).
+        navigate({ to: target as never });
+      } else {
+        // Server-only path (embedded-OP bridge / authorize callback): the
+        // router has no route for it, so the browser must load it directly
+        // to complete the OIDC flow.
+        window.location.assign(target);
+      }
     } else {
       // Same-origin home after a plain (non-OP) login: SPA-side navigate so
       // the in-memory access token set by the login response survives.

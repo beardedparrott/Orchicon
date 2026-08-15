@@ -32,6 +32,11 @@ var publicPaths = map[string]bool{
 	"/auth/local-login":   true,
 	"/auth/dev-login":     true,
 	"/auth/refresh":       true,
+	// /auth/logout is credential-free by design (cookie-based): it can only
+	// end the caller's own browser session, and requiring a bearer token
+	// here would 401 the sign-out request before the refresh cookie is
+	// cleared — leaving a reload after sign-out able to re-authenticate.
+	"/auth/logout":        true,
 	"/auth/oidc/login":    true,
 	"/auth/oidc/callback": true,
 	"/auth/session":       true,

@@ -12,8 +12,7 @@
 import { useEffect, type ReactNode } from "react";
 
 import {
-  fetchSession,
-  loadStashedToken,
+  ensureSession,
   logout as doLogout,
   devLogin,
   localLogin,
@@ -24,16 +23,23 @@ import {
 
 // AuthProvider boots the session on mount. Place it above the router
 // (or as a layout effect in the root route).
+//
+// The router auth guard (root beforeLoad) runs before React mounts and
+// already resolved the session via the shared ensureSession bootstrap on a
+// full page load — skip the bootstrap when the store was resolved by it.
+// Otherwise (public-route loads like /login, or no guard) bootstrap here;
+// the shared promise dedups against any in-flight guard resolution.
 export function AuthProvider({ children }: { children: ReactNode }) {
   const setSession = useSessionStore((s) => s.setSession);
   const setLoading = useSessionStore((s) => s.setLoading);
 
   useEffect(() => {
     let cancelled = false;
+    const already = useSessionStore.getState();
+    if (!already.loading && already.session.authenticated) return;
     setLoading(true);
     (async () => {
-      loadStashedToken();
-      const s = await fetchSession();
+      const s = await ensureSession();
       if (!cancelled) {
         setSession(s);
         setLoading(false);
