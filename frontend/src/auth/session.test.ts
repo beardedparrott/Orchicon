@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ensureSession,
   getAccessToken,
+  localLogin,
   logout,
   setAccessToken,
   signup,
@@ -290,5 +291,72 @@ describe("signup", () => {
     );
 
     await expect(signup("newuser", "password-123")).rejects.toThrow(/signup failed/);
+  });
+});
+
+describe("localLogin", () => {
+  beforeEach(() => {
+    storage.clear();
+    logout();
+    setAccessToken("");
+    useSessionStore.setState({ session: { authenticated: false }, loading: false });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    storage.clear();
+    logout();
+    setAccessToken("");
+    useSessionStore.setState({ session: { authenticated: false }, loading: false });
+  });
+
+  it("maps the server-sourced forced-change flag onto the session (flagged bootstrap admin)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        okResponse({
+          access_token: "login-token",
+          token_type: "Bearer",
+          expires_in: 3600,
+          identity_id: "usr_admin",
+          tenant_id: "tnt_test",
+          is_admin: true,
+          force_password_change: true,
+        }),
+      ),
+    );
+
+    const out = await localLogin("admin", "admin");
+
+    // The flag is the gate signal: true drives the full-screen
+    // change-password gate in place of the app content.
+    expect(out.session.force_password_change).toBe(true);
+    // The entered username rides on the session so the gate's
+    // SetLocalCredential call has it before any reload.
+    expect(out.session.username).toBe("admin");
+    expect(out.session.authenticated).toBe(true);
+    expect(getAccessToken()).toBe("login-token");
+  });
+
+  it("leaves the flag unset for unflagged credentials", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        okResponse({
+          access_token: "login-token",
+          token_type: "Bearer",
+          expires_in: 3600,
+          identity_id: "usr_pinned",
+          tenant_id: "tnt_test",
+          is_admin: true,
+          // force_password_change omitted (omitempty) → unflagged.
+        }),
+      ),
+    );
+
+    const out = await localLogin("admin", "pinned-password");
+
+    expect(out.session.force_password_change).toBe(false);
+    expect(out.session.username).toBe("admin");
   });
 });

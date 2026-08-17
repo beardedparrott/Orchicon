@@ -2,8 +2,6 @@ package auth
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"log/slog"
 	"os"
 
@@ -17,8 +15,10 @@ import (
 // and dev-login is off by default, but the embedded-OP local login cannot
 // work until an admin provisions a credential (SetLocalCredential is
 // admin-only). BootstrapLocalAdmin seeds the FIRST credential so a fresh
-// plane is immediately usable — the operator reads the boot-log line (or
-// pins the password via env) and signs in through the embedded OP.
+// plane is immediately usable — the operator signs in with the built-in
+// default admin/admin (or a password pinned via env) through the embedded
+// OP. When the built-in default is seeded, the credential is flagged for a
+// forced password change on first login, so the default never persists.
 //
 // It is strictly local-mode, explicit-opt-out, and idempotent: it never
 // runs outside local mode, never touches an existing admin, and never
@@ -81,20 +81,19 @@ func BootstrapLocalAdmin(ctx context.Context, pool *db.Pool, log *slog.Logger, c
 		}
 	}
 
-	// Credential from env, never a baked-in default: a generated
-	// cryptographically random password is logged once at boot
-	// (GitLab/Grafana first-admin pattern). It is never written to env or
-	// config and is never repeated on subsequent boots (once an admin
-	// exists the seed is a no-op).
+	// Credential: env pin wins; otherwise the built-in default admin/admin
+	// (GitLab/Grafana first-admin pattern). The default is discoverable —
+	// no password to hunt for in a boot log — and self-expiring: seeding
+	// it flags the credential for a forced password change on first login,
+	// so the default stops working as soon as a new password is set. A
+	// pinned password is an explicit operator choice and is never flagged.
+	// The seed is a no-op once an admin exists, so the chosen credential is
+	// never repeated on subsequent boots.
 	password := os.Getenv(localAdminPasswordEnv)
-	generated := false
+	forceChange := false
 	if password == "" {
-		pw, err := randomPassword()
-		if err != nil {
-			return err
-		}
-		password = pw
-		generated = true
+		password = localAdminDefaultPassword
+		forceChange = true
 	}
 	if len(password) > MaxPasswordLen {
 		log.Warn("local admin bootstrap: password exceeds length limit, skipping", "username", username)
@@ -122,7 +121,7 @@ func BootstrapLocalAdmin(ctx context.Context, pool *db.Pool, log *slog.Logger, c
 	if err := bindAdminRole(ctx, ttx.Tx, tenantID, ident.ID, adminRoleID); err != nil {
 		return err
 	}
-	if _, err := db.UpsertLocalCredential(ctx, ttx.Tx, tenantID, ident.ID, username, hash); err != nil {
+	if _, err := db.UpsertLocalCredential(ctx, ttx.Tx, tenantID, ident.ID, username, hash, forceChange); err != nil {
 		return err
 	}
 	if err := ttx.Commit(ctx); err != nil {
@@ -134,9 +133,9 @@ func BootstrapLocalAdmin(ctx context.Context, pool *db.Pool, log *slog.Logger, c
 		action = "reset"
 	}
 	log.Warn("local-mode bootstrap admin "+action+": username "+username+", password "+password,
-		"hint", "sign in at /login via the embedded OP local login; pin ORCHICON_LOCAL_ADMIN_PASSWORD to make it deterministic, ORCHICON_LOCAL_ADMIN_SEED=0 to disable the auto-seed (the explicit reset override still works)")
-	if generated {
-		log.Warn("local-mode bootstrap admin password was auto-generated — set ORCHICON_LOCAL_ADMIN_PASSWORD to pin it")
+		"hint", "sign in at /login via the embedded OP local login; pin ORCHICON_LOCAL_ADMIN_PASSWORD to skip the forced password change, ORCHICON_LOCAL_ADMIN_SEED=0 to disable the auto-seed (the explicit reset override still works)")
+	if forceChange {
+		log.Warn("local-mode bootstrap admin was seeded with the default credential admin/admin — it MUST be changed on first login (the SPA gates the plane until then)")
 	}
 	return nil
 }
@@ -218,23 +217,14 @@ func bindAdminRole(ctx context.Context, tx pgx.Tx, tenantID, identityID, adminRo
 	return err
 }
 
-// randomPassword returns a 24-character URL-safe random string.
-func randomPassword() (string, error) {
-	b := make([]byte, 18)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
-}
-
 const (
 	// localAdminSeedEnv is the explicit opt-out for the bootstrap seed.
 	// Any value other than "0" enables it (default on in local mode).
 	localAdminSeedEnv = "ORCHICON_LOCAL_ADMIN_SEED"
 	// localAdminUsernameEnv pins the bootstrap username.
 	localAdminUsernameEnv = "ORCHICON_LOCAL_ADMIN_USERNAME"
-	// localAdminPasswordEnv pins the bootstrap password. When unset a
-	// random password is generated and logged once at boot.
+	// localAdminPasswordEnv pins the bootstrap password. When unset the
+	// built-in default admin/admin is seeded with the forced-change flag.
 	localAdminPasswordEnv = "ORCHICON_LOCAL_ADMIN_PASSWORD"
 	// localAdminResetEnv is the explicit lockout-recovery override. When
 	// set to "1", the seed re-arms on a plane that already has an admin
@@ -244,6 +234,11 @@ const (
 	localAdminResetEnv = "ORCHICON_LOCAL_ADMIN_RESET"
 	// localAdminDefaultUsername is the default bootstrap username.
 	localAdminDefaultUsername = "admin"
+	// localAdminDefaultPassword is the built-in default bootstrap password,
+	// used when ORCHICON_LOCAL_ADMIN_PASSWORD is unset. Seeding it flags
+	// the credential for a forced password change on first login, so the
+	// default never persists past the operator's first sign-in.
+	localAdminDefaultPassword = "admin"
 	// maxUsernameLen bounds the username at the boundary (mirrors the
 	// SetLocalCredential validator).
 	maxUsernameLen = 255

@@ -129,7 +129,7 @@ func TestSignupDuplicateUsername(t *testing.T) {
 	username := "signup_dup"
 
 	// Seed an account via the boundary primitives (like the admin path).
-	createLocalAccount(t, pool, tenantID, username, username, "seed-password")
+	createLocalAccount(t, pool, tenantID, username, username, "seed-password", false)
 
 	resp, body := postSignup(t, srv.URL, username, "new-password")
 	if resp.StatusCode != http.StatusConflict {

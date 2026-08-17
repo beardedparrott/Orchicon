@@ -261,7 +261,7 @@ func TestIdentityCRUDDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin credential tx: %v", err)
 	}
-	if _, err := db.UpsertLocalCredential(ctx, cttx.Tx, tenantID, victim.Id, "victim-dev", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHRzYWx0c2FsdA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"); err != nil {
+	if _, err := db.UpsertLocalCredential(ctx, cttx.Tx, tenantID, victim.Id, "victim-dev", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHRzYWx0c2FsdA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", false); err != nil {
 		t.Fatalf("upsert local credential: %v", err)
 	}
 	if err := cttx.Commit(ctx); err != nil {

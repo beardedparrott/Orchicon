@@ -159,7 +159,7 @@ func TestDevLoginOverrideStillHonored(t *testing.T) {
 // logs in there (never the hardcoded tnt_dev).
 func TestLocalLoginLandsInDeploymentTenant(t *testing.T) {
 	srv, pool, h := testTenantMappingEnv(t, "acme")
-	createLocalAccount(t, pool, "acme", "local-acme@orchicon.local", "acmeuser", "acme-password")
+	createLocalAccount(t, pool, "acme", "local-acme@orchicon.local", "acmeuser", "acme-password", false)
 	t.Cleanup(func() { tenantMappingCleanup(t, pool, "acme", "local-acme@orchicon.local") })
 
 	resp, err := http.Post(srv.URL+"/auth/local-login", "application/json",
