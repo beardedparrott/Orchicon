@@ -173,6 +173,12 @@ type tokenResponse struct {
 	// local login (set only when a pending embedded-OP authorize request
 	// was completed). Always server-constructed — never echoes the client.
 	Next string `json:"next,omitempty"`
+	// ForcePasswordChange is true when the signed-in credential is flagged
+	// for a forced password change (the bootstrap admin seeded with the
+	// built-in default). The SPA renders a full-screen change-password gate
+	// in place of the app content while it is true; the token is still
+	// issued so the session can call the change RPC (ADR-3).
+	ForcePasswordChange bool `json:"force_password_change,omitempty"`
 }
 
 // localLoginRequest is the body for POST /auth/local-login.
@@ -279,6 +285,10 @@ func (h *Handler) localLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.setRefreshCookie(w, pair.RefreshToken)
+	// Server-sourced forced-change flag (ADR-4): the SPA renders the
+	// change-password gate for flagged credentials; the token is still
+	// issued so the gate can call the change RPC.
+	cred := h.localCredential(r.Context(), tenantID, identityID)
 	resp := tokenResponse{
 		AccessToken: pair.AccessToken,
 		TokenType:   "Bearer",
@@ -286,6 +296,7 @@ func (h *Handler) localLogin(w http.ResponseWriter, r *http.Request) {
 		IdentityID:  identityID,
 		TenantID:    tenantID,
 		IsAdmin:     isAdmin,
+		ForcePasswordChange: cred != nil && cred.ForcePasswordChange,
 	}
 	// Complete a pending embedded-OP authorize request (the login bridge
 	// redirects unauthenticated browsers here with next=/auth/op/login?id=…).
@@ -456,7 +467,7 @@ func (h *Handler) createLocalAccount(ctx context.Context, tenantID, username, ha
 	// Bind the credential to the fresh identity. A concurrent signup that
 	// won the identity insert can lose here on the username index; the
 	// unique violation maps to already-exists so only one succeeds.
-	if _, err := db.UpsertLocalCredential(ctx, ttx.Tx, tenantID, ident.ID, username, hash); err != nil {
+	if _, err := db.UpsertLocalCredential(ctx, ttx.Tx, tenantID, ident.ID, username, hash, false); err != nil {
 		if isUniqueViolation(err) {
 			return db.IdentityRow{}, errAccountExists
 		}
@@ -766,13 +777,41 @@ func (h *Handler) session(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"authenticated": false})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"authenticated": true,
 		"identity_id":   claims.Subject,
 		"tenant_id":     claims.TenantID,
 		"is_admin":      claims.IsAdmin,
 		"expires_at":    claims.ExpiresAt,
-	})
+		// Server-sourced forced-change flag (ADR-4): re-resolved on every
+		// full page load so the SPA gate survives reloads; false for
+		// non-local credentials (no local_credentials row).
+		"force_password_change": false,
+	}
+	if cred := h.localCredential(r.Context(), claims.TenantID, claims.Subject); cred != nil {
+		resp["force_password_change"] = cred.ForcePasswordChange
+		// The credential's username: the SPA change-password gate passes it
+		// to SetLocalCredential, which requires the username to upsert.
+		resp["username"] = cred.Username
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// localCredential returns the identity's local credential row, or nil when
+// there is none (production/OIDC sessions, non-local identities, or a DB
+// hiccup). The forced-change flag is a local-credential property, so a
+// missing row is simply unflagged — the safe default.
+func (h *Handler) localCredential(ctx context.Context, tenantID, identityID string) *db.LocalCredentialRow {
+	ttx, err := h.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil
+	}
+	defer ttx.Rollback(ctx)
+	row, err := db.GetLocalCredentialByIdentity(ctx, ttx.Tx, tenantID, identityID)
+	if err != nil {
+		return nil
+	}
+	return &row
 }
 
 // ensureDevAdminBinding creates the tenant admin role (if absent) and

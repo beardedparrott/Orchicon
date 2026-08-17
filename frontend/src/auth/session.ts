@@ -55,6 +55,16 @@ export type SessionInfo = {
   tenant_id?: string;
   is_admin?: boolean;
   expires_at?: number;
+  // The local credential's username (local-mode sessions only; carried on
+  // the session response so it survives a full page load). The
+  // change-password gate passes it to SetLocalCredential, which requires
+  // the username to upsert.
+  username?: string;
+  // True when the signed-in local credential is flagged for a forced
+  // password change (the bootstrap admin seeded with the built-in default).
+  // The SPA renders a full-screen change-password gate while it is true;
+  // the token is still issued so the gate can call the change RPC.
+  force_password_change?: boolean;
 };
 
 // devLogin mints a synthetic token via the dev IdP (local mode only).
@@ -107,6 +117,10 @@ export async function localLogin(
       tenant_id: body.tenant_id,
       is_admin: body.is_admin,
       expires_at: Date.now() + body.expires_in * 1000,
+      // The username just entered (the gate's SetLocalCredential call needs
+      // it before any reload); the server re-sends it on /auth/session.
+      username,
+      force_password_change: body.force_password_change === true,
     },
     next: body.next ?? undefined,
   };

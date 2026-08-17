@@ -939,7 +939,9 @@ func (s *Service) SetLocalCredential(ctx context.Context, req *connect.Request[a
 	if _, err := db.GetIdentity(ctx, ttx.Tx, tenantID, msg.IdentityId); err != nil {
 		return nil, mapDBError(err)
 	}
-	row, err := db.UpsertLocalCredential(ctx, ttx.Tx, tenantID, msg.IdentityId, username, hash)
+	// forcePasswordChange=false: setting a credential is an explicit choice
+	// (admin action or the first-login forced change), so the flag clears.
+	row, err := db.UpsertLocalCredential(ctx, ttx.Tx, tenantID, msg.IdentityId, username, hash, false)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("username already in use by another identity"))

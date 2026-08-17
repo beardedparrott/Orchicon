@@ -29,18 +29,23 @@ type LocalCredentialRow struct {
 	Username     string
 	PasswordHash string
 	Status       string
-	Version      int
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// ForcePasswordChange marks a credential that must have its password
+	// changed before the operator may proceed (the bootstrap admin seeded
+	// with the built-in default). The flag rides on the login/session
+	// responses and is cleared by a successful SetLocalCredential.
+	ForcePasswordChange bool
+	Version             int
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 const localCredentialCols = `id, tenant_id, identity_id, username, password_hash, status,
-	version, created_at, updated_at`
+	force_password_change, version, created_at, updated_at`
 
 func scanLocalCredential(row pgx.Row) (LocalCredentialRow, error) {
 	var r LocalCredentialRow
 	err := row.Scan(&r.ID, &r.TenantID, &r.IdentityID, &r.Username, &r.PasswordHash,
-		&r.Status, &r.Version, &r.CreatedAt, &r.UpdatedAt)
+		&r.Status, &r.ForcePasswordChange, &r.Version, &r.CreatedAt, &r.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return LocalCredentialRow{}, ErrNotFound
 	}
@@ -56,17 +61,22 @@ func scanLocalCredential(row pgx.Row) (LocalCredentialRow, error) {
 // string, never a plaintext password. The row is keyed on
 // (tenant_id, identity_id); a conflicting username on another identity
 // surfaces as a unique-constraint error the caller maps to already-exists.
-func UpsertLocalCredential(ctx context.Context, tx pgx.Tx, tenantID, identityID, username, passwordHash string) (LocalCredentialRow, error) {
-	const q = `INSERT INTO local_credentials (id, tenant_id, identity_id, username, password_hash, status)
-		VALUES ($1, $2, $3, $4, $5, 'active')
+// forcePasswordChange is carried through the ON CONFLICT DO UPDATE so the
+// flag is written on insert AND replace (the bootstrap seed sets it for the
+// built-in default; SetLocalCredential and signup pass false — setting a
+// credential is an explicit choice that clears the forced-change state).
+func UpsertLocalCredential(ctx context.Context, tx pgx.Tx, tenantID, identityID, username, passwordHash string, forcePasswordChange bool) (LocalCredentialRow, error) {
+	const q = `INSERT INTO local_credentials (id, tenant_id, identity_id, username, password_hash, status, force_password_change)
+		VALUES ($1, $2, $3, $4, $5, 'active', $6)
 		ON CONFLICT (tenant_id, identity_id)
 		DO UPDATE SET username = EXCLUDED.username,
 			password_hash = EXCLUDED.password_hash,
 			status = 'active',
+			force_password_change = EXCLUDED.force_password_change,
 			version = local_credentials.version + 1,
 			updated_at = now()
 		RETURNING ` + localCredentialCols
-	return scanLocalCredential(tx.QueryRow(ctx, q, NewID(), tenantID, identityID, username, passwordHash))
+	return scanLocalCredential(tx.QueryRow(ctx, q, NewID(), tenantID, identityID, username, passwordHash, forcePasswordChange))
 }
 
 // GetLocalCredentialByUsername finds the active local credential for a

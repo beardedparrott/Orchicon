@@ -61,21 +61,23 @@ func TestLocalCredentialsCRUD(t *testing.T) {
 	})
 
 	hash := "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHRzYWx0c2FsdA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-	upsert := func() {
+	upsert := func(forceChange bool) {
 		t.Helper()
 		utx, err := pool.BeginTenantTx(ctx, tenant)
 		if err != nil {
 			t.Fatalf("begin upsert tx: %v", err)
 		}
 		defer utx.Rollback(ctx)
-		if _, err := db.UpsertLocalCredential(ctx, utx.Tx, tenant, ident.ID, username, hash); err != nil {
+		if _, err := db.UpsertLocalCredential(ctx, utx.Tx, tenant, ident.ID, username, hash, forceChange); err != nil {
 			t.Fatalf("UpsertLocalCredential: %v", err)
 		}
 		if err := utx.Commit(ctx); err != nil {
 			t.Fatalf("commit upsert: %v", err)
 		}
 	}
-	upsert()
+	// The built-in-default bootstrap seeds the flag true; a default row is
+	// false, so upsert with the flag set first to prove it round-trips.
+	upsert(true)
 
 	// Username lookup returns the stored hash (never a plaintext column).
 	gtx, err := pool.BeginTenantTx(ctx, tenant)
@@ -92,6 +94,9 @@ func TestLocalCredentialsCRUD(t *testing.T) {
 	if row.Username != username {
 		t.Fatalf("username = %q, want %q", row.Username, username)
 	}
+	if !row.ForcePasswordChange {
+		t.Fatal("force_password_change = false, want true (upsert with flag)")
+	}
 
 	// Identity lookup finds the same row.
 	byIdent, err := db.GetLocalCredentialByIdentity(ctx, gtx.Tx, tenant, ident.ID)
@@ -106,7 +111,9 @@ func TestLocalCredentialsCRUD(t *testing.T) {
 	}
 
 	// Upsert is idempotent per (tenant, identity) and bumps the version.
-	upsert()
+	// Replacing with the flag false must clear the flag (the ON CONFLICT
+	// DO UPDATE path — this is how SetLocalCredential clears the state).
+	upsert(false)
 	gtx2, err := pool.BeginTenantTx(ctx, tenant)
 	if err != nil {
 		t.Fatalf("begin get2 tx: %v", err)
@@ -117,6 +124,9 @@ func TestLocalCredentialsCRUD(t *testing.T) {
 	}
 	if row2.Version != 2 {
 		t.Fatalf("version = %d, want 2 after re-upsert", row2.Version)
+	}
+	if row2.ForcePasswordChange {
+		t.Fatal("force_password_change = true after re-upsert with false, want cleared")
 	}
 	if err := gtx2.Rollback(ctx); err != nil {
 		t.Fatalf("rollback get2 tx: %v", err)
@@ -153,7 +163,7 @@ func TestLocalCredentialsCRUD(t *testing.T) {
 	}
 
 	// Re-insert so the cascade test below has a row to delete with the identity.
-	upsert()
+	upsert(false)
 
 	// Identity deletion cascades to the credential (ON DELETE CASCADE).
 	ctxTenant := context.Background()

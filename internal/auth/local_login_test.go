@@ -61,8 +61,9 @@ func testLocalLoginEnv(t *testing.T) (*httptest.Server, *db.Pool, *Handler) {
 
 // createLocalAccount seeds an identity + local credential directly through
 // the data-access layer (the boundary primitive), mirroring what the admin
-// SetLocalCredential path does.
-func createLocalAccount(t *testing.T, pool *db.Pool, tenantID, subject, username, password string) string {
+// SetLocalCredential path does. forceChange sets the forced-password-change
+// flag (the bootstrap-admin state) when true.
+func createLocalAccount(t *testing.T, pool *db.Pool, tenantID, subject, username, password string, forceChange bool) string {
 	t.Helper()
 	ctx := context.Background()
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)
@@ -77,7 +78,7 @@ func createLocalAccount(t *testing.T, pool *db.Pool, tenantID, subject, username
 	if err != nil {
 		t.Fatalf("HashPassword: %v", err)
 	}
-	if _, err := db.UpsertLocalCredential(ctx, ttx.Tx, tenantID, ident.ID, username, hash); err != nil {
+	if _, err := db.UpsertLocalCredential(ctx, ttx.Tx, tenantID, ident.ID, username, hash, forceChange); err != nil {
 		t.Fatalf("UpsertLocalCredential: %v", err)
 	}
 	if err := ttx.Commit(ctx); err != nil {
@@ -98,7 +99,7 @@ func createLocalAccount(t *testing.T, pool *db.Pool, tenantID, subject, username
 func TestLocalLoginCorrectCredentials(t *testing.T) {
 	srv, pool, _ := testLocalLoginEnv(t)
 	const tenantID = "tnt_dev"
-	createLocalAccount(t, pool, tenantID, "local@orchicon.local", "localuser", "correct-password")
+	createLocalAccount(t, pool, tenantID, "local@orchicon.local", "localuser", "correct-password", false)
 
 	resp, err := http.Post(srv.URL+"/auth/local-login", "application/json",
 		strings.NewReader(`{"username":"localuser","password":"correct-password"}`))
@@ -140,9 +141,101 @@ func TestLocalLoginCorrectCredentials(t *testing.T) {
 	}
 }
 
+// TestLocalLoginForcedChangeFlag pins the forced-password-change contract
+// (ADR-3/ADR-4): a flagged credential still gets a token issued on login
+// (the SPA gate needs a live session to call the change RPC), the flag
+// rides on BOTH the login response and /auth/session (so the gate survives
+// a full page load), and a successful SetLocalCredential clears the flag —
+// after which the old password no longer works and the new one logs in
+// unflagged.
+func TestLocalLoginForcedChangeFlag(t *testing.T) {
+	srv, pool, _ := testLocalLoginEnv(t)
+	const tenantID = "tnt_dev"
+	identityID := createLocalAccount(t, pool, tenantID, "forced@orchicon.local", "forcedadmin", "admin", true)
+
+	// 1. Login with the default credential: 200, token issued, flag true.
+	resp, err := http.Post(srv.URL+"/auth/local-login", "application/json",
+		strings.NewReader(`{"username":"forcedadmin","password":"admin"}`))
+	if err != nil {
+		t.Fatalf("POST local-login: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("flagged login status = %d, want 200 (the token is still issued)", resp.StatusCode)
+	}
+	var body tokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.AccessToken == "" {
+		t.Fatal("no access token issued for a flagged login")
+	}
+	if !body.ForcePasswordChange {
+		t.Fatal("login response missing force_password_change=true")
+	}
+
+	// 2. /auth/session carries the flag too (the gate survives F5).
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/auth/session", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+body.AccessToken)
+	sres, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET session: %v", err)
+	}
+	defer sres.Body.Close()
+	if sres.StatusCode != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", sres.StatusCode)
+	}
+	var sess map[string]any
+	if err := json.NewDecoder(sres.Body).Decode(&sess); err != nil {
+		t.Fatalf("decode session: %v", err)
+	}
+	if sess["authenticated"] != true {
+		t.Fatalf("session not authenticated: %+v", sess)
+	}
+	if sess["force_password_change"] != true {
+		t.Fatalf("session missing force_password_change=true: %+v", sess)
+	}
+
+	// 3. The change path (admin-gated SetLocalCredential RPC) clears the flag.
+	ctx := tenant.WithID(context.Background(), tenantID)
+	svc := NewService(pool, slog.New(slog.DiscardHandler))
+	if _, err := svc.SetLocalCredential(ctx, connect.NewRequest(&apiv1.SetLocalCredentialRequest{
+		IdentityId: identityID,
+		Username:   "forcedadmin",
+		Password:   "new-password-456",
+	})); err != nil {
+		t.Fatalf("SetLocalCredential: %v", err)
+	}
+
+	// 4. The old default password no longer works...
+	if wrongBody := postLogin(t, srv.URL, `{"username":"forcedadmin","password":"admin"}`); wrongBody != "invalid credentials" {
+		t.Fatalf("old default password still works after the forced change: %q", wrongBody)
+	}
+	// ...and the new one logs in unflagged.
+	resp2, err := http.Post(srv.URL+"/auth/local-login", "application/json",
+		strings.NewReader(`{"username":"forcedadmin","password":"new-password-456"}`))
+	if err != nil {
+		t.Fatalf("POST local-login (new password): %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("new-password login status = %d, want 200", resp2.StatusCode)
+	}
+	var body2 tokenResponse
+	if err := json.NewDecoder(resp2.Body).Decode(&body2); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body2.ForcePasswordChange {
+		t.Fatal("force_password_change not cleared after SetLocalCredential")
+	}
+}
+
 func TestLocalLoginGeneric401(t *testing.T) {
 	srv, pool, _ := testLocalLoginEnv(t)
-	createLocalAccount(t, pool, "tnt_dev", "enum@orchicon.local", "enumuser", "right-password")
+	createLocalAccount(t, pool, "tnt_dev", "enum@orchicon.local", "enumuser", "right-password", false)
 
 	wrongBody := postLogin(t, srv.URL, `{"username":"enumuser","password":"wrong-password"}`)
 	unknownBody := postLogin(t, srv.URL, `{"username":"nosuchuser","password":"whatever"}`)
@@ -217,7 +310,7 @@ func TestLocalLoginDisabledWithoutOP(t *testing.T) {
 func TestLocalLoginCompletesOPFlow(t *testing.T) {
 	srv, pool, _ := testLocalLoginEnv(t)
 	const tenantID = "tnt_dev"
-	createLocalAccount(t, pool, tenantID, "flow@orchicon.local", "flowuser", "flow-password")
+	createLocalAccount(t, pool, tenantID, "flow@orchicon.local", "flowuser", "flow-password", false)
 
 	state := "state-local"
 	verifier := "012345678901234567890123456789012345678901234567890123"

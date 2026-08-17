@@ -63,14 +63,26 @@ func RuntimeEnvironmentBlock(image string) string {
 	return sb.String()
 }
 
+// gitDisciplineBlock is the shared "work on a branch of develop" directive in
+// the stable prompt prefix. It guarantees EVERY worker — including custom
+// workers whose own AGENTS.md has no git content — is explicitly told to work
+// off a branch of `develop` and never commit directly to the protected
+// branches. The canned workers additionally carry richer per-role git guidance
+// (gitBranchBlock / gitAwarenessBlock in seed_workers.go); this block is the
+// floor that can never be missing from a dispatch.
+const gitDisciplineBlock = "\n## Git discipline\n" +
+	"- Work on a branch created off `develop` (the integration branch where all work lands). **NEVER** commit to, push to, or open a PR into `main` or `develop` directly.\n" +
+	"- Use the branch the workflow created for this work item if one exists; create one off `develop` only if none does.\n\n"
+
 // StablePromptPrefix is the byte-identical shared prefix prepended to every
 // worker composite prompt. llama.cpp's KV/prompt cache is prefix-based: when
 // the FIRST tokens of every worker's prompt are identical, the shared prefix
 // is reused across steps, roles, and runs (local-model runs pay the prefill
 // cost once, not per step). It is built ONLY from shared constants — worker
-// identity + safety rules + efficiency directives + runtime environment —
-// never from per-worker strings. Role/worker-specific AGENTS.md content, the
-// task, execution history, facts, and instructions follow AFTER the prefix.
+// identity + safety rules + efficiency directives + git discipline + runtime
+// environment — never from per-worker strings. Role/worker-specific AGENTS.md
+// content, the task, execution history, facts, and instructions follow AFTER
+// the prefix.
 //
 // The runtime image is per-run (all steps of a run dispatch the same work
 // item, so it is constant within a run), which is what makes the prefix
@@ -80,6 +92,7 @@ func StablePromptPrefix(runtimeImage string) string {
 	sb.WriteString(WorkerIdentityPreamble)
 	sb.WriteString(safetyBlock)
 	sb.WriteString(efficiencyBlock)
+	sb.WriteString(gitDisciplineBlock)
 	sb.WriteString(RuntimeEnvironmentBlock(runtimeImage))
 	return sb.String()
 }
