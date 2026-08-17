@@ -32,7 +32,10 @@ Read on demand by Orchicon workers. Your role, task, acceptance criteria, and th
 - `/tmp` is noexec in the runtime containers: Go's default TMPDIR there makes test binaries fail with exec-format errors. Use an exec-able dir (e.g. `GOTMPDIR=$PWD/.gtmp`) for `go test` / `make ci`.
 - `:orchicon-dev` runtime containers boot a sandbox plane at `http://localhost:8080` with Postgres on `localhost:5432` (user `orchicon`) and `ORCHICON_TELEMETRY=none`. Base/`:gui` images boot no plane.
 - The runtime supervisor runs the daemon self-copy present at container start — a container started before a feature landed runs the pre-feature binary.
-- Pre-existing gofmt drift and whole-repo semgrep findings exist at base. Only NEW findings introduced by your change matter.
+- Pre-existing gofmt drift and whole-repo semgrep findings exist at base. Only NEW findings introduced by your change matter. Verify against the base (`git diff origin/develop`) once; do not fix unrelated files. Scope semgrep to the files you touched:
+  ```bash
+  semgrep scan --config .orchicon/semgrep_orchicon.yml --error $(git diff --name-only origin/develop...HEAD | grep -E '\.go$')
+  ```
 - The repo is PUBLIC; do not attempt to re-privatize it.
 
 ## Summary contract

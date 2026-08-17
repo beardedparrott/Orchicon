@@ -11,6 +11,15 @@ Read on demand by agents working directly with the human developer (and by human
 
 A **worker running inside Orchicon** operates autonomously: it PRs into `develop`, merges on approval, and deletes the branch without asking. A **session working directly with a human** must ALWAYS ask the human before creating a PR and again before merging — the human owns the review. When in doubt, treat yourself as a human-facing session and ask.
 
+## Working norms
+
+- **Do not assume; test every hypothesis.** When a user reports a bug, reproduce it, read the relevant code path, and verify the fix resolves it at the system level — not just in a typecheck or unit test.
+- **Efficiency is not an excuse for shortcuts.** Never patch a symptom without first identifying the root cause; verbose investigation is cheaper than a second pass that has to undo incorrect assumptions.
+- **Every answer must explain the full picture:** *why* it was broken, *where* the fault lived, *who* caused it (which component), *when* it triggers, and *what* the fix does at a mechanical level.
+- **Fix the whole class, not just one instance.** A bug in a query, handler, or component — especially a copy-paste pattern like a SQL column list or a Scan call — is often systemic; search for every other occurrence and fix them all.
+- **Think broadly, not minimally.** If a suggestion applies to one endpoint (e.g. "add cache-control headers"), check whether every similar path has the same gap.
+- **Prefer parallel tool calls** when independent (one message, many tools). Read only the slice of a file you need; keep edits surgical; skip preamble/postamble — the diff speaks for itself. Run `make ci` once at the end, not after every edit.
+
 ## Git workflow
 
 - `develop` is the integration branch; `main` is release-only and managed by the human. Workers and agents branch off `develop` and PR into `develop` — never `main`.
@@ -18,6 +27,8 @@ A **worker running inside Orchicon** operates autonomously: it PRs into `develop
 - Branch naming: `<type>/<short-description>` (`feat/`, `fix/`, `chore/`, `refactor/`, `docs/`, `test/`).
 - Before starting work on a new branch, bump the version tag (`git tag -a v0.1.<next> -m "v0.1.<next>"`) so local builds report the current version. `git fetch --tags` before rebuilding after a release merge.
 - PRs must target `develop` explicitly (`gh pr create --base develop`) — `main` is the default branch. PRs must NOT carry the `release` label (that label belongs only on the human's `develop` → `main` release PR).
+- Commit early and often on your branch. Write clear present-tense messages (`Add project CRUD service and data-access layer`). Stage only the files relevant to the commit.
+- Before starting work, `git pull origin develop` to get the latest. Before pushing, `git fetch origin && git rebase origin/develop` if the branch has been open for a while.
 - Before opening a PR: fetch + rebase onto `origin/develop` if the branch is stale. Update `UPDATES.md` with a new row (typed table format, monotonic row numbers). Do NOT touch README.md's "Last Release Changes" — it is auto-synced from UPDATES.md by `scripts/gen-release-notes.sh --sync-readme`.
 - Before merging, ask the user again (PR-creation approval ≠ merge approval). After merging, delete the branch.
 
@@ -30,6 +41,21 @@ scripts/container.sh down dev && scripts/container.sh up dev   # restart with th
 ```
 
 Dev and prod are two container instances (`orchicon-cnt-dev` on :8080/:3002, `orchicon-cnt-prod` on :8091/:3003) sharing compose-era Postgres volumes. **The DEV instance is the default and only instance for development work. Never create, mutate, or delete data on the PROD instance.**
+
+**Disk hygiene:** the Go build cache grows to tens of GB (`~/.cache/go-build`) and repeated container builds leave dangling Docker images. Reclaim with `make clean` (go cache + `bin/`) and `make clean-docker` (dangling images + stopped containers + unused volumes). The serve/detached log auto-rotates and is pruned via Settings → Defaults → Log management — never `rm` a live log by hand. Run `make clean` at the end of a heavy dev session, and check `make cache-check` before starting work.
+
+## Phases
+
+Every task follows this sequence:
+
+1. Read AGENTS.md, then read UPDATES.md to understand the current state, and read the relevant DOCUMENTATION.md sections before touching something unfamiliar.
+2. Create a branch and do the work, committing changes often.
+3. Fully test and verify (see Verification).
+4. Before the final commit on your branch, update `UPDATES.md` with a new row in the typed table format (see UPDATES.md). Do NOT touch README.md's "Last Release Changes" manually — `scripts/gen-release-notes.sh --sync-readme` keeps it in sync. This is the commit that will be PR'd and merged into `develop`.
+5. Follow the Git workflow above.
+6. Inform the user every time UPDATES have been made, in a tabled format.
+
+If architecture or anything referenced in the docs has changed, update the relevant `.md` documentation for future runs. Do not edit AGENTS.md itself — it is the human-maintained router; flag any proposed change to the human.
 
 ## Architecture quick reference
 
@@ -80,7 +106,7 @@ For Docker/infra changes, verify the full stack boots (healthz + Grafana on :300
 
 ## Install scripts & release
 
-`scripts/install.sh` / `scripts/install.ps1` are the one-line installers published at orchicon.dev. Windows runs the whole stack inside WSL2 (`install.ps1` provisions WSL2 + Docker-in-WSL and installs the Linux binary into the distro). `site/` + install scripts are staged on `develop` and only reach orchicon.dev when the human merges `develop` → `main` (CloudFlare Pages is pinned to `main`). The release workflow builds binaries for linux/darwin/windows × amd64/arm64 on tag push, attaches them to the GitHub Release, and pushes the container images. Releases are capped at 5 (`prune-releases.yml`); the release body is generated from UPDATES.md by `scripts/gen-release-notes.sh`. When a phase changes what ships in the binary, update the install scripts and release workflow.
+`scripts/install.sh` / `scripts/install.ps1` are the one-line installers published at orchicon.dev. Windows runs the whole stack inside WSL2 (`install.ps1` provisions WSL2 + Docker-in-WSL and installs the Linux binary into the distro). `site/` + install scripts are staged on `develop` and only reach orchicon.dev when the human merges `develop` → `main` (CloudFlare Pages is pinned to `main`). The release workflow builds binaries for linux/darwin/windows × amd64/arm64 on tag push, attaches them to the GitHub Release, and pushes the container images. Releases are capped at 5 (`prune-releases.yml`); the release body is generated from UPDATES.md by `scripts/gen-release-notes.sh`. When a phase changes what ships in the binary, update the install scripts and release workflow. Verify by running the installer against a draft release at minimum (`bash scripts/install.sh --version vX.Y.Z --dry-run` on each target platform, or `--uninstall` to test cleanup).
 
 ## E2E & data preservation
 
