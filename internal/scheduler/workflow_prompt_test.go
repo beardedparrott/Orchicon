@@ -1,8 +1,13 @@
 package scheduler
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/domain"
+	"github.com/beardedparrott/orchicon/internal/workflow"
 )
 
 // TestWriteCappedText_Under exercises the small-input path: the body
@@ -130,5 +135,141 @@ func TestRuntimeEnvironmentBlockEmptyImage(t *testing.T) {
 	got := runtimeEnvironmentBlock("")
 	if !strings.Contains(got, "default Orchicon runtime base image") {
 		t.Errorf("expected base-image fallback, got:\n%s", got)
+	}
+}
+
+// TestStablePromptPrefixSameImageIdentical verifies the stable prompt prefix
+// is built ONLY from shared constants (identity + safety + efficiency +
+// runtime env): two prefixes for the same runtime image must be byte-identical,
+// and a different image only changes the image label.
+func TestStablePromptPrefixSameImageIdentical(t *testing.T) {
+	a := db.StablePromptPrefix("orchicon-dev:latest")
+	b := db.StablePromptPrefix("orchicon-dev:latest")
+	if a != b {
+		t.Errorf("stable prefix must be byte-identical for the same image")
+	}
+	if a == db.StablePromptPrefix("orchicon-base:latest") {
+		t.Errorf("stable prefix must vary with the runtime image")
+	}
+}
+
+// TestCompositeStablePrefixSharedAcrossWorkers verifies the acceptance
+// criterion for prompt caching: two different workers' composite prompts share
+// a common prefix of at least ~1k tokens (~4 chars/token), built from the
+// shared identity/safety/efficiency/runtime-env blocks, with the role-specific
+// content strictly AFTER the prefix.
+func TestCompositeStablePrefixSharedAcrossWorkers(t *testing.T) {
+	ctx := context.Background()
+	// No ProjectID/ContextFiles → buildCompositePrompt never touches the tx
+	// (verified: the only DB reads are gated on those fields), so tx may be nil.
+	item := db.WorkItemRow{Title: "Shared prefix", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
+	swe := db.WorkerVersionRow{
+		Role:     "You are a senior full-stack engineer who ships Go and React daily.",
+		Skills:   "Go • React • Postgres",
+		Behavior: "Write tests alongside implementation.",
+		AgentsMD: "## Git workflow\ncommit early and often.\n",
+	}
+	arch := db.WorkerVersionRow{
+		Role:     "You are a principal architect who owns system design.",
+		Skills:   "System design • Security • ADRs",
+		Behavior: "Think holistically; document trade-offs.",
+		AgentsMD: "## Standards\nWrite ADRs for significant decisions.\n",
+	}
+	r := &WorkflowReconciler{}
+	a, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, swe, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, arch, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Common prefix length in bytes.
+	n := 0
+	for n < len(a) && n < len(b) && a[n] == b[n] {
+		n++
+	}
+	const wantChars = 1000 * 4 // ~1k tokens at the ~4 chars/token heuristic
+	if n < wantChars {
+		t.Errorf("common prefix = %d chars, want >= %d (~1k tokens); a[:200]=%q b[:200]=%q", n, wantChars, a[:200], b[:200])
+	}
+	prefix := a[:n]
+	for _, want := range []string{
+		"## Safety rules (HARD limits)",
+		"## Efficiency — minimize tool output and tool calls",
+		"Minimize tool output.",
+		"Batch your tool calls.",
+		"## Runtime environment",
+	} {
+		if !strings.Contains(prefix, want) {
+			t.Errorf("shared prefix missing %q", want)
+		}
+	}
+	// Role-specific content must come strictly AFTER the stable prefix.
+	if i := strings.Index(a, "senior full-stack engineer"); i < n {
+		t.Errorf("role text must come after the stable prefix (found at %d, prefix %d)", i, n)
+	}
+	if i := strings.Index(b, "principal architect"); i < n {
+		t.Errorf("role text must come after the stable prefix (found at %d, prefix %d)", i, n)
+	}
+}
+
+// TestCompositePromptEfficiencyAndBatchingDirectives verifies every worker's
+// composite prompt carries the tool-output-discipline and tool-call-batching
+// directives (acceptance: explicit minimize-tool-output + batch-tool-calls
+// instructions, and the "Verify, don't assume" guardrail survives).
+func TestCompositePromptEfficiencyAndBatchingDirectives(t *testing.T) {
+	ctx := context.Background()
+	item := db.WorkItemRow{Title: "Efficiency directives", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
+	worker := db.WorkerVersionRow{Role: "Engineer"}
+	r := &WorkflowReconciler{}
+	out, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, worker, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Minimize tool output.",
+		"git status --short",
+		"git log --oneline -5",
+		"`grep` `touched_files`",
+		"Batch your tool calls.",
+		"fewer, larger calls are dramatically cheaper",
+		"you MUST verify state with actual tool calls and never fabricate output",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("composite prompt missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
+// TestCompositePromptNoEmbeddedFactsBlock verifies the embedded
+// "## Facts learned (this run)" prompt block is gone — the
+// .orchicon/<run>/facts_learned file is now the single source of established
+// facts, and the "read facts_learned" instruction is retained.
+func TestCompositePromptNoEmbeddedFactsBlock(t *testing.T) {
+	ctx := context.Background()
+	item := db.WorkItemRow{Title: "Facts dedup", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
+	// A completed prior step carrying facts, so the old block WOULD have rendered.
+	runs := map[string]db.WorkflowStepRunRow{
+		"step1": {
+			ID:        "sr1",
+			Status:    domain.StepRunSucceeded,
+			Iteration: 0,
+			Result:    []byte(`{"_summary":"Did work.\nFACTS LEARNED: the sandbox plane is up.\n"}`),
+		},
+	}
+	steps := []workflow.StepWire{{ID: "step1", Name: "DevOps Engineer", Kind: "task"}}
+	r := &WorkflowReconciler{}
+	out, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, db.WorkerVersionRow{Role: "Engineer"}, steps, runs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "## Facts learned (this run)") {
+		t.Errorf("embedded facts block must be removed; got:\n%s", out)
+	}
+	// The file-reading instruction must survive.
+	if !strings.Contains(out, "facts_learned") {
+		t.Errorf("the read-facts_learned instruction must be retained")
 	}
 }
