@@ -1841,7 +1841,11 @@ const maxSummaryTokens = 500
 //
 //   - the ORCHICON WORKER SUMMARY: <decision> routing line, if present in the
 //     text (normally already stripped into `_decision`, kept defensively)
-//   - every FACTS LEARNED: line — extractFactsLearned must still see them
+//   - every FACTS LEARNED: line — extractFactsLearned must still see them.
+//     Both the plain `FACTS LEARNED: <fact>` form a worker writes and the
+//     `FACTS LEARNED (from <step>): <fact>` form the handoff writer persists to
+//     .orchicon/<run>/facts_learned (a downstream worker may quote file lines
+//     back verbatim) are treated as structural and pass through untouched.
 //
 // Narrative lines are kept from the front of the summary until the budget is
 // spent, in original order, so blocking feedback (stated up front) survives.
@@ -1864,8 +1868,10 @@ func capSummaryNarrative(summary string, maxTokens int) string {
 		trimmed := strings.TrimSpace(line)
 		isFact := false
 		if trimmed != "" {
-			s := strings.TrimLeft(strings.TrimLeft(trimmed, "-"), " ")
-			if strings.HasPrefix(strings.ToLower(s), "facts learned:") {
+			s := strings.ToLower(strings.TrimLeft(strings.TrimLeft(trimmed, "-"), " "))
+			// Structural facts: both the plain marker a worker writes and the
+			// step-attributed form the facts_learned file carries.
+			if strings.HasPrefix(s, "facts learned:") || strings.HasPrefix(s, "facts learned (from") {
 				isFact = true
 			}
 		}

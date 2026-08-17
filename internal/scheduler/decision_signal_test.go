@@ -207,7 +207,8 @@ func TestCapSummaryNarrativePreservesFactsAndRouting(t *testing.T) {
 	in := narrative +
 		"ORCHICON WORKER SUMMARY: failure — the login flow loses the session token.\n" +
 		"FACTS LEARNED: the runtime container supervisor runs the pre-feature daemon self-copy.\n" +
-		"FACTS LEARNED: /tmp is noexec in the runtime containers.\n"
+		"FACTS LEARNED: /tmp is noexec in the runtime containers.\n" +
+		"FACTS LEARNED (from Senior Software Engineer): a step-attributed fact quoted back from the facts_learned file.\n"
 
 	got := capSummaryNarrative(in, 500)
 	if len(got) >= len(in) {
@@ -229,6 +230,9 @@ func TestCapSummaryNarrativePreservesFactsAndRouting(t *testing.T) {
 	}
 	if !strings.Contains(got, "FACTS LEARNED: /tmp is noexec in the runtime containers.") {
 		t.Errorf("FACTS LEARNED line lost by cap; got:\n%s", got)
+	}
+	if !strings.Contains(got, "FACTS LEARNED (from Senior Software Engineer): a step-attributed fact quoted back from the facts_learned file.") {
+		t.Errorf("step-attributed FACTS LEARNED line lost by cap; got:\n%s", got)
 	}
 	facts := extractFactsLearned(got)
 	if len(facts) != 2 {
