@@ -484,6 +484,56 @@ func TestControlSequenceResumeStops(t *testing.T) {
 	}
 }
 
+// TestControlSequenceResumeHaltedParent: RESUME on a halted chain (parent
+// failed, first non-succeeded child failed) is accepted and drives the
+// injected resume starter — the handler gate that made a manual resume a
+// no-op (the scheduler then re-arms the failed child; the scheduler-level
+// semantics are covered in sequence_reconciler_test.go).
+func TestControlSequenceResumeHaltedParent(t *testing.T) {
+	pool := validateParentTestPool(t)
+	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
+	projID := validateParentProject(t, ctx, pool)
+	svc := New(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	wf := seedPublishedWorkflowForTest(t, pool, projID, true)
+
+	parent := createSequenceItem(t, pool, projID, domain.WorkItemKindEpic, "Parent", nil, nil, nil)
+	c1 := createSequenceItem(t, pool, projID, domain.WorkItemKindTask, "C1", &parent.ID, &wf, nil)
+	c2 := createSequenceItem(t, pool, projID, domain.WorkItemKindTask, "C2", &parent.ID, &wf, nil)
+	reorderSequenceItems(t, pool, projID, parent.ID, []string{c1.ID, c2.ID})
+
+	svc.SetResumeSequenceStarter(func(ctx context.Context, tenantID, parentID string) error {
+		stop := schedulerStop{}
+		return stop.resume(ctx, pool, tenantID, parentID)
+	})
+
+	// Halted chain: parent failed, first child failed, later sibling pending.
+	setSequenceWorkItemField(t, pool, parent.ID, func(f *db.UpdateWorkItemFields) {
+		status := domain.WorkItemFailed
+		f.Status = &status
+	})
+	setSequenceWorkItemField(t, pool, c1.ID, func(f *db.UpdateWorkItemFields) {
+		status := domain.WorkItemFailed
+		f.Status = &status
+	})
+
+	resp, err := svc.ControlSequence(ctx, connect.NewRequest(&apiv1.ControlSequenceRequest{
+		Id:     parent.ID,
+		Action: apiv1.SequenceAction_SEQUENCE_ACTION_RESUME,
+	}))
+	if err != nil {
+		t.Fatalf("RESUME on halted parent: %v", err)
+	}
+	if got := resp.Msg.WorkItem.Status; got != apiv1.WorkItemStatus_WORK_ITEM_STATUS_RUNNING {
+		t.Errorf("parent status after RESUME = %v, want running", got)
+	}
+	if got := mustGetSequenceItem(t, pool, c1.ID); got.Status != domain.WorkItemRunning {
+		t.Errorf("c1 status after RESUME = %q, want running (re-armed)", got.Status)
+	}
+	if got := mustGetSequenceItem(t, pool, c2.ID); got.Status != domain.WorkItemPending {
+		t.Errorf("c2 status after RESUME = %q, want pending (not yet)", got.Status)
+	}
+}
+
 // schedulerStop bridges the test to the real scheduler primitives without
 // importing the scheduler package (avoids a package cycle in tests).
 type schedulerStop struct{}
