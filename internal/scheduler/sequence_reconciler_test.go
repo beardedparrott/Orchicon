@@ -988,6 +988,143 @@ func TestResumeSequenceParksThenResumes(t *testing.T) {
 	}
 }
 
+// TestResumeSequenceHaltedChainReArmsFailedChild is the regression test
+// for the "Resume button on a sequence parent does not resume the
+// sequence" bug. A chain halted on a failed child (parent failed) resumes
+// through ResumeSequence: the failed child is re-armed to running — re-run,
+// not skipped — and prior sibling state is kept. Before the fix,
+// ResumeSequence handed the still-failed child to reconcileParent, whose
+// failed-child branch re-halted the chain (a resume no-op).
+func TestResumeSequenceHaltedChainReArmsFailedChild(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C2", &parent.ID, &wf)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID})
+
+	// Run the chain, then halt it: c1 fails → parent failed, c2 stays pending.
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatal(err)
+	}
+	setStatus(t, env.pool, c1.ID, domain.WorkItemFailed)
+	rec := NewSequenceReconciler(env.pool, nil, env.startFn())
+	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemFailed {
+		t.Fatalf("precondition: parent should be failed (halted), got %q", got.Status)
+	}
+
+	// Resume the halted chain: c1 re-arms (re-run, not skipped), c2 untouched.
+	if err := ResumeSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatalf("ResumeSequence: %v", err)
+	}
+	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemRunning {
+		t.Errorf("parent status after resume = %q, want running", got.Status)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemRunning {
+		t.Errorf("c1 status after resume = %q, want running (re-armed)", got.Status)
+	}
+	if got := mustGet(t, env.pool, c2.ID); got.Status != domain.WorkItemPending {
+		t.Errorf("c2 status after resume = %q, want pending (not yet)", got.Status)
+	}
+	armed := env.armedWorkItems()
+	if len(armed) != 2 || armed[0] != c1.ID || armed[1] != c1.ID {
+		t.Errorf("armed work items = %v, want [c1 c1] (c1 re-dispatched, c2 never armed)", armed)
+	}
+}
+
+// TestResumeSequenceHaltedCancelledChild: a chain halted on a CANCELLED
+// first non-succeeded child resumes exactly like a failed one — the
+// cancelled child is reset to pending and re-armed (cancellation is the
+// same halt semantics as failure).
+func TestResumeSequenceHaltedCancelledChild(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C2", &parent.ID, &wf)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID})
+
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatal(err)
+	}
+	setStatus(t, env.pool, c1.ID, domain.WorkItemCancelled)
+	rec := NewSequenceReconciler(env.pool, nil, env.startFn())
+	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemFailed {
+		t.Fatalf("precondition: parent should be failed (halted), got %q", got.Status)
+	}
+
+	if err := ResumeSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatalf("ResumeSequence: %v", err)
+	}
+	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemRunning {
+		t.Errorf("parent status after resume = %q, want running", got.Status)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemRunning {
+		t.Errorf("c1 status after resume = %q, want running (re-armed)", got.Status)
+	}
+	armed := env.armedWorkItems()
+	if len(armed) != 2 || armed[1] != c1.ID {
+		t.Errorf("armed work items = %v, want [c1 c1]", armed)
+	}
+}
+
+// TestResumeSequenceHaltedContainerChild: resuming a chain halted on a
+// FAILED container child re-arms the container, which resets its subtree —
+// the nested chain re-runs from its own first non-succeeded child through
+// the existing container arm path (no recursion added).
+func TestResumeSequenceHaltedContainerChild(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
+	feature := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindFeature, "Feature", &parent.ID, nil)
+	t1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "T1", &feature.ID, &wf)
+	t2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "T2", &feature.ID, &wf)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{feature.ID})
+	reorder(t, env.pool, env.proj.ID, feature.ID, []string{t1.ID, t2.ID})
+
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatal(err)
+	}
+	rec := NewSequenceReconciler(env.pool, nil, env.startFn())
+	if err := rec.reconcileOne(ctx, approvalTestTenant, feature.ID); err != nil {
+		t.Fatal(err)
+	}
+	// t1 fails → feature fails → parent fails (whole chain halted).
+	setStatus(t, env.pool, t1.ID, domain.WorkItemFailed)
+	_ = rec.reconcileOne(ctx, approvalTestTenant, feature.ID)
+	_ = rec.reconcileOne(ctx, approvalTestTenant, parent.ID)
+	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemFailed {
+		t.Fatalf("precondition: parent should be failed (halted), got %q", got.Status)
+	}
+
+	if err := ResumeSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatalf("ResumeSequence: %v", err)
+	}
+	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemRunning {
+		t.Errorf("parent status after resume = %q, want running", got.Status)
+	}
+	// The container child is re-armed as a container, and its subtree
+	// resets to pending — the nested chain re-runs from t1.
+	if got := mustGet(t, env.pool, feature.ID); got.Status != domain.WorkItemRunning {
+		t.Errorf("feature status after resume = %q, want running (container re-armed)", got.Status)
+	}
+	if got := mustGet(t, env.pool, t1.ID); got.Status != domain.WorkItemPending {
+		t.Errorf("t1 status after resume = %q, want pending (subtree reset for re-run)", got.Status)
+	}
+	if got := mustGet(t, env.pool, t2.ID); got.Status != domain.WorkItemPending {
+		t.Errorf("t2 status after resume = %q, want pending", got.Status)
+	}
+}
+
 // TestResumeSequenceNoChildren: resume/stop on a leaf (no children) is
 // rejected — only sequence parents can be controlled.
 func TestResumeSequenceNoChildren(t *testing.T) {

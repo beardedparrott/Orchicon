@@ -1,5 +1,6 @@
 // SequenceControls — manual Start / Resume / Stop buttons for ANY work
-// item, shown on the board, tree, and detail page. The buttons are a pure
+// item, shown on the work-item overview page (board + tree) only — not on
+// the detail page. The buttons are a pure
 // function of the item's server-reported status + whether it has children
 // (the server does the real validation via ControlSequence, so a stale
 // render can never fire an invalid gesture):

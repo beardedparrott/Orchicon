@@ -468,9 +468,17 @@ func StartSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantI
 // reset the subtree: prior child successes are preserved, and the chain
 // continues from where it left off. This is the manual counterpart to the
 // auto-resume path (a failed parent whose children are no longer halted
-// revives on the next scan); it exists for the parked case — a parent
-// parked by StopSequence (status pending) is never picked up by the scan,
-// so Resume is how it re-enters the chain without destroying history.
+// revives on the next scan); it exists for the two cases the derived
+// cursor cannot act on alone:
+//
+//   - Parked: a parent parked by StopSequence (status pending) is never
+//     picked up by the scan, so Resume is how it re-enters the chain
+//     without destroying history.
+//   - Halted: a parent failed by failSequenceChain (first non-succeeded
+//     child failed/cancelled) would re-halt if handed to reconcileParent
+//     unchanged, so Resume first re-arms that child to pending — the same
+//     input change the manual "set failed child to pending" produces —
+//     which lets the auto-revive + arm path continue the chain.
 //
 // Validation of the subtree (workflows bound, no one-shots) is the
 // CALLER's responsibility and runs before this (mirrors StartSequence).
@@ -491,6 +499,30 @@ func ResumeSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenant
 	}
 	if len(children) == 0 {
 		return errors.New("cannot resume a sequence on a work item with no children")
+	}
+
+	// Halted-chain resume: a parent whose first non-succeeded child is
+	// failed/cancelled has halted (failSequenceChain marked the parent
+	// failed, and reconcileParent's failed-child branch re-halts it). A
+	// manual resume must re-arm that child — set it back to pending so the
+	// engine's derived cursor treats it as on-deck and the auto-revive
+	// branch (parent failed + first child no longer halted) re-arms it.
+	// This is byte-for-byte the same input change the manual "set failed
+	// child to pending" produces, so parent-level Resume ≡ child-level
+	// pending by construction. Only the FIRST non-succeeded child is
+	// reset: anySiblingBlocksArming keeps multi-failure chains parked on
+	// the remaining failures (each must be resolved in turn), and a
+	// container child re-arms its own subtree through the existing
+	// container arm path.
+	if idx := deriveNextChild(children); idx >= 0 {
+		switch children[idx].Status {
+		case domain.WorkItemFailed, domain.WorkItemCancelled:
+			status := domain.WorkItemPending
+			if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, children[idx].ID,
+				children[idx].Version, db.UpdateWorkItemFields{Status: &status}); err != nil {
+				return fmt.Errorf("re-arm halted child on resume: %w", err)
+			}
+		}
 	}
 
 	// Parent → running; clear a stale workflow binding on the parent

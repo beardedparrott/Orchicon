@@ -33,7 +33,6 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { KindPill, PositionBadge, RecurringBadge } from "@/components/work-items/work-item-badges";
 import { WorkItemParentSelect } from "@/components/work-items/work-item-parent-select";
-import { SequenceControls } from "@/components/work-items/sequence-controls";
 import { computeSequencePositions } from "@/components/work-items/sequence-utils";
 import { kindLabel, kindMeta, statusMeta, isTerminal, showRecurringBadge, MANUALLY_UNMOVABLE_STATUSES } from "@/components/work-items/work-item-meta";
 import { cn } from "@/lib/utils";
@@ -221,9 +220,6 @@ function WorkItemDetailPage() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {!editing && viewMode === "detail" && (
-            <SequenceControls item={item} hasChildren={hasChildren} />
-          )}
           {!editing && viewMode === "detail" && (
             <Button
               variant="outline"
