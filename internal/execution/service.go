@@ -29,6 +29,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/tenant"
+	"github.com/beardedparrott/orchicon/internal/transcript"
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -1259,23 +1260,13 @@ func composeFollowUpPrompt(v db.WorkerVersionRow, runtimeImage string) string {
 // renderSessionContext renders the durable transcript into a readable
 // chronological context for a follow-up seed and extracts the original
 // session identity (session_info part). The context is bounded so a long
-// session doesn't blow the model window.
+// session doesn't blow the model window. The per-part rendering is shared
+// with the scheduler's recovery seed via the leaf transcript package.
 func renderSessionContext(parts []db.SessionPart) (context, sessionID, serveURL, servePassword string) {
-	const maxContext = 60000
-	var sb strings.Builder
-	trunc := func(text string) string {
-		if len(text) > 2000 {
-			return text[:2000] + "\n…(truncated)"
-		}
-		return text
-	}
 	for _, p := range parts {
 		var pl struct {
-			Text   string          `json:"text"`
-			Source string          `json:"source"`
-			Part   json.RawMessage `json:"part"`
-			SID    string          `json:"session_id"`
-			SURL   string          `json:"serve_url"`
+			SID  string `json:"session_id"`
+			SURL string `json:"serve_url"`
 		}
 		_ = json.Unmarshal(p.Payload, &pl)
 		if pl.SID != "" {
@@ -1284,37 +1275,8 @@ func renderSessionContext(parts []db.SessionPart) (context, sessionID, serveURL,
 		if pl.SURL != "" {
 			serveURL = pl.SURL
 		}
-		switch p.Kind {
-		case "user_message":
-			sb.WriteString("USER (" + pl.Source + "): " + trunc(pl.Text) + "\n\n")
-		case "text":
-			// The assistant text lives under part.text in the raw part JSON.
-			var part struct {
-				Text string `json:"text"`
-			}
-			_ = json.Unmarshal(pl.Part, &part)
-			if part.Text != "" {
-				sb.WriteString("ASSISTANT: " + trunc(part.Text) + "\n\n")
-			}
-		case "tool_use":
-			var part struct {
-				Tool string `json:"tool"`
-			}
-			_ = json.Unmarshal(pl.Part, &part)
-			if part.Tool != "" {
-				sb.WriteString("TOOL CALL: " + part.Tool + "\n\n")
-			}
-		case "reasoning":
-			// skip — verbose, and the assistant text carries the outcome.
-		case "error":
-			sb.WriteString("ERROR\n\n")
-		}
-		if sb.Len() >= maxContext {
-			sb.WriteString("\n…(conversation truncated)\n")
-			break
-		}
 	}
-	return sb.String(), sessionID, serveURL, servePassword
+	return transcript.RenderParts(parts, 60000, 2000, "\n…(conversation truncated)\n"), sessionID, serveURL, servePassword
 }
 
 func strPtr(s string) *string { return &s }

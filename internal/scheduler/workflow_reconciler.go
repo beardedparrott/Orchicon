@@ -1122,7 +1122,7 @@ func (r *WorkflowReconciler) buildRunNarrative(ctx context.Context, tx pgx.Tx, t
 			"step_name": sr.StepName,
 			"status":    sr.Status,
 		}
-		for _, k := range []string{"_summary", "_decision", "_issues", "_worker", "_worker_name", "_recovery_summary"} {
+		for _, k := range []string{"_summary", "_decision", "_issues", "_worker", "_worker_name", "_recovery_summary", "_recovery_execution_id", "_recovery_worker_id"} {
 			if v, ok := meta[k]; ok {
 				entry[strings.TrimPrefix(k, "_")] = v
 			}
@@ -1513,16 +1513,21 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			"_worker_version": step.WorkerVersion,
 		})
 		// Preserve the recovery narrative across a re-dispatch so the run
-		// view keeps showing it after the step runs again.
+		// view keeps showing it after the step runs again. Carries ALL
+		// _recovery_* keys (summary + the dead execution/worker identity
+		// the dispatch path uses to gate the .orchicon/worker.recovery
+		// file) so a recovery-resumed dispatch keeps its seed.
 		if sr.Status == domain.StepRunRecovering {
-			var prev struct {
-				RecoverySummary string `json:"_recovery_summary"`
-			}
+			var prev map[string]any
 			_ = json.Unmarshal(sr.Result, &prev)
-			if prev.RecoverySummary != "" {
+			if len(prev) > 0 {
 				var newResult map[string]any
 				_ = json.Unmarshal(stepResult, &newResult)
-				newResult["_recovery_summary"] = prev.RecoverySummary
+				for _, k := range []string{"_recovery_summary", "_recovery_execution_id", "_recovery_worker_id"} {
+					if v, ok := prev[k]; ok {
+						newResult[k] = v
+					}
+				}
 				stepResult, _ = json.Marshal(newResult)
 			}
 		}
@@ -2294,16 +2299,24 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 
 	// Recovery context: if THIS step is being re-dispatched after a
 	// recovery (its step run is recovering and carries a recovery
-	// summary), show the narrative so the replacement execution learns
+	// seed), show the narrative so the replacement execution learns
 	// from the failure instead of repeating it ("same failure twice"
-	// loop).
+	// loop). A same-worker recovery points at the seeded
+	// .orchicon/worker.recovery file (transcript tail + already-done
+	// directive); a recovery whose seed is for a DIFFERENT worker
+	// keeps the summary-only narrative WITHOUT the file reference so
+	// the new worker is never pointed at another worker's file.
 	if currentRun, ok := runs[wi.WorkflowStepID]; ok {
-		var recMeta struct {
-			RecoverySummary string `json:"_recovery_summary"`
-		}
-		_ = json.Unmarshal(currentRun.Result, &recMeta)
-		if recMeta.RecoverySummary != "" {
-			fmt.Fprintf(&sb, "## Recovery\n\nA previous execution of this step failed and was recovered. Recovery summary:\n%s\n\n", recMeta.RecoverySummary)
+		if seed := recoverySeedFor(currentRun.Result, nil, worker.WorkerID); seed != nil {
+			sb.WriteString(recoveryFileReferenceBlock(seed))
+		} else {
+			var recMeta struct {
+				RecoverySummary string `json:"_recovery_summary"`
+			}
+			_ = json.Unmarshal(currentRun.Result, &recMeta)
+			if recMeta.RecoverySummary != "" {
+				fmt.Fprintf(&sb, "## Recovery\n\nA previous execution of this step failed and was recovered. Recovery summary:\n%s\n\n", recMeta.RecoverySummary)
+			}
 		}
 	}
 
@@ -3007,7 +3020,8 @@ func resolveApprovalWorkItems(sr db.WorkflowStepRunRow, step workflow.StepWire, 
 // prompt, the approver worker pin (so TaskReconciler.workerVersionForStepRun
 // resolves the approver without touching the ticket), the upstream
 // review context, and the pending decision marker. When re-dispatching a
-// recovering step, the previous _recovery_summary is preserved.
+// recovering step, the previous _recovery_* keys are preserved so the
+// recovery-resumed dispatch keeps its seed.
 func buildApprovalStepResult(primaryWID, composite, workerRefStr string, workerVersion int, upstreamWorker, upstreamSummary string, upstreamFiles []string, ac string, prevResult []byte) []byte {
 	stepResult, _ := json.Marshal(map[string]any{
 		"_work_item_id":     primaryWID,
@@ -3020,14 +3034,16 @@ func buildApprovalStepResult(primaryWID, composite, workerRefStr string, workerV
 		"_ac":               ac,
 		"_decision":         "pending",
 	})
-	var prev struct {
-		RecoverySummary string `json:"_recovery_summary"`
-	}
+	var prev map[string]any
 	_ = json.Unmarshal(prevResult, &prev)
-	if prev.RecoverySummary != "" {
+	if len(prev) > 0 {
 		var newResult map[string]any
 		_ = json.Unmarshal(stepResult, &newResult)
-		newResult["_recovery_summary"] = prev.RecoverySummary
+		for _, k := range []string{"_recovery_summary", "_recovery_execution_id", "_recovery_worker_id"} {
+			if v, ok := prev[k]; ok {
+				newResult[k] = v
+			}
+		}
 		stepResult, _ = json.Marshal(newResult)
 	}
 	return stepResult
