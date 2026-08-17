@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -823,6 +824,13 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	if succeeded && output != "" {
 		summary = extractWorkerSummary(output)
 	}
+	// Cap the narrative portion of the summary so a bloated summary doesn't
+	// tax every later step that re-embeds it (Execution history + the
+	// .orchicon/<run>/summary + issues fallback files). The cap preserves the
+	// routing word and every FACTS LEARNED: line verbatim (see
+	// capSummaryNarrative); the full worker output remains in _output for
+	// audit.
+	summary = capSummaryNarrative(summary, maxSummaryTokens)
 	// Check if this work item is a follow-up with a parent execution
 	// to write back to. Read _parent_execution_id from the raw results
 	// before we overwrite them with the worker output.
@@ -1033,10 +1041,15 @@ func (r *TaskReconciler) writeOrchiconFiles(ctx context.Context, exec db.Executi
 		write("summary", summary)
 		// Facts ledger: persist the FACTS LEARNED lines this step recorded
 		// so later steps can read them from disk (the composite prompt
-		// points the next worker at .orchicon/<run>/facts_learned first).
-		// Append to any facts earlier steps already recorded.
+		// points the next worker at .orchicon/<run>/facts_learned first —
+		// it is the single authoritative source of established facts since
+		// the embedded "## Facts learned (this run)" prompt block was
+		// removed). Append to any facts earlier steps already recorded.
+		// Each line carries the originating step name so downstream workers
+		// keep the same per-step attribution the embedded block used to give.
 		facts := extractFactsLearned(summary)
 		if len(facts) > 0 {
+			stepName := r.stepNameForExecution(ctx, exec)
 			existing := ""
 			if b, err := os.ReadFile(filepath.Join(orchDir, "facts_learned")); err == nil {
 				existing = string(b)
@@ -1049,7 +1062,13 @@ func (r *TaskReconciler) writeOrchiconFiles(ctx context.Context, exec db.Executi
 				}
 			}
 			for _, f := range facts {
-				sb.WriteString("FACTS LEARNED: ")
+				if stepName != "" {
+					sb.WriteString("FACTS LEARNED (from ")
+					sb.WriteString(stepName)
+					sb.WriteString("): ")
+				} else {
+					sb.WriteString("FACTS LEARNED: ")
+				}
 				sb.WriteString(f)
 				sb.WriteString("\n")
 			}
@@ -1079,6 +1098,36 @@ func (r *TaskReconciler) writeOrchiconFiles(ctx context.Context, exec db.Executi
 		}
 		write("touched_files", strings.TrimSpace(sb.String()))
 	}
+}
+
+// stepNameForExecution resolves the workflow step name that dispatched an
+// execution, so facts written to .orchicon/<run>/facts_learned can carry
+// per-step attribution (the embedded "## Facts learned (this run)" prompt
+// block that used to supply that attribution is gone). Looks up the step run
+// that owns the execution via worker_execution_id. Best-effort: returns ""
+// when the execution isn't tied to a step run (direct dispatch) or the lookup
+// fails — the facts then fall back to the plain marker.
+func (r *TaskReconciler) stepNameForExecution(ctx context.Context, exec db.ExecutionRow) string {
+	if exec.TenantID == "" || exec.ID == "" {
+		return ""
+	}
+	ttx, err := r.pool.BeginTenantTx(ctx, exec.TenantID)
+	if err != nil {
+		r.log.Warn("step name lookup: begin tx", "error", err)
+		return ""
+	}
+	defer ttx.Rollback(ctx)
+	var name string
+	err = ttx.Tx.QueryRow(ctx,
+		`SELECT step_name FROM workflow_step_runs
+		  WHERE tenant_id = $1 AND worker_execution_id = $2 LIMIT 1`,
+		exec.TenantID, exec.ID,
+	).Scan(&name)
+	if err != nil {
+		return ""
+	}
+	_ = ttx.Commit(ctx)
+	return name
 }
 
 // lookupProjectDir returns the project directory for a project id.
@@ -1600,11 +1649,12 @@ func extractComposite(pc []byte) (string, error) {
 // (must ask before PRing/merging). Both composite builders
 // (buildStandaloneComposite and the workflow buildCompositePrompt) emit
 // it so every dispatch carries the same self-definition.
-const workerIdentityPreamble = "You are an autonomous worker running inside the Orchicon orchestration platform. " +
-	"You are not a human operator and there is no human attached to this run. " +
-	"You execute one assigned work item per run, operate within your role and the project's acceptance criteria, " +
-	"and report your result via the ORCHICON WORKER SUMMARY contract at the end of your output. " +
-	"Work autonomously to completion; do not wait for interactive approval for work that is within your assigned scope.\n\n"
+//
+// The canonical text lives in internal/db (db.WorkerIdentityPreamble) so
+// the stable prompt prefix (db.StablePromptPrefix) can be built from a
+// single shared constant. This alias keeps the scheduler's call sites
+// terse.
+const workerIdentityPreamble = db.WorkerIdentityPreamble
 
 func composeSystemPrompt(v db.WorkerVersionRow) string {
 	if v.Role == "" && v.Skills == "" && v.Behavior == "" && v.AgentsMD == "" {
@@ -1638,7 +1688,11 @@ func composeSystemPrompt(v db.WorkerVersionRow) string {
 // (the caller falls back to a bare worker prompt if the result is empty).
 func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow) string {
 	var sb strings.Builder
-	sb.WriteString(workerIdentityPreamble)
+	// Stable prefix first: shared identity + safety + efficiency + runtime
+	// environment. Same byte-identical block the workflow path prepends, so a
+	// standalone dispatch and a workflow step share the llama.cpp KV-cache
+	// prefix.
+	sb.WriteString(db.StablePromptPrefix(task.RuntimeImage))
 	if worker := composeSystemPrompt(version); worker != "" {
 		fmt.Fprintf(&sb, "# Worker\n\n%s\n\n", worker)
 	}
@@ -1696,6 +1750,7 @@ func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkI
 	sb.WriteString("or\n")
 	sb.WriteString("```\nORCHICON WORKER SUMMARY: failure — Found 3 bugs in the implementation.\n```\n\n")
 	sb.WriteString("The first word (`success` or `failure`) is used to route the workflow. The text after `—` is passed to the next stage as the summary of your work.\n\n")
+	sb.WriteString("Keep your final summary concise — under ~500 tokens (roughly 2000 characters). It is re-embedded into every later step's prompt and persisted to `.orchicon/<run>/summary`, so verbosity taxes all downstream steps. `FACTS LEARNED:` lines and blocking feedback are exempt from the cap.\n\n")
 
 	return sb.String()
 }
@@ -1771,6 +1826,73 @@ func firstWordAsDecision(s string) string {
 		return "failure"
 	}
 	return ""
+}
+
+// maxSummaryTokens caps the narrative portion of a worker summary persisted as
+// `_summary` and re-embedded into every later step's prompt. Local-model runs
+// pay for context size, and a bloated summary taxes all downstream steps, so
+// the cap is a hard guard on top of the soft "keep it under ~500 tokens"
+// instruction in the summary contract.
+const maxSummaryTokens = 500
+
+// capSummaryNarrative truncates the NARRATIVE portion of a worker summary to
+// ~maxTokens tokens (lenient ~4 chars/token heuristic) while preserving the
+// structural content verbatim:
+//
+//   - the ORCHICON WORKER SUMMARY: <decision> routing line, if present in the
+//     text (normally already stripped into `_decision`, kept defensively)
+//   - every FACTS LEARNED: line — extractFactsLearned must still see them.
+//     Both the plain `FACTS LEARNED: <fact>` form a worker writes and the
+//     `FACTS LEARNED (from <step>): <fact>` form the handoff writer persists to
+//     .orchicon/<run>/facts_learned (a downstream worker may quote file lines
+//     back verbatim) are treated as structural and pass through untouched.
+//
+// Narrative lines are kept from the front of the summary until the budget is
+// spent, in original order, so blocking feedback (stated up front) survives.
+// A clear marker is appended so downstream workers know the summary was
+// capped. When nothing was truncated (e.g. a summary that is entirely facts)
+// the original text is returned unchanged.
+func capSummaryNarrative(summary string, maxTokens int) string {
+	if summary == "" {
+		return summary
+	}
+	const charsPerToken = 4
+	budget := maxTokens * charsPerToken
+	if len(summary) <= budget {
+		return summary
+	}
+	var out []string
+	used := 0
+	truncated := false
+	for _, line := range strings.Split(summary, "\n") {
+		trimmed := strings.TrimSpace(line)
+		isFact := false
+		if trimmed != "" {
+			s := strings.ToLower(strings.TrimLeft(strings.TrimLeft(trimmed, "-"), " "))
+			// Structural facts: both the plain marker a worker writes and the
+			// step-attributed form the facts_learned file carries.
+			if strings.HasPrefix(s, "facts learned:") || strings.HasPrefix(s, "facts learned (from") {
+				isFact = true
+			}
+		}
+		if isFact || strings.Contains(line, summaryMarker) {
+			// Structural content always passes through untouched.
+			out = append(out, line)
+			continue
+		}
+		if used >= budget {
+			truncated = true
+			continue
+		}
+		out = append(out, line)
+		used += len(line) + 1
+	}
+	if !truncated {
+		return summary
+	}
+	out = append(out, "…[summary narrative truncated at ~"+strconv.Itoa(maxTokens)+
+		" tokens — FACTS LEARNED lines and the ORCHICON WORKER SUMMARY routing are preserved verbatim; see the execution output for the full text]")
+	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
 // extractTouchedFiles parses `diff --git` lines from the worker's

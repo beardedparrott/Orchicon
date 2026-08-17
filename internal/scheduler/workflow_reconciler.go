@@ -2092,7 +2092,14 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 //     then output format including decision prefix
 func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, worker db.WorkerVersionRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, error) {
 	var sb strings.Builder
-	sb.WriteString(workerIdentityPreamble)
+	// Stable prompt prefix first: shared identity + safety rules + efficiency
+	// directives + runtime environment, built ONLY from shared constants so it
+	// is byte-identical across all workers and steps of a run. llama.cpp's
+	// KV/prompt cache is prefix-based, so this shared prefix is computed once
+	// and reused across every step (and role) of the run. Everything
+	// role/step-specific — worker identity, the task, project context,
+	// instructions, execution history — follows AFTER the prefix.
+	sb.WriteString(db.StablePromptPrefix(wi.RuntimeImage))
 
 	// 0. Worker identity — role, skills, behavior, and AGENTS.md.
 	if r := strings.TrimSpace(worker.Role); r != "" {
@@ -2327,44 +2334,22 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	sb.WriteString("The first word (`success` or `failure`) is used to route the workflow. The text after `—` is passed to the next stage as the summary of your work.\n\n")
 	sb.WriteString("**Important:** The workflow routes on the single word after `ORCHICON WORKER SUMMARY:` — `success` or `failure`. There is no `_issues:` failure channel: any `_issues:` block in your response is informational only and never changes the routing. If you find blocking problems, end with `failure` and explain them in the summary text. If you have only minor suggestions, keep the routing `success` and mention them in your summary text.\n\n")
 
-	// Facts learned: aggregate every `FACTS LEARNED:` line recorded by
-	// completed steps in this run, so later steps inherit established
-	// facts instead of re-deriving them.
-	var runFacts []string
-	stepNameByID := make(map[string]string)
-	for _, s := range allSteps {
-		stepNameByID[s.ID] = s.Name
-	}
-	for stepID, sr := range runs {
-		if _, ok := stepNameByID[stepID]; !ok {
-			continue
-		}
-		if sr.Status != domain.StepRunSucceeded && sr.Status != domain.StepRunFailed {
-			continue
-		}
-		var rData struct {
-			Summary string `json:"_summary"`
-		}
-		json.Unmarshal(sr.Result, &rData)
-		for _, f := range extractFactsLearned(rData.Summary) {
-			runFacts = append(runFacts, fmt.Sprintf("- **%s** — %s", stepNameByID[stepID], f))
-		}
-	}
-	if len(runFacts) > 0 {
-		sb.WriteString("## Facts learned (this run)\n\n")
-		sb.WriteString("The following facts were established by earlier steps in this run. Treat them as established: **do not re-verify or re-derive them.** If a fact proves wrong, append a correction as a new `FACTS LEARNED:` line rather than repeating the investigation.\n\n")
-		for _, f := range runFacts {
-			sb.WriteString(f)
-			sb.WriteString("\n")
-		}
-		sb.WriteString("\n")
-	}
+	// Summary brevity: the summary is re-embedded into every later step's
+	// prompt (Execution history) and persisted to .orchicon/<run>/summary, so
+	// a bloated summary taxes all downstream steps. Soft instruction here; the
+	// handoff writer also hard-caps the narrative (capSummaryNarrative) so a
+	// runaway summary cannot blow downstream context.
+	sb.WriteString("Keep your final summary concise — under ~500 tokens (roughly 2000 characters). It is re-embedded into every later step's prompt and persisted to `.orchicon/<run>/summary`, so verbosity taxes all downstream steps. `FACTS LEARNED:` lines and blocking feedback are exempt from the cap.\n\n")
 
 	// Prior execution timeline: show what each completed step produced,
 	// so the worker understands the full context including loop-backs.
 	sb.WriteString("## Execution history\n\n")
 	sb.WriteString("The following steps have completed in this workflow run. If a step ran multiple times (loop-back), each iteration is listed.\n")
 	// Build a step-ID→name lookup from allSteps.
+	stepNameByID := make(map[string]string)
+	for _, s := range allSteps {
+		stepNameByID[s.ID] = s.Name
+	}
 
 	type histEntry struct {
 		stepName, status, summary, issues, reason, iteration string
@@ -2459,35 +2444,15 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	}
 	sb.WriteString("If you produce an output file, use the `write` tool (not `bash` with a heredoc). The `write` tool saves the file and orchicon captures it as an inline artifact.\n")
 
-	// Machine-generated runtime environment facts (never authored worker
-	// context): the worker runs in an ephemeral rootless container with a
-	// known toolkit, so it stops probing the environment and can focus on
-	// the work. This reflects the resolved image for the run.
-	sb.WriteString(runtimeEnvironmentBlock(wi.RuntimeImage))
-
 	return sb.String(), nil
 }
 
-// runtimeEnvironmentBlock is the machine-generated "## Runtime
-// environment" section appended to every composite prompt. It tells the
-// worker the ground truth about its execution sandbox so it does not
-// waste cycles empirically probing the container (and so it uses the
-// rootless system-library escape hatch instead of hitting a wall).
+// runtimeEnvironmentBlock is kept as a thin alias for the shared
+// db.RuntimeEnvironmentBlock so scheduler tests and callers stay terse. The
+// canonical implementation lives in internal/db (alongside the other stable
+// prompt-prefix content).
 func runtimeEnvironmentBlock(image string) string {
-	img := strings.TrimSpace(image)
-	if img == "" {
-		img = "the default Orchicon runtime base image"
-	}
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "\n## Runtime environment\n\n")
-	fmt.Fprintf(&sb, "You are running inside an ephemeral, rootless Linux container (`%s`). Everything you install is wiped when the workflow run ends, so only save durable work to the project directory.\n\n", img)
-	sb.WriteString("- **Scratch directory:** `/tmp/orchicon` is the ONE place outside the project you may read and write. Put ephemeral files there (screenshots, logs, downloaded artifacts you need to inspect). It is wiped at run end — never put durable work there, and always save final outputs to the project directory.\n")
-	sb.WriteString("- You are **not root** and cannot become root: `sudo` is blocked and `apt-get` refuses to run without root. Do not attempt them.\n")
-	sb.WriteString("- You may install tools freely into the ephemeral filesystem with the user-space package managers that ship in the image: `pip install` (PIP_BREAK_SYSTEM_PACKAGES is set), `npm install`, `mise install <tool>`, `uv`, `bun`, `curl`. These need no root and are wiped at run end.\n")
-	sb.WriteString("- System packages are baked at build time; `apt-get install` will not work. If you need a system shared library that is missing (e.g. `libGL.so.1` for a GUI toolkit), fetch and extract it without root:\n\n")
-	sb.WriteString("    apt-get download <pkg> && dpkg-deb -x <pkg>*.deb /tmp/libs && export LD_LIBRARY_PATH=/tmp/libs/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH\n\n")
-	sb.WriteString("- There is no X server and usually no offscreen graphics libs. Prefer headless modes for GUI toolkits (e.g. `QT_QPA_PLATFORM=offscreen`), or install the missing libs with the pattern above.\n")
-	return sb.String()
+	return db.RuntimeEnvironmentBlock(image)
 }
 
 // walkAncestors walks the parent_id chain from a work item up to the

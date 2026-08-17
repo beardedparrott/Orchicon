@@ -2,6 +2,8 @@ package scheduler
 
 import (
 	"encoding/json"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -25,9 +27,9 @@ func TestSummaryWordIsSingleDecisionSignal(t *testing.T) {
 			want: "success",
 		},
 		{
-			name: "failure word routes failure",
+			name:   "failure word routes failure",
 			output: "ORCHICON WORKER SUMMARY: failure — the API contract is wrong.\n",
-			want: "failure",
+			want:   "failure",
 		},
 		{
 			name: "explicit _decision: line does not override summary",
@@ -36,9 +38,9 @@ func TestSummaryWordIsSingleDecisionSignal(t *testing.T) {
 			want: "success",
 		},
 		{
-			name: "no marker means no decision",
+			name:   "no marker means no decision",
 			output: "Just some prose with no summary marker.",
-			want: "",
+			want:   "",
 		},
 	}
 	for _, tc := range cases {
@@ -180,6 +182,84 @@ func TestAggregateLoopDecisions(t *testing.T) {
 				t.Errorf("aggregateLoopDecisions(%v) = %q, want %q", tc.decisions, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestCapSummaryNarrativeShortSummaryPassthrough verifies the fast path: a
+// summary under the budget passes through byte-identical.
+func TestCapSummaryNarrativeShortSummaryPassthrough(t *testing.T) {
+	in := "Did the work. Everything passes."
+	if got := capSummaryNarrative(in, 500); got != in {
+		t.Errorf("short summary must pass through untouched, got %q", got)
+	}
+	if got := capSummaryNarrative("", 500); got != "" {
+		t.Errorf("empty summary must stay empty, got %q", got)
+	}
+}
+
+// TestCapSummaryNarrativePreservesFactsAndRouting verifies the structural
+// preservation contract: the cap strips narrative verbosity but NEVER strips
+// FACTS LEARNED lines or the ORCHICON WORKER SUMMARY routing line. The facts
+// must remain extractable via extractFactsLearned after the cap.
+func TestCapSummaryNarrativePreservesFactsAndRouting(t *testing.T) {
+	narrative := strings.Repeat("long rambling narrative line that pads the summary with filler words\n", 200) // ~11k chars
+	lastNarrativeLine := "long rambling narrative line that pads the summary with filler words"
+	in := narrative +
+		"ORCHICON WORKER SUMMARY: failure — the login flow loses the session token.\n" +
+		"FACTS LEARNED: the runtime container supervisor runs the pre-feature daemon self-copy.\n" +
+		"FACTS LEARNED: /tmp is noexec in the runtime containers.\n" +
+		"FACTS LEARNED (from Senior Software Engineer): a step-attributed fact quoted back from the facts_learned file.\n"
+
+	got := capSummaryNarrative(in, 500)
+	if len(got) >= len(in) {
+		t.Errorf("narrative was not truncated; len=%d (in=%d)", len(got), len(in))
+	}
+	// The tail of the narrative must be gone (only the leading lines survive).
+	if tail := strings.LastIndex(got, lastNarrativeLine); tail >= 0 {
+		// The narrative's last surviving occurrence must not be the final
+		// occurrence of that line in the original — i.e. later lines were cut.
+		if strings.Count(got, lastNarrativeLine) >= 200 {
+			t.Errorf("all 200 narrative lines survived; len=%d", len(got))
+		}
+	}
+	if !strings.Contains(got, summaryMarker) || !strings.Contains(got, "failure") {
+		t.Errorf("routing line must survive the cap; got:\n%s", got)
+	}
+	if !strings.Contains(got, "FACTS LEARNED: the runtime container supervisor runs the pre-feature daemon self-copy.") {
+		t.Errorf("FACTS LEARNED line lost by cap; got:\n%s", got)
+	}
+	if !strings.Contains(got, "FACTS LEARNED: /tmp is noexec in the runtime containers.") {
+		t.Errorf("FACTS LEARNED line lost by cap; got:\n%s", got)
+	}
+	if !strings.Contains(got, "FACTS LEARNED (from Senior Software Engineer): a step-attributed fact quoted back from the facts_learned file.") {
+		t.Errorf("step-attributed FACTS LEARNED line lost by cap; got:\n%s", got)
+	}
+	facts := extractFactsLearned(got)
+	if len(facts) != 2 {
+		t.Errorf("extractFactsLearned after cap = %d facts, want 2: %v", len(facts), facts)
+	}
+	if !strings.Contains(got, "truncated") {
+		t.Errorf("expected a truncation marker, got:\n%s", got)
+	}
+}
+
+// TestCapSummaryNarrativeAllFactsNoTruncation verifies a summary that is
+// entirely facts exceeds the byte budget yet must be returned verbatim — the
+// cap only ever truncates narrative, never structural content.
+func TestCapSummaryNarrativeAllFactsNoTruncation(t *testing.T) {
+	var sb strings.Builder
+	for i := 0; i < 30; i++ {
+		sb.WriteString("FACTS LEARNED: established fact number ")
+		sb.WriteString(strconv.Itoa(i))
+		sb.WriteString(" that is intentionally verbose so the whole block blows the token budget.\n")
+	}
+	in := sb.String()
+	if len(in) <= maxSummaryTokens*4 {
+		t.Fatal("test setup: summary must exceed the budget")
+	}
+	got := capSummaryNarrative(in, 500)
+	if got != in {
+		t.Errorf("all-facts summary must pass through untouched, got:\n%s", got)
 	}
 }
 

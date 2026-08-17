@@ -1177,8 +1177,19 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
+	// Resolve the run's runtime image so the follow-up system prompt can open
+	// with the same stable prompt prefix as the original composite prompt —
+	// the shared head carries the worker identity, safety rules, and
+	// efficiency directives that the stored AGENTS.md no longer duplicates
+	// (it is stripped at seed time; the prefix is the single source). A
+	// follow-up's per-message system prompt is applied to the turn, so
+	// without this every follow-up turn would lose the safety block.
+	runtimeImage := ""
+	if wi, werr := db.GetWorkItem(ctx, ttx.Tx, tenantID, exec.TaskID); werr == nil {
+		runtimeImage = wi.RuntimeImage
+	}
 	context, sessionID, serveURL, servePassword := renderSessionContext(parts)
-	systemPrompt := composeFollowUpPrompt(version)
+	systemPrompt := composeFollowUpPrompt(version, runtimeImage)
 	startSeq := int64(0)
 	for _, p := range parts {
 		if p.Seq > startSeq {
@@ -1209,9 +1220,24 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 
 // composeFollowUpPrompt rebuilds the worker's composed system prompt for a
 // follow-up session (mirrors the TaskReconciler's composeSystemPrompt).
-func composeFollowUpPrompt(v db.WorkerVersionRow) string {
+//
+// It opens with the shared stable prompt prefix (db.StablePromptPrefix) —
+// worker identity + safety rules + efficiency directives + runtime
+// environment — the same byte-identical head every composite prompt starts
+// with. The stored AGENTS.md no longer duplicates the safety block (seedAgentsMD
+// strips it at persistence), so without the prefix a follow-up turn's
+// per-message system prompt would silently drop the HARD-limit safety rules.
+// runtimeImage is the run's runtime container image tag ("" falls back to the
+// default in the prefix text).
+func composeFollowUpPrompt(v db.WorkerVersionRow, runtimeImage string) string {
+	var sb strings.Builder
+	sb.WriteString(db.StablePromptPrefix(runtimeImage))
 	if v.Role == "" && v.Skills == "" && v.Behavior == "" && v.AgentsMD == "" {
-		return v.SystemPrompt
+		if v.SystemPrompt != "" {
+			sb.WriteString("\n\n")
+			sb.WriteString(v.SystemPrompt)
+		}
+		return sb.String()
 	}
 	var parts []string
 	add := func(heading, content string) {
@@ -1225,7 +1251,9 @@ func composeFollowUpPrompt(v db.WorkerVersionRow) string {
 	add("Skills", v.Skills)
 	add("Behavior", v.Behavior)
 	add("AGENTS.md", v.AgentsMD)
-	return strings.Join(parts, "\n\n")
+	sb.WriteString("\n\n")
+	sb.WriteString(strings.Join(parts, "\n\n"))
+	return sb.String()
 }
 
 // renderSessionContext renders the durable transcript into a readable
