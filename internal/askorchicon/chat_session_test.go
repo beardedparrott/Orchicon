@@ -234,6 +234,14 @@ func busIdle(sessionID string) opencode.BusEvent {
 	return opencode.BusEvent{Type: "session.idle", Properties: map[string]any{"sessionID": sessionID}}
 }
 
+// busDelta builds a modern mid-generation token-delta bus event (the serve's
+// text-delta stream: message.part.delta with field "text").
+func busDelta(sessionID, delta string) opencode.BusEvent {
+	return opencode.BusEvent{Type: "message.part.delta", Properties: map[string]any{
+		"sessionID": sessionID, "messageID": "m1", "partID": "p1", "field": "text", "delta": delta,
+	}}
+}
+
 func busSessionError(sessionID, message string) opencode.BusEvent {
 	return opencode.BusEvent{Type: "session.error", Properties: map[string]any{
 		"sessionID": sessionID,
@@ -794,6 +802,54 @@ func TestCollectConversationReplyCollectsReply(t *testing.T) {
 	}
 }
 
+// TestCollectConversationReplyDeltaStreamPreventsStall verifies the
+// mid-generation delta feed (D1 chat mirror) on the REAL chat path
+// (collectConversationReply → runOneTurnAttempt, which owns the stall
+// monitor): a slow model turn that streams token deltas for longer than the
+// no_progress window does NOT trip the chat stall monitor — each delta
+// resets lastActivity, so the turn completes once the completed text part +
+// idle arrive. Without the feed, a generation longer than the window with no
+// completed parts is aborted as stalled (the same false-stall as worker
+// executions).
+func TestCollectConversationReplyDeltaStreamPreventsStall(t *testing.T) {
+	// Window 2s (min stall-ticker interval is 1s; 2s gives deterministic
+	// ticks at 2s/4s). Deltas every ~1s keep lastActivity ≤1s old at every
+	// tick. WITHOUT the feed the monitor trips at the FIRST tick (2s), when
+	// lastActivity is ~2s old — so the test fails fast on a regression.
+	t.Setenv("ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW", "2s")
+	client := &fakeSessionClient{}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_delta", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
+	}
+	go func() {
+		waitForSend(t, client, 1)
+		// A slow generation: only deltas stream for well past the window,
+		// then the completed part + idle finish the turn.
+		for i := 0; i < 4; i++ {
+			client.sub.feed(busDelta("ses_delta", "tok"))
+			time.Sleep(1000 * time.Millisecond)
+		}
+		client.sub.feed(busText("ses_delta", "The answer"))
+		client.sub.feed(busIdle("ses_delta"))
+	}()
+	reply, _, sid, err := collectTurn(t, client, opts)
+	if err != nil {
+		t.Fatalf("collect error: %v", err)
+	}
+	if reply != "The answer" {
+		t.Errorf("reply = %q, want %q", reply, "The answer")
+	}
+	if sid != "ses_delta" {
+		t.Errorf("final session = %q, want ses_delta", sid)
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.aborted) != 0 {
+		t.Errorf("aborted sessions = %v, want none (deltas must prevent the stall abort)", client.aborted)
+	}
+}
+
 // TestCollectConversationReplyCollectsReasoning verifies reasoning parts on
 // the bus are unwrapped via LegacyEventFromBus, accumulated separately from
 // the reply text (never folded into assistant content), and returned by the
@@ -1269,4 +1325,3 @@ func TestTurnRegistrySweep(t *testing.T) {
 	// The expired cancel fired with errTurnExpired (captured above via
 	// context.Cause on the cancelled context).
 }
-

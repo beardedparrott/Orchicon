@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -121,6 +122,52 @@ func TestStallNoTripWhenProgressing(t *testing.T) {
 	m.observe("tool_call", map[string]any{"tool": "read", "args": map[string]any{}}) // 1 < 3
 	if reason := m.check(); reason != "" {
 		t.Fatalf("expected no stall, got %q", reason)
+	}
+}
+
+// TestTokenDeltasPreventNoProgressTrip verifies the no_progress window does
+// NOT trip while mid-generation token deltas are streaming: a slow local-model
+// generation that streams tokens but never completes a text part must count as
+// alive (the exact-300s Aborted root cause). The text_loop guard is
+// intentionally NOT reset by deltas — only lastStepFinish advances.
+func TestTokenDeltasPreventNoProgressTrip(t *testing.T) {
+	w := stallWindows{noProgress: 10 * time.Second, noFileDiff: time.Hour, textLoop: time.Hour, repetitionN: 100, repetitionW: time.Minute}
+	m := newTestMonitor(w)
+	// A generation that streams deltas well past the no_progress window but
+	// completes nothing stays alive.
+	for i := 0; i < 12; i++ {
+		m.mu.Lock()
+		m.lastStepFinish = m.now().Add(-9 * time.Second) // just inside the window
+		m.mu.Unlock()
+		m.observe("text", map[string]any{"delta": "tok"}) // streamed token
+		if reason := m.check(); reason != "" {
+			t.Fatalf("expected no stall while deltas stream, got %q", reason)
+		}
+	}
+	// Once the deltas stop, silence DOES trip the window.
+	m.mu.Lock()
+	m.lastStepFinish = m.now().Add(-11 * time.Second)
+	m.mu.Unlock()
+	if reason := m.check(); reason != "stalled:no_progress" {
+		t.Fatalf("expected stalled:no_progress after silence, got %q", reason)
+	}
+}
+
+// TestTokenDeltasDoNotResetTextLoop verifies delta liveness advances ONLY the
+// no_progress signal: a pure-token generation that never takes a meaningful
+// action still trips text_loop once that window elapses (D4 — the guard
+// against an infinite single-step reasoning loop).
+func TestTokenDeltasDoNotResetTextLoop(t *testing.T) {
+	w := stallWindows{noProgress: time.Hour, noFileDiff: time.Hour, textLoop: 10 * time.Second, repetitionN: 100, repetitionW: time.Minute}
+	m := newTestMonitor(w)
+	// A delta streams (lastStepFinish advances → no_progress stays fresh) but
+	// lastMeaningfulAction is untouched → text_loop must still trip.
+	m.observe("text", map[string]any{"delta": "tok"})
+	m.mu.Lock()
+	m.lastMeaningfulAction = m.now().Add(-11 * time.Second) // text_loop window elapsed
+	m.mu.Unlock()
+	if reason := m.check(); !strings.HasPrefix(reason, "stalled:text_loop") {
+		t.Fatalf("expected stalled:text_loop despite delta liveness, got %q", reason)
 	}
 }
 
