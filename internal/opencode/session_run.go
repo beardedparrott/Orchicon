@@ -294,7 +294,7 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 	// This must happen BEFORE the LegacyEventFromBus dispatch so deltas never
 	// reach parseEvent / the transcript / the UI (completed parts carry the
 	// durable record — see TokenDeltaFromBus).
-	if d, ok := TokenDeltaFromBus(evt); ok {
+	if _, ok := TokenDeltaFromBus(evt); ok {
 		r.resolveProbe()
 		r.noteSessionProgress()
 		if r.monitor != nil {
@@ -302,10 +302,11 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 			// signal — without touching lastMeaningfulAction, so the
 			// text_loop guard (an infinite single-step reasoning loop) is
 			// unchanged (D4). The part arg is nil: for "text" the monitor
-			// ignores it, so we avoid a per-delta allocation (D3).
+			// ignores it, so we avoid a per-delta allocation (D3). The
+			// delta text itself is liveness evidence only — the completed
+			// part carries the durable record.
 			r.monitor.observe("text", nil)
 		}
-		_ = d // deltas are liveness evidence; the completed part carries the durable text
 		return
 	}
 	if legacy, ok := LegacyEventFromBus(evt); ok {
