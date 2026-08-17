@@ -273,3 +273,42 @@ func TestCompositePromptNoEmbeddedFactsBlock(t *testing.T) {
 		t.Errorf("the read-facts_learned instruction must be retained")
 	}
 }
+
+// TestCompositePromptGitDisciplineForBareWorker verifies the acceptance
+// criterion for the shared git-discipline block: even a bare custom worker
+// (empty Role/Skills/Behavior/AgentsMD — no per-worker git guidance of its
+// own) is explicitly told to work off a branch of `develop` and never commit
+// to `main`/`develop` directly, in BOTH the workflow composite and the
+// standalone composite.
+func TestCompositePromptGitDisciplineForBareWorker(t *testing.T) {
+	ctx := context.Background()
+	item := db.WorkItemRow{Title: "Branch discipline", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
+	bare := db.WorkerVersionRow{} // nothing — a custom worker with no git content
+
+	r := &WorkflowReconciler{}
+	out, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, bare, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"## Git discipline",
+		"Work on a branch created off `develop`",
+		"NEVER** commit to, push to, or open a PR into `main` or `develop`",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("workflow composite missing %q for a bare worker; got:\n%s", want, out)
+		}
+	}
+
+	// Standalone (non-workflow) dispatch path must carry the same floor.
+	standalone := buildStandaloneComposite(nil, db.ExecutionRow{}, item, bare)
+	for _, want := range []string{
+		"## Git discipline",
+		"Work on a branch created off `develop`",
+		"NEVER** commit to, push to, or open a PR into `main` or `develop`",
+	} {
+		if !strings.Contains(standalone, want) {
+			t.Errorf("standalone composite missing %q for a bare worker; got:\n%s", want, standalone)
+		}
+	}
+}
