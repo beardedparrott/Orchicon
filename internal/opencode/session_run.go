@@ -288,6 +288,27 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		r.recordStreamError(evt)
 		return
 	}
+	// Mid-generation token deltas (streamed text/reasoning) are LIVENESS
+	// evidence: feed them to the progress monitor so a long, slow local-model
+	// generation counts as progress and never false-trips stalled:no_progress.
+	// This must happen BEFORE the LegacyEventFromBus dispatch so deltas never
+	// reach parseEvent / the transcript / the UI (completed parts carry the
+	// durable record — see TokenDeltaFromBus).
+	if _, ok := TokenDeltaFromBus(evt); ok {
+		r.resolveProbe()
+		r.noteSessionProgress()
+		if r.monitor != nil {
+			// observe("text") advances lastStepFinish — the no_progress
+			// signal — without touching lastMeaningfulAction, so the
+			// text_loop guard (an infinite single-step reasoning loop) is
+			// unchanged (D4). The part arg is nil: for "text" the monitor
+			// ignores it, so we avoid a per-delta allocation (D3). The
+			// delta text itself is liveness evidence only — the completed
+			// part carries the durable record.
+			r.monitor.observe("text", nil)
+		}
+		return
+	}
 	if legacy, ok := LegacyEventFromBus(evt); ok {
 		// ANY telemetry activity (text/tool/step/reasoning) after a probe
 		// is evidence the worker is alive — resolve the probe and revive
@@ -439,6 +460,14 @@ func sessionErrorMessage(evt BusEvent) string {
 func (r *sessionRun) recordStreamError(evt BusEvent) {
 	msg := sessionErrorMessage(evt)
 	r.a.log.Warn("opencode session error", "execution", r.execRow.ID, "message", msg)
+	// Abort-echo guard: when the session was already terminated (e.g. a
+	// fatal stall recorded its reason and Abort'd the session), the
+	// `session.error: Aborted` echo must not re-mark health, bump the
+	// recycle counter, or overwrite the terminal reason. The true cause
+	// (e.g. stalled:no_progress) is already recorded by finish().
+	if r.isFinished() {
+		return
+	}
 	r.mu.Lock()
 	if r.lastStreamErr == "" {
 		r.lastStreamErr = msg
@@ -539,8 +568,13 @@ func (r *sessionRun) onStall(reason string) {
 	r.callbacks.OnStall(r.parentCtx, r.execRow.ID, reason, fatal)
 	if fatal {
 		r.a.log.Warn("fatal stall — aborting session", "execution", r.execRow.ID, "reason", reason)
-		_ = r.client.Abort(r.parentCtx, r.sessionID)
+		// Record the terminal reason FIRST so the true cause survives the
+		// `session.error: Aborted` echo that the serve emits when Abort
+		// lands below — finish() is first-arrival-wins, and without this
+		// ordering the SSE-triggered recordStreamError could win the race
+		// and mask the real reason with "opencode_session_error: Aborted".
 		r.finish(false, reason)
+		_ = r.client.Abort(r.parentCtx, r.sessionID)
 		return
 	}
 	r.maybeNudge(reason)

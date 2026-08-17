@@ -357,6 +357,62 @@ func LegacyEventFromBus(evt BusEvent) (map[string]any, bool) {
 	return nil, false
 }
 
+// TokenDeltaFromBus reports whether a bus event is a mid-generation token
+// delta (streamed text/reasoning) and returns the incremental text. It
+// accepts both the modern `message.part.delta` shape (the serve's
+// text-delta / reasoning-delta stream) and the legacy
+// `message.part.updated`-with-delta shape (older serves). Deltas are
+// LIVENESS evidence only — callers feed them to the progress monitors so a
+// long, slow generation counts as progress; they must NOT be appended to
+// output, persisted to the transcript, or streamed to the UI (completed
+// parts carry the durable record, and a generation would otherwise create
+// thousands of tiny transcript rows).
+func TokenDeltaFromBus(evt BusEvent) (deltaText string, ok bool) {
+	props := evt.Properties
+	switch evt.Type {
+	case "message.part.delta":
+		// Modern shape: {sessionID, messageID, partID, field, delta}. The
+		// serve streams text and reasoning through the SAME field "text";
+		// other fields (e.g. "metadata") are not token progress.
+		field, _ := props["field"].(string)
+		if field != "" && field != "text" && field != "reasoning" {
+			return "", false
+		}
+		delta, _ := props["delta"].(string)
+		if delta == "" {
+			return "", false
+		}
+		return delta, true
+	case "message.part.updated":
+		// Legacy shape: a text/reasoning part with a `delta` subobject and
+		// NO time.end (a completed part is not a delta — let the normal
+		// LegacyEventFromBus path handle it).
+		part, _ := props["part"].(map[string]any)
+		if part == nil {
+			return "", false
+		}
+		ptype, _ := part["type"].(string)
+		if ptype != "text" && ptype != "reasoning" {
+			return "", false
+		}
+		if tm, _ := part["time"].(map[string]any); tm != nil {
+			if _, hasEnd := tm["end"]; hasEnd {
+				return "", false
+			}
+		}
+		delta, _ := part["delta"].(map[string]any)
+		if delta == nil {
+			return "", false
+		}
+		text, _ := delta["text"].(string)
+		if text == "" {
+			return "", false
+		}
+		return text, true
+	}
+	return "", false
+}
+
 // newRequest builds an authenticated request, scoping it to the client's
 // directory: the x-opencode-directory header on writes, the `directory`
 // query param on GETs (mirroring the SDK's request interceptor).

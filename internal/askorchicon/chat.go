@@ -1066,6 +1066,19 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				if !sent {
 					continue
 				}
+				// Mid-generation token deltas are liveness evidence: feed
+				// them to the stall monitor so a long, slow generation on
+				// a local model resets the no_progress clock instead of
+				// false-tripping the stall. Deltas must NOT flow into the
+				// reply text / reasoning / stream events (completed parts
+				// carry the durable record — TokenDeltaFromBus).
+				if _, ok := opencode.TokenDeltaFromBus(evt); ok {
+					// observe("text") resets lastActivity — for "text" the
+					// monitor ignores the part, so pass nil (no per-delta
+					// allocation).
+					monitor.observe("text", nil)
+					continue
+				}
 				if legacy, ok := opencode.LegacyEventFromBus(evt); ok {
 					t, _ := legacy["type"].(string)
 					part, _ := legacy["part"].(map[string]any)
