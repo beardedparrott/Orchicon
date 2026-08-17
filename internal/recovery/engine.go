@@ -816,6 +816,18 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 			if rec.Summary != "" {
 				merged["_recovery_summary"] = rec.Summary
 			}
+			// Publish the dead execution's identity + worker so the
+			// dispatch path can (a) gate the .orchicon/worker.recovery
+			// file on the SAME worker being re-dispatched and (b) read
+			// the dead session's transcript back into it. Written beside
+			// _recovery_summary so the scheduler's single recoverySeedFor
+			// predicate reads them all from the same result JSON.
+			merged["_recovery_execution_id"] = rec.FailedExecutionID
+			failedWorkerID := ""
+			if failedExec, err := db.GetExecution(ctx, ttx.Tx, tenantID, rec.FailedExecutionID); err == nil {
+				failedWorkerID = failedExec.WorkerID
+			}
+			merged["_recovery_worker_id"] = failedWorkerID
 			mergedJSON, _ := json.Marshal(merged)
 			if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRun.ID, stepRun.Version, db.UpdateWorkflowStepRunFields{
 				Result: &mergedJSON,
@@ -832,6 +844,12 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 				if rec.Summary != "" {
 					wiResults["_recovery_summary"] = rec.Summary
 				}
+				wiResults["_recovery_execution_id"] = rec.FailedExecutionID
+				failedWorkerID := ""
+				if failedExec, err := db.GetExecution(ctx, ttx.Tx, tenantID, rec.FailedExecutionID); err == nil {
+					failedWorkerID = failedExec.WorkerID
+				}
+				wiResults["_recovery_worker_id"] = failedWorkerID
 				wiResultsJSON, _ := json.Marshal(wiResults)
 				_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, rec.TaskID, task.Version, db.UpdateWorkItemFields{
 					Status:  strPtr(domain.WorkItemReady),

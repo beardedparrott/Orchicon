@@ -86,16 +86,50 @@ func ListExecutionSessionParts(ctx context.Context, tx pgx.Tx, tenantID, executi
 	return out, rows.Err()
 }
 
+// ListExecutionSessionPartsTail returns the LAST `limit` parts of an
+// execution's transcript (ORDER BY seq DESC LIMIT n), which is what the
+// recovery-resumed dispatch seeds into the .orchicon/worker.recovery file.
+// The caller reverses the result to restore chronological order. limit is
+// clamped to 1..1000.
+func ListExecutionSessionPartsTail(ctx context.Context, tx pgx.Tx, tenantID, executionID string, limit int) ([]SessionPart, error) {
+	if limit <= 0 {
+		limit = 1
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	const q = `SELECT execution_id, tenant_id, seq, kind, payload, created_at
+		FROM execution_session_parts
+		WHERE tenant_id = $1 AND execution_id = $2
+		ORDER BY seq DESC LIMIT $3`
+	rows, err := tx.Query(ctx, q, tenantID, executionID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list session parts tail: %w", err)
+	}
+	defer rows.Close()
+	var out []SessionPart
+	for rows.Next() {
+		var p SessionPart
+		var payload []byte
+		if err := rows.Scan(&p.ExecutionID, &p.TenantID, &p.Seq, &p.Kind, &payload, &p.CreatedAt); err != nil {
+			return nil, fmt.Errorf("db: scan session part: %w", err)
+		}
+		p.Payload = payload
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // SessionPartKind constants.
 const (
-	SessionPartUserMessage = "user_message"
-	SessionPartText        = "text"
-	SessionPartToolUse     = "tool_use"
-	SessionPartReasoning   = "reasoning"
-	SessionPartStepStart   = "step_start"
-	SessionPartStepFinish  = "step_finish"
-	SessionPartError       = "error"
-	SessionPartSessionInfo = "session_info"
+	SessionPartUserMessage  = "user_message"
+	SessionPartText         = "text"
+	SessionPartToolUse      = "tool_use"
+	SessionPartReasoning    = "reasoning"
+	SessionPartStepStart    = "step_start"
+	SessionPartStepFinish   = "step_finish"
+	SessionPartError        = "error"
+	SessionPartSessionInfo  = "session_info"
 	SessionPartSystemPrompt = "system_prompt"
 )
 

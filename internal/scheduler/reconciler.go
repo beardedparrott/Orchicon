@@ -470,9 +470,11 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	// agent's `prompt` via OPENCODE_CONFIG_CONTENT so every
 	// conversation turn carries the same context.
 	composite, _ := extractComposite(task.PromptContext)
+	var stepRunResult []byte // step run's full result — carries the _recovery_* seed keys
 	if exec.WorkflowRunID != "" && exec.WorkflowStepID != "" {
 		if stx, err := r.pool.BeginTenantTx(context.Background(), exec.TenantID); err == nil {
 			if sr, err := db.GetWorkflowStepRunByStep(context.Background(), stx.Tx, exec.TenantID, exec.WorkflowRunID, exec.WorkflowStepID); err == nil {
+				stepRunResult = sr.Result
 				var srMeta struct {
 					Prompt string `json:"_prompt"`
 				}
@@ -498,6 +500,15 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 			systemPrompt = "You are a worker in the Orchicon orchestration system. " +
 				"Complete the work item described in the user message and report back."
 		}
+	}
+	// Recovery seeding: if this is a recovery-resumed dispatch for the SAME
+	// worker that died, write .orchicon/worker.recovery (dead session's
+	// transcript tail + the already-done directive) and ensure the composite
+	// references it. A different worker or a fresh dispatch never sees the
+	// file or the reference (any stale file is swept as a safety net).
+	// Best-effort — a failure must never fail dispatch.
+	if projectDir != "" {
+		systemPrompt = r.seedRecoveryFile(context.Background(), exec, task, version, projectDir, stepRunResult, systemPrompt)
 	}
 	// User message (Goal): just the work item title. The composite
 	// (with the full task + project + recovery context) is the
@@ -850,14 +861,16 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	//
 	// We start fresh — previous results from an earlier execution
 	// (e.g. SSE) carry stale fields that must NOT survive into this
-	// execution. _parent_execution_id and _recovery_summary are
-	// carried forward for traceability. _issues is NOT preserved —
-	// the execution history in the prompt already shows prior issues.
+	// execution. _parent_execution_id and the _recovery_* keys are
+	// carried forward for traceability and so the dispatch path can
+	// gate the .orchicon/worker.recovery file on a same-worker
+	// recovery. _issues is NOT preserved — the execution history in
+	// the prompt already shows prior issues.
 	results := map[string]any{}
 	if len(wi.Results) > 0 {
 		var existing map[string]any
 		if err := json.Unmarshal(wi.Results, &existing); err == nil {
-			for _, k := range []string{"_parent_execution_id", "_recovery_summary"} {
+			for _, k := range []string{"_parent_execution_id", "_recovery_summary", "_recovery_execution_id", "_recovery_worker_id"} {
 				if v, ok := existing[k]; ok {
 					results[k] = v
 				}
@@ -971,6 +984,14 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 
 	// Write .orchicon/ files for the next worker to read.
 	r.writeOrchiconFiles(ctx, exec, wi, succeeded, results)
+
+	// System-side recovery-seed cleanup: a successful recovery-resumed
+	// execution removes .orchicon/worker.recovery when the file's footer
+	// matches this execution (the worker-side `rm` in the file's own
+	// directive is the primary mechanism; this is the backstop so the file
+	// never lingers across workflows/projects and never deletes a newer
+	// recovery's file).
+	r.removeRecoveryFileForSuccess(ctx, exec, results, succeeded)
 
 	// Follow-up write-back: if this work item has a parent execution
 	// (created via CreateFollowUpExecution), append the assistant's
@@ -1705,6 +1726,16 @@ func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkI
 	}
 	if ac := strings.TrimSpace(task.AcceptanceCriteria); ac != "" {
 		fmt.Fprintf(&sb, "Acceptance criteria:\n%s\n\n", ac)
+	}
+
+	// Recovery context: same-worker recovery-resumed dispatch reads the
+	// seed and points at .orchicon/worker.recovery (transcript tail +
+	// already-done directive). A different worker / fresh dispatch gets
+	// no block and never sees the file. buildStandaloneComposite parity
+	// with the workflow path (the recovery engine writes the seed keys
+	// into the work item's Results on resume).
+	if seed := recoverySeedFor(nil, task.Results, version.WorkerID); seed != nil {
+		sb.WriteString(recoveryFileReferenceBlock(seed))
 	}
 
 	// Project context — project_dir + project context_files.
