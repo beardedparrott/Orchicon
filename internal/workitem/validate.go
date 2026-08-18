@@ -186,6 +186,8 @@ func validateStatus(status apiv1.WorkItemStatus) string {
 		return domain.WorkItemScheduled
 	case apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECURRING:
 		return domain.WorkItemRecurring
+	case apiv1.WorkItemStatus_WORK_ITEM_STATUS_BLOCKED:
+		return domain.WorkItemBlocked
 	default:
 		return domain.WorkItemPending
 	}
@@ -195,6 +197,11 @@ func validateStatus(status apiv1.WorkItemStatus) string {
 // against the canonical work item statuses. Exported so the Ask Orchicon
 // MCP tools validate status the way the Connect path validates its proto
 // enum (the tool's status arrives as a raw string, not a proto enum).
+//
+// "blocked" is DELIBERATELY not accepted: it is a system-managed status set
+// only by the reconcilers when an upstream dependency is unsatisfied, so
+// user/operator input must never set it directly (mirrors the transition
+// matrix in the frontend — blocked items are not manually movable).
 func ValidateStatus(status string) (string, error) {
 	status = strings.ToLower(strings.TrimSpace(status))
 	switch status {

@@ -1,6 +1,6 @@
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Link2 } from "lucide-react";
 
 import {
   useCreateWorkItem,
@@ -945,6 +945,35 @@ function WorkItemDetailPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* Blocked-by banner — server-authoritative blockers (the DAG
+              sources not yet terminal-success). Rendered whenever the
+              server computed unsat edges, so the reason this item isn't
+              dispatching is always visible. */}
+          {item.blockedBy.length > 0 && (
+            <div className="rounded-md border border-teal-500/30 bg-teal-500/10 p-3">
+              <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-teal-800 dark:text-teal-300">
+                <Link2 className="h-3.5 w-3.5" aria-hidden />
+                Blocked by
+              </h4>
+              <ul className="mt-2 space-y-1.5">
+                {item.blockedBy.map((b) => (
+                  <li key={b.id} className="flex items-center gap-2 text-xs">
+                    <Link
+                      to="/work-items/$id"
+                      params={{ id: b.id }}
+                      className="min-w-0 flex-1 truncate font-medium hover:underline"
+                    >
+                      {b.title}
+                    </Link>
+                    <span className="shrink-0 text-muted-foreground">
+                      ({b.status || "unknown"})
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {/* Add dependency form */}
           <div className="flex items-end gap-2">
             <div className="flex-1 space-y-1">

@@ -604,13 +604,121 @@ func TestDependsOnTriggerBackstopDB(t *testing.T) {
 	}
 }
 
+// TestBlockedByAttachNamesBlockersDB verifies the server names blocking
+// edges on every read path (AC #1, server authority). The batch attach
+// (ListWorkItems / GetDependencyGraph) must put each blocker on the item it
+// actually blocks — a regression where the batch attached rows by the
+// blocker's id (dropping the edges, or attaching a self-blocker when the
+// blocker shares the page).
+func TestBlockedByAttachNamesBlockersDB(t *testing.T) {
+	ctx, pool, s, proj := dependsOnTestEnv(t)
+
+	// Create blocker→dependent edges directly in the direction the dispatch
+	// gate uses (from_id = blocker, to_id = dependent — the same direction
+	// ListUnsatisfiedDependencies / CheckDependenciesSatisfied read).
+	addBlock := func(blockerID, depID string) {
+		t.Helper()
+		ttx, err := pool.BeginTenantTx(ctx, validateParentTestTenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ttx.Rollback(ctx)
+		if _, err := db.CreateDependency(ctx, ttx.Tx, db.DependencyRow{
+			ID: db.NewID(), TenantID: validateParentTestTenant, ProjectID: proj,
+			FromID: blockerID, ToID: depID, Type: domain.DependencyDependsOn,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := ttx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	blockerA := dependsOnCreate(t, ctx, s, proj, nil)
+	blockerB := dependsOnCreate(t, ctx, s, proj, nil)
+	dep1 := dependsOnCreate(t, ctx, s, proj, nil)
+	dep2 := dependsOnCreate(t, ctx, s, proj, nil)
+	addBlock(blockerA.Id, dep1.Id)
+	addBlock(blockerB.Id, dep2.Id)
+
+	// ListWorkItems (batch attach) must name each dep's own blocker.
+	list, err := s.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
+		ProjectId: proj,
+		PageSize:  100,
+	}))
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	byID := map[string]*apiv1.WorkItem{}
+	for _, w := range list.Msg.WorkItems {
+		byID[w.Id] = w
+	}
+	if got := byID[dep1.Id].BlockedBy; len(got) != 1 || got[0].Id != blockerA.Id {
+		t.Fatalf("list: dep1 blocked_by = %v, want [%s]", got, blockerA.Id)
+	}
+	if got := byID[dep2.Id].BlockedBy; len(got) != 1 || got[0].Id != blockerB.Id {
+		t.Fatalf("list: dep2 blocked_by = %v, want [%s]", got, blockerB.Id)
+	}
+	// The blockers themselves have no incoming unsatisfied edges.
+	if got := byID[blockerA.Id].BlockedBy; len(got) != 0 {
+		t.Fatalf("list: blockerA blocked_by = %v, want none (no self-blocker)", got)
+	}
+
+	// GetDependencyGraph (batch attach over all nodes) must agree.
+	graph, err := s.GetDependencyGraph(ctx, connect.NewRequest(&apiv1.GetDependencyGraphRequest{ProjectId: proj}))
+	if err != nil {
+		t.Fatalf("graph: %v", err)
+	}
+	nodeByID := map[string]*apiv1.WorkItem{}
+	for _, n := range graph.Msg.Graph.Nodes {
+		nodeByID[n.Id] = n
+	}
+	if got := nodeByID[dep1.Id].BlockedBy; len(got) != 1 || got[0].Id != blockerA.Id {
+		t.Fatalf("graph: dep1 blocked_by = %v, want [%s]", got, blockerA.Id)
+	}
+	if got := nodeByID[dep2.Id].BlockedBy; len(got) != 1 || got[0].Id != blockerB.Id {
+		t.Fatalf("graph: dep2 blocked_by = %v, want [%s]", got, blockerB.Id)
+	}
+	if got := nodeByID[blockerA.Id].BlockedBy; len(got) != 0 {
+		t.Fatalf("graph: blockerA blocked_by = %v, want none", got)
+	}
+
+	// Once a blocker succeeds, the dependent's blocked_by empties at read time.
+	succ := apiv1.WorkItemStatus_WORK_ITEM_STATUS_SUCCEEDED
+	if _, err := s.UpdateWorkItem(ctx, connect.NewRequest(&apiv1.UpdateWorkItemRequest{
+		Id:     blockerA.Id,
+		Status: &succ,
+	})); err != nil {
+		t.Fatalf("succeed blockerA: %v", err)
+	}
+	list2, err := s.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
+		ProjectId: proj,
+		PageSize:  100,
+	}))
+	if err != nil {
+		t.Fatalf("list after unblock: %v", err)
+	}
+	for _, w := range list2.Msg.WorkItems {
+		if w.Id == dep1.Id {
+			if got := w.BlockedBy; len(got) != 0 {
+				t.Fatalf("list after unblock: dep1 blocked_by = %v, want empty (read-time, no staleness)", got)
+			}
+		}
+		if w.Id == dep2.Id {
+			if got := w.BlockedBy; len(got) != 1 || got[0].Id != blockerB.Id {
+				t.Fatalf("list after unblock: dep2 blocked_by = %v, want [%s]", got, blockerB.Id)
+			}
+		}
+	}
+	_ = pool
+}
+
 // TestMapDBErrorDependencyCycle verifies the trigger's cycle rejection —
 // which the service surfaces when the concurrent serialization path catches
 // an app write (the app-layer check ran against stale state) — is mapped to
 // a FailedPrecondition naming the offending edge, not an opaque Internal.
 // Pure unit test: no DB required.
-func TestMapDBErrorDependencyCycle(t *testing.T) {
-	pgErr := &pgconn.PgError{Code: "P0001", Message: "cannot add dependency w_a -> w_b: would create a cycle in the work DAG"}
+func TestMapDBErrorDependencyCycle(t *testing.T) {	pgErr := &pgconn.PgError{Code: "P0001", Message: "cannot add dependency w_a -> w_b: would create a cycle in the work DAG"}
 	err := mapDBError(pgErr)
 	if code := connect.CodeOf(err); code != connect.CodeFailedPrecondition {
 		t.Fatalf("mapDBError(cycle): got %s, want FailedPrecondition", code)

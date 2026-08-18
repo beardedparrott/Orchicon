@@ -42,6 +42,11 @@ import (
 // selection (docs/03 §5: heartbeat age > 60s → unhealthy).
 const heartbeatTTL = 60 * time.Second
 
+// scanBatchSize caps how many work items the TaskReconciler's empty-key
+// scan pass processes per tick (docs/03 §4: "Limited to a batch per tick
+// so one scan doesn't monopolize the reconciler goroutine").
+const scanBatchSize = 16
+
 // TaskReconciler implements the reconciler.Reconciler interface for the
 // "task" kind. It polls the work_items table for ready tasks and
 // dispatches them via the AdapterBridge.
@@ -59,6 +64,13 @@ type TaskReconciler struct {
 	// by writtenMu.
 	writtenMu           sync.Mutex
 	pendingWrittenFiles map[string][]string
+
+	// blockedMu guards the blocked re-evaluation rotation cursor below.
+	// The scan pass re-checks a rotating window of blocked tasks so every
+	// blocked item is eventually re-evaluated (not just the same oldest
+	// rows) when the backlog exceeds scanBatchSize.
+	blockedMu      sync.Mutex
+	blockedCursor  int
 }
 
 // NewTaskReconciler creates a TaskReconciler.
@@ -115,7 +127,7 @@ func (r *TaskReconciler) DispatchTask(ctx context.Context, taskID, stepRunID str
 // any other ready task) get dispatched without an explicit enqueue path.
 func (r *TaskReconciler) Reconcile(ctx context.Context, key string) reconciler.Result {
 	if key == "" {
-		// Scan pass: find ready tasks and dispatch each (docs/03 §4).
+		// Scan pass: find ready + blocked tasks and process each (docs/03 §4).
 		// Limited to a batch per tick so one scan doesn't monopolize the
 		// reconciler goroutine. v0.1: single dev tenant.
 		tenantID := "tnt_dev"
@@ -124,24 +136,89 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, key string) reconciler.R
 			return reconciler.Result{Error: err}
 		}
 		ready, err := db.ListReadyTasks(ctx, ttx.Tx, tenantID)
-		ttx.Rollback(ctx)
 		if err != nil {
+			ttx.Rollback(ctx)
 			return reconciler.Result{Error: fmt.Errorf("scan ready tasks: %w", err)}
 		}
-		for i, task := range ready {
-			if i >= 16 {
+		// Blocked tasks are re-evaluated every pass so a newly satisfied
+		// dependency gate flips them back to ready (and dispatches) without
+		// waiting on a notifier. The re-evaluation window ROTATES: with more
+		// blocked tasks than the per-tick batch, a fixed oldest-first window
+		// would re-scan the same rows forever and a blocker that turned
+		// terminal past the window would never clear.
+		blocked, err := db.ListBlockedTasks(ctx, ttx.Tx, tenantID)
+		ttx.Rollback(ctx)
+		if err != nil {
+			return reconciler.Result{Error: fmt.Errorf("scan blocked tasks: %w", err)}
+		}
+		// Ready tasks are dispatch candidates and must not be starved by a
+		// blocked backlog; blocked re-evaluation fills the rest of the batch.
+		budget := scanBatchSize
+		for _, task := range ready {
+			if budget == 0 {
 				break
 			}
 			if err := r.reconcileOne(ctx, task.ID, ""); err != nil {
 				r.log.Warn("scan: dispatch ready task failed", "task", task.ID, "error", err)
 			}
+			budget--
 		}
+		r.reconcileBlockedWindow(ctx, blocked, budget)
 		return reconciler.Result{}
 	}
 	if err := r.reconcileOne(ctx, key, ""); err != nil {
 		return reconciler.Result{Error: err}
 	}
 	return reconciler.Result{}
+}
+
+// reconcileBlockedWindow re-evaluates a rotating window of blocked tasks,
+// bounded by budget. Blocked re-evaluation must cover the WHOLE backlog,
+// not just the same oldest rows: a blocked item whose blocker turns
+// terminal clears on the next pass that reaches it, so a window that
+// advances each pass guarantees every blocked item is eventually rechecked
+// (and a satisfied gate flips it back to ready without any notifier). Each
+// examined item advances the cursor; with n blocked items and budget < n,
+// the full set cycles through in ceil(n/budget) passes.
+func (r *TaskReconciler) reconcileBlockedWindow(ctx context.Context, blocked []db.WorkItemRow, budget int) {
+	if len(blocked) == 0 || budget <= 0 {
+		return
+	}
+	n := len(blocked)
+	start := r.blockedWindowStart(n)
+	examined := 0
+	for k := 0; k < n && examined < budget; k++ {
+		task := blocked[(start+k)%n]
+		if err := r.reconcileOne(ctx, task.ID, ""); err != nil {
+			r.log.Warn("scan: re-evaluate blocked task failed", "task", task.ID, "error", err)
+		}
+		examined++
+	}
+	r.advanceBlockedCursor(n, examined)
+}
+
+// blockedWindowStart returns the rotation offset for this pass's blocked
+// re-evaluation window. It is an in-memory cursor (not persisted): a
+// reconciler restart simply resumes rotation from the start, and the
+// guarantee is only that every blocked item is eventually rechecked.
+func (r *TaskReconciler) blockedWindowStart(n int) int {
+	r.blockedMu.Lock()
+	defer r.blockedMu.Unlock()
+	if n <= 0 {
+		return 0
+	}
+	return r.blockedCursor % n
+}
+
+// advanceBlockedCursor records how many blocked tasks this pass examined so
+// the next pass picks up further along the list.
+func (r *TaskReconciler) advanceBlockedCursor(n, examined int) {
+	if n <= 0 || examined <= 0 {
+		return
+	}
+	r.blockedMu.Lock()
+	defer r.blockedMu.Unlock()
+	r.blockedCursor = (r.blockedCursor + examined) % n
 }
 
 // reconcileOne dispatches a single task. When stepRunID is set it is a
@@ -194,9 +271,21 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 		}
 		stepRun = &sr
 	} else {
-		// Only reconcile tasks in "ready" state (docs/03 §4: if status !=
-		// ready, return).
-		if task.Status != domain.WorkItemReady {
+		// Standalone dispatch. Only "ready" (docs/03 §4) and "blocked"
+		// tasks are processed:
+		//
+		//   - ready + unsat deps → flip to blocked (persisted) so the stall
+		//     is SURFACED instead of silently requeued;
+		//   - blocked + satisfied deps → flip to ready, then fall through
+		//     to dispatch in this same pass;
+		//   - blocked + unsat deps → stay blocked (return nil).
+		//
+		// A blocked item must clear back to ready before any dispatch —
+		// dispatch only ever proceeds from ready here, so the "no dispatch
+		// for blocked" invariant holds by construction.
+		switch task.Status {
+		case domain.WorkItemReady, domain.WorkItemBlocked:
+		default:
 			return nil
 		}
 		// Skip items that belong to a WORKFLOW RUN: they are dispatched
@@ -221,8 +310,37 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 			return fmt.Errorf("check deps: %w", err)
 		}
 		if !satisfied {
-			// Requeue: dependencies not yet terminal-success.
+			// Dependency stall. A ready task parks as blocked (persisted) —
+			// surfaced, never silently requeued. A blocked task stays
+			// blocked; the scan re-evaluates it on the next pass.
+			if task.Status == domain.WorkItemReady {
+				status := domain.WorkItemBlocked
+				if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, task.ID, task.Version, db.UpdateWorkItemFields{
+					Status: &status,
+				}); err != nil {
+					return fmt.Errorf("park task blocked: %w", err)
+				}
+				// Commit the park so the surfaced status is durable — the
+				// dispatch path below is skipped for a parked task (the
+				// deferred Rollback is then a no-op).
+				if err := ttx.Commit(ctx); err != nil {
+					return fmt.Errorf("commit park blocked: %w", err)
+				}
+			}
 			return nil
+		}
+		// Gate satisfied: a blocked task flips back to ready and dispatches
+		// in this same pass (carry the fresh version forward so the
+		// assigned transition below still CAS-matches).
+		if task.Status == domain.WorkItemBlocked {
+			status := domain.WorkItemReady
+			updated, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, task.ID, task.Version, db.UpdateWorkItemFields{
+				Status: &status,
+			})
+			if err != nil {
+				return fmt.Errorf("clear task blocked: %w", err)
+			}
+			task = updated
 		}
 	}
 

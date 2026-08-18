@@ -351,6 +351,9 @@ func (s *Service) GetWorkItem(ctx context.Context, req *connect.Request[apiv1.Ge
 	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := attachBlockedBy(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	return connect.NewResponse(&apiv1.GetWorkItemResponse{WorkItem: proto}), nil
 }
 
@@ -392,6 +395,9 @@ func (s *Service) ListWorkItems(ctx context.Context, req *connect.Request[apiv1.
 		resp.WorkItems = append(resp.WorkItems, rowToProto(w))
 	}
 	if err := attachDependsOnBatch(ctx, ttx.Tx, tenantID, resp.WorkItems); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := attachBlockedByBatch(ctx, ttx.Tx, tenantID, resp.WorkItems); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if len(items) > 0 {
@@ -804,6 +810,9 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := attachBlockedBy(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.updated", "work_item", updated.ID,
 		audit.Snapshot(workItemAuditSnapshot(current)), audit.Snapshot(workItemAuditSnapshot(updated))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.updated: %w", err))
@@ -879,6 +888,9 @@ func (s *Service) DeleteWorkItem(ctx context.Context, req *connect.Request[apiv1
 	}
 	proto := rowToProto(updated)
 	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := attachBlockedBy(ctx, ttx.Tx, tenantID, proto); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if err := ttx.Commit(ctx); err != nil {
@@ -1086,6 +1098,9 @@ func (s *Service) GetDependencyGraph(ctx context.Context, req *connect.Request[a
 	if err := attachDependsOnBatch(ctx, ttx.Tx, tenantID, graph.Nodes); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := attachBlockedByBatch(ctx, ttx.Tx, tenantID, graph.Nodes); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	for _, d := range deps {
 		graph.Edges = append(graph.Edges, depRowToProto(d))
 	}
@@ -1132,6 +1147,9 @@ func (s *Service) AssignWorker(ctx context.Context, req *connect.Request[apiv1.A
 	}
 	proto := rowToProto(updated)
 	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := attachBlockedBy(ctx, ttx.Tx, tenantID, proto); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if err := ttx.Commit(ctx); err != nil {
@@ -1186,6 +1204,9 @@ func (s *Service) UnassignWorker(ctx context.Context, req *connect.Request[apiv1
 	}
 	proto := rowToProto(updated)
 	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := attachBlockedBy(ctx, ttx.Tx, tenantID, proto); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if err := ttx.Commit(ctx); err != nil {
@@ -1299,6 +1320,9 @@ func (s *Service) ReorderWorkItems(ctx context.Context, req *connect.Request[api
 		resp.WorkItems = append(resp.WorkItems, rowToProto(sib))
 	}
 	if err := attachDependsOnBatch(ctx, ttx.Tx, tenantID, resp.WorkItems); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := attachBlockedByBatch(ctx, ttx.Tx, tenantID, resp.WorkItems); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if err := ttx.Commit(ctx); err != nil {
@@ -1502,6 +1526,9 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 	}
 	proto := rowToProto(updated)
 	if err := attachDependsOn(ctx, ttx2.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := attachBlockedBy(ctx, ttx2.Tx, tenantID, proto); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(&apiv1.ControlSequenceResponse{WorkItem: proto}), nil
@@ -1787,6 +1814,59 @@ func attachDependsOnBatch(ctx context.Context, tx pgx.Tx, tenantID string, items
 	return nil
 }
 
+// attachBlockedBy populates proto.BlockedBy (the sources of the item's
+// unsatisfied incoming blocks/depends_on edges) with one extra query,
+// inside the caller's transaction. Computed at read time so it can never
+// go stale on edge removal or status drift — the DAG + statuses are the
+// persisted authority. Attached for EVERY item with unsat edges (even a
+// pending/ready item the reconciler hasn't flipped yet), so the reason is
+// always visible.
+func attachBlockedBy(ctx context.Context, tx pgx.Tx, tenantID string, p *apiv1.WorkItem) error {
+	if p == nil {
+		return nil
+	}
+	blockers, err := db.ListUnsatisfiedDependencies(ctx, tx, tenantID, []string{p.Id})
+	if err != nil {
+		return err
+	}
+	for _, b := range blockers {
+		p.BlockedBy = append(p.BlockedBy, &apiv1.WorkItemBlocker{Id: b.ID, Title: b.Title, Status: b.Status})
+	}
+	return nil
+}
+
+// attachBlockedByBatch populates BlockedBy for a whole page of work items
+// with ONE query (to_id = ANY(...)) to avoid an N+1 per row.
+func attachBlockedByBatch(ctx context.Context, tx pgx.Tx, tenantID string, items []*apiv1.WorkItem) error {
+	ids := make([]string, 0, len(items))
+	byID := map[string]*apiv1.WorkItem{}
+	for _, it := range items {
+		if it == nil {
+			continue
+		}
+		ids = append(ids, it.Id)
+		byID[it.Id] = it
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	blockers, err := db.ListUnsatisfiedDependencies(ctx, tx, tenantID, ids)
+	if err != nil {
+		return err
+	}
+	for _, b := range blockers {
+		// ListUnsatisfiedDependencies returns rows keyed by the DEPENDENT
+		// (ToID) — the blocker is the edge's from_id. Mapping by ToID puts
+		// each blocker on the item it actually blocks; mapping by b.ID
+		// here would drop every edge (and attach a self-blocker when the
+		// blocker shares the page).
+		if it, ok := byID[b.ToID]; ok {
+			it.BlockedBy = append(it.BlockedBy, &apiv1.WorkItemBlocker{Id: b.ID, Title: b.Title, Status: b.Status})
+		}
+	}
+	return nil
+}
+
 func buildWorkItemEventPayload(eventType string, w db.WorkItemRow) ([]byte, error) {
 	evt := map[string]any{
 		"event_type":        eventType,
@@ -2042,6 +2122,8 @@ func statusToProto(status string) apiv1.WorkItemStatus {
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_SCHEDULED
 	case domain.WorkItemRecurring:
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECURRING
+	case domain.WorkItemBlocked:
+		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_BLOCKED
 	default:
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_UNSPECIFIED
 	}

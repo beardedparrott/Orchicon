@@ -77,6 +77,11 @@ func newSequenceTestEnv(t *testing.T) *sequenceTestEnv {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Each test tears down its own project so the shared tnt_dev DB never
+	// accumulates seq-env residue. The blocked-scan tests are sensitive to
+	// the total count of blocked/ready tasks in the tenant (the reconciler
+	// scan processes a bounded window), so hermetic cleanup is required.
+	t.Cleanup(func() { deleteTestProject(t, pool, proj.ID) })
 	return &sequenceTestEnv{pool: pool, proj: proj}
 }
 
@@ -491,8 +496,9 @@ func TestRetryResume(t *testing.T) {
 }
 
 // TestSequenceDependencyPark: an on-deck child with an unsatisfied
-// external blocker parks the chain (parent running, child pending, no
-// arm). When the blocker succeeds the chain advances automatically.
+// external blocker parks the chain (parent running, child BLOCKED, no
+// arm) — the stall is surfaced, not a silent gray pending. When the
+// blocker succeeds the chain advances automatically.
 func TestSequenceDependencyPark(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -517,19 +523,61 @@ func TestSequenceDependencyPark(t *testing.T) {
 	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
 		t.Fatal(err)
 	}
-	// Blocked: parent running, child pending, NOT armed.
+	// Blocked: parent running, child BLOCKED (surfaced stall), NOT armed.
 	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemRunning {
 		t.Errorf("parent status = %q, want running (parked)", got.Status)
 	}
-	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemPending {
-		t.Errorf("child status = %q, want pending (parked)", got.Status)
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemBlocked {
+		t.Errorf("child status = %q, want %q (parked, surfaced)", got.Status, domain.WorkItemBlocked)
 	}
 	if got := env.armedWorkItems(); len(got) != 0 {
 		t.Errorf("armed work items = %v, want none while parked", got)
 	}
-	// Blocker succeeds → chain advances without human action.
+	// Blocker succeeds → the blocked child clears to pending and arms in
+	// the same pass — chain advances without human action.
 	setStatus(t, env.pool, blocker.ID, domain.WorkItemSucceeded)
 	rec := NewSequenceReconciler(env.pool, nil, env.startFn())
+	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemRunning {
+		t.Errorf("child status = %q, want running after blocker success", got.Status)
+	}
+	if got := env.armedWorkItems(); len(got) != 1 || got[0] != c1.ID {
+		t.Errorf("armed work items = %v, want [c1]", got)
+	}
+}
+
+// TestSequenceBlockedStaysBlockedWhileBlockerNonTerminal: a dependency-
+// gated child whose blocker is still pending/failed stays BLOCKED (never
+// armed, never silently parked). Only a terminal-success blocker clears it.
+func TestSequenceBlockedStaysBlockedWhileBlockerNonTerminal(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+	blocker := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Blocker", nil, nil)
+	addDependency(t, env.pool, env.proj.ID, blocker.ID, c1.ID, domain.DependencyBlocks)
+
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatal(err)
+	}
+	rec := NewSequenceReconciler(env.pool, nil, env.startFn())
+	// A FAILED blocker still blocks (server gate accepts only succeeded):
+	// the dependent stays blocked, named and visible for the operator.
+	setStatus(t, env.pool, blocker.ID, domain.WorkItemFailed)
+	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemBlocked {
+		t.Errorf("child status = %q, want %q (failed blocker still blocks)", got.Status, domain.WorkItemBlocked)
+	}
+	if got := env.armedWorkItems(); len(got) != 0 {
+		t.Errorf("armed work items = %v, want none", got)
+	}
+	// Blocker succeeded → clears + arms.
+	setStatus(t, env.pool, blocker.ID, domain.WorkItemSucceeded)
 	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -557,18 +605,19 @@ func TestSequenceParallelDispatchOnSharedDependency(t *testing.T) {
 	reorder(t, env.pool, env.proj.ID, parent.ID, []string{a.ID, b.ID})
 
 	// Both children are dependency-governed by X; X is not done yet, so
-	// the chain parks with nothing armed.
+	// the chain parks with nothing armed and both children surfaced as
+	// blocked.
 	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
 		t.Fatal(err)
 	}
 	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemRunning {
 		t.Fatalf("parent status = %q, want running (parked on X)", got.Status)
 	}
-	if got := mustGet(t, env.pool, a.ID); got.Status != domain.WorkItemPending {
-		t.Errorf("A status = %q, want pending (parked on X)", got.Status)
+	if got := mustGet(t, env.pool, a.ID); got.Status != domain.WorkItemBlocked {
+		t.Errorf("A status = %q, want %q (parked on X, surfaced)", got.Status, domain.WorkItemBlocked)
 	}
-	if got := mustGet(t, env.pool, b.ID); got.Status != domain.WorkItemPending {
-		t.Errorf("B status = %q, want pending (parked on X)", got.Status)
+	if got := mustGet(t, env.pool, b.ID); got.Status != domain.WorkItemBlocked {
+		t.Errorf("B status = %q, want %q (parked on X, surfaced)", got.Status, domain.WorkItemBlocked)
 	}
 	if got := env.armedWorkItems(); len(got) != 0 {
 		t.Fatalf("armed work items = %v, want none while parked", got)
@@ -679,8 +728,8 @@ func TestSequenceDependencyGovernedChildIgnoresChainPosition(t *testing.T) {
 	if got := mustGet(t, env.pool, a.ID); got.Status != domain.WorkItemRunning {
 		t.Fatalf("A status = %q, want running", got.Status)
 	}
-	if got := mustGet(t, env.pool, b.ID); got.Status != domain.WorkItemPending {
-		t.Fatalf("B status = %q, want pending (parked on X)", got.Status)
+	if got := mustGet(t, env.pool, b.ID); got.Status != domain.WorkItemBlocked {
+		t.Fatalf("B status = %q, want %q (parked on X, surfaced)", got.Status, domain.WorkItemBlocked)
 	}
 
 	// X succeeds while A is still running: B is dependency-governed, so its
@@ -731,8 +780,8 @@ func TestSequenceFailureHaltsAllIncludingDependencyGoverned(t *testing.T) {
 	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemFailed {
 		t.Errorf("parent status = %q, want failed", got.Status)
 	}
-	if got := mustGet(t, env.pool, a.ID); got.Status != domain.WorkItemPending {
-		t.Errorf("A status = %q, want pending (nothing arms in a pass containing a failure)", got.Status)
+	if got := mustGet(t, env.pool, a.ID); got.Status != domain.WorkItemBlocked {
+		t.Errorf("A status = %q, want %q (parked on X, surfaced; nothing arms in a pass containing a failure)", got.Status, domain.WorkItemBlocked)
 	}
 
 	// Even after X succeeds, the unfixed failure still halts the chain.
@@ -740,8 +789,8 @@ func TestSequenceFailureHaltsAllIncludingDependencyGoverned(t *testing.T) {
 	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got := mustGet(t, env.pool, a.ID); got.Status != domain.WorkItemPending {
-		t.Errorf("A status = %q, want pending (failure halts all regardless of deps)", got.Status)
+	if got := mustGet(t, env.pool, a.ID); got.Status != domain.WorkItemBlocked {
+		t.Errorf("A status = %q, want %q (failure halts all regardless of deps)", got.Status, domain.WorkItemBlocked)
 	}
 }
 
@@ -1556,4 +1605,105 @@ func createRecurringParent(t *testing.T, pool *db.Pool, projID, title string) db
 		t.Fatal(err)
 	}
 	return w
+}
+
+// TestSequenceStopParksBlockedChild: StopSequence on a parent whose first
+// child is blocked must park EVERY descendant to pending — a blocked child
+// falls into haltWorkItem's default branch (it is not in-flight), so the
+// stopped chain is fully at rest and re-runnable.
+func TestSequenceStopParksBlockedChild(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+	blocker := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Blocker", nil, nil)
+	addDependency(t, env.pool, env.proj.ID, blocker.ID, c1.ID, domain.DependencyBlocks)
+
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemBlocked {
+		t.Fatalf("child status = %q, want %q (parked on blocker)", got.Status, domain.WorkItemBlocked)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := StopSequence(ctx, env.pool, logger, approvalTestTenant, parent.ID); err != nil {
+		t.Fatalf("StopSequence: %v", err)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemPending {
+		t.Errorf("child status = %q, want pending (stopped)", got.Status)
+	}
+	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemPending {
+		t.Errorf("parent status = %q, want pending (stopped)", got.Status)
+	}
+}
+
+// TestSequenceResumeClearsBlockedFirstChild: ResumeSequence routes the
+// first blocked child through reconcileParent, which clears it back to
+// pending (and arms it once its blocker is terminal-success).
+func TestSequenceResumeClearsBlockedFirstChild(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+	blocker := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Blocker", nil, nil)
+	addDependency(t, env.pool, env.proj.ID, blocker.ID, c1.ID, domain.DependencyBlocks)
+
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemBlocked {
+		t.Fatalf("child status = %q, want %q", got.Status, domain.WorkItemBlocked)
+	}
+	// Park the parent (STOP) so RESUME is a valid action.
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := StopSequence(ctx, env.pool, logger, approvalTestTenant, parent.ID); err != nil {
+		t.Fatalf("StopSequence: %v", err)
+	}
+	// Blocker succeeds before the resume.
+	setStatus(t, env.pool, blocker.ID, domain.WorkItemSucceeded)
+
+	if err := ResumeSequence(ctx, env.pool, logger, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatalf("ResumeSequence: %v", err)
+	}
+	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemRunning {
+		t.Errorf("parent status = %q, want running (resumed)", got.Status)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemRunning {
+		t.Errorf("child status = %q, want running (blocked cleared and armed by resume)", got.Status)
+	}
+	armed := env.armedWorkItems()
+	if len(armed) != 1 || armed[0] != c1.ID {
+		t.Errorf("armed work items = %v, want [c1]", armed)
+	}
+}
+
+// TestSequenceStartResetsBlockedSubtree: a recurring fire (StartSequence)
+// resets every descendant to pending — a previously blocked child must be
+// re-armed fresh for the new cycle, not left blocked.
+func TestSequenceStartResetsBlockedSubtree(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+	blocker := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Blocker", nil, nil)
+	addDependency(t, env.pool, env.proj.ID, blocker.ID, c1.ID, domain.DependencyBlocks)
+
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemBlocked {
+		t.Fatalf("child status = %q, want %q", got.Status, domain.WorkItemBlocked)
+	}
+	// Re-fire the chain (a recurring cycle start): the subtree resets to
+	// pending, so the new cycle's first child is on-deck again.
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatalf("StartSequence (re-fire): %v", err)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemBlocked {
+		t.Errorf("child status = %q, want %q (re-parked on still-unsatisfied blocker)", got.Status, domain.WorkItemBlocked)
+	}
 }

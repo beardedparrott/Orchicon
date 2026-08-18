@@ -133,6 +133,11 @@ const (
 	WorkItemStatus_WORK_ITEM_STATUS_RECOVERING    WorkItemStatus = 9
 	WorkItemStatus_WORK_ITEM_STATUS_SCHEDULED     WorkItemStatus = 10
 	WorkItemStatus_WORK_ITEM_STATUS_RECURRING     WorkItemStatus = 11
+	// System-managed: set by the reconcilers when an armed/on-deck item
+	// cannot dispatch because an upstream dependency (blocks/depends_on edge)
+	// is not terminal-success. Cleared automatically by the next reconcile
+	// pass when the dependency gate satisfies. Never user-assignable.
+	WorkItemStatus_WORK_ITEM_STATUS_BLOCKED WorkItemStatus = 12
 )
 
 // Enum value maps for WorkItemStatus.
@@ -150,6 +155,7 @@ var (
 		9:  "WORK_ITEM_STATUS_RECOVERING",
 		10: "WORK_ITEM_STATUS_SCHEDULED",
 		11: "WORK_ITEM_STATUS_RECURRING",
+		12: "WORK_ITEM_STATUS_BLOCKED",
 	}
 	WorkItemStatus_value = map[string]int32{
 		"WORK_ITEM_STATUS_UNSPECIFIED":   0,
@@ -164,6 +170,7 @@ var (
 		"WORK_ITEM_STATUS_RECOVERING":    9,
 		"WORK_ITEM_STATUS_SCHEDULED":     10,
 		"WORK_ITEM_STATUS_RECURRING":     11,
+		"WORK_ITEM_STATUS_BLOCKED":       12,
 	}
 )
 
@@ -309,7 +316,14 @@ type WorkItem struct {
 	// outgoing edges of type DEPENDS_ON in the work DAG, independent of the
 	// parent/child hierarchy). Mirrors the create/update request shape so the
 	// set round-trips; full edge objects are available from GetDependencyGraph.
-	DependsOn     []string `protobuf:"bytes,31,rep,name=depends_on,json=dependsOn,proto3" json:"depends_on,omitempty"`
+	DependsOn []string `protobuf:"bytes,31,rep,name=depends_on,json=dependsOn,proto3" json:"depends_on,omitempty"`
+	// blocked_by names the blocking dependency edges this item waits on:
+	// the sources of its incoming blocks/depends_on edges that are not yet
+	// terminal-success. Computed by the server at read time (never stored),
+	// so it is always consistent with the DAG + statuses. Populated whenever
+	// unsatisfied edges exist — even for a pending/ready item the reconciler
+	// has not yet flipped to blocked — so the reason is always visible.
+	BlockedBy     []*WorkItemBlocker `protobuf:"bytes,32,rep,name=blocked_by,json=blockedBy,proto3" json:"blocked_by,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -554,6 +568,76 @@ func (x *WorkItem) GetDependsOn() []string {
 	return nil
 }
 
+func (x *WorkItem) GetBlockedBy() []*WorkItemBlocker {
+	if x != nil {
+		return x.BlockedBy
+	}
+	return nil
+}
+
+// WorkItemBlocker is one upstream dependency edge that keeps its dependent
+// from dispatching (the source is not terminal-success). Populated at read
+// time on WorkItem.blocked_by.
+type WorkItemBlocker struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Title         string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	Status        string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"` // current status of the blocking item
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkItemBlocker) Reset() {
+	*x = WorkItemBlocker{}
+	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkItemBlocker) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkItemBlocker) ProtoMessage() {}
+
+func (x *WorkItemBlocker) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkItemBlocker.ProtoReflect.Descriptor instead.
+func (*WorkItemBlocker) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_work_item_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *WorkItemBlocker) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *WorkItemBlocker) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *WorkItemBlocker) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
 // RecurringSchedule defines the recurrence pattern for a recurring work item.
 // Stored as JSONB in the recurring_schedule column. NULL = not recurring.
 type RecurringSchedule struct {
@@ -569,7 +653,7 @@ type RecurringSchedule struct {
 
 func (x *RecurringSchedule) Reset() {
 	*x = RecurringSchedule{}
-	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[1]
+	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -581,7 +665,7 @@ func (x *RecurringSchedule) String() string {
 func (*RecurringSchedule) ProtoMessage() {}
 
 func (x *RecurringSchedule) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[1]
+	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -594,7 +678,7 @@ func (x *RecurringSchedule) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecurringSchedule.ProtoReflect.Descriptor instead.
 func (*RecurringSchedule) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_work_item_proto_rawDescGZIP(), []int{1}
+	return file_orchicon_api_v1_work_item_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *RecurringSchedule) GetFrequency() string {
@@ -650,7 +734,7 @@ type WorkItemDependency struct {
 
 func (x *WorkItemDependency) Reset() {
 	*x = WorkItemDependency{}
-	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[2]
+	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -662,7 +746,7 @@ func (x *WorkItemDependency) String() string {
 func (*WorkItemDependency) ProtoMessage() {}
 
 func (x *WorkItemDependency) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[2]
+	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -675,7 +759,7 @@ func (x *WorkItemDependency) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkItemDependency.ProtoReflect.Descriptor instead.
 func (*WorkItemDependency) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_work_item_proto_rawDescGZIP(), []int{2}
+	return file_orchicon_api_v1_work_item_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *WorkItemDependency) GetId() string {
@@ -740,7 +824,7 @@ type DependencyGraph struct {
 
 func (x *DependencyGraph) Reset() {
 	*x = DependencyGraph{}
-	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[3]
+	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -752,7 +836,7 @@ func (x *DependencyGraph) String() string {
 func (*DependencyGraph) ProtoMessage() {}
 
 func (x *DependencyGraph) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[3]
+	mi := &file_orchicon_api_v1_work_item_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -765,7 +849,7 @@ func (x *DependencyGraph) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DependencyGraph.ProtoReflect.Descriptor instead.
 func (*DependencyGraph) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_work_item_proto_rawDescGZIP(), []int{3}
+	return file_orchicon_api_v1_work_item_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *DependencyGraph) GetNodes() []*WorkItem {
@@ -786,7 +870,7 @@ var File_orchicon_api_v1_work_item_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\n" +
-	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x90\n" +
+	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xd1\n" +
 	"\n" +
 	"\bWorkItem\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
@@ -825,9 +909,15 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\x12recurring_schedule\x18\x1d \x01(\v2\".orchicon.api.v1.RecurringScheduleH\x01R\x11recurringSchedule\x88\x01\x01\x12:\n" +
 	"\vnext_run_at\x18\x1e \x01(\v2\x1a.google.protobuf.TimestampR\tnextRunAt\x12\x1d\n" +
 	"\n" +
-	"depends_on\x18\x1f \x03(\tR\tdependsOnB\x16\n" +
+	"depends_on\x18\x1f \x03(\tR\tdependsOn\x12?\n" +
+	"\n" +
+	"blocked_by\x18  \x03(\v2 .orchicon.api.v1.WorkItemBlockerR\tblockedByB\x16\n" +
 	"\x14_auto_start_workflowB\x15\n" +
-	"\x13_recurring_schedule\"\x9f\x01\n" +
+	"\x13_recurring_schedule\"O\n" +
+	"\x0fWorkItemBlocker\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
+	"\x05title\x18\x02 \x01(\tR\x05title\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\"\x9f\x01\n" +
 	"\x11RecurringSchedule\x12\x1c\n" +
 	"\tfrequency\x18\x01 \x01(\tR\tfrequency\x12\x1a\n" +
 	"\binterval\x18\x02 \x01(\x05R\binterval\x12\x12\n" +
@@ -858,7 +948,7 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\x1cWORK_ITEM_KIND_RECOVERY_STOP\x10\x05\x12-\n" +
 	")WORK_ITEM_KIND_RECOVERY_SUMMARIZE_RESTART\x10\x06\x12,\n" +
 	"(WORK_ITEM_KIND_RECOVERY_HUMAN_ESCALATION\x10\a\x12#\n" +
-	"\x1fWORK_ITEM_KIND_RECOVERY_RETRY_N\x10\b*\x8b\x03\n" +
+	"\x1fWORK_ITEM_KIND_RECOVERY_RETRY_N\x10\b*\xa9\x03\n" +
 	"\x0eWorkItemStatus\x12 \n" +
 	"\x1cWORK_ITEM_STATUS_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18WORK_ITEM_STATUS_PENDING\x10\x01\x12\x1a\n" +
@@ -872,7 +962,8 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\x1bWORK_ITEM_STATUS_RECOVERING\x10\t\x12\x1e\n" +
 	"\x1aWORK_ITEM_STATUS_SCHEDULED\x10\n" +
 	"\x12\x1e\n" +
-	"\x1aWORK_ITEM_STATUS_RECURRING\x10\v*\x8d\x01\n" +
+	"\x1aWORK_ITEM_STATUS_RECURRING\x10\v\x12\x1c\n" +
+	"\x18WORK_ITEM_STATUS_BLOCKED\x10\f*\x8d\x01\n" +
 	"\x0eDependencyType\x12\x1f\n" +
 	"\x1bDEPENDENCY_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16DEPENDENCY_TYPE_BLOCKS\x10\x01\x12\x1e\n" +
@@ -893,34 +984,36 @@ func file_orchicon_api_v1_work_item_proto_rawDescGZIP() []byte {
 }
 
 var file_orchicon_api_v1_work_item_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_orchicon_api_v1_work_item_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_orchicon_api_v1_work_item_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_orchicon_api_v1_work_item_proto_goTypes = []any{
 	(WorkItemKind)(0),             // 0: orchicon.api.v1.WorkItemKind
 	(WorkItemStatus)(0),           // 1: orchicon.api.v1.WorkItemStatus
 	(DependencyType)(0),           // 2: orchicon.api.v1.DependencyType
 	(*WorkItem)(nil),              // 3: orchicon.api.v1.WorkItem
-	(*RecurringSchedule)(nil),     // 4: orchicon.api.v1.RecurringSchedule
-	(*WorkItemDependency)(nil),    // 5: orchicon.api.v1.WorkItemDependency
-	(*DependencyGraph)(nil),       // 6: orchicon.api.v1.DependencyGraph
-	(*timestamppb.Timestamp)(nil), // 7: google.protobuf.Timestamp
+	(*WorkItemBlocker)(nil),       // 4: orchicon.api.v1.WorkItemBlocker
+	(*RecurringSchedule)(nil),     // 5: orchicon.api.v1.RecurringSchedule
+	(*WorkItemDependency)(nil),    // 6: orchicon.api.v1.WorkItemDependency
+	(*DependencyGraph)(nil),       // 7: orchicon.api.v1.DependencyGraph
+	(*timestamppb.Timestamp)(nil), // 8: google.protobuf.Timestamp
 }
 var file_orchicon_api_v1_work_item_proto_depIdxs = []int32{
 	0,  // 0: orchicon.api.v1.WorkItem.kind:type_name -> orchicon.api.v1.WorkItemKind
 	1,  // 1: orchicon.api.v1.WorkItem.status:type_name -> orchicon.api.v1.WorkItemStatus
-	7,  // 2: orchicon.api.v1.WorkItem.scheduled_start_at:type_name -> google.protobuf.Timestamp
-	7,  // 3: orchicon.api.v1.WorkItem.created_at:type_name -> google.protobuf.Timestamp
-	7,  // 4: orchicon.api.v1.WorkItem.updated_at:type_name -> google.protobuf.Timestamp
-	4,  // 5: orchicon.api.v1.WorkItem.recurring_schedule:type_name -> orchicon.api.v1.RecurringSchedule
-	7,  // 6: orchicon.api.v1.WorkItem.next_run_at:type_name -> google.protobuf.Timestamp
-	2,  // 7: orchicon.api.v1.WorkItemDependency.type:type_name -> orchicon.api.v1.DependencyType
-	7,  // 8: orchicon.api.v1.WorkItemDependency.created_at:type_name -> google.protobuf.Timestamp
-	3,  // 9: orchicon.api.v1.DependencyGraph.nodes:type_name -> orchicon.api.v1.WorkItem
-	5,  // 10: orchicon.api.v1.DependencyGraph.edges:type_name -> orchicon.api.v1.WorkItemDependency
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	8,  // 2: orchicon.api.v1.WorkItem.scheduled_start_at:type_name -> google.protobuf.Timestamp
+	8,  // 3: orchicon.api.v1.WorkItem.created_at:type_name -> google.protobuf.Timestamp
+	8,  // 4: orchicon.api.v1.WorkItem.updated_at:type_name -> google.protobuf.Timestamp
+	5,  // 5: orchicon.api.v1.WorkItem.recurring_schedule:type_name -> orchicon.api.v1.RecurringSchedule
+	8,  // 6: orchicon.api.v1.WorkItem.next_run_at:type_name -> google.protobuf.Timestamp
+	4,  // 7: orchicon.api.v1.WorkItem.blocked_by:type_name -> orchicon.api.v1.WorkItemBlocker
+	2,  // 8: orchicon.api.v1.WorkItemDependency.type:type_name -> orchicon.api.v1.DependencyType
+	8,  // 9: orchicon.api.v1.WorkItemDependency.created_at:type_name -> google.protobuf.Timestamp
+	3,  // 10: orchicon.api.v1.DependencyGraph.nodes:type_name -> orchicon.api.v1.WorkItem
+	6,  // 11: orchicon.api.v1.DependencyGraph.edges:type_name -> orchicon.api.v1.WorkItemDependency
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_work_item_proto_init() }
@@ -935,7 +1028,7 @@ func file_orchicon_api_v1_work_item_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_work_item_proto_rawDesc), len(file_orchicon_api_v1_work_item_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   4,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

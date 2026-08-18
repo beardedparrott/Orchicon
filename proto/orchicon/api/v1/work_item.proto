@@ -103,6 +103,22 @@ message WorkItem {
   // parent/child hierarchy). Mirrors the create/update request shape so the
   // set round-trips; full edge objects are available from GetDependencyGraph.
   repeated string depends_on = 31;
+  // blocked_by names the blocking dependency edges this item waits on:
+  // the sources of its incoming blocks/depends_on edges that are not yet
+  // terminal-success. Computed by the server at read time (never stored),
+  // so it is always consistent with the DAG + statuses. Populated whenever
+  // unsatisfied edges exist — even for a pending/ready item the reconciler
+  // has not yet flipped to blocked — so the reason is always visible.
+  repeated WorkItemBlocker blocked_by = 32;
+}
+
+// WorkItemBlocker is one upstream dependency edge that keeps its dependent
+// from dispatching (the source is not terminal-success). Populated at read
+// time on WorkItem.blocked_by.
+message WorkItemBlocker {
+  string id = 1;
+  string title = 2;
+  string status = 3; // current status of the blocking item
 }
 
 // RecurringSchedule defines the recurrence pattern for a recurring work item.
@@ -132,6 +148,11 @@ enum WorkItemStatus {
   WORK_ITEM_STATUS_RECOVERING = 9;
   WORK_ITEM_STATUS_SCHEDULED = 10;
   WORK_ITEM_STATUS_RECURRING = 11;
+  // System-managed: set by the reconcilers when an armed/on-deck item
+  // cannot dispatch because an upstream dependency (blocks/depends_on edge)
+  // is not terminal-success. Cleared automatically by the next reconcile
+  // pass when the dependency gate satisfies. Never user-assignable.
+  WORK_ITEM_STATUS_BLOCKED = 12;
 }
 
 // WorkItemDependency is an edge in the work DAG. The scheduler treats

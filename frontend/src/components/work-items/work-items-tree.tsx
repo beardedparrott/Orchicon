@@ -540,6 +540,7 @@ function SortableTreeRow({
         ) : null}
         {showRecurringBadge(item) && <RecurringBadge className="hidden sm:inline-flex" />}
         <BlockedChip
+          item={item}
           blockedBy={blockState.blockedBy}
           id={item.id}
           depsCount={depsCountOf(item.id, blockState)}
