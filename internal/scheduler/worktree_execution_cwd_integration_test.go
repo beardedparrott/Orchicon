@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"testing"
 
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -22,12 +23,17 @@ import (
 // WorktreePath (execution cwd = project_dir).
 
 // manifestCaptureBridge is a test double for AdapterBridge that records the
-// manifests passed to Start.
+// manifests passed to Start. It is safe for concurrent use: parallel dispatch
+// fans out startExecution across goroutines, so Start may be invoked from
+// several of them at once.
 type manifestCaptureBridge struct {
+	mu        sync.Mutex
 	manifests []ExecutionManifest
 }
 
 func (b *manifestCaptureBridge) Start(_ context.Context, _ db.ExecutionRow, manifest ExecutionManifest, _ ExecutionCallbacks) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.manifests = append(b.manifests, manifest)
 	return nil
 }
