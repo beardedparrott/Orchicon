@@ -479,6 +479,14 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// (deps reference a `parallel` step). These run in their OWN worktree
 	// and are held at ready until the WorktreeReconciler provisions one.
 	branchChild := parallelBranchChildIDs(steps)
+	// lazyConflict is the set of step IDs wired only through a
+	// loop_decision's explicit conflict_chain (the Integrator loop) with no
+	// static depends_on edge. StartRun already skips seeding them, but a run
+	// seeded by an older binary (or any other seeding path) may still carry a
+	// statically-seeded PENDING run — gate it so it can never dispatch on a
+	// clean pass. A conflict re-entry creates its run with iteration >= 1, so
+	// only iteration-0 (seeded) runs are held.
+	lazyConflict := workflow.LazyConflictChainStepIDs(steps)
 	// branchWorktreeTriggers collects parallel-branch step runs whose
 	// branch worktree was not yet provisioned this pass; post-commit each
 	// is enqueued with the WorktreeReconciler (key "<runID>:<stepRunID>")
@@ -670,6 +678,17 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			step, ok := stepByID[sr.StepID]
 			if !ok {
 				r.log.Debug("DEBUG: step not found in stepByID", "stepID", sr.StepID)
+				continue
+			}
+			// Lazy conflict-chain step (e.g. the Integrator): a PENDING run
+			// seeded statically (iteration 0) must not progress to READY —
+			// it only gains a legitimate run when a loop_decision gate
+			// detects a conflict and re-enters the chain (createChainRuns
+			// stamps iteration >= 1). Without this gate, a stale seeded run
+			// with empty depends_on would dispatch on the first clean pass.
+			if lazyConflict[sr.StepID] && sr.Iteration == 0 {
+				r.log.Debug("DEBUG: holding lazy conflict-chain step (no conflict routed)",
+					"stepID", sr.StepID, "id", sr.ID, "iteration", sr.Iteration)
 				continue
 			}
 			r.log.Debug("DEBUG: checking deps satisfied", "stepID", sr.StepID)
@@ -2009,7 +2028,51 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			}
 			decisions = append(decisions, d)
 		}
-		decision := aggregateLoopDecisions(decisions, cfg.FailureValue, cfg.SuccessValue)
+
+		// Conflict chain decision source: when the gate routes a conflict
+		// through an explicit conflict_chain (the Integrator loop), the
+		// INTEGRATOR's decision is authoritative once it lands — it merges
+		// develop into the branch, resolves the conflict, and re-submits,
+		// reporting success (merge landed) / conflict (another conflict) /
+		// failure. These steps are NOT static DependsOn (they have no run
+		// on the first clean pass). When a conflict-chain step has a
+		// terminal decision, that decision REPLACES the (now stale)
+		// DependsOn decisions — the merge step's original "conflict"
+		// signal must not keep re-entering after the integrator resolved
+		// it. The gate's own re-entry keeps it RUNNING until
+		// pollLoopDecisionChain sees the chain complete, so this is only
+		// read after the integrator finished.
+		if len(cfg.ConflictChain) > 0 {
+			conflictDecisions := make([]string, 0, len(cfg.ConflictChain))
+			for _, cid := range cfg.ConflictChain {
+				srList, err := listStepRunsByStepID(ctx, tx, tenantID, run.ID, cid)
+				if err != nil {
+					return r.failStep(ctx, tx, tenantID, run, sr, runs,
+						fmt.Errorf("loop_decision step %q: list conflict chain %s: %w", step.Name, cid, err))
+				}
+				// Find the active (non-superseded) run and read its decision.
+				for _, csr := range srList {
+					if csr.SupersededBy != "" {
+						continue
+					}
+					var cRes struct {
+						Decision string `json:"_decision"`
+					}
+					json.Unmarshal(csr.Result, &cRes)
+					if cRes.Decision != "" {
+						conflictDecisions = append(conflictDecisions, cRes.Decision)
+					}
+					break
+				}
+			}
+			if len(conflictDecisions) > 0 {
+				// The integrator's outcome is authoritative during a
+				// conflict re-entry; ignore the stale DependsOn signals.
+				decisions = conflictDecisions
+			}
+		}
+
+		decision := aggregateLoopDecisions(decisions, cfg.FailureValue, cfg.SuccessValue, cfg.ConflictValue)
 
 		switch decision {
 		case cfg.SuccessValue:
@@ -2040,6 +2103,48 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			r.log.Info("loop_decision: rejected, looping back",
 				"run", run.ID, "step", step.ID, "loop_branch", cfg.LoopBranch, "iteration", currentIter)
 			if err := r.loopDecisionReenter(ctx, tx, tenantID, run, sr, step, runs, cfg.LoopBranch, currentIter, now, allSteps); err != nil {
+				return err
+			}
+
+		case cfg.ConflictValue:
+			// Decision is conflict → the merge/PR step hit a merge
+			// conflict. Route to the Integrator loop: a worker merges
+			// develop into the branch, resolves the conflict, and
+			// re-submits — bounded by max_iterations. The control plane
+			// performs zero conflict resolution itself; it only routes.
+			if cfg.ConflictValue == "" {
+				// Back-compat: a gate that never configured a conflict
+				// value cannot receive this word. Treat it like failure.
+				break
+			}
+			// The conflict iteration budget counts how many times the
+			// INTEGRATOR has run (the conflict re-entry target), not the
+			// gate's own iteration — the gate stays RUNNING→READY across
+			// conflict re-entries without a new gate iteration, so its
+			// iteration count would never advance.
+			conflictTarget := conflictChainTarget(cfg)
+			currentIter := currentLoopIteration(runs, conflictTarget)
+			if currentIter >= cfg.MaxIterations {
+				// Budget exhausted. If escalated to human review, hold the
+				// run at approval_pending (a real human reviews the merge
+				// conflict through the existing Approvals flow); otherwise
+				// fail as today.
+				if cfg.ExhaustedReview == "human" {
+					escalated, err := r.escalateConflictToHuman(ctx, tx, tenantID, run, sr, step, runs, now, decisions)
+					if err != nil {
+						return err
+					}
+					runs[step.ID] = escalated
+					r.log.Warn("loop_decision: conflict budget exhausted — escalated to human review",
+						"run", run.ID, "step", step.ID, "iterations", currentIter)
+					break
+				}
+				return r.failStep(ctx, tx, tenantID, run, sr, runs,
+					fmt.Errorf("loop_decision step %q: conflict not resolved within max_iterations (%d)", step.Name, cfg.MaxIterations))
+			}
+			r.log.Info("loop_decision: conflict, routing to integrator",
+				"run", run.ID, "step", step.ID, "iteration", currentIter)
+			if err := r.conflictReenter(ctx, tx, tenantID, run, sr, step, runs, cfg, currentIter, now, allSteps); err != nil {
 				return err
 			}
 
@@ -3859,6 +3964,14 @@ type loopDecisionConfig struct {
 	SuccessValue  string `json:"success_value"`  // value meaning success; default "success"
 	FailureValue  string `json:"failure_value"`  // value meaning failure; default "failure"
 	MaxReask      int    `json:"max_reask"`      // max re-ask attempts when no decision field found; default 3
+
+	// Conflict routing (merge-integrator loop). Conflict is a third
+	// routing signal a worker reports (e.g. a DevOps merge worker that
+	// hits a merge conflict: `ORCHICON WORKER SUMMARY: conflict`).
+	ConflictValue   string   `json:"conflict_value"`   // value meaning conflict; default "conflict"
+	ConflictChain   []string `json:"conflict_chain"`   // explicit re-entry chain (integrator → merge), NOT a static-DAG ancestor
+	ConflictBranch  string   `json:"conflict_branch"`  // fallback single re-entry target (static-DAG ancestor topology)
+	ExhaustedReview string   `json:"exhausted_review"` // "human" escalates an exhausted conflict budget to human review; "" fails as today
 }
 
 func parseLoopDecisionConfig(config string) loopDecisionConfig {
@@ -3872,6 +3985,9 @@ func parseLoopDecisionConfig(config string) loopDecisionConfig {
 	}
 	if cfg.FailureValue == "" {
 		cfg.FailureValue = "failure"
+	}
+	if cfg.ConflictValue == "" {
+		cfg.ConflictValue = "conflict"
 	}
 	if cfg.MaxReask <= 0 {
 		cfg.MaxReask = 3
@@ -4174,6 +4290,97 @@ func (r *WorkflowReconciler) loopDecisionReenter(ctx context.Context, tx pgx.Tx,
 	return nil
 }
 
+// conflictChainTarget returns the step ID whose iteration count tracks the
+// conflict loop budget: the last step of the explicit conflict_chain (the
+// Integrator, which produces the routing decision), else conflict_branch,
+// else loop_branch.
+func conflictChainTarget(cfg loopDecisionConfig) string {
+	if len(cfg.ConflictChain) > 0 {
+		return cfg.ConflictChain[len(cfg.ConflictChain)-1]
+	}
+	if cfg.ConflictBranch != "" {
+		return cfg.ConflictBranch
+	}
+	return cfg.LoopBranch
+}
+
+// conflictReenter routes a conflicted merge into the Integrator loop. The
+// Integrator step is NOT a static DAG ancestor (a lazy step would break the
+// first clean pass), so the chain is given explicitly: conflict_chain lists
+// the step IDs (e.g. [integrator, merge]) to re-create as PENDING runs,
+// superseding prior iterations. When conflict_chain is empty it falls back
+// to conflict_branch, then loop_branch, reusing the static-ancestor DAG
+// topology via loopDecisionReenter. The gate marks itself RUNNING so
+// downstream steps block until the re-entered chain completes.
+func (r *WorkflowReconciler) conflictReenter(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, step workflow.StepWire, runs map[string]db.WorkflowStepRunRow, cfg loopDecisionConfig, currentIter int, now time.Time, allSteps []workflow.StepWire) error {
+	nextIter := currentIter + 1
+
+	if len(cfg.ConflictChain) > 0 {
+		// Explicit chain: create PENDING runs for exactly these step IDs
+		// (superseding prior runs), then re-create the gate as RUNNING so
+		// downstream steps block until the chain completes.
+		if err := r.createChainRuns(ctx, tx, tenantID, run.ID, cfg.ConflictChain, nextIter, allSteps); err != nil {
+			return fmt.Errorf("loop_decision step %q: create conflict chain runs: %w", step.Name, err)
+		}
+		updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+			Status: strPtr(domain.StepRunRunning),
+			Result: func() *[]byte { r := []byte(`{"loop":"conflict-re-entered"}`); return &r }(),
+		})
+		if err != nil {
+			return fmt.Errorf("loop_decision step %q: mark running: %w", step.Name, err)
+		}
+		runs[step.ID] = updated
+		if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepStarted, run, updated); err != nil {
+			return fmt.Errorf("enqueue loop_decision step_started: %w", err)
+		}
+		r.log.Info("loop_decision conflict re-entered",
+			"run", run.ID, "step", step.ID, "iteration", nextIter, "conflict_chain", cfg.ConflictChain)
+		return nil
+	}
+
+	// Fall back to a static-ancestor topology: conflict_branch, then
+	// loop_branch. Reuse the existing re-enter mechanics.
+	target := cfg.ConflictBranch
+	if target == "" {
+		target = cfg.LoopBranch
+	}
+	if target == "" {
+		return r.failStep(ctx, tx, tenantID, run, sr, runs,
+			fmt.Errorf("loop_decision step %q: conflict decision with no conflict_chain, conflict_branch, or loop_branch", step.Name))
+	}
+	return r.loopDecisionReenter(ctx, tx, tenantID, run, sr, step, runs, target, currentIter, now, allSteps)
+}
+
+// escalateConflictToHuman transitions an exhausted conflict gate to
+// approval_pending — the same status a human approval step uses — so the
+// run pauses for a real human to review the unresolved merge conflict
+// through the existing Approvals flow. It writes the decision summary and
+// exhausted marker into the step result so listApprovalItems can surface
+// the conflict context. This mirrors the recovery human_escalation path.
+func (r *WorkflowReconciler) escalateConflictToHuman(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, step workflow.StepWire, runs map[string]db.WorkflowStepRunRow, now time.Time, decisions []string) (db.WorkflowStepRunRow, error) {
+	// Summarize the conflict context for the reviewer.
+	conflictSummary := "merge conflict not resolved within max_iterations"
+	if len(decisions) > 0 {
+		conflictSummary = "merge conflict: " + strings.Join(decisions, ", ")
+	}
+	stepResult, _ := json.Marshal(map[string]any{
+		"_decision":           "pending",
+		"_exhausted":          true,
+		"_reason":             conflictSummary,
+		"_upstream_summary":   conflictSummary,
+		"_exhausted_conflict": true,
+	})
+	updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+		Status:  strPtr(domain.StepRunApprovalPending),
+		Result:  &stepResult,
+		EndedAt: &now,
+	})
+	if err != nil {
+		return db.WorkflowStepRunRow{}, fmt.Errorf("loop_decision step %q: escalate conflict to human review: %w", step.Name, err)
+	}
+	return updated, nil
+}
+
 // chainStepIDs returns the IDs of every step strictly between `fromID`
 // and `toID` in DAG order (fromID inclusive, toID exclusive): the set of
 // steps reachable downstream from `fromID` (via depends_on) that are also
@@ -4298,7 +4505,9 @@ func (r *WorkflowReconciler) createChainRuns(ctx context.Context, tx pgx.Tx, ten
 // pollLoopDecisionChain checks whether every step in the chain between
 // the loop decision's loop_branch target and its upstream dependency
 // has completed (all terminal). Callers re-mark the loop decision as
-// READY when true.
+// READY when true. When the gate was re-entered via an explicit
+// conflict_chain (the Integrator loop), that chain is polled instead of
+// the DAG-derived one — the Integrator is not a static DAG ancestor.
 func (r *WorkflowReconciler) pollLoopDecisionChain(ctx context.Context, tx pgx.Tx, tenantID string, sr db.WorkflowStepRunRow, allSteps []workflow.StepWire) (bool, error) {
 	// Find the loop decision's configuration to get loop_branch.
 	var stepDef *workflow.StepWire
@@ -4312,11 +4521,14 @@ func (r *WorkflowReconciler) pollLoopDecisionChain(ctx context.Context, tx pgx.T
 		return false, fmt.Errorf("step %s not found in version", sr.StepID)
 	}
 	cfg := parseLoopDecisionConfig(stepDef.Config)
-	if cfg.LoopBranch == "" {
-		return false, nil
-	}
 
-	chain := chainStepIDs(allSteps, cfg.LoopBranch, sr.StepID)
+	var chain []string
+	switch {
+	case len(cfg.ConflictChain) > 0:
+		chain = cfg.ConflictChain
+	case cfg.LoopBranch != "":
+		chain = chainStepIDs(allSteps, cfg.LoopBranch, sr.StepID)
+	}
 	if len(chain) == 0 {
 		return false, nil
 	}
@@ -4335,7 +4547,20 @@ func (r *WorkflowReconciler) pollLoopDecisionChain(ctx context.Context, tx pgx.T
 				break
 			}
 		}
-		if active.ID == "" || active.Status != domain.StepRunSucceeded {
+		if active.ID == "" {
+			return false, nil
+		}
+		// A chain step is complete once it reaches a terminal state. For
+		// the ordinary loop_branch chain only SUCCEEDED unblocks (a failed
+		// reviewer triggers recovery via the anyFailed path). For the
+		// explicit conflict_chain, a FAILED integrator must also unblock so
+		// the gate re-evaluates and routes the failure — recovery would
+		// otherwise not apply to the lazy integrator step.
+		if len(cfg.ConflictChain) > 0 {
+			if active.Status != domain.StepRunSucceeded && active.Status != domain.StepRunFailed {
+				return false, nil
+			}
+		} else if active.Status != domain.StepRunSucceeded {
 			return false, nil
 		}
 	}
@@ -4405,11 +4630,14 @@ func extractFactsLearned(summary string) []string {
 }
 
 // aggregateLoopDecisions evaluates the routing decision across multiple
-// upstream steps of a fan-in loop decision. Failure is decisive: if ANY
-// upstream reports failure the gate loops back. Otherwise it proceeds
-// only when every upstream reports success; an empty string means no
-// upstream reported a decision (caller re-asks).
-func aggregateLoopDecisions(decisions []string, failureValue, successValue string) string {
+// upstream steps of a fan-in loop decision. Failure is decisive above all:
+// if ANY upstream reports failure the gate loops back. Otherwise conflict
+// (a merge-integrator signal) is decisive. It proceeds forward only when
+// every upstream reports success; an empty string means no upstream
+// reported a decision (caller re-asks). conflictValue is the configured
+// conflict signal (default "conflict"); it is only treated as decisive
+// when non-empty.
+func aggregateLoopDecisions(decisions []string, failureValue, successValue, conflictValue string) string {
 	decision := ""
 	for _, d := range decisions {
 		switch d {
@@ -4417,6 +4645,13 @@ func aggregateLoopDecisions(decisions []string, failureValue, successValue strin
 			return failureValue
 		case successValue:
 			decision = successValue
+		}
+	}
+	if conflictValue != "" {
+		for _, d := range decisions {
+			if d == conflictValue {
+				return conflictValue
+			}
 		}
 	}
 	return decision

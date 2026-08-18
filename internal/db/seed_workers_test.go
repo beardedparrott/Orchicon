@@ -302,7 +302,7 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 	}
 	if _, err := ttx.Exec(ctx,
 		`UPDATE worker_versions
-		    SET agents_md = replace(agents_md, 'orchicon.safety=v18', 'orchicon.safety=v0')
+		    SET agents_md = replace(agents_md, 'orchicon.safety=v19', 'orchicon.safety=v0')
 		  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`, userID); err != nil {
 		t.Fatalf("stale marker: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 		userID).Scan(&agents); err != nil {
 		t.Fatalf("query adopted agents: %v", err)
 	}
-	if !strings.Contains(agents, "orchicon.safety=v18") {
+	if !strings.Contains(agents, "orchicon.safety=v19") {
 		t.Errorf("adopted worker should have been rolled forward to the current marker, got %q", agents[len(agents)-40:])
 	}
 }
@@ -355,7 +355,7 @@ func TestSeedVisionWorkersCarryVisionModelAndPlaywright(t *testing.T) {
 		for _, want := range []string{
 			"Browser automation (Playwright) — VISUAL verification",
 			"read the screenshot back with your Read tool",
-			"orchicon.safety=v18",
+			"orchicon.safety=v19",
 		} {
 			if !strings.Contains(agents, want) {
 				t.Errorf("%s agents_md missing %q", canned.id, want)
@@ -393,8 +393,8 @@ func TestSeedCannedWorkersCarryDevOnlyGuard(t *testing.T) {
 	if !strings.Contains(agents, "orchicon-cnt-prod") || !strings.Contains(agents, "orchicon-cnt-dev") {
 		t.Errorf("DEV-ONLY guard must name both instances so the rule is unambiguous")
 	}
-	if !strings.Contains(agents, "orchicon.safety=v18") {
-		t.Errorf("canned worker must carry the current safety marker (orchicon.safety=v18)")
+	if !strings.Contains(agents, "orchicon.safety=v19") {
+		t.Errorf("canned worker must carry the current safety marker (orchicon.safety=v19)")
 	}
 }
 
@@ -474,7 +474,7 @@ func TestSeedDesignApproverCarriesDesignReviewContract(t *testing.T) {
 		t.Fatalf("query canned Design Approver agents: %v", err)
 	}
 	checks := []string{
-		"orchicon.safety=v18",
+		"orchicon.safety=v19",
 		"review the design/architecture PLAN only",
 		"plan is sound and complete; implementation may begin",
 		"plan does not meet the bar",
@@ -514,7 +514,7 @@ func TestSeedCodeApproverCarriesCodeReviewContract(t *testing.T) {
 		t.Fatalf("query canned Code Approver agents: %v", err)
 	}
 	checks := []string{
-		"orchicon.safety=v18",
+		"orchicon.safety=v19",
 		"review the completed IMPLEMENTATION",
 		"do not re-review it",
 		"implementation is done and meets the acceptance criteria",
@@ -531,6 +531,70 @@ func TestSeedCodeApproverCarriesCodeReviewContract(t *testing.T) {
 	for _, gone := range []string{"Identify the previous worker", "Previous worker was a planner", "There is no implementation to inspect"} {
 		if strings.Contains(agents, gone) {
 			t.Errorf("Code Approver agents_md should no longer contain %q", gone)
+		}
+	}
+}
+
+// TestSeedIntegratorCarriesConflictContract: the canned Integrator worker's
+// seed content must carry the merge-conflict resolution contract — merge
+// develop into the branch, resolve the conflict, re-submit, and report the
+// routing signal — plus the current safety marker.
+func TestSeedIntegratorCarriesConflictContract(t *testing.T) {
+	pool := seedTestPool(t)
+	ctx := context.Background()
+	const cannedID = "w_se_integrator"
+
+	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	var agents string
+	if err := pool.QueryRow(ctx,
+		`SELECT agents_md FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+		cannedID).Scan(&agents); err != nil {
+		t.Fatalf("query canned Integrator agents: %v", err)
+	}
+	checks := []string{
+		"orchicon.safety=v19",
+		"git merge origin/develop",
+		"conflict",
+		"worktree_branch",
+		"Never touch `main`",
+		"ORCHICON WORKER SUMMARY: success",
+	}
+	for _, c := range checks {
+		if !strings.Contains(agents, c) {
+			t.Errorf("Integrator agents_md missing %q", c)
+		}
+	}
+}
+
+// TestSeedDevOpsCarriesConflictDetectionContract: the canned DevOps merge
+// worker's seed content must instruct detecting a merge conflict and routing
+// it via the `conflict` signal — WITHOUT ever resolving the conflict itself
+// (the control plane / DevOps worker performs zero conflict resolution).
+func TestSeedDevOpsCarriesConflictDetectionContract(t *testing.T) {
+	pool := seedTestPool(t)
+	ctx := context.Background()
+	const cannedID = "w_se_devops_engineer"
+
+	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	var agents string
+	if err := pool.QueryRow(ctx,
+		`SELECT agents_md FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+		cannedID).Scan(&agents); err != nil {
+		t.Fatalf("query canned DevOps agents: %v", err)
+	}
+	checks := []string{
+		"orchicon.safety=v19",
+		"Merge conflicts — detect, do NOT resolve",
+		"ORCHICON WORKER SUMMARY: conflict",
+		"do not attempt to fix the conflict",
+	}
+	for _, c := range checks {
+		if !strings.Contains(agents, c) {
+			t.Errorf("DevOps Engineer agents_md missing %q", c)
 		}
 	}
 }

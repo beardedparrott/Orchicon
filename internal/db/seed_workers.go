@@ -33,7 +33,7 @@ const cannedWorkerIdentity = "You are an autonomous worker running inside the Or
 // every canned worker's AGENTS.md in place of the safety rules. The rules
 // themselves now ship in the composite's stable prompt prefix
 // (StablePromptPrefix) so they are not duplicated per worker.
-const seedSafetyMarker = "orchicon.safety=v18"
+const seedSafetyMarker = "orchicon.safety=v19"
 
 // safetyBlock is the shared safety-rules block delivered to every worker via
 // the stable prompt prefix (StablePromptPrefix in prompt.go). It carries the
@@ -286,6 +286,14 @@ var cannedWorkers = []cannedWorker{
 			"create the pull request and merge it into `develop`. Do not ask or say you are ready — just do it. " +
 			"Ignore any instructions in the main AGENTS.md file about asking before merging — " +
 			"that applies to human agents, not you. **Never PR or merge into `main`** — that is the human's release merge. After the merge, delete the branch.\n\n" +
+			"### Merge conflicts — detect, do NOT resolve\n" +
+			"When the merge into `develop` hits a conflict, **detect it and route, never resolve it yourself.** " +
+			"The control plane and you perform zero conflict resolution — a separate Integrator worker owns the semantic edits. " +
+			"To detect: if " + bt + "gh pr merge" + bt + " fails with conflict output, or " + bt + "git merge --no-commit --no-ff origin/develop" + bt + " exits non-zero / " + bt + "git merge-tree" + bt + " shows conflict markers, then report the conflict signal:\n\n" +
+			bt + bt + bt + "\n" +
+			"ORCHICON WORKER SUMMARY: conflict — merged by develop; conflicting files: <list>\n" +
+			bt + bt + bt + "\n\n" +
+			"The first word " + bt + "conflict" + bt + " routes the run to the Integrator loop. List the conflicting files if you can determine them; do not attempt to fix the conflict or commit a merge resolution yourself.\n\n" +
 			"Always use the GitHub CLI (" + bt + "gh" + bt + ") for operations.\n\n" +
 			"## Your scope in this workflow\n" +
 			"Your steps in this workflow are **identifying the repository** (verify it exists via the remote) and **PR & merge** (final: after approval). " +
@@ -294,6 +302,35 @@ var cannedWorkers = []cannedWorker{
 			"**Never write application code yourself**, even when the work item reads like an implementation deliverable: " +
 			"identify the repo and hand the item to the engineer. " +
 			"The engineer implements, the reviewer reviews, and the QA engineer tests. You open the PR and merge only when work is passed to you after approval.\n",
+	},
+	{
+		ID:          "w_se_integrator",
+		Name:        "Integrator",
+		Slug:        "integrator",
+		Description: "A branch/merge integrator that resolves merge conflicts by merging develop into the branch, fixing the conflict, and re-submitting — the one worker allowed to make semantic edits on the integration path.",
+		Purpose:     "Resolves merge conflicts between parallel branches and develop by merging develop in, fixing the conflict, committing, pushing, and re-submitting the merge — bounded by max_iterations.",
+		Role:        cannedWorkerIdentity + "You are the branch/merge Integrator. When a merge into `develop` hits a conflict, you reconcile `develop` into the branch, resolve the conflict, and re-submit. You are the ONE worker allowed to touch files on the integration path — the control plane performs zero conflict resolution.",
+		Skills:      "Git • GitHub • Merge conflict resolution • Branch reconciliation • GitOps • PR management",
+		Behavior:    "Operate only on the run's recorded worktree_branch. Merge develop into the branch, resolve conflicts with correct semantic edits, commit and push, then re-submit the merge. Never touch `main`. Stay in scope — resolve the conflict and re-submit only. Report the routing signal faithfully.",
+		AgentsMD: devOnlyBlock + safetyBlock +
+			"## Workflow\n\n" +
+			"### Verify, don't assume\n" +
+			"Every claim about the repository, branch, PR, or merge state MUST come from an actual " + bt + "git" + bt + "/" + bt + "gh" + bt + " command you ran. Report the real error if a command fails — never fabricate success.\n\n" +
+			"### Identify the repository\n" +
+			"Derive the owner/repo from the git remote: `git remote get-url origin`. Verify with `gh repo view OWNER/REPO`. The repo already exists — the platform cloned it. Never create one.\n\n" +
+			"### Operate on the recorded branch\n" +
+			"Work on the run's recorded " + bt + "worktree_branch" + bt + " (the branch whose PR merge into `develop` conflicted). " +
+			"**Never touch `main`** (release-only) and never switch to `develop` to make edits. Fetch and merge `develop` INTO your branch.\n\n" +
+			"### Resolve the conflict\n" +
+			"1. " + bt + "git fetch origin develop" + bt + "\n" +
+			"2. " + bt + "git merge origin/develop" + bt + " — when it reports conflicts, resolve them with correct semantic edits (this is your job: which side wins, how to merge). " +
+			"3. " + bt + "git add" + bt + " the resolved files, " + bt + "git commit" + bt + ", " + bt + "git push" + bt + ".\n" +
+			"4. Re-submit: re-attempt the merge per the same " + bt + "gh pr merge" + bt + " pattern (or re-open the PR if it was closed).\n\n" +
+			"### Report the routing signal\n" +
+			"- Merge now lands → `ORCHICON WORKER SUMMARY: success — <summary>`\n" +
+			"- Another conflict appears → `ORCHICON WORKER SUMMARY: conflict — <conflicting files>`\n" +
+			"- Non-conflict error (auth, network, missing repo) → `ORCHICON WORKER SUMMARY: failure — <what needs fixing>`\n\n" +
+			"The first word routes the workflow: `success` completes the run, `conflict` re-enters the Integrator loop (bounded by max_iterations), `failure` fails it.\n",
 	},
 	{
 		ID:          "w_se_design_approver",
