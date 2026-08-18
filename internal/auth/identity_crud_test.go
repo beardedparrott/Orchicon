@@ -339,4 +339,73 @@ func deleteIdentityRow(t *testing.T, pool *db.Pool, tenantID, id string) func() 
 	}
 }
 
+// TestIdentityUsernameLeftJoin pins the Identity.username projection: the
+// read paths (GetIdentity / ListIdentities) surface the local_credentials
+// login handle via the LEFT JOIN — populated when a credential exists,
+// empty when none does — and never leak the password hash.
+func TestIdentityUsernameLeftJoin(t *testing.T) {
+	pool, svc, ctx, tenantID := newIdentityCRUDService(t)
+
+	credentialed := mustCreateIdentity(t, bindIdentityCalls(svc, ctx), "user", "cred-user", "Credentialed")
+	t.Cleanup(deleteIdentityRow(t, pool, tenantID, credentialed.Id))
+	plain := mustCreateIdentity(t, bindIdentityCalls(svc, ctx), "user", "plain-user", "Plain")
+	t.Cleanup(deleteIdentityRow(t, pool, tenantID, plain.Id))
+
+	// Bind a local credential to the first identity (username != subject).
+	if _, err := svc.SetLocalCredential(ctx, connect.NewRequest(&apiv1.SetLocalCredentialRequest{
+		IdentityId: credentialed.Id,
+		Username:   "login-handle",
+		Password:   "cred-password-123",
+	})); err != nil {
+		t.Fatalf("SetLocalCredential: %v", err)
+	}
+
+	// GetIdentity surfaces the credential username.
+	got, err := svc.GetIdentity(ctx, connect.NewRequest(&apiv1.GetIdentityRequest{Id: credentialed.Id}))
+	if err != nil {
+		t.Fatalf("GetIdentity: %v", err)
+	}
+	if got.Msg.Identity.Username != "login-handle" {
+		t.Fatalf("GetIdentity username = %q, want %q", got.Msg.Identity.Username, "login-handle")
+	}
+	// The uncredentialed identity reports an empty username.
+	gotPlain, err := svc.GetIdentity(ctx, connect.NewRequest(&apiv1.GetIdentityRequest{Id: plain.Id}))
+	if err != nil {
+		t.Fatalf("GetIdentity (plain): %v", err)
+	}
+	if gotPlain.Msg.Identity.Username != "" {
+		t.Fatalf("uncredentialed GetIdentity username = %q, want empty", gotPlain.Msg.Identity.Username)
+	}
+
+	// ListIdentities surfaces both.
+	list, err := svc.ListIdentities(ctx, connect.NewRequest(&apiv1.ListIdentitiesRequest{}))
+	if err != nil {
+		t.Fatalf("ListIdentities: %v", err)
+	}
+	byID := map[string]string{}
+	for _, id := range list.Msg.Identities {
+		byID[id.Id] = id.Username
+	}
+	if byID[credentialed.Id] != "login-handle" {
+		t.Fatalf("ListIdentities username for credentialed = %q, want %q", byID[credentialed.Id], "login-handle")
+	}
+	if byID[plain.Id] != "" {
+		t.Fatalf("ListIdentities username for plain = %q, want empty", byID[plain.Id])
+	}
+
+	// The read path must never expose the password hash.
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	row, err := db.GetLocalCredentialByIdentity(ctx, ttx.Tx, tenantID, credentialed.Id)
+	if err != nil {
+		t.Fatalf("GetLocalCredentialByIdentity: %v", err)
+	}
+	if containsPlaintext(row.PasswordHash, "cred-password-123") {
+		t.Fatal("plaintext leaked into the stored hash")
+	}
+}
+
 func pointerTo[T any](v T) *T { return &v }
