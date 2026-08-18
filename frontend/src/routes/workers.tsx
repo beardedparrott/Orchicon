@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, createRoute } from "@tanstack/react-router";
-import { Trash2, SearchX, FolderPlus } from "lucide-react";
+import { Trash2, SearchX, FolderPlus, GripVertical } from "lucide-react";
+import { useDraggable } from "@dnd-kit/core";
 
 import { useBatchDeleteWorkers, useListWorkers } from "@/api/workers";
-import { WorkerStatus } from "@/api/gen/orchicon/api/v1/worker_pb";
+import { WorkerStatus, type Worker } from "@/api/gen/orchicon/api/v1/worker_pb";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -14,7 +15,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { CategoryFolder } from "@/components/CategoryFolder";
-import { CategoryAssignSelect } from "@/components/CategoryAssignSelect";
+import { CategoryDndContext } from "@/components/CategoryDndContext";
 import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
 import {
   useCategoryPreferences,
@@ -250,93 +251,56 @@ function WorkersPage() {
             </span>
           </div>
           <div>
-            {categoryGroups.map(({ category, items }) => (
-              <CategoryFolder
-                key={category.id}
-                category={category}
-                count={items.length}
-                isCollapsed={
-                  category.id === "uncategorized"
-                    ? prefs.collapsed.has("uncategorized")
-                    : prefs.collapsed.has(category.id)
-                }
-                onToggle={() => prefs.toggleCollapsed(category.id)}
-                onRename={(newName) =>
-                  prefs.renameCategory(category.id, newName)
-                }
-                onDelete={() => {
-                  if (
-                    window.confirm(
-                      `Delete "${category.name}"? Items will move to Uncategorized.`,
-                    )
-                  ) {
-                    prefs.deleteCategory(category.id);
+            <CategoryDndContext
+              categories={prefs.state.categories}
+              onAssign={prefs.assignItem}
+            >
+              {categoryGroups.map(({ category, items }) => (
+                <CategoryFolder
+                  key={category.id}
+                  category={category}
+                  count={items.length}
+                  isCollapsed={
+                    category.id === "uncategorized"
+                      ? prefs.collapsed.has("uncategorized")
+                      : prefs.collapsed.has(category.id)
                   }
-                }}
-                onUpdateDescription={(desc) =>
-                  prefs.updateDescription(category.id, desc)
-                }
-              >
-                <div className="space-y-1">
-                  {items.map((w) => (
-                    <div key={w.id} className="group flex items-center gap-2">
-                      <input
-                        type="checkbox"
+                  onToggle={() => prefs.toggleCollapsed(category.id)}
+                  onRename={(newName) =>
+                    prefs.renameCategory(category.id, newName)
+                  }
+                  onDelete={() => {
+                    if (
+                      window.confirm(
+                        `Delete "${category.name}"? Items will move to Uncategorized.`,
+                      )
+                    ) {
+                      prefs.deleteCategory(category.id);
+                    }
+                  }}
+                  onUpdateDescription={(desc) =>
+                    prefs.updateDescription(category.id, desc)
+                  }
+                  droppableId={category.id}
+                >
+                  <div className="space-y-1">
+                    {items.map((w) => (
+                      <WorkerRow
+                        key={w.id}
+                        worker={w}
                         checked={selected.has(w.id)}
-                        onChange={() => toggleSelect(w.id)}
-                        className="ml-2 h-4 w-4 shrink-0 rounded border-input"
-                      />
-                      <Link
-                        to="/workers/$id"
-                        params={{ id: w.id }}
-                        className="min-w-0 flex-1"
-                      >
-                        <Card className="transition-colors hover:bg-accent">
-                          <CardContent className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
-                            <div className="flex min-w-0 items-center gap-3">
-                              <WorkerStatusBadge status={w.status} />
-                              <div className="min-w-0 flex-1 overflow-hidden">
-                                <p className="truncate text-sm font-medium">
-                                  {w.name}
-                                </p>
-                                <p className="break-all font-mono text-xs text-muted-foreground">
-                                  {w.slug}
-                                </p>
-                              </div>
-                            </div>
-                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground sm:shrink-0">
-                              {w.purpose && (
-                                <span className="max-w-[200px] truncate">
-                                  {w.purpose}
-                                </span>
-                              )}
-                              <span>v{w.currentVersion}</span>
-                            </div>
-                          </CardContent>
-                        </Card>
-                      </Link>
-                      <button
-                        onClick={() => {
+                        onToggleSelect={() => toggleSelect(w.id)}
+                        onDelete={() => {
                           if (window.confirm("Delete this worker?")) {
                             batchDelete.mutate([w.id]);
                           }
                         }}
-                        className="opacity-0 group-hover:opacity-100 rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground hover:text-destructive hover:bg-accent transition-all shrink-0"
-                        title="Delete worker"
-                      >
-                        ✕
-                      </button>
-                      <CategoryAssignSelect
-                        entityId={w.id}
-                        currentCategoryId={prefs.state.assignments[w.id]}
-                        categories={prefs.state.categories}
-                        onAssign={prefs.assignItem}
                       />
-                    </div>
-                  ))}
-                </div>
-              </CategoryFolder>
-            ))}
+                    ))}
+                  </div>
+                </CategoryFolder>
+              ))}
+            </CategoryDndContext>
           </div>
         </>
       )}
@@ -349,6 +313,84 @@ function WorkersPage() {
         }
         existingNames={existingCategoryNames}
       />
+    </div>
+  );
+}
+
+function WorkerRow({
+  worker,
+  checked,
+  onToggleSelect,
+  onDelete,
+}: {
+  worker: Worker;
+  checked: boolean;
+  onToggleSelect: () => void;
+  onDelete: () => void;
+}) {
+  // Drag handle is a SIBLING of the <Link>, so clicking the handle can never
+  // open the item; only the Card (<Link>) navigates. dnd-kit's listeners live
+  // on the handle span, the measured node is the row.
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: worker.id,
+  });
+  return (
+    <div
+      ref={setNodeRef}
+      className={cn("group flex items-center gap-2", isDragging && "z-10 opacity-50")}
+    >
+      <span
+        {...attributes}
+        {...listeners}
+        aria-label={`Drag ${worker.name} to a category`}
+        className="mt-0.5 shrink-0 cursor-grab text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 active:cursor-grabbing"
+      >
+        <GripVertical className="h-4 w-4" />
+      </span>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={onToggleSelect}
+        onPointerDown={(e) => e.stopPropagation()}
+        className="ml-1 h-4 w-4 shrink-0 rounded border-input"
+      />
+      <Link
+        to="/workers/$id"
+        params={{ id: worker.id }}
+        className="min-w-0 flex-1"
+      >
+        <Card className="transition-colors hover:bg-accent">
+          <CardContent className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-center gap-3">
+              <WorkerStatusBadge status={worker.status} />
+              <div className="min-w-0 flex-1 overflow-hidden">
+                <p className="truncate text-sm font-medium">
+                  {worker.name}
+                </p>
+                <p className="break-all font-mono text-xs text-muted-foreground">
+                  {worker.slug}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground sm:shrink-0">
+              {worker.purpose && (
+                <span className="max-w-[200px] truncate">
+                  {worker.purpose}
+                </span>
+              )}
+              <span>v{worker.currentVersion}</span>
+            </div>
+          </CardContent>
+        </Card>
+      </Link>
+      <button
+        onClick={onDelete}
+        onPointerDown={(e) => e.stopPropagation()}
+        className="rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground opacity-0 transition-all group-hover:opacity-100 hover:bg-accent hover:text-destructive shrink-0"
+        title="Delete worker"
+      >
+        ✕
+      </button>
     </div>
   );
 }
