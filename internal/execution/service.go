@@ -995,6 +995,15 @@ func rowToProto(e db.ExecutionRow) *apiv1.WorkerExecution {
 	if len(e.Conversation) > 0 {
 		p.Conversation = e.Conversation
 	}
+	if e.WorktreeStatus != nil {
+		p.WorktreeStatus = *e.WorktreeStatus
+	}
+	if e.WorktreeBranch != nil {
+		p.WorktreeBranch = *e.WorktreeBranch
+	}
+	if e.WorktreePath != nil {
+		p.WorktreePath = *e.WorktreePath
+	}
 	return p
 }
 

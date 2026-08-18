@@ -44,6 +44,7 @@ data/
 # builds with a default GOTMPDIR fail to run test binaries.
 .gotmp/
 .go-tmp/
+.gtmp/
 # Workflow-runner scratch caches (Go build/test + GOTMPDIR) — never committed.
 .cache-build/
 .qa-gocache/

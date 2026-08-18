@@ -30,6 +30,7 @@ import { useGetUsage } from "@/api/aigateway";
 import { Markdown } from "@/components/markdown";
 import { SessionChatPane } from "@/components/executions/SessionChatPane";
 import { ExecutionContextSidebar } from "@/components/executions/ExecutionContextSidebar";
+import { worktreeTileItems } from "@/components/WorktreeTiles";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
@@ -326,6 +327,7 @@ function ExecutionContextFooter({
         ? `${exec.workflowName || exec.workflowRunId}${exec.workflowStepId ? ` · step ${exec.workflowStepId}` : ""}`
         : "—",
     },
+    ...worktreeTileItems(exec.worktreeStatus, exec.worktreeBranch, exec.worktreePath),
   ];
   return (
     <div className="rounded-xl border bg-card p-4 shadow-sm">

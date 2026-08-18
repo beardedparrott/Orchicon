@@ -365,6 +365,30 @@ export class WorkerExecution extends Message<WorkerExecution> {
    */
   workerName = "";
 
+  /**
+   * Worktree provisioning state (the non-repo in-place fallback), copied
+   * from the parent workflow run at dispatch:
+   * worktree_status is pending/ready/skipped/failed/pruned; a non-repo run
+   * is 'skipped' with empty path/branch and renders as "runs in place".
+   *
+   * @generated from field: string worktree_status = 26;
+   */
+  worktreeStatus = "";
+
+  /**
+   * deterministic branch created for the run
+   *
+   * @generated from field: string worktree_branch = 27;
+   */
+  worktreeBranch = "";
+
+  /**
+   * isolated working tree the execution ran in
+   *
+   * @generated from field: string worktree_path = 28;
+   */
+  worktreePath = "";
+
   constructor(data?: PartialMessage<WorkerExecution>) {
     super();
     proto3.util.initPartial(data, this);
@@ -398,6 +422,9 @@ export class WorkerExecution extends Message<WorkerExecution> {
     { no: 23, name: "iteration", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 24, name: "system_prompt", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 25, name: "worker_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 26, name: "worktree_status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 27, name: "worktree_branch", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 28, name: "worktree_path", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkerExecution {

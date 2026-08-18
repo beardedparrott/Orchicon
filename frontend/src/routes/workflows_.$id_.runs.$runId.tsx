@@ -13,7 +13,7 @@ import ReactFlow, {
   type Node,
 } from "reactflow";
 import { useQueryClient } from "@tanstack/react-query";
-import type { WorkflowRun, WorkflowStepRun } from "@/api/gen/orchicon/api/v1/workflow_pb";
+import type { WorkflowStepRun } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import { StepKind, StepRunStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
 
 import { useApproveStep } from "@/api/approvals";
@@ -38,6 +38,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { WorktreeTiles, worktreeTileItems } from "@/components/WorktreeTiles";
 import { ACCENT_STROKE, KIND_ACCENT } from "@/components/workflow-editor/stepKinds";
 import { cn } from "@/lib/utils";
 import { LiveDuration } from "@/components/ui/live-duration";
@@ -318,7 +319,6 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
           <p className="text-xs text-muted-foreground">
             workflow v{run.workflowVersion} · status:{" "}
             <RunStatusBadge status={run.status} />
-            {worktreeTag(run)}
             {run.currentStep && (
               <> · current step: <span className="font-mono">{run.currentStep}</span></>
             )}
@@ -363,6 +363,19 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
         <div className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-1.5">
           <LiveDuration startedAt={run.startedAt} endedAt={run.endedAt} />
           <span className="text-xs text-muted-foreground">elapsed</span>
+        </div>
+      )}
+
+      {worktreeTileItems(run.worktreeStatus, run.worktreeBranch, run.worktreePath).length > 0 && (
+        <div className="rounded-xl border bg-card p-4 shadow-sm">
+          <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Worktree
+          </h3>
+          <WorktreeTiles
+            worktreeStatus={run.worktreeStatus}
+            worktreeBranch={run.worktreeBranch}
+            worktreePath={run.worktreePath}
+          />
         </div>
       )}
 
@@ -868,21 +881,6 @@ function RunStepNode({
 // source/target handles on the canvas nodes.
 
 // --- badges + helpers ---
-
-// worktreeTag renders the run's worktree/branch state as a muted inline tag
-// (the non-repo in-place fallback). A git-backed run (ready) shows its
-// recorded branch; a non-repo run (skipped) shows the neutral "runs in
-// place"; any other/absent state renders nothing so no branch is ever shown
-// for runs without a worktree.
-function worktreeTag(run: WorkflowRun) {
-  if (run.worktreeStatus === "ready" && run.worktreeBranch) {
-    return <> · branch: <span className="font-mono">{run.worktreeBranch}</span></>;
-  }
-  if (run.worktreeStatus === "skipped") {
-    return <> · runs in place</>;
-  }
-  return null;
-}
 
 function RunStatusBadge({ status }: { status: number }) {
   return (
