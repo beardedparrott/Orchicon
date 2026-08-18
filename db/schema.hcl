@@ -811,6 +811,18 @@ table "worker_executions" {
     type = text
     null = true
   }
+  column "worktree_status" {
+    type = text
+    null = true
+  }
+  column "worktree_path" {
+    type = text
+    null = true
+  }
+  column "worktree_branch" {
+    type = text
+    null = true
+  }
   column "workflow_run_id" {
     type = text
     null = false
