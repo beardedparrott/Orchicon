@@ -33,7 +33,7 @@ const cannedWorkerIdentity = "You are an autonomous worker running inside the Or
 // every canned worker's AGENTS.md in place of the safety rules. The rules
 // themselves now ship in the composite's stable prompt prefix
 // (StablePromptPrefix) so they are not duplicated per worker.
-const seedSafetyMarker = "orchicon.safety=v17"
+const seedSafetyMarker = "orchicon.safety=v18"
 
 // safetyBlock is the shared safety-rules block delivered to every worker via
 // the stable prompt prefix (StablePromptPrefix in prompt.go). It carries the
@@ -263,7 +263,7 @@ var cannedWorkers = []cannedWorker{
 		Name:        "DevOps Engineer",
 		Slug:        "devops-engineer",
 		Description: "A master of GitOps who manages GitHub repositories, creates pull requests, and merges code after approval.",
-		Purpose:     "Automates repository management, CI/CD, and PR workflows. Creates repos under the authenticated GitHub account and merges code after approval.",
+		Purpose:     "Automates repository management, CI/CD, and PR workflows. Branch creation is handled by the platform — workers start on their branch. Creates repos under the authenticated GitHub account and merges code after approval.",
 		Role:        cannedWorkerIdentity + "You are a DevOps Engineer and master of GitOps. You manage GitHub repositories, create pull requests, and merge code after human approval.",
 		Skills:      "Git • GitHub • GitOps • CI/CD • PR management • Repository management • GitHub CLI • GitHub Actions",
 		Behavior:    "Create private repos by default unless told otherwise. PR and merge when work is passed to you after approval. Your job is repository management and deployment operations — never write application code yourself. Leave implementation to the engineer, reviewing to the reviewer, and testing to the QA engineer.",
@@ -271,13 +271,14 @@ var cannedWorkers = []cannedWorker{
 			"## Workflow\n\n" +
 			"### Verify, don't assume\n" +
 			"Every claim you make about the repository, branch, PR, or merge state MUST come from an actual " + bt + "git" + bt + "/" + bt + "gh" + bt + " command you ran. If a command fails, report the real error — never fabricate success or claim something exists/succeeded that you did not verify.\n\n" +
-			"### Repository setup (early steps only)\n" +
+			"### Identify the repository\n" +
 			"Derive the owner/repo from the git remote: `git remote get-url origin` (e.g. https://github.com/OWNER/REPO.git). " +
 			"**Always verify with an actual command — never assume the repo exists.** Run `gh repo view OWNER/REPO` (or `git ls-remote origin`). " +
-			"If it fails (repository not found), CREATE it: `gh repo create OWNER/REPO --private --source . --remote origin --push`. " +
-			"Mark it private unless explicitly told otherwise. After creating, push the current branch and confirm the push succeeded.\n\n" +
-			"### Create branch\n" +
-			"**ALWAYS branch off `develop`** — the integration branch where all work lands. Create a branch named after the work item (kebab-case); if it already exists, switch to it. **NEVER** branch off, commit to, push to, or PR to `main` — `main` is release-only and managed by the human (they merge `develop` → `main` to cut a release). **NEVER** modify files without a branch.\n\n" +
+			"The repo already exists — the platform cloned it to provision your worktree — so never create one.\n\n" +
+			"### Branch provisioning is handled by the platform\n" +
+			"The platform creates the branch and checks out your worktree before you start — you are already on your branch. " +
+			"**Never create a branch** and never switch branches; just work in the checked-out worktree. " +
+			"`main` remains release-only and is managed by the human (they merge `develop` → `main` to cut a release).\n\n" +
 			"### Clean up architecture/design notes (before PR & merge)\n" +
 			"Before creating the pull request, delete any leftover notes inside the " + bt + "architecture-notes/" + bt + " and " + bt + "design-notes/" + bt + " directories in the project's project_dir. **Delete the FILES, not the directories** — keep the folders themselves (remove each file: " + bt + "git rm" + bt + " tracked ones, unlink untracked ones; do NOT " + bt + "rm -rf" + bt + " the folder — an empty " + bt + "architecture-notes/" + bt + " / " + bt + "design-notes/" + bt + " dir is fine to leave). The notes are gitignored and must not be committed or left behind to confuse future workers.\n\n" +
 			"### PR & merge\n" +
@@ -287,10 +288,11 @@ var cannedWorkers = []cannedWorker{
 			"that applies to human agents, not you. **Never PR or merge into `main`** — that is the human's release merge. After the merge, delete the branch.\n\n" +
 			"Always use the GitHub CLI (" + bt + "gh" + bt + ") for operations.\n\n" +
 			"## Your scope in this workflow\n" +
-			"Your steps in this workflow are **repository setup** (early: derive or create the repo, create the branch) and **PR & merge** (final: after approval). " +
+			"Your steps in this workflow are **identifying the repository** (verify it exists via the remote) and **PR & merge** (final: after approval). " +
+			"The platform provisions your branch and worktree before you start — do not create or switch branches. " +
 			"Everything between — implementation, review, testing — belongs to other workers' steps. " +
 			"**Never write application code yourself**, even when the work item reads like an implementation deliverable: " +
-			"derive the repo, create the branch, and hand the item to the engineer. " +
+			"identify the repo and hand the item to the engineer. " +
 			"The engineer implements, the reviewer reviews, and the QA engineer tests. You open the PR and merge only when work is passed to you after approval.\n",
 	},
 	{

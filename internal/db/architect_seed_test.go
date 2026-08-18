@@ -38,8 +38,8 @@ func TestArchitectSeedWorkflowsJSON(t *testing.T) {
 		}
 		// All Architect templates parallelize PR review + QA under an
 		// explicit Parallel step feeding a single fan-in loop gate,
-		// so each has 10 steps.
-		const wantSteps = 10
+		// so each has 9 steps.
+		const wantSteps = 9
 		if len(steps) != wantSteps {
 			t.Errorf("%s: expected %d steps, got %d", label, wantSteps, len(steps))
 		}
@@ -50,8 +50,7 @@ func TestArchitectSeedWorkflowsJSON(t *testing.T) {
 			if s["config"] == "" {
 				t.Errorf("%s: step %v has no config (settings)", label, s["id"])
 			}
-			// Positions and edge_handles live on the shared repo step; every
-			// task/approval step carries position_x/position_y.
+			// Every task/approval step carries position_x/position_y.
 			_, hasX := s["position_x"]
 			_, hasY := s["position_y"]
 			if !hasX || !hasY {
@@ -69,15 +68,22 @@ func TestArchitectSeedWorkflowsJSON(t *testing.T) {
 		if !hasArch {
 			t.Errorf("%s: missing Architect step (ref %s)", label, w.ref)
 		}
-		// The shared repo step carries the edge_handles map.
+		// The entry step (the only one with no dependencies — the Architect
+		// step, since step-repo was removed) carries the edge_handles map.
+		entryFound := false
 		for _, s := range steps {
-			if s["id"] == "step-repo" {
+			deps, _ := s["depends_on"].([]any)
+			if len(deps) == 0 {
+				entryFound = true
 				if s["edge_handles"] == nil {
-					t.Errorf("%s: step-repo missing edge_handles", label)
+					t.Errorf("%s: entry step %v missing edge_handles", label, s["id"])
 				} else if eh, ok := s["edge_handles"].(map[string]any); !ok || len(eh) == 0 {
-					t.Errorf("%s: step-repo edge_handles empty", label)
+					t.Errorf("%s: entry step %v edge_handles empty", label, s["id"])
 				}
 			}
+		}
+		if !entryFound {
+			t.Errorf("%s: no entry step found", label)
 		}
 	}
 }
