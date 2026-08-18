@@ -2041,7 +2041,13 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		// signal must not keep re-entering after the integrator resolved
 		// it. The gate's own re-entry keeps it RUNNING until
 		// pollLoopDecisionChain sees the chain complete, so this is only
-		// read after the integrator finished.
+		// read after the integrator finished. decisionFromConflictChain
+		// records that the routed decision was produced by the Integrator,
+		// whose worker contract treats `failure` as a terminal failure
+		// (auth/network/missing repo) — it must NOT loop back to the merge
+		// (the stale failed-Integrator run would keep overriding later
+		// merge evaluations), so the failure branch below fails the run.
+		decisionFromConflictChain := false
 		if len(cfg.ConflictChain) > 0 {
 			conflictDecisions := make([]string, 0, len(cfg.ConflictChain))
 			for _, cid := range cfg.ConflictChain {
@@ -2069,6 +2075,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 				// The integrator's outcome is authoritative during a
 				// conflict re-entry; ignore the stale DependsOn signals.
 				decisions = conflictDecisions
+				decisionFromConflictChain = true
 			}
 		}
 
@@ -2093,6 +2100,20 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 
 		case cfg.FailureValue:
 			// Decision is failure → loop back to loop_branch with full context.
+			if decisionFromConflictChain {
+				// The Integrator (the conflict-chain decision source)
+				// reported `failure` — a non-conflict error (auth, network,
+				// missing repo) per its worker contract, which states
+				// "`failure` fails it". Fail the run here rather than
+				// looping back to the merge: loopDecisionReenter would
+				// re-run the merge without superseding the failed
+				// Integrator run, so its stale `_decision: failure` would
+				// keep overriding every subsequent merge evaluation and
+				// loop back again until the merge budget exhausted.
+				return r.failStep(ctx, tx, tenantID, run, sr, runs,
+					fmt.Errorf("loop_decision step %q: integrator failed: %s", step.Name, strings.Join(decisions, ", ")))
+			}
+			// Decision is failure → loop back to loop_branch with full context.
 			currentIter := currentLoopIteration(runs, cfg.LoopBranch)
 			if currentIter >= cfg.MaxIterations {
 				// Fail even though the step run succeeded — the reviewer
@@ -2113,9 +2134,15 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			// re-submits — bounded by max_iterations. The control plane
 			// performs zero conflict resolution itself; it only routes.
 			if cfg.ConflictValue == "" {
-				// Back-compat: a gate that never configured a conflict
-				// value cannot receive this word. Treat it like failure.
-				break
+				// Unreachable in practice: parseLoopDecisionConfig always
+				// defaults conflict_value to "conflict", and
+				// aggregateLoopDecisions only returns a value it matched
+				// against a non-empty configured value — so an empty
+				// conflict_value can never reach this case. Defensive
+				// guard: fail explicitly rather than silently `break`
+				// (which would leave the gate READY and hang the run).
+				return r.failStep(ctx, tx, tenantID, run, sr, runs,
+					fmt.Errorf("loop_decision step %q: conflict decision but conflict_value is empty", step.Name))
 			}
 			// The conflict iteration budget counts how many times the
 			// INTEGRATOR has run (the conflict re-entry target), not the
