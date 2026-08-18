@@ -30,8 +30,8 @@ import (
 // (all containers are removed at start) and the plane's run-start gate +
 // adopt pass re-lease for active runs.
 type daemonPool struct {
-	d   *Daemon
-	mu  sync.Mutex
+	d  *Daemon
+	mu sync.Mutex
 	// entries is the full inventory by container name.
 	entries map[string]*poolEntry
 	// clean lists available (reset, warm) container names per environment.
@@ -55,9 +55,9 @@ type poolEntry struct {
 	serveURL      string
 	// planeURL is the sandbox plane /healthz base URL (empty on base/gui
 	// images — no plane boot).
-	planeURL  string
-	leasedBy  string // run id; "" = available
-	lastUsed  time.Time
+	planeURL string
+	leasedBy string // run id; "" = available
+	lastUsed time.Time
 }
 
 func newDaemonPool(d *Daemon) *daemonPool {
@@ -70,10 +70,15 @@ func newDaemonPool(d *Daemon) *daemonPool {
 }
 
 // poolEnvKey derives the environment key for a create request: the image +
-// the sorted mount set. Runs with the same image + mounts share a pool;
-// different environments never share a container (bind mounts are fixed at
-// create time and cannot change on a running container).
-func poolEnvKey(req CreateRequest) string {
+// the sorted mount set + a fingerprint of the read-once HOST inputs baked
+// into every container at create time (opencode config/auth, the adapter
+// install, the resolved GH token — see hostfp.go). Runs with the same image +
+// mounts + host inputs share a pool; different environments never share a
+// container (bind mounts are fixed at create time and cannot change on a
+// running container, and the serve caches the host inputs at boot). hostFp ==
+// "" folds away — the key then reduces to image + mounts (no behavior change
+// when HostHome is unset / nothing applies).
+func poolEnvKey(req CreateRequest, hostFp string) string {
 	h := sha256.New()
 	_, _ = io.WriteString(h, "img="+req.Image+"\n")
 	mounts := append([]MountSpec(nil), req.Mounts...)
@@ -85,6 +90,9 @@ func poolEnvKey(req CreateRequest) string {
 	})
 	for _, m := range mounts {
 		_, _ = io.WriteString(h, fmt.Sprintf("%s:%s\n", m.Source, m.Dest))
+	}
+	if hostFp != "" {
+		_, _ = io.WriteString(h, "host="+hostFp+"\n")
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
@@ -123,7 +131,7 @@ func (p *daemonPool) checkout(ctx context.Context, runID string, req CreateReque
 		p.mu.Unlock()
 	}
 
-	key := poolEnvKey(req)
+	key := poolEnvKey(req, p.d.hostInputsFingerprint())
 	p.mu.Lock()
 	var chosen *poolEntry
 	if names := p.clean[key]; len(names) > 0 {
@@ -225,20 +233,27 @@ func (p *daemonPool) release(runID string) {
 // container is removed FIRST so a reset never leaks its predecessor.
 func (p *daemonPool) resetAndPool(old *poolEntry) {
 	_, _ = p.d.docker("rm", "-f", old.name)
-	name := poolName(old.envKey)
-	resp, err := p.d.createContainer(name, CreateRequest{
+	// Re-derive the env key from the CURRENT host state instead of reusing
+	// old.envKey: a read-once host input (config/auth/adapter/token) that
+	// changed while the run was leased must land the reset container under
+	// the NEW key — under the old key it would idle-reap unused while the
+	// next checkout created fresh anyway.
+	req := CreateRequest{
 		Image:       old.image,
 		Mounts:      old.mounts,
 		ServeConfig: old.serveCfg,
 		ProjectDir:  old.projectDir,
-	})
+	}
+	envKey := poolEnvKey(req, p.d.hostInputsFingerprint())
+	name := poolName(envKey)
+	resp, err := p.d.createContainer(name, req)
 	if err != nil {
 		p.d.Log.Warn("pool reset failed — dropping container", "container", old.name, "error", err)
 		return
 	}
 	ent := &poolEntry{
 		name:          name,
-		envKey:        old.envKey,
+		envKey:        envKey,
 		image:         old.image,
 		mounts:        old.mounts,
 		serveCfg:      old.serveCfg,
