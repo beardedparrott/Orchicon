@@ -82,26 +82,26 @@ type WorkflowRunRow struct {
 // (architecture-notes/concurrent-step-run-dispatch.md D2); non-branch
 // steps keep them at their defaults ('pending'/empty).
 type WorkflowStepRunRow struct {
-	ID                 string
-	TenantID           string
-	WorkflowRunID      string
-	StepID             string
-	StepName           string
-	StepKind           string
-	Status             string
-	Attempt            int
-	Result             []byte // jsonb
-	WorkerExecutionID  string
-	Iteration          int    // re-entry count (0 for first dispatch)
-	SupersededBy       string // step run id that superseded this one
-	WorktreeStatus     string // WorktreeReconciler provisioning state (pending/ready/skipped/failed/pruned)
-	WorktreePath       string // isolated working tree path (parallel-branch children)
-	WorktreeBranch     string // deterministic branch created for the step run
-	StartedAt          *time.Time
-	EndedAt            *time.Time
-	Version            int
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	ID                string
+	TenantID          string
+	WorkflowRunID     string
+	StepID            string
+	StepName          string
+	StepKind          string
+	Status            string
+	Attempt           int
+	Result            []byte // jsonb
+	WorkerExecutionID string
+	Iteration         int    // re-entry count (0 for first dispatch)
+	SupersededBy      string // step run id that superseded this one
+	WorktreeStatus    string // WorktreeReconciler provisioning state (pending/ready/skipped/failed/pruned)
+	WorktreePath      string // isolated working tree path (parallel-branch children)
+	WorktreeBranch    string // deterministic branch created for the step run
+	StartedAt         *time.Time
+	EndedAt           *time.Time
+	Version           int
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // CreateWorkflow inserts a new workflow header row within the given

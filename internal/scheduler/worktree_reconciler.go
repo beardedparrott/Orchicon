@@ -109,7 +109,8 @@ func (r *WorktreeReconciler) Reconcile(ctx context.Context, key string) reconcil
 		return r.scan(ctx, tenantID)
 	}
 	runID, stepRunID, _ := splitWorktreeKey(key)
-	if stepRunID != "" {		if err := r.reconcileStepRunOne(ctx, tenantID, runID, stepRunID); err != nil {
+	if stepRunID != "" {
+		if err := r.reconcileStepRunOne(ctx, tenantID, runID, stepRunID); err != nil {
 			return reconciler.Result{Error: err}
 		}
 		return reconciler.Result{}
