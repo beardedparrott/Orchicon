@@ -740,6 +740,51 @@ func ListDependenciesTargetingItems(ctx context.Context, tx pgx.Tx, tenantID str
 	return out, rows.Err()
 }
 
+// UnsatisfiedDependencyRow is one blocking edge source that keeps the
+// dependent work item from dispatching: the source is not
+// terminal-success. ToID is the dependent (the edge's to_id), ID/Title/
+// Status belong to the blocker (the edge's from_id) — the batch attach
+// keys rows by ToID so a page of dependents maps to their blockers.
+// Populated at read time for WorkItem.blocked_by so the server names the
+// blocking edges (AGENTS invariant #1: the UI reflects server state).
+type UnsatisfiedDependencyRow struct {
+	ToID   string
+	ID     string
+	Title  string
+	Status string
+}
+
+// ListUnsatisfiedDependencies returns the sources of every incoming
+// blocks/depends_on edge whose status is NOT 'succeeded' for the given
+// work items. The predicate is IDENTICAL to CheckDependenciesSatisfied
+// (relates_to never blocks; only succeeded unblocks), so the read-time
+// blocked_by list and the reconciler's dispatch gate can never disagree.
+// Bounded by the number of edges targeting the items — one indexed join
+// over the dependency edges + work_items.
+func ListUnsatisfiedDependencies(ctx context.Context, tx pgx.Tx, tenantID string, toIDs []string) ([]UnsatisfiedDependencyRow, error) {
+	const q = `SELECT d.to_id, wi.id, wi.title, wi.status
+		FROM work_item_dependencies d
+		JOIN work_items wi ON wi.id = d.from_id AND wi.tenant_id = d.tenant_id
+		WHERE d.tenant_id = $1 AND d.to_id = ANY($2)
+		  AND d.type IN ('blocks', 'depends_on')
+		  AND wi.status != 'succeeded'
+		ORDER BY wi.created_at`
+	rows, err := tx.Query(ctx, q, tenantID, toIDs)
+	if err != nil {
+		return nil, fmt.Errorf("db: list unsatisfied dependencies: %w", err)
+	}
+	defer rows.Close()
+	var out []UnsatisfiedDependencyRow
+	for rows.Next() {
+		var d UnsatisfiedDependencyRow
+		if err := rows.Scan(&d.ToID, &d.ID, &d.Title, &d.Status); err != nil {
+			return nil, fmt.Errorf("db: scan unsatisfied dependency: %w", err)
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // DeleteOutgoingDependencies removes every dependency edge of the given
 // type where from_id = fromID within the tenant scope (set-replace
 // support for UpdateWorkItem's depends_on list).

@@ -231,6 +231,72 @@ func TestKindSwitchChildrenReparentDB(t *testing.T) {
 	}
 }
 
+// TestKindSwitchBlockedItemStaysBlocked is the regression test for the
+// kind-switch cleanup edge: a BLOCKED item switched to a non-schedulable
+// kind is not in the ready/assigned/scheduled/recurring demote list, so it
+// keeps its blocked status. This is intentional and harmless — the
+// reconcilers still process blocked items and clear them when the gate
+// satisfies — but it must stay stable so operators never see the system
+// status silently rewritten by a kind switch.
+func TestKindSwitchBlockedItemStaysBlocked(t *testing.T) {
+	pool := validateParentTestPool(t)
+	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
+	projectA := validateParentProject(t, ctx, pool)
+
+	epic := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindEpic, nil)
+	blockedTask := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
+	writeItem(t, pool, blockedTask.ID, blockedTask.Version, db.UpdateWorkItemFields{
+		Status: strPtr(domain.WorkItemBlocked),
+	})
+	blockedTask = readItem(t, pool, blockedTask.ID)
+	if blockedTask.Status != domain.WorkItemBlocked {
+		t.Fatalf("fixture should be blocked, got %q", blockedTask.Status)
+	}
+
+	ttx, err := pool.BeginTenantTx(ctx, validateParentTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+
+	plan, err := ResolveKindSwitch(ctx, ttx.Tx, validateParentTestTenant, blockedTask, domain.WorkItemKindFeature, nil, projectA)
+	if err != nil {
+		t.Fatalf("blocked task → feature: %v", err)
+	}
+	// The blocked status is NOT demoted (it is system-managed; the
+	// reconcilers own it) — NewStatus must stay nil.
+	if plan.NewStatus != nil {
+		t.Fatalf("blocked → feature demoted status to %q, want untouched", *plan.NewStatus)
+	}
+	if !plan.ClearWorkerRef {
+		t.Fatal("blocked → feature should still clear the worker ref (non-schedulable)")
+	}
+
+	// Apply the plan the way the UpdateWorkItem handler does (kind +
+	// plan fields) and confirm the item keeps blocked end-to-end.
+	apply := db.UpdateWorkItemFields{Kind: strPtr(domain.WorkItemKindFeature)}
+	if plan.NewStatus != nil {
+		apply.Status = plan.NewStatus
+	}
+	if plan.ClearWorkerRef {
+		apply.ClearAssignedWorkerRef = true
+	}
+	applied := readItem(t, pool, blockedTask.ID)
+	if _, err := db.UpdateWorkItem(ctx, ttx.Tx, validateParentTestTenant, applied.ID, applied.Version, apply); err != nil {
+		t.Fatalf("apply switch: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	after := readItem(t, pool, blockedTask.ID)
+	if after.Status != domain.WorkItemBlocked {
+		t.Errorf("status after kind switch = %q, want %q (system-managed, untouched)", after.Status, domain.WorkItemBlocked)
+	}
+	if after.Kind != domain.WorkItemKindFeature {
+		t.Errorf("kind after switch = %q, want feature", after.Kind)
+	}
+}
+
 // TestKindSwitchProjectMoveDB verifies the interaction between a kind
 // switch and a project move (ADR-WIT-1/2 + the carried-parent guard):
 // moving to another project with a kind switch requires a parent in the

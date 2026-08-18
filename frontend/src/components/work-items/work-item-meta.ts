@@ -248,6 +248,18 @@ const STATUS_META: Record<number, StatusMeta> = {
     pillDark: "bg-fuchsia-500/15 text-fuchsia-300",
     dot: "bg-fuchsia-500",
   },
+  // Teal — visually distinct from every other pill (teal is otherwise
+  // unused by statuses/kinds). System-managed: set by the reconcilers when
+  // an armed/on-deck item cannot dispatch because an upstream dependency is
+  // not terminal-success. Distinct from pending/scheduled so operators see
+  // WHY nothing is dispatching.
+  [WorkItemStatus.BLOCKED]: {
+    label: "blocked",
+    titleLabel: "Blocked",
+    pill: "bg-teal-500/15 text-teal-800",
+    pillDark: "bg-teal-500/15 text-teal-300",
+    dot: "bg-teal-500",
+  },
 };
 
 export function statusMeta(status: number): StatusMeta {
@@ -274,6 +286,7 @@ export const STATUS_FILTER_OPTIONS = [
   { value: WorkItemStatus.RECOVERING, label: "Recovering" },
   { value: WorkItemStatus.SCHEDULED, label: "Scheduled" },
   { value: WorkItemStatus.RECURRING, label: "Recurring" },
+  { value: WorkItemStatus.BLOCKED, label: "Blocked" },
 ];
 
 /** Every status value offered by the status filter — the default
@@ -320,12 +333,15 @@ export const BOARD_COLUMNS: BoardColumn[] = [
 
 // Statuses without a dedicated column render in the column of their
 // closest active status: checkpointing/recovering → Running,
-// scheduled/recurring → Pending. The card still shows its REAL status pill.
+// scheduled/recurring/blocked → Pending. The card still shows its REAL
+// status pill (blocked keeps its distinct teal pill while sitting in the
+// Pending column).
 export function columnForStatus(status: number): number {
   if (status === WorkItemStatus.CHECKPOINTING) return WorkItemStatus.RUNNING;
   if (status === WorkItemStatus.RECOVERING) return WorkItemStatus.RUNNING;
   if (status === WorkItemStatus.SCHEDULED) return WorkItemStatus.PENDING;
   if (status === WorkItemStatus.RECURRING) return WorkItemStatus.PENDING;
+  if (status === WorkItemStatus.BLOCKED) return WorkItemStatus.PENDING;
   return status;
 }
 
@@ -333,11 +349,15 @@ export function columnForStatus(status: number): number {
 // System-managed statuses — users cannot manually drag items into these.
 // Running is set by the TaskReconciler when a workflow executes;
 // Checkpointing and Recovering are transient states within a workflow.
+// Blocked is set by the reconcilers when an upstream dependency is
+// unsatisfied (system-managed — operators can't drag INTO it; it clears
+// automatically).
 // ---------------------------------------------------------------------------
 export const MANUALLY_UNMOVABLE_STATUSES = new Set<number>([
   WorkItemStatus.RUNNING,
   WorkItemStatus.CHECKPOINTING,
   WorkItemStatus.RECOVERING,
+  WorkItemStatus.BLOCKED,
 ]);
 
 // ---------------------------------------------------------------------------

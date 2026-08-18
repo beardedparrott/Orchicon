@@ -144,6 +144,11 @@ const (
 	WorkItemCancelled     = "cancelled"
 	WorkItemRecovering    = "recovering"
 	WorkItemRecurring     = "recurring"
+	// WorkItemBlocked is a system-managed status set by the reconcilers
+	// when an armed/on-deck item cannot dispatch because an upstream
+	// dependency (blocks/depends_on edge) is not terminal-success. The
+	// next reconcile pass clears it automatically when the gate satisfies.
+	WorkItemBlocked = "blocked"
 )
 
 // Dependency types — edges in the work DAG

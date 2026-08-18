@@ -828,3 +828,28 @@ func TestIsRecurringScheduleEmpty(t *testing.T) {
 		t.Error("message with start_time should not be empty")
 	}
 }
+
+// --- Blocked status mapping ---
+
+// TestBlockedStatusMapping pins the blocked/waiting-state status switches:
+// the proto→domain and domain→proto maps accept the new BLOCKED enum value
+// so it round-trips through the API, while user-facing ValidateStatus (used
+// by the Ask Orchicon tools and board drops) rejects it — blocked is
+// system-managed and only the reconcilers may set it.
+func TestBlockedStatusMapping(t *testing.T) {
+	if got := validateStatus(apiv1.WorkItemStatus_WORK_ITEM_STATUS_BLOCKED); got != domain.WorkItemBlocked {
+		t.Errorf("validateStatus(BLOCKED) = %q, want %q", got, domain.WorkItemBlocked)
+	}
+	if got := statusToProto(domain.WorkItemBlocked); got != apiv1.WorkItemStatus_WORK_ITEM_STATUS_BLOCKED {
+		t.Errorf("statusToProto(blocked) = %v, want BLOCKED", got)
+	}
+	if _, err := ValidateStatus("blocked"); err == nil {
+		t.Error("ValidateStatus must reject 'blocked' (system-managed status)")
+	}
+	if _, err := ValidateStatus("BLOCKED"); err == nil {
+		t.Error("ValidateStatus must reject 'BLOCKED' (case-insensitive normalization still rejects)")
+	}
+	if _, err := ValidateStatus("ready"); err != nil {
+		t.Errorf("ValidateStatus('ready') = %v, want nil", err)
+	}
+}

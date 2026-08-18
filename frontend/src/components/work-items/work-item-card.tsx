@@ -12,7 +12,7 @@ import { Link } from "@tanstack/react-router";
 import { Link2, Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 
-import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
+import { WorkItemStatus, type WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import {
   KindBadge,
   RecurringBadge,
@@ -29,21 +29,55 @@ import { cn } from "@/lib/utils";
 
 /** Dependency chain icon. Amber chip + count when actually blocked; a
  *  muted gray icon (with "has dependencies" tooltip) when the item has
- *  edges in the DAG but nothing blocking it right now. */
+ *  edges in the DAG but nothing blocking it right now.
+ *
+ *  When the item's status IS blocked, the server is the authority
+ *  (AGENTS invariant #1): the chip renders from `item.blockedBy` (the
+ *  blocking edges the server computed at read time), falling back to the
+ *  client-derived advisory map only as a presentation hint. */
 export function BlockedChip({
+  item,
   blockedBy,
   id,
   depsCount = 0,
   className,
 }: {
+  /** the work item the chip annotates (server `blockedBy` is authoritative
+   *  when it is blocked) */
+  item?: WorkItem;
   blockedBy?: Map<string, WorkItem[]>;
   id: string;
   depsCount?: number;
   className?: string;
 }) {
+  const serverBlockers = item?.status === WorkItemStatus.BLOCKED ? item.blockedBy ?? [] : [];
+  const isDark = useDarkPalette();
+
+  if (serverBlockers.length > 0) {
+    const titles = serverBlockers.map((b) => b.title).join(", ");
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            tabIndex={0}
+            aria-label={`Blocked by ${titles}`}
+            className={cn(
+              "inline-flex items-center gap-0.5 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-semibold focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+              isDark ? "text-amber-300" : "text-amber-800",
+              className,
+            )}
+          >
+            <Link2 aria-hidden className="h-3 w-3" />
+            {serverBlockers.length}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>Blocked by: {titles}</TooltipContent>
+      </Tooltip>
+    );
+  }
+
   const blockers = blockedBy?.get(id) ?? [];
   const titles = blockers.map((b) => b.title).join(", ");
-  const isDark = useDarkPalette();
 
   if (blockers.length > 0) {
     return (
@@ -143,7 +177,7 @@ export function WorkItemCard({
         {badge}
         {showRecurringBadge(item) && <RecurringBadge />}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
-          <BlockedChip blockedBy={blockedBy} id={item.id} depsCount={depsCount} />
+          <BlockedChip item={item} blockedBy={blockedBy} id={item.id} depsCount={depsCount} />
           {moving ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
           ) : (

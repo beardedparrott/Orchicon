@@ -279,23 +279,52 @@ func reconcileParent(ctx context.Context, tx pgx.Tx, tenantID, parentID string, 
 			domain.WorkItemRecurring:
 			// In flight (or human-managed): wait for the current child.
 			continue
-		case domain.WorkItemPending:
+		case domain.WorkItemPending, domain.WorkItemBlocked:
 			// Chain gate (strict children only): the child's position in
 			// the chain is reached only when its immediate predecessor is
 			// succeeded. Dependency-governed children are ordered by their
-			// edges, so they skip this gate.
+			// edges, so they skip this gate. (A blocked child is always
+			// dependency-governed by construction — it only got blocked
+			// via an unsatisfied edge.)
 			if !depGoverned[c.ID] && i > 0 && children[i-1].Status != domain.WorkItemSucceeded {
 				continue // chain position not reached — wait for the predecessor
 			}
 			// Dependency gate: an unsatisfied external blocker parks this
-			// child (parent stays running, child stays pending) until the
-			// blockers succeed — then the next pass arms automatically.
+			// child until the blockers succeed — then the next pass arms
+			// automatically. The park is now SURFACED: a pending child
+			// with unsat deps flips to blocked (persisted) so operators
+			// see WHY nothing is dispatching, instead of a silent gray
+			// pending pill. A blocked child stays blocked; when the gate
+			// satisfies it flips back to pending and falls through to arm
+			// in this same pass.
 			satisfied, err := db.CheckDependenciesSatisfied(ctx, tx, tenantID, c.ID)
 			if err != nil {
 				return nil, fmt.Errorf("check deps: %w", err)
 			}
 			if !satisfied {
+				if c.Status == domain.WorkItemPending {
+					status := domain.WorkItemBlocked
+					if _, err := db.UpdateWorkItem(ctx, tx, tenantID, c.ID, c.Version, db.UpdateWorkItemFields{
+						Status: &status,
+					}); err != nil {
+						return nil, fmt.Errorf("park child blocked: %w", err)
+					}
+				}
 				continue // parked — do not arm, do not requeue, do not fail
+			}
+			// Gate satisfied: a blocked child clears back to pending (the
+			// on-deck set) before arming below. Carry the fresh version
+			// forward so the arm's CAS still matches (this pass updates the
+			// child twice).
+			if c.Status == domain.WorkItemBlocked {
+				status := domain.WorkItemPending
+				updated, err := db.UpdateWorkItem(ctx, tx, tenantID, c.ID, c.Version, db.UpdateWorkItemFields{
+					Status: &status,
+				})
+				if err != nil {
+					return nil, fmt.Errorf("clear child blocked: %w", err)
+				}
+				c = updated
 			}
 			// Arm. A container child starts a nested sequence; a leaf starts
 			// its own bound workflow. No ready/assigned dance, no config copy.

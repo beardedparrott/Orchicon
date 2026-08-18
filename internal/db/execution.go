@@ -503,6 +503,41 @@ func DeleteExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) error 
 	return nil
 }
 
+// ListBlockedTasks returns work items in "blocked" status for a tenant,
+// ordered by priority — the TaskReconciler scan complement to
+// ListReadyTasks. Blocked tasks are re-evaluated on every pass so a newly
+// satisfied dependency gate flips them back to ready (and dispatches in
+// the same pass) without any new notifier wiring.
+func ListBlockedTasks(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkItemRow, error) {
+	const q = `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
+		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
+		workflow_run_id, workflow_step_id,
+		priority, budgets, context_window, sort_order, results, prompt_context, context_files, version, created_at, updated_at
+		FROM work_items
+		WHERE tenant_id = $1 AND status = 'blocked' AND assigned_worker_ref IS NOT NULL
+		ORDER BY priority DESC, created_at ASC`
+	rows, err := tx.Query(ctx, q, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("db: list blocked tasks: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkItemRow
+	for rows.Next() {
+		var w WorkItemRow
+		if err := rows.Scan(
+			&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
+			&w.Description, &w.AcceptanceCriteria, &w.AcceptanceReview, &w.Status, &w.AssignedWorkerRef,
+			&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
+			&w.Priority, &w.Budgets, &w.ContextWindow, &w.SortOrder, &w.Results,
+			&w.PromptContext, &w.ContextFiles, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan blocked work item: %w", err)
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
 // CheckDependenciesSatisfied returns true if all dependency edges pointing
 // TO the given work item have their source (from_id) in a terminal-success
 // state (succeeded). A task is only dispatched when its dependencies are

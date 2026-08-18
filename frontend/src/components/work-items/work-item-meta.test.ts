@@ -25,6 +25,8 @@ import {
   isTerminal,
   isRecurringItem,
   showRecurringBadge,
+  MANUALLY_UNMOVABLE_STATUSES,
+  STATUS_FILTER_OPTIONS,
 } from "@/components/work-items/work-item-meta";
 
 describe("kind meta palette variants", () => {
@@ -190,5 +192,33 @@ describe("board column mapping and transition matrix (regression guards)", () =>
     expect(isTerminal(WorkItemStatus.RUNNING)).toBe(false);
     expect(isTerminal(WorkItemStatus.READY)).toBe(false);
     expect(isTerminal(WorkItemStatus.RECURRING)).toBe(false);
+    // The server gate unblocks only on SUCCEEDED; a blocked item whose
+    // blocker failed/cancelled stays blocked (named, operator-resolvable).
+    // The advisory TERMINAL_STATUSES intentionally diverges — keep it.
+    expect(isTerminal(WorkItemStatus.BLOCKED)).toBe(false);
+  });
+});
+
+describe("blocked status (blocked/waiting state)", () => {
+  it("uses teal — distinct from every other status pill", () => {
+    const blocked = statusMeta(WorkItemStatus.BLOCKED);
+    expect(blocked.pill).toContain("text-teal-800");
+    expect(blocked.pillDark).toContain("text-teal-300");
+    expect(blocked.pill).toContain("bg-teal-500/15");
+    expect(blocked.label).toBe("blocked");
+    expect(blocked.titleLabel).toBe("Blocked");
+    // Distinct from pending/scheduled so operators see why nothing is
+    // dispatching.
+    expect(blocked.pill).not.toBe(statusMeta(WorkItemStatus.PENDING).pill);
+    expect(blocked.pill).not.toBe(statusMeta(WorkItemStatus.SCHEDULED).pill);
+  });
+
+  it("renders in the Pending board column (real pill stays teal)", () => {
+    expect(columnForStatus(WorkItemStatus.BLOCKED)).toBe(WorkItemStatus.PENDING);
+  });
+
+  it("is system-managed (not manually movable) and filterable", () => {
+    expect(MANUALLY_UNMOVABLE_STATUSES.has(WorkItemStatus.BLOCKED)).toBe(true);
+    expect(STATUS_FILTER_OPTIONS.map((o) => o.value)).toContain(WorkItemStatus.BLOCKED);
   });
 });

@@ -162,6 +162,16 @@ export enum WorkItemStatus {
    * @generated from enum value: WORK_ITEM_STATUS_RECURRING = 11;
    */
   RECURRING = 11,
+
+  /**
+   * System-managed: set by the reconcilers when an armed/on-deck item
+   * cannot dispatch because an upstream dependency (blocks/depends_on edge)
+   * is not terminal-success. Cleared automatically by the next reconcile
+   * pass when the dependency gate satisfies. Never user-assignable.
+   *
+   * @generated from enum value: WORK_ITEM_STATUS_BLOCKED = 12;
+   */
+  BLOCKED = 12,
 }
 // Retrieve enum metadata with: proto3.getEnumType(WorkItemStatus)
 proto3.util.setEnumType(WorkItemStatus, "orchicon.api.v1.WorkItemStatus", [
@@ -177,6 +187,7 @@ proto3.util.setEnumType(WorkItemStatus, "orchicon.api.v1.WorkItemStatus", [
   { no: 9, name: "WORK_ITEM_STATUS_RECOVERING" },
   { no: 10, name: "WORK_ITEM_STATUS_SCHEDULED" },
   { no: 11, name: "WORK_ITEM_STATUS_RECURRING" },
+  { no: 12, name: "WORK_ITEM_STATUS_BLOCKED" },
 ]);
 
 /**
@@ -429,6 +440,18 @@ export class WorkItem extends Message<WorkItem> {
    */
   dependsOn: string[] = [];
 
+  /**
+   * blocked_by names the blocking dependency edges this item waits on:
+   * the sources of its incoming blocks/depends_on edges that are not yet
+   * terminal-success. Computed by the server at read time (never stored),
+   * so it is always consistent with the DAG + statuses. Populated whenever
+   * unsatisfied edges exist — even for a pending/ready item the reconciler
+   * has not yet flipped to blocked — so the reason is always visible.
+   *
+   * @generated from field: repeated orchicon.api.v1.WorkItemBlocker blocked_by = 32;
+   */
+  blockedBy: WorkItemBlocker[] = [];
+
   constructor(data?: PartialMessage<WorkItem>) {
     super();
     proto3.util.initPartial(data, this);
@@ -467,6 +490,7 @@ export class WorkItem extends Message<WorkItem> {
     { no: 29, name: "recurring_schedule", kind: "message", T: RecurringSchedule, opt: true },
     { no: 30, name: "next_run_at", kind: "message", T: Timestamp },
     { no: 31, name: "depends_on", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 32, name: "blocked_by", kind: "message", T: WorkItemBlocker, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkItem {
@@ -483,6 +507,61 @@ export class WorkItem extends Message<WorkItem> {
 
   static equals(a: WorkItem | PlainMessage<WorkItem> | undefined, b: WorkItem | PlainMessage<WorkItem> | undefined): boolean {
     return proto3.util.equals(WorkItem, a, b);
+  }
+}
+
+/**
+ * WorkItemBlocker is one upstream dependency edge that keeps its dependent
+ * from dispatching (the source is not terminal-success). Populated at read
+ * time on WorkItem.blocked_by.
+ *
+ * @generated from message orchicon.api.v1.WorkItemBlocker
+ */
+export class WorkItemBlocker extends Message<WorkItemBlocker> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * @generated from field: string title = 2;
+   */
+  title = "";
+
+  /**
+   * current status of the blocking item
+   *
+   * @generated from field: string status = 3;
+   */
+  status = "";
+
+  constructor(data?: PartialMessage<WorkItemBlocker>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.WorkItemBlocker";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "title", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkItemBlocker {
+    return new WorkItemBlocker().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): WorkItemBlocker {
+    return new WorkItemBlocker().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): WorkItemBlocker {
+    return new WorkItemBlocker().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: WorkItemBlocker | PlainMessage<WorkItemBlocker> | undefined, b: WorkItemBlocker | PlainMessage<WorkItemBlocker> | undefined): boolean {
+    return proto3.util.equals(WorkItemBlocker, a, b);
   }
 }
 
