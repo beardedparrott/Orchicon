@@ -453,3 +453,306 @@ func TestWorktreeSkippedNotReprovisioned(t *testing.T) {
 		t.Fatalf("worktree_status = %q, want skipped (recorded decision must hold)", got.WorktreeStatus)
 	}
 }
+
+// setRunStatus flips a run to a terminal state (completed/failed/aborted)
+// the way the workflow engine would.
+func setRunStatus(t *testing.T, env *worktreeTestEnv, status string) {
+	t.Helper()
+	ctx := context.Background()
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("set status: begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	run, err := db.GetWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID)
+	if err != nil {
+		t.Fatalf("set status: get run: %v", err)
+	}
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID, run.Version, db.UpdateWorkflowRunFields{
+		Status: &status,
+	}); err != nil {
+		t.Fatalf("set status: update run: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("set status: commit: %v", err)
+	}
+}
+
+// assertPruned verifies the AC1/AC2 postconditions on the run row: pruned
+// status, cleared path, branch retained.
+func assertPruned(t *testing.T, env *worktreeTestEnv) db.WorkflowRunRow {
+	t.Helper()
+	run := env.getRun(t)
+	if run.WorktreeStatus != domain.WorktreePruned {
+		t.Fatalf("worktree_status = %q, want pruned", run.WorktreeStatus)
+	}
+	if run.WorktreePath != "" {
+		t.Errorf("worktree_path = %q, want empty after prune", run.WorktreePath)
+	}
+	if run.WorktreeBranch == "" {
+		t.Errorf("worktree_branch was cleared; the DevOps merge step needs it (branch deletion stays there)")
+	}
+	return run
+}
+
+// TestWorktreePrunedAtTerminal is the core pruning acceptance test: when a
+// run reaches a terminal state, reconcile removes the worktree dir, runs
+// `git worktree prune`, records 'pruned', and — AC4 — does NOT delete the
+// branch (that stays with the DevOps merge step).
+func TestWorktreePrunedAtTerminal(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	if _, err := os.Stat(env.expectedPath()); err != nil {
+		t.Fatalf("worktree not created before terminal state: %v", err)
+	}
+	setRunStatus(t, env, domain.WorkflowRunCompleted)
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (prune): %v", res.Error)
+	}
+
+	// The worktree dir is gone and git no longer lists it.
+	if _, err := os.Stat(env.expectedPath()); !os.IsNotExist(err) {
+		t.Fatalf("worktree dir still exists after terminal prune: %v", err)
+	}
+	if strings.Contains(gitRun(t, env.repo, "worktree", "list"), env.expectedPath()) {
+		t.Fatalf("worktree list still shows %s after prune", env.expectedPath())
+	}
+
+	// Row postconditions: pruned + cleared path + retained branch.
+	run := assertPruned(t, env)
+	if run.WorktreeBranch != env.expectedBranch() {
+		t.Errorf("worktree_branch = %q, want %q (must survive pruning)", run.WorktreeBranch, env.expectedBranch())
+	}
+
+	// AC4: the branch must still exist — the control plane never deletes
+	// branches.
+	if out := gitRun(t, env.repo, "branch", "--list", env.expectedBranch()); out == "" {
+		t.Fatalf("branch %q was deleted by pruning — branch deletion stays with the DevOps merge step", env.expectedBranch())
+	}
+}
+
+// TestWorktreePruneIdempotent verifies AC2: reconcile retries after a
+// successful prune are safe — no error, no churn, no re-creation.
+func TestWorktreePruneIdempotent(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	setRunStatus(t, env, domain.WorkflowRunFailed)
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (prune pass 1): %v", res.Error)
+	}
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (prune pass 2): %v", res.Error)
+	}
+	run := assertPruned(t, env)
+
+	// The scan pass converges too: a 'pruned' row is not a prune candidate.
+	if res := env.rec.Reconcile(ctx, ""); res.Error != nil {
+		t.Fatalf("reconcile (scan): %v", res.Error)
+	}
+	if _, err := os.Stat(env.expectedPath()); !os.IsNotExist(err) {
+		t.Fatalf("worktree dir recreated after prune: %v", err)
+	}
+	after := env.getRun(t)
+	if after.WorktreeStatus != domain.WorktreePruned {
+		t.Fatalf("scan disturbed the pruned row: status = %q", after.WorktreeStatus)
+	}
+	if after.WorktreeBranch != run.WorktreeBranch {
+		t.Errorf("scan changed worktree_branch: %q → %q", run.WorktreeBranch, after.WorktreeBranch)
+	}
+}
+
+// TestWorktreePruneSkipsNonTerminal locks in AC3: a run that is still
+// running with a ready worktree is never pruned — neither by the enqueue
+// (Reconcile(key)) path nor by the scan discovery.
+func TestWorktreePruneSkipsNonTerminal(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	cur, err := db.GetWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID, cur.Version, db.UpdateWorkflowRunFields{
+		Status: strPtr(domain.WorkflowRunRunning),
+	}); err != nil {
+		t.Fatalf("set run running: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// Enqueue path: reconcileOne must route a running run to provisioning
+	// convergence, never to pruning.
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (enqueue): %v", res.Error)
+	}
+	// Scan path: the prune discovery query must not return a running run.
+	if res := env.rec.Reconcile(ctx, ""); res.Error != nil {
+		t.Fatalf("reconcile (scan): %v", res.Error)
+	}
+
+	if _, err := os.Stat(env.expectedPath()); err != nil {
+		t.Fatalf("running run's worktree was pruned: %v", err)
+	}
+	run := env.getRun(t)
+	if run.WorktreeStatus != domain.WorktreeReady {
+		t.Fatalf("running run's worktree_status = %q, want ready", run.WorktreeStatus)
+	}
+	if run.WorktreePath != env.expectedPath() {
+		t.Errorf("running run's worktree_path = %q, want %q", run.WorktreePath, env.expectedPath())
+	}
+}
+
+// TestWorktreePruneAlreadyGone covers the idempotent "missing worktree =
+// already pruned = success" path: the worktree is removed out-of-band (e.g.
+// by a crashed earlier pass) before the row is marked, and reconcile still
+// converges to 'pruned' without error.
+func TestWorktreePruneAlreadyGone(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	// Remove the worktree out-of-band, exactly like a crashed prune pass
+	// would (dir removed but row still 'ready').
+	gitRun(t, env.repo, "worktree", "remove", "--force", env.expectedPath())
+	gitRun(t, env.repo, "worktree", "prune")
+	if _, err := os.Stat(env.expectedPath()); !os.IsNotExist(err) {
+		t.Fatalf("worktree dir still exists after manual removal: %v", err)
+	}
+	setRunStatus(t, env, domain.WorkflowRunFailed)
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (prune already-gone): %v", res.Error)
+	}
+	assertPruned(t, env)
+}
+
+// TestWorktreePruneScanDiscovery verifies terminal runs with a ready
+// worktree are picked up by the scan pass alone (Reconcile(ctx, "")).
+func TestWorktreePruneScanDiscovery(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	setRunStatus(t, env, domain.WorkflowRunCompleted)
+
+	// No enqueue: the scan must discover and prune the terminal run.
+	if res := env.rec.Reconcile(ctx, ""); res.Error != nil {
+		t.Fatalf("reconcile (scan): %v", res.Error)
+	}
+	if _, err := os.Stat(env.expectedPath()); !os.IsNotExist(err) {
+		t.Fatalf("worktree dir still exists after scan-discovered prune: %v", err)
+	}
+	assertPruned(t, env)
+}
+
+// TestWorktreePruneAbortedRun verifies the aborted terminal path is pruned
+// exactly like completed/failed (a cancelled work item maps to an aborted
+// run).
+func TestWorktreePruneAbortedRun(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	setRunStatus(t, env, domain.WorkflowRunAborted)
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (prune aborted): %v", res.Error)
+	}
+	if _, err := os.Stat(env.expectedPath()); !os.IsNotExist(err) {
+		t.Fatalf("aborted run's worktree dir still exists: %v", err)
+	}
+	assertPruned(t, env)
+}
+
+// TestWorktreePruneNonReadyTerminalUntouched verifies the idempotent guard:
+// a terminal run in any worktree state other than 'ready' has nothing to
+// prune and is never touched.
+func TestWorktreePruneNonReadyTerminalUntouched(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	// A terminal run that was never provisioned (worktree_status pending).
+	setRunStatus(t, env, domain.WorkflowRunFailed)
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (enqueue): %v", res.Error)
+	}
+	if res := env.rec.Reconcile(ctx, ""); res.Error != nil {
+		t.Fatalf("reconcile (scan): %v", res.Error)
+	}
+	run := env.getRun(t)
+	if run.WorktreeStatus != domain.WorktreePending {
+		t.Fatalf("non-provisioned terminal run was touched: worktree_status = %q", run.WorktreeStatus)
+	}
+}
+
+// TestWorktreePrunedNotReprovisioned locks in the recovery-adjacent guard:
+// a run whose worktree was pruned is a recorded terminal decision — even if
+// the run is later re-armed (status flipped back to running), the loop never
+// re-provisions it (the deterministic branch already exists, so
+// re-provisioning could never succeed).
+func TestWorktreePrunedNotReprovisioned(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	setRunStatus(t, env, domain.WorkflowRunCompleted)
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (prune): %v", res.Error)
+	}
+	assertPruned(t, env)
+
+	// Re-arm the run the way a recovery would (status back to running).
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	cur, err := db.GetWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID, cur.Version, db.UpdateWorkflowRunFields{
+		Status: strPtr(domain.WorkflowRunRunning),
+	}); err != nil {
+		t.Fatalf("re-arm run: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit re-arm: %v", err)
+	}
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (re-armed): %v", res.Error)
+	}
+	run := env.getRun(t)
+	if run.WorktreeStatus != domain.WorktreePruned {
+		t.Fatalf("re-armed run was re-provisioned: worktree_status = %q", run.WorktreeStatus)
+	}
+	if _, err := os.Stat(env.expectedPath()); !os.IsNotExist(err) {
+		t.Fatalf("a worktree was re-created for the pruned run: %v", err)
+	}
+}

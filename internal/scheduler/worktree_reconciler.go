@@ -80,9 +80,12 @@ func (r *WorktreeReconciler) Reconcile(ctx context.Context, key string) reconcil
 	return reconciler.Result{}
 }
 
-// scan lists un-provisioned pending/running runs and provisions each.
-// Batch-capped so one pass can't monopolize the reconciler goroutine
-// (mirrors TaskReconciler's scan).
+// scan lists un-provisioned pending/running runs and provisions each,
+// then lists terminal runs with a recorded worktree and prunes each.
+// Both passes go through the same idempotent per-run entry point
+// (reconcileOne dispatches terminal runs to pruneOne). Batch-capped so
+// one pass can't monopolize the reconciler goroutine (mirrors
+// TaskReconciler's scan).
 func (r *WorktreeReconciler) scan(ctx context.Context, tenantID string) reconciler.Result {
 	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -96,6 +99,20 @@ func (r *WorktreeReconciler) scan(ctx context.Context, tenantID string) reconcil
 	for _, run := range runs {
 		if err := r.reconcileOne(ctx, tenantID, run.ID); err != nil {
 			r.log.Warn("worktree: provision run failed", "run", run.ID, "error", err)
+		}
+	}
+	ttx, err = r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return reconciler.Result{Error: err}
+	}
+	terminal, err := db.ListTerminalRunsWithWorktrees(ctx, ttx.Tx, tenantID, 16)
+	ttx.Rollback(ctx)
+	if err != nil {
+		return reconciler.Result{Error: fmt.Errorf("scan terminal worktrees: %w", err)}
+	}
+	for _, run := range terminal {
+		if err := r.reconcileOne(ctx, tenantID, run.ID); err != nil {
+			r.log.Warn("worktree: prune run failed", "run", run.ID, "error", err)
 		}
 	}
 	return reconciler.Result{}
@@ -112,10 +129,11 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 	if err != nil {
 		return err
 	}
-	// Terminal runs are never touched (the scan predicate already
-	// excludes them; the enqueue path must too).
+	// Terminal runs dispatch to the prune path: their worktree (if any) is
+	// reaped instead of provisioned. The scan predicate already excludes
+	// them from provisioning; the enqueue path must route here too.
 	if isTerminalRun(run) {
-		return nil
+		return r.pruneOne(ctx, tenantID, run)
 	}
 	// One-shot runs have an empty project_id until the PROJECT step binds
 	// them on first dispatch — nothing to provision until then.
@@ -131,9 +149,9 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 		if r.worktreeMatches(ctx, run.ProjectID, run.WorktreePath, run.WorktreeBranch) {
 			return nil
 		}
-	case domain.WorktreeSkipped, domain.WorktreeFailed:
-		// Recorded decisions are respected: a skipped or failed run is
-		// never re-provisioned by the loop. (A human may reset the row.)
+	case domain.WorktreeSkipped, domain.WorktreeFailed, domain.WorktreePruned:
+		// Recorded decisions are respected: a skipped, failed or pruned run
+		// is never re-provisioned by the loop. (A human may reset the row.)
 		return nil
 	}
 
@@ -207,6 +225,82 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 	}
 
 	return r.recordReady(ctx, tenantID, runID, path, branch)
+}
+
+// pruneOne reaps a terminal run's worktree: remove the working tree dir,
+// run `git worktree prune` in the main repo, and record the result
+// ('pruned') on the run row. Idempotent by construction — every step
+// treats "already gone" as success, so reconcile retries converge:
+//
+//   - Non-'ready' runs (pending/skipped/failed/pruned) have nothing to
+//     reap → no-op.
+//   - A recorded worktree that no longer exists on disk (already removed,
+//     or the repo plane is gone) is treated as already pruned → success.
+//   - The branch is NEVER deleted: `git worktree remove` and
+//     `git worktree prune` leave refs intact — branch deletion after merge
+//     stays with the DevOps merge step.
+func (r *WorktreeReconciler) pruneOne(ctx context.Context, tenantID string, run db.WorkflowRunRow) error {
+	// Idempotent guard: only reap a worktree this reconciler provably
+	// provisioned and recorded 'ready'. A terminal run in any other
+	// worktree state has nothing to prune (already pruned, or never
+	// provisioned). This is the retry-safety core — a terminal run whose
+	// worktree was already removed still carries worktree_status='ready',
+	// so the missing-worktree handling below reads as success.
+	if run.WorktreeStatus != domain.WorktreeReady || run.WorktreePath == "" {
+		return nil
+	}
+	path := run.WorktreePath
+
+	// Resolve the main repo. If it is unresolvable (project_dir missing or
+	// not a git work tree), never delete anything we can't verify: when the
+	// recorded worktree is already gone, converge on 'pruned' (idempotent
+	// success); when it still exists, leave the row for a later pass.
+	projectDir := r.lookupProjectDir(ctx, tenantID, run.ProjectID)
+	if projectDir == "" || !r.isInsideWorkTree(ctx, projectDir) {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return r.markPruned(ctx, tenantID, run.ID, "worktree already gone; main repo unresolvable")
+		}
+		r.log.Warn("worktree: cannot prune; main repo unresolvable", "run", run.ID, "path", path)
+		return nil
+	}
+
+	// Registered worktree at the recorded path → remove it (--force: a
+	// failed run may leave dirty files). git validates the removal; the
+	// branch ref survives (AC4).
+	existing, err := r.worktreeAt(ctx, projectDir, path)
+	if err != nil {
+		return fmt.Errorf("worktree: list worktrees: %w", err)
+	}
+	if existing != nil {
+		if err := r.removeWorktree(ctx, projectDir, path); err != nil {
+			return fmt.Errorf("worktree: remove %s: %w", path, err)
+		}
+	} else if occupied, oerr := r.dirOccupied(path); oerr != nil {
+		return fmt.Errorf("worktree: inspect %s: %w", path, oerr)
+	} else if occupied {
+		// Not registered but the directory exists: only remove it when we
+		// can prove it is one of our worktree artifacts; never delete
+		// arbitrary user data.
+		if r.isOrchiconWorktreeArtifact(path) {
+			if rerr := r.removeWorktreeArtifact(path); rerr != nil {
+				return fmt.Errorf("worktree: remove artifact at %s: %w", path, rerr)
+			}
+		} else {
+			r.log.Warn("worktree: refusing to remove non-worktree directory",
+				"run", run.ID, "path", path)
+		}
+	}
+	// else: not registered and no directory → already pruned; fall through.
+
+	// AC1: run `git worktree prune` in the main repo even when nothing was
+	// removed, to sweep stale admin data left by interrupted removes.
+	if _, err := runGit(ctx, projectDir, "worktree", "prune"); err != nil {
+		// The working tree removal above already succeeded; the prune step
+		// is best-effort housekeeping, so warn rather than wedge the run.
+		r.log.Warn("worktree: git worktree prune failed", "run", run.ID, "error", err)
+	}
+
+	return r.markPruned(ctx, tenantID, run.ID, "")
 }
 
 // loadRun reads a run outside a transaction (released before git work).
@@ -615,6 +709,48 @@ func (r *WorktreeReconciler) mark(ctx context.Context, tenantID, runID, status, 
 		return fmt.Errorf("mark worktree %s: %w", status, err)
 	}
 	return ttx.Commit(ctx)
+}
+
+// markPruned records that a terminal run's worktree has been reaped. The
+// existing `mark` refuses terminal runs by design, so pruning needs its own
+// writer. In one optimistic transaction it sets worktree_status='pruned'
+// and clears worktree_path; worktree_branch is KEPT so the DevOps merge
+// step knows which branch the run used (branch deletion stays there — the
+// control plane never deletes a branch).
+func (r *WorktreeReconciler) markPruned(ctx context.Context, tenantID, runID, reason string) error {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer ttx.Rollback(ctx)
+	run, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, runID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("get run: %w", err)
+	}
+	// Already pruned by a concurrent pass — converge, don't fight.
+	if run.WorktreeStatus == domain.WorktreePruned {
+		return ttx.Commit(ctx)
+	}
+	fields := db.UpdateWorkflowRunFields{
+		WorktreeStatus: strPtr(domain.WorktreePruned),
+		WorktreePath:   strPtr(""),
+	}
+	if reason != "" {
+		if merged, ok := mergeRunContext(run.RunContext, map[string]any{"worktree_pruned": reason}); ok {
+			fields.RunContext = &merged
+		}
+	}
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, fields); err != nil {
+		return fmt.Errorf("mark worktree pruned: %w", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	r.log.Info("worktree pruned", "run", runID, "branch", run.WorktreeBranch)
+	return nil
 }
 
 // mergeRunContext folds a worktree_error into the run's run_context jsonb
