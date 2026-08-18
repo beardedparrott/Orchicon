@@ -150,8 +150,13 @@ type leafStart struct {
 // for the same parent converges to the same state.
 //
 // The derived cursor: children are ordered by sort_order NULLS LAST,
-// created_at; the first child whose status is not terminal-success is the
-// on-deck child. Every decision below is a pure function of
+// created_at. On each pass every PENDING child is evaluated for arming —
+// it arms when its dependency gate passes (all incoming depends_on/blocks
+// edges satisfied) AND, for a strict sequence child (no incoming
+// dependency edges), when its chain position is reached (its immediate
+// predecessor in sort_order is succeeded). Unrelated siblings arm
+// concurrently; strict chains stay serialized by construction (a just-armed
+// predecessor is non-terminal). Every decision is a pure function of
 // (sort_order, statuses, dependencies) — there is no cursor row to drift.
 func reconcileParent(ctx context.Context, tx pgx.Tx, tenantID, parentID string, start StartWorkflowFn) ([]leafStart, error) {
 	parent, err := db.GetWorkItem(ctx, tx, tenantID, parentID)
@@ -199,14 +204,31 @@ func reconcileParent(ctx context.Context, tx pgx.Tx, tenantID, parentID string, 
 		}
 		return nil, nil
 	}
-	first := children[idx]
+
+	// Failure pre-scan: a failed/cancelled child ANYWHERE in the sequence
+	// halts the WHOLE chain — the parent (and every container up the
+	// ancestor chain) goes failed, and NOTHING arms in this pass, even a
+	// dependency-governed sibling whose edges are otherwise satisfied.
+	// Status-based, not position-based, so a mid-run reorder cannot skip an
+	// unfixed failure. This preserves the strict-chain halt/retry semantics
+	// while the per-child arming loop below relaxes serialization for every
+	// non-failure case.
+	for _, c := range children {
+		if c.Status == domain.WorkItemFailed || c.Status == domain.WorkItemCancelled {
+			if err := failSequenceChain(ctx, tx, tenantID, c); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		}
+	}
+
 	// Retry/resume: a parent that was FAILED (chain halted on a failed
 	// child) is revived to running as soon as its children are no longer
 	// halted — the derived cursor resumes with the next sibling, no
 	// explicit "resume sequence" action. The scan includes failed parents
-	// so this converges automatically.
-	if parent.Status == domain.WorkItemFailed &&
-		first.Status != domain.WorkItemFailed && first.Status != domain.WorkItemCancelled {
+	// so this converges automatically. The failure pre-scan above
+	// guarantees no failed/cancelled child remains when this fires.
+	if parent.Status == domain.WorkItemFailed {
 		status := domain.WorkItemRunning
 		if _, err := db.UpdateWorkItem(ctx, tx, tenantID, parentID, parent.Version, db.UpdateWorkItemFields{
 			Status: &status,
@@ -214,83 +236,111 @@ func reconcileParent(ctx context.Context, tx pgx.Tx, tenantID, parentID string, 
 			return nil, fmt.Errorf("revive sequence parent: %w", err)
 		}
 	}
-	switch first.Status {
-	case domain.WorkItemFailed, domain.WorkItemCancelled:
-		// Failure halts the chain: the parent and every container up the
-		// ancestor chain go failed; nothing after the failure arms.
-		if err := failSequenceChain(ctx, tx, tenantID, first); err != nil {
-			return nil, err
-		}
-		return nil, nil
-	case domain.WorkItemRunning, domain.WorkItemAssigned, domain.WorkItemReady,
-		domain.WorkItemCheckpointing, domain.WorkItemRecovering, domain.WorkItemScheduled,
-		domain.WorkItemRecurring:
-		// In flight (or human-managed): wait for the current child.
-		return nil, nil
-	case domain.WorkItemPending:
-		// On deck. Strict one-at-a-time: a mid-run drag (ReorderWorkItems)
-		// may have sorted this pending sibling ahead of an in-flight child.
-		// Never arm while any sibling is in flight — that would run two
-		// sequence children concurrently (sequential execution is strict).
-		// The derived cursor keeps waiting until the in-flight child
-		// reaches a terminal state, then re-derives who's next.
-		if anySiblingBlocksArming(children) {
-			return nil, nil
-		}
-		// The dependency gate composes as a gate, not a halt: an
-		// unsatisfied external blocker parks the chain on this child
-		// (parent stays running, child stays pending) until the blockers
-		// succeed — then the next pass arms automatically.
-		satisfied, err := db.CheckDependenciesSatisfied(ctx, tx, tenantID, first.ID)
-		if err != nil {
-			return nil, fmt.Errorf("check deps: %w", err)
-		}
-		if !satisfied {
-			return nil, nil // parked — do not arm, do not requeue, do not fail
-		}
-		// Arm. A container child starts a nested sequence; a leaf starts
-		// its own bound workflow. No ready/assigned dance, no config copy.
-		grandchildren, err := db.ListDirectChildren(ctx, tx, tenantID, first.ID)
-		if err != nil {
-			return nil, fmt.Errorf("list grandchildren: %w", err)
-		}
-		if len(grandchildren) > 0 {
-			status := domain.WorkItemRunning
-			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, first.ID, first.Version, db.UpdateWorkItemFields{
-				Status: &status,
-			}); err != nil {
-				return nil, fmt.Errorf("arm container child: %w", err)
-			}
-			// Its own chain resets to pending when the container arms
-			// (nested sequence). The next scan pass reconciles it.
-			if err := resetSubtree(ctx, tx, tenantID, first.ID); err != nil {
-				return nil, err
-			}
-			return nil, nil
-		}
-		if first.WorkflowID == nil || *first.WorkflowID == "" {
-			// Config error — schedule-time validation should have
-			// prevented this. Mark the child failed and cascade.
-			status := domain.WorkItemFailed
-			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, first.ID, first.Version, db.UpdateWorkItemFields{
-				Status: &status,
-			}); err != nil {
-				return nil, fmt.Errorf("mark unbound child failed: %w", err)
-			}
-			if err := failSequenceChain(ctx, tx, tenantID, first); err != nil {
-				return nil, err
-			}
-			return nil, nil
-		}
-		status := domain.WorkItemRunning
-		if _, err := db.UpdateWorkItem(ctx, tx, tenantID, first.ID, first.Version, db.UpdateWorkItemFields{
-			Status: &status,
-		}); err != nil {
-			return nil, fmt.Errorf("arm leaf child: %w", err)
-		}
-		return []leafStart{{tenantID, *first.WorkflowID, first.ProjectID, first.ID}}, nil
+
+	// Classify each child as strict-sequence (no incoming dependency edges)
+	// vs dependency-governed (has incoming edges) in one query. A strict
+	// child's ordering is its chain position; a dependency-governed child's
+	// ordering is its edges — it has no chain gate.
+	depGoverned := map[string]bool{}
+	ids := make([]string, 0, len(children))
+	for _, c := range children {
+		ids = append(ids, c.ID)
 	}
-	return nil, nil
+	targeting, err := db.ListDependenciesTargetingItems(ctx, tx, tenantID, ids,
+		[]string{domain.DependencyBlocks, domain.DependencyDependsOn})
+	if err != nil {
+		return nil, fmt.Errorf("list targeting deps: %w", err)
+	}
+	for _, d := range targeting {
+		depGoverned[d.ToID] = true
+	}
+
+	// Per-child arming loop over ALL children in sort_order. Each pending
+	// child arms independently when its gates pass, so unrelated siblings
+	// dispatch concurrently (parallelism) while strict chains keep their
+	// order:
+	//
+	//   - Dependency gate (every child): all incoming depends_on/blocks
+	//     edges satisfied (CheckDependenciesSatisfied). Unsatisfied → park
+	//     (stay pending, never fail — the existing gate semantics).
+	//   - Chain gate (strict children only): a strict child arms only when
+	//     its immediate predecessor in sort_order is succeeded. The loop's
+	//     statuses are the pre-pass snapshot, so a just-armed predecessor
+	//     still shows pending (non-terminal) and blocks the next strict
+	//     child even within this same pass — strict chains stay serialized
+	//     by construction.
+	var starts []leafStart
+	for i, c := range children {
+		switch c.Status {
+		case domain.WorkItemSucceeded:
+			continue // past
+		case domain.WorkItemRunning, domain.WorkItemAssigned, domain.WorkItemReady,
+			domain.WorkItemCheckpointing, domain.WorkItemRecovering, domain.WorkItemScheduled,
+			domain.WorkItemRecurring:
+			// In flight (or human-managed): wait for the current child.
+			continue
+		case domain.WorkItemPending:
+			// Chain gate (strict children only): the child's position in
+			// the chain is reached only when its immediate predecessor is
+			// succeeded. Dependency-governed children are ordered by their
+			// edges, so they skip this gate.
+			if !depGoverned[c.ID] && i > 0 && children[i-1].Status != domain.WorkItemSucceeded {
+				continue // chain position not reached — wait for the predecessor
+			}
+			// Dependency gate: an unsatisfied external blocker parks this
+			// child (parent stays running, child stays pending) until the
+			// blockers succeed — then the next pass arms automatically.
+			satisfied, err := db.CheckDependenciesSatisfied(ctx, tx, tenantID, c.ID)
+			if err != nil {
+				return nil, fmt.Errorf("check deps: %w", err)
+			}
+			if !satisfied {
+				continue // parked — do not arm, do not requeue, do not fail
+			}
+			// Arm. A container child starts a nested sequence; a leaf starts
+			// its own bound workflow. No ready/assigned dance, no config copy.
+			grandchildren, err := db.ListDirectChildren(ctx, tx, tenantID, c.ID)
+			if err != nil {
+				return nil, fmt.Errorf("list grandchildren: %w", err)
+			}
+			if len(grandchildren) > 0 {
+				status := domain.WorkItemRunning
+				if _, err := db.UpdateWorkItem(ctx, tx, tenantID, c.ID, c.Version, db.UpdateWorkItemFields{
+					Status: &status,
+				}); err != nil {
+					return nil, fmt.Errorf("arm container child: %w", err)
+				}
+				// Its own chain resets to pending when the container arms
+				// (nested sequence). The next scan pass reconciles it.
+				if err := resetSubtree(ctx, tx, tenantID, c.ID); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			if c.WorkflowID == nil || *c.WorkflowID == "" {
+				// Config error — schedule-time validation should have
+				// prevented this. Mark the child failed and cascade.
+				status := domain.WorkItemFailed
+				if _, err := db.UpdateWorkItem(ctx, tx, tenantID, c.ID, c.Version, db.UpdateWorkItemFields{
+					Status: &status,
+				}); err != nil {
+					return nil, fmt.Errorf("mark unbound child failed: %w", err)
+				}
+				if err := failSequenceChain(ctx, tx, tenantID, c); err != nil {
+					return nil, err
+				}
+				return nil, nil
+			}
+			status := domain.WorkItemRunning
+			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, c.ID, c.Version, db.UpdateWorkItemFields{
+				Status: &status,
+			}); err != nil {
+				return nil, fmt.Errorf("arm leaf child: %w", err)
+			}
+			starts = append(starts, leafStart{tenantID, *c.WorkflowID, c.ProjectID, c.ID})
+		}
+	}
+	return starts, nil
 }
 
 // deriveNextChild returns the index of the first direct child in the
@@ -304,39 +354,6 @@ func deriveNextChild(children []db.WorkItemRow) int {
 		}
 	}
 	return -1
-}
-
-// anySiblingBlocksArming reports whether any child is in a state that
-// must resolve before the on-deck pending child may arm: still executing
-// (running/checkpointing/recovering), awaiting dispatch or a scheduled
-// start (assigned/ready/scheduled), or halted (failed/cancelled). Guards
-// two invariants:
-//
-//  1. Strict sequential execution: a mid-run ReorderWorkItems can sort a
-//     pending sibling ahead of an in-flight child; arming it would start
-//     two sequence children concurrently.
-//  2. Failure halts the chain: a failed/cancelled child anywhere in the
-//     sequence parks it — nothing after the failure ever arms on its own,
-//     and the only way forward is fixing + retrying that child to success
-//     (the derived cursor then re-derives who's next). A reorder that puts
-//     a pending child before a failed sibling must not skip the unfixed
-//     failure.
-//
-// The set mirrors the engine's in-flight/wait statuses (the on-deck
-// switch treats scheduled as "wait for the current child"). Only
-// terminal-success siblings are "past"; anything else still in flight or
-// halted is waited on regardless of sort_order.
-func anySiblingBlocksArming(children []db.WorkItemRow) bool {
-	for _, c := range children {
-		switch c.Status {
-		case domain.WorkItemRunning, domain.WorkItemCheckpointing,
-			domain.WorkItemRecovering, domain.WorkItemAssigned, domain.WorkItemReady,
-			domain.WorkItemScheduled, domain.WorkItemRecurring,
-			domain.WorkItemFailed, domain.WorkItemCancelled:
-			return true
-		}
-	}
-	return false
 }
 
 // failSequenceChain marks the failed child's parent — and every ancestor
@@ -510,9 +527,9 @@ func ResumeSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenant
 	// This is byte-for-byte the same input change the manual "set failed
 	// child to pending" produces, so parent-level Resume ≡ child-level
 	// pending by construction. Only the FIRST non-succeeded child is
-	// reset: anySiblingBlocksArming keeps multi-failure chains parked on
-	// the remaining failures (each must be resolved in turn), and a
-	// container child re-arms its own subtree through the existing
+	// reset: reconcileParent's failure pre-scan keeps multi-failure chains
+	// parked on the remaining failures (each must be resolved in turn), and
+	// a container child re-arms its own subtree through the existing
 	// container arm path.
 	if idx := deriveNextChild(children); idx >= 0 {
 		switch children[idx].Status {
