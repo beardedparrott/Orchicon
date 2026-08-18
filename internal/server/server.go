@@ -286,6 +286,9 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	})
 
 	taskRec := scheduler.NewTaskReconciler(pool, log, adapterBridge)
+	// Bounded in-pass fan-out for the scan pass: independent ready tasks
+	// dispatch concurrently (ORCHICON_DISPATCH_CONCURRENCY, default 4).
+	taskRec.SetDispatchConcurrency(cfg.DispatchConcurrency)
 	// Per-workflow runtime containers: the control plane talks to the
 	// host-side runtime daemon over a unix socket. When the socket is
 	// absent (headless `orchicon serve`), the lifecycle is disabled and

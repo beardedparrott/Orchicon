@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
@@ -44,8 +45,31 @@ const heartbeatTTL = 60 * time.Second
 
 // scanBatchSize caps how many work items the TaskReconciler's empty-key
 // scan pass processes per tick (docs/03 §4: "Limited to a batch per tick
-// so one scan doesn't monopolize the reconciler goroutine").
+// so one scan doesn't monopolize the reconciler goroutine"). It is the
+// candidate BATCH for one pass (how many items the pass examines), which
+// is deliberately DECOUPLED from the concurrency bound below.
 const scanBatchSize = 16
+
+// defaultDispatchConcurrency is the default bound on how many ready work
+// items the scan pass dispatches CONCURRENTLY in one pass (docs/03 §4,
+// parallel dispatch). Conservative: each in-flight dispatch holds one pgx
+// pool connection for its short transaction (pool default max conns =
+// max(4, NumCPU)) and the daemon has a per-execution container budget.
+// Overridable via Config.DispatchConcurrency (ORCHICON_DISPATCH_CONCURRENCY).
+const defaultDispatchConcurrency = 4
+
+// ConcurrencyLimiter reports the maximum number of concurrent dispatches
+// allowed for a project. It is the seam for the per-project concurrency
+// guard (sibling concurrency-guards work item): when set on the
+// TaskReconciler, the effective per-pass dispatch bound is the minimum of
+// the global DispatchConcurrency and the per-project limits of the
+// candidate items. Nil (the default) applies only the global bound.
+type ConcurrencyLimiter interface {
+	// Limit returns the maximum concurrent dispatches allowed for a
+	// project. A value <= 0 means the project imposes no additional
+	// restriction (the global bound alone applies).
+	Limit(ctx context.Context, projectID string) int
+}
 
 // TaskReconciler implements the reconciler.Reconciler interface for the
 // "task" kind. It polls the work_items table for ready tasks and
@@ -69,13 +93,50 @@ type TaskReconciler struct {
 	// The scan pass re-checks a rotating window of blocked tasks so every
 	// blocked item is eventually re-evaluated (not just the same oldest
 	// rows) when the backlog exceeds scanBatchSize.
-	blockedMu      sync.Mutex
-	blockedCursor  int
+	blockedMu     sync.Mutex
+	blockedCursor int
+
+	// dispatchConcurrency bounds how many reconcileOne calls the scan pass
+	// runs concurrently (in flight at once) when fanning out its candidate
+	// batch. Zero means defaultDispatchConcurrency. Set via
+	// SetDispatchConcurrency.
+	dispatchConcurrency int
+	// concurrencyLimiter, when set, further bounds the pass by the
+	// per-project limits of the candidate items (concurrency-guards seam).
+	// Set via SetConcurrencyLimiter.
+	concurrencyLimiter ConcurrencyLimiter
+	// dispatchOverlap is a test-only hook invoked with the current number
+	// of reconcileOne calls in flight whenever the scan fan-out acquires a
+	// semaphore slot, so tests can assert the concurrency bound without
+	// coupling to the adapter bridge. Nil in production.
+	dispatchOverlap func(inFlight int)
 }
 
 // NewTaskReconciler creates a TaskReconciler.
 func NewTaskReconciler(pool *db.Pool, log *slog.Logger, bridge AdapterBridge) *TaskReconciler {
 	return &TaskReconciler{pool: pool, log: log, bridge: bridge}
+}
+
+// SetDispatchConcurrency sets the per-pass concurrency bound for the scan
+// pass (ORCHICON_DISPATCH_CONCURRENCY). Values are clamped to
+// [1, scanBatchSize]; zero/negative falls back to the default (4) at scan
+// time. Setters are called at startup, before the reconciler loop runs.
+func (r *TaskReconciler) SetDispatchConcurrency(n int) {
+	if n < 1 {
+		n = 1
+	}
+	if n > scanBatchSize {
+		n = scanBatchSize
+	}
+	r.dispatchConcurrency = n
+}
+
+// SetConcurrencyLimiter installs the per-project concurrency guard seam
+// (concurrency-guards work item). When set, the effective per-pass limit
+// is the minimum of the global DispatchConcurrency and the per-project
+// limits reported for the candidate items. Nil keeps the global bound.
+func (r *TaskReconciler) SetConcurrencyLimiter(l ConcurrencyLimiter) {
+	r.concurrencyLimiter = l
 }
 
 // SetRecoveryTrigger is deprecated. Recovery is triggered exclusively by
@@ -127,44 +188,7 @@ func (r *TaskReconciler) DispatchTask(ctx context.Context, taskID, stepRunID str
 // any other ready task) get dispatched without an explicit enqueue path.
 func (r *TaskReconciler) Reconcile(ctx context.Context, key string) reconciler.Result {
 	if key == "" {
-		// Scan pass: find ready + blocked tasks and process each (docs/03 §4).
-		// Limited to a batch per tick so one scan doesn't monopolize the
-		// reconciler goroutine. v0.1: single dev tenant.
-		tenantID := "tnt_dev"
-		ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
-		if err != nil {
-			return reconciler.Result{Error: err}
-		}
-		ready, err := db.ListReadyTasks(ctx, ttx.Tx, tenantID)
-		if err != nil {
-			ttx.Rollback(ctx)
-			return reconciler.Result{Error: fmt.Errorf("scan ready tasks: %w", err)}
-		}
-		// Blocked tasks are re-evaluated every pass so a newly satisfied
-		// dependency gate flips them back to ready (and dispatches) without
-		// waiting on a notifier. The re-evaluation window ROTATES: with more
-		// blocked tasks than the per-tick batch, a fixed oldest-first window
-		// would re-scan the same rows forever and a blocker that turned
-		// terminal past the window would never clear.
-		blocked, err := db.ListBlockedTasks(ctx, ttx.Tx, tenantID)
-		ttx.Rollback(ctx)
-		if err != nil {
-			return reconciler.Result{Error: fmt.Errorf("scan blocked tasks: %w", err)}
-		}
-		// Ready tasks are dispatch candidates and must not be starved by a
-		// blocked backlog; blocked re-evaluation fills the rest of the batch.
-		budget := scanBatchSize
-		for _, task := range ready {
-			if budget == 0 {
-				break
-			}
-			if err := r.reconcileOne(ctx, task.ID, ""); err != nil {
-				r.log.Warn("scan: dispatch ready task failed", "task", task.ID, "error", err)
-			}
-			budget--
-		}
-		r.reconcileBlockedWindow(ctx, blocked, budget)
-		return reconciler.Result{}
+		return r.scan(ctx)
 	}
 	if err := r.reconcileOne(ctx, key, ""); err != nil {
 		return reconciler.Result{Error: err}
@@ -172,29 +196,148 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, key string) reconciler.R
 	return reconciler.Result{}
 }
 
-// reconcileBlockedWindow re-evaluates a rotating window of blocked tasks,
-// bounded by budget. Blocked re-evaluation must cover the WHOLE backlog,
-// not just the same oldest rows: a blocked item whose blocker turns
-// terminal clears on the next pass that reaches it, so a window that
-// advances each pass guarantees every blocked item is eventually rechecked
-// (and a satisfied gate flips it back to ready without any notifier). Each
-// examined item advances the cursor; with n blocked items and budget < n,
-// the full set cycles through in ceil(n/budget) passes.
-func (r *TaskReconciler) reconcileBlockedWindow(ctx context.Context, blocked []db.WorkItemRow, budget int) {
-	if len(blocked) == 0 || budget <= 0 {
-		return
+// scan is the empty-key scan pass (docs/03 §4): find ready + blocked tasks
+// and dispatch them with a BOUNDED IN-PASS FAN-OUT. Independent,
+// dependency-satisfied items dispatch CONCURRENTLY (up to
+// dispatchConcurrency in flight) instead of one-at-a-time, so a tick's
+// wall time becomes MAX(item time) instead of SUM(item time).
+//
+// The candidate set is built exactly as before — ready tasks
+// (priority-ordered) first, then a rotating window of blocked tasks filling
+// the rest of the per-tick batch (scanBatchSize) — but the batch cap is
+// DECOUPLED from the concurrency bound: every candidate in the batch goes
+// through the unchanged reconcileOne in one pass, with at most
+// dispatchConcurrency in flight at any moment. Keeping the batch at 16
+// preserves the blocked re-evaluation rotation cadence under load — capping
+// candidates at the concurrency limit (4) would starve the blocked window
+// whenever ≥4 ready items exist, stalling dependency clears indefinitely.
+//
+// The fan-out waits for all in-flight items before returning, so the
+// manager stays single-scan-per-tick and the blocked rotation cursor stays
+// owned by the scan goroutine (no new races on blockedMu). Per-item errors
+// are logged as warnings and never fail the pass (same as the serial scan).
+func (r *TaskReconciler) scan(ctx context.Context) reconciler.Result {
+	// v0.1: single dev tenant.
+	tenantID := "tnt_dev"
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return reconciler.Result{Error: err}
 	}
-	n := len(blocked)
-	start := r.blockedWindowStart(n)
-	examined := 0
-	for k := 0; k < n && examined < budget; k++ {
-		task := blocked[(start+k)%n]
-		if err := r.reconcileOne(ctx, task.ID, ""); err != nil {
-			r.log.Warn("scan: re-evaluate blocked task failed", "task", task.ID, "error", err)
+	ready, err := db.ListReadyTasks(ctx, ttx.Tx, tenantID)
+	if err != nil {
+		ttx.Rollback(ctx)
+		return reconciler.Result{Error: fmt.Errorf("scan ready tasks: %w", err)}
+	}
+	// Blocked tasks are re-evaluated every pass so a newly satisfied
+	// dependency gate flips them back to ready (and dispatches) without
+	// waiting on a notifier. The re-evaluation window ROTATES: with more
+	// blocked tasks than the per-tick batch, a fixed oldest-first window
+	// would re-scan the same rows forever and a blocker that turned
+	// terminal past the window would never clear.
+	blocked, err := db.ListBlockedTasks(ctx, ttx.Tx, tenantID)
+	ttx.Rollback(ctx)
+	if err != nil {
+		return reconciler.Result{Error: fmt.Errorf("scan blocked tasks: %w", err)}
+	}
+	// Ready tasks are dispatch candidates and must not be starved by a
+	// blocked backlog; blocked re-evaluation fills the rest of the batch.
+	candidates, examined := r.scanCandidates(ready, blocked)
+	r.advanceBlockedCursor(len(blocked), examined)
+	if len(candidates) == 0 {
+		return reconciler.Result{}
+	}
+	r.dispatchCandidates(ctx, candidates)
+	return reconciler.Result{}
+}
+
+// scanCandidates builds this pass's candidate set: ready tasks
+// (priority-ordered) first, then the rotating blocked window up to the
+// remaining batch. Ready items get priority; blocked re-evaluation fills
+// the rest — the same budget semantics as the serial scan. It returns the
+// candidates and the number of blocked items examined (used to advance
+// the rotation cursor). The candidate batch is scanBatchSize regardless of
+// the concurrency bound (see scan).
+func (r *TaskReconciler) scanCandidates(ready, blocked []db.WorkItemRow) ([]db.WorkItemRow, int) {
+	budget := scanBatchSize
+	var candidates []db.WorkItemRow
+	for _, task := range ready {
+		if budget == 0 {
+			break
 		}
-		examined++
+		candidates = append(candidates, task)
+		budget--
 	}
-	r.advanceBlockedCursor(n, examined)
+	examined := 0
+	if budget > 0 && len(blocked) > 0 {
+		n := len(blocked)
+		start := r.blockedWindowStart(n)
+		for k := 0; k < n && examined < budget; k++ {
+			candidates = append(candidates, blocked[(start+k)%n])
+			examined++
+		}
+	}
+	return candidates, examined
+}
+
+// dispatchCandidates fans out reconcileOne across the pass's candidate
+// items with bounded concurrency (effectiveDispatchLimit), waiting for
+// every in-flight item before returning. Each candidate still goes through
+// the UNCHANGED reconcileOne — the ready→assigned version CAS prevents
+// double dispatch, and each dispatch creates its own WorkerExecution /
+// execution container, so independent items share no mutable state.
+func (r *TaskReconciler) dispatchCandidates(ctx context.Context, candidates []db.WorkItemRow) {
+	limit := r.effectiveDispatchLimit(ctx, candidates)
+	if limit > len(candidates) {
+		limit = len(candidates)
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	r.log.Info("dispatch pass", "candidates", len(candidates), "concurrency", limit)
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	var inFlight atomic.Int32
+	for _, task := range candidates {
+		wg.Add(1)
+		go func(task db.WorkItemRow) {
+			defer wg.Done()
+			sem <- struct{}{}
+			cur := inFlight.Add(1)
+			if r.dispatchOverlap != nil {
+				r.dispatchOverlap(int(cur))
+			}
+			defer func() {
+				inFlight.Add(-1)
+				<-sem
+			}()
+			if err := r.reconcileOne(ctx, task.ID, ""); err != nil {
+				r.log.Warn("scan: dispatch task failed", "task", task.ID, "error", err)
+			}
+		}(task)
+	}
+	wg.Wait()
+}
+
+// effectiveDispatchLimit returns the concurrency bound for this pass: the
+// configured global dispatchConcurrency (default 4), further restricted to
+// the minimum POSITIVE per-project limit reported by the ConcurrencyLimiter
+// when one is set (concurrency-guards seam). Clamped to [1, scanBatchSize].
+func (r *TaskReconciler) effectiveDispatchLimit(ctx context.Context, candidates []db.WorkItemRow) int {
+	limit := r.dispatchConcurrency
+	if limit < 1 {
+		limit = defaultDispatchConcurrency
+	}
+	if limit > scanBatchSize {
+		limit = scanBatchSize
+	}
+	if r.concurrencyLimiter != nil {
+		for _, c := range candidates {
+			if pl := r.concurrencyLimiter.Limit(ctx, c.ProjectID); pl > 0 && pl < limit {
+				limit = pl
+			}
+		}
+	}
+	return limit
 }
 
 // blockedWindowStart returns the rotation offset for this pass's blocked

@@ -138,6 +138,15 @@ type Config struct {
 	// failed to load a worker that existed. 0 disables the periodic
 	// sweep (the boot check still runs).
 	IndexCheckInterval time.Duration
+
+	// DispatchConcurrency bounds how many ready work items the
+	// TaskReconciler scan pass dispatches CONCURRENTLY in one pass
+	// (ORCHICON_DISPATCH_CONCURRENCY, default 4). Independent,
+	// dependency-satisfied items fan out up to this limit; each in-flight
+	// dispatch holds one pgx pool connection for its short transaction, so
+	// the pool's max_conns must comfortably exceed it. Values are clamped
+	// to [1, scanBatchSize=16] by the reconciler setter.
+	DispatchConcurrency int
 }
 
 // Default returns a Config populated with local-dev defaults that match
@@ -179,10 +188,20 @@ func Default() Config {
 			S3Region:   env("ORCHICON_S3_REGION", ""),
 			S3Endpoint: env("ORCHICON_S3_ENDPOINT", ""),
 		},
-		ReadHeaderTimeout:  10 * time.Second,
-		ShutdownTimeout:    15 * time.Second,
-		IndexCheckInterval: envDuration("ORCHICON_INDEX_CHECK_INTERVAL", 6*time.Hour),
+		ReadHeaderTimeout:   10 * time.Second,
+		ShutdownTimeout:     15 * time.Second,
+		IndexCheckInterval:  envDuration("ORCHICON_INDEX_CHECK_INTERVAL", 6*time.Hour),
+		DispatchConcurrency: envInt("ORCHICON_DISPATCH_CONCURRENCY", 4),
 	}
+}
+
+func envInt(key string, fallback int) int {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
 }
 
 func envDuration(key string, fallback time.Duration) time.Duration {
