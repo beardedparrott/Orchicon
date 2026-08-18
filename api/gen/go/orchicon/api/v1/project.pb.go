@@ -210,9 +210,16 @@ type Project struct {
 	// context when workers are dispatched for this project. The contents
 	// of these files are injected into the composite prompt
 	// (buildCompositePrompt).
-	ContextFiles  []string `protobuf:"bytes,11,rep,name=context_files,json=contextFiles,proto3" json:"context_files,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ContextFiles []string `protobuf:"bytes,11,rep,name=context_files,json=contextFiles,proto3" json:"context_files,omitempty"`
+	// max_concurrent_runs caps how many executions may run concurrently for
+	// this project (0 = no additional restriction — the tenant cap, or no
+	// cap, applies). The effective limit for a project is
+	// min(tenant.max_concurrent_runs, project.max_concurrent_runs). Non-repo
+	// projects (in-place fallback) serialize by default unless this field is
+	// explicitly set > 1 AND the tenant permits it.
+	MaxConcurrentRuns int32 `protobuf:"varint,12,opt,name=max_concurrent_runs,json=maxConcurrentRuns,proto3" json:"max_concurrent_runs,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *Project) Reset() {
@@ -320,6 +327,13 @@ func (x *Project) GetContextFiles() []string {
 		return x.ContextFiles
 	}
 	return nil
+}
+
+func (x *Project) GetMaxConcurrentRuns() int32 {
+	if x != nil {
+		return x.MaxConcurrentRuns
+	}
+	return 0
 }
 
 // ContextFiles is a wrapper so UpdateProjectRequest can distinguish
@@ -709,11 +723,14 @@ type UpdateProjectRequest struct {
 	Slug  *string                `protobuf:"bytes,5,opt,name=slug,proto3,oneof" json:"slug,omitempty"`
 	Goals *GoalFields            `protobuf:"bytes,3,opt,name=goals,proto3,oneof" json:"goals,omitempty"` // converted to JSON by the server; empty fields clears goals
 	// FieldMask support added as the schema grows (docs/07 §5.4).
-	RequestId     string        `protobuf:"bytes,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	ProjectDir    *string       `protobuf:"bytes,6,opt,name=project_dir,json=projectDir,proto3,oneof" json:"project_dir,omitempty"`
-	ContextFiles  *ContextFiles `protobuf:"bytes,7,opt,name=context_files,json=contextFiles,proto3,oneof" json:"context_files,omitempty"` // empty files list clears the selection
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	RequestId    string        `protobuf:"bytes,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	ProjectDir   *string       `protobuf:"bytes,6,opt,name=project_dir,json=projectDir,proto3,oneof" json:"project_dir,omitempty"`
+	ContextFiles *ContextFiles `protobuf:"bytes,7,opt,name=context_files,json=contextFiles,proto3,oneof" json:"context_files,omitempty"` // empty files list clears the selection
+	// Per-project max-concurrent-runs override (0 = no additional
+	// restriction).
+	MaxConcurrentRuns *int32 `protobuf:"varint,8,opt,name=max_concurrent_runs,json=maxConcurrentRuns,proto3,oneof" json:"max_concurrent_runs,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *UpdateProjectRequest) Reset() {
@@ -793,6 +810,13 @@ func (x *UpdateProjectRequest) GetContextFiles() *ContextFiles {
 		return x.ContextFiles
 	}
 	return nil
+}
+
+func (x *UpdateProjectRequest) GetMaxConcurrentRuns() int32 {
+	if x != nil && x.MaxConcurrentRuns != nil {
+		return *x.MaxConcurrentRuns
+	}
+	return 0
 }
 
 type ListProjectFilesRequest struct {
@@ -1108,7 +1132,7 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value\"@\n" +
 	"\n" +
 	"GoalFields\x122\n" +
-	"\x06fields\x18\x01 \x03(\v2\x1a.orchicon.api.v1.GoalFieldR\x06fields\"\x82\x03\n" +
+	"\x06fields\x18\x01 \x03(\v2\x1a.orchicon.api.v1.GoalFieldR\x06fields\"\xb2\x03\n" +
 	"\aProject\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x12\n" +
@@ -1124,7 +1148,8 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\vproject_dir\x18\n" +
 	" \x01(\tR\n" +
 	"projectDir\x12#\n" +
-	"\rcontext_files\x18\v \x03(\tR\fcontextFiles\"$\n" +
+	"\rcontext_files\x18\v \x03(\tR\fcontextFiles\x12.\n" +
+	"\x13max_concurrent_runs\x18\f \x01(\x05R\x11maxConcurrentRuns\"$\n" +
 	"\fContextFiles\x12\x14\n" +
 	"\x05files\x18\x01 \x03(\tR\x05files\"\x8a\x01\n" +
 	"\rFileTreeEntry\x12\x12\n" +
@@ -1154,7 +1179,7 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\a_status\"t\n" +
 	"\x14ListProjectsResponse\x124\n" +
 	"\bprojects\x18\x01 \x03(\v2\x18.orchicon.api.v1.ProjectR\bprojects\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xdc\x02\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xa9\x03\n" +
 	"\x14UpdateProjectRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\x04name\x18\x02 \x01(\tH\x00R\x04name\x88\x01\x01\x12\x17\n" +
@@ -1164,12 +1189,14 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"request_id\x18\x04 \x01(\tR\trequestId\x12$\n" +
 	"\vproject_dir\x18\x06 \x01(\tH\x03R\n" +
 	"projectDir\x88\x01\x01\x12G\n" +
-	"\rcontext_files\x18\a \x01(\v2\x1d.orchicon.api.v1.ContextFilesH\x04R\fcontextFiles\x88\x01\x01B\a\n" +
+	"\rcontext_files\x18\a \x01(\v2\x1d.orchicon.api.v1.ContextFilesH\x04R\fcontextFiles\x88\x01\x01\x123\n" +
+	"\x13max_concurrent_runs\x18\b \x01(\x05H\x05R\x11maxConcurrentRuns\x88\x01\x01B\a\n" +
 	"\x05_nameB\a\n" +
 	"\x05_slugB\b\n" +
 	"\x06_goalsB\x0e\n" +
 	"\f_project_dirB\x10\n" +
-	"\x0e_context_files\"^\n" +
+	"\x0e_context_filesB\x16\n" +
+	"\x14_max_concurrent_runs\"^\n" +
 	"\x17ListProjectFilesRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
 	"\asubpath\x18\x02 \x01(\tR\asubpath\x12\x19\n" +

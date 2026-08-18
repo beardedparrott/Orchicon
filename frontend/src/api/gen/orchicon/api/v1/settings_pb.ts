@@ -172,6 +172,21 @@ export class TenantSettings extends Message<TenantSettings> {
   logMaxFiles = 0;
 
   /**
+   * --- Dispatch concurrency (per-project/tenant max-concurrent-runs) ---
+   * Cap on how many worker executions may run CONCURRENTLY across the
+   * whole tenant. Enforced at dispatch time in the TaskReconciler. A
+   * project can override this per-project (Project.max_concurrent_runs);
+   * the effective limit for a project is min(tenant, project), where 0 on
+   * either side means "no additional restriction from that side". Projects
+   * at their cap hold ready items until a running execution frees a slot.
+   * Optional so an update can distinguish "set to 0 (no cap)" from
+   * "leave unchanged"; absent = unchanged. Zero (default) = no tenant cap.
+   *
+   * @generated from field: optional int32 max_concurrent_runs = 28;
+   */
+  maxConcurrentRuns?: number;
+
+  /**
    * @generated from field: google.protobuf.Timestamp created_at = 100;
    */
   createdAt?: Timestamp;
@@ -207,6 +222,7 @@ export class TenantSettings extends Message<TenantSettings> {
     { no: 25, name: "log_roll_interval_hours", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 26, name: "log_retention_days", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 27, name: "log_max_files", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 28, name: "max_concurrent_runs", kind: "scalar", T: 5 /* ScalarType.INT32 */, opt: true },
     { no: 100, name: "created_at", kind: "message", T: Timestamp },
     { no: 101, name: "updated_at", kind: "message", T: Timestamp },
   ]);

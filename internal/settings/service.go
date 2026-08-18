@@ -135,6 +135,10 @@ func requireTenant(ctx context.Context) (string, error) {
 }
 
 func settingsRowToProto(r *db.TenantSettingsRow) *apiv1.TenantSettings {
+	// max_concurrent_runs is an optional (oneof) field so the client can
+	// distinguish "set to 0 (no cap)" from "leave unchanged"; the server
+	// always fills it with the persisted value.
+	maxConcurrentRuns := int32(r.MaxConcurrentRuns)
 	return &apiv1.TenantSettings{
 		DefaultWorkerModel:               r.DefaultWorkerModel,
 		DefaultAskOrchiconModel:          r.DefaultAskOrchiconModel,
@@ -154,6 +158,7 @@ func settingsRowToProto(r *db.TenantSettingsRow) *apiv1.TenantSettings {
 		LogRollIntervalHours:             r.LogRollIntervalHours,
 		LogRetentionDays:                 r.LogRetentionDays,
 		LogMaxFiles:                      r.LogMaxFiles,
+		MaxConcurrentRuns:                &maxConcurrentRuns,
 		CreatedAt:                        timestamppb.New(r.CreatedAt),
 		UpdatedAt:                        timestamppb.New(r.UpdatedAt),
 	}
@@ -169,6 +174,16 @@ func settingsProtoToRow(s *apiv1.TenantSettings) db.TenantSettingsRow {
 		// invalid JSON. Treat an unset field as "no override" so a client
 		// that only edits log settings doesn't break the update.
 		budget = "{}"
+	}
+	// max_concurrent_runs is optional in the proto; a nil pointer means the
+	// client did not send it and the persisted value must be left untouched
+	// (0 IS meaningful — it clears the cap). The *_Set flag carries that
+	// distinction into the ON CONFLICT CASE in db.UpdateTenantSettings.
+	var maxConcurrentRuns int
+	maxConcurrentRunsSet := false
+	if s.MaxConcurrentRuns != nil {
+		maxConcurrentRuns = int(*s.MaxConcurrentRuns)
+		maxConcurrentRunsSet = true
 	}
 	return db.TenantSettingsRow{
 		DefaultWorkerModel:               s.DefaultWorkerModel,
@@ -189,6 +204,8 @@ func settingsProtoToRow(s *apiv1.TenantSettings) db.TenantSettingsRow {
 		LogRollIntervalHours:             s.LogRollIntervalHours,
 		LogRetentionDays:                 s.LogRetentionDays,
 		LogMaxFiles:                      s.LogMaxFiles,
+		MaxConcurrentRuns:                maxConcurrentRuns,
+		MaxConcurrentRunsSet:             maxConcurrentRunsSet,
 	}
 }
 

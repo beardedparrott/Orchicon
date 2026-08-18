@@ -10,27 +10,29 @@ import (
 
 // TenantSettingsRow is the in-memory representation of a tenant_settings row.
 type TenantSettingsRow struct {
-	TenantID                     string
-	DefaultWorkerModel           string
-	DefaultAskOrchiconModel      string
-	StallNoProgressWindowSeconds  int64
-	StallNoFileDiffWindowSeconds  int64
-	StallTextLoopWindowSeconds    int64
-	StallRepetitionCount          int32
-	StallRepetitionWindowSeconds  int64
-	DefaultBudgetOverrides        []byte // jsonb: default budget JSON (tokens/cost_usd/wall_clock_seconds/tool_call_count); a worker's budget_overrides overrides these
-	ExecutionReapGraceSeconds     int64 // liveness reaper: min age before an execution is reaping-eligible
-	ExecutionReapConsecutiveFailures int32 // liveness reaper: consecutive not-alive probes before reaping
-	BackupSchedule               string // cron expression; empty = disabled
-	BackupRetentionDays           int32  // 0 = keep all
-	BackupDirectory              string // empty = default
-	LogDirectory                 string // serve log dir; empty = env/code default
-	LogMaxSizeMB                 int64  // max log file size before rotation (MB); 0 = default
-	LogRollIntervalHours         int64  // time-based roll interval (hours); 0 = default
-	LogRetentionDays             int32  // days rotated logs are kept; 0 = default
-	LogMaxFiles                  int32  // max rotated log files kept; 0 = default
-	CreatedAt                    time.Time
-	UpdatedAt                    time.Time
+	TenantID                         string
+	DefaultWorkerModel               string
+	DefaultAskOrchiconModel          string
+	StallNoProgressWindowSeconds     int64
+	StallNoFileDiffWindowSeconds     int64
+	StallTextLoopWindowSeconds       int64
+	StallRepetitionCount             int32
+	StallRepetitionWindowSeconds     int64
+	DefaultBudgetOverrides           []byte // jsonb: default budget JSON (tokens/cost_usd/wall_clock_seconds/tool_call_count); a worker's budget_overrides overrides these
+	ExecutionReapGraceSeconds        int64  // liveness reaper: min age before an execution is reaping-eligible
+	ExecutionReapConsecutiveFailures int32  // liveness reaper: consecutive not-alive probes before reaping
+	BackupSchedule                   string // cron expression; empty = disabled
+	BackupRetentionDays              int32  // 0 = keep all
+	BackupDirectory                  string // empty = default
+	LogDirectory                     string // serve log dir; empty = env/code default
+	LogMaxSizeMB                     int64  // max log file size before rotation (MB); 0 = default
+	LogRollIntervalHours             int64  // time-based roll interval (hours); 0 = default
+	LogRetentionDays                 int32  // days rotated logs are kept; 0 = default
+	LogMaxFiles                      int32  // max rotated log files kept; 0 = default
+	MaxConcurrentRuns                int    // tenant-wide cap on concurrently running executions; 0 = no cap
+	MaxConcurrentRunsSet             bool   // true when the update explicitly sets max_concurrent_runs (0 is meaningful)
+	CreatedAt                        time.Time
+	UpdatedAt                        time.Time
 }
 
 // GetTenantSettings returns the current settings for a tenant. If no row
@@ -44,6 +46,7 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
 		COALESCE(log_directory, ''), COALESCE(log_max_size_mb, 0), COALESCE(log_roll_interval_hours, 0),
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
+		max_concurrent_runs,
 		created_at, updated_at
 		FROM tenant_settings WHERE tenant_id = $1`
 	row, err := tx.Query(ctx, q, tenantID)
@@ -65,6 +68,7 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
 		COALESCE(log_directory, ''), COALESCE(log_max_size_mb, 0), COALESCE(log_roll_interval_hours, 0),
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
+		max_concurrent_runs,
 		created_at, updated_at`
 	ins, err := tx.Query(ctx, insertQ, tenantID)
 	if err != nil {
@@ -90,9 +94,9 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		execution_reap_grace_seconds, execution_reap_consecutive_failures,
 		backup_schedule, backup_retention_days, backup_directory,
 		log_directory, log_max_size_mb, log_roll_interval_hours,
-		log_retention_days, log_max_files,
+		log_retention_days, log_max_files, max_concurrent_runs,
 		updated_at
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, now())
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, now())
 	ON CONFLICT (tenant_id) DO UPDATE SET
 		default_worker_model = CASE WHEN $2 <> '' THEN $2 ELSE tenant_settings.default_worker_model END,
 		default_ask_orchicon_model = CASE WHEN $3 <> '' THEN $3 ELSE tenant_settings.default_ask_orchicon_model END,
@@ -112,6 +116,7 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		log_roll_interval_hours = CASE WHEN $17 <> 0 THEN $17 ELSE tenant_settings.log_roll_interval_hours END,
 		log_retention_days = CASE WHEN $18 <> 0 THEN $18 ELSE tenant_settings.log_retention_days END,
 		log_max_files = CASE WHEN $19 <> 0 THEN $19 ELSE tenant_settings.log_max_files END,
+		max_concurrent_runs = CASE WHEN $21 THEN $20 ELSE tenant_settings.max_concurrent_runs END,
 		updated_at = now()
 	RETURNING tenant_id, default_worker_model, default_ask_orchicon_model,
 		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
@@ -121,6 +126,7 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
 		COALESCE(log_directory, ''), COALESCE(log_max_size_mb, 0), COALESCE(log_roll_interval_hours, 0),
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
+		max_concurrent_runs,
 		created_at, updated_at`
 	row, err := tx.Query(ctx, q,
 		tenantID, in.DefaultWorkerModel, in.DefaultAskOrchiconModel,
@@ -130,7 +136,8 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		in.ExecutionReapGraceSeconds, in.ExecutionReapConsecutiveFailures,
 		in.BackupSchedule, in.BackupRetentionDays, in.BackupDirectory,
 		in.LogDirectory, in.LogMaxSizeMB, in.LogRollIntervalHours,
-		in.LogRetentionDays, in.LogMaxFiles,
+		in.LogRetentionDays, in.LogMaxFiles, in.MaxConcurrentRuns,
+		in.MaxConcurrentRunsSet,
 	)
 	if err != nil {
 		return TenantSettingsRow{}, fmt.Errorf("db: update tenant settings: %w", err)
@@ -153,6 +160,7 @@ func scanTenantSettings(row pgx.Rows) (TenantSettingsRow, error) {
 		&r.BackupSchedule, &r.BackupRetentionDays, &r.BackupDirectory,
 		&r.LogDirectory, &r.LogMaxSizeMB, &r.LogRollIntervalHours,
 		&r.LogRetentionDays, &r.LogMaxFiles,
+		&r.MaxConcurrentRuns,
 		&r.CreatedAt, &r.UpdatedAt,
 	); err != nil {
 		return TenantSettingsRow{}, fmt.Errorf("db: scan tenant settings: %w", err)

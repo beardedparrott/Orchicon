@@ -115,6 +115,17 @@ message TenantSettings {
   // Zero = default.
   int32 log_max_files = 27;
 
+  // --- Dispatch concurrency (per-project/tenant max-concurrent-runs) ---
+  // Cap on how many worker executions may run CONCURRENTLY across the
+  // whole tenant. Enforced at dispatch time in the TaskReconciler. A
+  // project can override this per-project (Project.max_concurrent_runs);
+  // the effective limit for a project is min(tenant, project), where 0 on
+  // either side means "no additional restriction from that side". Projects
+  // at their cap hold ready items until a running execution frees a slot.
+  // Optional so an update can distinguish "set to 0 (no cap)" from
+  // "leave unchanged"; absent = unchanged. Zero (default) = no tenant cap.
+  optional int32 max_concurrent_runs = 28;
+
   google.protobuf.Timestamp created_at = 100;
   google.protobuf.Timestamp updated_at = 101;
 }

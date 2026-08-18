@@ -373,6 +373,33 @@ func UpdateExecution(ctx context.Context, tx pgx.Tx, tenantID, id string, expect
 	return e, nil
 }
 
+// activeExecutionStatuses is the SQL form of the non-terminal execution
+// set the concurrency guard counts: dispatching / running / healthy /
+// stalled / unhealthy / terminating. Any other status (succeeded, failed,
+// failed_to_start, terminated) has released its dispatch slot. Every
+// per-project dispatch-limit COUNT query MUST use this constant so the
+// "active execution" definition stays in one place.
+const activeExecutionStatuses = "('dispatching','running','healthy','stalled','unhealthy','terminating')"
+
+// CountActiveExecutionsForProject returns the number of currently active
+// (non-terminal) executions for a project. It is the per-project admission
+// measure for the max-concurrent-runs dispatch guard: when the count is at
+// or above a project's effective limit, the TaskReconciler holds the next
+// dispatch until a running execution releases its slot.
+func CountActiveExecutionsForProject(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (int, error) {
+	var count int
+	err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM worker_executions
+		WHERE tenant_id = $1 AND project_id = $2
+		  AND status IN `+activeExecutionStatuses,
+		tenantID, projectID,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("db: count active executions for project: %w", err)
+	}
+	return count, nil
+}
+
 // ListDispatchingExecutions returns executions in "dispatching" state
 // (docs/03 §6). Used by the TaskReconciler to track in-flight dispatches.
 func ListDispatchingExecutions(ctx context.Context, tx pgx.Tx, tenantID string) ([]ExecutionRow, error) {

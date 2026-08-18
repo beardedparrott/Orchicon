@@ -206,7 +206,14 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 		}
 		fields.ContextFiles = &filesJSON
 	}
-	if fields.Name == nil && fields.Slug == nil && fields.Goals == nil && fields.ProjectDir == nil && fields.ContextFiles == nil {
+	if msg.MaxConcurrentRuns != nil {
+		limit := int(*msg.MaxConcurrentRuns)
+		if limit < 0 {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("max_concurrent_runs must be >= 0"))
+		}
+		fields.MaxConcurrentRuns = &limit
+	}
+	if fields.Name == nil && fields.Slug == nil && fields.Goals == nil && fields.ProjectDir == nil && fields.ContextFiles == nil && fields.MaxConcurrentRuns == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("at least one field must be set"))
 	}
 
@@ -352,12 +359,12 @@ func (s *Service) PauseProject(ctx context.Context, req *connect.Request[apiv1.P
 	const q = `UPDATE projects SET status = 'paused', updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
 		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at,
-			project_dir, context_files`
+			project_dir, context_files, max_concurrent_runs`
 	var p db.ProjectRow
 	err = ttx.Tx.QueryRow(ctx, q, tenantID, req.Msg.Id, current.Version).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles,
+		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("project not found"))
@@ -401,12 +408,12 @@ func (s *Service) ActivateProject(ctx context.Context, req *connect.Request[apiv
 	const q = `UPDATE projects SET status = 'active', updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3 AND status = 'drafting'
 		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at,
-			project_dir, context_files`
+			project_dir, context_files, max_concurrent_runs`
 	var p db.ProjectRow
 	err = ttx.Tx.QueryRow(ctx, q, tenantID, req.Msg.Id, current.Version).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles,
+		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Either the version was stale or the project is not drafting.
