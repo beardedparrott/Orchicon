@@ -1,6 +1,8 @@
 // WorktreeReconciler — the control loop that provisions each git-backed
 // workflow run its own isolated working tree at arm time
-// (architecture-notes/worktree-reconciler.md).
+// (architecture-notes/worktree-reconciler.md), and — for concurrent
+// step-run dispatch — each parallel-branch step run its own branch
+// worktree (architecture-notes/concurrent-step-run-dispatch.md D2).
 //
 // At run-arm (the pending→running transition in WorkflowReconciler), a run
 // that belongs to a git-backed project gets `git worktree add
@@ -9,6 +11,14 @@
 // downstream consumers (execution-cwd wiring, cleanup, non-repo fallback).
 // The branch name is deterministic — the work item's kebab-case slug plus a
 // short run suffix — so concurrent runs of the same item never collide.
+//
+// At branch dispatch time, a parallel-branch child step run (a step whose
+// depends_on references a `parallel` step) gets its OWN worktree at
+// <project_dir>/.orchicon-worktrees/<runID>/<stepRunID> on a sub-branch
+// <runBranch>/<stepSlug>-<stepRunSuffix>, so independent branches share no
+// filesystem and no .orchicon/ metadata dir. The result is recorded on the
+// workflow_step_runs row. The key is composite: "<runID>:<stepRunID>" for
+// a branch worktree, "<runID>" for the run worktree.
 //
 // The loop is k8s-style and idempotent: re-running a pass for a run
 // converges to the same state (existing worktrees are detected, never
@@ -36,6 +46,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
 	"github.com/beardedparrott/orchicon/internal/slug"
+	"github.com/beardedparrott/orchicon/internal/workflow"
 )
 
 // worktreeDirName is the subdirectory under project_dir where per-run
@@ -49,6 +60,23 @@ const gitCmdTimeout = 30 * time.Second
 // "<slug>-<suffix>" stays well under git's 255-byte ref limit even for
 // very long work item titles.
 const maxBranchSlugLen = 180
+
+// maxStepBranchSlugLen caps the step-ID segment of a branch-step-run
+// branch name (<runBranch>/<stepSlug>-<stepRunSuffix>). The run branch can
+// already reach ~197 bytes (maxBranchSlugLen + suffix), so the step slug
+// stays short to leave room for the separator + step-run suffix.
+const maxStepBranchSlugLen = 32
+
+// maxBranchNameLen caps the full branch-step-run branch name so it stays
+// well under git's 255-byte ref limit (the effective branch-name cap is
+// 243 bytes once "refs/heads/" is counted).
+const maxBranchNameLen = 220
+
+// maxWorktreeCandidatePages bounds how many 16-row pages the branch-worktree
+// scan walks per tick, so non-branch residue rows (never provisioned, so
+// they stay 'pending' forever) cannot starve real branch candidates while
+// still bounding the pass's work (mirrors scanBatchSize's budget spirit).
+const maxWorktreeCandidatePages = 4
 
 // gitDetectionTTL bounds how long a cached git work-tree detection on the
 // project row is trusted before it is re-detected (a directory that becomes
@@ -70,26 +98,46 @@ func NewWorktreeReconciler(pool *db.Pool, log *slog.Logger) *WorktreeReconciler 
 // Kind returns the reconciler kind (used for queue + leadership keying).
 func (r *WorktreeReconciler) Kind() string { return "worktree" }
 
-// Reconcile provisions a single run's working tree (key = run id), or
+// Reconcile provisions a single run's working tree (key = run id), a
+// single branch step run's working tree (key = "<runID>:<stepRunID>"), or
 // scans for candidates when the key is empty. Idempotent: re-running a
-// pass for a run converges to the same state (docs/03 §1).
+// pass for a key converges to the same state (docs/03 §1).
 func (r *WorktreeReconciler) Reconcile(ctx context.Context, key string) reconciler.Result {
 	// v0.1: single dev tenant (mirrors TaskReconciler/WorkflowReconciler).
 	tenantID := "tnt_dev"
 	if key == "" {
 		return r.scan(ctx, tenantID)
 	}
-	if err := r.reconcileOne(ctx, tenantID, key); err != nil {
+	runID, stepRunID, _ := splitWorktreeKey(key)
+	if stepRunID != "" {		if err := r.reconcileStepRunOne(ctx, tenantID, runID, stepRunID); err != nil {
+			return reconciler.Result{Error: err}
+		}
+		return reconciler.Result{}
+	}
+	if err := r.reconcileOne(ctx, tenantID, runID); err != nil {
 		return reconciler.Result{Error: err}
 	}
 	return reconciler.Result{}
 }
 
+// splitWorktreeKey parses a worktree reconciler key into its run and
+// optional step-run components. Run and step-run IDs are ULIDs (no
+// colons), so the first ':' cleanly separates them. Returns
+// (runID, stepRunID, composite) where composite is the parsed pair.
+func splitWorktreeKey(key string) (runID, stepRunID, composite string) {
+	if idx := strings.IndexByte(key, ':'); idx > 0 {
+		return key[:idx], key[idx+1:], key
+	}
+	return key, "", key
+}
+
 // scan lists un-provisioned pending/running runs and provisions each,
-// then lists terminal runs with a recorded worktree and prunes each.
-// Both passes go through the same idempotent per-run entry point
-// (reconcileOne dispatches terminal runs to pruneOne). Batch-capped so
-// one pass can't monopolize the reconciler goroutine (mirrors
+// then lists terminal runs with a recorded worktree and prunes each. The
+// same two passes run for branch worktrees (parallel-branch child step
+// runs). All passes go through the same idempotent per-run entry point
+// (reconcileOne dispatches terminal runs to pruneOne; reconcileStepRunOne
+// dispatches terminal step runs to pruneStepRunOne). Batch-capped so one
+// pass can't monopolize the reconciler goroutine (mirrors
 // TaskReconciler's scan).
 func (r *WorktreeReconciler) scan(ctx context.Context, tenantID string) reconciler.Result {
 	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
@@ -106,6 +154,42 @@ func (r *WorktreeReconciler) scan(ctx context.Context, tenantID string) reconcil
 			r.log.Warn("worktree: provision run failed", "run", run.ID, "error", err)
 		}
 	}
+	// Branch worktrees: provision parallel-branch child step runs that are
+	// still pending. The DAG shape decides who is a branch child — filter
+	// the (batch-capped, paginated) pending step-run candidates by loading
+	// each run's version steps once. The scan walks several pages so
+	// non-branch residue rows (never provisioned) cannot starve real
+	// branch candidates.
+	var afterCreated time.Time
+	var afterID string
+	for page := 0; page < maxWorktreeCandidatePages; page++ {
+		ttx, err = r.pool.BeginTenantTx(ctx, tenantID)
+		if err != nil {
+			return reconciler.Result{Error: err}
+		}
+		candidates, err := db.ListWorktreeStepRunCandidates(ctx, ttx.Tx, tenantID, 16, afterCreated, afterID)
+		ttx.Rollback(ctx)
+		if err != nil {
+			return reconciler.Result{Error: fmt.Errorf("scan branch worktree candidates: %w", err)}
+		}
+		if len(candidates) == 0 {
+			break
+		}
+		for _, sr := range candidates {
+			afterCreated, afterID = sr.CreatedAt, sr.ID
+			if !r.isParallelBranchChildStepRun(ctx, tenantID, sr.WorkflowRunID, sr.StepID) {
+				continue
+			}
+			if err := r.reconcileStepRunOne(ctx, tenantID, sr.WorkflowRunID, sr.ID); err != nil {
+				r.log.Warn("worktree: provision branch worktree failed",
+					"run", sr.WorkflowRunID, "step_run", sr.ID, "error", err)
+			}
+		}
+		if len(candidates) < 16 {
+			break
+		}
+	}
+	// Prune terminal runs' worktrees.
 	ttx, err = r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return reconciler.Result{Error: err}
@@ -120,7 +204,50 @@ func (r *WorktreeReconciler) scan(ctx context.Context, tenantID string) reconcil
 			r.log.Warn("worktree: prune run failed", "run", run.ID, "error", err)
 		}
 	}
+	// Prune terminal step runs' branch worktrees.
+	ttx, err = r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return reconciler.Result{Error: err}
+	}
+	terminalStepRuns, err := db.ListTerminalStepRunsWithWorktrees(ctx, ttx.Tx, tenantID, 16)
+	ttx.Rollback(ctx)
+	if err != nil {
+		return reconciler.Result{Error: fmt.Errorf("scan terminal step-run worktrees: %w", err)}
+	}
+	for _, sr := range terminalStepRuns {
+		if err := r.reconcileStepRunOne(ctx, tenantID, sr.WorkflowRunID, sr.ID); err != nil {
+			r.log.Warn("worktree: prune branch worktree failed",
+				"run", sr.WorkflowRunID, "step_run", sr.ID, "error", err)
+		}
+	}
 	return reconciler.Result{}
+}
+
+// isParallelBranchChildStepRun reports whether the step with the given ID
+// (in the run's published workflow version) is a parallel-branch child —
+// its depends_on references a step whose kind is `parallel`. Only such
+// steps get a branch worktree. Loads the run's version steps in a short
+// transaction; a missing version or steps means "not a branch child"
+// (fail-open: the step simply runs in the run's cwd).
+func (r *WorktreeReconciler) isParallelBranchChildStepRun(ctx context.Context, tenantID, runID, stepID string) bool {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return false
+	}
+	defer ttx.Rollback(ctx)
+	run, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, runID)
+	if err != nil {
+		return false
+	}
+	version, err := db.GetWorkflowVersion(ctx, ttx.Tx, tenantID, run.WorkflowID, run.WorkflowVersion)
+	if err != nil {
+		return false
+	}
+	steps, err := workflow.ParseSteps(version.Steps)
+	if err != nil {
+		return false
+	}
+	return parallelBranchChildIDs(steps)[stepID]
 }
 
 // reconcileOne provisions a single run's isolated working tree and records
@@ -231,6 +358,264 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 	}
 
 	return r.recordReady(ctx, tenantID, runID, path, branch)
+}
+
+// reconcileStepRunOne provisions a single parallel-branch step run's
+// isolated working tree and records the result (path + branch) on the
+// workflow_step_runs row. Mirror of reconcileOne for the step-run key: a
+// terminal step run (or a step run of a terminal run) dispatches to the
+// prune path; non-branch steps are never provisioned here; non-repo
+// projects and runs without a bound project are marked 'skipped' so the
+// branch child runs in the run's cwd. Idempotent by construction — every
+// path/branch decision is a pure function of (runID, stepRunID), and the
+// final row update uses optimistic concurrency, so concurrent passes
+// converge rather than duplicate.
+func (r *WorktreeReconciler) reconcileStepRunOne(ctx context.Context, tenantID, runID, stepRunID string) error {
+	// Phase 1 — read the step run + its run (short transaction, released
+	// before git work).
+	run, sr, err := r.loadStepRun(ctx, tenantID, runID, stepRunID)
+	if err != nil {
+		return err
+	}
+	// Terminal step runs (or step runs of terminal runs) dispatch to the
+	// prune path: their branch worktree (if any) is reaped instead of
+	// provisioned.
+	if isTerminalStepRun(sr) || isTerminalRun(run) {
+		return r.pruneStepRunOne(ctx, tenantID, sr)
+	}
+	if run.ProjectID == "" {
+		// No project to provision against — the branch child runs in the
+		// run's cwd. Mark skipped so the DAG gate stops holding the step.
+		return r.markStepSkipped(ctx, tenantID, stepRunID,
+			"run has no bound project; branch runs in the run's cwd")
+	}
+
+	switch sr.WorktreeStatus {
+	case domain.WorktreeReady:
+		// Converge: the worktree we recorded must still exist on the
+		// recorded branch. If it does, we're done; if it vanished, fall
+		// through and re-provision.
+		if r.worktreeMatches(ctx, run.ProjectID, sr.WorktreePath, sr.WorktreeBranch) {
+			return nil
+		}
+	case domain.WorktreeSkipped, domain.WorktreeFailed, domain.WorktreePruned:
+		// Recorded decisions are respected: a skipped, failed or pruned
+		// step run is never re-provisioned by the loop.
+		return nil
+	}
+
+	// Phase 2 — resolve the project dir + detect a git work tree (cached
+	// on the project row).
+	projectDir, gitBacked, found := r.resolveGitBacked(ctx, tenantID, run.ProjectID)
+	if !found {
+		return r.markStepSkipped(ctx, tenantID, stepRunID, "project has no project_dir")
+	}
+	if !gitBacked {
+		return r.markStepSkipped(ctx, tenantID, stepRunID,
+			fmt.Sprintf("project dir %s is not a git work tree", projectDir))
+	}
+
+	path := filepath.Join(projectDir, worktreeDirName, runID, stepRunID)
+	branch := r.branchWorktreeName(ctx, tenantID, run, sr)
+
+	// Phase 3 — converge against what git actually has at the expected
+	// path (mirrors reconcileOne's repair/fail-closed logic).
+	existing, err := r.worktreeAt(ctx, projectDir, path)
+	if err != nil {
+		return fmt.Errorf("worktree: list worktrees: %w", err)
+	}
+	if existing != nil {
+		if existing.branch == branch {
+			return r.recordStepReady(ctx, tenantID, stepRunID, path, branch)
+		}
+		// A foreign worktree occupies our path. When the row still says
+		// 'pending' (no other owner) we own the path by construction (it
+		// is runID/stepRunID-namespaced), so repair it.
+		if sr.WorktreeStatus == domain.WorktreePending {
+			if rerr := r.removeWorktree(ctx, projectDir, path); rerr != nil {
+				return fmt.Errorf("worktree: repair stale worktree at %s: %w", path, rerr)
+			}
+		} else {
+			return r.markStepFailed(ctx, tenantID, stepRunID,
+				fmt.Sprintf("path %s occupied by a git worktree on branch %s", path, existing.branch))
+		}
+	} else if occupied, oerr := r.dirOccupied(path); oerr != nil {
+		return fmt.Errorf("worktree: inspect %s: %w", path, oerr)
+	} else if occupied {
+		if sr.WorktreeStatus == domain.WorktreePending && r.isOrchiconWorktreeArtifact(path) {
+			if rerr := r.removeWorktreeArtifact(path); rerr != nil {
+				return fmt.Errorf("worktree: prune partial artifact at %s: %w", path, rerr)
+			}
+		} else {
+			return r.markStepFailed(ctx, tenantID, stepRunID,
+				fmt.Sprintf("path %s is occupied by a non-worktree directory", path))
+		}
+	}
+
+	// Phase 4 — resolve the base ref and create. The base is the run's
+	// branch when the run worktree exists (preserving lineage); otherwise
+	// the repo's default ref.
+	base := ""
+	if run.WorktreeStatus == domain.WorktreeReady && run.WorktreeBranch != "" {
+		base = run.WorktreeBranch
+	} else {
+		base = r.resolveBaseRef(ctx, projectDir)
+	}
+	if err := r.addWorktree(ctx, projectDir, path, branch, base); err != nil {
+		if isAlreadyTrackedErr(err) {
+			// A concurrent pass won the create race — converge.
+			if existing, lerr := r.worktreeAt(ctx, projectDir, path); lerr == nil && existing != nil && existing.branch == branch {
+				return r.recordStepReady(ctx, tenantID, stepRunID, path, branch)
+			}
+		}
+		return r.markStepFailed(ctx, tenantID, stepRunID, fmt.Sprintf("git worktree add: %v", err))
+	}
+
+	return r.recordStepReady(ctx, tenantID, stepRunID, path, branch)
+}
+
+// branchWorktreeName computes the deterministic, collision-safe branch for
+// a branch step run: <runBranch>-<stepSlug>-<stepRunSuffix>. The run
+// branch name is a prefix (lineage is preserved via the base ref the
+// worktree is created FROM), and the step-run suffix makes the branch
+// unique PER STEP RUN — loop iterations re-create step runs with fresh IDs
+// for the same step, so a branch keyed only on the step ID would collide
+// on the second iteration (git forbids two worktrees on one branch).
+// NOTE: the "<runBranch>/<stepID>" sub-branch form from the original design
+// is invalid under git's ref layout — a branch `runbranch` exists, so the
+// leaf `refs/heads/runbranch` blocks creating `refs/heads/runbranch/x`
+// ("cannot lock ref"). The flat hyphenated form has no such conflict. The
+// step-ID segment is slugified so user-authored step IDs (which may hold
+// git-ref-invalid characters) never break `git worktree add`. When the run
+// branch is not yet recorded (run worktree still pending), the
+// deterministic run branch name is computed instead.
+func (r *WorktreeReconciler) branchWorktreeName(ctx context.Context, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow) string {
+	runBranch := run.WorktreeBranch
+	if runBranch == "" {
+		runBranch = branchNameFor(r.slugSource(ctx, tenantID, run), run.ID)
+	}
+	stepSlug := slug.Slugify(sr.StepID)
+	if stepSlug == "" {
+		stepSlug = "step"
+	}
+	// Cap the step slug so the full ref stays well under git's 255-byte
+	// ref limit even for a maximal run branch (~197 bytes) + suffix.
+	if len(stepSlug) > maxStepBranchSlugLen {
+		stepSlug = stepSlug[:maxStepBranchSlugLen]
+	}
+	name := runBranch + "-" + stepSlug + "-" + runSuffix(sr.ID)
+	// Defensive cap: shrink the step slug, then the run-branch prefix, so
+	// the full ref stays under git's limit even for a near-maximal run
+	// branch. Uniqueness never depends on the slug — the step-run suffix
+	// (16 chars of entropy) is what makes the branch collision-safe.
+	if len(name) > maxBranchNameLen {
+		over := len(name) - maxBranchNameLen
+		if over < len(stepSlug) {
+			stepSlug = stepSlug[:len(stepSlug)-over]
+			name = runBranch + "-" + stepSlug + "-" + runSuffix(sr.ID)
+		}
+		if len(name) > maxBranchNameLen {
+			keep := maxBranchNameLen - (len(stepSlug) + 2 + len(runSuffix(sr.ID)))
+			if keep < 1 {
+				keep = 1
+			}
+			name = runBranch[:keep] + "-" + stepSlug + "-" + runSuffix(sr.ID)
+		}
+	}
+	return name
+}
+
+// pruneStepRunOne reaps a terminal step run's branch worktree: remove the
+// working tree dir, run `git worktree prune` in the main repo, and record
+// 'pruned' on the step run row. Idempotent by construction — every step
+// treats "already gone" as success. The branch ref is NEVER deleted.
+func (r *WorktreeReconciler) pruneStepRunOne(ctx context.Context, tenantID string, sr db.WorkflowStepRunRow) error {
+	if sr.WorktreeStatus != domain.WorktreeReady || sr.WorktreePath == "" {
+		return nil
+	}
+	path := sr.WorktreePath
+
+	run, err := r.loadRun(ctx, tenantID, sr.WorkflowRunID)
+	if err != nil {
+		return err
+	}
+	projectDir := r.lookupProjectDir(ctx, tenantID, run.ProjectID)
+	if projectDir == "" || !r.isInsideWorkTree(ctx, projectDir) {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return r.markStepPruned(ctx, tenantID, sr.ID, "worktree already gone; main repo unresolvable")
+		}
+		r.log.Warn("worktree: cannot prune branch worktree; main repo unresolvable",
+			"run", sr.WorkflowRunID, "step_run", sr.ID, "path", path)
+		return nil
+	}
+
+	existing, err := r.worktreeAt(ctx, projectDir, path)
+	if err != nil {
+		return fmt.Errorf("worktree: list worktrees: %w", err)
+	}
+	if existing != nil {
+		if err := r.removeWorktree(ctx, projectDir, path); err != nil {
+			return fmt.Errorf("worktree: remove %s: %w", path, err)
+		}
+	} else if occupied, oerr := r.dirOccupied(path); oerr != nil {
+		return fmt.Errorf("worktree: inspect %s: %w", path, oerr)
+	} else if occupied {
+		if r.isOrchiconWorktreeArtifact(path) {
+			if rerr := r.removeWorktreeArtifact(path); rerr != nil {
+				return fmt.Errorf("worktree: remove artifact at %s: %w", path, rerr)
+			}
+		} else {
+			r.log.Warn("worktree: refusing to remove non-worktree directory",
+				"run", sr.WorkflowRunID, "step_run", sr.ID, "path", path)
+		}
+	}
+
+	if _, err := runGit(ctx, projectDir, "worktree", "prune"); err != nil {
+		r.log.Warn("worktree: git worktree prune failed",
+			"run", sr.WorkflowRunID, "step_run", sr.ID, "error", err)
+	}
+
+	return r.markStepPruned(ctx, tenantID, sr.ID, "")
+}
+
+// loadStepRun reads a step run and its run outside a transaction (released
+// before git work).
+func (r *WorktreeReconciler) loadStepRun(ctx context.Context, tenantID, runID, stepRunID string) (db.WorkflowRunRow, db.WorkflowStepRunRow, error) {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return db.WorkflowRunRow{}, db.WorkflowStepRunRow{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer ttx.Rollback(ctx)
+	run, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, runID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return db.WorkflowRunRow{}, db.WorkflowStepRunRow{}, nil
+		}
+		return db.WorkflowRunRow{}, db.WorkflowStepRunRow{}, fmt.Errorf("get run: %w", err)
+	}
+	sr, err := db.GetWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRunID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return db.WorkflowRunRow{}, db.WorkflowStepRunRow{}, nil
+		}
+		return db.WorkflowRunRow{}, db.WorkflowStepRunRow{}, fmt.Errorf("get step run: %w", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return db.WorkflowRunRow{}, db.WorkflowStepRunRow{}, fmt.Errorf("commit: %w", err)
+	}
+	return run, sr, nil
+}
+
+// isTerminalStepRun reports whether a step run can never progress again —
+// the terminal states after which its branch worktree (if any) is reaped.
+// Superseded step runs keep their terminal status, so a superseded run is
+// covered by its own status.
+func isTerminalStepRun(sr db.WorkflowStepRunRow) bool {
+	switch sr.Status {
+	case domain.StepRunSucceeded, domain.StepRunFailed, domain.StepRunSkipped, domain.StepRunBlocked:
+		return true
+	}
+	return false
 }
 
 // pruneOne reaps a terminal run's worktree: remove the working tree dir,
@@ -802,6 +1187,158 @@ func (r *WorktreeReconciler) markPruned(ctx context.Context, tenantID, runID, re
 	}
 	r.log.Info("worktree pruned", "run", runID, "branch", run.WorktreeBranch)
 	return nil
+}
+
+// --- step-run row state transitions (each a short optimistic tx) -----------
+
+// recordStepReady records the provisioned branch worktree on the step run
+// row. Optimistic concurrency + a non-terminal guard so a step run that
+// terminalized mid-provision is not spuriously touched (the worktree still
+// exists for the prune pass to reap).
+func (r *WorktreeReconciler) recordStepReady(ctx context.Context, tenantID, stepRunID, path, branch string) error {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer ttx.Rollback(ctx)
+	sr, err := db.GetWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRunID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("get step run: %w", err)
+	}
+	// Already provisioned by a concurrent pass — converge, don't fight.
+	if sr.WorktreeStatus == domain.WorktreeReady {
+		return ttx.Commit(ctx)
+	}
+	if isTerminalStepRun(sr) {
+		return nil
+	}
+	if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRunID, sr.Version, db.UpdateWorkflowStepRunFields{
+		WorktreeStatus: strPtr(domain.WorktreeReady),
+		WorktreePath:   strPtr(path),
+		WorktreeBranch: strPtr(branch),
+	}); err != nil {
+		return fmt.Errorf("record step worktree ready: %w", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	r.log.Info("worktree: branch worktree provisioned", "step_run", stepRunID, "path", path, "branch", branch)
+	return nil
+}
+
+// markStepSkipped records that no branch worktree will be provisioned for
+// this step run (non-repo project, or run has no bound project) so the
+// DAG gate stops holding the branch child at ready.
+func (r *WorktreeReconciler) markStepSkipped(ctx context.Context, tenantID, stepRunID, reason string) error {
+	r.log.Info("worktree: branch skipped (non-repo project)", "step_run", stepRunID, "reason", reason)
+	return r.markStep(ctx, tenantID, stepRunID, domain.WorktreeSkipped, "", "", reason)
+}
+
+// markStepFailed records a branch-worktree provisioning error on the step
+// run. The DAG gate fails the branch step on this mark.
+func (r *WorktreeReconciler) markStepFailed(ctx context.Context, tenantID, stepRunID, reason string) error {
+	r.log.Warn("worktree: branch provisioning failed", "step_run", stepRunID, "reason", reason)
+	return r.markStep(ctx, tenantID, stepRunID, domain.WorktreeFailed, "", "", reason)
+}
+
+// markStep applies a terminal worktree_status to a step run, folding a
+// reason into the step run's result (best-effort — the status is the
+// source of truth). Refuses to touch a terminal step run.
+func (r *WorktreeReconciler) markStep(ctx context.Context, tenantID, stepRunID, status, path, branch, reason string) error {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer ttx.Rollback(ctx)
+	sr, err := db.GetWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRunID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("get step run: %w", err)
+	}
+	if isTerminalStepRun(sr) {
+		return nil
+	}
+	fields := db.UpdateWorkflowStepRunFields{WorktreeStatus: strPtr(status)}
+	if path != "" {
+		fields.WorktreePath = strPtr(path)
+	}
+	if branch != "" {
+		fields.WorktreeBranch = strPtr(branch)
+	}
+	if reason != "" {
+		if merged, ok := mergeStepRunContext(sr.Result, map[string]any{"worktree_error": reason}); ok {
+			fields.Result = &merged
+		}
+	}
+	if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRunID, sr.Version, fields); err != nil {
+		return fmt.Errorf("mark step worktree %s: %w", status, err)
+	}
+	return ttx.Commit(ctx)
+}
+
+// markStepPruned records that a terminal step run's branch worktree has
+// been reaped. In one optimistic transaction it sets worktree_status
+// 'pruned' and clears worktree_path; worktree_branch is KEPT so the
+// DevOps merge step knows which branch the branch step used (the control
+// plane never deletes a branch).
+func (r *WorktreeReconciler) markStepPruned(ctx context.Context, tenantID, stepRunID, reason string) error {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer ttx.Rollback(ctx)
+	sr, err := db.GetWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRunID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("get step run: %w", err)
+	}
+	// Already pruned by a concurrent pass — converge, don't fight.
+	if sr.WorktreeStatus == domain.WorktreePruned {
+		return ttx.Commit(ctx)
+	}
+	fields := db.UpdateWorkflowStepRunFields{
+		WorktreeStatus: strPtr(domain.WorktreePruned),
+		WorktreePath:   strPtr(""),
+	}
+	if reason != "" {
+		if merged, ok := mergeStepRunContext(sr.Result, map[string]any{"worktree_pruned": reason}); ok {
+			fields.Result = &merged
+		}
+	}
+	if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRunID, sr.Version, fields); err != nil {
+		return fmt.Errorf("mark step worktree pruned: %w", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	r.log.Info("worktree: branch worktree pruned", "step_run", stepRunID, "branch", sr.WorktreeBranch)
+	return nil
+}
+
+// mergeStepRunContext folds a worktree_error into a step run's result
+// jsonb (best-effort, additive).
+func mergeStepRunContext(existing []byte, add map[string]any) ([]byte, bool) {
+	out := map[string]any{}
+	if len(existing) > 0 {
+		if err := json.Unmarshal(existing, &out); err != nil {
+			out = map[string]any{}
+		}
+	}
+	for k, v := range add {
+		out[k] = v
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return nil, false
+	}
+	return b, true
 }
 
 // mergeRunContext folds a worktree_error into the run's run_context jsonb

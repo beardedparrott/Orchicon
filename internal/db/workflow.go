@@ -77,7 +77,10 @@ type WorkflowRunRow struct {
 // WorkflowStepRunRow is the data-access shape of a workflow_step_runs
 // table row (docs/09 §3.4). The runtime state of a single step within
 // a WorkflowRun. iteration and superseded_by track loop decision
-// re-entry (docs/11 §3.4).
+// re-entry (docs/11 §3.4). worktree_* carry the per-step-run isolated
+// working tree provisioned for parallel-branch children
+// (architecture-notes/concurrent-step-run-dispatch.md D2); non-branch
+// steps keep them at their defaults ('pending'/empty).
 type WorkflowStepRunRow struct {
 	ID                 string
 	TenantID           string
@@ -91,6 +94,9 @@ type WorkflowStepRunRow struct {
 	WorkerExecutionID  string
 	Iteration          int    // re-entry count (0 for first dispatch)
 	SupersededBy       string // step run id that superseded this one
+	WorktreeStatus     string // WorktreeReconciler provisioning state (pending/ready/skipped/failed/pruned)
+	WorktreePath       string // isolated working tree path (parallel-branch children)
+	WorktreeBranch     string // deterministic branch created for the step run
 	StartedAt          *time.Time
 	EndedAt            *time.Time
 	Version            int
@@ -755,6 +761,7 @@ func CreateWorkflowStepRun(ctx context.Context, tx pgx.Tx, s WorkflowStepRunRow)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING id, tenant_id, workflow_run_id, step_id, step_name, step_kind,
 			status, attempt, result, worker_execution_id, iteration, superseded_by,
+			worktree_status, worktree_path, worktree_branch,
 			started_at, ended_at, version, created_at, updated_at`
 	row := s
 	var supBy *string
@@ -767,6 +774,7 @@ func CreateWorkflowStepRun(ctx context.Context, tx pgx.Tx, s WorkflowStepRunRow)
 		&row.ID, &row.TenantID, &row.WorkflowRunID, &row.StepID, &row.StepName,
 		&row.StepKind, &row.Status, &row.Attempt, &row.Result,
 		&row.WorkerExecutionID, &row.Iteration, &supBy,
+		&row.WorktreeStatus, &row.WorktreePath, &row.WorktreeBranch,
 		&row.StartedAt, &row.EndedAt, &row.Version,
 		&row.CreatedAt, &row.UpdatedAt,
 	)
@@ -791,7 +799,8 @@ func iterSupersededBy(s string) *string {
 func GetWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkflowStepRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_run_id, step_id, step_name, step_kind,
 		status, attempt, result, 		worker_execution_id,
-		iteration, superseded_by, started_at, ended_at, version,
+		iteration, superseded_by, worktree_status, worktree_path, worktree_branch,
+		started_at, ended_at, version,
 		created_at, updated_at
 		FROM workflow_step_runs WHERE id = $1 AND tenant_id = $2`
 	var s WorkflowStepRunRow
@@ -800,7 +809,8 @@ func GetWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (Wo
 		&s.ID, &s.TenantID, &s.WorkflowRunID, &s.StepID, &s.StepName,
 		&s.StepKind, &s.Status, &s.Attempt, &s.Result,
 		&s.WorkerExecutionID,
-		&s.Iteration, &supBy, &s.StartedAt, &s.EndedAt, &s.Version,
+		&s.Iteration, &supBy, &s.WorktreeStatus, &s.WorktreePath, &s.WorktreeBranch,
+		&s.StartedAt, &s.EndedAt, &s.Version,
 		&s.CreatedAt, &s.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -821,7 +831,8 @@ func GetWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (Wo
 func GetWorkflowStepRunByStep(ctx context.Context, tx pgx.Tx, tenantID, runID, stepID string) (WorkflowStepRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_run_id, step_id, step_name, step_kind,
 		status, attempt, result, 		worker_execution_id,
-		iteration, superseded_by, started_at, ended_at, version,
+		iteration, superseded_by, worktree_status, worktree_path, worktree_branch,
+		started_at, ended_at, version,
 		created_at, updated_at
 		FROM workflow_step_runs
 		WHERE tenant_id = $1 AND workflow_run_id = $2 AND step_id = $3
@@ -832,7 +843,8 @@ func GetWorkflowStepRunByStep(ctx context.Context, tx pgx.Tx, tenantID, runID, s
 		&s.ID, &s.TenantID, &s.WorkflowRunID, &s.StepID, &s.StepName,
 		&s.StepKind, &s.Status, &s.Attempt, &s.Result,
 		&s.WorkerExecutionID,
-		&s.Iteration, &supBy, &s.StartedAt, &s.EndedAt, &s.Version,
+		&s.Iteration, &supBy, &s.WorktreeStatus, &s.WorktreePath, &s.WorktreeBranch,
+		&s.StartedAt, &s.EndedAt, &s.Version,
 		&s.CreatedAt, &s.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -856,7 +868,8 @@ func GetWorkflowStepRunByStep(ctx context.Context, tx pgx.Tx, tenantID, runID, s
 func GetWorkflowStepRunByExecution(ctx context.Context, tx pgx.Tx, tenantID, executionID string) (WorkflowStepRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_run_id, step_id, step_name, step_kind,
 		status, attempt, result, 		worker_execution_id,
-		iteration, superseded_by, started_at, ended_at, version,
+		iteration, superseded_by, worktree_status, worktree_path, worktree_branch,
+		started_at, ended_at, version,
 		created_at, updated_at
 		FROM workflow_step_runs
 		WHERE tenant_id = $1 AND worker_execution_id = $2
@@ -867,7 +880,8 @@ func GetWorkflowStepRunByExecution(ctx context.Context, tx pgx.Tx, tenantID, exe
 		&s.ID, &s.TenantID, &s.WorkflowRunID, &s.StepID, &s.StepName,
 		&s.StepKind, &s.Status, &s.Attempt, &s.Result,
 		&s.WorkerExecutionID,
-		&s.Iteration, &supBy, &s.StartedAt, &s.EndedAt, &s.Version,
+		&s.Iteration, &supBy, &s.WorktreeStatus, &s.WorktreePath, &s.WorktreeBranch,
+		&s.StartedAt, &s.EndedAt, &s.Version,
 		&s.CreatedAt, &s.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -886,7 +900,8 @@ func GetWorkflowStepRunByExecution(ctx context.Context, tx pgx.Tx, tenantID, exe
 func ListWorkflowStepRuns(ctx context.Context, tx pgx.Tx, tenantID, runID string) ([]WorkflowStepRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_run_id, step_id, step_name, step_kind,
 		status, attempt, result, 		worker_execution_id,
-		iteration, superseded_by, started_at, ended_at, version,
+		iteration, superseded_by, worktree_status, worktree_path, worktree_branch,
+		started_at, ended_at, version,
 		created_at, updated_at
 		FROM workflow_step_runs
 		WHERE tenant_id = $1 AND workflow_run_id = $2
@@ -904,7 +919,8 @@ func ListWorkflowStepRuns(ctx context.Context, tx pgx.Tx, tenantID, runID string
 			&s.ID, &s.TenantID, &s.WorkflowRunID, &s.StepID, &s.StepName,
 			&s.StepKind, &s.Status, &s.Attempt, &s.Result,
 			&s.WorkerExecutionID,
-			&s.Iteration, &supBy, &s.StartedAt, &s.EndedAt, &s.Version,
+			&s.Iteration, &supBy, &s.WorktreeStatus, &s.WorktreePath, &s.WorktreeBranch,
+			&s.StartedAt, &s.EndedAt, &s.Version,
 			&s.CreatedAt, &s.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan workflow step run: %w", err)
@@ -926,6 +942,9 @@ type UpdateWorkflowStepRunFields struct {
 	WorkerExecutionID *string
 	Iteration         *int
 	SupersededBy      *string
+	WorktreeStatus    *string
+	WorktreePath      *string
+	WorktreeBranch    *string
 	StartedAt         *time.Time
 	EndedAt           *time.Time
 	// ClearEndedAt clears ended_at to NULL regardless of the EndedAt
@@ -970,6 +989,21 @@ func UpdateWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string, 
 		args = append(args, iterSupersededBy(*f.SupersededBy))
 		setIdx++
 	}
+	if f.WorktreeStatus != nil {
+		q += fmt.Sprintf(`, worktree_status = $%d`, setIdx)
+		args = append(args, *f.WorktreeStatus)
+		setIdx++
+	}
+	if f.WorktreePath != nil {
+		q += fmt.Sprintf(`, worktree_path = $%d`, setIdx)
+		args = append(args, *f.WorktreePath)
+		setIdx++
+	}
+	if f.WorktreeBranch != nil {
+		q += fmt.Sprintf(`, worktree_branch = $%d`, setIdx)
+		args = append(args, *f.WorktreeBranch)
+		setIdx++
+	}
 	if f.StartedAt != nil {
 		q += fmt.Sprintf(`, started_at = $%d`, setIdx)
 		args = append(args, *f.StartedAt)
@@ -986,7 +1020,8 @@ func UpdateWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string, 
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, workflow_run_id, step_id, step_name, step_kind,
 		status, attempt, result, worker_execution_id,
-		iteration, superseded_by, started_at, ended_at, version,
+		iteration, superseded_by, worktree_status, worktree_path, worktree_branch,
+		started_at, ended_at, version,
 		created_at, updated_at`
 	var s WorkflowStepRunRow
 	var supBy *string
@@ -994,7 +1029,8 @@ func UpdateWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string, 
 		&s.ID, &s.TenantID, &s.WorkflowRunID, &s.StepID, &s.StepName,
 		&s.StepKind, &s.Status, &s.Attempt, &s.Result,
 		&s.WorkerExecutionID,
-		&s.Iteration, &supBy, &s.StartedAt, &s.EndedAt, &s.Version,
+		&s.Iteration, &supBy, &s.WorktreeStatus, &s.WorktreePath, &s.WorktreeBranch,
+		&s.StartedAt, &s.EndedAt, &s.Version,
 		&s.CreatedAt, &s.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1139,6 +1175,118 @@ func ListTerminalRunsWithWorktrees(ctx context.Context, tx pgx.Tx, tenantID stri
 			r.WorkItemID = *wiID
 		}
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ListWorktreeStepRunCandidates returns workflow step runs the
+// WorktreeReconciler should provision a per-branch isolated working tree
+// for: step runs belonging to NON-terminal runs that have a bound project,
+// whose worktree_status is still 'pending', and whose own step-run status
+// is NOT terminal (a succeeded/failed/skipped/blocked step run will never
+// dispatch, so it never needs a branch worktree — excluding it keeps
+// non-branch residue from starving the scan batch). The caller filters to
+// parallel-branch children (the DAG shape decides who gets a branch
+// worktree — see parallelBranchChildIDs in the scheduler). The 'pending'
+// default makes the scan self-healing for step runs created before the
+// columns existed. Batch-capped (paged after afterCreated/afterID so the
+// scan can walk past residue rows) so one pass can't monopolize the
+// reconciler goroutine.
+func ListWorktreeStepRunCandidates(ctx context.Context, tx pgx.Tx, tenantID string, limit int, afterCreated time.Time, afterID string) ([]WorkflowStepRunRow, error) {
+	if limit <= 0 {
+		limit = 16
+	}
+	q := `SELECT s.id, s.tenant_id, s.workflow_run_id, s.step_id, s.step_name,
+		s.step_kind, s.status, s.attempt, s.result, s.worker_execution_id,
+		s.iteration, s.superseded_by, s.worktree_status, s.worktree_path, s.worktree_branch,
+		s.started_at, s.ended_at, s.version, s.created_at, s.updated_at
+		FROM workflow_step_runs s
+		JOIN workflow_runs r ON r.id = s.workflow_run_id AND r.tenant_id = s.tenant_id
+		WHERE s.tenant_id = $1 AND r.status IN ('pending', 'running') AND r.project_id <> ''
+		  AND s.worktree_status = 'pending'
+		  AND s.status NOT IN ('succeeded', 'failed', 'skipped', 'blocked')`
+	args := []any{tenantID, limit}
+	if !afterCreated.IsZero() {
+		q += fmt.Sprintf(` AND (s.created_at, s.id) > ($%d, $%d)`, len(args)+1, len(args)+2)
+		args = append(args, afterCreated, afterID)
+	}
+	q += `
+		ORDER BY s.created_at ASC, s.id ASC
+		LIMIT $2`
+	rows, err := tx.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: list worktree step run candidates: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkflowStepRunRow
+	for rows.Next() {
+		var s WorkflowStepRunRow
+		var supBy *string
+		if err := rows.Scan(
+			&s.ID, &s.TenantID, &s.WorkflowRunID, &s.StepID, &s.StepName,
+			&s.StepKind, &s.Status, &s.Attempt, &s.Result,
+			&s.WorkerExecutionID,
+			&s.Iteration, &supBy, &s.WorktreeStatus, &s.WorktreePath, &s.WorktreeBranch,
+			&s.StartedAt, &s.EndedAt, &s.Version,
+			&s.CreatedAt, &s.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan worktree step run candidate: %w", err)
+		}
+		if supBy != nil {
+			s.SupersededBy = *supBy
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// ListTerminalStepRunsWithWorktrees returns workflow step runs with a
+// recorded branch worktree ('ready' + non-empty path) that can be reaped:
+// step runs that are themselves terminal (succeeded/failed/skipped/
+// blocked/superseded — superseded runs keep their terminal status) OR
+// belong to a terminal run (completed/failed/aborted). This is the
+// scan-side discovery surface for the WorktreeReconciler's step-run prune
+// pass — step runs whose worktrees were already pruned are excluded by the
+// 'ready' + non-empty path predicate, so re-scanning is a no-op.
+// Batch-capped to mirror ListWorktreeStepRunCandidates.
+func ListTerminalStepRunsWithWorktrees(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowStepRunRow, error) {
+	if limit <= 0 {
+		limit = 16
+	}
+	const q = `SELECT s.id, s.tenant_id, s.workflow_run_id, s.step_id, s.step_name,
+		s.step_kind, s.status, s.attempt, s.result, s.worker_execution_id,
+		s.iteration, s.superseded_by, s.worktree_status, s.worktree_path, s.worktree_branch,
+		s.started_at, s.ended_at, s.version, s.created_at, s.updated_at
+		FROM workflow_step_runs s
+		JOIN workflow_runs r ON r.id = s.workflow_run_id AND r.tenant_id = s.tenant_id
+		WHERE s.tenant_id = $1 AND s.worktree_status = 'ready' AND s.worktree_path <> ''
+		  AND (s.status IN ('succeeded', 'failed', 'skipped', 'blocked')
+		       OR r.status IN ('completed', 'failed', 'aborted'))
+		ORDER BY s.created_at ASC
+		LIMIT $2`
+	rows, err := tx.Query(ctx, q, tenantID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list terminal step runs with worktrees: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkflowStepRunRow
+	for rows.Next() {
+		var s WorkflowStepRunRow
+		var supBy *string
+		if err := rows.Scan(
+			&s.ID, &s.TenantID, &s.WorkflowRunID, &s.StepID, &s.StepName,
+			&s.StepKind, &s.Status, &s.Attempt, &s.Result,
+			&s.WorkerExecutionID,
+			&s.Iteration, &supBy, &s.WorktreeStatus, &s.WorktreePath, &s.WorktreeBranch,
+			&s.StartedAt, &s.EndedAt, &s.Version,
+			&s.CreatedAt, &s.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan terminal step run: %w", err)
+		}
+		if supBy != nil {
+			s.SupersededBy = *supBy
+		}
+		out = append(out, s)
 	}
 	return out, rows.Err()
 }
