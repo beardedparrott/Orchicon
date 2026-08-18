@@ -81,7 +81,10 @@ func (d *barrierDispatcher) stepRuns() []string {
 	return append([]string(nil), d.calls...)
 }
 
-func (d *barrierDispatcher) newInFlightPeak(rec *WorkflowReconciler) func() int {
+// newInFlightPeak attaches the test-only dispatchOverlap hook to a
+// reconciler and returns a reader for the peak number of DispatchTask calls
+// observed in flight during a fan-out.
+func newInFlightPeak(rec *WorkflowReconciler) func() int {
 	var mu sync.Mutex
 	peak := 0
 	rec.dispatchOverlap = func(cur int) {
@@ -106,7 +109,7 @@ func TestDispatchInlineConcurrent(t *testing.T) {
 	const n = 3
 	rec.taskDispatcher = &barrierDispatcher{expected: n, done: make(chan struct{})}
 	rec.dispatchConcurrency = 4
-	peak := rec.taskDispatcher.(*barrierDispatcher).newInFlightPeak(rec)
+	peak := newInFlightPeak(rec)
 
 	steps := make([]dispatchReq, n)
 	for i := range steps {
@@ -477,7 +480,7 @@ func TestParallelBranchHeldUntilWorktreeReady(t *testing.T) {
 	barrier2 := &barrierDispatcher{expected: 2, done: make(chan struct{})}
 	env.rec.taskDispatcher = barrier2
 	env.rec.SetDispatchConcurrency(4)
-	peak := barrier2.newInFlightPeak(env.rec)
+	peak := newInFlightPeak(env.rec)
 	if err := env.rec.reconcileRun(ctx, approvalTestTenant, env.run.ID); err != nil {
 		t.Fatalf("reconcile (dispatch pass): %v", err)
 	}
