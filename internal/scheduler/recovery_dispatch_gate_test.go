@@ -103,14 +103,28 @@ func newRecoveryGateTestEnv(t *testing.T, strategy string) *recoveryGateTestEnv 
 	}
 	env.ticketID = ticket.ID
 
+	wfID := "wf-recovery-gate-" + db.NewID()
 	run, err := db.CreateWorkflowRun(ctx, ttx.Tx, db.WorkflowRunRow{
 		ID: db.NewID(), TenantID: approvalTestTenant,
-		WorkflowID: "wf-recovery-gate", WorkflowVersion: 1,
+		WorkflowID: wfID, WorkflowVersion: 1,
 		ProjectID: proj.ID, Status: domain.WorkflowRunRunning,
 		RunContext: []byte("{}"), WorkItemID: ticket.ID,
 	})
 	if err != nil {
 		t.Fatalf("create workflow run: %v", err)
+	}
+	// CreateWorkflowRun does not insert runtime_ready (column default false);
+	// flip it true explicitly so reconcileRun's headless runtime gate does
+	// not bump the run version mid-pass (which would stale the optimistic
+	// lock at the terminal-state update).
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, run.ID, run.Version, db.UpdateWorkflowRunFields{
+		RuntimeReady: boolPtr(true),
+	}); err != nil {
+		t.Fatalf("set run runtime_ready: %v", err)
+	}
+	run, err = db.GetWorkflowRun(ctx, ttx.Tx, approvalTestTenant, run.ID)
+	if err != nil {
+		t.Fatalf("reload run: %v", err)
 	}
 	env.run = run
 
@@ -138,6 +152,31 @@ func newRecoveryGateTestEnv(t *testing.T, strategy string) *recoveryGateTestEnv 
 		ID: "step-task", Name: "Task", Kind: domain.StepKindTask,
 		Ref: "w_se_devops_engineer", WorkerVersion: 1,
 		Config: `{"recovery":{"strategy":"summarize_restart","max_attempts":3}}`,
+	}
+
+	// reconcileRun requires a published workflow version to drive the DAG —
+	// create the workflow + version (with this step) and publish it.
+	if _, err := db.CreateWorkflow(ctx, ttx.Tx, db.WorkflowRow{
+		ID: wfID, TenantID: approvalTestTenant,
+		ProjectID: proj.ID, Name: "Recovery Gate", CurrentVersion: 1,
+		Status: "active", Type: "template",
+	}); err != nil {
+		t.Fatalf("create workflow: %v", err)
+	}
+	stepsJSON, err := json.Marshal([]workflow.StepWire{env.step})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateWorkflowVersion(ctx, ttx.Tx, db.WorkflowVersionRow{
+		ID: db.NewID(), TenantID: approvalTestTenant,
+		WorkflowID: wfID, Version: 1,
+		VersionNote: "test", Status: "draft",
+		Steps: stepsJSON, Inputs: []byte("{}"), Outputs: []byte("{}"),
+	}); err != nil {
+		t.Fatalf("create workflow version: %v", err)
+	}
+	if _, err := db.PublishWorkflowVersion(ctx, ttx.Tx, approvalTestTenant, wfID, 1); err != nil {
+		t.Fatalf("publish workflow version: %v", err)
 	}
 
 	// Recovering step run carrying the dead-execution identity + strategy
