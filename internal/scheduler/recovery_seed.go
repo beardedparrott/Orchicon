@@ -8,9 +8,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/domain"
+	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/transcript"
+	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel/attribute"
+	otelmetric "go.opentelemetry.io/otel/metric"
 )
 
 // Recovery seeding (.orchicon/worker.recovery).
@@ -55,7 +62,13 @@ const (
 	// recoveryDirective tells the worker it may terminate immediately by
 	// re-printing its summary; it also instructs the worker to delete the
 	// file, which is the primary cleanup mechanism for the fast path.
-	recoveryDirective = "If you are already done with your work, please print your ORCHICON WORKER SUMMARY. If you already did that, please just print the summary itself again and then finish. When you finish, delete this file (rm .orchicon/worker.recovery) so a future session for a different worker is never confused by it."
+	recoveryDirective = "If you are already done with your work, please print your ORCHICON WORKER SUMMARY. If you already did that, please just print the summary itself again and then finish. When you finish, delete this file (rm .orchicon/worker.recovery) so a future session for a different worker is never confused by it. If `.orchicon/worker.recovery` is missing or unreadable when you start, do NOT redo any work — finish immediately with `ORCHICON WORKER SUMMARY: failure` and reason `recovery seed file missing`."
+
+	// recoveryFailFastDirective is the last line of defense: the composite's
+	// ## Recovery block instructs a recovery-resumed worker to fail fast when
+	// the seed file it was promised is missing. It mirrors recoveryDirective
+	// so the worker sees the contract in BOTH the prompt and the file itself.
+	recoveryFailFastDirective = "If the file is missing or unreadable, do NOT redo work — finish immediately with decision `fail` and reason `recovery seed file missing`."
 
 	// recoveryFooterExecLine / recoveryFooterWorkerLine are the LAST lines
 	// of the file. The system-side cleanup matcher reads them so it never
@@ -122,6 +135,77 @@ func recoverySeedFor(runResult, wiResults []byte, workerID string) *recoverySeed
 	return &seed
 }
 
+// recoveryIdentityFromResult extracts the dead-execution identity recorded
+// on a step-run / work-item result. Order of preference mirrors the ADR:
+// _failed_execution_id (persisted at the recovering transition) →
+// _recovery_execution_id (published by the recovery engine).
+func recoveryIdentityFromResult(runResult, wiResults []byte) (failedExecID string) {
+	read := func(raw []byte) {
+		var m map[string]any
+		if len(raw) == 0 || json.Unmarshal(raw, &m) != nil {
+			return
+		}
+		if failedExecID == "" {
+			if e, ok := m["_failed_execution_id"].(string); ok && e != "" {
+				failedExecID = e
+			}
+		}
+		if failedExecID == "" {
+			if e, ok := m["_recovery_execution_id"].(string); ok && e != "" {
+				failedExecID = e
+			}
+		}
+	}
+	read(runResult)
+	read(wiResults)
+	return failedExecID
+}
+
+// resolveRecoverySeed is the SHARED seed resolver used by BOTH the
+// workflow dispatch gate (recoveryDispatchReady) and the TaskReconciler's
+// file writer, so the two can never disagree about whether a dispatch is a
+// same-worker recovery-resumed dispatch:
+//
+//  1. fast path: recoverySeedFor on the step-run result + work item
+//     results (the keys the recovery engine publishes on resume);
+//  2. fallback: when no keys are present yet but a failed-execution id is
+//     resolvable, build the seed from the most recent recovery row for
+//     that execution — only if it is terminal `resumed`. The same-worker
+//     gate (failed worker == dispatching worker) still applies.
+//
+// Returns nil when the dispatch is NOT a resolvable same-worker
+// recovery-resumed dispatch.
+func resolveRecoverySeed(ctx context.Context, tx pgx.Tx, tenantID, taskID string, runResult, wiResults []byte, workerID string) *recoverySeed {
+	if seed := recoverySeedFor(runResult, wiResults, workerID); seed != nil {
+		return seed
+	}
+	return recoverySeedFromRow(ctx, tx, tenantID, taskID, runResult, wiResults, workerID)
+}
+
+// recoverySeedFromRow is the DB fallback half of the shared resolver: when
+// the engine-published keys are not yet on the step run / work item, build
+// the seed from the most recent recovery row for the failed execution — but
+// ONLY if it is terminal `resumed`. The same-worker gate (failed worker ==
+// dispatching worker) still applies.
+func recoverySeedFromRow(ctx context.Context, tx pgx.Tx, tenantID, taskID string, runResult, wiResults []byte, workerID string) *recoverySeed {
+	failedExecID := recoveryIdentityFromResult(runResult, wiResults)
+	if failedExecID == "" || tx == nil {
+		return nil
+	}
+	rec, err := db.GetLatestRecoveryForExecution(ctx, tx, tenantID, taskID, failedExecID)
+	if err != nil || rec.Status != domain.RecoveryResumed {
+		return nil
+	}
+	failedWorkerID := ""
+	if fe, err := db.GetExecution(ctx, tx, tenantID, rec.FailedExecutionID); err == nil {
+		failedWorkerID = fe.WorkerID
+	}
+	if failedWorkerID == "" || failedWorkerID != workerID {
+		return nil
+	}
+	return &recoverySeed{Summary: rec.Summary, FailedExecID: rec.FailedExecutionID, FailedWorkerID: failedWorkerID}
+}
+
 // recoveryFileReferenceBlock is the ## Recovery prompt block that tells a
 // recovery-resumed worker to read the seed file. It is the shared text
 // the workflow + standalone composite builders emit natively and
@@ -130,7 +214,7 @@ func recoverySeedFor(runResult, wiResults []byte, workerID string) *recoverySeed
 func recoveryFileReferenceBlock(seed *recoverySeed) string {
 	var sb strings.Builder
 	sb.WriteString("## Recovery\n\n")
-	sb.WriteString("A previous execution of this step stalled and was recovered. This is your recovery-resumed session. " + recoveryFileReferenceMarker + " in the project working directory — it contains the dead session's transcript tail and instructions. Do NOT redo work that is already done. If you are already done with your work, print your ORCHICON WORKER SUMMARY (or re-print it if you already did) and finish.\n\n")
+	sb.WriteString("A previous execution of this step stalled and was recovered. This is your recovery-resumed session. " + recoveryFileReferenceMarker + " in the project working directory — it contains the dead session's transcript tail and instructions. Do NOT redo work that is already done. If you are already done with your work, print your ORCHICON WORKER SUMMARY (or re-print it if you already did) and finish. " + recoveryFailFastDirective + "\n\n")
 	if seed != nil && seed.Summary != "" {
 		sb.WriteString("Summary: " + seed.Summary + "\n")
 	}
@@ -184,20 +268,32 @@ func buildRecoveryFileContent(workerName string, seed *recoverySeed, tail string
 	return sb.String()
 }
 
-// seedRecoveryFile is the dispatch-time hook. It writes the seed file when
-// this dispatch is a same-worker recovery-resumed dispatch, removes any
-// stale file otherwise (safety net for a worker reassignment), and returns
-// the composite with the ## Recovery reference block ensured. Best-effort:
-// a failure to write must never fail dispatch — the caller logs and
-// continues. The returned prompt replaces the one passed in.
-func (r *TaskReconciler) seedRecoveryFile(ctx context.Context, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow, projectDir string, stepRunResult []byte, systemPrompt string) string {
+// seedRecoveryFile is the dispatch-time hard gate. It writes (or verifies)
+// .orchicon/worker.recovery when this dispatch is a same-worker
+// recovery-resumed dispatch, and returns the composite with the ## Recovery
+// reference block ensured. A nil seed (fresh / different-worker dispatch)
+// proceeds unchanged — and never sweeps an existing file, which may belong
+// to another in-flight recovery (a fresh worker is never pointed at it).
+//
+// This is NOT best-effort anymore: if the seed is resolvable but the file
+// cannot be written+verified, an error is returned and the caller fails the
+// dispatch (failed_to_start) instead of launching the session cold.
+func (r *TaskReconciler) seedRecoveryFile(ctx context.Context, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow, projectDir string, stepRunResult []byte, systemPrompt string) (string, error) {
 	if projectDir == "" {
-		return systemPrompt
+		return systemPrompt, nil
 	}
+	// Resolve the seed with the SHARED resolver (fast-path keys first —
+	// no DB needed; fallback to the terminal-resumed recovery row in a
+	// short read tx) so the gate and the file writer can never disagree.
 	seed := recoverySeedFor(stepRunResult, task.Results, version.WorkerID)
+	if seed == nil && exec.TenantID != "" {
+		if ttx, err := r.pool.BeginTenantTx(ctx, exec.TenantID); err == nil {
+			seed = recoverySeedFromRow(ctx, ttx.Tx, exec.TenantID, task.ID, stepRunResult, task.Results, version.WorkerID)
+			_ = ttx.Rollback(ctx)
+		}
+	}
 	if seed == nil {
-		r.removeRecoveryFile(projectDir)
-		return systemPrompt
+		return systemPrompt, nil
 	}
 
 	// Fetch the failed worker's display name (header) + the dead session's
@@ -219,11 +315,130 @@ func (r *TaskReconciler) seedRecoveryFile(ctx context.Context, exec db.Execution
 		}
 	}
 
-	if err := r.writeRecoveryFile(projectDir, buildRecoveryFileContent(workerName, seed, tail)); err != nil {
-		r.log.Warn("recovery seed: write file", "error", err)
+	content := buildRecoveryFileContent(workerName, seed, tail)
+	if err := r.writeRecoveryFileGate(projectDir, seed, content, exec); err != nil {
+		recoverySeedMetricsSingleton.recordWriteFailure()
+		return systemPrompt, err
 	}
+	recoverySeedMetricsSingleton.recordWritten()
 	r.log.Info("recovery seed written", "execution", exec.ID, "failed_execution", seed.FailedExecID, "worker", seed.FailedWorkerID)
-	return ensureRecoveryFileReference(systemPrompt, seed)
+	return ensureRecoveryFileReference(systemPrompt, seed), nil
+}
+
+// writeRecoveryFileGate enforces the file half of the recovery-resume
+// invariant: .orchicon/worker.recovery must exist, be non-empty, and carry
+// the footer for THIS recovery execution + worker before the dispatch may
+// proceed. Bounded retries (3 × short backoff) on write/verify failure.
+func (r *TaskReconciler) writeRecoveryFileGate(projectDir string, seed *recoverySeed, content string, exec db.ExecutionRow) error {
+	const attempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		lastErr = r.writeRecoveryFileOnce(projectDir, seed, content, exec)
+		if lastErr == nil {
+			return nil
+		}
+		if attempt < attempts {
+			time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+		}
+	}
+	return lastErr
+}
+
+// writeRecoveryFileOnce performs one write/verify cycle: idempotent reuse
+// when the file already carries the same footer, a foreign-seed ownership
+// check before overwriting a different footer, then an atomic write +
+// verify. Any failure returns an error so the dispatch can fail loud.
+func (r *TaskReconciler) writeRecoveryFileOnce(projectDir string, seed *recoverySeed, content string, exec db.ExecutionRow) error {
+	orchDir := filepath.Join(projectDir, recoveryFileDir)
+	if err := os.MkdirAll(orchDir, 0o755); err != nil {
+		return fmt.Errorf("recovery seed file could not be written: %w", err)
+	}
+	path := filepath.Join(orchDir, recoveryFileName)
+
+	// Pre-existing file handling.
+	if existing, err := os.ReadFile(path); err == nil {
+		existingStr := string(existing)
+		sameFooter := strings.Contains(existingStr, recoveryFooterExecLine+seed.FailedExecID) &&
+			strings.Contains(existingStr, recoveryFooterWorkerLine+seed.FailedWorkerID)
+		if sameFooter && len(existing) > 0 {
+			// Same recovery owns the file → reuse idempotently (verify it).
+			recoverySeedMetricsSingleton.recordSkipped("same_footer")
+			return r.verifyRecoveryFile(projectDir, seed)
+		}
+		// Different footer → foreign seed. Never clobber a LIVE foreign
+		// recovery's file; only overwrite when the owning recovery is
+		// provably terminal (the prior replacement finished/aborted, so its
+		// file is stale).
+		ownerExec, _ := parseRecoveryFileFooter(existingStr)
+		if ownerExec == "" || !r.recoveryOwnerTerminal(exec, ownerExec) {
+			recoverySeedMetricsSingleton.recordSkipped("foreign_seed")
+			return fmt.Errorf("recovery seed file could not be written: existing file belongs to another recovery (%s)", ownerExec)
+		}
+		r.log.Warn("recovery seed: overwriting stale foreign file", "owner_execution", ownerExec)
+	}
+
+	if err := r.writeRecoveryFile(projectDir, content); err != nil {
+		return fmt.Errorf("recovery seed file could not be written: %w", err)
+	}
+	return r.verifyRecoveryFile(projectDir, seed)
+}
+
+// recoveryOwnerTerminal reports whether the recovery for a failed execution
+// (identified by its footer's exec id) has reached a TERMINAL state. A file
+// only exists because its recovery reached resumed and dispatched; a
+// terminal owner therefore means the file is stale and safe to overwrite.
+func (r *TaskReconciler) recoveryOwnerTerminal(exec db.ExecutionRow, failedExecID string) bool {
+	if exec.TenantID == "" || failedExecID == "" {
+		return false
+	}
+	if ttx, err := r.pool.BeginTenantTx(context.Background(), exec.TenantID); err == nil {
+		defer ttx.Rollback(context.Background())
+		rec, err := db.GetLatestRecoveryForFailedExecution(context.Background(), ttx.Tx, exec.TenantID, failedExecID)
+		if err != nil {
+			return false
+		}
+		return rec.Status == domain.RecoveryResumed || rec.Status == domain.RecoveryFailed || rec.Status == domain.RecoveryCancelled
+	}
+	return false
+}
+
+// parseRecoveryFileFooter reads the footer lines of a seed file back out.
+func parseRecoveryFileFooter(content string) (execID, workerID string) {
+	for _, line := range strings.Split(content, "\n") {
+		if execID == "" && strings.HasPrefix(line, recoveryFooterExecLine) {
+			execID = strings.TrimPrefix(line, recoveryFooterExecLine)
+		}
+		if workerID == "" && strings.HasPrefix(line, recoveryFooterWorkerLine) {
+			workerID = strings.TrimPrefix(line, recoveryFooterWorkerLine)
+		}
+	}
+	return
+}
+
+// verifyRecoveryFile stat-checks the file (exists, non-empty) and
+// read-checks the footer against the expected seed. This is the final gate
+// before bridge.Start: the worker must be able to trust the file exists
+// with its own footer.
+func (r *TaskReconciler) verifyRecoveryFile(projectDir string, seed *recoverySeed) error {
+	path := filepath.Join(projectDir, recoveryFileDir, recoveryFileName)
+	st, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("recovery seed file could not be verified: %w", err)
+	}
+	if st.Size() == 0 {
+		return errors.New("recovery seed file could not be verified: file is empty")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("recovery seed file could not be verified: %w", err)
+	}
+	content := string(b)
+	if !strings.Contains(content, recoveryFooterExecLine+seed.FailedExecID) ||
+		!strings.Contains(content, recoveryFooterWorkerLine+seed.FailedWorkerID) {
+		return errors.New("recovery seed file could not be verified: footer does not match the recovery execution + worker")
+	}
+	recoverySeedMetricsSingleton.recordVerified()
+	return nil
 }
 
 // writeRecoveryFile writes the seed file atomically (temp + rename).
@@ -327,3 +542,95 @@ func (r *TaskReconciler) removeRecoveryFileForSuccess(ctx context.Context, exec 
 	}
 	r.removeRecoveryFileMatching(projectDir, execID, workerID)
 }
+
+// recoverySeedMetrics holds the OTel counters for the recovery-seed
+// lifecycle (ADR fix-recovery-seed-race §6). Best-effort: the ensure
+// pattern swallows instrument errors and ORCHICON_TELEMETRY=none makes
+// Meter() a no-op, so metrics are never a control-flow dependency.
+type recoverySeedMetrics struct {
+	initOnce        sync.Once
+	written         otelmetric.Int64Counter
+	skipped         otelmetric.Int64Counter
+	verified        otelmetric.Int64Counter
+	writeFailure    otelmetric.Int64Counter
+	dispatchHeld    otelmetric.Int64Counter
+	dispatchBlocked otelmetric.Int64Counter
+}
+
+func (m *recoverySeedMetrics) ensure() {
+	m.initOnce.Do(func() {
+		// NOTE: no units on these instruments — the Prometheus exporter
+		// appends "_<unit>" to metric names, which would break the canonical
+		// names queried downstream (same pattern as internal/aigateway).
+		if c, err := telemetry.Meter().Int64Counter("orchicon_recovery_seed_written",
+			otelmetric.WithDescription("Recovery seed files written at dispatch time")); err == nil {
+			m.written = c
+		}
+		if c, err := telemetry.Meter().Int64Counter("orchicon_recovery_seed_skipped",
+			otelmetric.WithDescription("Recovery seed actions skipped by reason")); err == nil {
+			m.skipped = c
+		}
+		if c, err := telemetry.Meter().Int64Counter("orchicon_recovery_seed_verified",
+			otelmetric.WithDescription("Recovery seed files verified (exists, non-empty, footer matches)")); err == nil {
+			m.verified = c
+		}
+		if c, err := telemetry.Meter().Int64Counter("orchicon_recovery_seed_write_failure",
+			otelmetric.WithDescription("Recovery seed file write/verify failures that blocked a dispatch")); err == nil {
+			m.writeFailure = c
+		}
+		if c, err := telemetry.Meter().Int64Counter("orchicon_recovery_dispatch_held",
+			otelmetric.WithDescription("Recovery re-dispatches held by the gate (recovery not yet ready)")); err == nil {
+			m.dispatchHeld = c
+		}
+		if c, err := telemetry.Meter().Int64Counter("orchicon_recovery_dispatch_blocked",
+			otelmetric.WithDescription("Recovery dispatches failed loud instead of starting cold")); err == nil {
+			m.dispatchBlocked = c
+		}
+	})
+}
+
+func (m *recoverySeedMetrics) recordWritten() {
+	m.ensure()
+	if m.written != nil {
+		m.written.Add(context.Background(), 1)
+	}
+}
+
+func (m *recoverySeedMetrics) recordSkipped(reason string) {
+	m.ensure()
+	if m.skipped != nil {
+		m.skipped.Add(context.Background(), 1, otelmetric.WithAttributes(attribute.String("reason", reason)))
+	}
+}
+
+func (m *recoverySeedMetrics) recordVerified() {
+	m.ensure()
+	if m.verified != nil {
+		m.verified.Add(context.Background(), 1)
+	}
+}
+
+func (m *recoverySeedMetrics) recordWriteFailure() {
+	m.ensure()
+	if m.writeFailure != nil {
+		m.writeFailure.Add(context.Background(), 1)
+	}
+}
+
+func (m *recoverySeedMetrics) recordHeld() {
+	m.ensure()
+	if m.dispatchHeld != nil {
+		m.dispatchHeld.Add(context.Background(), 1)
+	}
+}
+
+func (m *recoverySeedMetrics) recordBlocked() {
+	m.ensure()
+	if m.dispatchBlocked != nil {
+		m.dispatchBlocked.Add(context.Background(), 1)
+	}
+}
+
+// recoverySeedMetricsSingleton is the shared instance for the recovery-seed
+// counters (ADR fix-recovery-seed-race §6).
+var recoverySeedMetricsSingleton = &recoverySeedMetrics{}

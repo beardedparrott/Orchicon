@@ -286,6 +286,43 @@ func GetActiveRecoveryForExecution(ctx context.Context, tx pgx.Tx, tenantID, tas
 	return r, nil
 }
 
+// GetLatestRecoveryForExecution returns the most recent recovery execution
+// for a specific failed execution, regardless of status. Used by the
+// dispatch gate (terminal-resumed check) and the seed fallback resolver:
+// a recovering step run is only re-dispatched once its recovery is terminal
+// `resumed` and a seed is resolvable from it.
+func GetLatestRecoveryForExecution(ctx context.Context, tx pgx.Tx, tenantID, taskID, failedExecID string) (RecoveryExecutionRow, error) {
+	q := `SELECT ` + recoveryExecutionCols + ` FROM recovery_executions
+		WHERE tenant_id = $1 AND task_id = $2 AND failed_execution_id = $3
+		ORDER BY triggered_at DESC LIMIT 1`
+	var r RecoveryExecutionRow
+	if err := scanRecoveryExecution(&r, tx.QueryRow(ctx, q, tenantID, taskID, failedExecID)); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return RecoveryExecutionRow{}, ErrNotFound
+		}
+		return RecoveryExecutionRow{}, fmt.Errorf("db: get latest recovery for execution: %w", err)
+	}
+	return r, nil
+}
+
+// GetLatestRecoveryForFailedExecution returns the most recent recovery
+// execution for a failed execution, tenant-wide (no task filter). Used by
+// the recovery-file gate's foreign-seed ownership check, which sees only
+// the file's footer execution id and does not know the owner's task id.
+func GetLatestRecoveryForFailedExecution(ctx context.Context, tx pgx.Tx, tenantID, failedExecID string) (RecoveryExecutionRow, error) {
+	q := `SELECT ` + recoveryExecutionCols + ` FROM recovery_executions
+		WHERE tenant_id = $1 AND failed_execution_id = $2
+		ORDER BY triggered_at DESC LIMIT 1`
+	var r RecoveryExecutionRow
+	if err := scanRecoveryExecution(&r, tx.QueryRow(ctx, q, tenantID, failedExecID)); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return RecoveryExecutionRow{}, ErrNotFound
+		}
+		return RecoveryExecutionRow{}, fmt.Errorf("db: get latest recovery for failed execution: %w", err)
+	}
+	return r, nil
+}
+
 // GetLatestRecoveryForTask returns the most recent recovery execution for
 // a task, regardless of status. Used by the workflow RECOVER step to
 // determine whether a recovery has completed (terminal) or is still
