@@ -266,8 +266,13 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.created: %w", err))
 	}
 	// depends_on edges: create a DEPENDS_ON-type edge for each listed ID in
-	// the same transaction as the item. A fresh item has no edges yet, so a
-	// cycle is impossible; validation (same project, exists, no
+	// the same transaction as the item. Cycle check is intentionally NOT
+	// run here — it is provably safe by construction: a fresh item has no
+	// incoming edges, so an outgoing item→target edge can never close a
+	// cycle regardless of the graph around it. (Do not assume this for a
+	// path that creates edges between two fresh items — that can cycle and
+	// must cycle-check; the DB trigger enforce_work_dag_acyclic is the
+	// backstop for every writer.) Validation (same project, exists, no
 	// self-dependency) still runs against the effective project. Any
 	// failure rolls the whole tx back — no item, no edges.
 	if len(msg.DependsOn) > 0 {
@@ -968,13 +973,24 @@ func (s *Service) AddDependency(ctx context.Context, req *connect.Request[apiv1.
 	// Cycle check: would adding from→to create a cycle? Traverse
 	// forward from `to` — if `from` is reachable, the edge closes a
 	// cycle (docs/09 §11: recursive CTE).
-	createsCycle, err := db.CheckCycleWithRecursiveCTE(ctx, ttx.Tx, tenantID, msg.ProjectId, msg.FromId, msg.ToId)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if createsCycle {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			errors.New("adding this dependency would create a cycle in the work DAG"))
+	//
+	// Gated on edge type: only `depends_on`/`blocks` are DAG edges.
+	// `relates_to` is symmetric and never an ordering edge, so it is
+	// exempt from the DAG invariant and the check is skipped entirely —
+	// the traversal filter alone would still false-positive (with an
+	// existing A depends_on B, adding B relates_to A would walk A→B,
+	// reach B = `from`, and report a cycle). The DB trigger
+	// (enforce_work_dag_acyclic) enforces the same gate at the
+	// persistence boundary.
+	if depType != domain.DependencyRelatesTo {
+		createsCycle, err := db.CheckCycleWithRecursiveCTE(ctx, ttx.Tx, tenantID, msg.ProjectId, msg.FromId, msg.ToId)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		if createsCycle {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("cannot add dependency %s -> %s: would create a cycle in the work DAG", msg.FromId, msg.ToId))
+		}
 	}
 
 	dep := db.DependencyRow{
@@ -1678,7 +1694,7 @@ func (s *Service) replaceDependsOn(ctx context.Context, tx pgx.Tx, tenantID, pro
 		}
 		if createsCycle {
 			return connect.NewError(connect.CodeFailedPrecondition,
-				errors.New("adding this dependency would create a cycle in the work DAG"))
+				fmt.Errorf("cannot add dependency %s -> %s: would create a cycle in the work DAG", itemID, depID))
 		}
 		created, err := db.CreateDependency(ctx, tx, db.DependencyRow{
 			ID:        db.NewID(),
