@@ -64,6 +64,9 @@ type WorkflowRunRow struct {
 	BoundWorkerRef  []byte // jsonb; reserved for future use
 	RuntimeImage    string // resolved runtime container image tag at run start
 	RuntimeReady    bool   // runtime-serve readiness gate: executions dispatch only once true
+	WorktreeStatus  string // WorktreeReconciler provisioning state (pending/ready/skipped/failed)
+	WorktreePath    string // isolated working tree path (git-backed runs)
+	WorktreeBranch  string // deterministic branch created for the run
 	Version         int
 	StartedAt       *time.Time
 	EndedAt         *time.Time
@@ -491,7 +494,8 @@ func CreateWorkflowRun(ctx context.Context, tx pgx.Tx, r WorkflowRunRow) (Workfl
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id, tenant_id, workflow_id, workflow_version, project_id, status,
 			current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-			runtime_ready, version, started_at, ended_at, created_at, updated_at`
+			runtime_ready, worktree_status, worktree_path, worktree_branch,
+			version, started_at, ended_at, created_at, updated_at`
 	row := r
 	var wiID *string
 	err := tx.QueryRow(ctx, q,
@@ -503,6 +507,7 @@ func CreateWorkflowRun(ctx context.Context, tx pgx.Tx, r WorkflowRunRow) (Workfl
 		&row.ID, &row.TenantID, &row.WorkflowID, &row.WorkflowVersion,
 		&row.ProjectID, &row.Status, &row.CurrentStep, &row.RunContext,
 		&wiID, &row.BoundWorkerRef, &row.RuntimeImage, &row.RuntimeReady,
+		&row.WorktreeStatus, &row.WorktreePath, &row.WorktreeBranch,
 		&row.Version, &row.StartedAt, &row.EndedAt,
 		&row.CreatedAt, &row.UpdatedAt,
 	)
@@ -519,7 +524,8 @@ func CreateWorkflowRun(ctx context.Context, tx pgx.Tx, r WorkflowRunRow) (Workfl
 func GetWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkflowRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, version, started_at, ended_at, created_at, updated_at
+		runtime_ready, worktree_status, worktree_path, worktree_branch,
+			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs WHERE id = $1 AND tenant_id = $2`
 	var r WorkflowRunRow
 	var wiID *string
@@ -527,6 +533,7 @@ func GetWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (Workfl
 		&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 		&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 		&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
+		&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
 		&r.Version, &r.StartedAt, &r.EndedAt,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -559,7 +566,8 @@ func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) 
 	}
 	q := `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, version, started_at, ended_at, created_at, updated_at
+		runtime_ready, worktree_status, worktree_path, worktree_branch,
+			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND ($2 = '' OR id > $2)`
 	args := []any{f.TenantID, f.AfterID}
@@ -586,6 +594,7 @@ func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) 
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
@@ -620,6 +629,12 @@ type UpdateWorkflowRunFields struct {
 	// sets it false at run start and the async ensure-serving pass sets it
 	// true once the workflow's runtime opencode serve is proven usable.
 	RuntimeReady *bool
+	// WorktreeStatus/Path/Branch are written by the WorktreeReconciler
+	// once the run's isolated working tree is provisioned (or skipped/
+	// failed). All three are set atomically on the ready transition.
+	WorktreeStatus *string
+	WorktreePath   *string
+	WorktreeBranch *string
 	// ClearEndedAt clears ended_at to NULL regardless of the EndedAt
 	// pointer. Used when resuming a terminalized (failed) run — the ended
 	// timestamp must be cleared so the restarted run's lifecycle is honest.
@@ -684,16 +699,33 @@ func UpdateWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string, expe
 		args = append(args, *f.RuntimeReady)
 		setIdx++
 	}
+	if f.WorktreeStatus != nil {
+		q += fmt.Sprintf(`, worktree_status = $%d`, setIdx)
+		args = append(args, *f.WorktreeStatus)
+		setIdx++
+	}
+	if f.WorktreePath != nil {
+		q += fmt.Sprintf(`, worktree_path = $%d`, setIdx)
+		args = append(args, *f.WorktreePath)
+		setIdx++
+	}
+	if f.WorktreeBranch != nil {
+		q += fmt.Sprintf(`, worktree_branch = $%d`, setIdx)
+		args = append(args, *f.WorktreeBranch)
+		setIdx++
+	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, version, started_at, ended_at, created_at, updated_at`
+		runtime_ready, worktree_status, worktree_path, worktree_branch,
+			version, started_at, ended_at, created_at, updated_at`
 	var r WorkflowRunRow
 	var wiID *string
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 		&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 		&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
+		&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
 		&r.Version, &r.StartedAt, &r.EndedAt,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -983,7 +1015,8 @@ func UpdateWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string, 
 func ListPendingWorkflowRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkflowRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, version, started_at, ended_at, created_at, updated_at
+		runtime_ready, worktree_status, worktree_path, worktree_branch,
+			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND status IN ('pending', 'running', 'paused')
 		ORDER BY created_at ASC`
@@ -1000,10 +1033,60 @@ func ListPendingWorkflowRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan workflow run: %w", err)
+		}
+		if wiID != nil {
+			r.WorkItemID = *wiID
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ListWorktreeCandidates returns workflow runs the WorktreeReconciler
+// should provision an isolated working tree for: non-terminal runs that
+// have a bound project (one-shot runs bind their project on first
+// dispatch — UpdateWorkflowRunFields.ProjectID — so empty project_id
+// runs are skipped) and have not yet been provisioned (worktree_status
+// 'pending'; 'ready'/'skipped'/'failed' runs are left alone). The
+// 'pending' default makes the scan self-healing for runs armed before
+// the columns existed. Batch-capped so one pass can't monopolize the
+// reconciler goroutine.
+func ListWorktreeCandidates(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowRunRow, error) {
+	if limit <= 0 {
+		limit = 16
+	}
+	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
+		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
+		runtime_ready, worktree_status, worktree_path, worktree_branch,
+			version, started_at, ended_at, created_at, updated_at
+		FROM workflow_runs
+		WHERE tenant_id = $1 AND status IN ('pending', 'running') AND project_id <> ''
+		  AND worktree_status = 'pending'
+		ORDER BY created_at ASC
+		LIMIT $2`
+	rows, err := tx.Query(ctx, q, tenantID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list worktree candidates: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkflowRunRow
+	for rows.Next() {
+		var r WorkflowRunRow
+		var wiID *string
+		if err := rows.Scan(
+			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
+			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
+			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.Version, &r.StartedAt, &r.EndedAt,
+			&r.CreatedAt, &r.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan worktree candidate: %w", err)
 		}
 		if wiID != nil {
 			r.WorkItemID = *wiID

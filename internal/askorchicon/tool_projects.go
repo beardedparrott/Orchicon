@@ -6,23 +6,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/slug"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-var slugRe = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
-
 func makeSlug(name string) string {
-	s := strings.ToLower(name)
-	s = regexp.MustCompile(`[^a-z0-9]+`).ReplaceAllString(s, "-")
-	s = strings.Trim(s, "-")
-	if s == "" {
-		s = "project"
+	if s := slug.Slugify(name); s != "" {
+		return s
 	}
-	return s
+	return "project"
 }
 
 func toolListProjects(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {

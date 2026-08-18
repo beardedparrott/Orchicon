@@ -194,6 +194,24 @@ const (
 	WorkflowRunPaused    = "paused"
 )
 
+// WorktreeStatus — the WorktreeReconciler's per-run working-tree
+// provisioning states, persisted on workflow_runs.worktree_status:
+//   - pending: not yet provisioned (the default; self-healing for runs
+//     armed before the columns existed).
+//   - ready: the isolated working tree exists; worktree_path +
+//     worktree_branch are recorded.
+//   - skipped: the project is not a git work tree — the run proceeds in
+//     place (the non-repo fallback work item consumes this decision).
+//   - failed: provisioning errored; the run proceeds in place (today's
+//     behavior) and the DAG gate / cwd wiring is the execution-cwd
+//     companion's job.
+const (
+	WorktreePending = "pending"
+	WorktreeReady   = "ready"
+	WorktreeSkipped = "skipped"
+	WorktreeFailed  = "failed"
+)
+
 // StepKind — the five step types (docs/02 §2.4):
 // StepKind enumerates the step types a workflow author can place on the
 // canvas (docs/02 §2.4, docs/10 §5.1). Stored as a string in StepWire

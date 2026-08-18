@@ -424,12 +424,25 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	s.rcmgr.Register(scheduledRunRec)
 	s.rcmgr.Register(sequenceRec)
 	s.rcmgr.Register(recurringFireRec)
+	// Worktree provisioning (per-run isolated working tree at arm time). The
+	// notifier makes provisioning fire at run-arm; the reconciler's scan
+	// pass is the safety net.
+	worktreeRec := scheduler.NewWorktreeReconciler(pool, log)
+	s.rcmgr.Register(worktreeRec)
 	// Wire the sequence notifier: when a bound child work item reaches a
 	// terminal state, advance its parent's chain immediately (the scan
 	// pass every 200ms is the safety net).
 	workflowRec.SetSequenceNotifier(func(ctx context.Context, parentID string) {
 		if s.rcmgr != nil {
 			s.rcmgr.Enqueue("sequence", parentID)
+		}
+	})
+	// Wire the worktree notifier: when a run is armed (pending→running),
+	// provision its isolated working tree immediately (the scan pass every
+	// 200ms is the safety net).
+	workflowRec.SetWorktreeNotifier(func(ctx context.Context, runID string) {
+		if s.rcmgr != nil {
+			s.rcmgr.Enqueue("worktree", runID)
 		}
 	})
 
