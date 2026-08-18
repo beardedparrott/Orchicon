@@ -20,7 +20,18 @@
 --   * depends_on/blocks rows are checked with the same WITH RECURSIVE
 --     reachability walk as the app-layer CheckCycleWithRecursiveCTE:
 --     traverse forward from NEW.to_id; if NEW.from_id is reachable, the
---     edge closes a cycle and the transaction aborts (nothing persists).
+--     edge closes a cycle and the transaction aborts (nothing persists);
+--   * concurrent writers are serialized per project with a transactional
+--     advisory lock taken before the walk. Two transactions inserting
+--     A→B and B→A at the same time under READ COMMITTED would each walk
+--     an empty (uncommitted) graph and both commit — a live cycle. The
+--     lock is held until commit/abort, so the second writer re-walks
+--     after the first commits, sees its edge, and is rejected. It is
+--     reentrant within one transaction, so multi-edge writes (set-replace
+--     on UpdateWorkItem, CreateWorkItem's depends_on block) contend only
+--     on their first edge; only a transaction writing to multiple
+--     projects can deadlock with another such transaction, which Postgres
+--     deadlock detection resolves by aborting one.
 --
 -- The function is SECURITY INVOKER (default), so RLS scopes the
 -- reachability walk to the row's tenant automatically; an INSERT outside
@@ -46,6 +57,17 @@ BEGIN
   IF NEW.type = 'relates_to' THEN
     RETURN NEW;
   END IF;
+
+  -- Serialize all DAG-edge writers for this tenant+project with a
+  -- transactional advisory lock. Without it, two concurrent inserts that
+  -- close a cycle (A→B and B→A) each walk the graph before the other
+  -- commits and both pass under READ COMMITTED — a TOCTOU race that
+  -- leaves a live cycle. Holding the lock to commit/abort makes the
+  -- second writer re-walk after the first commits and see its edge. The
+  -- lock is reentrant within a transaction (multi-edge writes take it
+  -- once); keyed on the tenant+project pair so unrelated projects never
+  -- contend.
+  PERFORM pg_advisory_xact_lock(hashtextextended(NEW.tenant_id || ':' || NEW.project_id, 0));
 
   -- Reachability walk over DAG edges only (depends_on/blocks): traverse
   -- forward from NEW.to_id; if NEW.from_id is reachable, NEW closes a

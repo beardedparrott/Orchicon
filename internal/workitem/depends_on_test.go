@@ -2,16 +2,19 @@ package workitem
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/tenant"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // dependsOnTestEnv sets up the service + a fresh project, mirroring the
@@ -598,5 +601,124 @@ func TestDependsOnTriggerBackstopDB(t *testing.T) {
 	edges = dependsOnAll(t, pool, validateParentTestTenant, proj)
 	if len(edges) != 3 {
 		t.Fatalf("trigger relates_to exemption: %d edges, want 3", len(edges))
+	}
+}
+
+// TestMapDBErrorDependencyCycle verifies the trigger's cycle rejection —
+// which the service surfaces when the concurrent serialization path catches
+// an app write (the app-layer check ran against stale state) — is mapped to
+// a FailedPrecondition naming the offending edge, not an opaque Internal.
+// Pure unit test: no DB required.
+func TestMapDBErrorDependencyCycle(t *testing.T) {
+	pgErr := &pgconn.PgError{Code: "P0001", Message: "cannot add dependency w_a -> w_b: would create a cycle in the work DAG"}
+	err := mapDBError(pgErr)
+	if code := connect.CodeOf(err); code != connect.CodeFailedPrecondition {
+		t.Fatalf("mapDBError(cycle): got %s, want FailedPrecondition", code)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "w_a -> w_b") || !strings.Contains(msg, "would create a cycle") {
+		t.Fatalf("mapDBError(cycle): message must name the edge and the cycle, got %q", msg)
+	}
+	// Non-cycle DB errors keep the Internal mapping.
+	if code := connect.CodeOf(mapDBError(fmt.Errorf("disk on fire"))); code != connect.CodeInternal {
+		t.Fatalf("mapDBError(generic): got %s, want Internal", code)
+	}
+	// A pgconn error that is not the cycle rejection stays Internal.
+	other := &pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint"}
+	if code := connect.CodeOf(mapDBError(other)); code != connect.CodeInternal {
+		t.Fatalf("mapDBError(non-cycle pg error): got %s, want Internal", code)
+	}
+}
+
+// TestDependsOnConcurrentRaceClosedDB proves the DB trigger's per-project
+// transactional advisory lock closes the concurrent-write TOCTOU race:
+// two transactions inserting A→B and B→A at the same time cannot both
+// pass the reachability walk and commit a live cycle. tx1 commits A→B;
+// tx2, queued on the advisory lock until then, re-walks the graph after
+// tx1 commits, sees A→B, and is rejected — the cycle never persists.
+func TestDependsOnConcurrentRaceClosedDB(t *testing.T) {
+	ctx, pool, s, proj := dependsOnTestEnv(t)
+
+	a := dependsOnCreate(t, ctx, s, proj, nil)
+	b := dependsOnCreate(t, ctx, s, proj, nil)
+	tenant := validateParentTestTenant
+
+	// tx1 inserts a→b and holds the project's advisory lock uncommitted.
+	tx1, err := pool.BeginTenantTx(ctx, tenant)
+	if err != nil {
+		t.Fatalf("begin tx1: %v", err)
+	}
+	defer tx1.Rollback(ctx)
+	if _, err := db.CreateDependency(ctx, tx1.Tx, db.DependencyRow{
+		ID: db.NewID(), TenantID: tenant, ProjectID: proj,
+		FromID: a.Id, ToID: b.Id, Type: domain.DependencyDependsOn,
+	}); err != nil {
+		t.Fatalf("tx1 insert a→b: %v", err)
+	}
+
+	// tx2 tries to insert b→a concurrently; the trigger must queue it on
+	// the advisory lock until tx1 commits, then re-walk and reject it.
+	tx2, err := pool.BeginTenantTx(ctx, tenant)
+	if err != nil {
+		t.Fatalf("begin tx2: %v", err)
+	}
+	pidCh := make(chan int32, 1)
+	resCh := make(chan error, 1)
+	go func() {
+		var pid int32
+		if err := tx2.QueryRow(ctx, "SELECT pg_backend_pid()").Scan(&pid); err != nil {
+			resCh <- fmt.Errorf("tx2 backend pid: %w", err)
+			return
+		}
+		pidCh <- pid
+		_, err := db.CreateDependency(ctx, tx2.Tx, db.DependencyRow{
+			ID: db.NewID(), TenantID: tenant, ProjectID: proj,
+			FromID: b.Id, ToID: a.Id, Type: domain.DependencyDependsOn,
+		})
+		if err == nil {
+			err = tx2.Commit(ctx)
+		} else {
+			_ = tx2.Rollback(ctx)
+		}
+		resCh <- err
+	}()
+	pid := <-pidCh
+
+	// Barrier: wait until tx2 is visibly queued on the advisory lock
+	// (granted=false) before releasing tx1 — otherwise the interleaving is
+	// sequential (tx2 after tx1 committed) and the race we mean to test
+	// was not exercised.
+	deadline := time.Now().Add(5 * time.Second)
+	blocked := false
+	for time.Now().Before(deadline) {
+		var n int
+		if err := pool.QueryRow(ctx,
+			`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted = false AND pid = $1`,
+			pid).Scan(&n); err != nil {
+			t.Fatalf("poll pg_locks: %v", err)
+		}
+		if n > 0 {
+			blocked = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !blocked {
+		t.Fatalf("tx2 never queued on the advisory lock: race not exercised (concurrency fix regression), pid=%d", pid)
+	}
+
+	// Release tx1: tx2 unblocks, re-walks, sees a→b, and must be rejected.
+	if err := tx1.Commit(ctx); err != nil {
+		t.Fatalf("commit tx1: %v", err)
+	}
+	if err := <-resCh; err == nil {
+		t.Fatal("concurrent b→a insert must be rejected, got nil")
+	} else if !strings.Contains(err.Error(), "would create a cycle in the work DAG") {
+		t.Fatalf("concurrent b→a insert: got error %q, want the DAG-cycle rejection", err)
+	}
+
+	// Only a→b persisted — the graph stayed acyclic.
+	edges := dependsOnAll(t, pool, tenant, proj)
+	if len(edges) != 1 || edges[0].FromID != a.Id || edges[0].ToID != b.Id {
+		t.Fatalf("concurrent race: edges = %v, want only [a→b]", edges)
 	}
 }

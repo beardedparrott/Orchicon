@@ -19,6 +19,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/project"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -1865,11 +1866,31 @@ func workItemInProject(ctx context.Context, tx pgx.Tx, tenantID, id, projectID s
 	return p == projectID, nil
 }
 
+// mapDBError maps a DB error to a Connect error: a missing row is
+// NotFound; a cycle rejection from the enforce_work_dag_acyclic trigger
+// (raised by the concurrent-write serialization path, where the app-layer
+// check ran against stale state) is FailedPrecondition with the trigger's
+// message naming the offending edge; everything else is Internal.
 func mapDBError(err error) error {
 	if errors.Is(err, db.ErrNotFound) {
 		return connect.NewError(connect.CodeNotFound, errors.New("work item not found"))
 	}
+	if isDependencyCycleError(err) {
+		return connect.NewError(connect.CodeFailedPrecondition, err)
+	}
 	return connect.NewError(connect.CodeInternal, err)
+}
+
+// isDependencyCycleError reports whether err is the
+// enforce_work_dag_acyclic trigger's cycle rejection. The trigger and the
+// app layer emit the same message shape, so the detection is message-based
+// (stable across both) rather than code-based.
+func isDependencyCycleError(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return strings.Contains(pgErr.Message, "would create a cycle in the work DAG")
 }
 
 // mapParentError maps a ValidateParent error to a Connect error: a
