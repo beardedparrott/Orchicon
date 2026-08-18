@@ -711,6 +711,33 @@ func ListDependenciesForItems(ctx context.Context, tx pgx.Tx, tenantID string, f
 	return out, rows.Err()
 }
 
+// ListDependenciesTargetingItems returns all dependency edges of the given
+// types whose to_id is in the provided set — the to_id-side mirror of
+// ListDependenciesForItems. Used by the sequence engine to classify each
+// child as dependency-governed (any incoming blocking edge) vs a strict
+// sequence child (no incoming edges) in a single query.
+func ListDependenciesTargetingItems(ctx context.Context, tx pgx.Tx, tenantID string, toIDs []string, depTypes []string) ([]DependencyRow, error) {
+	const q = `SELECT id, tenant_id, project_id, from_id, to_id, type, created_at
+		FROM work_item_dependencies
+		WHERE tenant_id = $1 AND to_id = ANY($2) AND type = ANY($3)
+		ORDER BY created_at`
+	rows, err := tx.Query(ctx, q, tenantID, toIDs, depTypes)
+	if err != nil {
+		return nil, fmt.Errorf("db: list dependencies targeting items: %w", err)
+	}
+	defer rows.Close()
+	var out []DependencyRow
+	for rows.Next() {
+		var d DependencyRow
+		if err := rows.Scan(&d.ID, &d.TenantID, &d.ProjectID, &d.FromID, &d.ToID,
+			&d.Type, &d.CreatedAt); err != nil {
+			return nil, fmt.Errorf("db: scan dependency targeting item: %w", err)
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // DeleteOutgoingDependencies removes every dependency edge of the given
 // type where from_id = fromID within the tenant scope (set-replace
 // support for UpdateWorkItem's depends_on list).
