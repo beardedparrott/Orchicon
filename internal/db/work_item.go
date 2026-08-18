@@ -613,7 +613,9 @@ type DependencyRow struct {
 
 // CreateDependency inserts a new DAG edge within the given tenant
 // transaction. The caller is responsible for cycle detection before
-// calling this (docs/02 §2.2: cycles are rejected at admission).
+// calling this (docs/02 §2.2: cycles are rejected at admission); the
+// DB trigger enforce_work_dag_acyclic is the authoritative backstop and
+// aborts the transaction if the edge would close a cycle.
 func CreateDependency(ctx context.Context, tx pgx.Tx, d DependencyRow) (DependencyRow, error) {
 	const q = `INSERT INTO work_item_dependencies
 		(id, tenant_id, project_id, from_id, to_id, type)
@@ -769,6 +771,14 @@ func ItemParticipatesInDependency(ctx context.Context, tx pgx.Tx, tenantID, item
 // reachable from `to`, adding the edge would close a cycle
 // (docs/09 §11: recursive CTE for dependency traversal).
 //
+// Only DAG edges (`depends_on`, `blocks`) participate in the walk;
+// `relates_to` is a symmetric, non-ordering relationship and is exempt
+// from the DAG invariant (consistent with the DB trigger
+// enforce_work_dag_acyclic). Callers that add a `relates_to` edge must
+// skip this check entirely — the traversal filter alone is not enough
+// (an existing `A depends_on B` would make `B relates_to A` falsely
+// reach B) — the AddDependency service gates the call on edge type.
+//
 // Returns true if adding from→to would create a cycle.
 func CheckCycleWithRecursiveCTE(ctx context.Context, tx pgx.Tx, tenantID, projectID, fromID, toID string) (bool, error) {
 	// Traverse forward from `to`: follow from_id → to_id edges. If we
@@ -776,10 +786,12 @@ func CheckCycleWithRecursiveCTE(ctx context.Context, tx pgx.Tx, tenantID, projec
 	const q = `WITH RECURSIVE reach AS (
 		SELECT to_id AS node FROM work_item_dependencies
 		WHERE tenant_id = $1 AND project_id = $2 AND from_id = $3
+		  AND type IN ('depends_on', 'blocks')
 		UNION
 		SELECT d.to_id FROM work_item_dependencies d
 		JOIN reach r ON d.from_id = r.node
 		WHERE d.tenant_id = $1 AND d.project_id = $2
+		  AND d.type IN ('depends_on', 'blocks')
 	)
 	SELECT EXISTS(SELECT 1 FROM reach WHERE node = $4)`
 	var creates bool
