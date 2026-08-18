@@ -501,14 +501,24 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				"Complete the work item described in the user message and report back."
 		}
 	}
-	// Recovery seeding: if this is a recovery-resumed dispatch for the SAME
-	// worker that died, write .orchicon/worker.recovery (dead session's
-	// transcript tail + the already-done directive) and ensure the composite
-	// references it. A different worker or a fresh dispatch never sees the
-	// file or the reference (any stale file is swept as a safety net).
-	// Best-effort — a failure must never fail dispatch.
+	// Recovery seeding — a HARD gate: if this is a recovery-resumed dispatch
+	// for the SAME worker that died, .orchicon/worker.recovery must exist,
+	// be non-empty, and carry this recovery's footer BEFORE the session may
+	// start. A different worker or a fresh dispatch never sees the file or
+	// the reference (and any existing file is left alone — it may belong to
+	// another in-flight recovery). A failure to write/verify the seed file
+	// fails the dispatch (failed_to_start) instead of launching cold — the
+	// recovery-resume invariant.
 	if projectDir != "" {
-		systemPrompt = r.seedRecoveryFile(context.Background(), exec, task, version, projectDir, stepRunResult, systemPrompt)
+		updatedPrompt, err := r.seedRecoveryFile(context.Background(), exec, task, version, projectDir, stepRunResult, systemPrompt)
+		if err != nil {
+			r.log.Error("recovery seed gate failed — failing dispatch instead of starting cold",
+				"execution", exec.ID, "error", err)
+			recoverySeedMetricsSingleton.recordBlocked()
+			r.markFailedToStart(context.Background(), exec, "recovery seed file could not be written: "+err.Error())
+			return
+		}
+		systemPrompt = updatedPrompt
 	}
 	// User message (Goal): just the work item title. The composite
 	// (with the full task + project + recovery context) is the

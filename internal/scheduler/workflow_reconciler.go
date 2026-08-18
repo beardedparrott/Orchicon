@@ -580,24 +580,31 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 					continue
 				}
 			}
-			// For recovering steps, skip while their recovery is still in
-			// flight. Recovery is scoped per failing step run (the work
-			// item is a shared input reference and never flips to
-			// "recovering"), so the gate consults the recovery rows: an
-			// active recovery for the failed execution this step run is
-			// waiting on → wait; none → re-dispatch. Applies to TASK and
+			// For recovering steps, hold the dispatch until the recovery is
+			// READY: terminal `resumed` AND a seed resolvable for the exact
+			// dispatching worker (the file gate then writes/verifies
+			// .orchicon/worker.recovery before the session starts). The
+			// single recoveryDispatchReady predicate replaces the old
+			// gate, which keyed off sr.WorkerExecutionID — cleared at
+			// re-dispatch — and let a recovering step re-dispatch in the
+			// SAME pass that flipped it recovering, before the recovery row
+			// even existed (the observed race). Applies to TASK and
 			// worker-backed APPROVAL steps alike (an approval step using
 			// the summarize_restart strategy must wait for its recovery
 			// before the approver is re-dispatched).
 			if sr.Status == domain.StepRunRecovering && (sr.StepKind == domain.StepKindTask || sr.StepKind == domain.StepKindApproval) {
-				var parsed struct {
-					WorkItemID string `json:"_work_item_id"`
-				}
-				if err := json.Unmarshal(sr.Result, &parsed); err == nil && parsed.WorkItemID != "" && sr.WorkerExecutionID != "" {
-					if _, err := db.GetActiveRecoveryForExecution(ctx, ttx.Tx, tenantID, parsed.WorkItemID, sr.WorkerExecutionID); err == nil {
-						// Recovery still in progress — wait for next pass.
-						continue
+				ready, stepFail := r.recoveryDispatchReady(ctx, ttx.Tx, tenantID, run, sr, runByID)
+				if stepFail != nil {
+					if ferr := r.failStep(ctx, ttx.Tx, tenantID, run, sr, runByID, stepFail); ferr != nil {
+						return ferr
 					}
+					madeProgress = true
+					continue
+				}
+				if !ready {
+					// Recovery not ready — hold for the next pass.
+					recoverySeedMetricsSingleton.recordHeld()
+					continue
 				}
 			}
 			step, ok := stepByID[sr.StepID]
@@ -1523,7 +1530,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			if len(prev) > 0 {
 				var newResult map[string]any
 				_ = json.Unmarshal(stepResult, &newResult)
-				for _, k := range []string{"_recovery_summary", "_recovery_execution_id", "_recovery_worker_id"} {
+				for _, k := range recoveryResultKeys {
 					if v, ok := prev[k]; ok {
 						newResult[k] = v
 					}
@@ -3039,7 +3046,7 @@ func buildApprovalStepResult(primaryWID, composite, workerRefStr string, workerV
 	if len(prev) > 0 {
 		var newResult map[string]any
 		_ = json.Unmarshal(stepResult, &newResult)
-		for _, k := range []string{"_recovery_summary", "_recovery_execution_id", "_recovery_worker_id"} {
+		for _, k := range recoveryResultKeys {
 			if v, ok := prev[k]; ok {
 				newResult[k] = v
 			}
@@ -3096,6 +3103,151 @@ type recoveryTriggerReq struct {
 	failedExecID string
 	stepRunID    string
 	reason       string
+}
+
+// recoveryResultKeys are the result keys a re-dispatch preserves verbatim.
+// They carry the recovery narrative (engine-published) plus the
+// dead-execution identity + strategy the dispatch path persists at the
+// recovering transition — all must survive WorkerExecutionID being cleared
+// at re-dispatch so the recovery seed stays resolvable.
+var recoveryResultKeys = []string{
+	"_recovery_summary", "_recovery_execution_id", "_recovery_worker_id",
+	"_failed_execution_id", "_failed_worker_id", "_recovery_strategy",
+}
+
+// recoveringStepResult builds the result JSON written when a step run
+// transitions to recovering. It records the dead-execution identity
+// (_failed_execution_id / _failed_worker_id) so the recovery seed is
+// resolvable even after dispatchStep clears WorkerExecutionID, plus the
+// recovery strategy the dispatch gate routes on. The previous result's
+// _worker_id / _worker_version are preserved so the recoveryDispatchReady
+// gate (which must NOT depend on WorkerExecutionID) can resolve the seed
+// for the exact dispatching worker. strategy is normalized (empty → "retry",
+// matching readStepRecoveryConfig).
+func recoveringStepResult(ctx context.Context, tx pgx.Tx, tenantID, workItemID, failedExecID, strategy string, prevResult []byte) []byte {
+	if strategy == "" {
+		strategy = "retry"
+	}
+	res := map[string]any{
+		"_work_item_id":        workItemID,
+		"_failed_execution_id": failedExecID,
+		"_recovery_strategy":   strategy,
+	}
+	if len(prevResult) > 0 {
+		var prev map[string]any
+		if json.Unmarshal(prevResult, &prev) == nil {
+			for _, k := range []string{"_worker_id", "_worker_version"} {
+				if v, ok := prev[k]; ok {
+					res[k] = v
+				}
+			}
+		}
+	}
+	if failedExecID != "" && tx != nil {
+		if fe, err := db.GetExecution(ctx, tx, tenantID, failedExecID); err == nil && fe.WorkerID != "" {
+			res["_failed_worker_id"] = fe.WorkerID
+		}
+	}
+	b, _ := json.Marshal(res)
+	return b
+}
+
+// recoveryDispatchReady is the single predicate gating a recovering
+// TASK/APPROVAL step run's re-dispatch (replaces the old gate that keyed
+// off sr.WorkerExecutionID, which dispatchStep clears at re-dispatch). It
+// enforces the recovery-resume invariant:
+//
+//	A recovery-resumed execution is only created after (1) its recovery is
+//	terminal `resumed`, (2) the seed is resolvable for the exact
+//	dispatching worker, and (3) the TaskReconciler's file gate will
+//	write+verify .orchicon/worker.recovery before the session starts.
+//
+// Returns (ready=true, nil) to dispatch, (false, nil) to hold for the next
+// pass, or (false, reason) to FAIL the step with `reason` (terminal
+// recovery that never resumed — never dispatch cold).
+func (r *WorkflowReconciler) recoveryDispatchReady(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, runs map[string]db.WorkflowStepRunRow) (bool, error) {
+	var meta struct {
+		WorkItemID       string `json:"_work_item_id"`
+		FailedExecID     string `json:"_failed_execution_id"`
+		RecoveryExecID   string `json:"_recovery_execution_id"`
+		RecoveryStrategy string `json:"_recovery_strategy"`
+		WorkerID         string `json:"_worker_id"`
+	}
+	if err := json.Unmarshal(sr.Result, &meta); err != nil || meta.WorkItemID == "" {
+		// No ticket recorded — cannot gate; dispatchStep/failStep will
+		// resolve the situation.
+		return true, nil
+	}
+	failedExecID := meta.FailedExecID
+	if failedExecID == "" {
+		failedExecID = meta.RecoveryExecID
+	}
+	if failedExecID == "" {
+		failedExecID = sr.WorkerExecutionID
+	}
+
+	// Legacy in-flight recovering row (pre-deploy — no _recovery_strategy):
+	// current behavior — wait only while an ACTIVE recovery exists.
+	if meta.RecoveryStrategy == "" {
+		if failedExecID == "" {
+			return true, nil
+		}
+		if _, err := db.GetActiveRecoveryForExecution(ctx, tx, tenantID, meta.WorkItemID, failedExecID); err == nil {
+			return false, nil // active recovery — wait
+		}
+		return true, nil // no active recovery — dispatch (legacy behavior)
+	}
+
+	// Only the engine-driven summarize_restart strategy gates on the
+	// recovery lifecycle. retry (the retry-clone flow, not engine-driven),
+	// human_escalation and stop dispatch immediately (current behavior).
+	if meta.RecoveryStrategy != "summarize_restart" {
+		return true, nil
+	}
+	if failedExecID == "" {
+		// A summarize_restart recovering step with no dead-execution
+		// identity must never fall back to a cold dispatch. Hold — the
+		// identity is written in the SAME transaction that flips the step
+		// recovering, so this is transient in-pass state only.
+		return false, nil
+	}
+
+	// 1. No ACTIVE recovery may remain for the failed execution.
+	if _, err := db.GetActiveRecoveryForExecution(ctx, tx, tenantID, meta.WorkItemID, failedExecID); err == nil {
+		return false, nil // still in flight — wait
+	} else if err != db.ErrNotFound {
+		return false, err
+	}
+
+	// 2. A TERMINAL `resumed` recovery must exist. A missing row means the
+	//    post-commit trigger has not created it yet (the same-pass race) —
+	//    hold. A terminal non-resumed recovery means the step can never be
+	//    resumed — fail it loud instead of wedging or dispatching cold.
+	rec, err := db.GetLatestRecoveryForExecution(ctx, tx, tenantID, meta.WorkItemID, failedExecID)
+	if err == db.ErrNotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	switch rec.Status {
+	case domain.RecoveryResumed:
+		// proceed to the seed check below
+	case domain.RecoveryFailed, domain.RecoveryCancelled:
+		return false, fmt.Errorf("recovery did not resume (recovery status %s)", rec.Status)
+	default:
+		// pending / running / blocked — still in flight; hold.
+		return false, nil
+	}
+
+	// 3. A seed must be resolvable for the exact dispatching worker
+	//    (step-run keys, or the recovery-row fallback). nil → hold: the
+	//    engine publishes the keys atomically with terminal-resumed, so
+	//    this resolves within the same commit window.
+	if seed := resolveRecoverySeed(ctx, tx, tenantID, meta.WorkItemID, sr.Result, nil, meta.WorkerID); seed == nil {
+		return false, nil
+	}
+	return true, nil
 }
 
 // dispatchLinkGrace is how long a task step running with NO execution
@@ -3239,7 +3391,7 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 				// re-dispatches the SAME step run on the next pass
 				// (dispatchStep re-resolves the ticket and clears the
 				// stale execution link). Bounded by max_attempts below.
-				stepResult, _ := json.Marshal(map[string]string{"_work_item_id": parsed.WorkItemID})
+				stepResult := recoveringStepResult(ctx, tx, tenantID, parsed.WorkItemID, sr.WorkerExecutionID, rc.Strategy, sr.Result)
 				updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 					Status:  strPtr(domain.StepRunRecovering),
 					Attempt: &newAttempt,
@@ -3274,7 +3426,7 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 			if _, err := db.CreateWorkItem(ctx, tx, fresh); err != nil {
 				return false, false, fmt.Errorf("create retry work item: %w", err)
 			}
-			stepResult, _ := json.Marshal(map[string]string{"_work_item_id": freshID})
+			stepResult := recoveringStepResult(ctx, tx, tenantID, freshID, sr.WorkerExecutionID, rc.Strategy, sr.Result)
 			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 				Status:  strPtr(domain.StepRunRecovering),
 				Attempt: &newAttempt,
@@ -3304,7 +3456,7 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 					reason:       "step_recovery",
 				})
 			}
-			stepResult, _ := json.Marshal(map[string]string{"_work_item_id": parsed.WorkItemID})
+			stepResult := recoveringStepResult(ctx, tx, tenantID, parsed.WorkItemID, sr.WorkerExecutionID, rc.Strategy, sr.Result)
 			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 				Status:  strPtr(domain.StepRunRecovering),
 				Attempt: &newAttempt,
