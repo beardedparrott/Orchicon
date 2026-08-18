@@ -52,6 +52,13 @@ message WorkerExecution {
   string worktree_status = 26;
   string worktree_branch = 27; // deterministic branch created for the run
   string worktree_path = 28; // isolated working tree the execution ran in
+  // Pull-request surface for the run's branch, mirrored from the parent
+  // workflow run at dispatch (same seam as the worktree columns). The
+  // per-branch DevOps worker authors pr_url/pr_state into the run's
+  // `run_context`; when empty the UI falls back to a deterministic
+  // `pull/new/{branch}` link from the project's repo_slug.
+  string pr_url = 29;
+  string pr_state = 30;
 }
 
 // ExecutionStatus — lifecycle of a WorkerExecution

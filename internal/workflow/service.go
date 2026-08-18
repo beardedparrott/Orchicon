@@ -1821,6 +1821,7 @@ func versionRowToProto(v db.WorkflowVersionRow) *apiv1.WorkflowVersion {
 }
 
 func runRowToProto(r db.WorkflowRunRow) *apiv1.WorkflowRun {
+	prURL, prState := db.PrFromRunContext(r.RunContext)
 	p := &apiv1.WorkflowRun{
 		Id:              r.ID,
 		TenantId:        r.TenantID,
@@ -1835,6 +1836,8 @@ func runRowToProto(r db.WorkflowRunRow) *apiv1.WorkflowRun {
 		WorktreeStatus:  r.WorktreeStatus,
 		WorktreeBranch:  r.WorktreeBranch,
 		WorktreePath:    r.WorktreePath,
+		PrUrl:           prURL,
+		PrState:         prState,
 		CreatedAt:       timestamppb.New(r.CreatedAt),
 		UpdatedAt:       timestamppb.New(r.UpdatedAt),
 	}

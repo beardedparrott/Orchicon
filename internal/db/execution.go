@@ -32,6 +32,8 @@ type ExecutionRow struct {
 	WorktreeStatus *string // worktree provisioning state (pending/ready/skipped/failed/pruned; NULL = no worktree)
 	WorktreePath   *string // isolated working tree the execution ran in
 	WorktreeBranch *string // deterministic branch created for the run
+	PrURL          *string // PR URL for the run's branch, mirrored from the parent workflow run at dispatch
+	PrState        *string // PR state (open/merged/draft/none), mirrored from the parent workflow run at dispatch
 	WorkflowRunID  string
 	WorkflowStepID string
 	WorkflowName   string
@@ -54,13 +56,13 @@ func CreateExecution(ctx context.Context, tx pgx.Tx, e ExecutionRow) (ExecutionR
 	const q = `INSERT INTO worker_executions
 		(id, tenant_id, project_id, task_id, worker_id, worker_version,
 		 adapter_id, status, health_state, started_at,
-		 worktree_status, worktree_path, worktree_branch,
+		 worktree_status, worktree_path, worktree_branch, pr_url, pr_state,
 		 workflow_run_id, workflow_step_id, conversation, is_follow_up, iteration)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 		RETURNING id, tenant_id, project_id, task_id, worker_id, worker_version,
 			adapter_id, status, health_state, started_at, ended_at,
 			token_usage, cost_usd, checkpoint_ref, recovery_id,
-			worktree_status, worktree_path, worktree_branch,
+			worktree_status, worktree_path, worktree_branch, pr_url, pr_state,
 			workflow_run_id, workflow_step_id, error_message, output, conversation, is_follow_up, iteration, version,
 			created_at, updated_at`
 	conv := e.Conversation
@@ -71,14 +73,14 @@ func CreateExecution(ctx context.Context, tx pgx.Tx, e ExecutionRow) (ExecutionR
 	err := tx.QueryRow(ctx, q,
 		e.ID, e.TenantID, e.ProjectID, e.TaskID, e.WorkerID, e.WorkerVersion,
 		e.AdapterID, e.Status, e.HealthState, e.StartedAt,
-		e.WorktreeStatus, e.WorktreePath, e.WorktreeBranch,
+		e.WorktreeStatus, e.WorktreePath, e.WorktreeBranch, e.PrURL, e.PrState,
 		e.WorkflowRunID, e.WorkflowStepID, conv, e.IsFollowUp, e.Iteration,
 	).Scan(
 		&row.ID, &row.TenantID, &row.ProjectID, &row.TaskID, &row.WorkerID,
 		&row.WorkerVersion, &row.AdapterID, &row.Status, &row.HealthState,
 		&row.StartedAt, &row.EndedAt, &row.TokenUsage, &row.CostUSD,
 		&row.CheckpointRef, &row.RecoveryID,
-		&row.WorktreeStatus, &row.WorktreePath, &row.WorktreeBranch,
+		&row.WorktreeStatus, &row.WorktreePath, &row.WorktreeBranch, &row.PrURL, &row.PrState,
 		&row.WorkflowRunID, &row.WorkflowStepID,
 		&row.ErrorMessage, &row.Output, &row.Conversation, &row.IsFollowUp, &row.Iteration,
 		&row.Version,
@@ -95,7 +97,7 @@ func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (Executio
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
-		we.worktree_status, we.worktree_path, we.worktree_branch,
+		we.worktree_status, we.worktree_path, we.worktree_branch, we.pr_url, we.pr_state,
 		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, COALESCE(wkr.name, '') AS worker_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
@@ -109,7 +111,7 @@ func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (Executio
 		&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 		&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 		&e.CheckpointRef, &e.RecoveryID,
-		&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch,
+		&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch, &e.PrURL, &e.PrState,
 		&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName, &e.WorkerName,
 		&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
 		&e.Version,
@@ -155,7 +157,7 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 	q := `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
-		we.worktree_status, we.worktree_path, we.worktree_branch,
+		we.worktree_status, we.worktree_path, we.worktree_branch, we.pr_url, we.pr_state,
 		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, COALESCE(wkr.name, '') AS worker_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
@@ -231,7 +233,7 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 			&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 			&e.CheckpointRef, &e.RecoveryID,
-			&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch,
+			&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch, &e.PrURL, &e.PrState,
 			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName, &e.WorkerName,
 			&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
 			&e.Version,
@@ -350,7 +352,7 @@ func UpdateExecution(ctx context.Context, tx pgx.Tx, tenantID, id string, expect
 	q += ` RETURNING id, tenant_id, project_id, task_id, worker_id, worker_version,
 		adapter_id, status, health_state, started_at, ended_at,
 		token_usage, cost_usd, checkpoint_ref, recovery_id,
-		worktree_status, worktree_path, worktree_branch,
+		worktree_status, worktree_path, worktree_branch, pr_url, pr_state,
 		error_message, output, conversation, is_follow_up, iteration, version,
 		created_at, updated_at`
 	var e ExecutionRow
@@ -359,7 +361,7 @@ func UpdateExecution(ctx context.Context, tx pgx.Tx, tenantID, id string, expect
 		&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 		&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 		&e.CheckpointRef, &e.RecoveryID,
-		&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch,
+		&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch, &e.PrURL, &e.PrState,
 		&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
 		&e.Version,
 		&e.CreatedAt, &e.UpdatedAt,
@@ -406,7 +408,7 @@ func ListDispatchingExecutions(ctx context.Context, tx pgx.Tx, tenantID string) 
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
-		we.worktree_status, we.worktree_path, we.worktree_branch,
+		we.worktree_status, we.worktree_path, we.worktree_branch, we.pr_url, we.pr_state,
 		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, COALESCE(wkr.name, '') AS worker_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
@@ -428,7 +430,7 @@ func ListDispatchingExecutions(ctx context.Context, tx pgx.Tx, tenantID string) 
 			&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 			&e.CheckpointRef, &e.RecoveryID,
-			&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch,
+			&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch, &e.PrURL, &e.PrState,
 			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName, &e.WorkerName,
 			&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
 			&e.Version,
@@ -449,7 +451,7 @@ func ListRunningExecutions(ctx context.Context, tx pgx.Tx, tenantID string) ([]E
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
-		we.worktree_status, we.worktree_path, we.worktree_branch,
+		we.worktree_status, we.worktree_path, we.worktree_branch, we.pr_url, we.pr_state,
 		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, COALESCE(wkr.name, '') AS worker_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
@@ -471,7 +473,7 @@ func ListRunningExecutions(ctx context.Context, tx pgx.Tx, tenantID string) ([]E
 			&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 			&e.CheckpointRef, &e.RecoveryID,
-			&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch,
+			&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch, &e.PrURL, &e.PrState,
 			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName, &e.WorkerName,
 			&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
 			&e.Version,
@@ -607,7 +609,7 @@ func GetLatestExecutionForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID 
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
 		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
-		we.worktree_status, we.worktree_path, we.worktree_branch,
+		we.worktree_status, we.worktree_path, we.worktree_branch, we.pr_url, we.pr_state,
 		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, COALESCE(wkr.name, '') AS worker_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
 		we.created_at, we.updated_at
 		FROM worker_executions we
@@ -622,7 +624,7 @@ func GetLatestExecutionForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID 
 		&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
 		&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
 		&e.CheckpointRef, &e.RecoveryID,
-		&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch,
+		&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch, &e.PrURL, &e.PrState,
 		&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName, &e.WorkerName,
 		&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
 		&e.Version,

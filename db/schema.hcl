@@ -173,6 +173,21 @@ table "projects" {
     default = 0
     comment = "Per-project cap on concurrently running executions (0 = no additional restriction)"
   }
+  column "git_work_tree" {
+    type = boolean
+    null = false
+    default = false
+    comment = "Cached git work-tree detection (false = non-repo in-place fallback)"
+  }
+  column "git_detected_at" {
+    type = timestamptz
+    null = true
+  }
+  column "repo_slug" {
+    type = text
+    null = true
+    comment = "Cached git origin owner/repo of project_dir; used for deterministic per-branch PR links"
+  }
   column "version" {
     type = integer
     null = false
@@ -828,6 +843,16 @@ table "worker_executions" {
   column "worktree_branch" {
     type = text
     null = true
+  }
+  column "pr_url" {
+    type = text
+    null = true
+    comment = "PR URL for the run's branch, mirrored from the parent workflow run at dispatch"
+  }
+  column "pr_state" {
+    type = text
+    null = true
+    comment = "PR state (open/merged/draft/none), mirrored from the parent workflow run at dispatch"
   }
   column "workflow_run_id" {
     type = text

@@ -27,8 +27,10 @@ import {
   useRetryStepRun,
 } from "@/api/workflows";
 import { useListExecutions } from "@/api/executions";
+import { useListProjects } from "@/api/projects";
 import { useStreamWorkflowEvents } from "@/api/workflowEvents";
 import { workflowKeys } from "@/api/workflows";
+import { PrLinkChip } from "@/components/work-items/work-item-card";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -107,6 +109,9 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
   const { data: run, isLoading, error } = useGetWorkflowRun(runId);
   const { data: stepRuns } = useGetWorkflowStepRuns(runId);
   const { data: runExecs } = useListExecutions({ workflowRunId: runId, sortOrder: "asc" });
+  // repo_slug for the deterministic PR fallback link on the run's branch.
+  const { data: projects } = useListProjects();
+  const repoSlug = projects?.find((p) => p.id === run?.projectId)?.repoSlug;
   const abortRun = useAbortWorkflow();
   const forceProgress = useForceProgressWorkflowRun();
   const retryFailed = useRetryFailedWorkflowRun();
@@ -368,8 +373,19 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
 
       {worktreeTileItems(run.worktreeStatus, run.worktreeBranch, run.worktreePath).length > 0 && (
         <div className="rounded-xl border bg-card p-4 shadow-sm">
-          <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Worktree
+          <h3 className="mb-3 flex items-center justify-between gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            <span>Worktree</span>
+            {run && (
+              <PrLinkChip
+                run={{
+                  prUrl: run.prUrl || undefined,
+                  prState: run.prState || undefined,
+                  worktreeStatus: run.worktreeStatus || undefined,
+                  worktreeBranch: run.worktreeBranch || undefined,
+                }}
+                repoSlug={repoSlug}
+              />
+            )}
           </h3>
           <WorktreeTiles
             worktreeStatus={run.worktreeStatus}

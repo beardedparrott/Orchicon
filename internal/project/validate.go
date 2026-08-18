@@ -368,7 +368,16 @@ func rowToProto(p db.ProjectRow) *apiv1.Project {
 		ProjectDir:        p.ProjectDir,
 		ContextFiles:      contextFilesFromJSONOrEmpty(p.ContextFiles),
 		MaxConcurrentRuns: int32(p.MaxConcurrentRuns),
+		RepoSlug:          stringOrEmpty(p.RepoSlug),
 	}
+}
+
+// stringOrEmpty dereferences a nullable string, returning "" for nil.
+func stringOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // contextFilesFromJSONOrEmpty is a best-effort parser for the context_files

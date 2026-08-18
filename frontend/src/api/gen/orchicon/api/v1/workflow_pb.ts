@@ -743,6 +743,26 @@ export class WorkflowRun extends Message<WorkflowRun> {
    */
   worktreePath = "";
 
+  /**
+   * Pull-request surface for the run's branch (additive, read-time). The
+   * per-branch DevOps worker writes these into the run's structured
+   * `run_context` (JSON) after it runs `gh pr create`/`gh pr merge`; the
+   * read path parses them out. When pr_url is empty the UI falls back to a
+   * deterministic `pull/new/{branch}` link derived from the project's
+   * stored git origin (repo_slug) so every provisioned git-backed run can
+   * still jump to a PR even before one exists.
+   *
+   * @generated from field: string pr_url = 19;
+   */
+  prUrl = "";
+
+  /**
+   * e.g. open/merged/draft/none; empty until worker-authored
+   *
+   * @generated from field: string pr_state = 20;
+   */
+  prState = "";
+
   constructor(data?: PartialMessage<WorkflowRun>) {
     super();
     proto3.util.initPartial(data, this);
@@ -769,6 +789,8 @@ export class WorkflowRun extends Message<WorkflowRun> {
     { no: 16, name: "worktree_status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 17, name: "worktree_branch", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 18, name: "worktree_path", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 19, name: "pr_url", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 20, name: "pr_state", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowRun {

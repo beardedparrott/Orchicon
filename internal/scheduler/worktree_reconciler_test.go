@@ -85,3 +85,28 @@ func TestBranchNameEmptySourceFallsBack(t *testing.T) {
 		t.Fatalf("branchNameFor(empty source) = %q, want a 'run-' fallback prefix", got)
 	}
 }
+
+func TestParseRepoSlug(t *testing.T) {
+	cases := []struct {
+		name   string
+		remote string
+		want   string
+	}{
+		{"https with .git", "https://github.com/beardedparrott/Orchicon.git", "beardedparrott/Orchicon"},
+		{"https no .git", "https://github.com/beardedparrott/Orchicon", "beardedparrott/Orchicon"},
+		{"ssh scp-like", "git@github.com:beardedparrott/Orchicon.git", "beardedparrott/Orchicon"},
+		{"ssh url form", "ssh://git@github.com/beardedparrott/Orchicon.git", "beardedparrott/Orchicon"},
+		{"git protocol", "git://github.com/beardedparrott/Orchicon", "beardedparrott/Orchicon"},
+		{"empty", "", ""},
+		{"no owner", "https://github.com/Orchicon.git", ""},
+		{"not a github url", "/local/path", ""},
+		{"bare remote name", "origin", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseRepoSlug(tc.remote); got != tc.want {
+				t.Fatalf("parseRepoSlug(%q) = %q, want %q", tc.remote, got, tc.want)
+			}
+		})
+	}
+}

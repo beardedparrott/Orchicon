@@ -283,8 +283,15 @@ type WorkerExecution struct {
 	WorktreeStatus string `protobuf:"bytes,26,opt,name=worktree_status,json=worktreeStatus,proto3" json:"worktree_status,omitempty"`
 	WorktreeBranch string `protobuf:"bytes,27,opt,name=worktree_branch,json=worktreeBranch,proto3" json:"worktree_branch,omitempty"` // deterministic branch created for the run
 	WorktreePath   string `protobuf:"bytes,28,opt,name=worktree_path,json=worktreePath,proto3" json:"worktree_path,omitempty"`       // isolated working tree the execution ran in
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Pull-request surface for the run's branch, mirrored from the parent
+	// workflow run at dispatch (same seam as the worktree columns). The
+	// per-branch DevOps worker authors pr_url/pr_state into the run's
+	// `run_context`; when empty the UI falls back to a deterministic
+	// `pull/new/{branch}` link from the project's repo_slug.
+	PrUrl         string `protobuf:"bytes,29,opt,name=pr_url,json=prUrl,proto3" json:"pr_url,omitempty"`
+	PrState       string `protobuf:"bytes,30,opt,name=pr_state,json=prState,proto3" json:"pr_state,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WorkerExecution) Reset() {
@@ -509,6 +516,20 @@ func (x *WorkerExecution) GetWorktreeBranch() string {
 func (x *WorkerExecution) GetWorktreePath() string {
 	if x != nil {
 		return x.WorktreePath
+	}
+	return ""
+}
+
+func (x *WorkerExecution) GetPrUrl() string {
+	if x != nil {
+		return x.PrUrl
+	}
+	return ""
+}
+
+func (x *WorkerExecution) GetPrState() string {
+	if x != nil {
+		return x.PrState
 	}
 	return ""
 }
@@ -2274,7 +2295,7 @@ var File_orchicon_api_v1_execution_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"\n" +
-	"\x1forchicon/api/v1/execution.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x97\b\n" +
+	"\x1forchicon/api/v1/execution.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc9\b\n" +
 	"\x0fWorkerExecution\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -2310,7 +2331,9 @@ const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"workerName\x12'\n" +
 	"\x0fworktree_status\x18\x1a \x01(\tR\x0eworktreeStatus\x12'\n" +
 	"\x0fworktree_branch\x18\x1b \x01(\tR\x0eworktreeBranch\x12#\n" +
-	"\rworktree_path\x18\x1c \x01(\tR\fworktreePath\"\x86\x02\n" +
+	"\rworktree_path\x18\x1c \x01(\tR\fworktreePath\x12\x15\n" +
+	"\x06pr_url\x18\x1d \x01(\tR\x05prUrl\x12\x19\n" +
+	"\bpr_state\x18\x1e \x01(\tR\aprState\"\x86\x02\n" +
 	"\x0eExecutionEvent\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12!\n" +
 	"\fexecution_id\x18\x02 \x01(\tR\vexecutionId\x12\x1b\n" +

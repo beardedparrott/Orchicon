@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -72,6 +73,28 @@ type WorkflowRunRow struct {
 	EndedAt         *time.Time
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+}
+
+// PrFromRunContext extracts the PR surface (pr_url, pr_state) that the
+// per-branch DevOps worker authors into the run's structured `run_context`
+// JSONB. Best-effort: missing or non-string keys yield empty strings, so the
+// read path falls back to the deterministic `pull/new/{branch}` link derived
+// from the project's repo_slug.
+func PrFromRunContext(runContext []byte) (prURL, prState string) {
+	if len(runContext) == 0 {
+		return "", ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal(runContext, &m); err != nil {
+		return "", ""
+	}
+	if v, ok := m["pr_url"].(string); ok {
+		prURL = v
+	}
+	if v, ok := m["pr_state"].(string); ok {
+		prState = v
+	}
+	return prURL, prState
 }
 
 // WorkflowStepRunRow is the data-access shape of a workflow_step_runs

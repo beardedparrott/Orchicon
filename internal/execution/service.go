@@ -1004,6 +1004,12 @@ func rowToProto(e db.ExecutionRow) *apiv1.WorkerExecution {
 	if e.WorktreePath != nil {
 		p.WorktreePath = *e.WorktreePath
 	}
+	if e.PrURL != nil {
+		p.PrUrl = *e.PrURL
+	}
+	if e.PrState != nil {
+		p.PrState = *e.PrState
+	}
 	return p
 }
 

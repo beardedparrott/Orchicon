@@ -52,6 +52,12 @@ message Project {
   // projects (in-place fallback) serialize by default unless this field is
   // explicitly set > 1 AND the tenant permits it.
   int32 max_concurrent_runs = 12;
+  // repo_slug is the cached git origin ("owner/repo") of the project's
+  // project_dir, captured when the WorktreeReconciler detects the work
+  // tree. Empty when the project is not git-backed (or origin is unknown).
+  // Used to derive deterministic per-branch PR links without a provider
+  // call (e.g. https://github.com/{owner}/{repo}/pull/new/{branch}).
+  string repo_slug = 13;
 }
 
 // ContextFiles is a wrapper so UpdateProjectRequest can distinguish

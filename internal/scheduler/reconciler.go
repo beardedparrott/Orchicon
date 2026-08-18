@@ -674,6 +674,23 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 			}
 		}
 	}
+	// Carry the run's PR surface onto the execution row so the executions
+	// list/detail can link out to the run's PR (same seam as the worktree
+	// columns). The authoritative pr_url/pr_state live in the run's
+	// run_context (worker-authored); when empty the UI falls back to a
+	// deterministic `pull/new/{branch}` link from the project's repo_slug.
+	var prURL, prState *string
+	if workflowRunID != "" {
+		if run, gerr := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, workflowRunID); gerr == nil {
+			u, s := db.PrFromRunContext(run.RunContext)
+			if u != "" {
+				prURL = strPtr(u)
+			}
+			if s != "" {
+				prState = strPtr(s)
+			}
+		}
+	}
 	execRow := db.ExecutionRow{
 		ID:             db.NewID(),
 		TenantID:       tenantID,
@@ -692,6 +709,8 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 		WorktreeStatus: worktreeStatus,
 		WorktreePath:   worktreePath,
 		WorktreeBranch: worktreeBranch,
+		PrURL:          prURL,
+		PrState:        prState,
 	}
 	created, err := db.CreateExecution(ctx, ttx.Tx, execRow)
 	if err != nil {

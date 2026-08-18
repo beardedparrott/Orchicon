@@ -218,8 +218,14 @@ type Project struct {
 	// projects (in-place fallback) serialize by default unless this field is
 	// explicitly set > 1 AND the tenant permits it.
 	MaxConcurrentRuns int32 `protobuf:"varint,12,opt,name=max_concurrent_runs,json=maxConcurrentRuns,proto3" json:"max_concurrent_runs,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// repo_slug is the cached git origin ("owner/repo") of the project's
+	// project_dir, captured when the WorktreeReconciler detects the work
+	// tree. Empty when the project is not git-backed (or origin is unknown).
+	// Used to derive deterministic per-branch PR links without a provider
+	// call (e.g. https://github.com/{owner}/{repo}/pull/new/{branch}).
+	RepoSlug      string `protobuf:"bytes,13,opt,name=repo_slug,json=repoSlug,proto3" json:"repo_slug,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Project) Reset() {
@@ -334,6 +340,13 @@ func (x *Project) GetMaxConcurrentRuns() int32 {
 		return x.MaxConcurrentRuns
 	}
 	return 0
+}
+
+func (x *Project) GetRepoSlug() string {
+	if x != nil {
+		return x.RepoSlug
+	}
+	return ""
 }
 
 // ContextFiles is a wrapper so UpdateProjectRequest can distinguish
@@ -1132,7 +1145,7 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value\"@\n" +
 	"\n" +
 	"GoalFields\x122\n" +
-	"\x06fields\x18\x01 \x03(\v2\x1a.orchicon.api.v1.GoalFieldR\x06fields\"\xb2\x03\n" +
+	"\x06fields\x18\x01 \x03(\v2\x1a.orchicon.api.v1.GoalFieldR\x06fields\"\xcf\x03\n" +
 	"\aProject\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x12\n" +
@@ -1149,7 +1162,8 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	" \x01(\tR\n" +
 	"projectDir\x12#\n" +
 	"\rcontext_files\x18\v \x03(\tR\fcontextFiles\x12.\n" +
-	"\x13max_concurrent_runs\x18\f \x01(\x05R\x11maxConcurrentRuns\"$\n" +
+	"\x13max_concurrent_runs\x18\f \x01(\x05R\x11maxConcurrentRuns\x12\x1b\n" +
+	"\trepo_slug\x18\r \x01(\tR\brepoSlug\"$\n" +
 	"\fContextFiles\x12\x14\n" +
 	"\x05files\x18\x01 \x03(\tR\x05files\"\x8a\x01\n" +
 	"\rFileTreeEntry\x12\x12\n" +

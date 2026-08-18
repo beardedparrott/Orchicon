@@ -791,7 +791,11 @@ func (r *WorktreeReconciler) resolveGitBacked(ctx context.Context, tenantID, pro
 	}
 	// Cache empty or stale: detect once and write back (best-effort).
 	isWT := r.isInsideWorkTree(ctx, dir)
-	if _, uerr := db.UpdateProjectGitDetection(ctx, ttx.Tx, tenantID, projectID, proj.Version, isWT); uerr != nil {
+	repoSlug := ""
+	if isWT {
+		repoSlug = r.detectRepoSlug(ctx, dir)
+	}
+	if _, uerr := db.UpdateProjectGitDetection(ctx, ttx.Tx, tenantID, projectID, proj.Version, isWT, repoSlug); uerr != nil {
 		r.log.Warn("worktree: cache git detection failed (best-effort)", "project", projectID, "error", uerr)
 	} else {
 		_ = ttx.Commit(ctx)
@@ -899,6 +903,65 @@ func (r *WorktreeReconciler) isInsideWorkTree(ctx context.Context, projectDir st
 		return false
 	}
 	return strings.TrimSpace(out) == "true"
+}
+
+// detectRepoSlug reads the git remote origin of projectDir and returns it as
+// "owner/repo" (e.g. "beardedparrott/Orchicon"). Best-effort: an empty string
+// is returned when there is no origin or it cannot be parsed, so the project
+// falls back to a provider-free PR link only when we actually know the origin.
+// The PR surface relies on this slug to synthesize a deterministic
+// `pull/new/{branch}` link without calling a provider.
+func (r *WorktreeReconciler) detectRepoSlug(ctx context.Context, projectDir string) string {
+	out, err := runGit(ctx, projectDir, "remote", "get-url", "origin")
+	if err != nil {
+		return ""
+	}
+	return parseRepoSlug(strings.TrimSpace(out))
+}
+
+// parseRepoSlug extracts the "owner/repo" portion of a git remote URL,
+// handling the common HTTPS and SSH forms:
+//
+//	https://github.com/owner/repo.git   → owner/repo
+//	git@github.com:owner/repo.git       → owner/repo
+//	ssh://git@github.com/owner/repo.git → owner/repo
+//	git://github.com/owner/repo         → owner/repo
+//
+// Returns "" when the URL does not look like an owner/repo pair. The repo
+// suffix (".git") is stripped.
+func parseRepoSlug(remote string) string {
+	s := strings.TrimSpace(remote)
+	if s == "" {
+		return ""
+	}
+	// Strip a trailing .git (case-insensitive).
+	if len(s) > 4 && strings.EqualFold(s[len(s)-4:], ".git") {
+		s = s[:len(s)-4]
+	}
+	var ownerRepo string
+	if i := strings.Index(s, "://"); i >= 0 {
+		// URL form: scheme://host/owner/repo — take the last two path
+		// segments (host is ignored).
+		after := s[i+3:]
+		parts := strings.SplitN(after, "/", 3)
+		if len(parts) < 3 {
+			return ""
+		}
+		ownerRepo = parts[1] + "/" + parts[2]
+	} else if c := strings.Index(s, ":"); c >= 0 {
+		// SSH scp-like form: user@host:owner/repo — take after the colon.
+		ownerRepo = s[c+1:]
+	} else {
+		return ""
+	}
+	parts := strings.Split(ownerRepo, "/")
+	if len(parts) != 2 {
+		return ""
+	}
+	if parts[0] == "" || parts[1] == "" {
+		return ""
+	}
+	return parts[0] + "/" + parts[1]
 }
 
 // worktreeInfo is the subset of `git worktree list --porcelain` we need.
