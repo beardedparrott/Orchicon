@@ -303,6 +303,26 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 			iteration = sr.Iteration
 		}
 	}
+	// Carry the run's worktree state onto the execution row so the
+	// execution detail view can render worktree status/branch/path.
+	// The worktree is per-run (provisioned at run arm), so every
+	// execution dispatched for a run records the same state. The
+	// WorktreeReconciler writes only the run row; without this copy the
+	// worker_executions columns stay NULL and the UI shows nothing.
+	var worktreeStatus, worktreePath, worktreeBranch *string
+	if workflowRunID != "" {
+		if run, gerr := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, workflowRunID); gerr == nil {
+			if run.WorktreeStatus != "" {
+				worktreeStatus = strPtr(run.WorktreeStatus)
+			}
+			if run.WorktreePath != "" {
+				worktreePath = strPtr(run.WorktreePath)
+			}
+			if run.WorktreeBranch != "" {
+				worktreeBranch = strPtr(run.WorktreeBranch)
+			}
+		}
+	}
 	execRow := db.ExecutionRow{
 		ID:             db.NewID(),
 		TenantID:       tenantID,
@@ -318,6 +338,9 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 		WorkflowStepID: workflowStepID,
 		IsFollowUp:     isFollowUp,
 		Iteration:      iteration,
+		WorktreeStatus: worktreeStatus,
+		WorktreePath:   worktreePath,
+		WorktreeBranch: worktreeBranch,
 	}
 	created, err := db.CreateExecution(ctx, ttx.Tx, execRow)
 	if err != nil {
