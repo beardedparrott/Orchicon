@@ -167,6 +167,12 @@ table "projects" {
     null = false
     default = "[]"
   }
+  column "max_concurrent_runs" {
+    type = integer
+    null = false
+    default = 0
+    comment = "Per-project cap on concurrently running executions (0 = no additional restriction)"
+  }
   column "version" {
     type = integer
     null = false

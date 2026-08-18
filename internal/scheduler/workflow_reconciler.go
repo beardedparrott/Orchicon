@@ -238,6 +238,49 @@ func parallelBranchChildIDs(steps []workflow.StepWire) map[string]bool {
 }
 
 // reconcileRun progresses a single workflow run through its step DAG.
+// holdInPlaceDispatch reports whether a run must be held before any of its
+// steps dispatch, under the D3 in-place serialization guard (concurrency
+// guards). A non-repo run (project git_work_tree=false) executes in the
+// SHARED project_dir; until the WorktreeReconciler atomically admits it and
+// marks worktree_status='skipped', the run is 'pending' and dispatching a
+// step would run it in place — racing an admitted run's directory.
+//
+// The hold engages ONLY when the cached detection is FRESH and non-repo:
+// an undetermined (git_detected_at NULL) or stale cache means the
+// WorktreeReconciler has not yet decided, and today's behavior (dispatch,
+// falling back to project_dir) applies until it does — the D3 admission
+// gate at the WorktreeReconciler remains the authoritative serializer, and
+// the hold re-engages on the next scan pass once detection lands. Runs
+// with no bound project have no shared directory to serialize.
+func (r *WorkflowReconciler) holdInPlaceDispatch(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow) bool {
+	if run.WorktreeStatus != domain.WorktreePending {
+		// 'skipped' (admitted in place), 'ready' (worktree), 'failed',
+		// 'pruned' — all dispatch normally.
+		return false
+	}
+	if run.ProjectID == "" {
+		return false
+	}
+	var gitWorkTree bool
+	var detectedAt *time.Time
+	err := tx.QueryRow(ctx,
+		`SELECT git_work_tree, git_detected_at FROM projects WHERE tenant_id = $1 AND id = $2`,
+		tenantID, run.ProjectID,
+	).Scan(&gitWorkTree, &detectedAt)
+	if err != nil {
+		// Missing project: nothing to serialize against — fail open.
+		return false
+	}
+	if detectedAt == nil {
+		return false
+	}
+	if time.Since(*detectedAt) >= gitDetectionTTL {
+		// Stale cache: the WorktreeReconciler re-detects on its next pass.
+		return false
+	}
+	return !gitWorkTree
+}
+
 func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID string) error {
 	r.log.Debug("DEBUG: reconcileRun entered", "runID", runID, "tenantID", tenantID)
 	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
@@ -651,104 +694,126 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			}
 		}
 
+		// D3 — in-place serialization hold (concurrency guards). A NON-REPO
+		// run's steps execute in the SHARED project_dir. The
+		// WorktreeReconciler atomically admits non-repo runs and marks them
+		// worktree_status='skipped'; until that admission the run is
+		// 'pending', and dispatching a step would run it in place — racing
+		// an admitted run's directory. Hold the whole run at ready and fire
+		// the worktree notifier so the admission happens immediately (the
+		// 200ms scan pass is the safety net). Git-backed pending runs are
+		// NOT held: their worktree provisioning is async and today's cwd
+		// wiring already falls back to project_dir only when the worktree
+		// is not 'ready'.
+		inPlaceHold := r.holdInPlaceDispatch(ctx, ttx.Tx, tenantID, run)
+		if inPlaceHold {
+			if r.worktreeNotifier != nil {
+				r.worktreeNotifier(context.Background(), run.ID)
+			}
+			r.log.Info("workflow: holding steps — run not yet admitted to in-place execution",
+				"run", run.ID, "project", run.ProjectID)
+		}
+
 		// Dispatch ready or recovering steps by kind, evaluating gates first.
 		// Recovering steps from summarize_restart are skipped here — the
 		// recovery engine sets the work item back to "ready" asynchronously
 		// and the TaskReconciler dispatches it on its own heartbeat.
-		for _, sr := range stepRuns {
-			if sr.SupersededBy != "" {
-				continue
-			}
-			if sr.Status != domain.StepRunReady && sr.Status != domain.StepRunRecovering {
-				if r2, ok := runByID[sr.StepID]; ok && (r2.Status == domain.StepRunReady || r2.Status == domain.StepRunRecovering) {
-					sr = r2
-				} else {
+		if !inPlaceHold {
+			for _, sr := range stepRuns {
+				if sr.SupersededBy != "" {
 					continue
 				}
-			}
-			// For recovering steps, hold the dispatch until the recovery is
-			// READY: terminal `resumed` AND a seed resolvable for the exact
-			// dispatching worker (the file gate then writes/verifies
-			// .orchicon/worker.recovery before the session starts). The
-			// single recoveryDispatchReady predicate replaces the old
-			// gate, which keyed off sr.WorkerExecutionID — cleared at
-			// re-dispatch — and let a recovering step re-dispatch in the
-			// SAME pass that flipped it recovering, before the recovery row
-			// even existed (the observed race). Applies to TASK and
-			// worker-backed APPROVAL steps alike (an approval step using
-			// the summarize_restart strategy must wait for its recovery
-			// before the approver is re-dispatched).
-			if sr.Status == domain.StepRunRecovering && (sr.StepKind == domain.StepKindTask || sr.StepKind == domain.StepKindApproval) {
-				ready, stepFail := r.recoveryDispatchReady(ctx, ttx.Tx, tenantID, run, sr)
-				if stepFail != nil {
-					if ferr := r.failStep(ctx, ttx.Tx, tenantID, run, sr, runByID, stepFail); ferr != nil {
-						return ferr
+				if sr.Status != domain.StepRunReady && sr.Status != domain.StepRunRecovering {
+					if r2, ok := runByID[sr.StepID]; ok && (r2.Status == domain.StepRunReady || r2.Status == domain.StepRunRecovering) {
+						sr = r2
+					} else {
+						continue
 					}
-					madeProgress = true
-					continue
 				}
-				if !ready {
-					// Recovery not ready — hold for the next pass.
-					recoverySeedMetricsSingleton.recordHeld()
-					continue
-				}
-			}
-			step, ok := stepByID[sr.StepID]
-			if !ok {
-				continue
-			}
-			// D2 — branch-worktree readiness gate. A parallel-branch child
-			// must execute in its OWN worktree (AC1), so it is held at
-			// ready until the WorktreeReconciler provisions one — no
-			// eventually-consistent fallback to the run worktree (that
-			// would let branches share a filesystem and race .orchicon/).
-			//   'pending' → hold + enqueue a branch-worktree notifier
-			//               (fired post-commit); the 200ms scan pass is
-			//               the safety net that re-checks next pass.
-			//   'skipped' → non-git project / no run project: run in the
-			//               run's cwd (there is no worktree concept).
-			//   'failed'  → provisioning error: fail the step (mirrors
-			//               the run-worktree failed path).
-			//   'ready'/'pruned' → dispatch normally (pruned = a step run
-			//               re-armed after its branch was reaped; it runs
-			//               in the run's cwd).
-			if branchChild[sr.StepID] {
-				switch sr.WorktreeStatus {
-				case domain.WorktreePending, "":
-					branchWorktreeTriggers = append(branchWorktreeTriggers, sr.ID)
-					continue
-				case domain.WorktreeFailed:
-					if ferr := r.failStep(ctx, ttx.Tx, tenantID, run, sr, runByID,
-						fmt.Errorf("branch worktree provisioning failed for step %q", step.Name)); ferr != nil {
-						return ferr
+				// For recovering steps, hold the dispatch until the recovery is
+				// READY: terminal `resumed` AND a seed resolvable for the exact
+				// dispatching worker (the file gate then writes/verifies
+				// .orchicon/worker.recovery before the session starts). The
+				// single recoveryDispatchReady predicate replaces the old
+				// gate, which keyed off sr.WorkerExecutionID — cleared at
+				// re-dispatch — and let a recovering step re-dispatch in the
+				// SAME pass that flipped it recovering, before the recovery row
+				// even existed (the observed race). Applies to TASK and
+				// worker-backed APPROVAL steps alike (an approval step using
+				// the summarize_restart strategy must wait for its recovery
+				// before the approver is re-dispatched).
+				if sr.Status == domain.StepRunRecovering && (sr.StepKind == domain.StepKindTask || sr.StepKind == domain.StepKindApproval) {
+					ready, stepFail := r.recoveryDispatchReady(ctx, ttx.Tx, tenantID, run, sr)
+					if stepFail != nil {
+						if ferr := r.failStep(ctx, ttx.Tx, tenantID, run, sr, runByID, stepFail); ferr != nil {
+							return ferr
+						}
+						madeProgress = true
+						continue
 					}
-					madeProgress = true
+					if !ready {
+						// Recovery not ready — hold for the next pass.
+						recoverySeedMetricsSingleton.recordHeld()
+						continue
+					}
+				}
+				step, ok := stepByID[sr.StepID]
+				if !ok {
 					continue
 				}
-			}
-			allowed := r.evaluateGate(ctx, step, run)
-			if !allowed {
-				now := time.Now().UTC()
-				updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-					Status:  strPtr(domain.StepRunBlocked),
-					EndedAt: &now,
-				})
-				if err != nil {
-					return fmt.Errorf("mark step blocked: %w", err)
+				// D2 — branch-worktree readiness gate. A parallel-branch child
+				// must execute in its OWN worktree (AC1), so it is held at
+				// ready until the WorktreeReconciler provisions one — no
+				// eventually-consistent fallback to the run worktree (that
+				// would let branches share a filesystem and race .orchicon/).
+				//   'pending' → hold + enqueue a branch-worktree notifier
+				//               (fired post-commit); the 200ms scan pass is
+				//               the safety net that re-checks next pass.
+				//   'skipped' → non-git project / no run project: run in the
+				//               run's cwd (there is no worktree concept).
+				//   'failed'  → provisioning error: fail the step (mirrors
+				//               the run-worktree failed path).
+				//   'ready'/'pruned' → dispatch normally (pruned = a step run
+				//               re-armed after its branch was reaped; it runs
+				//               in the run's cwd).
+				if branchChild[sr.StepID] {
+					switch sr.WorktreeStatus {
+					case domain.WorktreePending, "":
+						branchWorktreeTriggers = append(branchWorktreeTriggers, sr.ID)
+						continue
+					case domain.WorktreeFailed:
+						if ferr := r.failStep(ctx, ttx.Tx, tenantID, run, sr, runByID,
+							fmt.Errorf("branch worktree provisioning failed for step %q", step.Name)); ferr != nil {
+							return ferr
+						}
+						madeProgress = true
+						continue
+					}
 				}
-				runByID[sr.StepID] = updated
+				allowed := r.evaluateGate(ctx, step, run)
+				if !allowed {
+					now := time.Now().UTC()
+					updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+						Status:  strPtr(domain.StepRunBlocked),
+						EndedAt: &now,
+					})
+					if err != nil {
+						return fmt.Errorf("mark step blocked: %w", err)
+					}
+					runByID[sr.StepID] = updated
+					madeProgress = true
+					if err := r.enqueueStepEvent(ctx, ttx.Tx, domain.WorkflowEventStepBlocked, run, updated); err != nil {
+						return fmt.Errorf("enqueue step_blocked: %w", err)
+					}
+					continue
+				}
+				var stepDispatches []dispatchReq
+				if err := r.dispatchStep(ctx, ttx.Tx, tenantID, run, step, sr, runByID, steps, &stepDispatches, &recoveryTriggers); err != nil {
+					return err
+				}
 				madeProgress = true
-				if err := r.enqueueStepEvent(ctx, ttx.Tx, domain.WorkflowEventStepBlocked, run, updated); err != nil {
-					return fmt.Errorf("enqueue step_blocked: %w", err)
-				}
-				continue
+				dispatchedSteps = append(dispatchedSteps, stepDispatches...)
 			}
-			var stepDispatches []dispatchReq
-			if err := r.dispatchStep(ctx, ttx.Tx, tenantID, run, step, sr, runByID, steps, &stepDispatches, &recoveryTriggers); err != nil {
-				return err
-			}
-			madeProgress = true
-			dispatchedSteps = append(dispatchedSteps, stepDispatches...)
 		}
 
 		// Poll running task steps + worker-backed approval steps: check

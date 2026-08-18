@@ -38,7 +38,8 @@ export function useListProjects(opts?: { search?: string; status?: ProjectStatus
 }
 
 // useUpdateProject updates the mutable fields of a project (name, slug,
-// goals). Partial update — only non-nil fields are written.
+// goals, max_concurrent_runs). Partial update — only non-nil fields are
+// written.
 export function useUpdateProject() {
   const qc = useQueryClient();
   return useMutation({
@@ -47,6 +48,7 @@ export function useUpdateProject() {
       name?: string;
       slug?: string;
       goals?: { fields: GoalField[] };
+      maxConcurrentRuns?: number;
     }) => {
       const res = await projectClient.updateProject(input);
       return res.project as Project;

@@ -93,11 +93,21 @@ type TenantSettings struct {
 	LogRetentionDays int32 `protobuf:"varint,26,opt,name=log_retention_days,json=logRetentionDays,proto3" json:"log_retention_days,omitempty"`
 	// Max rotated log files kept on disk (newest kept). Default 7.
 	// Zero = default.
-	LogMaxFiles   int32                  `protobuf:"varint,27,opt,name=log_max_files,json=logMaxFiles,proto3" json:"log_max_files,omitempty"`
-	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,100,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,101,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	LogMaxFiles int32 `protobuf:"varint,27,opt,name=log_max_files,json=logMaxFiles,proto3" json:"log_max_files,omitempty"`
+	// --- Dispatch concurrency (per-project/tenant max-concurrent-runs) ---
+	// Cap on how many worker executions may run CONCURRENTLY across the
+	// whole tenant. Enforced at dispatch time in the TaskReconciler. A
+	// project can override this per-project (Project.max_concurrent_runs);
+	// the effective limit for a project is min(tenant, project), where 0 on
+	// either side means "no additional restriction from that side". Projects
+	// at their cap hold ready items until a running execution frees a slot.
+	// Optional so an update can distinguish "set to 0 (no cap)" from
+	// "leave unchanged"; absent = unchanged. Zero (default) = no tenant cap.
+	MaxConcurrentRuns *int32                 `protobuf:"varint,28,opt,name=max_concurrent_runs,json=maxConcurrentRuns,proto3,oneof" json:"max_concurrent_runs,omitempty"`
+	CreatedAt         *timestamppb.Timestamp `protobuf:"bytes,100,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt         *timestamppb.Timestamp `protobuf:"bytes,101,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *TenantSettings) Reset() {
@@ -256,6 +266,13 @@ func (x *TenantSettings) GetLogMaxFiles() int32 {
 	return 0
 }
 
+func (x *TenantSettings) GetMaxConcurrentRuns() int32 {
+	if x != nil && x.MaxConcurrentRuns != nil {
+		return *x.MaxConcurrentRuns
+	}
+	return 0
+}
+
 func (x *TenantSettings) GetCreatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.CreatedAt
@@ -274,7 +291,7 @@ var File_orchicon_api_v1_settings_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"\n" +
-	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xee\b\n" +
+	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xbb\t\n" +
 	"\x0eTenantSettings\x120\n" +
 	"\x14default_worker_model\x18\x01 \x01(\tR\x12defaultWorkerModel\x12;\n" +
 	"\x1adefault_ask_orchicon_model\x18\x02 \x01(\tR\x17defaultAskOrchiconModel\x12F\n" +
@@ -294,11 +311,13 @@ const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"\x0flog_max_size_mb\x18\x18 \x01(\x03R\flogMaxSizeMb\x125\n" +
 	"\x17log_roll_interval_hours\x18\x19 \x01(\x03R\x14logRollIntervalHours\x12,\n" +
 	"\x12log_retention_days\x18\x1a \x01(\x05R\x10logRetentionDays\x12\"\n" +
-	"\rlog_max_files\x18\x1b \x01(\x05R\vlogMaxFiles\x129\n" +
+	"\rlog_max_files\x18\x1b \x01(\x05R\vlogMaxFiles\x123\n" +
+	"\x13max_concurrent_runs\x18\x1c \x01(\x05H\x00R\x11maxConcurrentRuns\x88\x01\x01\x129\n" +
 	"\n" +
 	"created_at\x18d \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18e \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAtB\xc7\x01\n" +
+	"updated_at\x18e \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAtB\x16\n" +
+	"\x14_max_concurrent_runsB\xc7\x01\n" +
 	"\x13com.orchicon.api.v1B\rSettingsProtoP\x01ZCgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1;apiv1\xa2\x02\x03OAX\xaa\x02\x0fOrchicon.Api.V1\xca\x02\x0fOrchicon\\Api\\V1\xe2\x02\x1bOrchicon\\Api\\V1\\GPBMetadata\xea\x02\x11Orchicon::Api::V1b\x06proto3"
 
 var (
@@ -333,6 +352,7 @@ func file_orchicon_api_v1_settings_proto_init() {
 	if File_orchicon_api_v1_settings_proto != nil {
 		return
 	}
+	file_orchicon_api_v1_settings_proto_msgTypes[0].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

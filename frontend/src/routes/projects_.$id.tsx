@@ -1,5 +1,5 @@
 import { createRoute, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, ArrowUp, Folder } from "lucide-react";
@@ -13,6 +13,8 @@ import {
   useUpdateProject,
   projectKeys,
 } from "@/api/projects";
+import { useGetSettings } from "@/api/settings";
+import { useListExecutions } from "@/api/executions";
 import { useListDirPath, useUpdateProjectDir } from "@/api/projectFiles";
 import { useStreamProjectEvents } from "@/api/projectEvents";
 import { EntityYamlView } from "@/components/EntityYamlView";
@@ -27,6 +29,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 import { FileBrowser } from "@/components/FileBrowser";
 
 import { Route as rootRoute } from "@/routes/__root";
@@ -55,6 +58,18 @@ function ProjectDetailPage() {
   // True after the user saves a project directory, to remind them the
   // container must be restarted before the mount takes effect.
   const [dirChanged, setDirChanged] = useState(false);
+  const [draftMaxRuns, setDraftMaxRuns] = useState("");
+  const [savingMaxRuns, setSavingMaxRuns] = useState(false);
+  // Active executions (non-terminal) for the current-vs-limit meter.
+  const { data: executions } = useListExecutions({ projectId: id, enabled: !!id });
+  const { data: tenantSettings } = useGetSettings();
+  const activeExecutions = (executions ?? []).filter((e) =>
+    e.status === 1 || e.status === 2 || e.status === 3 || e.status === 4 || e.status === 5 || e.status === 6,
+  ).length;
+
+  useEffect(() => {
+    setDraftMaxRuns(String(project?.maxConcurrentRuns ?? ""));
+  }, [project]);
 
   const { register, handleSubmit, reset } = useForm({
     defaultValues: { name: "", slug: "" },
@@ -352,6 +367,80 @@ function ProjectDetailPage() {
         />
       )}
 
+      {/* Concurrency guard: per-project max-concurrent-runs + current vs limit */}
+      {project && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Concurrency guard</CardTitle>
+            <CardDescription>
+              Caps how many executions may run concurrently for this project.
+              The effective limit is <code>min(tenant, project)</code>; 0 on
+              either side means no additional restriction. Items beyond the
+              limit stay ready and dispatch when a slot frees. Non-repo
+              projects (in-place execution) serialize unless this is set to{" "}
+              {">"} 1 and the tenant permits it.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="w-48">
+                <label className="mb-1 block text-sm font-medium">
+                  Max concurrent runs
+                </label>
+                <Input
+                  type="number"
+                  min={0}
+                  disabled={!editing}
+                  value={draftMaxRuns}
+                  onChange={(e) => setDraftMaxRuns(e.target.value)}
+                  placeholder="0 = no additional restriction"
+                />
+              </div>
+              {editing && (
+                <Button
+                  variant="outline"
+                  disabled={savingMaxRuns}
+                  onClick={() => {
+                    setSavingMaxRuns(true);
+                    updateProject.mutate(
+                      { id: project.id, maxConcurrentRuns: parseInt(draftMaxRuns) || 0 },
+                      { onSettled: () => setSavingMaxRuns(false) },
+                    );
+                  }}
+                >
+                  {savingMaxRuns ? "Saving…" : "Save limit"}
+                </Button>
+              )}
+            </div>
+            <div>
+              <div className="mb-1 flex items-center justify-between text-sm">
+                <span className="font-medium">Active executions</span>
+                <span className="text-muted-foreground">
+                  {activeExecutions} / {effectiveLimitLabel(project.maxConcurrentRuns ?? 0, tenantSettings?.maxConcurrentRuns ?? 0)}
+                </span>
+              </div>
+              <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                <div
+                  className={cn(
+                    "h-full rounded-full transition-all",
+                    atLimit(activeExecutions, project.maxConcurrentRuns ?? 0, tenantSettings?.maxConcurrentRuns ?? 0)
+                      ? "bg-destructive"
+                      : "bg-primary",
+                  )}
+                  style={{
+                    width: `${meterWidth(activeExecutions, project.maxConcurrentRuns ?? 0, tenantSettings?.maxConcurrentRuns ?? 0)}%`,
+                  }}
+                />
+              </div>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Tenant cap: {tenantSettings?.maxConcurrentRuns ?? 0}
+                {project.maxConcurrentRuns ? ` · Project cap: ${project.maxConcurrentRuns}` : " · Project cap: unset"}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Live event feed */}
       <Card>
         <CardHeader>
@@ -447,6 +536,33 @@ function statusLabel(status: number): string {
     5: "deleted",
   };
   return labels[status] ?? "unknown";
+}
+
+// effectiveLimit mirrors the server's min(tenant, project) formula where 0
+// on either side means "no restriction from that side".
+function effectiveLimit(projectLimit: number, tenantLimit: number): number {
+  if (projectLimit === 0) return tenantLimit;
+  if (tenantLimit === 0) return projectLimit;
+  return Math.min(tenantLimit, projectLimit);
+}
+
+function effectiveLimitLabel(projectLimit: number, tenantLimit: number): string {
+  const eff = effectiveLimit(projectLimit, tenantLimit);
+  return eff === 0 ? "unlimited" : String(eff);
+}
+
+function atLimit(active: number, projectLimit: number, tenantLimit: number): boolean {
+  const eff = effectiveLimit(projectLimit, tenantLimit);
+  return eff > 0 && active >= eff;
+}
+
+function meterWidth(active: number, projectLimit: number, tenantLimit: number): number {
+  const eff = effectiveLimit(projectLimit, tenantLimit);
+  if (eff <= 0) {
+    // No cap: show a sliver so the meter still renders, capped at 100%.
+    return Math.min(100, active * 8);
+  }
+  return Math.min(100, (active / eff) * 100);
 }
 
 function parseGoals(s: string): [string, string][] {

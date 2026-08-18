@@ -71,6 +71,51 @@ type ConcurrencyLimiter interface {
 	Limit(ctx context.Context, projectID string) int
 }
 
+// DispatchLimiter resolves the configured max-concurrent-runs caps for a
+// project (concurrency-guards work item, architecture-notes
+// per-project-dispatch-limits.md). It is the seam for:
+//
+//   - D2 — the admission gate in TaskReconciler.reconcileOne, which holds
+//     a dispatch (returns without creating an execution, leaving the item
+//     'ready') when the project's effective cap is reached;
+//   - D3 — the WorktreeReconciler's in-place (non-repo) serialization
+//     gate, which atomically admits non-repo runs so two never share the
+//     mutable project_dir.
+//
+// Both methods read in the caller's transaction so the limit value is
+// consistent with the count queries that follow.
+type DispatchLimiter interface {
+	// Limit returns the effective max-concurrent-runs cap for the project:
+	// min(tenant.max_concurrent_runs, project.max_concurrent_runs), where 0
+	// on either side means "no additional restriction from that side".
+	Limit(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (int, error)
+	// InPlaceLimit returns the non-repo in-place serialization limit for
+	// the project (default 1 = serialize, unless the project explicitly
+	// opts into concurrency with max_concurrent_runs > 1).
+	InPlaceLimit(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (int, error)
+}
+
+// dbDispatchLimiter is the production DispatchLimiter, backed by the
+// tenant_settings + projects tables (db.GetDispatchLimitValues).
+type dbDispatchLimiter struct{}
+
+// DBDispatchLimiter is the exported constructor for the production
+// DispatchLimiter. It is stateless — the resolver reads live from the
+// database via the reconciler's transaction.
+func DBDispatchLimiter() DispatchLimiter { return dbDispatchLimiter{} }
+
+func (dbDispatchLimiter) Limit(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (int, error) {
+	return db.GetEffectiveDispatchLimit(ctx, tx, tenantID, projectID)
+}
+
+func (dbDispatchLimiter) InPlaceLimit(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (int, error) {
+	tenantLimit, projectLimit, err := db.GetDispatchLimitValues(ctx, tx, tenantID, projectID)
+	if err != nil {
+		return 0, err
+	}
+	return db.InPlaceLimit(tenantLimit, projectLimit), nil
+}
+
 // TaskReconciler implements the reconciler.Reconciler interface for the
 // "task" kind. It polls the work_items table for ready tasks and
 // dispatches them via the AdapterBridge.
@@ -105,6 +150,10 @@ type TaskReconciler struct {
 	// per-project limits of the candidate items (concurrency-guards seam).
 	// Set via SetConcurrencyLimiter.
 	concurrencyLimiter ConcurrencyLimiter
+	// dispatchLimiter, when set, applies the per-project/tenant
+	// max-concurrent-runs admission gate inside reconcileOne (concurrency
+	// guards D2). Set via SetDispatchLimiter.
+	dispatchLimiter DispatchLimiter
 	// dispatchOverlap is a test-only hook invoked with the current number
 	// of reconcileOne calls in flight whenever the scan fan-out acquires a
 	// semaphore slot, so tests can assert the concurrency bound without
@@ -137,6 +186,15 @@ func (r *TaskReconciler) SetDispatchConcurrency(n int) {
 // limits reported for the candidate items. Nil keeps the global bound.
 func (r *TaskReconciler) SetConcurrencyLimiter(l ConcurrencyLimiter) {
 	r.concurrencyLimiter = l
+}
+
+// SetDispatchLimiter installs the per-project/tenant max-concurrent-runs
+// admission seam (concurrency-guards work item D2). When set, reconcileOne
+// holds a dispatch — returns without creating an execution, leaving the
+// item 'ready' for the next scan pass — whenever the project is at its
+// effective cap. Nil (the default) keeps today's unbounded dispatch.
+func (r *TaskReconciler) SetDispatchLimiter(l DispatchLimiter) {
+	r.dispatchLimiter = l
 }
 
 // SetRecoveryTrigger is deprecated. Recovery is triggered exclusively by
@@ -534,6 +592,32 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 	if err != nil {
 		r.log.Warn("no suitable adapter for task", "task", task.ID, "worker", version.WorkerID, "error", err)
 		return nil
+	}
+
+	// Concurrency guard (D2, architecture-notes/per-project-dispatch-limits
+	// .md): never dispatch beyond the project's effective
+	// max-concurrent-runs cap. Count-check-create has a TOCTOU window, so a
+	// transient overshoot is possible — that is a resource spike, not a
+	// correctness break, because the working-tree invariant is enforced
+	// STRUCTURALLY by the WorktreeReconciler (D3). The item (or step run)
+	// stays 'ready' and the next scan pass re-evaluates it, so it "waits
+	// until a slot frees" by construction.
+	if r.dispatchLimiter != nil {
+		limit, lerr := r.dispatchLimiter.Limit(ctx, ttx.Tx, tenantID, task.ProjectID)
+		if lerr != nil {
+			return fmt.Errorf("resolve dispatch limit: %w", lerr)
+		}
+		if limit > 0 {
+			active, aerr := db.CountActiveExecutionsForProject(ctx, ttx.Tx, tenantID, task.ProjectID)
+			if aerr != nil {
+				return fmt.Errorf("count active executions: %w", aerr)
+			}
+			if active >= limit {
+				r.log.Info("dispatch deferred: project at max concurrent runs",
+					"task", task.ID, "project", task.ProjectID, "active", active, "limit", limit)
+				return nil
+			}
+		}
 	}
 
 	// Create WorkerExecution (docs/03 §4: createWorkerExecution).

@@ -477,6 +477,7 @@ function DefaultsTab() {
   const [draftLogRollInterval, setDraftLogRollInterval] = useState("");
   const [draftLogRetention, setDraftLogRetention] = useState("");
   const [draftLogMaxFiles, setDraftLogMaxFiles] = useState("");
+  const [draftMaxConcurrentRuns, setDraftMaxConcurrentRuns] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -500,6 +501,7 @@ function DefaultsTab() {
       setDraftLogRollInterval(settings.logRollIntervalHours ? String(settings.logRollIntervalHours) : "");
       setDraftLogRetention(settings.logRetentionDays ? String(settings.logRetentionDays) : "");
       setDraftLogMaxFiles(settings.logMaxFiles ? String(settings.logMaxFiles) : "");
+      setDraftMaxConcurrentRuns(String(settings.maxConcurrentRuns ?? ""));
     }
   }, [settings]);
 
@@ -527,6 +529,7 @@ function DefaultsTab() {
         logRollIntervalHours: parseInt(draftLogRollInterval) || 0,
         logRetentionDays: parseInt(draftLogRetention) || 0,
         logMaxFiles: parseInt(draftLogMaxFiles) || 0,
+        maxConcurrentRuns: parseInt(draftMaxConcurrentRuns) || 0,
       } as any);
     } finally {
       setSaving(false);
@@ -696,6 +699,32 @@ function DefaultsTab() {
                 placeholder="3"
               />
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {!isLoading && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Dispatch concurrency</CardTitle>
+            <CardDescription>
+              Tenant-wide cap on how many worker executions may run
+              concurrently. Enforced at dispatch time: projects at their cap
+              hold ready items until a running execution frees a slot. A
+              project can override this per-project (Project &rarr;
+              Concurrency guard); the effective limit for a project is{" "}
+              <code>min(tenant, project)</code>, where 0 on either side means
+              no additional restriction.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <StallField
+              label="Max concurrent runs (tenant)"
+              description="0 = no tenant-wide cap. Non-repo projects (in-place execution) serialize by default unless they explicitly opt in."
+              value={draftMaxConcurrentRuns}
+              onChange={setDraftMaxConcurrentRuns}
+              placeholder="0"
+            />
           </CardContent>
         </Card>
       )}

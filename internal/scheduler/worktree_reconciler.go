@@ -47,6 +47,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/reconciler"
 	"github.com/beardedparrott/orchicon/internal/slug"
 	"github.com/beardedparrott/orchicon/internal/workflow"
+	"github.com/jackc/pgx/v5"
 )
 
 // worktreeDirName is the subdirectory under project_dir where per-run
@@ -88,11 +89,24 @@ const gitDetectionTTL = 24 * time.Hour
 type WorktreeReconciler struct {
 	pool *db.Pool
 	log  *slog.Logger
+	// limiter, when set, resolves the non-repo in-place serialization limit
+	// for the atomic admission gate (concurrency guards D3). Set via
+	// SetDispatchLimiter.
+	limiter DispatchLimiter
 }
 
 // NewWorktreeReconciler creates a WorktreeReconciler.
 func NewWorktreeReconciler(pool *db.Pool, log *slog.Logger) *WorktreeReconciler {
 	return &WorktreeReconciler{pool: pool, log: log}
+}
+
+// SetDispatchLimiter installs the per-project in-place serialization seam
+// (concurrency guards D3). When set, non-repo runs are atomically admitted
+// before being marked worktree_status='skipped' (the in-place token), so
+// two runs never share the mutable project_dir. Nil keeps today's
+// unbounded in-place fallback.
+func (r *WorktreeReconciler) SetDispatchLimiter(l DispatchLimiter) {
+	r.limiter = l
 }
 
 // Kind returns the reconciler kind (used for queue + leadership keying).
@@ -1130,6 +1144,24 @@ func (r *WorktreeReconciler) mark(ctx context.Context, tenantID, runID, status, 
 	if isTerminalRun(run) {
 		return nil
 	}
+	// D3 (concurrency guards): marking a run 'skipped' is admitting it into
+	// the IN-PLACE fallback — its executions will run in the shared
+	// project_dir. Admit ATOMICALLY (project-row lock + count within this
+	// tx) so two runs of a non-repo project never share the mutable
+	// working tree. A denied admission leaves the run 'pending'; the next
+	// scan pass re-admits it once a slot frees. Only 'skipped' transitions
+	// consult the gate — 'ready'/'failed' carry no in-place token.
+	if status == domain.WorktreeSkipped {
+		admitted, aerr := r.admitInPlace(ctx, ttx.Tx, tenantID, run)
+		if aerr != nil {
+			return fmt.Errorf("admit in-place run: %w", aerr)
+		}
+		if !admitted {
+			r.log.Info("worktree: in-place run deferred (project at in-place concurrency limit)",
+				"run", runID, "project", run.ProjectID)
+			return ttx.Commit(ctx)
+		}
+	}
 	fields := db.UpdateWorkflowRunFields{WorktreeStatus: strPtr(status)}
 	if path != "" {
 		fields.WorktreePath = strPtr(path)
@@ -1146,6 +1178,24 @@ func (r *WorktreeReconciler) mark(ctx context.Context, tenantID, runID, status, 
 		return fmt.Errorf("mark worktree %s: %w", status, err)
 	}
 	return ttx.Commit(ctx)
+}
+
+// admitInPlace is the D3 atomic admission for a run entering the in-place
+// (non-repo) fallback. It resolves the project's in-place serialization
+// limit and consults the project-row-locked counter — all within the
+// caller's transaction, so the mark that follows commits atomically with
+// the reservation. Runs without a bound project have no shared project_dir
+// to serialize, so they always admit (fail-open). A nil limiter (never
+// wired) keeps today's unbounded fallback.
+func (r *WorktreeReconciler) admitInPlace(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow) (bool, error) {
+	if r.limiter == nil || run.ProjectID == "" {
+		return true, nil
+	}
+	limit, err := r.limiter.InPlaceLimit(ctx, tx, tenantID, run.ProjectID)
+	if err != nil {
+		return false, err
+	}
+	return db.AdmitInPlaceRun(ctx, tx, tenantID, run.ProjectID, limit)
 }
 
 // markPruned records that a terminal run's worktree has been reaped. The
@@ -1264,6 +1314,23 @@ func (r *WorktreeReconciler) markStep(ctx context.Context, tenantID, stepRunID, 
 	if isTerminalStepRun(sr) {
 		return nil
 	}
+	// D3 (concurrency guards): a branch child's 'skipped' means "run in the
+	// run's cwd" — which, for a non-repo project, is the shared project_dir.
+	// Never release a branch child into the in-place cwd before its RUN
+	// holds the in-place slot: that would let a branch child race an
+	// admitted run's directory while the run row is still 'pending'. Runs
+	// without a bound project have no shared directory (fail-open).
+	if status == domain.WorktreeSkipped {
+		admitted, aerr := r.stepInPlaceAdmitted(ctx, ttx.Tx, tenantID, sr)
+		if aerr != nil {
+			return fmt.Errorf("admit in-place step run: %w", aerr)
+		}
+		if !admitted {
+			r.log.Info("worktree: branch step run deferred (run not yet admitted to in-place)",
+				"step_run", stepRunID, "run", sr.WorkflowRunID)
+			return ttx.Commit(ctx)
+		}
+	}
 	fields := db.UpdateWorkflowStepRunFields{WorktreeStatus: strPtr(status)}
 	if path != "" {
 		fields.WorktreePath = strPtr(path)
@@ -1280,6 +1347,32 @@ func (r *WorktreeReconciler) markStep(ctx context.Context, tenantID, stepRunID, 
 		return fmt.Errorf("mark step worktree %s: %w", status, err)
 	}
 	return ttx.Commit(ctx)
+}
+
+// stepInPlaceAdmitted reports whether a branch child may be released into
+// the in-place fallback ('skipped'): the child executes in its RUN's cwd,
+// so the run must already hold the in-place slot (worktree_status
+// 'skipped') or be fail-open ('failed' — a provisioning error still runs in
+// place today). A still-'pending' run means the run-level admission gate
+// hasn't admitted it yet — hold the child until the next pass, when the
+// run-level reconcileOne marks the run 'skipped' (or not) and this step
+// re-evaluates. Runs with no bound project have no shared directory.
+func (r *WorktreeReconciler) stepInPlaceAdmitted(ctx context.Context, tx pgx.Tx, tenantID string, sr db.WorkflowStepRunRow) (bool, error) {
+	run, err := db.GetWorkflowRun(ctx, tx, tenantID, sr.WorkflowRunID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("get run for step in-place admission: %w", err)
+	}
+	if run.ProjectID == "" {
+		return true, nil
+	}
+	switch run.WorktreeStatus {
+	case domain.WorktreeSkipped, domain.WorktreeFailed:
+		return true, nil
+	}
+	return false, nil
 }
 
 // markStepPruned records that a terminal step run's branch worktree has

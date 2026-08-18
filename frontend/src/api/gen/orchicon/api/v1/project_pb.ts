@@ -219,6 +219,18 @@ export class Project extends Message<Project> {
    */
   contextFiles: string[] = [];
 
+  /**
+   * max_concurrent_runs caps how many executions may run concurrently for
+   * this project (0 = no additional restriction — the tenant cap, or no
+   * cap, applies). The effective limit for a project is
+   * min(tenant.max_concurrent_runs, project.max_concurrent_runs). Non-repo
+   * projects (in-place fallback) serialize by default unless this field is
+   * explicitly set > 1 AND the tenant permits it.
+   *
+   * @generated from field: int32 max_concurrent_runs = 12;
+   */
+  maxConcurrentRuns = 0;
+
   constructor(data?: PartialMessage<Project>) {
     super();
     proto3.util.initPartial(data, this);
@@ -238,6 +250,7 @@ export class Project extends Message<Project> {
     { no: 9, name: "updated_at", kind: "message", T: Timestamp },
     { no: 10, name: "project_dir", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 11, name: "context_files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 12, name: "max_concurrent_runs", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Project {
@@ -631,6 +644,14 @@ export class UpdateProjectRequest extends Message<UpdateProjectRequest> {
    */
   contextFiles?: ContextFiles;
 
+  /**
+   * Per-project max-concurrent-runs override (0 = no additional
+   * restriction).
+   *
+   * @generated from field: optional int32 max_concurrent_runs = 8;
+   */
+  maxConcurrentRuns?: number;
+
   constructor(data?: PartialMessage<UpdateProjectRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -646,6 +667,7 @@ export class UpdateProjectRequest extends Message<UpdateProjectRequest> {
     { no: 4, name: "request_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 6, name: "project_dir", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 7, name: "context_files", kind: "message", T: ContextFiles, opt: true },
+    { no: 8, name: "max_concurrent_runs", kind: "scalar", T: 5 /* ScalarType.INT32 */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateProjectRequest {

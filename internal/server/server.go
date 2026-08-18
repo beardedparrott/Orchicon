@@ -289,6 +289,10 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// Bounded in-pass fan-out for the scan pass: independent ready tasks
 	// dispatch concurrently (ORCHICON_DISPATCH_CONCURRENCY, default 4).
 	taskRec.SetDispatchConcurrency(cfg.DispatchConcurrency)
+	// Per-project/tenant max-concurrent-runs admission gate (concurrency
+	// guards): reconcileOne holds a dispatch when the project is at its
+	// effective cap, leaving the item ready until a slot frees.
+	taskRec.SetDispatchLimiter(scheduler.DBDispatchLimiter())
 	// Per-workflow runtime containers: the control plane talks to the
 	// host-side runtime daemon over a unix socket. When the socket is
 	// absent (headless `orchicon serve`), the lifecycle is disabled and
@@ -435,6 +439,10 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// notifier makes provisioning fire at run-arm; the reconciler's scan
 	// pass is the safety net.
 	worktreeRec := scheduler.NewWorktreeReconciler(pool, log)
+	// Non-repo in-place serialization gate (concurrency guards D3): non-repo
+	// runs are atomically admitted before being marked 'skipped', so two
+	// runs never share the mutable project_dir.
+	worktreeRec.SetDispatchLimiter(scheduler.DBDispatchLimiter())
 	s.rcmgr.Register(worktreeRec)
 	// Wire the sequence notifier: when a bound child work item reaches a
 	// terminal state, advance its parent's chain immediately (the scan
