@@ -231,6 +231,17 @@ export class Project extends Message<Project> {
    */
   maxConcurrentRuns = 0;
 
+  /**
+   * repo_slug is the cached git origin ("owner/repo") of the project's
+   * project_dir, captured when the WorktreeReconciler detects the work
+   * tree. Empty when the project is not git-backed (or origin is unknown).
+   * Used to derive deterministic per-branch PR links without a provider
+   * call (e.g. https://github.com/{owner}/{repo}/pull/new/{branch}).
+   *
+   * @generated from field: string repo_slug = 13;
+   */
+  repoSlug = "";
+
   constructor(data?: PartialMessage<Project>) {
     super();
     proto3.util.initPartial(data, this);
@@ -251,6 +262,7 @@ export class Project extends Message<Project> {
     { no: 10, name: "project_dir", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 11, name: "context_files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
     { no: 12, name: "max_concurrent_runs", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 13, name: "repo_slug", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Project {

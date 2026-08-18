@@ -26,10 +26,12 @@ import {
   useApproveToolCall,
 } from "@/api/executions";
 import { executionKeys } from "@/api/executions";
+import { useListProjects } from "@/api/projects";
 import { useGetUsage } from "@/api/aigateway";
 import { Markdown } from "@/components/markdown";
 import { SessionChatPane } from "@/components/executions/SessionChatPane";
 import { ExecutionContextSidebar } from "@/components/executions/ExecutionContextSidebar";
+import { PrLinkChip } from "@/components/work-items/work-item-card";
 import { worktreeTileItems } from "@/components/WorktreeTiles";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -47,6 +49,9 @@ function ExecutionDetailPage() {
 
   const { data: exec, isLoading, error } = useGetExecution(id);
   const { data: usage } = useGetUsage({ executionId: id });
+  // repo_slug for the deterministic PR fallback link on the run branch.
+  const { data: projects } = useListProjects();
+  const repoSlug = projects?.find((p) => p.id === exec?.projectId)?.repoSlug;
   const pauseExec = usePauseExecution();
   const resumeExec = useResumeExecution();
   const cancelExec = useCancelExecution();
@@ -215,7 +220,7 @@ function ExecutionDetailPage() {
           {/* Execution context — kept as a footer card with the
               structured metadata (worker, adapter, task, workflow)
               since that data doesn't fit naturally in the sidebar. */}
-          <ExecutionContextFooter exec={exec} />
+          <ExecutionContextFooter exec={exec} repoSlug={repoSlug} />
         </div>
 
         <ExecutionContextSidebar
@@ -311,8 +316,11 @@ function ExecutionLiveBadge({
 
 function ExecutionContextFooter({
   exec,
+  repoSlug,
 }: {
   exec: import("@/api/gen/orchicon/api/v1/execution_pb").WorkerExecution;
+  /** project git origin slug (owner/repo) for deterministic PR fallback */
+  repoSlug?: string;
 }) {
   const items = [
     {
@@ -331,12 +339,23 @@ function ExecutionContextFooter({
   ];
   return (
     <div className="rounded-xl border bg-card p-4 shadow-sm">
-      <div className="mb-3 flex items-center justify-between">
+      <div className="mb-3 flex items-center justify-between gap-2">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Execution context
         </h3>
-        <span className="font-mono text-[10px] text-muted-foreground/70 sm:hidden">
-          {exec.id}
+        <span className="flex shrink-0 items-center gap-2">
+          <PrLinkChip
+            run={{
+              prUrl: exec.prUrl || undefined,
+              prState: exec.prState || undefined,
+              worktreeStatus: exec.worktreeStatus || undefined,
+              worktreeBranch: exec.worktreeBranch || undefined,
+            }}
+            repoSlug={repoSlug}
+          />
+          <span className="font-mono text-[10px] text-muted-foreground/70 sm:hidden">
+            {exec.id}
+          </span>
         </span>
       </div>
       <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">

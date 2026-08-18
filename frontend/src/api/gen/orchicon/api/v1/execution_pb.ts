@@ -389,6 +389,22 @@ export class WorkerExecution extends Message<WorkerExecution> {
    */
   worktreePath = "";
 
+  /**
+   * Pull-request surface for the run's branch, mirrored from the parent
+   * workflow run at dispatch (same seam as the worktree columns). The
+   * per-branch DevOps worker authors pr_url/pr_state into the run's
+   * `run_context`; when empty the UI falls back to a deterministic
+   * `pull/new/{branch}` link from the project's repo_slug.
+   *
+   * @generated from field: string pr_url = 29;
+   */
+  prUrl = "";
+
+  /**
+   * @generated from field: string pr_state = 30;
+   */
+  prState = "";
+
   constructor(data?: PartialMessage<WorkerExecution>) {
     super();
     proto3.util.initPartial(data, this);
@@ -425,6 +441,8 @@ export class WorkerExecution extends Message<WorkerExecution> {
     { no: 26, name: "worktree_status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 27, name: "worktree_branch", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 28, name: "worktree_path", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 29, name: "pr_url", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 30, name: "pr_state", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkerExecution {

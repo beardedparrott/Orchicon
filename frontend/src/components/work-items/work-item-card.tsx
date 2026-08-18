@@ -9,7 +9,7 @@
 // in its origin column until the refetch lands.
 
 import { Link } from "@tanstack/react-router";
-import { Link2, Loader2 } from "lucide-react";
+import { ExternalLink, GitBranch, Link2, Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { WorkItemStatus, type WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
@@ -25,6 +25,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { prLinkForRun, type PrRun } from "@/lib/pr";
 import { cn } from "@/lib/utils";
 
 /** Dependency chain icon. Amber chip + count when actually blocked; a
@@ -124,6 +125,79 @@ export function BlockedChip({
   return null;
 }
 
+/** Compact external-link chip to a run's PR. Theme-aware (dark palette via
+ *  useDarkPalette); an authored PR chip is tinted primary, the deterministic
+ *  "pull/new/{branch}" fallback (no PR authored yet) is muted. */
+export function PrLinkChip({ run, repoSlug }: { run: PrRun; repoSlug?: string }) {
+  const link = prLinkForRun(run, repoSlug);
+  if (!link) return null;
+  return (
+    <a
+      href={link.href}
+      target="_blank"
+      rel="noreferrer"
+      onClick={(e) => e.stopPropagation()}
+      title={link.href}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-semibold no-underline hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+        link.isFallback
+          ? "bg-muted text-muted-foreground hover:bg-accent"
+          : "bg-primary/10 text-primary hover:bg-primary/15",
+      )}
+    >
+      <ExternalLink className="h-3 w-3" aria-hidden />
+      {link.label}
+    </a>
+  );
+}
+
+/** Compact "run" footer for a board/list card: one line per active run with
+ *  its branch (reusing the F1 worktree vocabulary for visual consistency)
+ *  plus a PR link chip, and a "+N concurrent" indicator when more than one
+ *  run is active so parallelism is visible at a glance. Renders nothing when
+ *  there are no runs. Keeps the F2 BlockedChip rendering unaffected (it
+ *  lives in the card header row). */
+export function RunFooter({
+  runs,
+  repoSlug,
+}: {
+  runs?: PrRun[];
+  repoSlug?: string;
+}) {
+  if (!runs || runs.length === 0) return null;
+  // Dedupe by branch (a run's branch is unique); fall back to prUrl.
+  const seen = new Set<string>();
+  const unique = runs.filter((r) => {
+    const k = r.worktreeBranch || r.prUrl || "";
+    if (!k || seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  const showConcurrency = unique.length > 1;
+  return (
+    <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
+      {unique.map((r, i) => (
+        <span key={r.worktreeBranch || r.prUrl || i} className="inline-flex min-w-0 items-center gap-1.5">
+          {r.worktreeBranch && (
+            <span className="inline-flex shrink-0 items-center gap-1 font-mono text-muted-foreground">
+              <GitBranch className="h-3 w-3 shrink-0" aria-hidden />
+              <span className="max-w-[9rem] truncate" title={r.worktreeBranch}>
+                {r.worktreeBranch}
+              </span>
+            </span>
+          )}
+          <PrLinkChip run={r} repoSlug={repoSlug} />
+        </span>
+      ))}
+      {showConcurrency && (
+        <span className="shrink-0 rounded-full bg-accent px-1.5 py-0.5 text-[11px] font-semibold text-accent-foreground">
+          +{unique.length - 1} concurrent
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function WorkItemCard({
   item,
   selected,
@@ -133,6 +207,8 @@ export function WorkItemCard({
   moving = false,
   actions,
   badge,
+  runs,
+  repoSlug,
 }: {
   item: WorkItem;
   selected: boolean;
@@ -145,6 +221,10 @@ export function WorkItemCard({
   actions?: ReactNode;
   /** optional leading chip next to the kind badge (e.g. chain position) */
   badge?: ReactNode;
+  /** optional run footer data — branch/worktree/PR per active run */
+  runs?: PrRun[];
+  /** project git origin slug (owner/repo) for deterministic PR fallback */
+  repoSlug?: string;
 }) {
   const meta = kindMeta(item.kind);
   const priority = priorityLabel(item.priority);
@@ -200,6 +280,7 @@ export function WorkItemCard({
           {actions && <span className="ml-auto shrink-0">{actions}</span>}
         </div>
       )}
+      <RunFooter runs={runs} repoSlug={repoSlug} />
     </div>
   );
 }

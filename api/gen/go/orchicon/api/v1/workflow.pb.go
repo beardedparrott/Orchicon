@@ -757,8 +757,17 @@ type WorkflowRun struct {
 	WorktreeStatus string `protobuf:"bytes,16,opt,name=worktree_status,json=worktreeStatus,proto3" json:"worktree_status,omitempty"`
 	WorktreeBranch string `protobuf:"bytes,17,opt,name=worktree_branch,json=worktreeBranch,proto3" json:"worktree_branch,omitempty"`
 	WorktreePath   string `protobuf:"bytes,18,opt,name=worktree_path,json=worktreePath,proto3" json:"worktree_path,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Pull-request surface for the run's branch (additive, read-time). The
+	// per-branch DevOps worker writes these into the run's structured
+	// `run_context` (JSON) after it runs `gh pr create`/`gh pr merge`; the
+	// read path parses them out. When pr_url is empty the UI falls back to a
+	// deterministic `pull/new/{branch}` link derived from the project's
+	// stored git origin (repo_slug) so every provisioned git-backed run can
+	// still jump to a PR even before one exists.
+	PrUrl         string `protobuf:"bytes,19,opt,name=pr_url,json=prUrl,proto3" json:"pr_url,omitempty"`
+	PrState       string `protobuf:"bytes,20,opt,name=pr_state,json=prState,proto3" json:"pr_state,omitempty"` // e.g. open/merged/draft/none; empty until worker-authored
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WorkflowRun) Reset() {
@@ -913,6 +922,20 @@ func (x *WorkflowRun) GetWorktreeBranch() string {
 func (x *WorkflowRun) GetWorktreePath() string {
 	if x != nil {
 		return x.WorktreePath
+	}
+	return ""
+}
+
+func (x *WorkflowRun) GetPrUrl() string {
+	if x != nil {
+		return x.PrUrl
+	}
+	return ""
+}
+
+func (x *WorkflowRun) GetPrState() string {
+	if x != nil {
+		return x.PrState
 	}
 	return ""
 }
@@ -1261,7 +1284,7 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"position_x\x18\t \x01(\x01R\tpositionX\x12\x1d\n" +
 	"\n" +
 	"position_y\x18\n" +
-	" \x01(\x01R\tpositionY\"\xe5\x05\n" +
+	" \x01(\x01R\tpositionY\"\x97\x06\n" +
 	"\vWorkflowRun\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1f\n" +
@@ -1288,7 +1311,9 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"\rruntime_image\x18\x0f \x01(\tR\fruntimeImage\x12'\n" +
 	"\x0fworktree_status\x18\x10 \x01(\tR\x0eworktreeStatus\x12'\n" +
 	"\x0fworktree_branch\x18\x11 \x01(\tR\x0eworktreeBranch\x12#\n" +
-	"\rworktree_path\x18\x12 \x01(\tR\fworktreePath\"\x99\x05\n" +
+	"\rworktree_path\x18\x12 \x01(\tR\fworktreePath\x12\x15\n" +
+	"\x06pr_url\x18\x13 \x01(\tR\x05prUrl\x12\x19\n" +
+	"\bpr_state\x18\x14 \x01(\tR\aprState\"\x99\x05\n" +
 	"\x0fWorkflowStepRun\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12&\n" +

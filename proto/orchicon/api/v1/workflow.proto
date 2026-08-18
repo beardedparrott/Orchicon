@@ -99,6 +99,15 @@ message WorkflowRun {
   string worktree_status = 16;
   string worktree_branch = 17;
   string worktree_path = 18;
+  // Pull-request surface for the run's branch (additive, read-time). The
+  // per-branch DevOps worker writes these into the run's structured
+  // `run_context` (JSON) after it runs `gh pr create`/`gh pr merge`; the
+  // read path parses them out. When pr_url is empty the UI falls back to a
+  // deterministic `pull/new/{branch}` link derived from the project's
+  // stored git origin (repo_slug) so every provisioned git-backed run can
+  // still jump to a PR even before one exists.
+  string pr_url = 19;
+  string pr_state = 20; // e.g. open/merged/draft/none; empty until worker-authored
 }
 
 // WorkflowStepRun is the runtime state of a single step within a

@@ -63,6 +63,7 @@ import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/ca
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
+import type { PrRun } from "@/lib/pr";
 
 export interface WorkItemsBoardProps {
   projectId: string;
@@ -82,6 +83,11 @@ export interface WorkItemsBoardProps {
   isLoading: boolean;
   error: unknown;
   hasQuery: boolean;
+  /** per-work-item run footer data (branch/worktree/PR per active run) —
+   *  makes concurrent runs visible on the board card */
+  runsByItem?: Map<string, PrRun[]>;
+  /** project git origin slug (owner/repo) for deterministic PR fallback */
+  repoSlug?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +138,8 @@ export function WorkItemsBoard({
   isLoading,
   error,
   hasQuery,
+  runsByItem,
+  repoSlug,
 }: WorkItemsBoardProps) {
   const updateStatus = useUpdateWorkItem(projectId);
   const { moveItems: batchMoveItems } = useBatchMoveWorkItems(projectId);
@@ -385,6 +393,8 @@ export function WorkItemsBoard({
               onToggleCollapse={onToggleCollapse}
               dragCount={dragCount}
               positions={positions}
+              runsByItem={runsByItem}
+              repoSlug={repoSlug}
             />
           );
         })}
@@ -401,6 +411,8 @@ export function WorkItemsBoard({
                 (blockState.blocks.get(activeItem.id)?.length ?? 0) +
                 (blockState.blockedBy.get(activeItem.id)?.length ?? 0)
               }
+              runs={runsByItem?.get(activeItem.id)}
+              repoSlug={repoSlug}
             />
             {dragCount > 1 && (
               <span
@@ -434,6 +446,8 @@ function BoardColumn({
   onToggleCollapse,
   dragCount,
   positions,
+  runsByItem,
+  repoSlug,
 }: {
   column: { status: number; label: string };
   items: WorkItem[];
@@ -447,6 +461,8 @@ function BoardColumn({
   onToggleCollapse: (id: string) => void;
   dragCount: number;
   positions: Map<string, number>;
+  runsByItem?: Map<string, PrRun[]>;
+  repoSlug?: string;
 }) {
   const isReadOnly = MANUALLY_UNMOVABLE_STATUSES.has(column.status);
 
@@ -518,6 +534,8 @@ function BoardColumn({
               onToggleCollapse={onToggleCollapse}
               dragCount={dragCount}
               positions={positions}
+              runsByItem={runsByItem}
+              repoSlug={repoSlug}
             />
           ))}
         </SortableContext>
@@ -549,6 +567,8 @@ function HierarchyNodeComponent({
   onToggleCollapse,
   dragCount,
   positions,
+  runsByItem,
+  repoSlug,
   depth = 0,
 }: {
   node: HierarchyNode;
@@ -562,6 +582,8 @@ function HierarchyNodeComponent({
   onToggleCollapse: (id: string) => void;
   dragCount: number;
   positions: Map<string, number>;
+  runsByItem?: Map<string, PrRun[]>;
+  repoSlug?: string;
   depth?: number;
 }) {
   // Persisted per-project collapse state; default EXPANDED (ADR-WI-3) so
@@ -584,6 +606,8 @@ function HierarchyNodeComponent({
           onToggleExpand={() => onToggleCollapse(node.item.id)}
           multiDragCount={dragCount}
           position={positions.get(node.item.id)}
+          runs={runsByItem?.get(node.item.id)}
+          repoSlug={repoSlug}
         />
       </div>
       {expanded &&
@@ -602,6 +626,8 @@ function HierarchyNodeComponent({
             onToggleCollapse={onToggleCollapse}
             dragCount={dragCount}
             positions={positions}
+            runsByItem={runsByItem}
+            repoSlug={repoSlug}
             depth={depth + 1}
           />
         ))}
@@ -625,6 +651,8 @@ function SortableCard({
   onToggleExpand,
   multiDragCount = 0,
   position,
+  runs,
+  repoSlug,
 }: {
   item: WorkItem;
   selected: Set<string>;
@@ -639,6 +667,10 @@ function SortableCard({
   multiDragCount?: number;
   /** chain position badge (#1, #2, …) — true sequence order */
   position?: number;
+  /** run footer data (branch/worktree/PR per active run) */
+  runs?: PrRun[];
+  /** project git origin slug (owner/repo) for deterministic PR fallback */
+  repoSlug?: string;
 }) {
   const {
     attributes,
@@ -708,6 +740,8 @@ function SortableCard({
             <MoveToMenu item={item} disabled={moving} onMove={onMove} />
           </div>
         }
+        runs={runs}
+        repoSlug={repoSlug}
       />
     </div>
   );

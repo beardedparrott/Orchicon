@@ -15,6 +15,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useBatchDeleteWorkItems, useGetDependencyGraph, useListWorkItems, useReorderWorkItems } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
+import { useListExecutions } from "@/api/executions";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -44,6 +45,7 @@ import { useDebouncedValue } from "@/components/work-items/use-debounced-value";
 import { WorkItemsTree } from "@/components/work-items/work-items-tree";
 import { useWorkItemsPreferences, parentIds } from "@/components/work-items/work-items-preferences";
 import { cn } from "@/lib/utils";
+import type { PrRun } from "@/lib/pr";
 import { Route as rootRoute } from "@/routes/__root";
 
 export const Route = createRoute({
@@ -115,6 +117,45 @@ function WorkItemsPage() {
     sortOrder: sortOrder || undefined,
   });
   const { data: graph } = useGetDependencyGraph(projectId, { refetchInterval: 5_000 });
+
+  // Run/PR visibility (parallel board view): executions carry the run's
+  // branch/worktree and PR surface (mirrored at dispatch), so group them by
+  // work item (taskId) to render a per-run footer on the board/list cards.
+  // Reuses useListExecutions (MVP path) — no new RPC. Polling matches the
+  // board's 5s rhythm so concurrent runs stay fresh.
+  const { data: executions } = useListExecutions({
+    projectId: projectId || undefined,
+  });
+  // repo_slug per project for the deterministic PR fallback (all-projects
+  // view needs per-item origin resolution).
+  const projectSlugById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of projects ?? []) if (p.repoSlug) m.set(p.id, p.repoSlug);
+    return m;
+  }, [projects]);
+  const runsByItem = useMemo(() => {
+    const m = new Map<string, PrRun[]>();
+    for (const e of executions ?? []) {
+      if (!e.taskId) continue;
+      const pr: PrRun = {
+        prUrl: e.prUrl || undefined,
+        prState: e.prState || undefined,
+        worktreeStatus: e.worktreeStatus || undefined,
+        worktreeBranch: e.worktreeBranch || undefined,
+        repoSlug: projectSlugById.get(e.projectId) || undefined,
+      };
+      const list = m.get(e.taskId);
+      if (list) list.push(pr);
+      else m.set(e.taskId, [pr]);
+    }
+    return m;
+  }, [executions, projectSlugById]);
+  // Single-project view: the card-level fallback slug (overridden per run
+  // by repoSlug above when items span projects).
+  const repoSlug = useMemo(
+    () => (projectId ? projectSlugById.get(projectId) : undefined),
+    [projectId, projectSlugById],
+  );
 
   const blockState = useMemo(
     () => computeBlockState(graph?.nodes, graph?.edges),
@@ -300,6 +341,8 @@ function WorkItemsPage() {
                 isLoading={isLoading}
                 error={error}
                 hasQuery={hasQuery}
+                runsByItem={runsByItem}
+                repoSlug={repoSlug}
               />
             ) : (
               <WorkItemsBoard
@@ -314,6 +357,8 @@ function WorkItemsPage() {
                 isLoading={isLoading}
                 error={error}
                 hasQuery={hasQuery}
+                runsByItem={runsByItem}
+                repoSlug={repoSlug}
               />
             )}
           </TooltipProvider>
