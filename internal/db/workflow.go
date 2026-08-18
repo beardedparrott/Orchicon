@@ -64,7 +64,7 @@ type WorkflowRunRow struct {
 	BoundWorkerRef  []byte // jsonb; reserved for future use
 	RuntimeImage    string // resolved runtime container image tag at run start
 	RuntimeReady    bool   // runtime-serve readiness gate: executions dispatch only once true
-	WorktreeStatus  string // WorktreeReconciler provisioning state (pending/ready/skipped/failed)
+	WorktreeStatus  string // WorktreeReconciler provisioning state (pending/ready/skipped/failed/pruned)
 	WorktreePath    string // isolated working tree path (git-backed runs)
 	WorktreeBranch  string // deterministic branch created for the run
 	Version         int
@@ -1087,6 +1087,53 @@ func ListWorktreeCandidates(ctx context.Context, tx pgx.Tx, tenantID string, lim
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan worktree candidate: %w", err)
+		}
+		if wiID != nil {
+			r.WorkItemID = *wiID
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ListTerminalRunsWithWorktrees returns workflow runs in a terminal state
+// (completed/failed/aborted) that still have a recorded worktree to reap
+// (worktree_status 'ready' with a recorded path). This is the scan-side
+// discovery surface for the WorktreeReconciler's prune pass — terminal
+// runs whose worktrees were already pruned are excluded by the
+// 'ready' + non-empty path predicate, so re-scanning is a no-op.
+// Batch-capped to mirror ListWorktreeCandidates.
+func ListTerminalRunsWithWorktrees(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowRunRow, error) {
+	if limit <= 0 {
+		limit = 16
+	}
+	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
+		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
+		runtime_ready, worktree_status, worktree_path, worktree_branch,
+			version, started_at, ended_at, created_at, updated_at
+		FROM workflow_runs
+		WHERE tenant_id = $1 AND status IN ('completed', 'failed', 'aborted')
+		  AND worktree_status = 'ready' AND worktree_path <> ''
+		ORDER BY created_at ASC
+		LIMIT $2`
+	rows, err := tx.Query(ctx, q, tenantID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list terminal runs with worktrees: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkflowRunRow
+	for rows.Next() {
+		var r WorkflowRunRow
+		var wiID *string
+		if err := rows.Scan(
+			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
+			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
+			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.Version, &r.StartedAt, &r.EndedAt,
+			&r.CreatedAt, &r.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan terminal run: %w", err)
 		}
 		if wiID != nil {
 			r.WorkItemID = *wiID
