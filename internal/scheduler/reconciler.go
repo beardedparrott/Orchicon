@@ -466,10 +466,14 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	// resolved first.
 	runtimeImage := ""
 	worktreePath := ""
+	worktreeStatus := ""
+	worktreeBranch := ""
 	if task.WorkflowRunID != "" {
 		if rtx, err := r.pool.BeginTenantTx(context.Background(), exec.TenantID); err == nil {
 			if run, gerr := db.GetWorkflowRun(context.Background(), rtx.Tx, exec.TenantID, task.WorkflowRunID); gerr == nil {
 				runtimeImage = run.RuntimeImage
+				worktreeStatus = run.WorktreeStatus
+				worktreeBranch = run.WorktreeBranch
 				if run.WorktreeStatus == domain.WorktreeReady && run.WorktreePath != "" {
 					worktreePath = run.WorktreePath
 				}
@@ -523,7 +527,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	// work-item context + instructions) so standalone dispatches see
 	// project/work-item context "just like projects" (F5).
 	if systemPrompt == "" {
-		systemPrompt = buildStandaloneComposite(r.pool, exec, task, version)
+		systemPrompt = buildStandaloneComposite(r.pool, exec, task, version, worktreeStatus, worktreeBranch)
 		if strings.TrimSpace(systemPrompt) == "" {
 			systemPrompt = "You are a worker in the Orchicon orchestration system. " +
 				"Complete the work item described in the user message and report back."
@@ -1733,7 +1737,7 @@ func composeSystemPrompt(v db.WorkerVersionRow) string {
 //
 // Best-effort: any DB read failure degrades to the subset that succeeded
 // (the caller falls back to a bare worker prompt if the result is empty).
-func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow) string {
+func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow, worktreeStatus, worktreeBranch string) string {
 	var sb strings.Builder
 	// Stable prefix first: shared identity + safety + efficiency + runtime
 	// environment. Same byte-identical block the workflow path prepends, so a
@@ -1801,6 +1805,10 @@ func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkI
 
 	// Worker's contract.
 	sb.WriteString("# Instructions\n\n")
+	// Git/branch guidance keyed on the run's worktree_status: a non-repo
+	// (in-place) run is never told to work on a branch. Same block the
+	// workflow composite emits, so the two dispatch paths agree.
+	sb.WriteString(db.GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir))
 	sb.WriteString("The workflow routes on exactly one signal: the word after `ORCHICON WORKER SUMMARY:` — `success` or `failure`. There is no `_issues:` failure channel. If work genuinely cannot be accepted, end with `ORCHICON WORKER SUMMARY: failure` and say what needs fixing in the summary text. Non-blocking observations belong in the summary text only and never affect the routing.\n\n")
 	sb.WriteString("Format:\n")
 	sb.WriteString("```\nORCHICON WORKER SUMMARY: success — Implemented the feature.\n```\n")

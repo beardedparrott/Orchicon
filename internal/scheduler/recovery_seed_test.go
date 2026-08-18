@@ -161,7 +161,7 @@ func TestBuildStandaloneCompositeRecoveryBlock(t *testing.T) {
 		TenantID: "tnt_test",
 		Title:    "Recover me",
 		Results:  recoveryResultJSON("exec abc failed", "exec-1", "w1"),
-	}, db.WorkerVersionRow{WorkerID: "w1", Role: "Engineer"})
+	}, db.WorkerVersionRow{WorkerID: "w1", Role: "Engineer"}, "", "")
 	if !strings.Contains(withSeed, recoveryFileReferenceMarker) {
 		t.Errorf("standalone composite must reference the recovery file when the seed matches")
 	}
@@ -174,7 +174,7 @@ func TestBuildStandaloneCompositeRecoveryBlock(t *testing.T) {
 		TenantID: "tnt_test",
 		Title:    "Recover me",
 		Results:  recoveryResultJSON("exec abc failed", "exec-1", "w1"),
-	}, db.WorkerVersionRow{WorkerID: "w2", Role: "Engineer"})
+	}, db.WorkerVersionRow{WorkerID: "w2", Role: "Engineer"}, "", "")
 	if strings.Contains(diffWorker, recoveryFileReferenceMarker) {
 		t.Error("different-worker standalone composite must not reference the recovery file")
 	}
@@ -183,7 +183,7 @@ func TestBuildStandaloneCompositeRecoveryBlock(t *testing.T) {
 	}
 
 	// Fresh dispatch → no reference.
-	fresh := buildStandaloneComposite(pool, exec, db.WorkItemRow{TenantID: "tnt_test", Title: "Fresh"}, db.WorkerVersionRow{WorkerID: "w1", Role: "Engineer"})
+	fresh := buildStandaloneComposite(pool, exec, db.WorkItemRow{TenantID: "tnt_test", Title: "Fresh"}, db.WorkerVersionRow{WorkerID: "w1", Role: "Engineer"}, "", "")
 	if strings.Contains(fresh, recoveryFileReferenceMarker) {
 		t.Error("fresh dispatch must not reference the recovery file")
 	}

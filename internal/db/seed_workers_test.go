@@ -302,7 +302,7 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 	}
 	if _, err := ttx.Exec(ctx,
 		`UPDATE worker_versions
-		    SET agents_md = replace(agents_md, 'orchicon.safety=v16', 'orchicon.safety=v0')
+		    SET agents_md = replace(agents_md, 'orchicon.safety=v17', 'orchicon.safety=v0')
 		  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`, userID); err != nil {
 		t.Fatalf("stale marker: %v", err)
 	}
@@ -319,15 +319,17 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 		userID).Scan(&agents); err != nil {
 		t.Fatalf("query adopted agents: %v", err)
 	}
-	if !strings.Contains(agents, "orchicon.safety=v16") {
+	if !strings.Contains(agents, "orchicon.safety=v17") {
 		t.Errorf("adopted worker should have been rolled forward to the current marker, got %q", agents[len(agents)-40:])
 	}
 }
 
 // TestSeedVisionWorkersCarryVisionModelAndPlaywright: the Vision canned
 // workers must default to the vision-capable model (opencode-go/mimo-v2.5),
-// carry the Playwright visual-verification block, and keep the develop-first
-// git workflow.
+// carry the Playwright visual-verification block and the current safety
+// marker, and — after the git-neutral change — must NOT carry hardcoded
+// branch-workflow guidance in their AGENTS.md (per-run prompt blocks keyed on
+// worktree_status provide it instead).
 func TestSeedVisionWorkersCarryVisionModelAndPlaywright(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
@@ -353,11 +355,16 @@ func TestSeedVisionWorkersCarryVisionModelAndPlaywright(t *testing.T) {
 		for _, want := range []string{
 			"Browser automation (Playwright) — VISUAL verification",
 			"read the screenshot back with your Read tool",
-			"integration branch where all work lands",
-			"orchicon.safety=v16",
+			"orchicon.safety=v17",
 		} {
 			if !strings.Contains(agents, want) {
 				t.Errorf("%s agents_md missing %q", canned.id, want)
+			}
+		}
+		// Git-neutral: no hardcoded branch-workflow guidance in AGENTS.md.
+		for _, forbid := range []string{"Git workflow", "Git awareness", "integration branch where all work lands"} {
+			if strings.Contains(agents, forbid) {
+				t.Errorf("%s agents_md must be git-neutral (no %q) so non-repo runs aren't told a branch exists", canned.id, forbid)
 			}
 		}
 	}
@@ -386,8 +393,8 @@ func TestSeedCannedWorkersCarryDevOnlyGuard(t *testing.T) {
 	if !strings.Contains(agents, "orchicon-cnt-prod") || !strings.Contains(agents, "orchicon-cnt-dev") {
 		t.Errorf("DEV-ONLY guard must name both instances so the rule is unambiguous")
 	}
-	if !strings.Contains(agents, "orchicon.safety=v16") {
-		t.Errorf("canned worker must carry the current safety marker (orchicon.safety=v16)")
+	if !strings.Contains(agents, "orchicon.safety=v17") {
+		t.Errorf("canned worker must carry the current safety marker (orchicon.safety=v17)")
 	}
 }
 
@@ -467,7 +474,7 @@ func TestSeedDesignApproverCarriesDesignReviewContract(t *testing.T) {
 		t.Fatalf("query canned Design Approver agents: %v", err)
 	}
 	checks := []string{
-		"orchicon.safety=v16",
+		"orchicon.safety=v17",
 		"review the design/architecture PLAN only",
 		"plan is sound and complete; implementation may begin",
 		"plan does not meet the bar",
@@ -507,7 +514,7 @@ func TestSeedCodeApproverCarriesCodeReviewContract(t *testing.T) {
 		t.Fatalf("query canned Code Approver agents: %v", err)
 	}
 	checks := []string{
-		"orchicon.safety=v16",
+		"orchicon.safety=v17",
 		"review the completed IMPLEMENTATION",
 		"do not re-review it",
 		"implementation is done and meets the acceptance criteria",

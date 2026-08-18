@@ -2330,9 +2330,26 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		fmt.Fprintf(&sb, "This is iteration %d of this step. You may have done this work before — review your previous output and the feedback from downstream steps before repeating yourself.\n\n", currentRun.Iteration)
 	}
 
-	// Git branch guidance: avoid creating multiple branches across
-	// iterations. The worker should use the existing branch.
-	sb.WriteString("Use the existing git branch from the previous iteration if one exists. Do NOT create a new branch unless the previous work was on `main`.\n\n")
+	// Git/branch guidance: keyed on the run's worktree_status so a non-repo
+	// (in-place) run is never told to work on a branch. ready → the
+	// develop-first discipline block naming the recorded branch; anything
+	// else → an in-place block. The worktree fields come from the run row
+	// (the same signal that drives the execution cwd), resolved in the
+	// already-open transaction.
+	worktreeStatus, worktreeBranch, projectDir := "", "", ""
+	if wi.WorkflowRunID != "" {
+		_ = tx.QueryRow(ctx,
+			`SELECT worktree_status, worktree_branch FROM workflow_runs WHERE id = $1 AND tenant_id = $2`,
+			wi.WorkflowRunID, tenantID,
+		).Scan(&worktreeStatus, &worktreeBranch)
+	}
+	if wi.ProjectID != "" {
+		_ = tx.QueryRow(ctx,
+			`SELECT project_dir FROM projects WHERE id = $1 AND tenant_id = $2`,
+			wi.ProjectID, tenantID,
+		).Scan(&projectDir)
+	}
+	sb.WriteString(db.GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir))
 
 	// Recovery context: if THIS step is being re-dispatched after a
 	// recovery (its step run is recovering and carries a recovery

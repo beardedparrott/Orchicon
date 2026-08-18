@@ -751,8 +751,14 @@ type WorkflowRun struct {
 	UpdatedAt       *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	WorkItemId      string                 `protobuf:"bytes,14,opt,name=work_item_id,json=workItemId,proto3" json:"work_item_id,omitempty"`     // bound work item id, if any; empty for one-shot runs
 	RuntimeImage    string                 `protobuf:"bytes,15,opt,name=runtime_image,json=runtimeImage,proto3" json:"runtime_image,omitempty"` // resolved runtime container image tag at run start
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Worktree provisioning state (the non-repo in-place fallback):
+	// worktree_status is pending/ready/skipped/failed/pruned; a non-repo run
+	// is 'skipped' with empty path/branch and renders as "runs in place".
+	WorktreeStatus string `protobuf:"bytes,16,opt,name=worktree_status,json=worktreeStatus,proto3" json:"worktree_status,omitempty"`
+	WorktreeBranch string `protobuf:"bytes,17,opt,name=worktree_branch,json=worktreeBranch,proto3" json:"worktree_branch,omitempty"`
+	WorktreePath   string `protobuf:"bytes,18,opt,name=worktree_path,json=worktreePath,proto3" json:"worktree_path,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *WorkflowRun) Reset() {
@@ -886,6 +892,27 @@ func (x *WorkflowRun) GetWorkItemId() string {
 func (x *WorkflowRun) GetRuntimeImage() string {
 	if x != nil {
 		return x.RuntimeImage
+	}
+	return ""
+}
+
+func (x *WorkflowRun) GetWorktreeStatus() string {
+	if x != nil {
+		return x.WorktreeStatus
+	}
+	return ""
+}
+
+func (x *WorkflowRun) GetWorktreeBranch() string {
+	if x != nil {
+		return x.WorktreeBranch
+	}
+	return ""
+}
+
+func (x *WorkflowRun) GetWorktreePath() string {
+	if x != nil {
+		return x.WorktreePath
 	}
 	return ""
 }
@@ -1234,7 +1261,7 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"position_x\x18\t \x01(\x01R\tpositionX\x12\x1d\n" +
 	"\n" +
 	"position_y\x18\n" +
-	" \x01(\x01R\tpositionY\"\xee\x04\n" +
+	" \x01(\x01R\tpositionY\"\xe5\x05\n" +
 	"\vWorkflowRun\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1f\n" +
@@ -1258,7 +1285,10 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"updated_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12 \n" +
 	"\fwork_item_id\x18\x0e \x01(\tR\n" +
 	"workItemId\x12#\n" +
-	"\rruntime_image\x18\x0f \x01(\tR\fruntimeImage\"\x99\x05\n" +
+	"\rruntime_image\x18\x0f \x01(\tR\fruntimeImage\x12'\n" +
+	"\x0fworktree_status\x18\x10 \x01(\tR\x0eworktreeStatus\x12'\n" +
+	"\x0fworktree_branch\x18\x11 \x01(\tR\x0eworktreeBranch\x12#\n" +
+	"\rworktree_path\x18\x12 \x01(\tR\fworktreePath\"\x99\x05\n" +
 	"\x0fWorkflowStepRun\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12&\n" +

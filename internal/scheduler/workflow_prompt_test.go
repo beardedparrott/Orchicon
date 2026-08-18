@@ -274,13 +274,14 @@ func TestCompositePromptNoEmbeddedFactsBlock(t *testing.T) {
 	}
 }
 
-// TestCompositePromptGitDisciplineForBareWorker verifies the acceptance
-// criterion for the shared git-discipline block: even a bare custom worker
-// (empty Role/Skills/Behavior/AgentsMD — no per-worker git guidance of its
-// own) is explicitly told to work off a branch of `develop` and never commit
-// to `main`/`develop` directly, in BOTH the workflow composite and the
-// standalone composite.
-func TestCompositePromptGitDisciplineForBareWorker(t *testing.T) {
+// TestCompositePromptGitGuidanceForBareWorker verifies the per-run git/branch
+// guidance gating (the non-repo in-place fallback): a run with no worktree
+// (worktree_status absent/empty) gets the in-place block and is NEVER told a
+// branch exists; a git-backed run (ready + branch) gets the develop-first
+// branch block naming its recorded branch. A bare custom worker (empty
+// Role/Skills/Behavior/AgentsMD) must not be told to work on a branch when
+// there is none — in BOTH the workflow composite and the standalone composite.
+func TestCompositePromptGitGuidanceForBareWorker(t *testing.T) {
 	ctx := context.Background()
 	item := db.WorkItemRow{Title: "Branch discipline", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
 	bare := db.WorkerVersionRow{} // nothing — a custom worker with no git content
@@ -290,25 +291,57 @@ func TestCompositePromptGitDisciplineForBareWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// No worktree → the in-place block, no branch assumption.
 	for _, want := range []string{
-		"## Git discipline",
-		"Work on a branch created off `develop`",
-		"NEVER** commit to, push to, or open a PR into `main` or `develop`",
+		"no git branch or worktree",
+		"work in place",
+		"Do not create branches, commit, push, or open pull requests",
 	} {
 		if !strings.Contains(out, want) {
-			t.Errorf("workflow composite missing %q for a bare worker; got:\n%s", want, out)
+			t.Errorf("workflow composite missing %q for a non-repo bare worker; got:\n%s", want, out)
+		}
+	}
+	for _, forbid := range []string{
+		"branch created off `develop`",
+		"Use the branch recorded for this run",
+		"work on the branch",
+	} {
+		if strings.Contains(out, forbid) {
+			t.Errorf("workflow composite must not assume a branch for a non-repo run; found %q", forbid)
 		}
 	}
 
-	// Standalone (non-workflow) dispatch path must carry the same floor.
-	standalone := buildStandaloneComposite(nil, db.ExecutionRow{}, item, bare)
+	// Standalone (non-workflow) dispatch path must carry the same in-place floor.
+	standalone := buildStandaloneComposite(nil, db.ExecutionRow{}, item, bare, "", "")
 	for _, want := range []string{
-		"## Git discipline",
-		"Work on a branch created off `develop`",
-		"NEVER** commit to, push to, or open a PR into `main` or `develop`",
+		"no git branch or worktree",
+		"Do not create branches, commit, push, or open pull requests",
 	} {
 		if !strings.Contains(standalone, want) {
 			t.Errorf("standalone composite missing %q for a bare worker; got:\n%s", want, standalone)
 		}
+	}
+}
+
+// TestCompositePromptGitGuidanceGitBacked verifies the git-backed branch:
+// a run with worktree_status=ready and a recorded branch gets the
+// develop-first discipline block naming that branch — never an in-place note.
+func TestCompositePromptGitGuidanceGitBacked(t *testing.T) {
+	// Simulate a git-backed run: worktree_status=ready, a recorded branch,
+	// and a project dir. The block is keyed purely on these params, so a
+	// direct call with the params set exercises the git path.
+	out := db.GitGuidanceBlock(domain.WorktreeReady, "feat/my-branch", "/tmp/proj")
+	for _, want := range []string{
+		"## Git discipline",
+		"`feat/my-branch`",
+		"branch created off `develop`",
+		"NEVER** commit to, push to, or open a PR into `main` or `develop`",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("git guidance missing %q for a git-backed run; got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "work in place") {
+		t.Errorf("git-backed run must not get the in-place block; got:\n%s", out)
 	}
 }
