@@ -45,6 +45,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
@@ -85,6 +86,18 @@ type WorkflowReconciler struct {
 	// next reconcile pass re-triggers the (idempotent) probe.
 	warmingMu sync.Mutex
 	warming   map[string]bool
+
+	// dispatchConcurrency bounds how many inline TaskReconciler dispatches
+	// the post-commit fan-out runs concurrently for the independent branch
+	// steps collected in one pass (D1 — mirrors TaskReconciler's scan fan-
+	// out). Zero means defaultDispatchConcurrency. Set via
+	// SetDispatchConcurrency.
+	dispatchConcurrency int
+	// dispatchOverlap is a test-only hook invoked with the current number
+	// of DispatchTask calls in flight whenever the inline fan-out acquires
+	// a semaphore slot, so tests can assert the concurrency bound. Nil in
+	// production.
+	dispatchOverlap func(inFlight int)
 }
 
 // RuntimeLifecycle creates/reaps the per-workflow runtime container and
@@ -134,12 +147,27 @@ func (r *WorkflowReconciler) SetSequenceNotifier(fn func(ctx context.Context, pa
 	r.sequenceNotifier = fn
 }
 
-// SetWorktreeNotifier injects the callback that enqueues a run with the
-// WorktreeReconciler right after it is armed, so the run's isolated
-// working tree is provisioned immediately. Optional — the scan pass is the
-// safety net.
+// SetWorktreeNotifier injects the callback that enqueues a run (or, for a
+// parallel-branch step run, a "<runID>:<stepRunID>" key) with the
+// WorktreeReconciler so its isolated working tree is provisioned
+// immediately. Optional — the scan pass is the safety net.
 func (r *WorkflowReconciler) SetWorktreeNotifier(fn func(ctx context.Context, runID string)) {
 	r.worktreeNotifier = fn
+}
+
+// SetDispatchConcurrency sets the per-pass concurrency bound for the
+// post-commit inline dispatch fan-out (ORCHICON_DISPATCH_CONCURRENCY).
+// Values are clamped to [1, 64]; zero/negative falls back to the default
+// (4) at fan-out time. Setters are called at startup, before the
+// reconciler loop runs.
+func (r *WorkflowReconciler) SetDispatchConcurrency(n int) {
+	if n < 1 {
+		n = 1
+	}
+	if n > 64 {
+		n = 64
+	}
+	r.dispatchConcurrency = n
 }
 
 // Kind returns the reconciler kind (docs/03 §2.1).
@@ -182,6 +210,31 @@ func (r *WorkflowReconciler) scanRuns(ctx context.Context, tenantID string) erro
 		}
 	}
 	return nil
+}
+
+// parallelBranchChildIDs returns the set of step IDs that are
+// parallel-branch children: steps whose depends_on references a step whose
+// kind is `parallel`. Only these steps get their OWN branch worktree (D2)
+// and are gated on branch-worktree readiness before dispatch. Single
+// source of truth shared by the WorkflowReconciler (dispatch gate) and the
+// WorktreeReconciler (branch provisioning scan).
+func parallelBranchChildIDs(steps []workflow.StepWire) map[string]bool {
+	parallel := make(map[string]bool, len(steps))
+	for _, s := range steps {
+		if s.Kind == domain.StepKindParallel {
+			parallel[s.ID] = true
+		}
+	}
+	out := make(map[string]bool)
+	for _, s := range steps {
+		for _, dep := range s.DependsOn {
+			if parallel[dep] {
+				out[s.ID] = true
+				break
+			}
+		}
+	}
+	return out
 }
 
 // reconcileRun progresses a single workflow run through its step DAG.
@@ -378,6 +431,17 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// (task, step run) pair — the work item is a shared input reference, so
 	// parallel steps bound to it each get their own execution.
 	var dispatchedSteps []dispatchReq
+
+	// branchChild is the set of step IDs that are parallel-branch children
+	// (deps reference a `parallel` step). These run in their OWN worktree
+	// and are held at ready until the WorktreeReconciler provisions one.
+	branchChild := parallelBranchChildIDs(steps)
+	// branchWorktreeTriggers collects parallel-branch step runs whose
+	// branch worktree was not yet provisioned this pass; post-commit each
+	// is enqueued with the WorktreeReconciler (key "<runID>:<stepRunID>")
+	// so provisioning starts immediately instead of waiting for the scan
+	// pass.
+	var branchWorktreeTriggers []string
 
 	// Recovery triggers collected during this pass are invoked AFTER the
 	// transaction commits. TriggerOnFailure opens its OWN transaction on a
@@ -633,6 +697,35 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			if !ok {
 				continue
 			}
+			// D2 — branch-worktree readiness gate. A parallel-branch child
+			// must execute in its OWN worktree (AC1), so it is held at
+			// ready until the WorktreeReconciler provisions one — no
+			// eventually-consistent fallback to the run worktree (that
+			// would let branches share a filesystem and race .orchicon/).
+			//   'pending' → hold + enqueue a branch-worktree notifier
+			//               (fired post-commit); the 200ms scan pass is
+			//               the safety net that re-checks next pass.
+			//   'skipped' → non-git project / no run project: run in the
+			//               run's cwd (there is no worktree concept).
+			//   'failed'  → provisioning error: fail the step (mirrors
+			//               the run-worktree failed path).
+			//   'ready'/'pruned' → dispatch normally (pruned = a step run
+			//               re-armed after its branch was reaped; it runs
+			//               in the run's cwd).
+			if branchChild[sr.StepID] {
+				switch sr.WorktreeStatus {
+				case domain.WorktreePending, "":
+					branchWorktreeTriggers = append(branchWorktreeTriggers, sr.ID)
+					continue
+				case domain.WorktreeFailed:
+					if ferr := r.failStep(ctx, ttx.Tx, tenantID, run, sr, runByID,
+						fmt.Errorf("branch worktree provisioning failed for step %q", step.Name)); ferr != nil {
+						return ferr
+					}
+					madeProgress = true
+					continue
+				}
+			}
 			allowed := r.evaluateGate(ctx, step, run)
 			if !allowed {
 				now := time.Now().UTC()
@@ -771,6 +864,11 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// necessarily the DAG order; a failing step created last would otherwise
 	// leave the other steps "pending" on a failed run).
 	var nonTerminal []db.WorkflowStepRunRow
+	// anyRunning tracks whether any step run is still RUNNING. Under D4 a
+	// run with a failed branch and an in-flight sibling stays running until
+	// the sibling reaches its OWN terminal mark (AC4) — it is marked failed
+	// only once every in-flight step is terminal.
+	anyRunning := false
 	for _, sr := range stepRuns {
 		if sr.SupersededBy != "" {
 			continue
@@ -789,6 +887,9 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		case domain.StepRunFailed, domain.StepRunBlocked:
 			anyFailed = true
 			allSucceeded = false
+		case domain.StepRunRunning:
+			allSucceeded = false
+			anyRunning = true
 		case domain.StepRunApprovalPending:
 			allSucceeded = false
 		case domain.StepRunRecovering:
@@ -800,11 +901,17 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			nonTerminal = append(nonTerminal, sr)
 		}
 	}
-	// If the run has failed, skip all remaining non-terminal steps so
-	// the UI accurately reflects the run state instead of showing them
-	// as "pending" forever.
+	// If the run has failed, skip the not-yet-dispatched steps so the UI
+	// accurately reflects the run state instead of showing them as
+	// "pending" forever. D4: a step run that has ALREADY DISPATCHED
+	// (RUNNING) is never smeared with a shared skipped mark — it continues
+	// to its own terminal mark (the next pass polls it) and the run is
+	// failed only once it and the failed branch are both terminal (AC4).
 	if anyFailed {
 		for _, cur := range nonTerminal {
+			if cur.Status == domain.StepRunRunning {
+				continue
+			}
 			now2 := time.Now().UTC()
 			updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, cur.ID, cur.Version, db.UpdateWorkflowStepRunFields{
 				Status:  strPtr(domain.StepRunSkipped),
@@ -878,7 +985,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		if err := r.enqueueRunEvent(ctx, ttx.Tx, domain.WorkflowEventRunCompleted, run, ""); err != nil {
 			return fmt.Errorf("enqueue run_completed: %w", err)
 		}
-	} else if anyFailed {
+	} else if anyFailed && !anyRunning {
 		now := time.Now().UTC()
 		// Update the linked work item to failed, carrying the run-level
 		// narrative.
@@ -962,6 +1069,16 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	if armed && r.worktreeNotifier != nil {
 		r.worktreeNotifier(context.Background(), runID)
 	}
+	// Branch-worktree provisioning (D2): parallel-branch child step runs
+	// held at ready this pass are enqueued with the WorktreeReconciler
+	// under their composite "<runID>:<stepRunID>" key so their own working
+	// tree is provisioned immediately. Post-commit, like the run-arm
+	// notifier.
+	if r.worktreeNotifier != nil {
+		for _, stepRunID := range branchWorktreeTriggers {
+			r.worktreeNotifier(context.Background(), runID+":"+stepRunID)
+		}
+	}
 	// Sequence advance: a bound child reached a terminal state and has a
 	// parent — notify the sequence engine so the parent's chain advances
 	// (or halts) immediately rather than on the next scan tick. Post-commit
@@ -995,18 +1112,67 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// to the TaskReconciler's own transaction (docs/03 §8 invariant #1:
 	// only the TaskReconciler creates WorkerExecutions). Dispatch is scoped
 	// per step run — the work item is a shared input reference, so parallel
-	// steps bound to it each get their own execution.
-	if r.taskDispatcher != nil {
-		for _, d := range dispatchedSteps {
-			if err := r.taskDispatcher.DispatchTask(context.Background(), d.taskID, d.stepRunID); err != nil {
-				r.log.Warn("inline dispatch failed", "work_item", d.taskID, "step_run", d.stepRunID, "error", err)
-			}
-		}
+	// steps bound to it each get their own execution. Independent branch
+	// steps dispatch CONCURRENTLY (bounded fan-out, D1) so a pass's wall
+	// time becomes MAX(branch start) instead of SUM(branch start).
+	if r.taskDispatcher != nil && len(dispatchedSteps) > 0 {
+		r.dispatchInline(context.Background(), dispatchedSteps)
 	}
 	if progressed {
 		r.log.Info("workflow run progressed", "run", runID, "status", run.Status)
 	}
 	return nil
+}
+
+// dispatchInline fans out the pass's collected inline TaskReconciler
+// dispatches with bounded concurrency (dispatchConcurrency, default 4),
+// waiting for every in-flight dispatch before returning. It mirrors
+// TaskReconciler.dispatchCandidates: independent step runs dispatch in
+// PARALLEL (D1) so a pass's branch-start wall time becomes MAX instead of
+// SUM. Each DispatchTask opens its own transaction, links a distinct step
+// run via optimistic concurrency, and starts its execution in a goroutine
+// — no shared mutable state and no cross-step row contention, so the
+// fan-out is safe by construction. Per-item errors are logged and never
+// fail the pass.
+func (r *WorkflowReconciler) dispatchInline(ctx context.Context, steps []dispatchReq) {
+	limit := r.dispatchInlineLimit(len(steps))
+	r.log.Info("inline dispatch pass", "dispatches", len(steps), "concurrency", limit)
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	var inFlight atomic.Int32
+	for _, d := range steps {
+		wg.Add(1)
+		go func(d dispatchReq) {
+			defer wg.Done()
+			sem <- struct{}{}
+			cur := inFlight.Add(1)
+			if r.dispatchOverlap != nil {
+				r.dispatchOverlap(int(cur))
+			}
+			defer func() {
+				inFlight.Add(-1)
+				<-sem
+			}()
+			if err := r.taskDispatcher.DispatchTask(ctx, d.taskID, d.stepRunID); err != nil {
+				r.log.Warn("inline dispatch failed", "work_item", d.taskID, "step_run", d.stepRunID, "error", err)
+			}
+		}(d)
+	}
+	wg.Wait()
+}
+
+// dispatchInlineLimit returns the effective concurrency bound for the
+// inline dispatch fan-out: the configured dispatchConcurrency (default
+// defaultDispatchConcurrency), clamped to the batch size.
+func (r *WorkflowReconciler) dispatchInlineLimit(n int) int {
+	limit := r.dispatchConcurrency
+	if limit < 1 {
+		limit = defaultDispatchConcurrency
+	}
+	if limit > n {
+		limit = n
+	}
+	return limit
 }
 
 // failRunAtStart fails a workflow run before it can execute — a structural
@@ -1348,6 +1514,15 @@ const maxWorkItemDescLen = 1 << 20
 // must not fire until the new iteration re-approves. Without this, a
 // rejected approval left "succeeded" + superseded would still let the
 // downstream success-branch step dispatch in the same pass.
+//
+// INVARIANT (D3, concurrent step-run dispatch): this is THE fan-in
+// synchronization point — a gate/approval/loop decision with multiple
+// parallel inputs becomes ready only when EVERY input step run is
+// terminal-success (loop decisions additionally accept a failed upstream
+// so they can evaluate looping). Under concurrent branch dispatch it must
+// keep checking ALL depends_on — never "optimize" it into checking the
+// parallel marker step's single mark, or a gate/loop decision would
+// dispatch before its parallel siblings finish, breaking AC2/AC3.
 func (r *WorkflowReconciler) depsSatisfied(step workflow.StepWire, runs map[string]db.WorkflowStepRunRow) bool {
 	isLoopDecision := step.Kind == domain.StepKindLoopDecision
 	for _, dep := range step.DependsOn {

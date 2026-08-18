@@ -564,14 +564,20 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 			iteration = sr.Iteration
 		}
 	}
-	// Carry the run's worktree state onto the execution row so the
-	// execution detail view can render worktree status/branch/path.
-	// The worktree is per-run (provisioned at run arm), so every
-	// execution dispatched for a run records the same state. The
-	// WorktreeReconciler writes only the run row; without this copy the
-	// worker_executions columns stay NULL and the UI shows nothing.
+	// Carry the worktree state onto the execution row so the execution
+	// detail view can render worktree status/branch/path. D2: a
+	// parallel-branch child's execution runs in the STEP RUN's own branch
+	// worktree, so its state is copied from the step run when the step run
+	// carries a ready worktree; every other step run keeps the per-run
+	// worktree (provisioned at run arm). The WorktreeReconciler writes the
+	// run/step-run rows; without this copy the worker_executions columns
+	// stay NULL and the UI shows nothing.
 	var worktreeStatus, worktreePath, worktreeBranch *string
-	if workflowRunID != "" {
+	if stepRun != nil && stepRun.WorktreeStatus == domain.WorktreeReady && stepRun.WorktreePath != "" {
+		worktreeStatus = strPtr(stepRun.WorktreeStatus)
+		worktreePath = strPtr(stepRun.WorktreePath)
+		worktreeBranch = strPtr(stepRun.WorktreeBranch)
+	} else if workflowRunID != "" {
 		if run, gerr := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, workflowRunID); gerr == nil {
 			if run.WorktreeStatus != "" {
 				worktreeStatus = strPtr(run.WorktreeStatus)
@@ -760,6 +766,21 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				worktreeBranch = run.WorktreeBranch
 				if run.WorktreeStatus == domain.WorktreeReady && run.WorktreePath != "" {
 					worktreePath = run.WorktreePath
+				}
+			}
+			// D2: a parallel-branch child execution runs in the STEP RUN's
+			// OWN branch worktree — its cwd must be the branch worktree,
+			// not the run worktree. Resolve via the step run LINKED to this
+			// execution (GetWorkflowStepRunByExecution), because
+			// exec.WorkflowStepID alone is not unique across loop
+			// iterations. Non-branch steps carry no ready branch worktree,
+			// so they keep the run worktree (today's behavior).
+			if exec.WorkflowStepID != "" {
+				if sr, gerr := db.GetWorkflowStepRunByExecution(context.Background(), rtx.Tx, exec.TenantID, exec.ID); gerr == nil &&
+					sr.WorktreeStatus == domain.WorktreeReady && sr.WorktreePath != "" {
+					worktreeStatus = sr.WorktreeStatus
+					worktreePath = sr.WorktreePath
+					worktreeBranch = sr.WorktreeBranch
 				}
 			}
 			_ = rtx.Rollback(context.Background())

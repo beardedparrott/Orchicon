@@ -386,6 +386,10 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		s.reaper = scheduler.NewExecutionReaper(pool, adapterBridge.IsExecutionActive, taskRec.FailLostExecution, log)
 	}
 	workflowRec := scheduler.NewWorkflowReconciler(pool, log, policyEngine, taskRec, recoveryEngine, runtimeLifecycle)
+	// Bounded in-pass fan-out for the post-commit inline dispatch: parallel
+	// branch step runs dispatch concurrently (ORCHICON_DISPATCH_CONCURRENCY,
+	// default 4) — the workflow mirror of the TaskReconciler scan fan-out.
+	workflowRec.SetDispatchConcurrency(cfg.DispatchConcurrency)
 	// The Server keeps a concrete *runtime.Lifecycle for the adopt sweep;
 	// the interface may be nil (no daemon) while the concrete value is
 	// set — type-assert to extract it.
