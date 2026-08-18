@@ -25,7 +25,14 @@ type ExecutionManifest struct {
 	ContextSources     []byte // jsonb
 	Budgets            []byte // jsonb
 	Permissions        []byte // jsonb
-	ProjectDir         string // working directory for the adapter subprocess
+	// ProjectDir is the project root: the container bind-mount source and
+	// the daemon-level guard/serve boundary. Always the true project dir.
+	ProjectDir string
+	// WorktreePath is the execution's working directory when the run has a
+	// provisioned worktree (a subdir of ProjectDir: .orchicon-worktrees/
+	// <runID>, worker starts checked out on its branch). Empty = run in
+	// ProjectDir directly.
+	WorktreePath string
 	// RuntimeWorkflowID is the workflow run whose runtime container this
 	// execution should dispatch into. When non-empty AND a runtime
 	// daemon is configured, the adapter runs `opencode` inside the

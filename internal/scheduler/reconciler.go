@@ -457,6 +457,34 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 			projectDir = p.ProjectDir
 		}
 	}
+	// Resolve the workflow run's runtime container image (the adapter's
+	// self-heal recreates the container with the identical image the
+	// WorkflowReconciler used at run start) AND the run's provisioned
+	// worktree path, which becomes the execution working directory. This
+	// fetch runs BEFORE the recovery-seed gate: the seed file lands in the
+	// execution cwd (the worktree for worktree runs), so the cwd must be
+	// resolved first.
+	runtimeImage := ""
+	worktreePath := ""
+	if task.WorkflowRunID != "" {
+		if rtx, err := r.pool.BeginTenantTx(context.Background(), exec.TenantID); err == nil {
+			if run, gerr := db.GetWorkflowRun(context.Background(), rtx.Tx, exec.TenantID, task.WorkflowRunID); gerr == nil {
+				runtimeImage = run.RuntimeImage
+				if run.WorktreeStatus == domain.WorktreeReady && run.WorktreePath != "" {
+					worktreePath = run.WorktreePath
+				}
+			}
+			_ = rtx.Rollback(context.Background())
+		}
+	}
+	// The execution working directory is the provisioned worktree path when
+	// the run has one (the worker starts already checked out on its branch
+	// inside the worktree), else the project dir. Only worktree_status='ready'
+	// switches the cwd; skipped/failed/pending runs keep the project dir.
+	execCwd := projectDir
+	if worktreePath != "" {
+		execCwd = worktreePath
+	}
 	// The system prompt is the full context the model sees on every
 	// turn. The WorkflowReconciler builds the composite per step and
 	// stores it on the STEP RUN's result (_prompt) — the ticket is a
@@ -510,7 +538,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	// fails the dispatch (failed_to_start) instead of launching cold — the
 	// recovery-resume invariant.
 	if projectDir != "" {
-		updatedPrompt, err := r.seedRecoveryFile(context.Background(), exec, task, version, projectDir, stepRunResult, systemPrompt)
+		updatedPrompt, err := r.seedRecoveryFile(context.Background(), exec, task, version, execCwd, stepRunResult, systemPrompt)
 		if err != nil {
 			r.log.Error("recovery seed gate failed — failing dispatch instead of starting cold",
 				"execution", exec.ID, "error", err)
@@ -549,19 +577,6 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		}
 	}
 
-	// Resolve the workflow run's runtime container image so the adapter's
-	// self-heal recreates the container with the identical image the
-	// WorkflowReconciler used at run start.
-	runtimeImage := ""
-	if task.WorkflowRunID != "" {
-		if rtx, err := r.pool.BeginTenantTx(context.Background(), exec.TenantID); err == nil {
-			if run, gerr := db.GetWorkflowRun(context.Background(), rtx.Tx, exec.TenantID, task.WorkflowRunID); gerr == nil {
-				runtimeImage = run.RuntimeImage
-			}
-			_ = rtx.Rollback(context.Background())
-		}
-	}
-
 	// Merge the tenant-level default budget (base) with the worker's own
 	// budget_overrides (override) so a worker's explicit field always wins
 	// per-field over the tenant default. The merged JSON is what the
@@ -583,6 +598,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		Budgets:                      budgetsJSON,
 		Permissions:                  version.Permissions,
 		ProjectDir:                   projectDir,
+		WorktreePath:                 worktreePath,
 		RuntimeWorkflowID:            task.WorkflowRunID,
 		RuntimeImage:                 runtimeImage,
 		StallNoProgressWindowSeconds: stallNoProgress,

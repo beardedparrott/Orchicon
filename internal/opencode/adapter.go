@@ -130,6 +130,17 @@ func (a *Adapter) sessionsEnabled(manifest scheduler.ExecutionManifest) bool {
 	return os.Getenv("ORCHICON_OPCODE_SESSION_TRANSPORT") != "0"
 }
 
+// executionDir resolves the worker's working directory: the run's provisioned
+// worktree path when set, else the project dir. The worktree lives under the
+// project dir (.orchicon-worktrees/<runID>), so it is covered by the
+// project-dir mount and passes the project-dir containment checks.
+func executionDir(m scheduler.ExecutionManifest) string {
+	if m.WorktreePath != "" {
+		return m.WorktreePath
+	}
+	return m.ProjectDir
+}
+
 // sessionClientFor resolves the SessionClient for an execution: the
 // per-container serve for workflow-run executions (ensuring the container
 // exists + is serving), or the host serve for the in-process population.
@@ -159,7 +170,7 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 		if baseURL == "" {
 			baseURL = fmt.Sprintf("http://127.0.0.1:%d", resp.ServePort)
 		}
-		return NewSessionClient(baseURL, resp.ServePassword, manifest.ProjectDir)
+		return NewSessionClient(baseURL, resp.ServePassword, executionDir(manifest))
 	}
 	if a.host != nil {
 		return a.host.Client()
@@ -381,7 +392,7 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// Best-effort: drop the safety lint script into .orchicon/ so review
 	// and QA workers can run it (their bash tool is scoped to the project
 	// directory). See internal/opencode/lint.go.
-	writeSafetyLint(manifest.ProjectDir)
+	writeSafetyLint(executionDir(manifest))
 
 	// Session transport is the ONLY execution transport. Drive the
 	// execution through a persistent opencode session on a serve instance
