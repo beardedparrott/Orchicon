@@ -621,7 +621,19 @@ func (s *Service) StartWorkflow(ctx context.Context, req *connect.Request[apiv1.
 
 	// Seed a step run for each step in the DAG (status=pending). The
 	// reconciler progresses them through ready→running→succeeded.
+	// Lazy conflict-chain steps (e.g. the Integrator of a merge-integrator
+	// loop) are SKIPPED: they are wired only through a loop_decision gate's
+	// explicit conflict_chain, are referenced by no static depends_on edge,
+	// and must not run on a clean pass — they gain a run only when the gate
+	// detects a conflict and re-enters the chain (conflictReenter →
+	// createChainRuns creates the PENDING run at that point). Seeding one
+	// PENDING with empty deps would dispatch it on the first pass even with
+	// no conflict.
+	lazySteps := LazyConflictChainStepIDs(steps)
 	for _, step := range steps {
+		if lazySteps[step.ID] {
+			continue
+		}
 		stepRun := db.WorkflowStepRunRow{
 			ID:            db.NewID(),
 			TenantID:      tenantID,
@@ -1500,6 +1512,51 @@ func ParseSteps(data []byte) ([]StepWire, error) {
 // parseSteps is the internal alias used by the service handler.
 func parseSteps(data []byte) ([]StepWire, error) {
 	return ParseSteps(data)
+}
+
+// loopDecisionConflictChainConfig is the subset of a loop_decision step's
+// config that identifies the explicit conflict re-entry chain (the
+// Integrator loop). Only the conflict_chain field is needed to determine
+// laziness; the rest is handled by the scheduler's full config parser.
+type loopDecisionConflictChainConfig struct {
+	ConflictChain []string `json:"conflict_chain"`
+}
+
+// LazyConflictChainStepIDs returns the set of step IDs that are wired ONLY
+// through a loop_decision gate's explicit conflict_chain (e.g. the
+// Integrator step) and are not referenced by any static depends_on edge.
+// Such steps are lazy: they must NOT be seeded as PENDING step runs at run
+// start and must NOT dispatch on the first clean pass — they gain a run only
+// when a conflict is detected and the gate re-enters its conflict_chain.
+// Returns an empty map when no step is lazy (the common case).
+func LazyConflictChainStepIDs(steps []StepWire) map[string]bool {
+	var inChain []string
+	for _, s := range steps {
+		if s.Kind != domain.StepKindLoopDecision || s.Config == "" {
+			continue
+		}
+		var cfg loopDecisionConflictChainConfig
+		if json.Unmarshal([]byte(s.Config), &cfg) != nil {
+			continue
+		}
+		inChain = append(inChain, cfg.ConflictChain...)
+	}
+	if len(inChain) == 0 {
+		return nil
+	}
+	referenced := make(map[string]bool, len(steps))
+	for _, s := range steps {
+		for _, dep := range s.DependsOn {
+			referenced[dep] = true
+		}
+	}
+	lazy := make(map[string]bool)
+	for _, id := range inChain {
+		if !referenced[id] {
+			lazy[id] = true
+		}
+	}
+	return lazy
 }
 
 // enqueueWorkflowEvent builds a workflow event envelope, encodes it as

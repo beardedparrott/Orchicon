@@ -57,9 +57,19 @@ export function PropertiesPanel({
         changed = true;
       }
     }
-    if (d.kind === STEP_KIND.LOOP_DECISION && typeof cfg.max_iterations !== "number") {
-      next.max_iterations = 3;
-      changed = true;
+    if (d.kind === STEP_KIND.LOOP_DECISION) {
+      if (typeof cfg.max_iterations !== "number") {
+        next.max_iterations = 3;
+        changed = true;
+      }
+      if (typeof cfg.conflict_value !== "string") {
+        next.conflict_value = "conflict";
+        changed = true;
+      }
+      if (typeof cfg.exhausted_review !== "string") {
+        next.exhausted_review = "";
+        changed = true;
+      }
     }
     if (d.kind === STEP_KIND.TASK) {
       const rec = cfg.recovery ?? {};
@@ -353,6 +363,59 @@ export function PropertiesPanel({
                 ? `Success target: ${cfg.success_branch}`
                 : "Connect the success outlet (right handle) to the next step."}
             </p>
+          </Field>
+          <Field label="Conflict value" hint="The worker summary first word that routes a merge conflict to the Integrator loop.">
+            <input
+              type="text"
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              value={typeof cfg.conflict_value === "string" ? cfg.conflict_value : "conflict"}
+              disabled={readOnly}
+              onChange={(e) => {
+                const next = { ...cfg, conflict_value: e.target.value };
+                onChange({ config: JSON.stringify(next) });
+              }}
+            />
+          </Field>
+          <Field label="Conflict chain (comma-separated step ids)" hint="Step ids re-created when a conflict is detected, e.g. the Integrator. Leave empty to fall back to conflict_branch / loop_branch.">
+            <input
+              type="text"
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              value={Array.isArray(cfg.conflict_chain) ? (cfg.conflict_chain as string[]).join(", ") : ""}
+              disabled={readOnly}
+              placeholder="step-integrator"
+              onChange={(e) => {
+                const chain = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
+                const next = { ...cfg, conflict_chain: chain };
+                onChange({ config: JSON.stringify(next) });
+              }}
+            />
+          </Field>
+          <Field label="Conflict branch" hint="Fallback single re-entry target (static-DAG ancestor) when conflict_chain is empty.">
+            <input
+              type="text"
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              value={typeof cfg.conflict_branch === "string" ? cfg.conflict_branch : ""}
+              disabled={readOnly}
+              placeholder="step-devops-pr"
+              onChange={(e) => {
+                const next = { ...cfg, conflict_branch: e.target.value };
+                onChange({ config: JSON.stringify(next) });
+              }}
+            />
+          </Field>
+          <Field label="Escalate exhausted conflict to human review" hint="When the Integrator loop exhausts max_iterations, hold the run at a human approval gate instead of failing it.">
+            <select
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              value={cfg.exhausted_review === "human" ? "human" : ""}
+              disabled={readOnly}
+              onChange={(e) => {
+                const next = { ...cfg, exhausted_review: e.target.value === "human" ? "human" : "" };
+                onChange({ config: JSON.stringify(next) });
+              }}
+            >
+              <option value="">Fail the run when exhausted</option>
+              <option value="human">Escalate to human review</option>
+            </select>
           </Field>
           </>
         )}

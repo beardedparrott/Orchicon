@@ -1311,8 +1311,10 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	// no separate `_decision:` or `_issues:` channel that can contradict
 	// it — a standalone `_decision:` line or an `_issues:` block must
 	// never override the summary word. `_issues` is still captured for
-	// the run view and .orchicon/issues (informational only). The
-	// decision key is only set when a marker was found, so a step run
+	// the run view and .orchicon/issues (informational only). The first
+	// word may be any signal: "success"/"failure" normalize, and custom
+	// words (e.g. "conflict") pass through verbatim for conflict routing.
+	// The decision key is only set when a marker was found, so a step run
 	// that starts with a placeholder (e.g. worker-backed approval's
 	// `_decision: "pending"`) keeps it until a real signal lands.
 	if d := extractSummaryDecision(output); d != "" {
@@ -2241,8 +2243,9 @@ func extractWorkerSummary(output string) string {
 
 // extractSummaryDecision reads the first word of the summary block
 // (the text after ORCHICON WORKER SUMMARY:) and returns "success",
-// "failure", or "" if neither is found. The first word and any
-// separator (—, :, whitespace) are consumed.
+// "failure", any other verbatim first word (e.g. "conflict"), or ""
+// if no marker is present. The first word and any separator (—, :,
+// whitespace) are consumed.
 func extractSummaryDecision(output string) string {
 	idx := strings.LastIndex(output, summaryMarker)
 	if idx < 0 {
@@ -2265,8 +2268,13 @@ func trimSummaryDecision(s string) string {
 	return strings.TrimSpace(rest)
 }
 
-// firstWordAsDecision returns "success", "failure", or "" depending
-// on the first whitespace-delimited word of s.
+// firstWordAsDecision returns the normalized decision from the first
+// whitespace-delimited word of s: "success"/"failure" for words that
+// start with those prefixes. Any OTHER first word is passed through
+// verbatim (lowercased) so a worker can route custom signals — e.g. a
+// DevOps merge worker reporting `ORCHICON WORKER SUMMARY: conflict`
+// hands "conflict" to a loop_decision gate configured with
+// conflict_value="conflict". Returns "" only for an empty input.
 func firstWordAsDecision(s string) string {
 	parts := strings.Fields(s)
 	if len(parts) == 0 {
@@ -2279,7 +2287,7 @@ func firstWordAsDecision(s string) string {
 	case strings.HasPrefix(first, "failure"):
 		return "failure"
 	}
-	return ""
+	return first
 }
 
 // maxSummaryTokens caps the narrative portion of a worker summary persisted as

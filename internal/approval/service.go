@@ -104,6 +104,17 @@ func (s *Service) ApproveStep(ctx context.Context, req *connect.Request[apiv1.Ap
 		decisionStatus = "rejected"
 	}
 
+	// An exhausted LOOP_DECISION gate escalated to human review (an
+	// unresolved merge conflict) is kind-sensitive: approving it SUCCEEDS
+	// the gate (the run completes), while rejecting it FAILS the gate (the
+	// run fails — the human determined the conflict cannot be resolved
+	// within budget). A plain approval step keeps the old behavior: both
+	// outcomes succeed the step and branch downstream on the decision.
+	newStatus := domain.StepRunSucceeded
+	if sr.StepKind == domain.StepKindLoopDecision && decisionStatus == "rejected" {
+		newStatus = domain.StepRunFailed
+	}
+
 	// Resolve attachment write paths (project-dir .orchicon/<run_id>/attachments/)
 	// so they can be recorded in the step result and written in the same tx.
 	attPaths := make([]map[string]string, 0, len(attachments))
@@ -127,7 +138,7 @@ func (s *Service) ApproveStep(ctx context.Context, req *connect.Request[apiv1.Ap
 
 	now := time.Now().UTC()
 	updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-		Status:  strPtr(domain.StepRunSucceeded),
+		Status:  strPtr(newStatus),
 		Result:  &resultPayload,
 		EndedAt: &now,
 	})
@@ -136,7 +147,12 @@ func (s *Service) ApproveStep(ctx context.Context, req *connect.Request[apiv1.Ap
 	}
 
 	// Enqueue a step_succeeded event so the reconciler progresses the DAG.
+	// An exhausted loop_decision gate that is rejected fails (step_failed)
+	// so the reconciler terminalizes the run.
 	evtType := domain.WorkflowEventStepSucceeded
+	if newStatus == domain.StepRunFailed {
+		evtType = domain.WorkflowEventStepFailed
+	}
 	evt := map[string]any{
 		"event_type":      evtType,
 		"tenant_id":       sr.TenantID,
@@ -352,7 +368,7 @@ func listApprovalItems(ctx context.Context, tx pgx.Tx, tenantID string, req *api
 		JOIN workflows w ON w.id = wr.workflow_id AND w.tenant_id = wr.tenant_id
 		LEFT JOIN work_items wi ON wi.workflow_run_id = wr.id AND wi.id = wr.work_item_id
 		LEFT JOIN projects p ON p.id = wr.project_id AND p.tenant_id = wr.tenant_id
-		WHERE wsr.tenant_id = $1 AND wsr.step_kind = 'approval'
+		WHERE wsr.tenant_id = $1 AND wsr.step_kind IN ('approval', 'loop_decision')
 		  AND wsr.status IN ('approval_pending', 'succeeded')`
 
 	args := []any{tenantID}
