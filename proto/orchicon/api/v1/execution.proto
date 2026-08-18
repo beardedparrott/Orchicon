@@ -45,6 +45,13 @@ message WorkerExecution {
   int32 iteration = 23; // loop number: 0 = first dispatch, 1+ = loop_decision re-ask/re-entry
   string system_prompt = 24; // the actual system prompt sent to the model for this execution — the workflow step run's _prompt (per-step composite). Empty for non-workflow / legacy dispatch.
   string worker_name = 25; // human-readable worker name (LEFT JOINed from workers at query time)
+  // Worktree provisioning state (the non-repo in-place fallback), copied
+  // from the parent workflow run at dispatch:
+  // worktree_status is pending/ready/skipped/failed/pruned; a non-repo run
+  // is 'skipped' with empty path/branch and renders as "runs in place".
+  string worktree_status = 26;
+  string worktree_branch = 27; // deterministic branch created for the run
+  string worktree_path = 28; // isolated working tree the execution ran in
 }
 
 // ExecutionStatus — lifecycle of a WorkerExecution

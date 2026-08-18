@@ -276,6 +276,13 @@ type WorkerExecution struct {
 	Iteration      int32                  `protobuf:"varint,23,opt,name=iteration,proto3" json:"iteration,omitempty"`                          // loop number: 0 = first dispatch, 1+ = loop_decision re-ask/re-entry
 	SystemPrompt   string                 `protobuf:"bytes,24,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"` // the actual system prompt sent to the model for this execution — the workflow step run's _prompt (per-step composite). Empty for non-workflow / legacy dispatch.
 	WorkerName     string                 `protobuf:"bytes,25,opt,name=worker_name,json=workerName,proto3" json:"worker_name,omitempty"`       // human-readable worker name (LEFT JOINed from workers at query time)
+	// Worktree provisioning state (the non-repo in-place fallback), copied
+	// from the parent workflow run at dispatch:
+	// worktree_status is pending/ready/skipped/failed/pruned; a non-repo run
+	// is 'skipped' with empty path/branch and renders as "runs in place".
+	WorktreeStatus string `protobuf:"bytes,26,opt,name=worktree_status,json=worktreeStatus,proto3" json:"worktree_status,omitempty"`
+	WorktreeBranch string `protobuf:"bytes,27,opt,name=worktree_branch,json=worktreeBranch,proto3" json:"worktree_branch,omitempty"` // deterministic branch created for the run
+	WorktreePath   string `protobuf:"bytes,28,opt,name=worktree_path,json=worktreePath,proto3" json:"worktree_path,omitempty"`       // isolated working tree the execution ran in
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -481,6 +488,27 @@ func (x *WorkerExecution) GetSystemPrompt() string {
 func (x *WorkerExecution) GetWorkerName() string {
 	if x != nil {
 		return x.WorkerName
+	}
+	return ""
+}
+
+func (x *WorkerExecution) GetWorktreeStatus() string {
+	if x != nil {
+		return x.WorktreeStatus
+	}
+	return ""
+}
+
+func (x *WorkerExecution) GetWorktreeBranch() string {
+	if x != nil {
+		return x.WorktreeBranch
+	}
+	return ""
+}
+
+func (x *WorkerExecution) GetWorktreePath() string {
+	if x != nil {
+		return x.WorktreePath
 	}
 	return ""
 }
@@ -2246,7 +2274,7 @@ var File_orchicon_api_v1_execution_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"\n" +
-	"\x1forchicon/api/v1/execution.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa0\a\n" +
+	"\x1forchicon/api/v1/execution.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x97\b\n" +
 	"\x0fWorkerExecution\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -2279,7 +2307,10 @@ const file_orchicon_api_v1_execution_proto_rawDesc = "" +
 	"\titeration\x18\x17 \x01(\x05R\titeration\x12#\n" +
 	"\rsystem_prompt\x18\x18 \x01(\tR\fsystemPrompt\x12\x1f\n" +
 	"\vworker_name\x18\x19 \x01(\tR\n" +
-	"workerName\"\x86\x02\n" +
+	"workerName\x12'\n" +
+	"\x0fworktree_status\x18\x1a \x01(\tR\x0eworktreeStatus\x12'\n" +
+	"\x0fworktree_branch\x18\x1b \x01(\tR\x0eworktreeBranch\x12#\n" +
+	"\rworktree_path\x18\x1c \x01(\tR\fworktreePath\"\x86\x02\n" +
 	"\x0eExecutionEvent\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12!\n" +
 	"\fexecution_id\x18\x02 \x01(\tR\vexecutionId\x12\x1b\n" +
