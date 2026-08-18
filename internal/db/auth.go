@@ -23,6 +23,12 @@ type IdentityRow struct {
 	Version      int
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+	// Username is the local-account login handle bound to this identity via
+	// local_credentials, populated by the LEFT JOIN on the identity read
+	// paths (GetIdentity/ListIdentities). Empty when the identity has no
+	// local credential. Only the username is projected — never
+	// password_hash (the credential boundary, docs/07 §6.1).
+	Username string
 }
 
 // GetOrCreateIdentity finds an identity by (tenant_id, subject), or
@@ -66,16 +72,25 @@ func GetOrCreateIdentity(ctx context.Context, tx pgx.Tx, tenantID, subject, disp
 	return row, true, nil
 }
 
-// GetIdentity fetches a single identity by id within the tenant scope.
+// GetIdentity fetches a single identity by id within the tenant scope. The
+// local_credentials username is LEFT JOINed in (username only, never the
+// hash) so the read path surfaces the identity's local login handle.
 func GetIdentity(ctx context.Context, tx pgx.Tx, tenantID, id string) (IdentityRow, error) {
-	const q = `SELECT id, tenant_id, subject, display_name, identity_type, status, version,
-		created_at, updated_at
-		FROM identities WHERE id = $1 AND tenant_id = $2`
+	const q = `SELECT i.id, i.tenant_id, i.subject, i.display_name, i.identity_type,
+		i.status, i.version, i.created_at, i.updated_at, lc.username
+		FROM identities i
+		LEFT JOIN local_credentials lc
+			ON lc.tenant_id = i.tenant_id AND lc.identity_id = i.id
+		WHERE i.id = $1 AND i.tenant_id = $2`
 	var r IdentityRow
+	var username *string
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
-		&r.ID, &r.TenantID, &r.Subject, &r.DisplayName, &r.IdentityType, &r.Status,
-		&r.Version, &r.CreatedAt, &r.UpdatedAt,
+		&r.ID, &r.TenantID, &r.Subject, &r.DisplayName, &r.IdentityType,
+		&r.Status, &r.Version, &r.CreatedAt, &r.UpdatedAt, &username,
 	)
+	if username != nil {
+		r.Username = *username
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return IdentityRow{}, ErrNotFound
 	}
@@ -92,16 +107,21 @@ type ListIdentitiesFilter struct {
 	AfterID  string
 }
 
-// ListIdentities returns a page of identities for the tenant.
+// ListIdentities returns a page of identities for the tenant. The
+// local_credentials username is LEFT JOINed in (username only, never the
+// hash) so the admin identities list surfaces each identity's local login
+// handle.
 func ListIdentities(ctx context.Context, tx pgx.Tx, f ListIdentitiesFilter) ([]IdentityRow, error) {
 	if f.PageSize <= 0 || f.PageSize > 1000 {
 		f.PageSize = 100
 	}
-	const q = `SELECT id, tenant_id, subject, display_name, identity_type, status, version,
-		created_at, updated_at
-		FROM identities
-		WHERE tenant_id = $1 AND ($2 = '' OR id > $2)
-		ORDER BY id ASC LIMIT $3`
+	const q = `SELECT i.id, i.tenant_id, i.subject, i.display_name, i.identity_type,
+		i.status, i.version, i.created_at, i.updated_at, lc.username
+		FROM identities i
+		LEFT JOIN local_credentials lc
+			ON lc.tenant_id = i.tenant_id AND lc.identity_id = i.id
+		WHERE i.tenant_id = $1 AND ($2 = '' OR i.id > $2)
+		ORDER BY i.id ASC LIMIT $3`
 	rows, err := tx.Query(ctx, q, f.TenantID, f.AfterID, f.PageSize)
 	if err != nil {
 		return nil, fmt.Errorf("db: list identities: %w", err)
@@ -110,9 +130,13 @@ func ListIdentities(ctx context.Context, tx pgx.Tx, f ListIdentitiesFilter) ([]I
 	var out []IdentityRow
 	for rows.Next() {
 		var r IdentityRow
+		var username *string
 		if err := rows.Scan(&r.ID, &r.TenantID, &r.Subject, &r.DisplayName, &r.IdentityType,
-			&r.Status, &r.Version, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			&r.Status, &r.Version, &r.CreatedAt, &r.UpdatedAt, &username); err != nil {
 			return nil, fmt.Errorf("db: scan identity: %w", err)
+		}
+		if username != nil {
+			r.Username = *username
 		}
 		out = append(out, r)
 	}

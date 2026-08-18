@@ -45,6 +45,14 @@ message Identity {
   int32 version = 7;
   google.protobuf.Timestamp created_at = 8;
   google.protobuf.Timestamp updated_at = 9;
+  // username is the local-account login handle bound to this identity via
+  // local_credentials (empty when the identity has no local credential).
+  // The login handle is not password material — only the username is
+  // exposed, never the hash — and it need not equal the subject (a
+  // dev-login/SSO-provisioned identity can hold a locally-named
+  // credential). This is the narrow documented exception that surfaces the
+  // handle on the identity read path (docs/07 §6.1).
+  string username = 10;
 }
 
 // Role is a named bundle of entitlements (resource:action pairs), scoped

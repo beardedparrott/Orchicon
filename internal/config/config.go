@@ -47,12 +47,6 @@ type AuthConfig struct {
 	SigningKey   string // HMAC key for minting/verifying Orchicon access tokens
 	AccessTTL    time.Duration
 	RefreshTTL   time.Duration
-	// DevLoginAllowed enables the synthetic /auth/dev-login endpoint
-	// (local mode only). Default false: it is a dev escape hatch, not
-	// the default path — a fresh plane authenticates through the
-	// embedded OP (or an external IdP), and the local-mode first-admin
-	// bootstrap seed (internal/auth/bootstrap.go) makes that usable.
-	DevLoginAllowed bool
 
 	// EmbeddedOP enables the in-process OpenID Provider (zitadel/oidc v3,
 	// pkg/op) mounted on the plane origin. Defaults to true; a strict
@@ -115,11 +109,11 @@ type Config struct {
 
 	// DeploymentTenantID is the single tenant this deployment owns
 	// (ORCHICON_DEPLOYMENT_TENANT_ID, default "tnt_dev"). Every auth path
-	// — OIDC callback, dev-login, the embedded-OP local login, the
-	// local-admin bootstrap — resolves logins into this tenant, and boot
-	// provisions it via SeedDevTenant. It is server config, never client
-	// input; the IdP's identity claims are not consulted for tenant
-	// selection (single-tenant-per-deployment, decision #178).
+	// — OIDC callback, the embedded-OP local login, the local-admin
+	// bootstrap — resolves logins into this tenant, and boot provisions it
+	// via SeedDevTenant. It is server config, never client input; the IdP's
+	// identity claims are not consulted for tenant selection
+	// (single-tenant-per-deployment, decision #178).
 	DeploymentTenantID string
 
 	// Instance identifies this control plane ("dev"/"prod"). It labels
@@ -174,7 +168,6 @@ func Default() Config {
 			SigningKey:      env("ORCHICON_AUTH_SIGNING_KEY", "orchicon-dev-signing-key-change-in-production"),
 			AccessTTL:       15 * time.Minute,
 			RefreshTTL:      24 * time.Hour,
-			DevLoginAllowed: envBool("ORCHICON_DEV_LOGIN", false),
 			EmbeddedOP:      envBool("ORCHICON_OP_ENABLED", true),
 			OPRedirectURIs:  env("ORCHICON_OP_REDIRECT_URIS", ""),
 			OPIssuer:        env("ORCHICON_OP_ISSUER", ""),

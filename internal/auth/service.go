@@ -1157,6 +1157,7 @@ func identityRowToProto(r db.IdentityRow) *apiv1.Identity {
 		Version:      int32(r.Version),
 		CreatedAt:    timestamppb.New(r.CreatedAt),
 		UpdatedAt:    timestamppb.New(r.UpdatedAt),
+		Username:     r.Username,
 	}
 }
 

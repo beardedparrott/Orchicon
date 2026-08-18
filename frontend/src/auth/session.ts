@@ -1,4 +1,4 @@
-// Auth session: in-memory access token + refresh-on-401 + OIDC/dev login.
+// Auth session: in-memory access token + refresh-on-401 + local/OIDC login.
 //
 // Per docs/10_Frontend_Architecture.md §7: the access token lives in
 // memory (never localStorage); the refresh token lives in an HttpOnly
@@ -66,27 +66,6 @@ export type SessionInfo = {
   // the token is still issued so the gate can call the change RPC.
   force_password_change?: boolean;
 };
-
-// devLogin mints a synthetic token via the dev IdP (local mode only).
-export async function devLogin(subject: string): Promise<SessionInfo> {
-  const res = await fetch("/auth/dev-login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ subject }),
-  });
-  if (!res.ok) {
-    throw new Error(`dev-login failed: ${res.status}`);
-  }
-  const body = await res.json();
-  setAccessToken(body.access_token);
-  return {
-    authenticated: true,
-    identity_id: body.identity_id,
-    tenant_id: body.tenant_id,
-    is_admin: body.is_admin,
-    expires_at: Date.now() + body.expires_in * 1000,
-  };
-}
 
 // localLogin authenticates a local account against the embedded IdP with a
 // username + password. The server verifies the stored argon2id/bcrypt hash,
@@ -285,7 +264,6 @@ export type AuthConfig = {
   mode: string;
   embedded_op: boolean;
   external_oidc: boolean;
-  dev_login: boolean;
   // signup advertises self-service account creation over the embedded IdP
   // (true exactly when the plane's embedded OP is enabled). The SPA shows
   // the "Create an account" affordance only when it is advertised.

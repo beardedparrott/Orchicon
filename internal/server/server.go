@@ -168,10 +168,11 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	log.Info("auth configured", "issuer", cfg.Auth.Issuer, "mode", cfg.Mode)
 
 	// Local-mode first-admin bootstrap: seed the embedded-OP login
-	// credential for a fresh plane so it is usable out of the box (the
-	// anonymous dev bypass is gone and dev-login is off by default).
-	// No-op in production, when ORCHICON_LOCAL_ADMIN_SEED=0, or once an
-	// admin already exists. Logs the generated password once on first boot.
+	// credential for a fresh plane (admin/admin with a forced password
+	// change) so it is usable out of the box. Runs in every local-mode
+	// plane with the embedded OP (dev AND prod volumes); no-op in
+	// production, when the OP is disabled, or once an admin credential
+	// already exists. Logs the generated password once on first boot.
 	if err := auth.BootstrapLocalAdmin(context.Background(), pool, log, cfg); err != nil {
 		log.Warn("local admin bootstrap failed (continuing)", "error", err)
 	}

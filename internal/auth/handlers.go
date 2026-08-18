@@ -35,7 +35,6 @@ type LocalCredentialVerifier func(ctx context.Context, tenantID, username, passw
 //
 //	POST /auth/local-login    Local-account login (embedded IdP, username+password)
 //	POST /auth/signup         Self-service account creation (embedded IdP, username+password)
-//	POST /auth/dev-login      Local-mode synthetic login (subject → tokens; flag-gated)
 //	POST /auth/refresh        Exchange a refresh token for a new access token
 //	POST /auth/logout         Clear the HttpOnly refresh cookie (end the browser session)
 //	GET  /auth/oidc/login     Redirect to the IdP authorize URL
@@ -57,9 +56,9 @@ type Handler struct {
 	log      *slog.Logger
 	// deploymentTenantID is the single tenant this deployment owns
 	// (ORCHICON_DEPLOYMENT_TENANT_ID, default "tnt_dev"). Every auth path
-	// resolves logins into it — OIDC callback, dev-login, and the
-	// embedded-OP local login — so a non-default install never splits
-	// identities across tenants (decision #178).
+	// resolves logins into it — OIDC callback, the embedded-OP local
+	// login, and the local-admin bootstrap — so a non-default install
+	// never splits identities across tenants (decision #178).
 	deploymentTenantID string
 	// verifyCred is the injected LocalCredentialVerifier (the credential
 	// boundary). Defaults to the DB-backed lookup + hash check; a test or
@@ -111,7 +110,6 @@ func (h *Handler) Resolver() *Resolver { return h.resolver }
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/auth/local-login", h.localLogin)
 	mux.HandleFunc("/auth/signup", h.signup)
-	mux.HandleFunc("/auth/dev-login", h.devLogin)
 	mux.HandleFunc("/auth/refresh", h.refresh)
 	mux.HandleFunc("/auth/logout", h.logout)
 	mux.HandleFunc("/auth/oidc/login", h.oidcLogin)
@@ -132,7 +130,6 @@ type authConfigResponse struct {
 	Mode         string `json:"mode"`
 	EmbeddedOP   bool   `json:"embedded_op"`
 	ExternalOIDC bool   `json:"external_oidc"`
-	DevLogin     bool   `json:"dev_login"`
 	// Signup advertises self-service account creation over the embedded IdP
 	// (true exactly when the embedded OP is enabled). The SPA shows the
 	// "Create an account" affordance only when the plane advertises it.
@@ -149,16 +146,8 @@ func (h *Handler) authConfig(w http.ResponseWriter, r *http.Request) {
 		Mode:         string(h.mode),
 		EmbeddedOP:   h.cfg.EmbeddedOP,
 		ExternalOIDC: h.oidc != nil,
-		DevLogin:     h.mode == config.ModeLocal && h.cfg.DevLoginAllowed,
 		Signup:       h.cfg.EmbeddedOP,
 	})
-}
-
-// devLoginRequest is the body for POST /auth/dev-login.
-type devLoginRequest struct {
-	Subject  string `json:"subject"`
-	TenantID string `json:"tenant_id"`
-	Name     string `json:"name"`
 }
 
 // tokenResponse is the JSON body returned on login/refresh.
@@ -551,71 +540,6 @@ func opAuthRequestID(next string) (string, bool) {
 	return "", false
 }
 
-// devLogin mints tokens for a synthetic subject. Local dev only — gated
-// by ORCHICON_DEV_LOGIN. Production rejects this path.
-func (h *Handler) devLogin(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if h.mode != config.ModeLocal || !h.cfg.DevLoginAllowed {
-		http.Error(w, "dev login is disabled", http.StatusForbidden)
-		return
-	}
-	var req devLoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	req.Subject = strings.TrimSpace(req.Subject)
-	if req.Subject == "" {
-		http.Error(w, "subject must not be empty", http.StatusBadRequest)
-		return
-	}
-	tenantID := req.TenantID
-	if tenantID == "" {
-		tenantID = h.deploymentTenantID
-	}
-	name := req.Name
-	if name == "" {
-		name = req.Subject
-	}
-	ident, _, err := h.resolver.EnsureIdentityForSubject(r.Context(), tenantID, req.Subject, name, "user")
-	if err != nil {
-		h.log.Error("dev-login: ensure identity", "error", err)
-		http.Error(w, "failed to provision identity", http.StatusInternalServerError)
-		return
-	}
-	// Seed the admin role + binding so the dev user has full access.
-	isAdmin, err := h.ensureDevAdminBinding(r.Context(), tenantID, ident.ID)
-	if err != nil {
-		h.log.Error("dev-login: ensure admin binding", "error", err)
-		http.Error(w, "failed to provision role", http.StatusInternalServerError)
-		return
-	}
-	ents, _, err := h.resolver.ResolveIdentity(r.Context(), tenantID, ident.ID)
-	if err != nil {
-		h.log.Error("dev-login: resolve entitlements", "error", err)
-		http.Error(w, "failed to resolve entitlements", http.StatusInternalServerError)
-		return
-	}
-	pair, err := h.issuer.IssuePair(ident.ID, tenantID, ents, isAdmin)
-	if err != nil {
-		http.Error(w, "failed to issue tokens", http.StatusInternalServerError)
-		return
-	}
-	h.setRefreshCookie(w, pair.RefreshToken)
-	h.auditAuthEvent(r.Context(), tenantID, ident.ID, "auth.login", "dev")
-	writeJSON(w, http.StatusOK, tokenResponse{
-		AccessToken: pair.AccessToken,
-		TokenType:   "Bearer",
-		ExpiresIn:   pair.ExpiresIn,
-		IdentityID:  ident.ID,
-		TenantID:    tenantID,
-		IsAdmin:     isAdmin,
-	})
-}
-
 // refresh exchanges a refresh token (cookie or body) for a new access token.
 type refreshRequest struct {
 	RefreshToken string `json:"refresh_token"`
@@ -739,7 +663,27 @@ func (h *Handler) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if created {
-		_, _ = h.ensureDevAdminBinding(r.Context(), tenantID, ident.ID)
+		// First-login admin grant (decision #179, idempotent): provision the
+		// tenant admin role + binding for the fresh identity. Routed through
+		// the bootstrap helpers (ensureAdminRole + bindAdminRole) so there is
+		// exactly one admin-provisioning path; errors are logged, never fatal
+		// to the callback (an admin can grant roles later via Admin → Roles).
+		ttx, err := h.pool.BeginTenantTx(r.Context(), tenantID)
+		if err != nil {
+			h.log.Warn("oidc callback: begin admin-grant tx", "error", err)
+		} else {
+			defer ttx.Rollback(r.Context())
+			adminRoleID, err := ensureAdminRole(r.Context(), ttx.Tx, tenantID)
+			if err == nil {
+				err = bindAdminRole(r.Context(), ttx.Tx, tenantID, ident.ID, adminRoleID)
+			}
+			if err == nil {
+				err = ttx.Commit(r.Context())
+			}
+			if err != nil {
+				h.log.Warn("oidc callback: grant first-login admin role", "error", err)
+			}
+		}
 	}
 	h.auditAuthEvent(r.Context(), tenantID, ident.ID, "auth.login", "oidc")
 	ents, isAdmin, err := h.resolver.ResolveIdentity(r.Context(), tenantID, ident.ID)
@@ -812,66 +756,6 @@ func (h *Handler) localCredential(ctx context.Context, tenantID, identityID stri
 		return nil
 	}
 	return &row
-}
-
-// ensureDevAdminBinding creates the tenant admin role (if absent) and
-// binds it to the identity, returning whether the identity is now an
-// admin. Idempotent. The admin role bypasses per-call RBAC checks.
-func (h *Handler) ensureDevAdminBinding(ctx context.Context, tenantID, identityID string) (bool, error) {
-	ttx, err := h.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return false, err
-	}
-	defer ttx.Rollback(ctx)
-	// Find or create the admin role.
-	roles, err := db.ListRoles(ctx, ttx.Tx, tenantID, 1000, "")
-	if err != nil {
-		return false, err
-	}
-	var adminRoleID string
-	for _, rl := range roles {
-		if rl.Name == "admin" {
-			adminRoleID = rl.ID
-			break
-		}
-	}
-	if adminRoleID == "" {
-		role, err := db.CreateRole(ctx, ttx.Tx, db.RoleRow{
-			TenantID:     tenantID,
-			Name:         "admin",
-			Scope:        "tenant",
-			Entitlements: []string{"*"},
-		})
-		if err != nil {
-			return false, err
-		}
-		adminRoleID = role.ID
-	}
-	// Bind the identity to the admin role (idempotent: check first).
-	bindings, err := db.ListRoleBindings(ctx, ttx.Tx, tenantID, identityID, 1000, "")
-	if err != nil {
-		return false, err
-	}
-	for _, b := range bindings {
-		if b.RoleID == adminRoleID {
-			if err := ttx.Commit(ctx); err != nil {
-				return false, err
-			}
-			return true, nil
-		}
-	}
-	if _, err := db.CreateRoleBinding(ctx, ttx.Tx, db.RoleBindingRow{
-		TenantID:   tenantID,
-		IdentityID: identityID,
-		RoleID:     adminRoleID,
-		Scope:      "tenant",
-	}); err != nil {
-		return false, err
-	}
-	if err := ttx.Commit(ctx); err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 // setRefreshCookie sets the refresh token as an HttpOnly cookie. In
