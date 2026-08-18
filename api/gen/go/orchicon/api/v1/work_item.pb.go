@@ -304,7 +304,12 @@ type WorkItem struct {
 	RecurringSchedule *RecurringSchedule `protobuf:"bytes,29,opt,name=recurring_schedule,json=recurringSchedule,proto3,oneof" json:"recurring_schedule,omitempty"`
 	// next_run_at is the computed next occurrence of a recurring item, used by
 	// the scheduler due-scan. NULL = not recurring or no next occurrence.
-	NextRunAt     *timestamppb.Timestamp `protobuf:"bytes,30,opt,name=next_run_at,json=nextRunAt,proto3" json:"next_run_at,omitempty"`
+	NextRunAt *timestamppb.Timestamp `protobuf:"bytes,30,opt,name=next_run_at,json=nextRunAt,proto3" json:"next_run_at,omitempty"`
+	// depends_on are the IDs of the work items this item depends on (its
+	// outgoing edges of type DEPENDS_ON in the work DAG, independent of the
+	// parent/child hierarchy). Mirrors the create/update request shape so the
+	// set round-trips; full edge objects are available from GetDependencyGraph.
+	DependsOn     []string `protobuf:"bytes,31,rep,name=depends_on,json=dependsOn,proto3" json:"depends_on,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -542,6 +547,13 @@ func (x *WorkItem) GetNextRunAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *WorkItem) GetDependsOn() []string {
+	if x != nil {
+		return x.DependsOn
+	}
+	return nil
+}
+
 // RecurringSchedule defines the recurrence pattern for a recurring work item.
 // Stored as JSONB in the recurring_schedule column. NULL = not recurring.
 type RecurringSchedule struct {
@@ -774,7 +786,8 @@ var File_orchicon_api_v1_work_item_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\n" +
-	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf1\t\n" +
+	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x90\n" +
+	"\n" +
 	"\bWorkItem\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -810,7 +823,9 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\n" +
 	"sort_order\x18\x1c \x01(\x01R\tsortOrder\x12V\n" +
 	"\x12recurring_schedule\x18\x1d \x01(\v2\".orchicon.api.v1.RecurringScheduleH\x01R\x11recurringSchedule\x88\x01\x01\x12:\n" +
-	"\vnext_run_at\x18\x1e \x01(\v2\x1a.google.protobuf.TimestampR\tnextRunAtB\x16\n" +
+	"\vnext_run_at\x18\x1e \x01(\v2\x1a.google.protobuf.TimestampR\tnextRunAt\x12\x1d\n" +
+	"\n" +
+	"depends_on\x18\x1f \x03(\tR\tdependsOnB\x16\n" +
 	"\x14_auto_start_workflowB\x15\n" +
 	"\x13_recurring_schedule\"\x9f\x01\n" +
 	"\x11RecurringSchedule\x12\x1c\n" +

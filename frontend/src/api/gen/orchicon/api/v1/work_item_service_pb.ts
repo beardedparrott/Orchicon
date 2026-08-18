@@ -170,6 +170,16 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
    */
   recurringSchedule?: RecurringSchedule;
 
+  /**
+   * depends_on are the IDs of the work items this item depends on. Each ID
+   * creates a DEPENDS_ON-type edge (from = this item, to = the listed ID).
+   * Absent/empty = no edges. Validated: same project, target exists, no
+   * self-dependency, no cycle.
+   *
+   * @generated from field: repeated string depends_on = 18;
+   */
+  dependsOn: string[] = [];
+
   constructor(data?: PartialMessage<CreateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -195,6 +205,7 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
     { no: 15, name: "runtime_image", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 16, name: "context_files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
     { no: 17, name: "recurring_schedule", kind: "message", T: RecurringSchedule, opt: true },
+    { no: 18, name: "depends_on", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkItemRequest {
@@ -595,6 +606,16 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
    */
   recurringSchedule?: RecurringSchedule;
 
+  /**
+   * depends_on replaces the item's outgoing DEPENDS_ON edges (set-replace):
+   * an empty ids list clears all edges, an absent field leaves them
+   * unchanged. Validated: same project, target exists, no self-dependency,
+   * no cycle. Edges are independent of parent_id/sort_order.
+   *
+   * @generated from field: optional orchicon.api.v1.DependencyIds depends_on = 25;
+   */
+  dependsOn?: DependencyIds;
+
   constructor(data?: PartialMessage<UpdateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -623,6 +644,7 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
     { no: 22, name: "context_files", kind: "message", T: ContextFiles, opt: true },
     { no: 23, name: "acceptance_review", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 24, name: "recurring_schedule", kind: "message", T: RecurringSchedule, opt: true },
+    { no: 25, name: "depends_on", kind: "message", T: DependencyIds, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkItemRequest {
@@ -639,6 +661,47 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
 
   static equals(a: UpdateWorkItemRequest | PlainMessage<UpdateWorkItemRequest> | undefined, b: UpdateWorkItemRequest | PlainMessage<UpdateWorkItemRequest> | undefined): boolean {
     return proto3.util.equals(UpdateWorkItemRequest, a, b);
+  }
+}
+
+/**
+ * DependencyIds is a set of dependency target work item IDs. Used for
+ * UpdateWorkItem.depends_on so "leave unchanged" (field absent) and
+ * "clear all" (empty ids) are distinguishable.
+ *
+ * @generated from message orchicon.api.v1.DependencyIds
+ */
+export class DependencyIds extends Message<DependencyIds> {
+  /**
+   * @generated from field: repeated string ids = 1;
+   */
+  ids: string[] = [];
+
+  constructor(data?: PartialMessage<DependencyIds>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DependencyIds";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DependencyIds {
+    return new DependencyIds().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DependencyIds {
+    return new DependencyIds().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DependencyIds {
+    return new DependencyIds().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DependencyIds | PlainMessage<DependencyIds> | undefined, b: DependencyIds | PlainMessage<DependencyIds> | undefined): boolean {
+    return proto3.util.equals(DependencyIds, a, b);
   }
 }
 

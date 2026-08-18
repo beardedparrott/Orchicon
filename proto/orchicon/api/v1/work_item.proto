@@ -98,6 +98,11 @@ message WorkItem {
   // next_run_at is the computed next occurrence of a recurring item, used by
   // the scheduler due-scan. NULL = not recurring or no next occurrence.
   google.protobuf.Timestamp next_run_at = 30;
+  // depends_on are the IDs of the work items this item depends on (its
+  // outgoing edges of type DEPENDS_ON in the work DAG, independent of the
+  // parent/child hierarchy). Mirrors the create/update request shape so the
+  // set round-trips; full edge objects are available from GetDependencyGraph.
+  repeated string depends_on = 31;
 }
 
 // RecurringSchedule defines the recurrence pattern for a recurring work item.

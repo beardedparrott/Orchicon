@@ -265,6 +265,42 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.created", "work_item", created.ID, nil, audit.Snapshot(workItemAuditSnapshot(created))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.created: %w", err))
 	}
+	// depends_on edges: create a DEPENDS_ON-type edge for each listed ID in
+	// the same transaction as the item. A fresh item has no edges yet, so a
+	// cycle is impossible; validation (same project, exists, no
+	// self-dependency) still runs against the effective project. Any
+	// failure rolls the whole tx back — no item, no edges.
+	if len(msg.DependsOn) > 0 {
+		validated, err := validateDependsOn(ctx, ttx.Tx, tenantID, msg.ProjectId, created.ID, msg.DependsOn)
+		if err != nil {
+			return nil, err
+		}
+		for _, depID := range validated {
+			d := db.DependencyRow{
+				ID:        db.NewID(),
+				TenantID:  tenantID,
+				ProjectID: msg.ProjectId,
+				FromID:    created.ID,
+				ToID:      depID,
+				Type:      domain.DependencyDependsOn,
+			}
+			createdDep, err := db.CreateDependency(ctx, ttx.Tx, d)
+			if err != nil {
+				return nil, mapDBError(err)
+			}
+			if err := enqueueDependencyEvent(ctx, ttx.Tx, "work_item.dependency_added", createdDep); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
+			if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.dependency_added", "work_item", createdDep.FromID,
+				nil, audit.Snapshot(map[string]any{"from_id": createdDep.FromID, "to_id": createdDep.ToID, "type": createdDep.Type})); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.dependency_added: %w", err))
+			}
+		}
+	}
+	proto := rowToProto(created)
+	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
@@ -284,7 +320,7 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	}
 
 	s.log.Info("work item created", "id", created.ID, "kind", kind, "project", msg.ProjectId)
-	return connect.NewResponse(&apiv1.CreateWorkItemResponse{WorkItem: rowToProto(created)}), nil
+	return connect.NewResponse(&apiv1.CreateWorkItemResponse{WorkItem: proto}), nil
 }
 
 // GetWorkItem returns a single work item by id.
@@ -305,7 +341,11 @@ func (s *Service) GetWorkItem(ctx context.Context, req *connect.Request[apiv1.Ge
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	return connect.NewResponse(&apiv1.GetWorkItemResponse{WorkItem: rowToProto(w)}), nil
+	proto := rowToProto(w)
+	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&apiv1.GetWorkItemResponse{WorkItem: proto}), nil
 }
 
 // ListWorkItems returns a page of work items for a project, optionally
@@ -344,6 +384,9 @@ func (s *Service) ListWorkItems(ctx context.Context, req *connect.Request[apiv1.
 	resp := &apiv1.ListWorkItemsResponse{}
 	for _, w := range items {
 		resp.WorkItems = append(resp.WorkItems, rowToProto(w))
+	}
+	if err := attachDependsOnBatch(ctx, ttx.Tx, tenantID, resp.WorkItems); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if len(items) > 0 {
 		resp.NextPageToken = items[len(items)-1].ID
@@ -562,6 +605,18 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		if err := db.RequireProjectActive(ctx, ttx.Tx, tenantID, *fields.ProjectID); err != nil {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("target project not active: %w", err))
 		}
+		// Dependency edges are project-scoped and the DAG is per-project, so
+		// an item that participates in any edge (outgoing or incoming) may
+		// not silently move across projects — reject instead of leaving a
+		// dangling or cross-project graph. Remove the edges first.
+		participates, err := db.ItemParticipatesInDependency(ctx, ttx.Tx, tenantID, msg.Id)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		if participates {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				errors.New("cannot move a work item to another project while it has dependency edges; remove the edges first"))
+		}
 	}
 	// Reparenting is validated against the *effective* project — the
 	// request's project_id if also being changed, otherwise the current
@@ -724,6 +779,25 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	} else if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.updated", updated); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	// depends_on set-replace semantics: the request's list fully replaces
+	// the item's outgoing DEPENDS_ON edges (absent = unchanged, empty =
+	// clear), mirroring context_files. Applied inside this transaction so
+	// cycle detection reads the live intermediate state and any failure
+	// rolls the whole update back — no partial edges. Validated against the
+	// effective (post-reassignment) project.
+	if msg.DependsOn != nil {
+		effectiveProject := current.ProjectID
+		if fields.ProjectID != nil && *fields.ProjectID != "" {
+			effectiveProject = *fields.ProjectID
+		}
+		if err := s.replaceDependsOn(ctx, ttx.Tx, tenantID, effectiveProject, updated.ID, msg.DependsOn.Ids); err != nil {
+			return nil, err
+		}
+	}
+	proto := rowToProto(updated)
+	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.updated", "work_item", updated.ID,
 		audit.Snapshot(workItemAuditSnapshot(current)), audit.Snapshot(workItemAuditSnapshot(updated))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.updated: %w", err))
@@ -764,7 +838,7 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if msg.ContextFiles != nil {
 		project.NotifyProjectChanged()
 	}
-	return connect.NewResponse(&apiv1.UpdateWorkItemResponse{WorkItem: rowToProto(updated)}), nil
+	return connect.NewResponse(&apiv1.UpdateWorkItemResponse{WorkItem: proto}), nil
 }
 
 // DeleteWorkItem soft-deletes a work item by setting status to cancelled.
@@ -797,11 +871,15 @@ func (s *Service) DeleteWorkItem(ctx context.Context, req *connect.Request[apiv1
 		audit.Snapshot(workItemAuditSnapshot(current)), audit.SnapshotStatus(updated.Status)); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.deleted: %w", err))
 	}
+	proto := rowToProto(updated)
+	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
 	s.log.Info("work item deleted (cancelled)", "id", updated.ID)
-	return connect.NewResponse(&apiv1.DeleteWorkItemResponse{WorkItem: rowToProto(updated)}), nil
+	return connect.NewResponse(&apiv1.DeleteWorkItemResponse{WorkItem: proto}), nil
 }
 
 // HardDeleteWorkItem permanently removes a work item. Cascades to its
@@ -988,6 +1066,9 @@ func (s *Service) GetDependencyGraph(ctx context.Context, req *connect.Request[a
 	for _, w := range items {
 		graph.Nodes = append(graph.Nodes, rowToProto(w))
 	}
+	if err := attachDependsOnBatch(ctx, ttx.Tx, tenantID, graph.Nodes); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	for _, d := range deps {
 		graph.Edges = append(graph.Edges, depRowToProto(d))
 	}
@@ -1032,11 +1113,15 @@ func (s *Service) AssignWorker(ctx context.Context, req *connect.Request[apiv1.A
 		audit.Snapshot(workItemAuditSnapshot(current)), audit.Snapshot(workItemAuditSnapshot(updated))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.worker_assigned: %w", err))
 	}
+	proto := rowToProto(updated)
+	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
 	s.log.Info("worker assigned to work item", "id", updated.ID)
-	return connect.NewResponse(&apiv1.AssignWorkerResponse{WorkItem: rowToProto(updated)}), nil
+	return connect.NewResponse(&apiv1.AssignWorkerResponse{WorkItem: proto}), nil
 }
 
 // UnassignWorker removes the worker binding from a Task/Subtask.
@@ -1082,11 +1167,15 @@ func (s *Service) UnassignWorker(ctx context.Context, req *connect.Request[apiv1
 		audit.Snapshot(workItemAuditSnapshot(current)), audit.Snapshot(workItemAuditSnapshot(updated))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.worker_unassigned: %w", err))
 	}
+	proto := rowToProto(updated)
+	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
 	s.log.Info("worker unassigned from work item", "id", updated.ID)
-	return connect.NewResponse(&apiv1.UnassignWorkerResponse{WorkItem: rowToProto(updated)}), nil
+	return connect.NewResponse(&apiv1.UnassignWorkerResponse{WorkItem: proto}), nil
 }
 
 // ReorderWorkItems renumbers sort_order for the siblings under parent_id
@@ -1188,12 +1277,15 @@ func (s *Service) ReorderWorkItems(ctx context.Context, req *connect.Request[api
 		nil, audit.Snapshot(map[string]any{"parent_id": msg.ParentId, "child_ids": ids})); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.reordered: %w", err))
 	}
-	if err := ttx.Commit(ctx); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
-	}
 	resp := &apiv1.ReorderWorkItemsResponse{}
 	for _, sib := range ordered {
 		resp.WorkItems = append(resp.WorkItems, rowToProto(sib))
+	}
+	if err := attachDependsOnBatch(ctx, ttx.Tx, tenantID, resp.WorkItems); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -1391,7 +1483,11 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	return connect.NewResponse(&apiv1.ControlSequenceResponse{WorkItem: rowToProto(updated)}), nil
+	proto := rowToProto(updated)
+	if err := attachDependsOn(ctx, ttx2.Tx, tenantID, proto); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&apiv1.ControlSequenceResponse{WorkItem: proto}), nil
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -1505,6 +1601,173 @@ func enqueueDependencyEvent(ctx context.Context, tx pgx.Tx, eventType string, d 
 		OccurredAt:    time.Now().UTC(),
 	}
 	return db.EnqueueOutbox(ctx, tx, row)
+}
+
+// validateDependsOn dedupes and validates a depends_on ID list against the
+// effective project, mirroring the AddDependency admission rules: targets
+// must exist (NotFound), live in the given project, and not be the item
+// itself (self-dependency). Blank IDs are rejected. Returns the validated,
+// deduped IDs in input order; a nil/empty input returns nil.
+func validateDependsOn(ctx context.Context, tx pgx.Tx, tenantID, projectID, itemID string, depIDs []string) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	for _, id := range depIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("depends_on ids must not be blank"))
+		}
+		if id == itemID {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("cannot create a self-dependency"))
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		item, err := db.GetWorkItem(ctx, tx, tenantID, id)
+		if err != nil {
+			if errors.Is(err, db.ErrNotFound) {
+				return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("depends_on target %q not found", id))
+			}
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		if item.ProjectID != projectID {
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				fmt.Errorf("depends_on target %q is not in the same project", id))
+		}
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+// replaceDependsOn applies set-replace semantics to an item's outgoing
+// DEPENDS_ON edges inside the caller's transaction: it deletes the current
+// outgoing edge set, validates + re-inserts the desired set (cycle-checked
+// against the live intermediate state via the recursive CTE), and emits
+// work_item.dependency_added / work_item.dependency_removed events + audit
+// rows only for the diff. Any error rolls the caller's transaction back —
+// no partial edge sets.
+func (s *Service) replaceDependsOn(ctx context.Context, tx pgx.Tx, tenantID, projectID, itemID string, depIDs []string) error {
+	current, err := db.ListDependenciesForItems(ctx, tx, tenantID, []string{itemID}, domain.DependencyDependsOn)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	desired, err := validateDependsOn(ctx, tx, tenantID, projectID, itemID, depIDs)
+	if err != nil {
+		return err
+	}
+	// Delete the whole outgoing depends_on set first, then re-add the
+	// desired set — the recursive-CTE cycle check then reads the live
+	// intermediate state (design decision, matches the AddDependency path).
+	if err := db.DeleteOutgoingDependencies(ctx, tx, tenantID, itemID, domain.DependencyDependsOn); err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	had := map[string]bool{}
+	for _, d := range current {
+		had[d.ToID] = true
+	}
+	var removed []db.DependencyRow
+	for _, d := range current {
+		if !stringInSet(d.ToID, desired) {
+			removed = append(removed, d)
+		}
+	}
+	for _, depID := range desired {
+		createsCycle, err := db.CheckCycleWithRecursiveCTE(ctx, tx, tenantID, projectID, itemID, depID)
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, err)
+		}
+		if createsCycle {
+			return connect.NewError(connect.CodeFailedPrecondition,
+				errors.New("adding this dependency would create a cycle in the work DAG"))
+		}
+		created, err := db.CreateDependency(ctx, tx, db.DependencyRow{
+			ID:        db.NewID(),
+			TenantID:  tenantID,
+			ProjectID: projectID,
+			FromID:    itemID,
+			ToID:      depID,
+			Type:      domain.DependencyDependsOn,
+		})
+		if err != nil {
+			return mapDBError(err)
+		}
+		// Emit events + audit only for the diff: an edge that already
+		// existed before this request is recreated silently (same set).
+		if !had[depID] {
+			if err := enqueueDependencyEvent(ctx, tx, "work_item.dependency_added", created); err != nil {
+				return connect.NewError(connect.CodeInternal, err)
+			}
+			if err := recordAudit(ctx, tx, tenantID, "work_item.dependency_added", "work_item", created.FromID,
+				nil, audit.Snapshot(map[string]any{"from_id": created.FromID, "to_id": created.ToID, "type": created.Type})); err != nil {
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.dependency_added: %w", err))
+			}
+		}
+	}
+	for _, d := range removed {
+		if err := recordAudit(ctx, tx, tenantID, "work_item.dependency_removed", "work_item", d.FromID,
+			audit.Snapshot(map[string]any{"from_id": d.FromID, "to_id": d.ToID, "type": d.Type}), nil); err != nil {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.dependency_removed: %w", err))
+		}
+		if err := enqueueDependencyEvent(ctx, tx, "work_item.dependency_removed", d); err != nil {
+			return connect.NewError(connect.CodeInternal, err)
+		}
+	}
+	return nil
+}
+
+// stringInSet reports whether s is present in ids.
+func stringInSet(s string, ids []string) bool {
+	for _, id := range ids {
+		if id == s {
+			return true
+		}
+	}
+	return false
+}
+
+// attachDependsOn populates proto.DependsOn (the item's outgoing
+// DEPENDS_ON target IDs) with one extra query, inside the caller's
+// transaction. rowToProto stays pure; every WorkItem-returning handler
+// attaches the field so the payload is consistent across endpoints.
+func attachDependsOn(ctx context.Context, tx pgx.Tx, tenantID string, p *apiv1.WorkItem) error {
+	if p == nil {
+		return nil
+	}
+	deps, err := db.ListDependenciesForItems(ctx, tx, tenantID, []string{p.Id}, domain.DependencyDependsOn)
+	if err != nil {
+		return err
+	}
+	for _, d := range deps {
+		p.DependsOn = append(p.DependsOn, d.ToID)
+	}
+	return nil
+}
+
+// attachDependsOnBatch populates DependsOn for a whole page of work items
+// with ONE query (from_id = ANY(...)) to avoid an N+1 per row.
+func attachDependsOnBatch(ctx context.Context, tx pgx.Tx, tenantID string, items []*apiv1.WorkItem) error {
+	ids := make([]string, 0, len(items))
+	byID := map[string]*apiv1.WorkItem{}
+	for _, it := range items {
+		if it == nil {
+			continue
+		}
+		ids = append(ids, it.Id)
+		byID[it.Id] = it
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	deps, err := db.ListDependenciesForItems(ctx, tx, tenantID, ids, domain.DependencyDependsOn)
+	if err != nil {
+		return err
+	}
+	for _, d := range deps {
+		if it, ok := byID[d.FromID]; ok {
+			it.DependsOn = append(it.DependsOn, d.ToID)
+		}
+	}
+	return nil
 }
 
 func buildWorkItemEventPayload(eventType string, w db.WorkItemRow) ([]byte, error) {
