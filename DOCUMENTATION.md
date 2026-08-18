@@ -677,7 +677,7 @@ open http://localhost:8080
 | Senior Software Engineer | Full-stack development, implements features and fixes bugs |
 | PR Reviewer | Code review — finds bugs, security issues, and correctness problems |
 | QA Engineer | Functional and regression testing — validates acceptance criteria |
-| DevOps Engineer | Repository setup (early steps) and PR/merge after approval (late steps) |
+| DevOps Engineer | Repository identification and PR/merge after approval (the platform provisions branches and worktrees) |
 | Design Approver | Worker-backed approval of the architecture/design plan — reviews the plan against acceptance criteria, approve/reject |
 | Code Approver | Worker-backed approval of the completed implementation — verifies done-ness after QA/PR, approve/reject |
 | Principal Software Architect | Architecture design, ADR documentation, and technical strategy |
