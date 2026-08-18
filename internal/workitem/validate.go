@@ -188,6 +188,8 @@ func validateStatus(status apiv1.WorkItemStatus) string {
 		return domain.WorkItemRecurring
 	case apiv1.WorkItemStatus_WORK_ITEM_STATUS_BLOCKED:
 		return domain.WorkItemBlocked
+	case apiv1.WorkItemStatus_WORK_ITEM_STATUS_SKIPPED:
+		return domain.WorkItemSkipped
 	default:
 		return domain.WorkItemPending
 	}
@@ -202,6 +204,8 @@ func validateStatus(status apiv1.WorkItemStatus) string {
 // only by the reconcilers when an upstream dependency is unsatisfied, so
 // user/operator input must never set it directly (mirrors the transition
 // matrix in the frontend — blocked items are not manually movable).
+// "skipped" is likewise system-managed (set only by the reconciler when a
+// bound run completes with a skipped step) and is not user-assignable.
 func ValidateStatus(status string) (string, error) {
 	status = strings.ToLower(strings.TrimSpace(status))
 	switch status {

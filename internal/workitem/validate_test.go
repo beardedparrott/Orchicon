@@ -853,3 +853,24 @@ func TestBlockedStatusMapping(t *testing.T) {
 		t.Errorf("ValidateStatus('ready') = %v, want nil", err)
 	}
 }
+
+// TestSkippedStatusMapping pins the skip-status interplay round-trip: the
+// proto→domain and domain→proto maps accept the new SKIPPED enum value so
+// a skipped work item round-trips through the API, while user-facing
+// ValidateStatus rejects it — skipped is system-managed (set only by the
+// reconciler when a bound run completes with a skipped step), never
+// user-assignable (mirrors the blocked rule).
+func TestSkippedStatusMapping(t *testing.T) {
+	if got := validateStatus(apiv1.WorkItemStatus_WORK_ITEM_STATUS_SKIPPED); got != domain.WorkItemSkipped {
+		t.Errorf("validateStatus(SKIPPED) = %q, want %q", got, domain.WorkItemSkipped)
+	}
+	if got := statusToProto(domain.WorkItemSkipped); got != apiv1.WorkItemStatus_WORK_ITEM_STATUS_SKIPPED {
+		t.Errorf("statusToProto(skipped) = %v, want SKIPPED", got)
+	}
+	if _, err := ValidateStatus("skipped"); err == nil {
+		t.Error("ValidateStatus must reject 'skipped' (system-managed status)")
+	}
+	if _, err := ValidateStatus("SKIPPED"); err == nil {
+		t.Error("ValidateStatus must reject 'SKIPPED' (case-insensitive normalization still rejects)")
+	}
+}

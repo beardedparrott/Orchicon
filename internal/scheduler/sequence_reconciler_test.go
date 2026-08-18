@@ -213,6 +213,10 @@ func TestDeriveNextChild(t *testing.T) {
 		{"running in flight", []string{"succeeded", "running", "pending"}, 1},
 		{"failed halts", []string{"succeeded", "failed", "pending"}, 1},
 		{"cancelled halts", []string{"succeeded", "cancelled"}, 1},
+		{"all skipped → done", []string{"skipped", "skipped"}, -1},
+		{"succeeded then skipped → done", []string{"succeeded", "skipped"}, -1},
+		{"skipped then pending", []string{"skipped", "pending"}, 1},
+		{"skipped then running", []string{"skipped", "running", "pending"}, 1},
 		{"empty", []string{}, -1},
 	}
 	for _, tc := range cases {
@@ -586,6 +590,127 @@ func TestSequenceBlockedStaysBlockedWhileBlockerNonTerminal(t *testing.T) {
 	}
 	if got := env.armedWorkItems(); len(got) != 1 || got[0] != c1.ID {
 		t.Errorf("armed work items = %v, want [c1]", got)
+	}
+}
+
+// TestSequenceCancelledBlockerKeepsDependentBlocked: a cancelled blocker
+// keeps the dependent blocked (terminal-failure, exactly like failed) —
+// recoverable only via the existing recovery flow once the blocker is
+// resolved to a terminal-success state.
+func TestSequenceCancelledBlockerKeepsDependentBlocked(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+	blocker := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Blocker", nil, nil)
+	addDependency(t, env.pool, env.proj.ID, blocker.ID, c1.ID, domain.DependencyDependsOn)
+
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatal(err)
+	}
+	// A CANCELLED blocker (terminal-failure) still blocks: the dependent
+	// stays surfaced-blocked, never armed.
+	setStatus(t, env.pool, blocker.ID, domain.WorkItemCancelled)
+	rec := NewSequenceReconciler(env.pool, nil, env.startFn())
+	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemBlocked {
+		t.Errorf("child status = %q, want %q (cancelled blocker still blocks)", got.Status, domain.WorkItemBlocked)
+	}
+	if got := env.armedWorkItems(); len(got) != 0 {
+		t.Errorf("armed work items = %v, want none", got)
+	}
+}
+
+// TestSequenceSkippedBlockerSatisfiesDependencyGate: a skipped external
+// blocker satisfies the dependency gate (AC1) — the dependent clears
+// blocked and arms in the same pass, exactly as if the blocker had
+// succeeded. A skipped dependency never blocks its dependents.
+func TestSequenceSkippedBlockerSatisfiesDependencyGate(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+	blocker := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Blocker", nil, nil)
+	addDependency(t, env.pool, env.proj.ID, blocker.ID, c1.ID, domain.DependencyDependsOn)
+
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemBlocked {
+		t.Fatalf("C1 status = %q, want %q (parked on blocker, surfaced)", got.Status, domain.WorkItemBlocked)
+	}
+	// Blocker skipped → the dependency gate satisfies; C1 clears and arms.
+	setStatus(t, env.pool, blocker.ID, domain.WorkItemSkipped)
+	rec := NewSequenceReconciler(env.pool, nil, env.startFn())
+	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemRunning {
+		t.Errorf("C1 status = %q, want running after blocker skipped", got.Status)
+	}
+	if armed := env.armedWorkItems(); len(armed) != 1 || armed[0] != c1.ID {
+		t.Errorf("armed work items = %v, want [c1]", armed)
+	}
+}
+
+// TestSequenceAdvanceOnSkippedPredecessor: a skipped in-order predecessor
+// releases the next strict child — the chain gate treats skipped as
+// terminal-success exactly like succeeded.
+func TestSequenceAdvanceOnSkippedPredecessor(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C2", &parent.ID, &wf)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID})
+
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatal(err)
+	}
+	// C1 is skipped (as the WorkflowReconciler would mark a bound child
+	// whose run completed with a skipped step). The strict chain gate must
+	// treat it as terminal-success: C2's position is reached.
+	setStatus(t, env.pool, c1.ID, domain.WorkItemSkipped)
+	rec := NewSequenceReconciler(env.pool, nil, env.startFn())
+	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, env.pool, c2.ID); got.Status != domain.WorkItemRunning {
+		t.Errorf("C2 status = %q, want running after predecessor skipped", got.Status)
+	}
+	if got := env.armedWorkItems(); len(got) != 2 || got[1] != c2.ID {
+		t.Errorf("armed work items = %v, want [c1 c2]", got)
+	}
+}
+
+// TestSequenceCompletionWithSkippedChild: a sequence whose children are all
+// succeeded or skipped is complete — the parent transitions to succeeded
+// and a skipped child never wedges the chain on itself.
+func TestSequenceCompletionWithSkippedChild(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C2", &parent.ID, &wf)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID})
+
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatal(err)
+	}
+	setStatus(t, env.pool, c1.ID, domain.WorkItemSucceeded)
+	setStatus(t, env.pool, c2.ID, domain.WorkItemSkipped)
+	rec := NewSequenceReconciler(env.pool, nil, env.startFn())
+	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemSucceeded {
+		t.Errorf("parent status = %q, want succeeded (every child terminal-success)", got.Status)
 	}
 }
 

@@ -260,6 +260,18 @@ const STATUS_META: Record<number, StatusMeta> = {
     pillDark: "bg-teal-500/15 text-teal-300",
     dot: "bg-teal-500",
   },
+  // Yellow — distinct from every other status hue (amber is ASSIGNED's,
+  // emerald is SUCCEEDED's). System-managed terminal-success: set by the
+  // reconcilers when a bound run completes with every active step
+  // terminal-success but at least one step skipped. Satisfies dependency
+  // edges exactly like SUCCEEDED (never blocks dependents).
+  [WorkItemStatus.SKIPPED]: {
+    label: "skipped",
+    titleLabel: "Skipped",
+    pill: "bg-yellow-500/15 text-yellow-800",
+    pillDark: "bg-yellow-500/15 text-yellow-300",
+    dot: "bg-yellow-500",
+  },
 };
 
 export function statusMeta(status: number): StatusMeta {
@@ -287,6 +299,7 @@ export const STATUS_FILTER_OPTIONS = [
   { value: WorkItemStatus.SCHEDULED, label: "Scheduled" },
   { value: WorkItemStatus.RECURRING, label: "Recurring" },
   { value: WorkItemStatus.BLOCKED, label: "Blocked" },
+  { value: WorkItemStatus.SKIPPED, label: "Skipped" },
 ];
 
 /** Every status value offered by the status filter — the default
@@ -303,6 +316,7 @@ export const ALL_STATUS_VALUES = STATUS_FILTER_OPTIONS.map((o) => o.value);
 
 export const TERMINAL_STATUSES = new Set<number>([
   WorkItemStatus.SUCCEEDED,
+  WorkItemStatus.SKIPPED,
   WorkItemStatus.FAILED,
   WorkItemStatus.CANCELLED,
 ]);
@@ -333,15 +347,17 @@ export const BOARD_COLUMNS: BoardColumn[] = [
 
 // Statuses without a dedicated column render in the column of their
 // closest active status: checkpointing/recovering → Running,
-// scheduled/recurring/blocked → Pending. The card still shows its REAL
-// status pill (blocked keeps its distinct teal pill while sitting in the
-// Pending column).
+// scheduled/recurring/blocked → Pending, skipped → Succeeded. The card
+// still shows its REAL status pill (blocked keeps its distinct teal pill
+// while sitting in the Pending column; skipped keeps its yellow pill in
+// the Succeeded column).
 export function columnForStatus(status: number): number {
   if (status === WorkItemStatus.CHECKPOINTING) return WorkItemStatus.RUNNING;
   if (status === WorkItemStatus.RECOVERING) return WorkItemStatus.RUNNING;
   if (status === WorkItemStatus.SCHEDULED) return WorkItemStatus.PENDING;
   if (status === WorkItemStatus.RECURRING) return WorkItemStatus.PENDING;
   if (status === WorkItemStatus.BLOCKED) return WorkItemStatus.PENDING;
+  if (status === WorkItemStatus.SKIPPED) return WorkItemStatus.SUCCEEDED;
   return status;
 }
 
@@ -351,13 +367,16 @@ export function columnForStatus(status: number): number {
 // Checkpointing and Recovering are transient states within a workflow.
 // Blocked is set by the reconcilers when an upstream dependency is
 // unsatisfied (system-managed — operators can't drag INTO it; it clears
-// automatically).
+// automatically). Skipped is set by the reconcilers when a bound run
+// completes with a skipped step (system-managed — operators can't drag
+// into it or out of it).
 // ---------------------------------------------------------------------------
 export const MANUALLY_UNMOVABLE_STATUSES = new Set<number>([
   WorkItemStatus.RUNNING,
   WorkItemStatus.CHECKPOINTING,
   WorkItemStatus.RECOVERING,
   WorkItemStatus.BLOCKED,
+  WorkItemStatus.SKIPPED,
 ]);
 
 // ---------------------------------------------------------------------------

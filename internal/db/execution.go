@@ -538,14 +538,23 @@ func ListBlockedTasks(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkIt
 	return out, rows.Err()
 }
 
+// terminalSuccessStatuses is the SQL form of
+// domain.WorkItemIsTerminalSuccess: a work item is terminal-success for
+// dependency/arming purposes exactly when its status is one of these.
+// Every SQL dependency gate MUST use this constant (and stay in lockstep
+// with the Go predicate) so skip-status and depends_on share one
+// terminal-success definition. failed/cancelled are NOT listed — they
+// keep dependents blocked.
+const terminalSuccessStatuses = "('succeeded','skipped')"
+
 // CheckDependenciesSatisfied returns true if all dependency edges pointing
 // TO the given work item have their source (from_id) in a terminal-success
-// state (succeeded). A task is only dispatched when its dependencies are
-// satisfied (docs/02 §4 invariant #1, docs/03 §4).
+// state (succeeded or skipped). A task is only dispatched when its
+// dependencies are satisfied (docs/02 §4 invariant #1, docs/03 §4).
 func CheckDependenciesSatisfied(ctx context.Context, tx pgx.Tx, tenantID, workItemID string) (bool, error) {
 	// A work item is ready to dispatch if:
 	// 1. It has no blocking dependencies (no from_id edges where type in blocks/depends_on), OR
-	// 2. All blocking dependencies point to items in succeeded state.
+	// 2. All blocking dependencies point to items in a terminal-success state.
 	const q = `WITH blocking_deps AS (
 		SELECT from_id FROM work_item_dependencies
 		WHERE tenant_id = $1 AND to_id = $2
@@ -555,7 +564,7 @@ func CheckDependenciesSatisfied(ctx context.Context, tx pgx.Tx, tenantID, workIt
 		OR NOT EXISTS(
 			SELECT 1 FROM blocking_deps bd
 			JOIN work_items wi ON wi.id = bd.from_id
-			WHERE wi.status != 'succeeded'
+			WHERE wi.status NOT IN ` + terminalSuccessStatuses + `
 		)`
 	var satisfied bool
 	err := tx.QueryRow(ctx, q, tenantID, workItemID).Scan(&satisfied)

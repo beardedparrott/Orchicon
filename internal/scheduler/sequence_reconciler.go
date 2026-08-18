@@ -264,15 +264,19 @@ func reconcileParent(ctx context.Context, tx pgx.Tx, tenantID, parentID string, 
 	//     edges satisfied (CheckDependenciesSatisfied). Unsatisfied → park
 	//     (stay pending, never fail — the existing gate semantics).
 	//   - Chain gate (strict children only): a strict child arms only when
-	//     its immediate predecessor in sort_order is succeeded. The loop's
-	//     statuses are the pre-pass snapshot, so a just-armed predecessor
-	//     still shows pending (non-terminal) and blocks the next strict
-	//     child even within this same pass — strict chains stay serialized
-	//     by construction.
+	//     its immediate predecessor in sort_order is terminal-success. The
+	//     loop's statuses are the pre-pass snapshot, so a just-armed
+	//     predecessor still shows pending (non-terminal) and blocks the
+	//     next strict child even within this same pass — strict chains stay
+	//     serialized by construction.
 	var starts []leafStart
 	for i, c := range children {
 		switch c.Status {
 		case domain.WorkItemSucceeded:
+			continue // past
+		case domain.WorkItemSkipped:
+			// A skipped child is terminal-success: it satisfies edges,
+			// counts toward sequence completion, and is never re-armed.
 			continue // past
 		case domain.WorkItemRunning, domain.WorkItemAssigned, domain.WorkItemReady,
 			domain.WorkItemCheckpointing, domain.WorkItemRecovering, domain.WorkItemScheduled,
@@ -282,11 +286,11 @@ func reconcileParent(ctx context.Context, tx pgx.Tx, tenantID, parentID string, 
 		case domain.WorkItemPending, domain.WorkItemBlocked:
 			// Chain gate (strict children only): the child's position in
 			// the chain is reached only when its immediate predecessor is
-			// succeeded. Dependency-governed children are ordered by their
-			// edges, so they skip this gate. (A blocked child is always
-			// dependency-governed by construction — it only got blocked
-			// via an unsatisfied edge.)
-			if !depGoverned[c.ID] && i > 0 && children[i-1].Status != domain.WorkItemSucceeded {
+			// terminal-success (succeeded or skipped). Dependency-governed
+			// children are ordered by their edges, so they skip this gate.
+			// (A blocked child is always dependency-governed by
+			// construction — it only got blocked via an unsatisfied edge.)
+			if !depGoverned[c.ID] && i > 0 && !domain.WorkItemIsTerminalSuccess(children[i-1].Status) {
 				continue // chain position not reached — wait for the predecessor
 			}
 			// Dependency gate: an unsatisfied external blocker parks this
@@ -374,11 +378,13 @@ func reconcileParent(ctx context.Context, tx pgx.Tx, tenantID, parentID string, 
 
 // deriveNextChild returns the index of the first direct child in the
 // (already sort_order-ordered) slice whose status is not terminal-success,
-// or -1 when every child succeeded. This is the sequence cursor: a pure
-// function of (sort_order, statuses), recomputed on every reconcile pass.
+// or -1 when every child is terminal-success (succeeded or skipped). This
+// is the sequence cursor: a pure function of (sort_order, statuses),
+// recomputed on every reconcile pass. A skipped child counts as "past" so
+// it never wedges the chain on itself.
 func deriveNextChild(children []db.WorkItemRow) int {
 	for i, c := range children {
-		if c.Status != domain.WorkItemSucceeded {
+		if !domain.WorkItemIsTerminalSuccess(c.Status) {
 			return i
 		}
 	}

@@ -153,6 +153,11 @@ enum WorkItemStatus {
   // is not terminal-success. Cleared automatically by the next reconcile
   // pass when the dependency gate satisfies. Never user-assignable.
   WORK_ITEM_STATUS_BLOCKED = 12;
+  // System-managed terminal-success: set by the reconcilers when a bound
+  // workflow run completes with every active step terminal-success but at
+  // least one step skipped. Satisfies dependency edges exactly like
+  // SUCCEEDED (never blocks dependents). Never user-assignable.
+  WORK_ITEM_STATUS_SKIPPED = 13;
 }
 
 // WorkItemDependency is an edge in the work DAG. The scheduler treats

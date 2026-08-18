@@ -149,7 +149,26 @@ const (
 	// dependency (blocks/depends_on edge) is not terminal-success. The
 	// next reconcile pass clears it automatically when the gate satisfies.
 	WorkItemBlocked = "blocked"
+	// WorkItemSkipped is a system-managed terminal-success status set by
+	// the reconcilers when a bound workflow run completes with every
+	// active step terminal-success but at least one step skipped. A
+	// skipped work item satisfies dependency edges exactly like succeeded
+	// and never blocks dependents (docs/02_Domain_Model.md §2.2). Never
+	// user-settable; mirrors WorkItemBlocked's system-managed rule.
+	WorkItemSkipped = "skipped"
 )
+
+// WorkItemIsTerminalSuccess reports whether a work item is terminal-
+// success for dependency/arming purposes: succeeded or skipped. This is
+// THE single shared terminal-success definition — every dependency gate,
+// sequence chain gate, sequence cursor, blocked_by computation and
+// sequence-advance notification must use it (or its SQL equivalent
+// `status NOT IN ('succeeded','skipped')` in internal/db) so skip-status
+// and depends_on can never disagree. failed/cancelled are terminal-
+// FAILURE and deliberately return false: they keep dependents blocked.
+func WorkItemIsTerminalSuccess(status string) bool {
+	return status == WorkItemSucceeded || status == WorkItemSkipped
+}
 
 // Dependency types — edges in the work DAG
 // (docs/02_Domain_Model.md §2.2).
