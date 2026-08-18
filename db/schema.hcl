@@ -1088,6 +1088,21 @@ table "workflow_runs" {
     null = false
     default = ""
   }
+  column "worktree_status" {
+    type = text
+    null = false
+    default = "pending"
+  }
+  column "worktree_path" {
+    type = text
+    null = false
+    default = ""
+  }
+  column "worktree_branch" {
+    type = text
+    null = false
+    default = ""
+  }
   column "version" {
     type = integer
     null = false

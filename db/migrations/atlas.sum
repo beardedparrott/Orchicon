@@ -1,4 +1,4 @@
-h1:oy44RsihNiNrTvNoejDbKnORe1TRI1cZnKw1FVMBnW8=
+h1:vhRSiIJcKVOr7gPRSTg0Kkc1YXWc4hA2v5A+uXFGXCU=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712192105_initial_schema_down.sql h1:RDSZVdJtR8DJx9HvT6WrBdEOEoJpM/46JutUdlPs5wU=
 20260712223028_add_outbox.sql h1:+idZYfVIjOHjGIluT5JM5M0dMF6L1+VmeHeGy66DLEI=
@@ -91,3 +91,5 @@ h1:oy44RsihNiNrTvNoejDbKnORe1TRI1cZnKw1FVMBnW8=
 20260815000000_audit_events.sql h1:qCHY6iL2WisbZRxS1GqlGaZiGdr9TeX5636vWlqxCSI=
 20260815010000_audit_events_auth_method.sql h1:2URh5J9rjZYU/eVKcVj2w3SjiNWG6NFMFdFx5rSRbqc=
 20260817000000_local_credentials_force_password_change.sql h1:oUAERuu/KbhtEnFTK4pKK1EtT7oy4JG5y+dJ0QuGFVc=
+20260818000000_workflow_runs_worktree.sql h1:Mz1z8P0vJSlM62ECaUovk3t4n5au+OA7dy/3Qh+sjJU=
+20260818000000_workflow_runs_worktree_down.sql h1:2NA4/mruDxmI6FckwL27PZl+nAubs9hfqh/goIYWu8o=

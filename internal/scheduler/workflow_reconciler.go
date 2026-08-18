@@ -72,6 +72,13 @@ type WorkflowReconciler struct {
 	// Optional — the scan pass is the safety net.
 	sequenceNotifier func(ctx context.Context, parentID string)
 
+	// worktreeNotifier is called right after a run is armed (pending→running)
+	// so the WorktreeReconciler provisions the run's isolated working tree
+	// immediately instead of waiting for its next scan tick
+	// (architecture-notes/worktree-reconciler.md §2). Optional — the scan
+	// pass is the safety net.
+	worktreeNotifier func(ctx context.Context, runID string)
+
 	// warming tracks workflow runs whose runtime-serve readiness probe is
 	// in flight (the async ensure-serving pass). Guards against spawning a
 	// duplicate probe goroutine per run; a plane restart clears it and the
@@ -125,6 +132,14 @@ func NewWorkflowReconciler(pool *db.Pool, log *slog.Logger, pe PolicyEvaluator, 
 // when one of its bound children reaches a terminal state. Optional.
 func (r *WorkflowReconciler) SetSequenceNotifier(fn func(ctx context.Context, parentID string)) {
 	r.sequenceNotifier = fn
+}
+
+// SetWorktreeNotifier injects the callback that enqueues a run with the
+// WorktreeReconciler right after it is armed, so the run's isolated
+// working tree is provisioned immediately. Optional — the scan pass is the
+// safety net.
+func (r *WorkflowReconciler) SetWorktreeNotifier(fn func(ctx context.Context, runID string)) {
+	r.worktreeNotifier = fn
 }
 
 // Kind returns the reconciler kind (docs/03 §2.1).
@@ -275,6 +290,9 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	//   - one-shot runs: the WORK_ITEM canvas markers' work items —
 	//     all must agree (or be empty → base), conflicting images fail
 	//     the run at start since one container can't serve two images.
+	// armed marks a run that left pending in this pass so the worktree
+	// notifier fires post-commit (mirrors the sequence/workflow notifiers).
+	var armed bool
 	if run.Status == domain.WorkflowRunPending {
 		resolved, rerr := r.resolveRuntimeImage(ctx, ttx.Tx, tenantID, run, steps)
 		if rerr != nil {
@@ -306,6 +324,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			return fmt.Errorf("transition run to running: %w", err)
 		}
 		run = updated
+		armed = true
 		if err := r.enqueueRunEvent(ctx, ttx.Tx, domain.WorkflowEventRunStarted, run, ""); err != nil {
 			return fmt.Errorf("enqueue run_started: %w", err)
 		}
@@ -327,6 +346,9 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			// the gate.
 			if cerr := ttx.Commit(ctx); cerr != nil {
 				return fmt.Errorf("commit run start (warming runtime): %w", cerr)
+			}
+			if armed && r.worktreeNotifier != nil {
+				r.worktreeNotifier(context.Background(), runID)
 			}
 			return nil
 		}
@@ -919,6 +941,14 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 
 	if err := ttx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit: %w", err)
+	}
+	// Worktree provisioning: a run armed in this pass is enqueued with the
+	// WorktreeReconciler immediately so its isolated working tree is ready
+	// when the run's first step dispatches. Post-commit so the run's
+	// 'running' status is visible. Optional — the WorktreeReconciler's scan
+	// pass is the safety net.
+	if armed && r.worktreeNotifier != nil {
+		r.worktreeNotifier(context.Background(), runID)
 	}
 	// Sequence advance: a bound child reached a terminal state and has a
 	// parent — notify the sequence engine so the parent's chain advances
