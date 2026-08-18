@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, createRoute } from "@tanstack/react-router";
-import { Trash2, SearchX, FolderPlus } from "lucide-react";
+import { Trash2, SearchX, FolderPlus, GripVertical } from "lucide-react";
+import { useDraggable } from "@dnd-kit/core";
 
 import { useBatchDeleteWorkflows, useListWorkflows } from "@/api/workflows";
-import { WorkflowStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
+import { WorkflowStatus, type Workflow } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -14,7 +15,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { CategoryFolder } from "@/components/CategoryFolder";
-import { CategoryAssignSelect } from "@/components/CategoryAssignSelect";
+import { CategoryDndContext } from "@/components/CategoryDndContext";
 import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
 import {
   useCategoryPreferences,
@@ -255,97 +256,56 @@ function WorkflowsPage() {
             </span>
           </div>
           <div>
-            {categoryGroups.map(({ category, items }) => (
-              <CategoryFolder
-                key={category.id}
-                category={category}
-                count={items.length}
-                isCollapsed={
-                  category.id === "uncategorized"
-                    ? prefs.collapsed.has("uncategorized")
-                    : prefs.collapsed.has(category.id)
-                }
-                onToggle={() => prefs.toggleCollapsed(category.id)}
-                onRename={(newName) =>
-                  prefs.renameCategory(category.id, newName)
-                }
-                onDelete={() => {
-                  if (
-                    window.confirm(
-                      `Delete "${category.name}"? Items will move to Uncategorized.`,
-                    )
-                  ) {
-                    prefs.deleteCategory(category.id);
+            <CategoryDndContext
+              categories={prefs.state.categories}
+              onAssign={prefs.assignItem}
+            >
+              {categoryGroups.map(({ category, items }) => (
+                <CategoryFolder
+                  key={category.id}
+                  category={category}
+                  count={items.length}
+                  isCollapsed={
+                    category.id === "uncategorized"
+                      ? prefs.collapsed.has("uncategorized")
+                      : prefs.collapsed.has(category.id)
                   }
-                }}
-                onUpdateDescription={(desc) =>
-                  prefs.updateDescription(category.id, desc)
-                }
-              >
-                <div className="space-y-1">
-                  {items.map((w) => (
-                    <div key={w.id} className="group flex items-center gap-2">
-                      <input
-                        type="checkbox"
+                  onToggle={() => prefs.toggleCollapsed(category.id)}
+                  onRename={(newName) =>
+                    prefs.renameCategory(category.id, newName)
+                  }
+                  onDelete={() => {
+                    if (
+                      window.confirm(
+                        `Delete "${category.name}"? Items will move to Uncategorized.`,
+                      )
+                    ) {
+                      prefs.deleteCategory(category.id);
+                    }
+                  }}
+                  onUpdateDescription={(desc) =>
+                    prefs.updateDescription(category.id, desc)
+                  }
+                  droppableId={category.id}
+                >
+                  <div className="space-y-1">
+                    {items.map((w) => (
+                      <WorkflowRow
+                        key={w.id}
+                        workflow={w}
                         checked={selected.has(w.id)}
-                        onChange={() => toggleSelect(w.id)}
-                        className="ml-2 h-4 w-4 shrink-0 rounded border-input"
-                      />
-                      <Link
-                        to="/workflows/$id"
-                        params={{ id: w.id }}
-                        className="min-w-0 flex-1"
-                      >
-                        <Card className="transition-colors hover:bg-accent">
-                          <CardContent className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
-                            <div className="flex min-w-0 items-center gap-3">
-                              <StatusBadge status={w.status} />
-                              <div className="min-w-0 flex-1 overflow-hidden">
-                                <p className="truncate text-sm font-medium">
-                                  {w.name}
-                                </p>
-                                <div className="flex items-center gap-2">
-                                  <span
-                                    className={cn(
-                                      "rounded-full px-1.5 py-0.5 text-[10px] font-medium",
-                                      w.projectId
-                                        ? "bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300"
-                                        : "bg-purple-100 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300",
-                                    )}
-                                  >
-                                    {w.projectId ? "One-Shot" : "Template"}
-                                  </span>
-                                </div>
-                              </div>
-                            </div>
-                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground sm:shrink-0">
-                              <span>v{w.currentVersion || "—"}</span>
-                            </div>
-                          </CardContent>
-                        </Card>
-                      </Link>
-                      <button
-                        onClick={() => {
+                        onToggleSelect={() => toggleSelect(w.id)}
+                        onDelete={() => {
                           if (window.confirm("Delete this workflow?")) {
                             batchDelete.mutate([w.id]);
                           }
                         }}
-                        className="opacity-0 group-hover:opacity-100 rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground hover:text-destructive hover:bg-accent transition-all shrink-0"
-                        title="Delete workflow"
-                      >
-                        ✕
-                      </button>
-                      <CategoryAssignSelect
-                        entityId={w.id}
-                        currentCategoryId={prefs.state.assignments[w.id]}
-                        categories={prefs.state.categories}
-                        onAssign={prefs.assignItem}
                       />
-                    </div>
-                  ))}
-                </div>
-              </CategoryFolder>
-            ))}
+                    ))}
+                  </div>
+                </CategoryFolder>
+              ))}
+            </CategoryDndContext>
           </div>
         </>
       )}
@@ -358,6 +318,88 @@ function WorkflowsPage() {
         }
         existingNames={existingCategoryNames}
       />
+    </div>
+  );
+}
+
+function WorkflowRow({
+  workflow,
+  checked,
+  onToggleSelect,
+  onDelete,
+}: {
+  workflow: Workflow;
+  checked: boolean;
+  onToggleSelect: () => void;
+  onDelete: () => void;
+}) {
+  // Drag handle is a SIBLING of the <Link>, so clicking the handle can never
+  // open the item; only the Card (<Link>) navigates. dnd-kit's listeners live
+  // on the handle span, the measured node is the row.
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: workflow.id,
+  });
+  return (
+    <div
+      ref={setNodeRef}
+      className={cn("group flex items-center gap-2", isDragging && "z-10 opacity-50")}
+    >
+      <span
+        {...attributes}
+        {...listeners}
+        aria-label={`Drag ${workflow.name} to a category`}
+        className="mt-0.5 shrink-0 cursor-grab text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 active:cursor-grabbing"
+      >
+        <GripVertical className="h-4 w-4" />
+      </span>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={onToggleSelect}
+        onPointerDown={(e) => e.stopPropagation()}
+        className="ml-1 h-4 w-4 shrink-0 rounded border-input"
+      />
+      <Link
+        to="/workflows/$id"
+        params={{ id: workflow.id }}
+        className="min-w-0 flex-1"
+      >
+        <Card className="transition-colors hover:bg-accent">
+          <CardContent className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-center gap-3">
+              <StatusBadge status={workflow.status} />
+              <div className="min-w-0 flex-1 overflow-hidden">
+                <p className="truncate text-sm font-medium">
+                  {workflow.name}
+                </p>
+                <div className="flex items-center gap-2">
+                  <span
+                    className={cn(
+                      "rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+                      workflow.projectId
+                        ? "bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300"
+                        : "bg-purple-100 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300",
+                    )}
+                  >
+                    {workflow.projectId ? "One-Shot" : "Template"}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground sm:shrink-0">
+              <span>v{workflow.currentVersion || "—"}</span>
+            </div>
+          </CardContent>
+        </Card>
+      </Link>
+      <button
+        onClick={onDelete}
+        onPointerDown={(e) => e.stopPropagation()}
+        className="rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground opacity-0 transition-all group-hover:opacity-100 hover:bg-accent hover:text-destructive shrink-0"
+        title="Delete workflow"
+      >
+        ✕
+      </button>
     </div>
   );
 }

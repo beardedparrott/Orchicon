@@ -7,6 +7,7 @@ import {
   Pencil,
   Trash2,
 } from "lucide-react";
+import { useDroppable } from "@dnd-kit/core";
 
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -20,6 +21,13 @@ interface CategoryFolderProps {
   onRename: (newName: string) => void;
   onDelete: () => void;
   onUpdateDescription: (description: string) => void;
+  /**
+   * Opt-in drag-and-drop target id. When present, the whole folder region
+   * (header + description + items) becomes a dnd-kit drop target and
+   * highlights when a draggable is over it. Omitted = plain folder (no
+   * DnD), so non-DnD callers are unaffected.
+   */
+  droppableId?: string;
   children: React.ReactNode;
 }
 
@@ -31,8 +39,15 @@ export function CategoryFolder({
   onRename,
   onDelete,
   onUpdateDescription,
+  droppableId,
   children,
 }: CategoryFolderProps) {
+  // Unconditional hook call; disabled when no droppableId is given so the
+  // component stays usable outside a DndContext.
+  const { setNodeRef, isOver } = useDroppable({
+    id: droppableId ?? "",
+    disabled: !droppableId,
+  });
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(category.name);
   const [isEditingDesc, setIsEditingDesc] = useState(false);
@@ -72,7 +87,13 @@ export function CategoryFolder({
   const isUncategorized = category.id === "uncategorized";
 
   return (
-    <div className="mt-3 first:mt-0">
+    <div
+      ref={setNodeRef}
+      className={cn(
+        "mt-3 first:mt-0 transition-shadow",
+        isOver && "rounded-lg ring-2 ring-ring bg-accent/30",
+      )}
+    >
       <div
         className={cn(
           "group flex items-center gap-2 rounded-lg px-3 py-2 transition-colors",
