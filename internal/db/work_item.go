@@ -686,6 +686,56 @@ func ListDependencies(ctx context.Context, tx pgx.Tx, tenantID, projectID string
 	return out, rows.Err()
 }
 
+// ListDependenciesForItems returns all dependency edges of the given type
+// whose from_id is in the provided set — the single-query payload
+// population for WorkItem.depends_on (avoids an N+1 per item in List).
+func ListDependenciesForItems(ctx context.Context, tx pgx.Tx, tenantID string, fromIDs []string, depType string) ([]DependencyRow, error) {
+	const q = `SELECT id, tenant_id, project_id, from_id, to_id, type, created_at
+		FROM work_item_dependencies
+		WHERE tenant_id = $1 AND from_id = ANY($2) AND type = $3
+		ORDER BY created_at`
+	rows, err := tx.Query(ctx, q, tenantID, fromIDs, depType)
+	if err != nil {
+		return nil, fmt.Errorf("db: list dependencies for items: %w", err)
+	}
+	defer rows.Close()
+	var out []DependencyRow
+	for rows.Next() {
+		var d DependencyRow
+		if err := rows.Scan(&d.ID, &d.TenantID, &d.ProjectID, &d.FromID, &d.ToID,
+			&d.Type, &d.CreatedAt); err != nil {
+			return nil, fmt.Errorf("db: scan dependency for item: %w", err)
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// DeleteOutgoingDependencies removes every dependency edge of the given
+// type where from_id = fromID within the tenant scope (set-replace
+// support for UpdateWorkItem's depends_on list).
+func DeleteOutgoingDependencies(ctx context.Context, tx pgx.Tx, tenantID, fromID, depType string) error {
+	const q = `DELETE FROM work_item_dependencies WHERE tenant_id = $1 AND from_id = $2 AND type = $3`
+	if _, err := tx.Exec(ctx, q, tenantID, fromID, depType); err != nil {
+		return fmt.Errorf("db: delete outgoing dependencies: %w", err)
+	}
+	return nil
+}
+
+// ItemParticipatesInDependency reports whether the item is on either side
+// of any dependency edge (outgoing or incoming) within the tenant scope —
+// the project-reassignment guard (edges are project-scoped, so an item
+// with edges cannot silently move across projects).
+func ItemParticipatesInDependency(ctx context.Context, tx pgx.Tx, tenantID, itemID string) (bool, error) {
+	const q = `SELECT EXISTS(
+		SELECT 1 FROM work_item_dependencies WHERE tenant_id = $1 AND (from_id = $2 OR to_id = $2))`
+	var exists bool
+	if err := tx.QueryRow(ctx, q, tenantID, itemID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("db: item participates in dependency: %w", err)
+	}
+	return exists, nil
+}
+
 // CheckCycleWithRecursiveCTE checks whether adding an edge from→to
 // would create a cycle in the dependency DAG. It uses WITH RECURSIVE to
 // traverse the existing edges starting from `to` — if `from` is

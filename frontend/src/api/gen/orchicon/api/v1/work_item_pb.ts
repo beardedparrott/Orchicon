@@ -419,6 +419,16 @@ export class WorkItem extends Message<WorkItem> {
    */
   nextRunAt?: Timestamp;
 
+  /**
+   * depends_on are the IDs of the work items this item depends on (its
+   * outgoing edges of type DEPENDS_ON in the work DAG, independent of the
+   * parent/child hierarchy). Mirrors the create/update request shape so the
+   * set round-trips; full edge objects are available from GetDependencyGraph.
+   *
+   * @generated from field: repeated string depends_on = 31;
+   */
+  dependsOn: string[] = [];
+
   constructor(data?: PartialMessage<WorkItem>) {
     super();
     proto3.util.initPartial(data, this);
@@ -456,6 +466,7 @@ export class WorkItem extends Message<WorkItem> {
     { no: 28, name: "sort_order", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
     { no: 29, name: "recurring_schedule", kind: "message", T: RecurringSchedule, opt: true },
     { no: 30, name: "next_run_at", kind: "message", T: Timestamp },
+    { no: 31, name: "depends_on", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkItem {

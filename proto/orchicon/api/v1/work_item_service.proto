@@ -107,6 +107,11 @@ message CreateWorkItemRequest {
   // recurring_schedule sets a recurrence pattern; the item's status is
   // automatically flipped to RECURRING on create.
   optional orchicon.api.v1.RecurringSchedule recurring_schedule = 17;
+  // depends_on are the IDs of the work items this item depends on. Each ID
+  // creates a DEPENDS_ON-type edge (from = this item, to = the listed ID).
+  // Absent/empty = no edges. Validated: same project, target exists, no
+  // self-dependency, no cycle.
+  repeated string depends_on = 18;
 }
 
 message CreateWorkItemResponse {
@@ -173,6 +178,18 @@ message UpdateWorkItemRequest {
   // flips status to RECURRING; clearing it (empty message) resets to
   // non-recurring and clears next_run_at.
   optional orchicon.api.v1.RecurringSchedule recurring_schedule = 24;
+  // depends_on replaces the item's outgoing DEPENDS_ON edges (set-replace):
+  // an empty ids list clears all edges, an absent field leaves them
+  // unchanged. Validated: same project, target exists, no self-dependency,
+  // no cycle. Edges are independent of parent_id/sort_order.
+  optional DependencyIds depends_on = 25;
+}
+
+// DependencyIds is a set of dependency target work item IDs. Used for
+// UpdateWorkItem.depends_on so "leave unchanged" (field absent) and
+// "clear all" (empty ids) are distinguishable.
+message DependencyIds {
+  repeated string ids = 1;
 }
 
 message UpdateWorkItemResponse {
