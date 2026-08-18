@@ -593,7 +593,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			// the summarize_restart strategy must wait for its recovery
 			// before the approver is re-dispatched).
 			if sr.Status == domain.StepRunRecovering && (sr.StepKind == domain.StepKindTask || sr.StepKind == domain.StepKindApproval) {
-				ready, stepFail := r.recoveryDispatchReady(ctx, ttx.Tx, tenantID, run, sr, runByID)
+				ready, stepFail := r.recoveryDispatchReady(ctx, ttx.Tx, tenantID, run, sr)
 				if stepFail != nil {
 					if ferr := r.failStep(ctx, ttx.Tx, tenantID, run, sr, runByID, stepFail); ferr != nil {
 						return ferr
@@ -3165,7 +3165,7 @@ func recoveringStepResult(ctx context.Context, tx pgx.Tx, tenantID, workItemID, 
 // Returns (ready=true, nil) to dispatch, (false, nil) to hold for the next
 // pass, or (false, reason) to FAIL the step with `reason` (terminal
 // recovery that never resumed — never dispatch cold).
-func (r *WorkflowReconciler) recoveryDispatchReady(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, runs map[string]db.WorkflowStepRunRow) (bool, error) {
+func (r *WorkflowReconciler) recoveryDispatchReady(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow) (bool, error) {
 	var meta struct {
 		WorkItemID       string `json:"_work_item_id"`
 		FailedExecID     string `json:"_failed_execution_id"`

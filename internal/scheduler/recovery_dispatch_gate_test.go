@@ -425,7 +425,7 @@ func TestRecoveryGatePredicateTruthTable(t *testing.T) {
 	defer ttx.Rollback(ctx)
 
 	// No recovery row → hold.
-	ready, fail := env.reconciler.recoveryDispatchReady(ctx, ttx.Tx, approvalTestTenant, env.run, sr, nil)
+	ready, fail := env.reconciler.recoveryDispatchReady(ctx, ttx.Tx, approvalTestTenant, env.run, sr)
 	if ready || fail != nil {
 		t.Fatalf("no recovery row: (ready=%v, fail=%v), want (false, nil)", ready, fail)
 	}
@@ -446,7 +446,7 @@ func TestRecoveryGatePredicateTruthTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ready, fail = env.reconciler.recoveryDispatchReady(ctx, ttx.Tx, approvalTestTenant, env.run, sr, nil)
+	ready, fail = env.reconciler.recoveryDispatchReady(ctx, ttx.Tx, approvalTestTenant, env.run, sr)
 	if ready || fail != nil {
 		t.Fatalf("active recovery: (ready=%v, fail=%v), want (false, nil)", ready, fail)
 	}
@@ -472,7 +472,7 @@ func TestRecoveryGatePredicateTruthTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	sr3 := env.getStepRun(ctx, env.stepRun.ID)
-	ready, fail = env.reconciler.recoveryDispatchReady(ctx, ttx.Tx, approvalTestTenant, env.run, sr3, nil)
+	ready, fail = env.reconciler.recoveryDispatchReady(ctx, ttx.Tx, approvalTestTenant, env.run, sr3)
 	if !ready || fail != nil {
 		t.Fatalf("resumed + seed keys: (ready=%v, fail=%v), want (true, nil)", ready, fail)
 	}
@@ -494,7 +494,7 @@ func TestRecoveryGatePredicateTruthTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	sr4 := env.getStepRun(ctx, env.stepRun.ID)
-	ready, fail = env.reconciler.recoveryDispatchReady(ctx, ttx.Tx, approvalTestTenant, env.run, sr4, nil)
+	ready, fail = env.reconciler.recoveryDispatchReady(ctx, ttx.Tx, approvalTestTenant, env.run, sr4)
 	if ready {
 		t.Fatal("terminal failed recovery must not dispatch")
 	}
