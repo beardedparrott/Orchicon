@@ -47,7 +47,6 @@ func testLocalLoginEnv(t *testing.T) (*httptest.Server, *db.Pool, *Handler) {
 	cfg.Auth.SigningKey = "test-signing-key-for-local-login"
 	cfg.Auth.RedirectURL = "http://localhost:8080/auth/callback"
 	cfg.Auth.EmbeddedOP = true
-	cfg.Auth.DevLoginAllowed = true
 	cfg.Auth.OPRedirectURIs = ""
 
 	log := slog.New(slog.DiscardHandler)

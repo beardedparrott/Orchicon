@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoute } from "@tanstack/react-router";
 import { Timestamp } from "@bufbuild/protobuf";
 
@@ -198,19 +198,27 @@ function IdentitiesTab() {
   const [createSubject, setCreateSubject] = useState("");
   const [createName, setCreateName] = useState("");
 
-  // "Set local password" state (unchanged surface).
-  const [identityId, setIdentityId] = useState("");
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-
   // List-page pattern: search + status filter + selection.
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  // Inline row edit.
+  // Row-edit modal (display name + local credential).
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  const [editUsername, setEditUsername] = useState("");
+  const [editPassword, setEditPassword] = useState("");
+  const editDialogRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const dialog = editDialogRef.current;
+    if (!dialog) return;
+    if (editingId) {
+      dialog.showModal();
+    } else {
+      dialog.close();
+    }
+  }, [editingId]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -267,19 +275,46 @@ function IdentitiesTab() {
     const i = data?.find((x) => x.id === id);
     setEditingId(id);
     setEditName(i?.displayName ?? "");
+    // Username prefilled from the identity's local credential (empty when
+    // the identity has none — the admin fills it to provision one). Subject
+    // != credential username today: the credential's username is the login
+    // handle, not the OIDC/SSO subject.
+    setEditUsername(i?.username ?? "");
+    setEditPassword("");
   }
 
   async function handleEditSave(id: string) {
+    const i = data?.find((x) => x.id === id);
     const name = editName.trim();
     if (!name) return;
     try {
-      await update.mutateAsync({ id, displayName: name });
+      // Display-name edit (existing UpdateIdentity) — only when changed.
+      if (name !== (i?.displayName ?? "")) {
+        await update.mutateAsync({ id, displayName: name });
+      }
+      // Local credential: set only when BOTH username and password are
+      // non-empty (username is prefilled for credentialed identities; the
+      // admin fills it to provision a new one). Wired to SetLocalCredential
+      // (auth:write, admin-only).
+      if (editUsername.trim() && editPassword) {
+        await setCredential.mutateAsync({
+          identityId: id,
+          username: editUsername.trim(),
+          password: editPassword,
+        });
+      }
       toast.success("Identity updated.");
-      setEditingId(null);
-      setEditName("");
+      handleEditCancel();
     } catch {
       // error already toasted
     }
+  }
+
+  function handleEditCancel() {
+    setEditingId(null);
+    setEditName("");
+    setEditUsername("");
+    setEditPassword("");
   }
 
   async function handleToggleStatus(id: string, subject: string, current: string) {
@@ -345,17 +380,6 @@ function IdentitiesTab() {
       setSelected(new Set());
     } catch {
       // error already toasted
-    }
-  }
-
-  async function handleSetCredential() {
-    if (!identityId || !username || !password) return;
-    try {
-      await setCredential.mutateAsync({ identityId, username, password });
-      toast.success(`Local credential set for ${username}.`);
-      setPassword("");
-    } catch {
-      /* error already toasted by global handler */
     }
   }
 
@@ -459,6 +483,7 @@ function IdentitiesTab() {
               <th className="py-2 pr-4">ID</th>
               <th className="py-2 pr-4">Subject</th>
               <th className="py-2 pr-4">Name</th>
+              <th className="py-2 pr-4">Username</th>
               <th className="py-2 pr-4">Type</th>
               <th className="py-2 pr-4">Status</th>
               <th className="py-2 pr-4">Actions</th>
@@ -467,7 +492,7 @@ function IdentitiesTab() {
           <tbody>
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={7} className="py-3 text-muted-foreground">
+                <td colSpan={8} className="py-3 text-muted-foreground">
                   No identities match.
                 </td>
               </tr>
@@ -485,26 +510,8 @@ function IdentitiesTab() {
                 </td>
                 <td className="py-2 pr-4 font-mono text-xs">{i.id}</td>
                 <td className="py-2 pr-4 font-mono text-xs">{i.subject}</td>
-                <td className="py-2 pr-4">
-                  {editingId === i.id ? (
-                    <div className="flex items-center gap-2">
-                      <Input
-                        className="h-8 w-56"
-                        value={editName}
-                        onChange={(e) => setEditName(e.target.value)}
-                        autoFocus
-                      />
-                      <Button size="sm" onClick={() => handleEditSave(i.id)} disabled={update.isPending || !editName.trim()}>
-                        Save
-                      </Button>
-                      <Button size="sm" variant="outline" onClick={() => { setEditingId(null); setEditName(""); }}>
-                        Cancel
-                      </Button>
-                    </div>
-                  ) : (
-                    i.displayName
-                  )}
-                </td>
+                <td className="py-2 pr-4">{i.displayName}</td>
+                <td className="py-2 pr-4 font-mono text-xs">{i.username || ""}</td>
                 <td className="py-2 pr-4">{i.identityType}</td>
                 <td className="py-2 pr-4">
                   <span className={cn(
@@ -548,48 +555,84 @@ function IdentitiesTab() {
         </table>
       </div>
 
-      <div className="space-y-2 border-t pt-4">
-        <h3 className="text-sm font-semibold">Set local password</h3>
-        <p className="text-xs text-muted-foreground">
-          Create or change the embedded-IdP login credential for an identity
-          (admin-only, auth:write). Use this to change the default admin's
-          password after first boot.
-        </p>
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={identityId}
-            onChange={(e) => setIdentityId(e.target.value)}
-            className="rounded-md border border-input bg-background px-3 py-2 text-sm"
-            aria-label="Identity"
-          >
-            <option value="">Select identity…</option>
-            {data?.map((i) => (
-              <option key={i.id} value={i.id}>
-                {i.subject}
-              </option>
-            ))}
-          </select>
-          <Input
-            className="w-40"
-            placeholder="username"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-          />
-          <Input
-            className="w-56"
-            type="password"
-            placeholder="new password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-          <Button
-            onClick={handleSetCredential}
-            disabled={!identityId || !username || !password || setCredential.isPending}
-          >
-            {setCredential.isPending ? "Setting…" : "Set password"}
-          </Button>
-        </div>
-      </div>
+      {/* Row-edit modal: display name + local credential (username prefilled,
+          password set/change wired to SetLocalCredential, auth:write). */}
+      <dialog
+        ref={editDialogRef}
+        onClose={handleEditCancel}
+        className={cn(
+          "rounded-lg border bg-background text-foreground p-0 shadow-lg backdrop:bg-black/50",
+          "w-full max-w-md",
+        )}
+        onClick={(e) => {
+          if (e.target === editDialogRef.current) handleEditCancel();
+        }}
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (editingId) handleEditSave(editingId);
+          }}
+          className="p-6"
+        >
+          <h2 className="text-lg font-semibold mb-4">Edit identity</h2>
+          <div className="space-y-4">
+            <div>
+              <label htmlFor="edit-name" className="block text-sm font-medium mb-1.5">
+                Display name
+              </label>
+              <Input
+                id="edit-name"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div>
+              <label htmlFor="edit-username" className="block text-sm font-medium mb-1.5">
+                Username <span className="text-muted-foreground">(login handle)</span>
+              </label>
+              <Input
+                id="edit-username"
+                value={editUsername}
+                onChange={(e) => setEditUsername(e.target.value)}
+                placeholder="you@example.com"
+                autoComplete="off"
+              />
+            </div>
+            <div>
+              <label htmlFor="edit-password" className="block text-sm font-medium mb-1.5">
+                New password <span className="text-muted-foreground">(optional)</span>
+              </label>
+              <Input
+                id="edit-password"
+                type="password"
+                value={editPassword}
+                onChange={(e) => setEditPassword(e.target.value)}
+                placeholder="Set or change the local login password"
+                autoComplete="new-password"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                Saving a username + password sets or changes the embedded-IdP
+                login credential (admin-only, auth:write). Leave the password
+                empty to only update the display name. The username is the
+                login handle, which need not equal the identity subject.
+              </p>
+            </div>
+          </div>
+          <div className="mt-6 flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={handleEditCancel}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={!editName.trim() || update.isPending || setCredential.isPending}
+            >
+              {update.isPending || setCredential.isPending ? "Saving…" : "Save"}
+            </Button>
+          </div>
+        </form>
+      </dialog>
     </div>
   );
 }

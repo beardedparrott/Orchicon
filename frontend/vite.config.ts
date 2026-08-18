@@ -25,7 +25,7 @@ export default defineConfig({
         target: "http://localhost:8080",
         changeOrigin: true,
       },
-      // Auth endpoints (dev-login/refresh/oidc/session) + the embedded
+      // Auth endpoints (local-login/refresh/oidc/session) + the embedded
       // OpenID Provider login bridge — proxied so the SPA login flow
       // works under make fe-dev.
       "/auth": {

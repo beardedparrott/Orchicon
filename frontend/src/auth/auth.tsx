@@ -14,7 +14,6 @@ import { useEffect, type ReactNode } from "react";
 import {
   ensureSession,
   logout as doLogout,
-  devLogin,
   localLogin,
   signup,
   oidcLoginURL,
@@ -82,13 +81,6 @@ export function RequireEntitlement({
   // enforces the per-RPC entitlement. A v0.2 can hydrate entitlements
   // into the session for precise client gating.
   return <>{children}</>;
-}
-
-// startDevLogin triggers the local dev IdP synthetic login.
-export async function startDevLogin(subject: string): Promise<SessionInfo> {
-  const s = await devLogin(subject);
-  useSessionStore.getState().setSession(s);
-  return s;
 }
 
 // startLocalLogin authenticates a local account (embedded IdP) with a

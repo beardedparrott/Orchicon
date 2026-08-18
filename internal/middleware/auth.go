@@ -33,7 +33,6 @@ var publicPaths = map[string]bool{
 	// Self-service account creation (embedded IdP): happens before a
 	// session exists, exactly like local-login.
 	"/auth/signup":    true,
-	"/auth/dev-login": true,
 	"/auth/refresh":   true,
 	// /auth/logout is credential-free by design (cookie-based): it can only
 	// end the caller's own browser session, and requiring a bearer token
@@ -45,7 +44,7 @@ var publicPaths = map[string]bool{
 	"/auth/session":       true,
 	// /auth/config is the pre-login capability-flags endpoint the SPA
 	// login page reads to render the honest set of sign-in affordances
-	// (embedded-OP / external IdP / dev-login). Public + secret-free.
+	// (embedded-OP / external IdP). Public + secret-free.
 	"/auth/config": true,
 	// Embedded OpenID Provider endpoints (internal/auth/op). These are NOT
 	// /auth/*-prefixed so they must be listed here explicitly: discovery,

@@ -54,7 +54,6 @@ func testTenantMappingEnv(t *testing.T, deploymentTenant string) (*httptest.Serv
 	cfg.Auth.SigningKey = "test-signing-key-tenant-mapping"
 	cfg.Auth.RedirectURL = "http://localhost:8080/auth/callback"
 	cfg.Auth.EmbeddedOP = true
-	cfg.Auth.DevLoginAllowed = true
 	cfg.DeploymentTenantID = deploymentTenant
 
 	log := slog.New(slog.DiscardHandler)
@@ -66,8 +65,8 @@ func testTenantMappingEnv(t *testing.T, deploymentTenant string) (*httptest.Serv
 	return srv, pool, h
 }
 
-// tenantMappingCleanup removes a dev-login-provisioned identity from both
-// the deployment tenant and the dev tenant so the tests stay isolated.
+// tenantMappingCleanup removes a test-provisioned identity from both the
+// deployment tenant and the dev tenant so the tests stay isolated.
 func tenantMappingCleanup(t *testing.T, pool *db.Pool, tenantID, subject string) {
 	t.Helper()
 	ctx := context.Background()
@@ -81,76 +80,6 @@ func tenantMappingCleanup(t *testing.T, pool *db.Pool, tenantID, subject string)
 		_, _ = ttx.Exec(ctx, `DELETE FROM roles r WHERE r.name = 'admin'
 			AND NOT EXISTS (SELECT 1 FROM role_bindings b WHERE b.role_id = r.id)`)
 		_ = ttx.Commit(ctx)
-	}
-}
-
-// TestDevLoginLandsInDeploymentTenant pins that the dev-login tenant
-// default no longer assumes tnt_dev: with ORCHICON_DEPLOYMENT_TENANT_ID=
-// acme and no client-supplied tenant_id, the login provisions the identity
-// in acme and the issued tokens carry tenant_id=acme.
-func TestDevLoginLandsInDeploymentTenant(t *testing.T) {
-	srv, pool, h := testTenantMappingEnv(t, "acme")
-	subject := "dev-acme@orchicon.local"
-	t.Cleanup(func() { tenantMappingCleanup(t, pool, "acme", subject) })
-
-	resp, err := http.Post(srv.URL+"/auth/dev-login", "application/json",
-		strings.NewReader(`{"subject":"`+subject+`"}`))
-	if err != nil {
-		t.Fatalf("POST dev-login: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, body)
-	}
-	var body tokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if body.TenantID != "acme" {
-		t.Fatalf("tenant = %q, want %q (deployment tenant, not tnt_dev)", body.TenantID, "acme")
-	}
-	// The access token itself carries the deployment tenant.
-	claims, err := h.issuer.VerifyAccess(body.AccessToken)
-	if err != nil {
-		t.Fatalf("VerifyAccess: %v", err)
-	}
-	if claims.TenantID != "acme" {
-		t.Fatalf("token tenant claim = %q, want %q", claims.TenantID, "acme")
-	}
-	// The identity was provisioned in acme, not in the tnt_dev literal.
-	if !identityExists(t, pool, "acme", subject) {
-		t.Fatal("identity not provisioned in deployment tenant acme")
-	}
-	if identityExists(t, pool, "tnt_dev", subject) {
-		t.Fatal("identity leaked into tnt_dev")
-	}
-}
-
-// TestDevLoginOverrideStillHonored pins that the dev-only tenant_id
-// override survives the mapping change: a client-supplied tenant_id still
-// wins over the deployment tenant (the escape hatch for dev flows).
-func TestDevLoginOverrideStillHonored(t *testing.T) {
-	srv, pool, _ := testTenantMappingEnv(t, "acme")
-	subject := "dev-other@orchicon.local"
-	t.Cleanup(func() { tenantMappingCleanup(t, pool, "other-tnt", subject) })
-
-	resp, err := http.Post(srv.URL+"/auth/dev-login", "application/json",
-		strings.NewReader(`{"subject":"`+subject+`","tenant_id":"other-tnt"}`))
-	if err != nil {
-		t.Fatalf("POST dev-login: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, body)
-	}
-	var body tokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if body.TenantID != "other-tnt" {
-		t.Fatalf("tenant = %q, want %q (client-supplied override)", body.TenantID, "other-tnt")
 	}
 }
 

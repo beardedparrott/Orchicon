@@ -6,7 +6,7 @@ import {
   useSearch,
 } from "@tanstack/react-router";
 
-import { startDevLogin, startLocalLogin, startOIDCLogin } from "@/auth/auth";
+import { startLocalLogin, startOIDCLogin } from "@/auth/auth";
 import { fetchAuthConfig, type AuthConfig } from "@/auth/session";
 import { Button } from "@/components/ui/button";
 import {
@@ -22,9 +22,8 @@ import { Route as rootRoute } from "@/routes/__root";
 import { router } from "@/router";
 
 // Login page (docs/10 §7). Local accounts of the embedded IdP sign in with
-// a username + password; OIDC SSO is the external-IdP path; the synthetic
-// dev-login is the flag-gated dev escape hatch. The access token lands in
-// memory; the refresh token in an HttpOnly cookie.
+// a username + password; OIDC SSO is the external-IdP path. The access
+// token lands in memory; the refresh token in an HttpOnly cookie.
 //
 // The page is honest about the running plane: it fetches the public
 // /auth/config capability flags and renders only the sign-in affordances
@@ -61,7 +60,6 @@ function LoginPage() {
   const [cfgError, setCfgError] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [subject, setSubject] = useState("dev@orchicon.local");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -126,19 +124,6 @@ function LoginPage() {
     }
   }
 
-  async function handleDevLogin() {
-    setBusy(true);
-    setError("");
-    try {
-      await startDevLogin(subject);
-      continueTo(next ?? "/");
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-6">
       <Card className="w-full max-w-md">
@@ -192,30 +177,6 @@ function LoginPage() {
             >
               Continue with SSO (OIDC)
             </Button>
-          )}
-          {cfg?.dev_login && (
-            <>
-              <div className="relative py-2">
-                <div className="absolute inset-0 flex items-center">
-                  <span className="w-full border-t" />
-                </div>
-                <div className="relative flex justify-center text-xs uppercase">
-                  <span className="bg-card px-2 text-muted-foreground">or</span>
-                </div>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="subject">Subject (dev IdP)</Label>
-                <Input
-                  id="subject"
-                  value={subject}
-                  onChange={(e) => setSubject(e.target.value)}
-                  placeholder="you@example.com"
-                />
-              </div>
-              <Button variant="outline" className="w-full" onClick={handleDevLogin} disabled={busy}>
-                {busy ? "Signing in…" : "Dev sign in"}
-              </Button>
-            </>
           )}
           {error && (
             <p className="text-sm text-destructive">{error}</p>

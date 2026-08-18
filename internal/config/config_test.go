@@ -111,14 +111,10 @@ func TestValidateAllModesRequireIssuer(t *testing.T) {
 	}
 }
 
-func TestDevLoginDefaultsToFalse(t *testing.T) {
-	// Isolate the default from any ambient environment.
-	t.Setenv("ORCHICON_DEV_LOGIN", "")
+func TestDefaults(t *testing.T) {
+	// Isolate the defaults from any ambient environment.
 	t.Setenv("ORCHICON_DEPLOYMENT_TENANT_ID", "")
 	c := Default()
-	if c.Auth.DevLoginAllowed {
-		t.Fatal("DevLoginAllowed defaults to true; want false (dev-login must be flag-gated off)")
-	}
 	if !c.Auth.EmbeddedOP {
 		t.Fatal("EmbeddedOP defaults to false; want true (the embedded OP is the local default IdP)")
 	}
