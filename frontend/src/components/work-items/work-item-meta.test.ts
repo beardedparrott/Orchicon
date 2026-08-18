@@ -185,16 +185,18 @@ describe("board column mapping and transition matrix (regression guards)", () =>
     expect(task).toContain(WorkItemStatus.FAILED);
   });
 
-  it("terminal statuses are succeeded/failed/cancelled only", () => {
+  it("terminal statuses are succeeded/skipped/failed/cancelled only", () => {
     expect(isTerminal(WorkItemStatus.SUCCEEDED)).toBe(true);
+    expect(isTerminal(WorkItemStatus.SKIPPED)).toBe(true);
     expect(isTerminal(WorkItemStatus.FAILED)).toBe(true);
     expect(isTerminal(WorkItemStatus.CANCELLED)).toBe(true);
     expect(isTerminal(WorkItemStatus.RUNNING)).toBe(false);
     expect(isTerminal(WorkItemStatus.READY)).toBe(false);
     expect(isTerminal(WorkItemStatus.RECURRING)).toBe(false);
-    // The server gate unblocks only on SUCCEEDED; a blocked item whose
-    // blocker failed/cancelled stays blocked (named, operator-resolvable).
-    // The advisory TERMINAL_STATUSES intentionally diverges — keep it.
+    // The server gate unblocks only on SUCCEEDED/SKIPPED; a blocked item
+    // whose blocker failed/cancelled stays blocked (named,
+    // operator-resolvable). The advisory TERMINAL_STATUSES intentionally
+    // diverges — keep it.
     expect(isTerminal(WorkItemStatus.BLOCKED)).toBe(false);
   });
 });
@@ -220,5 +222,28 @@ describe("blocked status (blocked/waiting state)", () => {
   it("is system-managed (not manually movable) and filterable", () => {
     expect(MANUALLY_UNMOVABLE_STATUSES.has(WorkItemStatus.BLOCKED)).toBe(true);
     expect(STATUS_FILTER_OPTIONS.map((o) => o.value)).toContain(WorkItemStatus.BLOCKED);
+  });
+});
+
+describe("skipped status (terminal-success, skip-status/depends_on interplay)", () => {
+  it("uses yellow — distinct from every other status pill", () => {
+    const skipped = statusMeta(WorkItemStatus.SKIPPED);
+    expect(skipped.pill).toContain("text-yellow-800");
+    expect(skipped.pillDark).toContain("text-yellow-300");
+    expect(skipped.pill).toContain("bg-yellow-500/15");
+    expect(skipped.label).toBe("skipped");
+    expect(skipped.titleLabel).toBe("Skipped");
+    // Distinct from succeeded (emerald) and assigned (amber).
+    expect(skipped.pill).not.toBe(statusMeta(WorkItemStatus.SUCCEEDED).pill);
+    expect(skipped.pill).not.toBe(statusMeta(WorkItemStatus.ASSIGNED).pill);
+  });
+
+  it("renders in the Succeeded board column (real pill stays yellow)", () => {
+    expect(columnForStatus(WorkItemStatus.SKIPPED)).toBe(WorkItemStatus.SUCCEEDED);
+  });
+
+  it("is system-managed (not manually movable) and filterable", () => {
+    expect(MANUALLY_UNMOVABLE_STATUSES.has(WorkItemStatus.SKIPPED)).toBe(true);
+    expect(STATUS_FILTER_OPTIONS.map((o) => o.value)).toContain(WorkItemStatus.SKIPPED);
   });
 });

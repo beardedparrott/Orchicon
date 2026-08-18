@@ -759,6 +759,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// in the list alongside a fresh PENDING re-ask run.
 	allSucceeded := true
 	anyFailed := false
+	anySkipped := false
 	hasSteps := false
 	// terminalParent, when set, is the parent of a bound work item that
 	// reached a terminal state in this pass — the sequence engine is
@@ -779,7 +780,12 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			sr = latest
 		}
 		switch sr.Status {
-		case domain.StepRunSucceeded, domain.StepRunSkipped:
+		case domain.StepRunSucceeded:
+		case domain.StepRunSkipped:
+			// A skipped step is terminal-success; a run whose every active
+			// step is succeeded/skipped completes to a skipped work item
+			// when at least one step was skipped (distinct from succeeded).
+			anySkipped = true
 		case domain.StepRunFailed, domain.StepRunBlocked:
 			anyFailed = true
 			allSucceeded = false
@@ -815,17 +821,23 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		// The bound work item is now complete: it stayed "running" for
 		// the whole run (each step's execution transitions it to running,
 		// not succeeded — see TaskReconciler.boundToActiveRun) and only
-		// reaches "succeeded" when every step of the run has succeeded.
+		// reaches a terminal-success state when every step of the run has
+		// succeeded or been skipped.
 		if run.WorkItemID != "" {
 			if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID); err == nil {
 				// Recurring items stay "recurring" after a successful run:
 				// the next_run_at was pre-computed by RecurringFireReconciler
 				// and the item should be re-scanned on the next occurrence.
-				// Non-recurring items transition to "succeeded".
+				// Non-recurring items transition to "succeeded", or to
+				// "skipped" when the run completed with at least one skipped
+				// step (all active steps terminal-success, none failed).
 				// KEY: check the persistent RecurringSchedule field, NOT the
 				// transient status — StartWorkflow sets status="running" at
 				// fire time, so at completion the item is never "recurring".
 				status := domain.WorkItemSucceeded
+				if anySkipped {
+					status = domain.WorkItemSkipped
+				}
 				fields := db.UpdateWorkItemFields{}
 				if len(wi.RecurringSchedule) > 0 {
 					status = domain.WorkItemRecurring
@@ -842,13 +854,13 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				review := r.buildAcceptanceReview(ctx, ttx.Tx, tenantID, run, stepRuns, domain.WorkflowRunCompleted)
 				fields.AcceptanceReview = &review
 				if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, fields); err != nil {
-					return fmt.Errorf("mark bound work item succeeded: %w", err)
+					return fmt.Errorf("mark bound work item terminal-success: %w", err)
 				}
 				// Sequence wiring: a bound child reaching terminal-success
 				// must advance its parent's chain. Recurring items that
 				// stay recurring do NOT trigger sequence advance — they
 				// are standalone recurring tickets, not sequence children.
-				if wi.ParentID != nil && status == domain.WorkItemSucceeded {
+				if wi.ParentID != nil && domain.WorkItemIsTerminalSuccess(status) {
 					terminalParent = *wi.ParentID
 				}
 			}

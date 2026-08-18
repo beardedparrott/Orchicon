@@ -78,6 +78,13 @@ describe("computeBlockState", () => {
     expect(blockedBy.get("b")).toBeUndefined();
   });
 
+  it("a skipped blocker no longer blocks (skip-status never blocks dependents)", () => {
+    const a = item({ id: "a", title: "A", status: WorkItemStatus.SKIPPED });
+    const b = item({ id: "b", title: "B" });
+    const { blockedBy } = computeBlockState([a, b], [edge({ fromId: "a", toId: "b" })]);
+    expect(blockedBy.get("b")).toBeUndefined();
+  });
+
   it("skips edges whose nodes are not in the graph", () => {
     const b = item({ id: "b", title: "B" });
     const { blockedBy } = computeBlockState([b], [edge({ fromId: "ghost", toId: "b" })]);

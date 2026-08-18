@@ -138,6 +138,11 @@ const (
 	// is not terminal-success. Cleared automatically by the next reconcile
 	// pass when the dependency gate satisfies. Never user-assignable.
 	WorkItemStatus_WORK_ITEM_STATUS_BLOCKED WorkItemStatus = 12
+	// System-managed terminal-success: set by the reconcilers when a bound
+	// workflow run completes with every active step terminal-success but at
+	// least one step skipped. Satisfies dependency edges exactly like
+	// SUCCEEDED (never blocks dependents). Never user-assignable.
+	WorkItemStatus_WORK_ITEM_STATUS_SKIPPED WorkItemStatus = 13
 )
 
 // Enum value maps for WorkItemStatus.
@@ -156,6 +161,7 @@ var (
 		10: "WORK_ITEM_STATUS_SCHEDULED",
 		11: "WORK_ITEM_STATUS_RECURRING",
 		12: "WORK_ITEM_STATUS_BLOCKED",
+		13: "WORK_ITEM_STATUS_SKIPPED",
 	}
 	WorkItemStatus_value = map[string]int32{
 		"WORK_ITEM_STATUS_UNSPECIFIED":   0,
@@ -171,6 +177,7 @@ var (
 		"WORK_ITEM_STATUS_SCHEDULED":     10,
 		"WORK_ITEM_STATUS_RECURRING":     11,
 		"WORK_ITEM_STATUS_BLOCKED":       12,
+		"WORK_ITEM_STATUS_SKIPPED":       13,
 	}
 )
 
@@ -948,7 +955,7 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\x1cWORK_ITEM_KIND_RECOVERY_STOP\x10\x05\x12-\n" +
 	")WORK_ITEM_KIND_RECOVERY_SUMMARIZE_RESTART\x10\x06\x12,\n" +
 	"(WORK_ITEM_KIND_RECOVERY_HUMAN_ESCALATION\x10\a\x12#\n" +
-	"\x1fWORK_ITEM_KIND_RECOVERY_RETRY_N\x10\b*\xa9\x03\n" +
+	"\x1fWORK_ITEM_KIND_RECOVERY_RETRY_N\x10\b*\xc7\x03\n" +
 	"\x0eWorkItemStatus\x12 \n" +
 	"\x1cWORK_ITEM_STATUS_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18WORK_ITEM_STATUS_PENDING\x10\x01\x12\x1a\n" +
@@ -963,7 +970,8 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\x1aWORK_ITEM_STATUS_SCHEDULED\x10\n" +
 	"\x12\x1e\n" +
 	"\x1aWORK_ITEM_STATUS_RECURRING\x10\v\x12\x1c\n" +
-	"\x18WORK_ITEM_STATUS_BLOCKED\x10\f*\x8d\x01\n" +
+	"\x18WORK_ITEM_STATUS_BLOCKED\x10\f\x12\x1c\n" +
+	"\x18WORK_ITEM_STATUS_SKIPPED\x10\r*\x8d\x01\n" +
 	"\x0eDependencyType\x12\x1f\n" +
 	"\x1bDEPENDENCY_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16DEPENDENCY_TYPE_BLOCKS\x10\x01\x12\x1e\n" +

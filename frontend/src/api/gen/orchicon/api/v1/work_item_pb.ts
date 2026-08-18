@@ -172,6 +172,16 @@ export enum WorkItemStatus {
    * @generated from enum value: WORK_ITEM_STATUS_BLOCKED = 12;
    */
   BLOCKED = 12,
+
+  /**
+   * System-managed terminal-success: set by the reconcilers when a bound
+   * workflow run completes with every active step terminal-success but at
+   * least one step skipped. Satisfies dependency edges exactly like
+   * SUCCEEDED (never blocks dependents). Never user-assignable.
+   *
+   * @generated from enum value: WORK_ITEM_STATUS_SKIPPED = 13;
+   */
+  SKIPPED = 13,
 }
 // Retrieve enum metadata with: proto3.getEnumType(WorkItemStatus)
 proto3.util.setEnumType(WorkItemStatus, "orchicon.api.v1.WorkItemStatus", [
@@ -188,6 +198,7 @@ proto3.util.setEnumType(WorkItemStatus, "orchicon.api.v1.WorkItemStatus", [
   { no: 10, name: "WORK_ITEM_STATUS_SCHEDULED" },
   { no: 11, name: "WORK_ITEM_STATUS_RECURRING" },
   { no: 12, name: "WORK_ITEM_STATUS_BLOCKED" },
+  { no: 13, name: "WORK_ITEM_STATUS_SKIPPED" },
 ]);
 
 /**

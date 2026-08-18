@@ -755,10 +755,11 @@ type UnsatisfiedDependencyRow struct {
 }
 
 // ListUnsatisfiedDependencies returns the sources of every incoming
-// blocks/depends_on edge whose status is NOT 'succeeded' for the given
-// work items. The predicate is IDENTICAL to CheckDependenciesSatisfied
-// (relates_to never blocks; only succeeded unblocks), so the read-time
-// blocked_by list and the reconciler's dispatch gate can never disagree.
+// blocks/depends_on edge whose status is NOT terminal-success (NOT IN
+// terminalSuccessStatuses) for the given work items. The predicate is
+// IDENTICAL to CheckDependenciesSatisfied (relates_to never blocks; only
+// succeeded/skipped unblock), so the read-time blocked_by list and the
+// reconciler's dispatch gate can never disagree.
 // Bounded by the number of edges targeting the items — one indexed join
 // over the dependency edges + work_items.
 func ListUnsatisfiedDependencies(ctx context.Context, tx pgx.Tx, tenantID string, toIDs []string) ([]UnsatisfiedDependencyRow, error) {
@@ -767,7 +768,7 @@ func ListUnsatisfiedDependencies(ctx context.Context, tx pgx.Tx, tenantID string
 		JOIN work_items wi ON wi.id = d.from_id AND wi.tenant_id = d.tenant_id
 		WHERE d.tenant_id = $1 AND d.to_id = ANY($2)
 		  AND d.type IN ('blocks', 'depends_on')
-		  AND wi.status != 'succeeded'
+		  AND wi.status NOT IN ` + terminalSuccessStatuses + `
 		ORDER BY wi.created_at`
 	rows, err := tx.Query(ctx, q, tenantID, toIDs)
 	if err != nil {

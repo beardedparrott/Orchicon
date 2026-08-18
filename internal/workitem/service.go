@@ -2124,6 +2124,8 @@ func statusToProto(status string) apiv1.WorkItemStatus {
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECURRING
 	case domain.WorkItemBlocked:
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_BLOCKED
+	case domain.WorkItemSkipped:
+		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_SKIPPED
 	default:
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_UNSPECIFIED
 	}

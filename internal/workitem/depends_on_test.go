@@ -713,12 +713,111 @@ func TestBlockedByAttachNamesBlockersDB(t *testing.T) {
 	_ = pool
 }
 
+// TestSkippedBlockerSatisfiesDependencyGateDB pins the shared terminal-
+// success predicate at the SQL gate level (AC1 + AC3): a skipped blocker
+// satisfies CheckDependenciesSatisfied and is absent from
+// ListUnsatisfiedDependencies (never named in blocked_by), while a failed
+// blocker keeps the dependent blocked and stays named (AC2). The two SQL
+// sites share terminalSuccessStatuses, so the dispatch gate and the
+// read-time blocked_by list can never disagree.
+func TestSkippedBlockerSatisfiesDependencyGateDB(t *testing.T) {
+	ctx, pool, s, proj := dependsOnTestEnv(t)
+
+	blocker := dependsOnCreate(t, ctx, s, proj, nil)
+	dep := dependsOnCreate(t, ctx, s, proj, nil)
+
+	addEdge := func(fromID, toID string) {
+		t.Helper()
+		ttx, err := pool.BeginTenantTx(ctx, validateParentTestTenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ttx.Rollback(ctx)
+		if _, err := db.CreateDependency(ctx, ttx.Tx, db.DependencyRow{
+			ID: db.NewID(), TenantID: validateParentTestTenant, ProjectID: proj,
+			FromID: fromID, ToID: toID, Type: domain.DependencyDependsOn,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := ttx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setDBStatus := func(id, status string) {
+		t.Helper()
+		ttx, err := pool.BeginTenantTx(ctx, validateParentTestTenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ttx.Rollback(ctx)
+		wi, err := db.GetWorkItem(ctx, ttx.Tx, validateParentTestTenant, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.UpdateWorkItem(ctx, ttx.Tx, validateParentTestTenant, id, wi.Version, db.UpdateWorkItemFields{Status: &status}); err != nil {
+			t.Fatal(err)
+		}
+		if err := ttx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	addEdge(blocker.Id, dep.Id)
+
+	// A SKIPPED blocker satisfies the gate and is never named as a blocker.
+	setDBStatus(blocker.Id, domain.WorkItemSkipped)
+	ttx, err := pool.BeginTenantTx(ctx, validateParentTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sat, err := db.CheckDependenciesSatisfied(ctx, ttx.Tx, validateParentTestTenant, dep.Id)
+	if err != nil {
+		ttx.Rollback(ctx)
+		t.Fatalf("check deps: %v", err)
+	}
+	if !sat {
+		t.Error("CheckDependenciesSatisfied = false, want true (skipped blocker satisfies the edge)")
+	}
+	unsat, err := db.ListUnsatisfiedDependencies(ctx, ttx.Tx, validateParentTestTenant, []string{dep.Id})
+	ttx.Rollback(ctx)
+	if err != nil {
+		t.Fatalf("list unsat: %v", err)
+	}
+	if len(unsat) != 0 {
+		t.Errorf("ListUnsatisfiedDependencies(dep) = %+v, want none (skipped blocker is not named in blocked_by)", unsat)
+	}
+
+	// A FAILED blocker keeps the dependent blocked and stays named (AC2).
+	setDBStatus(blocker.Id, domain.WorkItemFailed)
+	ttx2, err := pool.BeginTenantTx(ctx, validateParentTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sat, err = db.CheckDependenciesSatisfied(ctx, ttx2.Tx, validateParentTestTenant, dep.Id)
+	if err != nil {
+		ttx2.Rollback(ctx)
+		t.Fatalf("check deps (failed blocker): %v", err)
+	}
+	if sat {
+		t.Error("CheckDependenciesSatisfied = true, want false (failed blocker keeps the dependent blocked)")
+	}
+	unsat, err = db.ListUnsatisfiedDependencies(ctx, ttx2.Tx, validateParentTestTenant, []string{dep.Id})
+	ttx2.Rollback(ctx)
+	if err != nil {
+		t.Fatalf("list unsat (failed blocker): %v", err)
+	}
+	if len(unsat) != 1 || unsat[0].ID != blocker.Id {
+		t.Errorf("ListUnsatisfiedDependencies(dep) = %+v, want [%s] (failed blocker stays named)", unsat, blocker.Id)
+	}
+}
+
 // TestMapDBErrorDependencyCycle verifies the trigger's cycle rejection —
 // which the service surfaces when the concurrent serialization path catches
 // an app write (the app-layer check ran against stale state) — is mapped to
 // a FailedPrecondition naming the offending edge, not an opaque Internal.
 // Pure unit test: no DB required.
-func TestMapDBErrorDependencyCycle(t *testing.T) {	pgErr := &pgconn.PgError{Code: "P0001", Message: "cannot add dependency w_a -> w_b: would create a cycle in the work DAG"}
+func TestMapDBErrorDependencyCycle(t *testing.T) {
+	pgErr := &pgconn.PgError{Code: "P0001", Message: "cannot add dependency w_a -> w_b: would create a cycle in the work DAG"}
 	err := mapDBError(pgErr)
 	if code := connect.CodeOf(err); code != connect.CodeFailedPrecondition {
 		t.Fatalf("mapDBError(cycle): got %s, want FailedPrecondition", code)
