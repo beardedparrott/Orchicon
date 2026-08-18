@@ -724,6 +724,25 @@ export class WorkflowRun extends Message<WorkflowRun> {
    */
   runtimeImage = "";
 
+  /**
+   * Worktree provisioning state (the non-repo in-place fallback):
+   * worktree_status is pending/ready/skipped/failed/pruned; a non-repo run
+   * is 'skipped' with empty path/branch and renders as "runs in place".
+   *
+   * @generated from field: string worktree_status = 16;
+   */
+  worktreeStatus = "";
+
+  /**
+   * @generated from field: string worktree_branch = 17;
+   */
+  worktreeBranch = "";
+
+  /**
+   * @generated from field: string worktree_path = 18;
+   */
+  worktreePath = "";
+
   constructor(data?: PartialMessage<WorkflowRun>) {
     super();
     proto3.util.initPartial(data, this);
@@ -747,6 +766,9 @@ export class WorkflowRun extends Message<WorkflowRun> {
     { no: 13, name: "updated_at", kind: "message", T: Timestamp },
     { no: 14, name: "work_item_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 15, name: "runtime_image", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 16, name: "worktree_status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 17, name: "worktree_branch", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 18, name: "worktree_path", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowRun {

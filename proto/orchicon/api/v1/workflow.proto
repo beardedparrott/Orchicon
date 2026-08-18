@@ -93,6 +93,12 @@ message WorkflowRun {
   google.protobuf.Timestamp updated_at = 13;
   string work_item_id = 14; // bound work item id, if any; empty for one-shot runs
   string runtime_image = 15; // resolved runtime container image tag at run start
+  // Worktree provisioning state (the non-repo in-place fallback):
+  // worktree_status is pending/ready/skipped/failed/pruned; a non-repo run
+  // is 'skipped' with empty path/branch and renders as "runs in place".
+  string worktree_status = 16;
+  string worktree_branch = 17;
+  string worktree_path = 18;
 }
 
 // WorkflowStepRun is the runtime state of a single step within a

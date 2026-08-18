@@ -13,7 +13,7 @@ import ReactFlow, {
   type Node,
 } from "reactflow";
 import { useQueryClient } from "@tanstack/react-query";
-import type { WorkflowStepRun } from "@/api/gen/orchicon/api/v1/workflow_pb";
+import type { WorkflowRun, WorkflowStepRun } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import { StepKind, StepRunStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
 
 import { useApproveStep } from "@/api/approvals";
@@ -318,6 +318,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
           <p className="text-xs text-muted-foreground">
             workflow v{run.workflowVersion} · status:{" "}
             <RunStatusBadge status={run.status} />
+            {worktreeTag(run)}
             {run.currentStep && (
               <> · current step: <span className="font-mono">{run.currentStep}</span></>
             )}
@@ -867,6 +868,21 @@ function RunStepNode({
 // source/target handles on the canvas nodes.
 
 // --- badges + helpers ---
+
+// worktreeTag renders the run's worktree/branch state as a muted inline tag
+// (the non-repo in-place fallback). A git-backed run (ready) shows its
+// recorded branch; a non-repo run (skipped) shows the neutral "runs in
+// place"; any other/absent state renders nothing so no branch is ever shown
+// for runs without a worktree.
+function worktreeTag(run: WorkflowRun) {
+  if (run.worktreeStatus === "ready" && run.worktreeBranch) {
+    return <> · branch: <span className="font-mono">{run.worktreeBranch}</span></>;
+  }
+  if (run.worktreeStatus === "skipped") {
+    return <> · runs in place</>;
+  }
+  return null;
+}
 
 function RunStatusBadge({ status }: { status: number }) {
   return (

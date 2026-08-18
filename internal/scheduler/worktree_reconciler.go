@@ -50,6 +50,11 @@ const gitCmdTimeout = 30 * time.Second
 // very long work item titles.
 const maxBranchSlugLen = 180
 
+// gitDetectionTTL bounds how long a cached git work-tree detection on the
+// project row is trusted before it is re-detected (a directory that becomes
+// a git repo is picked up within a TTL even without a project_dir change).
+const gitDetectionTTL = 24 * time.Hour
+
 // WorktreeReconciler implements reconciler.Reconciler for the "worktree"
 // kind, keyed by workflow-run ID.
 type WorktreeReconciler struct {
@@ -155,12 +160,13 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 		return nil
 	}
 
-	// Phase 2 — resolve the project dir + detect a git work tree.
-	projectDir := r.lookupProjectDir(ctx, tenantID, run.ProjectID)
-	if projectDir == "" {
+	// Phase 2 — resolve the project dir + detect a git work tree (cached on
+	// the project row so the loop does not shell out to git on every pass).
+	projectDir, gitBacked, found := r.resolveGitBacked(ctx, tenantID, run.ProjectID)
+	if !found {
 		return r.markSkipped(ctx, tenantID, runID, "project has no project_dir")
 	}
-	if !r.isInsideWorkTree(ctx, projectDir) {
+	if !gitBacked {
 		return r.markSkipped(ctx, tenantID, runID,
 			fmt.Sprintf("project dir %s is not a git work tree", projectDir))
 	}
@@ -255,6 +261,12 @@ func (r *WorktreeReconciler) pruneOne(ctx context.Context, tenantID string, run 
 	// not a git work tree), never delete anything we can't verify: when the
 	// recorded worktree is already gone, converge on 'pruned' (idempotent
 	// success); when it still exists, leave the row for a later pass.
+	//
+	// NOTE: this prunes a run whose row records worktree_status='ready' with
+	// a path — a real worktree was provisioned. We therefore detect LIVE here
+	// (not via the cached project detection) so a stale cache value of
+	// "non-git" can never leave a provisioned worktree un-reaped: the
+	// contradiction guard overrides the cache in the prune path.
 	projectDir := r.lookupProjectDir(ctx, tenantID, run.ProjectID)
 	if projectDir == "" || !r.isInsideWorkTree(ctx, projectDir) {
 		if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -346,6 +358,45 @@ func (r *WorktreeReconciler) lookupProjectDir(ctx context.Context, tenantID, pro
 	}
 	_ = ttx.Commit(ctx)
 	return proj.ProjectDir
+}
+
+// resolveGitBacked loads a project and decides whether its project_dir is a
+// git work tree, using the cached detection on the project row to avoid
+// shelling out to git on every reconcile pass. Returns
+// (projectDir, isGitWorkTree, found); found is false when the project or its
+// project_dir is missing.
+//
+// Cache semantics: git_detected_at == nil (undetermined) or older than
+// gitDetectionTTL → re-detect live and write the result back (best-effort,
+// version-guarded — a lost-write race converges on the next pass). A fresh
+// cache hit returns the cached value with NO git subprocess.
+func (r *WorktreeReconciler) resolveGitBacked(ctx context.Context, tenantID, projectID string) (string, bool, bool) {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		r.log.Warn("worktree: resolve git backed: begin tx", "error", err)
+		return "", false, false
+	}
+	defer ttx.Rollback(ctx)
+	proj, err := db.GetProject(ctx, ttx.Tx, tenantID, projectID)
+	if err != nil {
+		return "", false, false
+	}
+	if proj.ProjectDir == "" {
+		return "", false, false
+	}
+	dir := proj.ProjectDir
+	// A fresh cache entry is authoritative — no git subprocess.
+	if proj.GitDetectedAt != nil && time.Since(*proj.GitDetectedAt) < gitDetectionTTL {
+		return dir, proj.GitWorkTree, true
+	}
+	// Cache empty or stale: detect once and write back (best-effort).
+	isWT := r.isInsideWorkTree(ctx, dir)
+	if _, uerr := db.UpdateProjectGitDetection(ctx, ttx.Tx, tenantID, projectID, proj.Version, isWT); uerr != nil {
+		r.log.Warn("worktree: cache git detection failed (best-effort)", "project", projectID, "error", uerr)
+	} else {
+		_ = ttx.Commit(ctx)
+	}
+	return dir, isWT, true
 }
 
 // branchName computes the deterministic, collision-safe branch for a run:

@@ -1775,6 +1775,9 @@ func runRowToProto(r db.WorkflowRunRow) *apiv1.WorkflowRun {
 		RunContext:      string(r.RunContext),
 		WorkItemId:      r.WorkItemID,
 		Version:         int32(r.Version),
+		WorktreeStatus:  r.WorktreeStatus,
+		WorktreeBranch:  r.WorktreeBranch,
+		WorktreePath:    r.WorktreePath,
 		CreatedAt:       timestamppb.New(r.CreatedAt),
 		UpdatedAt:       timestamppb.New(r.UpdatedAt),
 	}

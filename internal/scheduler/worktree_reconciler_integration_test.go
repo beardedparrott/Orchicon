@@ -381,6 +381,199 @@ func TestWorktreeEmptyProjectIDUntouched(t *testing.T) {
 	}
 }
 
+// getProjectGitDetection reads a project's cached git-detection state.
+func getProjectGitDetection(t *testing.T, env *worktreeTestEnv, projectID string) db.ProjectRow {
+	t.Helper()
+	ttx, err := env.pool.BeginTenantTx(context.Background(), approvalTestTenant)
+	if err != nil {
+		t.Fatalf("get project: begin tx: %v", err)
+	}
+	defer ttx.Rollback(context.Background())
+	proj, err := db.GetProject(context.Background(), ttx.Tx, approvalTestTenant, projectID)
+	if err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	return proj
+}
+
+// TestWorktreeGitDetectionCached verifies the D1 cache write: after a
+// reconcile pass over a git-backed project, the project row carries
+// git_work_tree=true with a fresh git_detected_at, so later passes trust the
+// cache instead of shelling out to git.
+func TestWorktreeGitDetectionCached(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile: %v", res.Error)
+	}
+	proj := getProjectGitDetection(t, env, env.proj.ID)
+	if !proj.GitWorkTree {
+		t.Errorf("git_work_tree = false, want true for a git-backed project")
+	}
+	if proj.GitDetectedAt == nil {
+		t.Errorf("git_detected_at = nil, want a fresh detection timestamp")
+	}
+}
+
+// TestWorktreeNonRepoProjectCachesFalse verifies a non-repo project's run
+// proceeds in place (skipped) AND the cache records git_work_tree=false so
+// the loop does not re-shell-out to git on every pass.
+func TestWorktreeNonRepoProjectCachesFalse(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	plain := nonRepoDir(t)
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	proj, err := db.CreateProject(ctx, ttx.Tx, db.ProjectRow{
+		ID: db.NewID(), TenantID: approvalTestTenant,
+		Name: "Cache Non-Repo Project", Slug: "cache-nonrepo-" + strings.ToLower(db.NewID()),
+		Status: "active", Goals: []byte("[]"),
+		ProjectDir: plain,
+	})
+	if err != nil {
+		t.Fatalf("create non-repo project: %v", err)
+	}
+	run, err := db.CreateWorkflowRun(ctx, ttx.Tx, db.WorkflowRunRow{
+		ID: db.NewID(), TenantID: approvalTestTenant,
+		WorkflowID: "wf-worktree-test", WorkflowVersion: 1,
+		ProjectID: proj.ID, Status: domain.WorkflowRunPending,
+		RunContext: []byte("{}"),
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit fixture: %v", err)
+	}
+
+	if res := env.rec.Reconcile(ctx, run.ID); res.Error != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	got := getProjectGitDetection(t, env, proj.ID)
+	if got.GitWorkTree {
+		t.Errorf("git_work_tree = true, want false for a non-repo project")
+	}
+	if got.GitDetectedAt == nil {
+		t.Errorf("git_detected_at = nil, want a fresh detection timestamp")
+	}
+}
+
+// TestWorktreeGitDetectionInvalidatedOnDirChange verifies the D1 invalidation
+// choke point: changing a project's project_dir via UpdateProject resets the
+// git-detection cache (git_detected_at -> NULL) so the reconciler re-detects
+// for the new directory.
+func TestWorktreeGitDetectionInvalidatedOnDirChange(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	// Populate the cache with a detection.
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile: %v", res.Error)
+	}
+	proj := getProjectGitDetection(t, env, env.proj.ID)
+	if proj.GitDetectedAt == nil {
+		t.Fatalf("expected cache populated before dir change")
+	}
+
+	// Change project_dir → cache must be reset to undetermined.
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	cur, err := db.GetProject(ctx, ttx.Tx, approvalTestTenant, env.proj.ID)
+	if err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	repo := newTestRepo(t)
+	if _, err := db.UpdateProject(ctx, ttx.Tx, approvalTestTenant, env.proj.ID, cur.Version, db.UpdateProjectFields{
+		ProjectDir: &repo,
+	}); err != nil {
+		t.Fatalf("update project dir: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit update: %v", err)
+	}
+
+	got := getProjectGitDetection(t, env, env.proj.ID)
+	if got.GitDetectedAt != nil {
+		t.Errorf("git_detected_at = %v after dir change, want nil (cache invalidated)", got.GitDetectedAt)
+	}
+	if got.GitWorkTree {
+		t.Errorf("git_work_tree = true after dir change, want false (reset)")
+	}
+}
+
+// TestWorktreeNonRepoSecondPassNoGitShellOut proves the cache avoids repeated
+// shell-outs: after a non-repo project's detection is cached (false, fresh),
+// a second reconcile pass must NOT invoke git. We remove git from PATH; if the
+// reconciler still trusts the cache, the pass converges on 'skipped' without
+// error. If it shelled out to git it would fail to find the binary.
+func TestWorktreeNonRepoSecondPassNoGitShellOut(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	plain := nonRepoDir(t)
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	proj, err := db.CreateProject(ctx, ttx.Tx, db.ProjectRow{
+		ID: db.NewID(), TenantID: approvalTestTenant,
+		Name: "NoGit Second Pass", Slug: "nogit-second-" + strings.ToLower(db.NewID()),
+		Status: "active", Goals: []byte("[]"),
+		ProjectDir: plain,
+	})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	run, err := db.CreateWorkflowRun(ctx, ttx.Tx, db.WorkflowRunRow{
+		ID: db.NewID(), TenantID: approvalTestTenant,
+		WorkflowID: "wf-worktree-test", WorkflowVersion: 1,
+		ProjectID: proj.ID, Status: domain.WorkflowRunPending,
+		RunContext: []byte("{}"),
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit fixture: %v", err)
+	}
+
+	// First pass: detect + cache false.
+	if res := env.rec.Reconcile(ctx, run.ID); res.Error != nil {
+		t.Fatalf("reconcile pass 1: %v", res.Error)
+	}
+	if proj := getProjectGitDetection(t, env, proj.ID); proj.GitDetectedAt == nil {
+		t.Fatalf("expected cache populated after pass 1")
+	}
+
+	// Second pass with git unavailable: the fresh cache must be trusted, so
+	// the pass converges on 'skipped' without ever invoking git.
+	oldPATH := os.Getenv("PATH")
+	t.Setenv("PATH", "/nonexistent")
+	if res := env.rec.Reconcile(ctx, run.ID); res.Error != nil {
+		t.Errorf("second pass shelled out to git (or errored): %v", res.Error)
+	}
+	_ = os.Setenv("PATH", oldPATH)
+
+	ttx, err = env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	got, err := db.GetWorkflowRun(ctx, ttx.Tx, approvalTestTenant, run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.WorktreeStatus != domain.WorktreeSkipped {
+		t.Errorf("worktree_status = %q, want skipped", got.WorktreeStatus)
+	}
+}
+
 // TestWorktreeSkippedNotReprovisioned verifies a recorded 'skipped' decision
 // is respected: pointing the project at a real git repo later does not make
 // the loop revisit the run.

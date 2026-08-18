@@ -3,6 +3,8 @@ package db
 import (
 	"fmt"
 	"strings"
+
+	"github.com/beardedparrott/orchicon/internal/domain"
 )
 
 // WorkerIdentityPreamble is prepended to every worker system prompt so the
@@ -63,26 +65,19 @@ func RuntimeEnvironmentBlock(image string) string {
 	return sb.String()
 }
 
-// gitDisciplineBlock is the shared "work on a branch of develop" directive in
-// the stable prompt prefix. It guarantees EVERY worker — including custom
-// workers whose own AGENTS.md has no git content — is explicitly told to work
-// off a branch of `develop` and never commit directly to the protected
-// branches. The canned workers additionally carry richer per-role git guidance
-// (gitBranchBlock / gitAwarenessBlock in seed_workers.go); this block is the
-// floor that can never be missing from a dispatch.
-const gitDisciplineBlock = "\n## Git discipline\n" +
-	"- Work on a branch created off `develop` (the integration branch where all work lands). **NEVER** commit to, push to, or open a PR into `main` or `develop` directly.\n" +
-	"- Use the branch the workflow created for this work item if one exists; create one off `develop` only if none does.\n\n"
-
 // StablePromptPrefix is the byte-identical shared prefix prepended to every
 // worker composite prompt. llama.cpp's KV/prompt cache is prefix-based: when
 // the FIRST tokens of every worker's prompt are identical, the shared prefix
 // is reused across steps, roles, and runs (local-model runs pay the prefill
 // cost once, not per step). It is built ONLY from shared constants — worker
-// identity + safety rules + efficiency directives + git discipline + runtime
-// environment — never from per-worker strings. Role/worker-specific AGENTS.md
-// content, the task, execution history, facts, and instructions follow AFTER
-// the prefix.
+// identity + safety rules + efficiency directives + runtime environment —
+// never from per-worker strings. Role/worker-specific AGENTS.md content, the
+// task, execution history, facts, and instructions follow AFTER the prefix.
+//
+// Git/branch guidance is deliberately NOT part of the prefix: it is injected
+// per-run and keyed on the run's worktree_status (GitGuidanceBlock), so a
+// non-repo run is never told a branch exists. Keeping the prefix git-neutral
+// also preserves KV-cache sharing across repo and non-repo runs.
 //
 // The runtime image is per-run (all steps of a run dispatch the same work
 // item, so it is constant within a run), which is what makes the prefix
@@ -92,7 +87,37 @@ func StablePromptPrefix(runtimeImage string) string {
 	sb.WriteString(WorkerIdentityPreamble)
 	sb.WriteString(safetyBlock)
 	sb.WriteString(efficiencyBlock)
-	sb.WriteString(gitDisciplineBlock)
 	sb.WriteString(RuntimeEnvironmentBlock(runtimeImage))
 	return sb.String()
+}
+
+// GitGuidanceBlock emits the per-run git/branch guidance section, keyed on
+// the run's worktree_status (the same signal that drives the execution cwd).
+//
+//   - ready → the develop-first git discipline block: work on the branch
+//     recorded for this run (never push/PR/merge to main).
+//   - anything else (skipped/pending/failed/pruned, or no project) → an
+//     in-place block: this run works directly in project_dir, no branch or
+//     worktree, so the worker must not create branches/commit/push/PR.
+//
+// It is the single source of git guidance for a dispatch (replacing the old
+// unconditional prefix block + canned AGENTS.md blocks), so a non-repo run is
+// never instructed to work on a branch. Returns "" when the run is git-backed
+// but no branch is recorded yet (ready with empty branch is not expected).
+func GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir string) string {
+	if worktreeStatus == domain.WorktreeReady && worktreeBranch != "" {
+		return "\n## Git discipline\n" +
+			"- This run is git-backed and works on the branch `" + worktreeBranch + "` recorded for it.\n" +
+			"- Work on a branch created off `develop` (the integration branch where all work lands). **NEVER** commit to, push to, or open a PR into `main` or `develop` directly.\n" +
+			"- Use the branch recorded for this run (`" + worktreeBranch + "`); do not create a new branch unless the previous work was on `main`.\n" +
+			"- You do not open the pull request or merge it — the DevOps Engineer step creates the PR and merges into `develop` after approval.\n\n"
+	}
+	// Non-repo (or not-yet-git-backed) run: work in place, no branch.
+	if projectDir != "" {
+		return "\n## Git discipline\n" +
+			"- This run works in place in `" + projectDir + "`. There is no branch or worktree for this run.\n" +
+			"- Do not create branches, commit, push, or open pull requests; work directly in the project directory.\n\n"
+	}
+	return "\n## Git discipline\n" +
+		"- This run has no git branch or worktree. Do not create branches, commit, push, or open pull requests; work in place.\n\n"
 }
