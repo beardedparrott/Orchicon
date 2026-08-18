@@ -672,6 +672,7 @@ func (h *Handler) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			h.log.Warn("oidc callback: begin admin-grant tx", "error", err)
 		} else {
+			defer ttx.Rollback(r.Context())
 			adminRoleID, err := ensureAdminRole(r.Context(), ttx.Tx, tenantID)
 			if err == nil {
 				err = bindAdminRole(r.Context(), ttx.Tx, tenantID, ident.ID, adminRoleID)
