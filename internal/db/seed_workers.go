@@ -33,7 +33,7 @@ const cannedWorkerIdentity = "You are an autonomous worker running inside the Or
 // every canned worker's AGENTS.md in place of the safety rules. The rules
 // themselves now ship in the composite's stable prompt prefix
 // (StablePromptPrefix) so they are not duplicated per worker.
-const seedSafetyMarker = "orchicon.safety=v19"
+const seedSafetyMarker = "orchicon.safety=v20"
 
 // safetyBlock is the shared safety-rules block delivered to every worker via
 // the stable prompt prefix (StablePromptPrefix in prompt.go). It carries the
