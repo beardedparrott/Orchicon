@@ -1332,7 +1332,7 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	// never override the summary word. `_issues` is still captured for
 	// the run view and .orchicon/issues (informational only). The first
 	// word may be any signal: "success"/"failure" normalize, and custom
-	// words (e.g. "conflict") pass through verbatim for conflict routing.
+	// words pass through verbatim.
 	// The decision key is only set when a marker was found, so a step run
 	// that starts with a placeholder (e.g. worker-backed approval's
 	// `_decision: "pending"`) keeps it until a real signal lands.
@@ -2262,7 +2262,7 @@ func extractWorkerSummary(output string) string {
 
 // extractSummaryDecision reads the first word of the summary block
 // (the text after ORCHICON WORKER SUMMARY:) and returns "success",
-// "failure", any other verbatim first word (e.g. "conflict"), or ""
+// "failure", any other verbatim first word, or ""
 // if no marker is present. The first word and any separator (—, :,
 // whitespace) are consumed.
 func extractSummaryDecision(output string) string {

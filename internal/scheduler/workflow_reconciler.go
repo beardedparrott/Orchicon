@@ -4413,10 +4413,10 @@ func extractFactsLearned(summary string) []string {
 
 // aggregateLoopDecisions evaluates the routing decision across multiple
 // upstream steps of a fan-in loop decision. Failure is decisive above all:
-// if ANY upstream reports failure the gate loops back. Otherwise conflict
-// (a merge-integrator signal) is decisive. It proceeds forward only when
-// every upstream reports success; an empty string means no upstream
-// reported a decision (caller re-asks). conflictValue is the configured
+// if ANY upstream reports failure the gate loops back. Otherwise success is
+// decisive: it proceeds forward only when every upstream reports success; an
+// empty string means no upstream reported a decision (caller re-asks).
+// failureValue and successValue are the configured signal words.
 func aggregateLoopDecisions(decisions []string, failureValue, successValue string) string {
 	decision := ""
 	for _, d := range decisions {

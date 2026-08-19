@@ -38,9 +38,9 @@ func TestSummaryWordIsSingleDecisionSignal(t *testing.T) {
 			want: "success",
 		},
 		{
-			name:   "conflict word routes conflict (pass-through)",
-			output: "ORCHICON WORKER SUMMARY: conflict — merged by develop, conflicting files: src/a.go",
-			want:   "conflict",
+			name:   "custom word passes through verbatim",
+			output: "ORCHICON WORKER SUMMARY: customword — some narrative",
+			want:   "customword",
 		},
 		{
 			name:   "no marker means no decision",
@@ -180,7 +180,7 @@ func TestAggregateLoopDecisions(t *testing.T) {
 		{"no decisions -> empty (re-ask)", []string{"", ""}, ""},
 		{"empty inputs", nil, ""},
 		{"mixed unknown and success", []string{"", "success"}, "success"},
-		{"unknown non-conflict word is not decisive", []string{"oops", "success"}, "success"},
+		{"unknown custom word is not decisive", []string{"oops", "success"}, "success"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
