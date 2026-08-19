@@ -38,9 +38,9 @@ func TestSummaryWordIsSingleDecisionSignal(t *testing.T) {
 			want: "success",
 		},
 		{
-			name:   "conflict word routes conflict (pass-through)",
-			output: "ORCHICON WORKER SUMMARY: conflict — merged by develop, conflicting files: src/a.go",
-			want:   "conflict",
+			name:   "custom word passes through verbatim",
+			output: "ORCHICON WORKER SUMMARY: customword — some narrative",
+			want:   "customword",
 		},
 		{
 			name:   "no marker means no decision",

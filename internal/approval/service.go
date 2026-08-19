@@ -104,12 +104,12 @@ func (s *Service) ApproveStep(ctx context.Context, req *connect.Request[apiv1.Ap
 		decisionStatus = "rejected"
 	}
 
-	// An exhausted LOOP_DECISION gate escalated to human review (an
-	// unresolved merge conflict) is kind-sensitive: approving it SUCCEEDS
-	// the gate (the run completes), while rejecting it FAILS the gate (the
-	// run fails — the human determined the conflict cannot be resolved
-	// within budget). A plain approval step keeps the old behavior: both
-	// outcomes succeed the step and branch downstream on the decision.
+	// An exhausted LOOP_DECISION gate escalated to human review is
+	// kind-sensitive: approving it SUCCEEDS the gate (the run completes),
+	// while rejecting it FAILS the gate (the run fails — the human
+	// determined the loop cannot be resolved within budget). A plain
+	// approval step keeps the old behavior: both outcomes succeed the step
+	// and branch downstream on the decision.
 	newStatus := domain.StepRunSucceeded
 	if sr.StepKind == domain.StepKindLoopDecision && decisionStatus == "rejected" {
 		newStatus = domain.StepRunFailed
