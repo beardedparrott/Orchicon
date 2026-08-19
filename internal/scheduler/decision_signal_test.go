@@ -180,7 +180,7 @@ func TestAggregateLoopDecisions(t *testing.T) {
 		{"no decisions -> empty (re-ask)", []string{"", ""}, ""},
 		{"empty inputs", nil, ""},
 		{"mixed unknown and success", []string{"", "success"}, "success"},
-		{"unknown non-conflict word is not decisive", []string{"oops", "success"}, "success"},
+		{"unknown custom word is not decisive", []string{"oops", "success"}, "success"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
