@@ -130,29 +130,38 @@ var cannedWorkflows = []cannedWorkflow{
 			{"id":"step-09zk5l01","name":"Parallel","kind":"parallel","ref":"","worker_version":0,"depends_on":["step-sse"],"gate_policy_ref":"","config":"{}","position_x":-306.7399649338158,"position_y":81.10492023910098}
 		]`,
 	},
+}
+
+// retiredCannedWorkflow is a template that was once seeded as canned but
+// has been removed from cannedWorkflows.
+type retiredCannedWorkflow struct {
+	ID        string
+	VersionID string // the seed version — the workflow is seed-managed only while this is still its current version
+}
+
+// retiredCannedWorkflows lists workflow templates that were seeded in earlier
+// builds but removed from cannedWorkflows. SeedDevWorkflows hard-deletes any
+// still-seed-managed instance on boot so retired templates don't linger in
+// tenants. A workflow whose current version is no longer the original seed
+// version has been forked by a user and is left untouched.
+var retiredCannedWorkflows = []retiredCannedWorkflow{
 	{
-		ID:          "01KZB0CONFLICT000000000001",
-		VersionID:   "wfv_coding_template_ai_approval_architect_conflict_v1",
-		Name:        "Coding Template with Approvers (Non-human) - Architect - Conflict-Aware",
-		VersionNote: "Architect workflow with a merge-conflict Integrator loop: Architect -> Design Approver -> Senior SWE -> PR Reviewer + QA (parallel) -> Code Approver -> DevOps (PR/merge) -> Merge gate (conflict routes to Integrator loop, bounded; exhausted escalates to human review)",
-		StepsJSON: `[
-			{"id":"step-sse","name":"Senior Software Engineer","kind":"task","ref":"w_se_senior_software_engineer","worker_version":0,"depends_on":["step-i64wso0x"],"gate_policy_ref":"","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":6}}","position_x":-330.0029080215844,"position_y":-58.74360838475371},
-			{"id":"step-pr-reviewer","name":"PR Reviewer","kind":"task","ref":"w_se_pr_reviewer","worker_version":0,"depends_on":["step-rrcz490q"],"gate_policy_ref":"","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":6}}","position_x":-397.2581150575302,"position_y":267.0692727001121},
-			{"id":"step-qa","name":"QA Engineer","kind":"task","ref":"w_se_qa_engineer","worker_version":0,"depends_on":["step-rrcz490q"],"gate_policy_ref":"","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":6}}","position_x":-143.67363845559328,"position_y":267.86736384555934},
-			{"id":"step-loop-2","name":"Loop Decision","kind":"loop_decision","ref":"","worker_version":0,"depends_on":["step-pr-reviewer","step-qa"],"gate_policy_ref":"","config":"{\"max_iterations\":6,\"loop_branch\":\"step-sse\",\"success_branch\":\"step-approval\"}","position_x":-265.5238489863543,"position_y":432.1606427012862},
-			{"id":"step-approval","name":"Code Approver","kind":"approval","ref":"w_se_code_approver","worker_version":0,"depends_on":["step-loop-2"],"gate_policy_ref":"","config":"{\"reviewer\":\"worker\",\"max_iterations\":6,\"success_branch\":\"step-devops-pr\",\"loop_branch\":\"step-sse\"}","position_x":-80.24304019372471,"position_y":554.3205632662957},
-			{"id":"step-devops-pr","name":"DevOps Engineer","kind":"task","ref":"w_se_devops_engineer","worker_version":0,"depends_on":["step-approval"],"gate_policy_ref":"","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":6}}","position_x":153.19823076612238,"position_y":676.3205632662958},
-			{"id":"step-loop-merge","name":"Merge Gate","kind":"loop_decision","ref":"","worker_version":0,"depends_on":["step-devops-pr"],"gate_policy_ref":"","config":"{\"max_iterations\":3,\"loop_branch\":\"step-devops-pr\",\"conflict_value\":\"conflict\",\"conflict_chain\":[\"step-integrator\"],\"exhausted_review\":\"human\"}","position_x":153.19823076612238,"position_y":840.0},
-			{"id":"step-integrator","name":"Integrator","kind":"task","ref":"w_se_integrator","worker_version":0,"depends_on":[],"gate_policy_ref":"","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":6}}","position_x":330.0,"position_y":780.0},
-			{"id":"step-q4xlbg6v","name":"Principal Software Architect","kind":"task","ref":"w_se_principal_architect","worker_version":0,"depends_on":[],"gate_policy_ref":"","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":6}}","position_x":-370.21653077813266,"position_y":-346.6528223715784,"edge_handles":{"e-step-qa-step-loop-2":{"sourceHandle":"source-bottom","targetHandle":"target-top"},"e-step-loop-2-step-sse":{"sourceHandle":"source-loop","targetHandle":"target-top"},"e-step-rrcz490q-step-qa":{"sourceHandle":"source-bottom","targetHandle":"target-top"},"e-step-approval-step-sse":{"sourceHandle":"source-loop","targetHandle":"target-top"},"e-step-i64wso0x-step-sse":{"sourceHandle":"source-success","targetHandle":"target-top"},"e-step-sse-step-rrcz490q":{"sourceHandle":"source-bottom","targetHandle":"target-top"},"e-step-loop-2-step-approval":{"sourceHandle":"source-success"},"e-step-i64wso0x-step-q4xlbg6v":{"sourceHandle":"source-loop","targetHandle":"target-top"},"e-step-q4xlbg6v-step-i64wso0x":{"sourceHandle":"source-bottom","targetHandle":"target-top"},"e-step-approval-step-devops-pr":{"sourceHandle":"source-success"},"e-step-pr-reviewer-step-loop-2":{"sourceHandle":"source-bottom","targetHandle":"target-top"},"e-step-rrcz490q-step-pr-reviewer":{"sourceHandle":"source-bottom","targetHandle":"target-top"}}},
-			{"id":"step-i64wso0x","name":"Design Approver","kind":"approval","ref":"w_se_design_approver","worker_version":0,"depends_on":["step-q4xlbg6v"],"gate_policy_ref":"","config":"{\"reviewer\":\"worker\",\"max_iterations\":6,\"success_branch\":\"step-sse\",\"loop_branch\":\"step-q4xlbg6v\"}","position_x":-333.41658002439067,"position_y":-196.35081675232993},
-			{"id":"step-rrcz490q","name":"Parallel","kind":"parallel","ref":"","worker_version":0,"depends_on":["step-sse"],"gate_policy_ref":"","config":"{}","position_x":-308.0277894023609,"position_y":89.43532397943022}
-		]`,
+		ID:        "01KZB0CONFLICT000000000001",
+		VersionID: "wfv_coding_template_ai_approval_architect_conflict_v1",
+	},
+	{
+		ID:        "wf_devops_per_branch",
+		VersionID: "wfv_devops_per_branch_v1",
+	},
+	{
+		ID:        "wf_devops_per_branch_nogit",
+		VersionID: "wfv_devops_per_branch_nogit_v1",
 	},
 }
 
 // SeedDevWorkflows creates or updates all canned workflow templates in the
-// dev tenant. Idempotent — safe to call on every boot.
+// dev tenant and retires templates that have been removed from
+// cannedWorkflows. Idempotent — safe to call on every boot.
 func SeedDevWorkflows(ctx context.Context, p *Pool) error {
 	for _, w := range cannedWorkflows {
 		ttx, err := p.BeginTenantTx(ctx, "tnt_dev")
@@ -168,6 +177,93 @@ func SeedDevWorkflows(ctx context.Context, p *Pool) error {
 		if err := ttx.Commit(ctx); err != nil {
 			return fmt.Errorf("seed workflow %s: commit: %w", w.ID, err)
 		}
+	}
+
+	// Retired canned templates: workflows that used to be seeded but have
+	// been removed. Delete them ONLY when they are still seed-managed
+	// (their current version is the original seed version) — a user who
+	// forked one keeps their workflow.
+	for _, r := range retiredCannedWorkflows {
+		ttx, err := p.BeginTenantTx(ctx, "tnt_dev")
+		if err != nil {
+			return fmt.Errorf("retire workflow %s: begin tx: %w", r.ID, err)
+		}
+		var exists bool
+		if err := ttx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM workflows WHERE id = $1 AND tenant_id = 'tnt_dev')`, r.ID,
+		).Scan(&exists); err != nil {
+			ttx.Rollback(ctx)
+			return fmt.Errorf("retire workflow %s: check exists: %w", r.ID, err)
+		}
+		if exists {
+			seedManaged, err := workflowIsSeedManaged(ctx, ttx, r.ID, r.VersionID)
+			if err != nil {
+				ttx.Rollback(ctx)
+				return fmt.Errorf("retire workflow %s: inspect: %w", r.ID, err)
+			}
+			if seedManaged {
+				if err := deleteWorkflowByID(ctx, ttx, r.ID); err != nil {
+					ttx.Rollback(ctx)
+					return fmt.Errorf("retire workflow %s: %w", r.ID, err)
+				}
+			} else {
+				// User-forked workflow owns the id — leave it.
+				ttx.Rollback(ctx)
+				continue
+			}
+		}
+		if err := ttx.Commit(ctx); err != nil {
+			return fmt.Errorf("retire workflow %s: commit: %w", r.ID, err)
+		}
+	}
+	return nil
+}
+
+// workflowIsSeedManaged reports whether the workflow still carries its
+// original seed version (its current version id matches the seed's
+// VersionID). A workflow the user has forked by publishing new versions is
+// no longer seed-managed.
+func workflowIsSeedManaged(ctx context.Context, ttx *TenantTx, workflowID, seedVersionID string) (bool, error) {
+	var currentVer int
+	if err := ttx.QueryRow(ctx,
+		`SELECT current_version FROM workflows WHERE id = $1 AND tenant_id = 'tnt_dev'`, workflowID,
+	).Scan(&currentVer); err != nil {
+		return false, err
+	}
+	var verID string
+	if err := ttx.QueryRow(ctx,
+		`SELECT id FROM workflow_versions WHERE workflow_id = $1 AND tenant_id = 'tnt_dev' AND version = $2`,
+		workflowID, currentVer,
+	).Scan(&verID); err != nil {
+		return false, err
+	}
+	return verID == seedVersionID, nil
+}
+
+// deleteWorkflowByID hard-deletes a workflow and its owned rows (versions,
+// runs, step runs, edit locks) inside the seeder's tenant transaction.
+// Mirrors db.DeleteWorkflow but scoped to the seeded tenant so the seeder
+// can purge retired templates.
+func deleteWorkflowByID(ctx context.Context, ttx *TenantTx, workflowID string) error {
+	if _, err := ttx.Exec(ctx,
+		`DELETE FROM workflow_step_runs WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE tenant_id = 'tnt_dev' AND workflow_id = $1)`, workflowID); err != nil {
+		return fmt.Errorf("delete workflow step runs: %w", err)
+	}
+	if _, err := ttx.Exec(ctx,
+		`DELETE FROM workflow_runs WHERE tenant_id = 'tnt_dev' AND workflow_id = $1`, workflowID); err != nil {
+		return fmt.Errorf("delete workflow runs: %w", err)
+	}
+	if _, err := ttx.Exec(ctx,
+		`DELETE FROM workflow_versions WHERE tenant_id = 'tnt_dev' AND workflow_id = $1`, workflowID); err != nil {
+		return fmt.Errorf("delete workflow versions: %w", err)
+	}
+	if _, err := ttx.Exec(ctx,
+		`DELETE FROM edit_locks WHERE resource_id = $1 AND resource_type = 'workflow' AND tenant_id = 'tnt_dev'`, workflowID); err != nil {
+		return fmt.Errorf("delete workflow edit locks: %w", err)
+	}
+	if _, err := ttx.Exec(ctx,
+		`DELETE FROM workflows WHERE id = $1 AND tenant_id = 'tnt_dev'`, workflowID); err != nil {
+		return fmt.Errorf("delete workflow: %w", err)
 	}
 	return nil
 }
