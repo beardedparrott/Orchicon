@@ -551,6 +551,47 @@ func (s *Service) UpdateWorkflowVersion(ctx context.Context, req *connect.Reques
 	return connect.NewResponse(&apiv1.UpdateWorkflowVersionResponse{Version: versionRowToProto(v)}), nil
 }
 
+// UpdateWorkflow updates mutable workflow header fields (e.g. name).
+// Unlike UpdateWorkflowVersion which edits a draft version's steps,
+// this updates the workflow itself and is allowed in any lifecycle state.
+func (s *Service) UpdateWorkflow(ctx context.Context, req *connect.Request[apiv1.UpdateWorkflowRequest]) (*connect.Response[apiv1.UpdateWorkflowResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.WorkflowId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("workflow_id must not be empty"))
+	}
+	name, err := validateName(req.Msg.Name)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	current, err := db.GetWorkflow(ctx, ttx.Tx, tenantID, req.Msg.WorkflowId)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	updated, err := db.UpdateWorkflowName(ctx, ttx.Tx, tenantID, req.Msg.WorkflowId, current.Version, name)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.updated", "workflow", updated.ID,
+		audit.Snapshot(workflowAuditSnapshot(current)), audit.Snapshot(workflowAuditSnapshot(updated))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.updated: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("workflow updated", "id", updated.ID, "name", name)
+	return connect.NewResponse(&apiv1.UpdateWorkflowResponse{Workflow: workflowRowToProto(updated)}), nil
+}
+
 // StartWorkflow creates a WorkflowRun from a published version, seeds a
 // WorkflowStepRun for each step in the DAG, and enqueues a run_started
 // event (docs/02 §2.4, docs/03 §2). The WorkflowReconciler picks up the

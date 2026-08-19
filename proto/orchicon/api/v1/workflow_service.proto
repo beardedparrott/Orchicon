@@ -129,6 +129,11 @@ service WorkflowService {
 
   // GetEditLock returns the current edit lock state for a Workflow, if any.
   rpc GetEditLock(GetWorkflowEditLockRequest) returns (GetWorkflowEditLockResponse);
+
+  // UpdateWorkflow updates mutable workflow header fields (e.g. name).
+  // Unlike UpdateWorkflowVersion which edits a draft version's steps,
+  // this updates the workflow itself and is allowed in any lifecycle state.
+  rpc UpdateWorkflow(UpdateWorkflowRequest) returns (UpdateWorkflowResponse);
 }
 
 message CreateWorkflowRequest {
@@ -236,6 +241,15 @@ message UpdateWorkflowVersionRequest {
 
 message UpdateWorkflowVersionResponse {
   WorkflowVersion version = 1;
+}
+
+message UpdateWorkflowRequest {
+  string workflow_id = 1;
+  string name = 2; // new workflow name (trimmed, non-empty, max 500 chars)
+}
+
+message UpdateWorkflowResponse {
+  Workflow workflow = 1;
 }
 
 message StartWorkflowRequest {

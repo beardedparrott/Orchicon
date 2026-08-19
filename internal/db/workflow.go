@@ -303,6 +303,27 @@ func UpdateWorkflowStatus(ctx context.Context, tx pgx.Tx, tenantID, id string, e
 	return w, nil
 }
 
+// UpdateWorkflowName updates a workflow's name with optimistic concurrency.
+func UpdateWorkflowName(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, name string) (WorkflowRow, error) {
+	const q = `UPDATE workflows
+		SET name = $4, updated_at = now(), version = version + 1
+		WHERE tenant_id = $1 AND id = $2 AND version = $3
+		RETURNING id, tenant_id, project_id, name, current_version, status, type,
+			version, created_at, updated_at`
+	var w WorkflowRow
+	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, name).Scan(
+		&w.ID, &w.TenantID, &w.ProjectID, &w.Name, &w.CurrentVersion,
+		&w.Status, &w.Type, &w.Version, &w.CreatedAt, &w.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return WorkflowRow{}, ErrNotFound
+	}
+	if err != nil {
+		return WorkflowRow{}, fmt.Errorf("db: update workflow name: %w", err)
+	}
+	return w, nil
+}
+
 // UpdateWorkflowCurrentVersion bumps the current_version pointer to the
 // newly published version. Uses optimistic concurrency on the header.
 func UpdateWorkflowCurrentVersion(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion, newVersion int) (WorkflowRow, error) {
