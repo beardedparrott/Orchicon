@@ -686,13 +686,6 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   // existing workflows that set it at creation time.
   const effectiveProjectId = resolvedProjectId || wf.projectId;
 
-  // Sync nameValue when workflow data loads.
-  useEffect(() => {
-    if (wf.name && !editingName) {
-      setNameValue(wf.name);
-    }
-  }, [wf.name]);
-
   return (
     <TooltipProvider delayDuration={250}>
       <div className="flex flex-col gap-4">
@@ -727,7 +720,6 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                       (e.target as HTMLInputElement).blur();
                     }
                     if (e.key === "Escape") {
-                      setNameValue(wf.name);
                       setEditingName(false);
                     }
                   }}
@@ -736,7 +728,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
               ) : (
                 <h1
                   className="text-lg font-semibold tracking-tight sm:text-2xl truncate cursor-text hover:opacity-80"
-                  onClick={() => setEditingName(true)}
+                  onClick={() => { setNameValue(wf.name); setEditingName(true); }}
                   title="Click to rename"
                 >
                   {wf.name}
