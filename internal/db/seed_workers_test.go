@@ -324,13 +324,12 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 	}
 }
 
-// TestSeedVisionWorkersCarryVisionModelAndPlaywright: the Vision canned
-// workers must default to the vision-capable model (opencode-go/mimo-v2.5),
+// TestSeedVisionWorkersCarryPlaywright: the Vision canned workers must
 // carry the Playwright visual-verification block and the current safety
 // marker, and — after the git-neutral change — must NOT carry hardcoded
 // branch-workflow guidance in their AGENTS.md (per-run prompt blocks keyed on
 // worktree_status provide it instead).
-func TestSeedVisionWorkersCarryVisionModelAndPlaywright(t *testing.T) {
+func TestSeedVisionWorkersCarryPlaywright(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
 
@@ -342,15 +341,12 @@ func TestSeedVisionWorkersCarryVisionModelAndPlaywright(t *testing.T) {
 		if err := db.SeedDevWorkers(ctx, pool); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
-		var modelRef, agents string
+		var agents string
 		if err := pool.QueryRow(ctx,
-			`SELECT model_ref, agents_md FROM worker_versions
+			`SELECT agents_md FROM worker_versions
 			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
-			canned.id).Scan(&modelRef, &agents); err != nil {
+			canned.id).Scan(&agents); err != nil {
 			t.Fatalf("query %s: %v", canned.id, err)
-		}
-		if modelRef != "opencode-go/mimo-v2.5" {
-			t.Errorf("%s should default to the vision-capable model mimo-v2.5, got %q", canned.id, modelRef)
 		}
 		for _, want := range []string{
 			"Browser automation (Playwright) — VISUAL verification",
@@ -439,18 +435,7 @@ func TestSeedVisionWorkersAreFullStack(t *testing.T) {
 				t.Errorf("%s seed still carries limiting UI-only identity %q", canned.id, gone)
 			}
 		}
-
-		// Vision-capable model pinned; never a dead/wrong model.
-		var modelRef string
-		if err := pool.QueryRow(ctx,
-			`SELECT model_ref FROM worker_versions
-			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
-			canned.id).Scan(&modelRef); err != nil {
-			t.Fatalf("query %s model_ref: %v", canned.id, err)
-		}
-		if modelRef != "opencode-go/mimo-v2.5" {
-			t.Errorf("%s should keep the vision-capable model mimo-v2.5, got %q", canned.id, modelRef)
-		}
+		// model_ref is wiped — workers fall back to the tenant default_worker_model.
 	}
 }
 
@@ -535,44 +520,11 @@ func TestSeedCodeApproverCarriesCodeReviewContract(t *testing.T) {
 	}
 }
 
-// TestSeedIntegratorCarriesConflictContract: the canned Integrator worker's
-// seed content must carry the merge-conflict resolution contract — merge
-// develop into the branch, resolve the conflict, re-submit, and report the
-// routing signal — plus the current safety marker.
-func TestSeedIntegratorCarriesConflictContract(t *testing.T) {
-	pool := seedTestPool(t)
-	ctx := context.Background()
-	const cannedID = "w_se_integrator"
-
-	if err := db.SeedDevWorkers(ctx, pool); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	var agents string
-	if err := pool.QueryRow(ctx,
-		`SELECT agents_md FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
-		cannedID).Scan(&agents); err != nil {
-		t.Fatalf("query canned Integrator agents: %v", err)
-	}
-	checks := []string{
-		"orchicon.safety=v19",
-		"git merge origin/develop",
-		"conflict",
-		"worktree_branch",
-		"Never touch `main`",
-		"ORCHICON WORKER SUMMARY: success",
-	}
-	for _, c := range checks {
-		if !strings.Contains(agents, c) {
-			t.Errorf("Integrator agents_md missing %q", c)
-		}
-	}
-}
-
-// TestSeedDevOpsCarriesConflictDetectionContract: the canned DevOps merge
-// worker's seed content must instruct detecting a merge conflict and routing
-// it via the `conflict` signal — WITHOUT ever resolving the conflict itself
-// (the control plane / DevOps worker performs zero conflict resolution).
-func TestSeedDevOpsCarriesConflictDetectionContract(t *testing.T) {
+// TestSeedDevOpsCarriesMergeConflictResolutionContract: the canned DevOps
+// worker's seed content must instruct detecting a merge conflict AND resolving
+// it (merge develop in, fix with semantic edits, add/commit/push, re-attempt),
+// reporting only success or failure — no conflict signal.
+func TestSeedDevOpsCarriesMergeConflictResolutionContract(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
 	const cannedID = "w_se_devops_engineer"
@@ -588,13 +540,22 @@ func TestSeedDevOpsCarriesConflictDetectionContract(t *testing.T) {
 	}
 	checks := []string{
 		"orchicon.safety=v19",
-		"Merge conflicts — detect, do NOT resolve",
-		"ORCHICON WORKER SUMMARY: conflict",
-		"do not attempt to fix the conflict",
+		"Merge conflicts — detect AND resolve",
+		"git merge origin/develop",
+		"git add",
+		"git commit",
+		"git push",
+		"gh pr merge",
 	}
 	for _, c := range checks {
 		if !strings.Contains(agents, c) {
 			t.Errorf("DevOps Engineer agents_md missing %q", c)
+		}
+	}
+	// Must NOT contain the old conflict-routing language.
+	for _, forbid := range []string{"do NOT resolve", "conflict — merged by develop", "Integrator", "routes the run to the Integrator"} {
+		if strings.Contains(agents, forbid) {
+			t.Errorf("DevOps Engineer agents_md must not contain %q (merge conflicts are resolved, not routed)", forbid)
 		}
 	}
 }

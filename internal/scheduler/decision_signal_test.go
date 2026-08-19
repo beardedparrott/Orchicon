@@ -182,14 +182,11 @@ func TestAggregateLoopDecisions(t *testing.T) {
 		{"no decisions -> empty (re-ask)", []string{"", ""}, ""},
 		{"empty inputs", nil, ""},
 		{"mixed unknown and success", []string{"", "success"}, "success"},
-		{"single conflict routes conflict", []string{"conflict"}, "conflict"},
-		{"conflict decisive over success", []string{"success", "conflict"}, "conflict"},
-		{"failure decisive over conflict", []string{"conflict", "failure"}, "failure"},
 		{"unknown non-conflict word is not decisive", []string{"oops", "success"}, "success"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := aggregateLoopDecisions(tc.decisions, fail, ok, conf); got != tc.want {
+			if got := aggregateLoopDecisions(tc.decisions, fail, ok); got != tc.want {
 				t.Errorf("aggregateLoopDecisions(%v) = %q, want %q", tc.decisions, got, tc.want)
 			}
 		})
