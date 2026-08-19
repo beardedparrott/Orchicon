@@ -316,6 +316,10 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 	path := filepath.Join(projectDir, worktreeDirName, runID)
 	branch := r.branchName(ctx, tenantID, run)
 
+	// Resolve the base ref up front so the container-adopt path (Phase 3,
+	// case 2) can create the run worktree without re-entering Phase 4.
+	base := r.resolveBaseRef(ctx, projectDir)
+
 	// Phase 3 — converge against what git actually has at the expected path.
 	existing, err := r.worktreeAt(ctx, projectDir, path)
 	if err != nil {
@@ -344,23 +348,43 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 	} else if occupied, oerr := r.dirOccupied(path); oerr != nil {
 		return fmt.Errorf("worktree: inspect %s: %w", path, oerr)
 	} else if occupied {
-		// The path exists but is not a registered worktree. If it is
-		// clearly a partial git-worktree artifact of ours (a gitdir file
-		// inside the run-namespaced dir while the row is 'pending'), prune
-		// it; otherwise fail provisioning — never delete arbitrary user
-		// directories.
+		// The path exists but is not a registered worktree. Three cases:
+		//  1. A partial git-worktree artifact of ours (a gitdir file inside
+		//     the run-namespaced dir while the row is 'pending') → prune it.
+		//  2. A run-namespaced CONTAINER holding only provably-ours nested
+		//     branch-worktree artifacts — a parallel-branch step run was
+		//     provisioned first, racing the run worktree, so <runID>/ is a
+		//     plain dir holding <runID>/<stepRunID> worktrees. Adopt it:
+		//     move the nested worktrees out of the way, create the run
+		//     worktree into the (now empty) <runID>, then move them back.
+		//     The run worktree and the branch worktrees coexist; the
+		//     container is never deleted (AC2).
+		//  3. Anything else → fail provisioning — never delete arbitrary
+		//     user directories (AC3).
 		if run.WorktreeStatus == domain.WorktreePending && r.isOrchiconWorktreeArtifact(path) {
 			if rerr := r.removeWorktreeArtifact(path); rerr != nil {
 				return fmt.Errorf("worktree: prune partial artifact at %s: %w", path, rerr)
 			}
+		} else if run.WorktreeStatus == domain.WorktreePending {
+			isContainer, cerr := r.isOrchiconContainer(ctx, projectDir, path)
+			if cerr != nil {
+				return fmt.Errorf("worktree: inspect container %s: %w", path, cerr)
+			}
+			if isContainer {
+				if aerr := r.adoptRunContainer(ctx, projectDir, path, branch, base); aerr != nil {
+					return fmt.Errorf("worktree: adopt run container at %s: %w", path, aerr)
+				}
+				return r.recordReady(ctx, tenantID, runID, path, branch)
+			}
+			return r.markFailed(ctx, tenantID, runID,
+				fmt.Sprintf("path %s is occupied by a non-worktree directory", path))
 		} else {
 			return r.markFailed(ctx, tenantID, runID,
 				fmt.Sprintf("path %s is occupied by a non-worktree directory", path))
 		}
 	}
 
-	// Phase 4 — resolve the base ref and create.
-	base := r.resolveBaseRef(ctx, projectDir)
+	// Phase 4 — create against the resolved base ref.
 	if err := r.addWorktree(ctx, projectDir, path, branch, base); err != nil {
 		if isAlreadyTrackedErr(err) {
 			// A concurrent pass won the create race — converge on the
@@ -1070,6 +1094,156 @@ func (r *WorktreeReconciler) isOrchiconWorktreeArtifact(path string) bool {
 		return false
 	}
 	return strings.Contains(line, ".git"+string(filepath.Separator)+"worktrees")
+}
+
+// isOrchiconContainer reports whether path is a plain directory whose
+// immediate children are all provably ours — a run-namespaced CONTAINER
+// holding only nested branch-worktree artifacts (a parallel-branch step run
+// was provisioned first, racing the run worktree, so <runID>/ exists as a
+// plain dir holding <runID>/<stepRunID> worktrees). This is the "ours"
+// extension of the never-delete-user-data predicate for the run-container
+// case: a genuinely foreign directory (any child not provably ours) fails
+// the predicate and stays fail-closed. An empty run-namespaced container is
+// ours vacuously.
+func (r *WorktreeReconciler) isOrchiconContainer(ctx context.Context, projectDir, path string) (bool, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	if !fi.IsDir() {
+		return false, nil
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false, err
+	}
+	// An empty container holds no foreign content — ours by construction
+	// (it is runID-namespaced and the row is pending).
+	if len(entries) == 0 {
+		return true, nil
+	}
+	wts, err := listWorktrees(ctx, projectDir)
+	if err != nil {
+		return false, err
+	}
+	registered := make(map[string]bool, len(wts))
+	for _, wt := range wts {
+		registered[filepath.Clean(wt.path)] = true
+	}
+	for _, e := range entries {
+		if !r.childIsOrchiconOwned(path, e, registered) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// childIsOrchiconOwned reports whether an immediate child of a run
+// container is provably ours: a registered git worktree, a gitdir worktree
+// artifact, or a lone `.git` gitdir file. Only such children may be staged
+// by adoptRunContainer; a foreign child (any other file/dir) is never
+// touched.
+func (r *WorktreeReconciler) childIsOrchiconOwned(parent string, e os.DirEntry, registered map[string]bool) bool {
+	child := filepath.Join(parent, e.Name())
+	if registered[filepath.Clean(child)] {
+		return true
+	}
+	if r.isOrchiconWorktreeArtifact(child) {
+		return true
+	}
+	if e.Name() == ".git" && !e.IsDir() {
+		b, err := os.ReadFile(child)
+		if err == nil {
+			line := strings.TrimSpace(string(b))
+			if strings.HasPrefix(line, "gitdir: ") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// adoptRunContainer repairs the run-worktree race: when a parallel-branch
+// step run was provisioned first, <path> (the runID dir) is a plain
+// container holding nested branch worktrees at <path>/<child>. git refuses
+// `worktree add` into a non-empty directory, so this stages each
+// provably-ours nested child out of the way, creates the run worktree into
+// the now-empty <path>, then moves the children back to <path>/<child>.
+// The container is NEVER deleted (AC2): only `git worktree move` (for
+// registered worktrees) or os.Rename of provably-ours artifacts mutates the
+// filesystem. On success both the run worktree and every nested branch
+// worktree are registered and intact at their recorded paths.
+func (r *WorktreeReconciler) adoptRunContainer(ctx context.Context, projectDir, path, branch, base string) error {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
+	wts, err := listWorktrees(ctx, projectDir)
+	if err != nil {
+		return err
+	}
+	registered := make(map[string]bool, len(wts))
+	for _, wt := range wts {
+		registered[filepath.Clean(wt.path)] = true
+	}
+
+	// 1. Stage each provably-ours child out of the container.
+	type staged struct {
+		from, to string
+		move     bool // true → registered worktree (git worktree move), false → artifact (os.Rename)
+	}
+	var moves []staged
+	for _, e := range entries {
+		child := filepath.Join(path, e.Name())
+		if !r.childIsOrchiconOwned(path, e, registered) {
+			return fmt.Errorf("container %s holds foreign child %s — refusing to adopt", path, e.Name())
+		}
+		stagePath := filepath.Join(projectDir, worktreeDirName, stagingDirName(e.Name()))
+		ok := registered[filepath.Clean(child)]
+		if ok {
+			if _, gerr := runGit(ctx, projectDir, "worktree", "move", child, stagePath); gerr != nil {
+				return fmt.Errorf("stage nested worktree %s: %w", child, gerr)
+			}
+		} else if rerr := os.Rename(child, stagePath); rerr != nil {
+			return fmt.Errorf("stage nested artifact %s: %w", child, rerr)
+		}
+		moves = append(moves, staged{from: child, to: stagePath, move: ok})
+	}
+
+	// 2. <path> is now empty — create the run worktree into it.
+	if err := r.addWorktree(ctx, projectDir, path, branch, base); err != nil {
+		// Best-effort rollback: move already-staged children back so a
+		// later pass can retry cleanly.
+		for _, m := range moves {
+			if m.move {
+				_, _ = runGit(ctx, projectDir, "worktree", "move", m.to, m.from)
+			} else {
+				_ = os.Rename(m.to, m.from)
+			}
+		}
+		return err
+	}
+
+	// 3. Move the nested children back into the run worktree.
+	for _, m := range moves {
+		if m.move {
+			if _, gerr := runGit(ctx, projectDir, "worktree", "move", m.to, m.from); gerr != nil {
+				return fmt.Errorf("restore nested worktree %s: %w", m.from, gerr)
+			}
+		} else if rerr := os.Rename(m.to, m.from); rerr != nil {
+			return fmt.Errorf("restore nested artifact %s: %w", m.from, rerr)
+		}
+	}
+	return nil
+}
+
+// stagingDirName builds the transient sibling directory name used to stage
+// a nested branch worktree out of a run container during adoption. The
+// child name (a step-run ULID, or a gitdir artifact name) is unique within
+// the container, and the "_stage-" prefix keeps it out of the run
+// namespace so git's worktree list never mistakes it for a real worktree.
+func stagingDirName(child string) string {
+	return "_stage-" + child
 }
 
 // removeWorktreeArtifact removes a provably-ours partial worktree directory
