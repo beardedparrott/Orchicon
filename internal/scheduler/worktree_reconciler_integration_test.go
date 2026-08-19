@@ -949,3 +949,147 @@ func TestWorktreePrunedNotReprovisioned(t *testing.T) {
 		t.Fatalf("a worktree was re-created for the pruned run: %v", err)
 	}
 }
+
+// TestWorktreeRunProvisionedAfterBranchWorktree is the regression test for
+// the parallel-branch provisioning race: a parallel-branch step run can be
+// provisioned FIRST, creating <runID>/ as a plain container holding only
+// nested <runID>/<stepRunID> worktrees. A later reconcileOne for the run
+// must recognize that container as provably ours (never fail closed on the
+// never-delete-user-data guard) and create the run worktree INTO it
+// alongside the intact step-run worktree — the run reaches WorktreeReady,
+// not WorktreeFailed.
+func TestWorktreeRunProvisionedAfterBranchWorktree(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	// Seed a parallel-branch child step run for the run so we can provision
+	// its branch worktree before the run worktree exists.
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	sr, err := db.CreateWorkflowStepRun(ctx, ttx.Tx, db.WorkflowStepRunRow{
+		ID: db.NewID(), TenantID: approvalTestTenant, WorkflowRunID: env.run.ID,
+		StepID: "step-branch-a", StepName: "PR Reviewer", StepKind: "task",
+		Status: domain.StepRunReady, Result: []byte("{}"),
+	})
+	if err != nil {
+		t.Fatalf("create branch step run: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit fixture: %v", err)
+	}
+
+	// Race order: provision the branch worktree FIRST. This creates the
+	// <runID>/ container as a plain directory holding only the nested
+	// <runID>/<stepRunID> worktree.
+	key := env.run.ID + ":" + sr.ID
+	if res := env.rec.Reconcile(ctx, key); res.Error != nil {
+		t.Fatalf("provision branch worktree (first): %v", res.Error)
+	}
+	branchPath := filepath.Join(env.repo, worktreeDirName, env.run.ID, sr.ID)
+	if _, err := os.Stat(branchPath); err != nil {
+		t.Fatalf("branch worktree missing after first provision: %v", err)
+	}
+	// The container now exists and is not itself a registered worktree.
+	if _, err := os.Stat(env.expectedPath()); err != nil {
+		t.Fatalf("run container missing after branch provision: %v", err)
+	}
+	wt, err := env.rec.worktreeAt(ctx, env.repo, env.expectedPath())
+	if err != nil {
+		t.Fatalf("worktreeAt(run path): %v", err)
+	}
+	if wt != nil {
+		t.Fatalf("run path should not yet be a registered worktree")
+	}
+
+	// Now reconcile the RUN. It must recognize the provably-ours container
+	// and create the run worktree alongside the branch worktree — not fail
+	// closed.
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile run after branch provision: %v", res.Error)
+	}
+
+	run := env.getRun(t)
+	if run.WorktreeStatus != domain.WorktreeReady {
+		t.Fatalf("run worktree_status = %q, want ready (race must not fail-close)", run.WorktreeStatus)
+	}
+	if run.WorktreePath != env.expectedPath() {
+		t.Errorf("run worktree_path = %q, want %q", run.WorktreePath, env.expectedPath())
+	}
+
+	// The run worktree is present at <runID>.
+	if _, err := os.Stat(env.expectedPath()); err != nil {
+		t.Fatalf("run worktree not created at %s: %v", env.expectedPath(), err)
+	}
+	wt, err = env.rec.worktreeAt(ctx, env.repo, env.expectedPath())
+	if err != nil {
+		t.Fatalf("worktreeAt(run path) after reconcile: %v", err)
+	}
+	if wt == nil || wt.branch != env.expectedBranch() {
+		t.Fatalf("run worktree missing/wrong branch: %+v", wt)
+	}
+
+	// The branch worktree is intact: still registered at its recorded path
+	// with the same branch, and its checked-out files survive.
+	ttx, err = env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx (read sr): %v", err)
+	}
+	gotSR, err := db.GetWorkflowStepRun(ctx, ttx.Tx, approvalTestTenant, sr.ID)
+	_ = ttx.Rollback(ctx)
+	if err != nil {
+		t.Fatalf("get step run: %v", err)
+	}
+	if gotSR.WorktreeStatus != domain.WorktreeReady {
+		t.Fatalf("branch worktree_status = %q, want ready (must remain intact)", gotSR.WorktreeStatus)
+	}
+	if gotSR.WorktreePath != branchPath {
+		t.Errorf("branch worktree_path = %q, want %q (must remain at its recorded path)", gotSR.WorktreePath, branchPath)
+	}
+	wt, err = env.rec.worktreeAt(ctx, env.repo, branchPath)
+	if err != nil {
+		t.Fatalf("worktreeAt(branch path) after reconcile: %v", err)
+	}
+	if wt == nil || wt.branch != gotSR.WorktreeBranch {
+		t.Fatalf("branch worktree lost/misregistered after run adoption: %+v", wt)
+	}
+	if _, err := os.Stat(filepath.Join(branchPath, "README.md")); err != nil {
+		t.Fatalf("branch worktree checked-out files lost after run adoption: %v", err)
+	}
+
+	// The container directory was never deleted (AC2) — it now IS the run
+	// worktree holding the nested branch worktree.
+	if _, err := os.Stat(env.expectedPath()); err != nil {
+		t.Fatalf("run container was deleted: %v", err)
+	}
+}
+
+// TestWorktreeForeignDirStillFailsClosed locks in AC3: a genuinely foreign
+// directory occupying <runID>/ (content not provably ours) still fails
+// closed via markFailed — the never-delete-user-data invariant is preserved,
+// even for a pending run.
+func TestWorktreeForeignDirStillFailsClosed(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	// Create a foreign, non-worktree directory at the run's expected path.
+	if err := os.MkdirAll(env.expectedPath(), 0o755); err != nil {
+		t.Fatalf("mkdir foreign dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(env.expectedPath(), "user-notes.txt"), []byte("do not delete"), 0o644); err != nil {
+		t.Fatalf("write foreign file: %v", err)
+	}
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile: %v", res.Error)
+	}
+	run := env.getRun(t)
+	if run.WorktreeStatus != domain.WorktreeFailed {
+		t.Fatalf("worktree_status = %q, want failed (foreign dir must fail closed)", run.WorktreeStatus)
+	}
+	// The foreign directory is untouched.
+	if _, err := os.Stat(filepath.Join(env.expectedPath(), "user-notes.txt")); err != nil {
+		t.Fatalf("foreign directory was modified/deleted: %v", err)
+	}
+}
