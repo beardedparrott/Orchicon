@@ -1956,3 +1956,83 @@ export class GetWorkflowEditLockResponse extends Message<GetWorkflowEditLockResp
   }
 }
 
+/**
+ * @generated from message orchicon.api.v1.UpdateWorkflowRequest
+ */
+export class UpdateWorkflowRequest extends Message<UpdateWorkflowRequest> {
+  /**
+   * @generated from field: string workflow_id = 1;
+   */
+  workflowId = "";
+
+  /**
+   * @generated from field: string name = 2;
+   */
+  name = "";
+
+  constructor(data?: PartialMessage<UpdateWorkflowRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.UpdateWorkflowRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "workflow_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkflowRequest {
+    return new UpdateWorkflowRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UpdateWorkflowRequest {
+    return new UpdateWorkflowRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UpdateWorkflowRequest {
+    return new UpdateWorkflowRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: UpdateWorkflowRequest | PlainMessage<UpdateWorkflowRequest> | undefined, b: UpdateWorkflowRequest | PlainMessage<UpdateWorkflowRequest> | undefined): boolean {
+    return proto3.util.equals(UpdateWorkflowRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.UpdateWorkflowResponse
+ */
+export class UpdateWorkflowResponse extends Message<UpdateWorkflowResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.Workflow workflow = 1;
+   */
+  workflow?: Workflow;
+
+  constructor(data?: PartialMessage<UpdateWorkflowResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.UpdateWorkflowResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "workflow", kind: "message", T: Workflow },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkflowResponse {
+    return new UpdateWorkflowResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UpdateWorkflowResponse {
+    return new UpdateWorkflowResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UpdateWorkflowResponse {
+    return new UpdateWorkflowResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: UpdateWorkflowResponse | PlainMessage<UpdateWorkflowResponse> | undefined, b: UpdateWorkflowResponse | PlainMessage<UpdateWorkflowResponse> | undefined): boolean {
+    return proto3.util.equals(UpdateWorkflowResponse, a, b);
+  }
+}
+

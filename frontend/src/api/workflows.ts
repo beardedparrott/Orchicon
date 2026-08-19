@@ -20,7 +20,7 @@ import type { WorkflowStepRun } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import type { WorkflowStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import type { WorkflowRunStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import type { CreateWorkflowRequest, CreateWorkflowVersionRequest } from "@/api/gen/orchicon/api/v1/workflow_service_pb";
-import type { UpdateWorkflowVersionRequest } from "@/api/gen/orchicon/api/v1/workflow_service_pb";
+import type { UpdateWorkflowRequest, UpdateWorkflowVersionRequest } from "@/api/gen/orchicon/api/v1/workflow_service_pb";
 import type { PartialMessage } from "@bufbuild/protobuf";
 
 // Query keys are centralized so invalidation is type-safe.
@@ -171,6 +171,23 @@ export function useUpdateWorkflowVersion() {
     onSuccess: (version) => {
       qc.invalidateQueries({ queryKey: workflowKeys.versions(version.workflowId) });
       qc.invalidateQueries({ queryKey: workflowKeys.detail(version.workflowId) });
+    },
+  });
+}
+
+// useUpdateWorkflow updates mutable workflow header fields (e.g. name).
+// Unlike useUpdateWorkflowVersion which edits a draft version's steps,
+// this updates the workflow itself and is allowed in any lifecycle state.
+export function useUpdateWorkflow() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: PartialMessage<UpdateWorkflowRequest>) => {
+      const res = await workflowClient.updateWorkflow(input);
+      return res.workflow as Workflow;
+    },
+    onSuccess: (workflow) => {
+      qc.invalidateQueries({ queryKey: workflowKeys.detail(workflow.id) });
+      qc.invalidateQueries({ queryKey: workflowKeys.list() });
     },
   });
 }
