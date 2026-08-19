@@ -2290,10 +2290,7 @@ func trimSummaryDecision(s string) string {
 // firstWordAsDecision returns the normalized decision from the first
 // whitespace-delimited word of s: "success"/"failure" for words that
 // start with those prefixes. Any OTHER first word is passed through
-// verbatim (lowercased) so a worker can route custom signals — e.g. a
-// DevOps merge worker reporting `ORCHICON WORKER SUMMARY: conflict`
-// hands "conflict" to a loop_decision gate configured with
-// conflict_value="conflict". Returns "" only for an empty input.
+// verbatim (lowercased). Returns "" only for an empty input.
 func firstWordAsDecision(s string) string {
 	parts := strings.Fields(s)
 	if len(parts) == 0 {

@@ -162,12 +162,10 @@ func TestCountReaskRuns(t *testing.T) {
 // TestAggregateLoopDecisions verifies the fan-in gate aggregation: ANY
 // upstream failure loops back (failure is decisive), otherwise the gate
 // proceeds only when ALL upstreams succeeded; empty means no decision.
-// Conflict is decisive too when the gate configures a conflict_value.
 func TestAggregateLoopDecisions(t *testing.T) {
 	const (
 		fail = "failure"
 		ok   = "success"
-		conf = "conflict"
 	)
 	cases := []struct {
 		name      string
