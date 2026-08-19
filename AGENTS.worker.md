@@ -2,6 +2,14 @@
 
 Read on demand by Orchicon workers. Your role, task, acceptance criteria, and the ORCHICON WORKER SUMMARY contract are already in your system prompt. This file holds the cross-cutting rules every worker must follow; when in doubt, follow your system prompt.
 
+## Rule 0 — Work within your provisioned worktree
+
+- **The working directory IS your worktree.** Git-backed runs are dispatched with the working directory set to an isolated worktree at `<project_dir>/.orchicon-worktrees/<runID>/`. All file operations, builds, and tests must happen inside this worktree.
+- Do all your work inside the worktree; never write to `.orchicon/` or any other control-plane directory.
+- **GOTMPDIR and all scratch directories must live inside the worktree**, at an exec-able location. Use e.g. `GOTMPDIR=$PWD/.gotmp` for `go test` / `make ci`. This is required because the runtime container's `/tmp` is `noexec` (see Environment baseline) and because scratch must stay inside the worktree — never create `.gotmp/`, `.go-tmp/`, `.qa-gotmp/`, or `.gtmp/` under `.orchicon/` or anywhere else outside your worktree.
+- Scratch inside the worktree is already ignored by the repo `.gitignore`, so it is never committed.
+- **Runs without a provisioned worktree** (non-worktree dispatches, e.g. non-repo projects) work in place directly in `project_dir` — the scratch-inside-worktree rule applies to worktree runs; those runs keep the existing in-place guidance.
+
 ## Rule 1 — Branch discipline
 
 - Never commit to, push to, or PR into `main` or `develop`. `develop` is the integration branch; `main` is release-only and managed by the human.
@@ -37,6 +45,14 @@ Read on demand by Orchicon workers. Your role, task, acceptance criteria, and th
   semgrep scan --config .orchicon/semgrep_orchicon.yml --error $(git diff --name-only origin/develop...HEAD | grep -E '\.go$')
   ```
 - The repo is PUBLIC; do not attempt to re-privatize it.
+
+## Cleanup before reporting
+
+Before writing your `ORCHICON WORKER SUMMARY:` line, clean up the temporary files you created during execution:
+
+- Remove the GOTMPDIR and any other scratch directories you created inside your worktree (`.gotmp/`, `.go-tmp/`, `.qa-gotmp/`, `.gtmp/`, and any equivalent you used).
+- The worktree itself is pruned by the platform after the run, but you must clean up your own mess so `.orchicon/` and the shared control-plane directory never accumulate scratch.
+- Cleanup is a mandatory step — do not report `ORCHICON WORKER SUMMARY` until your scratch is removed.
 
 ## Summary contract
 
