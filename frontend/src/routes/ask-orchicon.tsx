@@ -387,6 +387,15 @@ function AskOrchiconPage() {
   // pending assistant message id. A live local slot is never overwritten —
   // server state only fills gaps, so a locally-started turn keeps its own
   // stream until it completes.
+  //
+  // The server's turn flag can LAG the persisted reply by up to a poll cycle
+  // (the registry entry is removed before the reply row is written). Re-arming
+  // a turn whose reply is already persisted would ping-pong with the completion
+  // effect — clearing here, re-arming there — flickering the Stop button and
+  // re-sticking the scroll on every toggle. The acked assistant message only
+  // ever exists in messages once the reply is persisted (never as a placeholder
+  // at ack time), so skip re-arming when it is present: the turn is genuinely
+  // done and the stale flag will clear on the next conversations poll.
   useEffect(() => {
     if (!activeConvId) return;
     const server = conversations?.find((c) => c.id === activeConvId);
@@ -394,6 +403,11 @@ function AskOrchiconPage() {
       server?.turnInFlight ?? activeConv?.turnInFlight ?? false;
     if (!serverRunning) return;
     if (streams[activeConvId]?.isStreaming) return;
+    const pendingId =
+      server?.pendingAssistantMessageId ||
+      activeConv?.pendingAssistantMessageId ||
+      "";
+    if (pendingId && messages?.some((m) => m.id === pendingId)) return;
     setStream(activeConvId, (prev) => {
       if (prev.isStreaming) return prev;
       return {
@@ -401,14 +415,11 @@ function AskOrchiconPage() {
         isStreaming: true,
         isThinking: true,
         reconnecting: true,
-        pendingReplyId:
-          server?.pendingAssistantMessageId ||
-          activeConv?.pendingAssistantMessageId ||
-          prev.pendingReplyId,
+        pendingReplyId: pendingId || prev.pendingReplyId,
         items: [],
       };
     });
-  }, [activeConvId, activeConv, conversations, streams, setStream]);
+  }, [activeConvId, activeConv, conversations, streams, messages, setStream]);
 
   const handleNewChat = useCallback(() => {
     setActiveConvId(null);
