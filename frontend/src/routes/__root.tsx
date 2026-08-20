@@ -1,6 +1,6 @@
-import { Outlet, createRootRoute } from "@tanstack/react-router";
+import { Outlet, createRootRoute, useRouterState } from "@tanstack/react-router";
 
-import { requireAuth } from "@/auth/route-guard";
+import { PUBLIC_PATHS, requireAuth } from "@/auth/route-guard";
 import { useSessionStore } from "@/auth/session";
 import { AppShell } from "@/components/app-shell";
 import { ForcePasswordGate } from "@/components/force-password-gate";
@@ -15,12 +15,17 @@ export const Route = createRootRoute({
 });
 
 function RootComponent() {
+  const path = useRouterState({ select: (s) => s.location.pathname });
   const session = useSessionStore((s) => s.session);
   if (session.authenticated && session.force_password_change) {
     // The signed-in credential is flagged for a forced password change:
     // the gate renders in place of the app content (ADR-6) — no app route
     // is reachable until the change completes.
     return <ForcePasswordGate />;
+  }
+  if (PUBLIC_PATHS.has(path)) {
+    // Auth pages already render a full-viewport centered card — no shell needed.
+    return <Outlet />;
   }
   return (
     <AppShell>
