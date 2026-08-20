@@ -66,6 +66,14 @@ export const Route = createRoute({
   component: AskOrchiconPage,
 });
 
+// --- draft persistence constants ---
+const DRAFT_STORAGE_KEY_PREFIX = "orchicon:draft:";
+
+// --- clipboard helper (strict superset of inline navigator.clipboard?.writeText patterns) ---
+function copyTextToClipboard(text: string): void {
+  navigator.clipboard?.writeText(text).catch(() => {});
+}
+
 // --- streaming item types (mirrors execution ChatItem for Ask Orchicon) ---
 
 type StreamItem =
@@ -394,16 +402,16 @@ function AskOrchiconPage() {
   // Streaming helper — takes convId as a parameter so it is never stale.
   // Mutates the given conversation's OWN stream slot via functional
   // updaters, so a turn keeps running (and the UI keeps updating) even
-  // while the user is browsing a different conversation. When the stream
-  // ends without an acked reply (error / aborted before turnStarted), the
-  // slot is cleared; acked turns clear via the pendingReplyId poll above.
+  // while the user is browsing a different conversation. Returns `true`
+  // when the stream observed TurnStarted (server acked/persisted the
+  // user message); `false` on any pre-ack failure.
   const runStream = useCallback(
     async (
       convId: string,
       text: string,
       attachments: AttachmentInput[] | undefined,
       mode: "send" | "interject",
-    ) => {
+    ): Promise<boolean> => {
       const gen = (dispatchGenRef.current[convId] ?? 0) + 1;
       dispatchGenRef.current[convId] = gen;
 
@@ -451,8 +459,8 @@ function AskOrchiconPage() {
         }
       };
 
+      let acked: boolean = false;
       try {
-        let acked = false;
         for await (const chunk of stream) {
           if (chunk.event.case === "turnStarted") {
             const assistantMessageId = chunk.event.value.assistantMessageId;
@@ -499,7 +507,7 @@ function AskOrchiconPage() {
           } else if (chunk.event.case === "error") {
             toast.error(chunk.event.value.message);
             fail();
-            return;
+            return false;
           }
         }
         if (!acked) {
@@ -508,13 +516,14 @@ function AskOrchiconPage() {
       } catch (err: unknown) {
         fail(err);
       }
+      return acked;
     },
     [toast, setStream],
   );
 
   // A normal send: starts a fresh turn on the conversation.
   const sendStreaming = useCallback(
-    async (convId: string, text: string, attachments?: AttachmentInput[]) => {
+    async (convId: string, text: string, attachments?: AttachmentInput[]): Promise<boolean> => {
       setStream(convId, (prev) => ({
         ...prev,
         optimisticUserMsg: text,
@@ -524,7 +533,7 @@ function AskOrchiconPage() {
         pendingReplyId: null,
         items: [],
       }));
-      await runStream(convId, text, attachments, "send");
+      return runStream(convId, text, attachments, "send");
     },
     [runStream, setStream],
   );
@@ -536,7 +545,7 @@ function AskOrchiconPage() {
   // and must NOT clear the new turn — the poll effect keys on the current
   // pendingReplyId, which turnStarted now points at the new id.
   const interjectStreaming = useCallback(
-    async (convId: string, text: string, attachments?: AttachmentInput[]) => {
+    async (convId: string, text: string, attachments?: AttachmentInput[]): Promise<boolean> => {
       setStream(convId, (prev) => ({
         ...prev,
         optimisticUserMsg: text,
@@ -546,34 +555,42 @@ function AskOrchiconPage() {
         pendingReplyId: null,
         items: [],
       }));
-      await runStream(convId, text, attachments, "interject");
+      return runStream(convId, text, attachments, "interject");
     },
     [runStream, setStream],
   );
 
   const handleSendMessage = useCallback(
-    async (text: string, attachments?: AttachmentInput[]) => {
-      if (!text.trim() || !activeConvId) return;
+    async (text: string, attachments?: AttachmentInput[]): Promise<boolean> => {
+      if (!text.trim() || !activeConvId) return false;
       if (isStreaming) {
         // Send while streaming = interject: interrupt the current reply and
         // redirect the model (the server aborts the session + supersedes the
         // turn), never the "another reply already processing" dead-end.
-        await interjectStreaming(activeConvId, text, attachments);
-      } else {
-        await sendStreaming(activeConvId, text, attachments);
+        const ok = await interjectStreaming(activeConvId, text, attachments);
+        if (!ok) {
+          copyTextToClipboard(text);
+        }
+        return ok;
       }
+      const ok = await sendStreaming(activeConvId, text, attachments);
+      if (!ok) {
+        copyTextToClipboard(text);
+      }
+      return ok;
     },
     [activeConvId, isStreaming, sendStreaming, interjectStreaming],
   );
 
-  const handleRetry = useCallback(() => {
+  const handleRetry = useCallback((): Promise<boolean> => {
     const lastUser = messages
       ?.slice()
       .reverse()
       .find((m) => m.role === "user");
     if (lastUser?.content) {
-      handleSendMessage(lastUser.content);
+      return handleSendMessage(lastUser.content);
     }
+    return Promise.resolve(false);
   }, [messages, handleSendMessage]);
 
   // Optimistic mode toggle — flips local state immediately, API in background.
@@ -689,7 +706,7 @@ function AskOrchiconPage() {
                   brainstorm ideas, or get help with your codebase.
                 </p>
               </div>
-              <ChatInputField
+               <ChatInputField
                 onSend={async (text, attachments) => {
                   // Create a conversation first, then send via the streaming
                   // helper directly (avoids the stale-closure on handleSendMessage).
@@ -699,13 +716,18 @@ function AskOrchiconPage() {
                     });
                     if (conv?.id) {
                       setActiveConvId(conv.id);
-                      await sendStreaming(conv.id, text, attachments);
+                      const ok = await sendStreaming(conv.id, text, attachments);
+                      if (!ok) {
+                        copyTextToClipboard(text);
+                      }
+                      return ok;
                     }
                   } catch {
                     toast.error("Failed to create conversation", {
                       title: "Error",
                     });
                   }
+                  return false;
                 }}
                 onStop={handleStopStreaming}
                 isStreaming={isStreaming}
@@ -889,6 +911,7 @@ function AskOrchiconPage() {
                 placeholder="Ask Orchicon anything..."
                 mode={localMode}
                 onModeChange={handleModeChange}
+                convId={activeConvId}
               />
             </div>
           </div>
@@ -1095,35 +1118,93 @@ function ChatInputField({
   placeholder = "Ask Orchicon anything...",
   mode = ConversationMode.BRAINSTORM,
   onModeChange,
+  convId,
 }: {
-  onSend: (text: string, attachments?: AttachmentInput[]) => void;
+  onSend: (text: string, attachments?: AttachmentInput[]) => Promise<boolean>;
   onStop: () => void;
   isStreaming: boolean;
   placeholder?: string;
   mode?: ConversationMode;
   onModeChange?: (mode: ConversationMode) => void;
+  convId?: string | null;
 }) {
   // The input stays ENABLED while streaming: sending mid-reply is the
   // interject path (interrupt + redirect), not a rejected "already
   // processing" send. Only the Stop button is offered alongside Send.
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<AttachmentInput[]>([]);
+  const [sending, setSending] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleSubmit = useCallback(() => {
-    if (text.trim() || attachments.length > 0) {
-      onSend(
-        text.trim(),
-        attachments.length > 0 ? attachments : undefined,
-      );
+  // Restore draft from sessionStorage when conversation changes.
+  useEffect(() => {
+    if (!convId) {
       setText("");
-      setAttachments([]);
-      if (inputRef.current) {
-        inputRef.current.style.height = "auto";
+      return;
+    }
+    try {
+      const key = `${DRAFT_STORAGE_KEY_PREFIX}${convId}`;
+      const saved = sessionStorage.getItem(key);
+      if (saved) {
+        setText(saved);
+      }
+    } catch {
+      // sessionStorage unavailable — ignore.
+    }
+  }, [convId]);
+
+  // Persist draft to sessionStorage as the user types.
+  const handleTextChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      const next = e.target.value;
+      setText(next);
+      if (!convId) return;
+      try {
+        const key = `${DRAFT_STORAGE_KEY_PREFIX}${convId}`;
+        if (next) {
+          sessionStorage.setItem(key, next);
+        } else {
+          sessionStorage.removeItem(key);
+        }
+      } catch {
+        // sessionStorage unavailable — ignore.
+      }
+      e.target.style.height = "auto";
+      e.target.style.height = `${Math.min(e.target.scrollHeight, 192)}px`;
+    },
+    [convId],
+  );
+
+  const handleSubmit = useCallback(async () => {
+    if (sending) return;
+    if (text.trim() || attachments.length > 0) {
+      setSending(true);
+      try {
+        const ok = await onSend(
+          text.trim(),
+          attachments.length > 0 ? attachments : undefined,
+        );
+        if (ok) {
+          setText("");
+          setAttachments([]);
+          if (inputRef.current) {
+            inputRef.current.style.height = "auto";
+          }
+          if (convId) {
+            try {
+              sessionStorage.removeItem(`${DRAFT_STORAGE_KEY_PREFIX}${convId}`);
+            } catch {
+              // ignore
+            }
+          }
+        }
+        // on false: text stays so user can fix & retry.
+      } finally {
+        setSending(false);
       }
     }
-  }, [text, attachments, onSend]);
+  }, [text, attachments, onSend, sending, convId]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -1291,11 +1372,7 @@ function ChatInputField({
           <textarea
             ref={inputRef}
             value={text}
-            onChange={(e) => {
-              setText(e.target.value);
-              e.target.style.height = "auto";
-              e.target.style.height = `${Math.min(e.target.scrollHeight, 192)}px`;
-            }}
+            onChange={handleTextChange}
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
             rows={1}
