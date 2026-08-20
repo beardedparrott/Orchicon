@@ -204,6 +204,17 @@ function AskOrchiconPage() {
   // two streams can overlap for a conversation.
   const dispatchGenRef = useRef<Record<string, number>>({});
 
+  // Per-conversation "a local runStream is actively iterating" flag. The
+  // completion effect must NOT finalize (clear) a stream slot while the local
+  // stream is still delivering chunks — otherwise it clears on every poll and
+  // the restore effect re-arms it, making the Stop button flicker continuously
+  // and unclickable. Set true while runStream's for-await runs, false after.
+  const liveStreamRef = useRef<Record<string, boolean>>({});
+  // Per-conversation sent text, mirrored out of the stream slot so the
+  // completion effect can copy it on reply-failure without depending on
+  // `streams` (which changes on every chunk and would re-run the effect).
+  const sentTextRef = useRef<Record<string, string>>({});
+
   // Conversation-list poll cadence: 3s while ANY conversation has a running
   // turn (so running indicators + Stop affordances stay live across tabs and
   // devices), false when nothing is running — no idle network churn. The
@@ -314,10 +325,19 @@ function AskOrchiconPage() {
   // conversation's stream slot (other conversations keep their own state,
   // so a turn running while you browse elsewhere stays intact). When the
   // acked message came back as an ERROR (reply failed after ack), the sent
-  // text (held in-memory on the slot) is copied to the clipboard and written
-  // back to sessionStorage so it is restorable — never lost on a failed reply.
+  // text is copied to the clipboard and written back to sessionStorage so it
+  // is restorable — never lost on a failed reply.
+  //
+  // This effect does NOT depend on `streams` (which changes on every streaming
+  // chunk): clearing the slot on every chunk while the local stream is still
+  // delivering text made the restore effect re-arm it, so the Stop button
+  // flickered continuously and could never be clicked. The liveStreamRef guard
+  // (a local runStream actively iterating) prevents finalizing a live turn; the
+  // effect only finalizes once the local stream has ended, or for a restored
+  // server turn with no local stream.
   useEffect(() => {
     if (!activeConvId || !isStreaming || !pendingReplyId || !messages) return;
+    if (liveStreamRef.current[activeConvId]) return;
     const acked = messages.find((m) => m.id === pendingReplyId);
     if (!acked) return;
     if (acked.metadata?.error) {
@@ -325,7 +345,7 @@ function AskOrchiconPage() {
       // cleared on ack (the message is persisted in history), but put the
       // sent text on the clipboard and write it back to sessionStorage so it
       // is restorable — the user never loses what they typed.
-      const sent = streams[activeConvId]?.sentText;
+      const sent = sentTextRef.current[activeConvId] ?? "";
       if (sent) {
         copyTextToClipboard(sent);
         try {
@@ -348,8 +368,9 @@ function AskOrchiconPage() {
       sentText: null,
       items: [],
     }));
+    delete sentTextRef.current[activeConvId];
     qc.invalidateQueries({ queryKey: askKeys.conversations });
-  }, [messages, isStreaming, pendingReplyId, activeConvId, streams, setStream, qc, toast]);
+  }, [messages, isStreaming, pendingReplyId, activeConvId, setStream, qc, toast]);
 
   // Re-attach a running turn after a refresh / from another tab or device.
   // The in-memory stream slot is gone (or never existed), but the server-side
@@ -480,6 +501,8 @@ function AskOrchiconPage() {
     async (convId: string) => {
       try {
         await abortTurn.mutateAsync(convId);
+        liveStreamRef.current[convId] = false;
+        delete sentTextRef.current[convId];
         setStream(convId, (prev) => ({
           ...prev,
           isStreaming: false,
@@ -564,6 +587,7 @@ function AskOrchiconPage() {
       };
 
       let acked: boolean = false;
+      liveStreamRef.current[convId] = true;
       try {
         for await (const chunk of stream) {
           if (chunk.event.case === "turnStarted") {
@@ -619,6 +643,8 @@ function AskOrchiconPage() {
         }
       } catch (err: unknown) {
         fail(err);
+      } finally {
+        liveStreamRef.current[convId] = false;
       }
       return acked;
     },
@@ -638,6 +664,7 @@ function AskOrchiconPage() {
         sentText: text,
         items: [],
       }));
+      sentTextRef.current[convId] = text;
       return runStream(convId, text, attachments, "send");
     },
     [runStream, setStream],
@@ -661,6 +688,7 @@ function AskOrchiconPage() {
         sentText: text,
         items: [],
       }));
+      sentTextRef.current[convId] = text;
       return runStream(convId, text, attachments, "interject");
     },
     [runStream, setStream],
