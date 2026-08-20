@@ -409,10 +409,10 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 		// --- Workflow Runs ---
 		{
 			Name:        "list_workflow_runs",
-			Description: "List workflow runs, optionally filtered by workflow_id or status.",
+			Description: "List workflow runs, optionally filtered by workflow_id, project_id, work_item_id, or status.",
 			Mutating:    false,
 			Fn:          toolListWorkflowRuns,
-			Properties:  map[string]PropertySchema{"workflow_id": {Type: "string", Description: "Optional workflow ID filter"}, "status": {Type: "string", Description: "Optional status filter"}},
+			Properties:  map[string]PropertySchema{"workflow_id": {Type: "string", Description: "Optional workflow ID filter"}, "project_id": {Type: "string", Description: "Optional project ID filter"}, "work_item_id": {Type: "string", Description: "Optional work item ID filter"}, "status": {Type: "string", Description: "Optional status filter"}, "sort_by": {Type: "string", Description: "Optional sort field: id or started_at"}, "sort_order": {Type: "string", Description: "Optional sort order: asc or desc"}},
 		},
 		{
 			Name:        "get_workflow_run",

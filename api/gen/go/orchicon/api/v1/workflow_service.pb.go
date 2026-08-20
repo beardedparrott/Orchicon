@@ -1518,10 +1518,14 @@ func (x *GetWorkflowRunResponse) GetRun() *WorkflowRun {
 
 type ListWorkflowRunsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	WorkflowId    string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	WorkflowId    string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"` // optional scope; empty = all workflows in tenant
 	PageToken     string                 `protobuf:"bytes,2,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
 	PageSize      int32                  `protobuf:"varint,3,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
 	Status        *WorkflowRunStatus     `protobuf:"varint,4,opt,name=status,proto3,enum=orchicon.api.v1.WorkflowRunStatus,oneof" json:"status,omitempty"`
+	ProjectId     string                 `protobuf:"bytes,5,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`      // optional scope; empty = all projects
+	WorkItemId    string                 `protobuf:"bytes,6,opt,name=work_item_id,json=workItemId,proto3" json:"work_item_id,omitempty"` // optional scope; empty = all work items
+	SortBy        string                 `protobuf:"bytes,7,opt,name=sort_by,json=sortBy,proto3" json:"sort_by,omitempty"`               // "id" (default) or "started_at"
+	SortOrder     string                 `protobuf:"bytes,8,opt,name=sort_order,json=sortOrder,proto3" json:"sort_order,omitempty"`      // "desc" (default) or "asc"
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1582,6 +1586,34 @@ func (x *ListWorkflowRunsRequest) GetStatus() WorkflowRunStatus {
 		return *x.Status
 	}
 	return WorkflowRunStatus_WORKFLOW_RUN_STATUS_UNSPECIFIED
+}
+
+func (x *ListWorkflowRunsRequest) GetProjectId() string {
+	if x != nil {
+		return x.ProjectId
+	}
+	return ""
+}
+
+func (x *ListWorkflowRunsRequest) GetWorkItemId() string {
+	if x != nil {
+		return x.WorkItemId
+	}
+	return ""
+}
+
+func (x *ListWorkflowRunsRequest) GetSortBy() string {
+	if x != nil {
+		return x.SortBy
+	}
+	return ""
+}
+
+func (x *ListWorkflowRunsRequest) GetSortOrder() string {
+	if x != nil {
+		return x.SortOrder
+	}
+	return ""
 }
 
 type ListWorkflowRunsResponse struct {
@@ -2508,14 +2540,21 @@ const file_orchicon_api_v1_workflow_service_proto_rawDesc = "" +
 	"\x15GetWorkflowRunRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"H\n" +
 	"\x16GetWorkflowRunResponse\x12.\n" +
-	"\x03run\x18\x01 \x01(\v2\x1c.orchicon.api.v1.WorkflowRunR\x03run\"\xc2\x01\n" +
+	"\x03run\x18\x01 \x01(\v2\x1c.orchicon.api.v1.WorkflowRunR\x03run\"\xbb\x02\n" +
 	"\x17ListWorkflowRunsRequest\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
 	"workflowId\x12\x1d\n" +
 	"\n" +
 	"page_token\x18\x02 \x01(\tR\tpageToken\x12\x1b\n" +
 	"\tpage_size\x18\x03 \x01(\x05R\bpageSize\x12?\n" +
-	"\x06status\x18\x04 \x01(\x0e2\".orchicon.api.v1.WorkflowRunStatusH\x00R\x06status\x88\x01\x01B\t\n" +
+	"\x06status\x18\x04 \x01(\x0e2\".orchicon.api.v1.WorkflowRunStatusH\x00R\x06status\x88\x01\x01\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x05 \x01(\tR\tprojectId\x12 \n" +
+	"\fwork_item_id\x18\x06 \x01(\tR\n" +
+	"workItemId\x12\x17\n" +
+	"\asort_by\x18\a \x01(\tR\x06sortBy\x12\x1d\n" +
+	"\n" +
+	"sort_order\x18\b \x01(\tR\tsortOrderB\t\n" +
 	"\a_status\"t\n" +
 	"\x18ListWorkflowRunsResponse\x120\n" +
 	"\x04runs\x18\x01 \x03(\v2\x1c.orchicon.api.v1.WorkflowRunR\x04runs\x12&\n" +

@@ -957,6 +957,88 @@ export class UpdateWorkflowVersionResponse extends Message<UpdateWorkflowVersion
 }
 
 /**
+ * @generated from message orchicon.api.v1.UpdateWorkflowRequest
+ */
+export class UpdateWorkflowRequest extends Message<UpdateWorkflowRequest> {
+  /**
+   * @generated from field: string workflow_id = 1;
+   */
+  workflowId = "";
+
+  /**
+   * new workflow name (trimmed, non-empty, max 500 chars)
+   *
+   * @generated from field: string name = 2;
+   */
+  name = "";
+
+  constructor(data?: PartialMessage<UpdateWorkflowRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.UpdateWorkflowRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "workflow_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkflowRequest {
+    return new UpdateWorkflowRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UpdateWorkflowRequest {
+    return new UpdateWorkflowRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UpdateWorkflowRequest {
+    return new UpdateWorkflowRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: UpdateWorkflowRequest | PlainMessage<UpdateWorkflowRequest> | undefined, b: UpdateWorkflowRequest | PlainMessage<UpdateWorkflowRequest> | undefined): boolean {
+    return proto3.util.equals(UpdateWorkflowRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.UpdateWorkflowResponse
+ */
+export class UpdateWorkflowResponse extends Message<UpdateWorkflowResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.Workflow workflow = 1;
+   */
+  workflow?: Workflow;
+
+  constructor(data?: PartialMessage<UpdateWorkflowResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.UpdateWorkflowResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "workflow", kind: "message", T: Workflow },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkflowResponse {
+    return new UpdateWorkflowResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UpdateWorkflowResponse {
+    return new UpdateWorkflowResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UpdateWorkflowResponse {
+    return new UpdateWorkflowResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: UpdateWorkflowResponse | PlainMessage<UpdateWorkflowResponse> | undefined, b: UpdateWorkflowResponse | PlainMessage<UpdateWorkflowResponse> | undefined): boolean {
+    return proto3.util.equals(UpdateWorkflowResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.StartWorkflowRequest
  */
 export class StartWorkflowRequest extends Message<StartWorkflowRequest> {
@@ -1213,6 +1295,8 @@ export class GetWorkflowRunResponse extends Message<GetWorkflowRunResponse> {
  */
 export class ListWorkflowRunsRequest extends Message<ListWorkflowRunsRequest> {
   /**
+   * optional scope; empty = all workflows in tenant
+   *
    * @generated from field: string workflow_id = 1;
    */
   workflowId = "";
@@ -1232,6 +1316,34 @@ export class ListWorkflowRunsRequest extends Message<ListWorkflowRunsRequest> {
    */
   status?: WorkflowRunStatus;
 
+  /**
+   * optional scope; empty = all projects
+   *
+   * @generated from field: string project_id = 5;
+   */
+  projectId = "";
+
+  /**
+   * optional scope; empty = all work items
+   *
+   * @generated from field: string work_item_id = 6;
+   */
+  workItemId = "";
+
+  /**
+   * "id" (default) or "started_at"
+   *
+   * @generated from field: string sort_by = 7;
+   */
+  sortBy = "";
+
+  /**
+   * "desc" (default) or "asc"
+   *
+   * @generated from field: string sort_order = 8;
+   */
+  sortOrder = "";
+
   constructor(data?: PartialMessage<ListWorkflowRunsRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1244,6 +1356,10 @@ export class ListWorkflowRunsRequest extends Message<ListWorkflowRunsRequest> {
     { no: 2, name: "page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "page_size", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 4, name: "status", kind: "enum", T: proto3.getEnumType(WorkflowRunStatus), opt: true },
+    { no: 5, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "work_item_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 7, name: "sort_by", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 8, name: "sort_order", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListWorkflowRunsRequest {
@@ -1953,86 +2069,6 @@ export class GetWorkflowEditLockResponse extends Message<GetWorkflowEditLockResp
 
   static equals(a: GetWorkflowEditLockResponse | PlainMessage<GetWorkflowEditLockResponse> | undefined, b: GetWorkflowEditLockResponse | PlainMessage<GetWorkflowEditLockResponse> | undefined): boolean {
     return proto3.util.equals(GetWorkflowEditLockResponse, a, b);
-  }
-}
-
-/**
- * @generated from message orchicon.api.v1.UpdateWorkflowRequest
- */
-export class UpdateWorkflowRequest extends Message<UpdateWorkflowRequest> {
-  /**
-   * @generated from field: string workflow_id = 1;
-   */
-  workflowId = "";
-
-  /**
-   * @generated from field: string name = 2;
-   */
-  name = "";
-
-  constructor(data?: PartialMessage<UpdateWorkflowRequest>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "orchicon.api.v1.UpdateWorkflowRequest";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "workflow_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 2, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkflowRequest {
-    return new UpdateWorkflowRequest().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UpdateWorkflowRequest {
-    return new UpdateWorkflowRequest().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UpdateWorkflowRequest {
-    return new UpdateWorkflowRequest().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: UpdateWorkflowRequest | PlainMessage<UpdateWorkflowRequest> | undefined, b: UpdateWorkflowRequest | PlainMessage<UpdateWorkflowRequest> | undefined): boolean {
-    return proto3.util.equals(UpdateWorkflowRequest, a, b);
-  }
-}
-
-/**
- * @generated from message orchicon.api.v1.UpdateWorkflowResponse
- */
-export class UpdateWorkflowResponse extends Message<UpdateWorkflowResponse> {
-  /**
-   * @generated from field: orchicon.api.v1.Workflow workflow = 1;
-   */
-  workflow?: Workflow;
-
-  constructor(data?: PartialMessage<UpdateWorkflowResponse>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "orchicon.api.v1.UpdateWorkflowResponse";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "workflow", kind: "message", T: Workflow },
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkflowResponse {
-    return new UpdateWorkflowResponse().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UpdateWorkflowResponse {
-    return new UpdateWorkflowResponse().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UpdateWorkflowResponse {
-    return new UpdateWorkflowResponse().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: UpdateWorkflowResponse | PlainMessage<UpdateWorkflowResponse> | undefined, b: UpdateWorkflowResponse | PlainMessage<UpdateWorkflowResponse> | undefined): boolean {
-    return proto3.util.equals(UpdateWorkflowResponse, a, b);
   }
 }
 

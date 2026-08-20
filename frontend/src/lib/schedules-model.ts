@@ -13,6 +13,7 @@ import {
   WorkItemStatus,
   type WorkItem,
 } from "@/api/gen/orchicon/api/v1/work_item_pb";
+import type { WorkflowRun } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import {
   sequenceParentIds,
   sortByChainOrder,
@@ -45,9 +46,6 @@ export function upcomingSortTime(item: WorkItem): number {
 // workflow_run_id, so the Running predicate is extended separately
 // (isSequenceRunningParent).
 export const ACTIVE_RUNNING_STATUSES = new Set([4, 5, 9]);
-
-// Terminal statuses that count as "previously ran" for History.
-export const TERMINAL_STATUSES = new Set([6, 7, 8]);
 
 // Statuses used by the queued-derivation helpers.
 const PENDING = 1;
@@ -95,22 +93,25 @@ export function queuedSequenceChildren(
 }
 
 /**
- * History membership: any item that previously ran a workflow. That means
- * a terminal status AND (had a scheduled start OR carried a workflow run
- * OR is a completed sequence parent). The workflowRunId clause is what
- * makes completed sequence children — and single workflow runs started
- * without a schedule — appear: they reach a terminal status with
- * workflow_run_id set but no scheduled_start_at, which the old
- * scheduledStartAt-only predicate dropped.
+ * History membership for a workflow run: true iff the run actually
+ * executed, i.e. it carries a real start time. This is the fix for missing
+ * runs — every real execution records started_at (recurring fires whose
+ * work item re-armed to SCHEDULED/RECURRING, prior runs of a work item
+ * that ran more than once, and in-flight runs all carry it). A run that
+ * was created but never started (started_at NULL — tests only in practice)
+ * is excluded; it has no real run time to show or sort by.
  */
-export function isHistoryItem(
-  item: WorkItem,
-  allItems: WorkItem[],
-): boolean {
-  if (!TERMINAL_STATUSES.has(item.status)) return false;
-  if (item.scheduledStartAt) return true;
-  if (item.workflowRunId) return true;
-  // A terminal parent with children and no bound run completed its whole
-  // sequence chain (or was cancelled) — it belongs in history too.
-  return sequenceParentIds(allItems).has(item.id);
+export function isHistoryRun(run: WorkflowRun): boolean {
+  return run.startedAt !== undefined;
+}
+
+/**
+ * Effective run time (ms) for a History-view run: its real started_at.
+ * Falls back to created_at only for robustness; a run with neither
+ * (started_at and created_at both absent) returns 0 so it sorts last.
+ * This is the fix for ordering — a recurring/re-scheduled item's next
+ * (future) scheduled firing time never displaces a run's actual start.
+ */
+export function historyRunRanAt(run: WorkflowRun): number {
+  return tsToMs(run.startedAt) || tsToMs(run.createdAt) || 0;
 }

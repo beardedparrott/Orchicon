@@ -163,7 +163,11 @@ type WorkflowServiceClient interface {
 	AbortWorkflow(context.Context, *connect.Request[v1.AbortWorkflowRequest]) (*connect.Response[v1.AbortWorkflowResponse], error)
 	// GetWorkflowRun returns a single WorkflowRun by id.
 	GetWorkflowRun(context.Context, *connect.Request[v1.GetWorkflowRunRequest]) (*connect.Response[v1.GetWorkflowRunResponse], error)
-	// ListWorkflowRuns returns a page of WorkflowRuns for a workflow.
+	// ListWorkflowRuns returns a page of WorkflowRuns scoped by tenant and
+	// any combination of workflow / project / work item. All scope filters
+	// are optional (empty = no filter); at least one scope filter or an
+	// empty scope is allowed. Runs are sorted by id descending by default,
+	// or by their real started_at when sort_by=started_at.
 	ListWorkflowRuns(context.Context, *connect.Request[v1.ListWorkflowRunsRequest]) (*connect.Response[v1.ListWorkflowRunsResponse], error)
 	// GetWorkflowStepRuns returns all step runs for a WorkflowRun.
 	GetWorkflowStepRuns(context.Context, *connect.Request[v1.GetWorkflowStepRunsRequest]) (*connect.Response[v1.GetWorkflowStepRunsResponse], error)
@@ -554,7 +558,11 @@ type WorkflowServiceHandler interface {
 	AbortWorkflow(context.Context, *connect.Request[v1.AbortWorkflowRequest]) (*connect.Response[v1.AbortWorkflowResponse], error)
 	// GetWorkflowRun returns a single WorkflowRun by id.
 	GetWorkflowRun(context.Context, *connect.Request[v1.GetWorkflowRunRequest]) (*connect.Response[v1.GetWorkflowRunResponse], error)
-	// ListWorkflowRuns returns a page of WorkflowRuns for a workflow.
+	// ListWorkflowRuns returns a page of WorkflowRuns scoped by tenant and
+	// any combination of workflow / project / work item. All scope filters
+	// are optional (empty = no filter); at least one scope filter or an
+	// empty scope is allowed. Runs are sorted by id descending by default,
+	// or by their real started_at when sort_by=started_at.
 	ListWorkflowRuns(context.Context, *connect.Request[v1.ListWorkflowRunsRequest]) (*connect.Response[v1.ListWorkflowRunsResponse], error)
 	// GetWorkflowStepRuns returns all step runs for a WorkflowRun.
 	GetWorkflowStepRuns(context.Context, *connect.Request[v1.GetWorkflowStepRunsRequest]) (*connect.Response[v1.GetWorkflowStepRunsResponse], error)

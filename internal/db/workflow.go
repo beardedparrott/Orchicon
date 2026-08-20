@@ -599,17 +599,25 @@ func GetWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (Workfl
 	return r, nil
 }
 
-// ListWorkflowRunsFilter scopes a list query to a workflow, optionally
-// filtered by status.
+// ListWorkflowRunsFilter scopes a list query by tenant and any combination
+// of workflow / project / work item (empty = no filter on that axis),
+// optionally filtered by status. SortBy/SortOrder control ordering; the
+// default is id DESC (kept for backward-compat with the run view and the
+// AskOrchicon tool). When SortBy=started_at the runs order by their real
+// start time (NULLS LAST so created-but-never-started runs sort last).
 type ListWorkflowRunsFilter struct {
 	TenantID   string
 	WorkflowID string
+	ProjectID  string
+	WorkItemID string
 	Status     string
 	PageSize   int
 	AfterID    string
+	SortBy     string
+	SortOrder  string
 }
 
-// ListWorkflowRuns returns a page of workflow runs for a workflow.
+// ListWorkflowRuns returns a page of workflow runs matching the filter.
 func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) ([]WorkflowRunRow, error) {
 	if f.PageSize <= 0 || f.PageSize > 1000 {
 		f.PageSize = 100
@@ -625,12 +633,33 @@ func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) 
 		q += fmt.Sprintf(` AND workflow_id = $%d`, len(args)+1)
 		args = append(args, f.WorkflowID)
 	}
+	if f.ProjectID != "" {
+		q += fmt.Sprintf(` AND project_id = $%d`, len(args)+1)
+		args = append(args, f.ProjectID)
+	}
+	if f.WorkItemID != "" {
+		q += fmt.Sprintf(` AND work_item_id = $%d`, len(args)+1)
+		args = append(args, f.WorkItemID)
+	}
 	if f.Status != "" {
 		q += fmt.Sprintf(` AND status = $%d`, len(args)+1)
 		args = append(args, f.Status)
 	}
-	q += ` ORDER BY id DESC LIMIT $` + fmt.Sprint(len(args)+1)
-	args = append(args, f.PageSize)
+	if f.SortBy == "started_at" {
+		order := "DESC"
+		if f.SortOrder == "asc" {
+			order = "ASC"
+		}
+		// The id-cursor clause only composes with an id sort; when sorting
+		// by started_at we ignore the cursor and return a single page of
+		// the requested size (callers that sort by started_at fetch one
+		// large page and never paginate).
+		q += ` ORDER BY started_at ` + order + ` NULLS LAST, id ` + order + ` LIMIT $` + fmt.Sprint(len(args)+1)
+		args = append(args, f.PageSize)
+	} else {
+		q += ` ORDER BY id DESC LIMIT $` + fmt.Sprint(len(args)+1)
+		args = append(args, f.PageSize)
+	}
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("db: list workflow runs: %w", err)

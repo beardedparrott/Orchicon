@@ -842,20 +842,37 @@ func (s *Service) GetWorkflowRun(ctx context.Context, req *connect.Request[apiv1
 	return connect.NewResponse(&apiv1.GetWorkflowRunResponse{Run: runRowToProto(run)}), nil
 }
 
-// ListWorkflowRuns returns a page of WorkflowRuns for a workflow.
+// ListWorkflowRuns returns a page of WorkflowRuns scoped by tenant and any
+// combination of workflow / project / work item (all optional). Sorted by id
+// descending by default, or by the run's real started_at when sort_by set.
 func (s *Service) ListWorkflowRuns(ctx context.Context, req *connect.Request[apiv1.ListWorkflowRunsRequest]) (*connect.Response[apiv1.ListWorkflowRunsResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if req.Msg.WorkflowId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("workflow_id must not be empty"))
+	sortBy := req.Msg.SortBy
+	if sortBy == "" {
+		sortBy = "id"
+	}
+	if sortBy != "id" && sortBy != "started_at" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("sort_by must be 'id' or 'started_at', got %q", sortBy))
+	}
+	sortOrder := req.Msg.SortOrder
+	if sortOrder == "" {
+		sortOrder = "desc"
+	}
+	if sortOrder != "asc" && sortOrder != "desc" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("sort_order must be 'asc' or 'desc', got %q", sortOrder))
 	}
 	f := db.ListWorkflowRunsFilter{
 		TenantID:   tenantID,
 		WorkflowID: req.Msg.WorkflowId,
+		ProjectID:  req.Msg.ProjectId,
+		WorkItemID: req.Msg.WorkItemId,
 		PageSize:   int(req.Msg.PageSize),
 		AfterID:    req.Msg.PageToken,
+		SortBy:     sortBy,
+		SortOrder:  sortOrder,
 	}
 	if req.Msg.Status != nil {
 		f.Status = workflowRunStatusFromProto(*req.Msg.Status)

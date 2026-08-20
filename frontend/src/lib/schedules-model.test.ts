@@ -1,15 +1,36 @@
 import { describe, expect, it } from "vitest";
 
 import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
+import type { WorkflowRun } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import {
   activeSequenceParentIds,
-  isHistoryItem,
+  historyRunRanAt,
+  isHistoryRun,
   queuedSequenceChildren,
   upcomingSortTime,
 } from "@/lib/schedules-model";
 
-// Helper to build a work item with only the fields the predicates read.
-// status: 1 pending, 4 running, 6 succeeded, 10 scheduled, 11 recurring.
+// Helper to build a workflow run with only the fields the predicates read.
+// A run is "executed" when it carries a real started_at.
+function run(
+  id: string,
+  opts: {
+    hasStartedAt?: boolean;
+    startedAtSeconds?: number;
+    hasCreatedAt?: boolean;
+    createdAtSeconds?: number;
+  } = {},
+): WorkflowRun {
+  return {
+    id,
+    startedAt: opts.hasStartedAt
+      ? { seconds: BigInt(opts.startedAtSeconds ?? 4000), nanos: 0 }
+      : undefined,
+    createdAt: opts.hasCreatedAt
+      ? { seconds: BigInt(opts.createdAtSeconds ?? 1000), nanos: 0 }
+      : undefined,
+  } as unknown as WorkflowRun;
+}
 function wi(
   id: string,
   status: number,
@@ -89,47 +110,64 @@ describe("queuedSequenceChildren", () => {
   });
 });
 
-describe("isHistoryItem", () => {
-  it("includes a scheduled item that reached a terminal status", () => {
-    const item = wi("single", 6, { workflowRunId: "run1", hasScheduledStart: true });
-    expect(isHistoryItem(item, [item])).toBe(true);
+describe("isHistoryRun", () => {
+  it("includes a run that actually executed (has a real started_at)", () => {
+    expect(isHistoryRun(run("r1", { hasStartedAt: true }))).toBe(true);
   });
 
-  it("includes a completed sequence child with no scheduled start (the bug)", () => {
-    // A sequence child succeeds with workflow_run_id set but no
-    // scheduled_start_at — only the parent is scheduled.
-    const items = [
-      wi("parent", 6, { hasChildren: true }),
-      wi("child1", 6, { parentId: "parent", workflowRunId: "run1" }),
-      wi("child2", 6, { parentId: "parent", workflowRunId: "run2" }),
-    ];
-    expect(isHistoryItem(items[1], items)).toBe(true);
-    expect(isHistoryItem(items[2], items)).toBe(true);
+  it("includes a recurring-fire run whose item re-armed (the missing-runs bug)", () => {
+    // A recurring fire creates a NEW run with a started_at even though the
+    // work item itself re-armed back to SCHEDULED/RECURRING — the run is
+    // the history unit, not the item status.
+    expect(isHistoryRun(run("r2", { hasStartedAt: true }))).toBe(true);
   });
 
-  it("includes a completed sequence parent", () => {
-    const items = [
-      wi("parent", 6, { hasChildren: true }),
-      wi("child1", 6, { parentId: "parent", workflowRunId: "run1" }),
-    ];
-    expect(isHistoryItem(items[0], items)).toBe(true);
+  it("includes a prior (older) run of a work item that ran more than once", () => {
+    expect(isHistoryRun(run("r-old", { hasStartedAt: true }))).toBe(true);
+    expect(isHistoryRun(run("r-new", { hasStartedAt: true }))).toBe(true);
   });
 
-  it("includes a single workflow run started without a schedule (the bug)", () => {
-    // Manual / start-immediately run: workflow_run_id set, no
-    // scheduled_start_at, terminal status.
-    const item = wi("single", 6, { workflowRunId: "run1" });
-    expect(isHistoryItem(item, [item])).toBe(true);
+  it("includes an in-flight run (still running, not terminal)", () => {
+    expect(isHistoryRun(run("r-run", { hasStartedAt: true }))).toBe(true);
   });
 
-  it("excludes terminal items that never ran a workflow and are not sequence parents", () => {
-    const item = wi("leaf", 6);
-    expect(isHistoryItem(item, [item])).toBe(false);
+  it("excludes a run that was created but never started (no started_at)", () => {
+    expect(isHistoryRun(run("r-armed", { hasCreatedAt: true }))).toBe(false);
+  });
+});
+
+describe("historyRunRanAt", () => {
+  it("returns the run's real started_at in ms", () => {
+    expect(historyRunRanAt(run("r1", { hasStartedAt: true, startedAtSeconds: 5000 }))).toBe(5_000_000);
   });
 
-  it("excludes non-terminal items", () => {
-    const running = wi("single", 4, { workflowRunId: "run1" });
-    expect(isHistoryItem(running, [running])).toBe(false);
+  it("falls back to created_at when started_at is absent", () => {
+    expect(historyRunRanAt(run("r2", { hasCreatedAt: true, createdAtSeconds: 2000 }))).toBe(2_000_000);
+  });
+
+  it("returns 0 when neither started_at nor created_at is set", () => {
+    expect(historyRunRanAt(run("r3"))).toBe(0);
+  });
+
+  it("orders runs by real start time descending (the 2am ordering bug)", () => {
+    // A run scheduled at 2am but started later must sort below later runs;
+    // historyRunRanAt uses the run's actual started_at, not the item's
+    // (future) scheduled firing time.
+    const twoAm = run("r-2am", { hasStartedAt: true, startedAtSeconds: 2 * 3600 });
+    const afternoon = run("r-pm", { hasStartedAt: true, startedAtSeconds: 14 * 3600 });
+    const sorted = [twoAm, afternoon].sort(
+      (a, b) => historyRunRanAt(b) - historyRunRanAt(a),
+    );
+    expect(sorted.map((r) => r.id)).toEqual(["r-pm", "r-2am"]);
+  });
+
+  it("reverses order when sorted ascending", () => {
+    const early = run("r-a", { hasStartedAt: true, startedAtSeconds: 1000 });
+    const late = run("r-b", { hasStartedAt: true, startedAtSeconds: 9000 });
+    const sorted = [late, early].sort(
+      (a, b) => historyRunRanAt(a) - historyRunRanAt(b),
+    );
+    expect(sorted.map((r) => r.id)).toEqual(["r-a", "r-b"]);
   });
 });
 

@@ -3,26 +3,24 @@
 // Shows all currently scheduled work items in chronological order with
 // their next runtimes ("Upcoming", the default view), a view of items
 // that have fired and are actively executing ("Running"), plus a history
-// of items that already ran ("History"). All data comes from existing
-// Connect-ES clients (AGENTS.md invariants #1/#2): Upcoming is a
+// of workflow runs that already executed ("History"). All data comes from
+// existing Connect-ES clients (AGENTS.md invariants #1/#2): Upcoming is a
 // status = WORK_ITEM_STATUS_SCHEDULED query plus a client-side "queued"
-// section of pending sequence children; Running and History are
-// broad fetches filtered client-side — Running to items with an in-flight
-// workflow run (status RUNNING / CHECKPOINTING / RECOVERING, workflow
-// bound), History to items that have a scheduled_start_at or a completed
-// workflow run or are a completed sequence parent and a terminal status
-// (the ListWorkItems API accepts exactly one status filter, so
-// those status unions cannot be fetched in one call — the fetch is
-// isolated behind useListWorkItems so a future backend filter/RPC can
-// swap in without touching this page's layout).
+// section of pending sequence children; Running is a broad item fetch
+// filtered client-side to items with an in-flight workflow run (status
+// RUNNING / CHECKPOINTING / RECOVERING, workflow bound); History is
+// run-driven — it enumerates the tenant's workflow_runs via the extended
+// ListWorkflowRuns RPC (scoped by project, sorted by each run's real
+// started_at) and renders one card per executed run, resolving each run's
+// bound work item / workflow for its title and kind.
 //
 // Sequence runs (a parent with children and no bound workflow) fan out to
 // per-child workflows: the engine resets every descendant to pending and
 // arms one child at a time. Only the parent carries scheduled_start_at,
 // so the children never match the SCHEDULED query — the Upcoming view
-// derives them from the full project list (see QueuedSection), and
-// History includes terminal items with workflow_run_id so completed
-// children (and single runs started without a schedule) are not dropped.
+// derives them from the full project list (see QueuedSection). In History,
+// a completed child's executed run appears like any other run (it carries
+// a real started_at in workflow_runs).
 //
 // Recurring work items (status = RECURRING, next_run_at set) are fetched
 // alongside scheduled items and merged into the Upcoming view. The
@@ -48,11 +46,15 @@ import {
   useRemoveSchedule,
 } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
-import { useGetWorkflowRun } from "@/api/workflows";
+import {
+  useListWorkflowRuns,
+  useListWorkflows,
+} from "@/api/workflows";
 import {
   WorkItemStatus,
   type WorkItem as WorkItemProto,
 } from "@/api/gen/orchicon/api/v1/work_item_pb";
+import type { WorkflowRun, Workflow as WorkflowProto } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import type { Project } from "@/api/gen/orchicon/api/v1/project_pb";
 import { Button } from "@/components/ui/button";
 import {
@@ -63,7 +65,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { KindBadge, KindDot, StatusPill, MultiWorkflowChip, PositionBadge, RecurringBadge } from "@/components/work-items/work-item-badges";
+import { KindBadge, KindDot, StatusPill, MultiWorkflowChip, PositionBadge, RecurringBadge, RunStatusBadge } from "@/components/work-items/work-item-badges";
 import { showRecurringBadge } from "@/components/work-items/work-item-meta";
 import {
   computeSequencePositions,
@@ -75,7 +77,8 @@ import { formatRecurrence } from "@/components/work-items/RecurringScheduleForm"
 import { Route as rootRoute } from "@/routes/__root";
 import {
   ACTIVE_RUNNING_STATUSES,
-  isHistoryItem,
+  historyRunRanAt,
+  isHistoryRun,
   queuedSequenceChildren,
   upcomingSortTime,
 } from "@/lib/schedules-model";
@@ -1038,34 +1041,74 @@ function HistoryView({
   onToggleSelect: (id: string) => void;
   onToggleSelectAll: (items: WorkItemProto[]) => void;
 }) {
+  // History is run-driven: enumerate the tenant's workflow runs for the
+  // selected scope (project, or all projects when empty) ordered by each
+  // run's real started_at. Every executed run appears — recurring fires
+  // whose work item re-armed to SCHEDULED/RECURRING, prior runs of a work
+  // item that ran more than once, and in-flight runs all carry a real
+  // started_at (the authoritative workflow_runs record), so none of them
+  // are dropped by a work-item-status derivation.
   const {
-    data: allItems,
-    isLoading,
-    error,
-  } = useListWorkItems(projectId, {
-    search: search || undefined,
+    data: runs,
+    isLoading: runsLoading,
+    error: runsError,
+  } = useListWorkflowRuns({
+    projectId: projectId || undefined,
+    sortBy: "started_at",
+    sortOrder,
+    pageSize: 1000,
     refetchInterval: 30_000,
   });
+  // The FULL project work item list (no search/kind filter) so every run's
+  // bound item resolves; search/kind are applied client-side below.
+  const {
+    data: allItems,
+    isLoading: itemsLoading,
+    error: itemsError,
+  } = useListWorkItems(projectId, {
+    refetchInterval: 30_000,
+  });
+  // All tenant workflows (including templates) so unbound one-shot runs —
+  // and bound runs whose workflow is a tenant-level template — render a
+  // human-readable workflow name.
+  const { data: workflows } = useListWorkflows();
 
-  // History = items that previously ran a workflow: those that had a
-  // scheduled start and reached a terminal status (as today), PLUS any
-  // terminal item that carried a workflow run (a completed sequence
-  // child, or a single workflow run started without a schedule — those
-  // have workflow_run_id but no scheduled_start_at, so the old
-  // scheduledStartAt-only predicate dropped them), PLUS terminal sequence
-  // parents. The API accepts one status filter, so this union is derived
-  // client-side (see the header comment).
-  const items = useMemo(() => {
-    const base = (allItems ?? []).filter(
-      (i) =>
-        isHistoryItem(i, allItems ?? []) &&
-        (!kindFilter || i.kind === Number(kindFilter)),
-    );
+  const itemsById = useMemo(() => {
+    const m = new Map<string, WorkItemProto>();
+    for (const i of allItems ?? []) m.set(i.id, i);
+    return m;
+  }, [allItems]);
+  const workflowsById = useMemo(() => {
+    const m = new Map<string, WorkflowProto>();
+    for (const w of workflows ?? []) m.set(w.id, w);
+    return m;
+  }, [workflows]);
+
+  // Resolve each run to a bound item (when it has one) and apply
+  // search/kind client-side, then order by the run's actual start time.
+  const entries = useMemo(() => {
+    const base = (runs ?? []).filter((run) => {
+      if (!isHistoryRun(run)) return false;
+      const item = run.workItemId ? itemsById.get(run.workItemId) : undefined;
+      if (kindFilter && (!item || item.kind !== Number(kindFilter))) return false;
+      if (search) {
+        const itemMatch = item?.title.toLowerCase().includes(search.toLowerCase());
+        const workflowName = workflowsById.get(run.workflowId)?.name.toLowerCase();
+        const workflowMatch =
+          (workflowName ?? "").includes(search.toLowerCase()) ||
+          run.workflowId.toLowerCase().includes(search.toLowerCase());
+        if (!itemMatch && !workflowMatch) return false;
+      }
+      return true;
+    });
     const sorted = [...base].sort(
-      (a, b) => historyRanAt(b) - historyRanAt(a),
+      (a, b) => historyRunRanAt(b) - historyRunRanAt(a),
     );
     return sortOrder === "desc" ? sorted : sorted.reverse();
-  }, [allItems, kindFilter, sortOrder]);
+  }, [runs, itemsById, workflowsById, kindFilter, search, sortOrder]);
+
+  const isLoading = runsLoading || itemsLoading;
+  const error = runsError || itemsError;
 
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
@@ -1077,7 +1120,7 @@ function HistoryView({
       </p>
     );
   }
-  if (items.length === 0) {
+  if (entries.length === 0) {
     return (
       <Card>
         <CardHeader>
@@ -1086,7 +1129,7 @@ function HistoryView({
             No past runs yet
           </CardTitle>
           <CardDescription>
-            Scheduled work items that have run will appear here.
+            Workflow runs that have executed will appear here.
           </CardDescription>
         </CardHeader>
       </Card>
@@ -1098,29 +1141,33 @@ function HistoryView({
       <div className="flex items-center gap-2 px-2 py-1">
         <input
           type="checkbox"
-          checked={selected.size === items.length}
-          onChange={() => onToggleSelectAll(items)}
+          checked={selected.size === entries.length}
+          onChange={() => onToggleSelectAll(
+            entries
+              .map((r) => (r.workItemId ? itemsById.get(r.workItemId) : undefined))
+              .filter((i): i is WorkItemProto => !!i),
+          )}
           className="h-4 w-4 rounded border-input"
           aria-label="Select all history items"
         />
         <span aria-live="polite" className="text-xs text-muted-foreground">
           {selected.size > 0
-            ? `${selected.size} of ${items.length} selected`
-            : `${items.length} past run item${items.length === 1 ? "" : "s"}`}
+            ? `${selected.size} of ${entries.length} selected`
+            : `${entries.length} past run${entries.length === 1 ? "" : "s"}`}
         </span>
       </div>
       <ul className="space-y-3">
-        {items.map((item, ii) => (
-          <li key={item.id} className="flex gap-3">
+        {entries.map((run, ii) => (
+          <li key={run.id} className="flex gap-3">
             <div className="hidden w-16 shrink-0 pt-4 text-right font-mono text-xs tabular-nums text-muted-foreground sm:block">
-              {formatTime(historyRanAt(item))}
+              {formatTime(historyRunRanAt(run))}
             </div>
             <div className="relative flex flex-col items-center">
               <KindDot
-                kind={item.kind}
+                kind={itemsById.get(run.workItemId ?? "")?.kind ?? 0}
                 className="mt-4 ring-2 ring-background"
               />
-              {ii !== items.length - 1 && (
+              {ii !== entries.length - 1 && (
                 <span
                   aria-hidden
                   className="absolute left-1/2 top-6 h-[calc(100%+0.75rem)] w-px -translate-x-1/2 bg-border"
@@ -1129,9 +1176,11 @@ function HistoryView({
             </div>
             <div className="min-w-0 flex-1">
               <HistoryCard
-                item={item}
+                run={run}
+                item={run.workItemId ? itemsById.get(run.workItemId) : undefined}
+                workflow={workflowsById.get(run.workflowId)}
                 projects={projects}
-                selected={selected.has(item.id)}
+                selected={run.workItemId ? selected.has(run.workItemId) : false}
                 onToggleSelect={onToggleSelect}
               />
             </div>
@@ -1143,66 +1192,71 @@ function HistoryView({
 }
 
 function HistoryCard({
+  run,
   item,
+  workflow,
   projects,
   selected,
   onToggleSelect,
 }: {
-  item: WorkItemProto;
+  run: WorkflowRun;
+  item?: WorkItemProto;
+  workflow?: WorkflowProto;
   projects?: Project[];
   selected: boolean;
   onToggleSelect: (id: string) => void;
 }) {
-  const projectName = projects?.find((p) => p.id === item.projectId)?.name;
-  const ranAt = historyRanAt(item);
-  const { data: workflowRun } = useGetWorkflowRun(
-    item.workflowRunId || "",
-  );
-  const startedAt = workflowRun?.startedAt ?? ranAt;
-  const endedAt = workflowRun?.endedAt ?? (tsToMs(item.updatedAt) || undefined);
+  const projectName = projects?.find((p) => p.id === run.projectId)?.name;
+  const ranAt = historyRunRanAt(run);
+  const startedAt = run.startedAt ? tsToMs(run.startedAt) : ranAt;
+  const endedAt = run.endedAt ? tsToMs(run.endedAt) : undefined;
+  const title = item?.title ?? workflow?.name ?? run.workflowId;
+  const itemId = item?.id;
   return (
     <div className="group flex items-center gap-2">
       <input
         type="checkbox"
         checked={selected}
-        onChange={() => onToggleSelect(item.id)}
+        onChange={() => itemId && onToggleSelect(itemId)}
+        disabled={!itemId}
         className="h-4 w-4 shrink-0 rounded border-input"
-        aria-label={`Select ${item.title}`}
+        aria-label={`Select ${title}`}
       />
       <Link
         to="/work-items/$id"
-        params={{ id: item.id }}
+        params={{ id: itemId ?? "" }}
+        disabled={!itemId}
         className="min-w-0 flex-1"
       >
         <Card className="transition-colors hover:bg-accent">
           <CardContent className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex min-w-0 items-center gap-3">
-              <KindDot kind={item.kind} />
+              <KindDot kind={item?.kind ?? 0} />
               <div className="min-w-0 flex-1 overflow-hidden">
                 <div className="flex items-center gap-2">
                   <span className="truncate text-sm font-medium group-hover:underline">
-                    {item.title}
+                    {title}
                   </span>
-                  <KindBadge kind={item.kind} />
-                  {showRecurringBadge(item) && <RecurringBadge />}
-                  <StatusPill status={item.status} />
+                  {item && <KindBadge kind={item.kind} />}
+                  {item && showRecurringBadge(item) && <RecurringBadge />}
+                  <RunStatusBadge status={run.status} />
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                   {projectName && <span>{projectName}</span>}
                   <span className="inline-flex items-center gap-1">
                     <Clock className="h-3 w-3" />
-                    Started {formatDate(ranAt)}
+                    Ran {formatDate(ranAt)}
                   </span>
                 </div>
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:shrink-0">
               <LiveDuration startedAt={startedAt} endedAt={endedAt} className="font-mono text-xs tabular-nums text-muted-foreground" />
-              <WorkflowChip workflowId={item.workflowId} />
-              {item.workflowId && item.workflowRunId && (
+              <WorkflowChip workflowId={run.workflowId} />
+              {run.workflowId && (
                 <RunChip
-                  workflowId={item.workflowId}
-                  runId={item.workflowRunId}
+                  workflowId={run.workflowId}
+                  runId={run.id}
                 />
               )}
             </div>
@@ -1400,17 +1454,6 @@ function runningStartedAt(item: WorkItemProto): number {
   return (
     tsToMs(item.scheduledStartAt) ||
     tsToMs(item.updatedAt) ||
-    tsToMs(item.createdAt)
-  );
-}
-
-// historyRanAt is the effective start time for a History-view item.
-// Sequence children and single runs started without a schedule have no
-// scheduled_start_at (only the sequence parent is scheduled), so fall
-// back to createdAt (the item creation time).
-function historyRanAt(item: WorkItemProto): number {
-  return (
-    tsToMs(item.scheduledStartAt) ||
     tsToMs(item.createdAt)
   );
 }
