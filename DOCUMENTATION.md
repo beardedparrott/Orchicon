@@ -1124,7 +1124,10 @@ The fastest local development cycle — stop the dev instance, rebuild the binar
 
 ```bash
 make container-rebuild instance=dev     # stop dev container → build bin/orchicon + image → start dev container
+make container-rebuild instance=prod    # same for the prod (dogfooding) instance
 ```
+
+`container-rebuild` **always forces a fresh frontend build** (`force-fe=1`), so a rebuilt instance is guaranteed to reflect the current source — the `fe-build` stamp check that normally skips an unchanged frontend is bypassed. This avoids the trap where a stale `frontend/dist` silently ships the previous UI after a rebuild (the repeated "my frontend fix went invisible" failure): the one-command rebuild is a trustworthy "rebuild dev / rebuild prod and test recent changes" flow.
 
 Or run the individual steps:
 
@@ -1133,6 +1136,8 @@ make build                              # bin/orchicon (frontend + container con
 scripts/container.sh down dev           # stop the dev instance
 scripts/container.sh up dev             # start it again with the new image
 ```
+
+For a fast Go-only iteration (no frontend change), `make build` alone uses the stamp-checked `fe-build` and skips the frontend rebuild; pass `force-fe=1` (`make build force-fe=1`) to force it.
 
 ### Dual-Instance (dev + prod containers)
 
@@ -1301,7 +1306,7 @@ For source-level iteration on the control plane itself, rebuild the image and re
 | `rls-check` | Verify every `tenant_id` table has RLS policy |
 | **Container** | |
 | `container-build` | Build `bin/orchicon` + the container image |
-| `container-rebuild` | Stop an instance, rebuild the image, start it (usage: `make container-rebuild instance=dev\|prod`) |
+| `container-rebuild` | Stop an instance, rebuild the image (frontend always forced), start it (usage: `make container-rebuild instance=dev\|prod`) |
 | `container-up` | Start the dev single-container instance |
 | `container-down` | Stop the dev single-container instance |
 | `container-status` | Show single-container instance status |
@@ -1310,7 +1315,7 @@ For source-level iteration on the control plane itself, rebuild the image and re
 | **Frontend** | |
 | `fe-install` | Install frontend dependencies |
 | `fe-dev` | Start Vite dev server |
-| `fe-build` | Build for production |
+| `fe-build` | Build for production (`force-fe=1` always rebuilds) |
 | `fe-lint` | Lint frontend |
 | **Install** | |
 | `install-dry-run` | Dry-run the install script (no changes made) |

@@ -144,13 +144,18 @@ fe-dev: ## Start the Vite dev server
 
 # fe-build rebuilds the production bundle only when the frontend source is
 # newer than the existing dist — repeated `make build` stays fast while any
-# frontend edit is guaranteed to land in the next binary.
-fe-build: ## Build the frontend for production (skipped when dist is up to date)
-	@if [ -f frontend/dist/index.html ] && ! find frontend/src frontend/index.html frontend/vite.config.ts frontend/tailwind.config.js frontend/postcss.config.js frontend/components.json -newer frontend/dist/index.html -print -quit 2>/dev/null | grep -q .; then \
-		echo "==> frontend bundle up to date"; \
-	else \
+# frontend edit is guaranteed to land in the next binary. Set force-fe=1 to
+# ALWAYS rebuild (used by container-rebuild so a rebuilt instance is
+# guaranteed to reflect the current source — the stamp check silently ships a
+# stale dist when the working tree is older than the last build, which is how
+# frontend fixes have repeatedly gone "invisible after a rebuild").
+force-fe ?= 0
+fe-build: ## Build the frontend for production (skipped when dist is up to date; force-fe=1 to always rebuild)
+	@if [ "$(force-fe)" = "1" ] || { [ ! -f frontend/dist/index.html ] || find frontend/src frontend/index.html frontend/vite.config.ts frontend/tailwind.config.js frontend/postcss.config.js frontend/components.json -newer frontend/dist/index.html -print -quit 2>/dev/null | grep -q . ; }; then \
 		echo "==> building frontend bundle"; \
 		cd frontend && npm run build; \
+	else \
+		echo "==> frontend bundle up to date"; \
 	fi
 
 fe-lint: ## Lint the frontend
@@ -173,7 +178,7 @@ runtime-stop: ## Stop the host-side workflow runtime daemon
 container-rebuild: ## Stop an instance, rebuild the image, start it (usage: make container-rebuild dev|prod)
 	@test -n "$(instance)" || { echo "usage: make container-rebuild instance=dev|prod"; exit 1; }
 	scripts/container.sh down $(instance)
-	$(MAKE) container-build
+	$(MAKE) container-build force-fe=1
 	scripts/container.sh up $(instance)
 container-up: ## Start the dev single-container instance
 	scripts/container.sh up dev
