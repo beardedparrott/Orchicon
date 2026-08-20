@@ -163,15 +163,20 @@ interface ConvStream {
   reconnecting: boolean;
   optimisticUserMsg: string | null;
   pendingReplyId: string | null;
+  // sentText is the message text captured at send time, held in-memory so the
+  // completion effect can copy it to the clipboard if the turn is ACKED but
+  // the reply later fails. Cleared on completion (success or failure) — it is
+  // not a persisted draft, so it never resurrects into the composer.
+  sentText: string | null;
   items: StreamItem[];
 }
-
 const EMPTY_STREAM: ConvStream = {
   isStreaming: false,
   isThinking: false,
   reconnecting: false,
   optimisticUserMsg: null,
   pendingReplyId: null,
+  sentText: null,
   items: [],
 };
 
@@ -308,35 +313,30 @@ function AskOrchiconPage() {
   // When it appears via polling, the turn is over — clear the ACTIVE
   // conversation's stream slot (other conversations keep their own state,
   // so a turn running while you browse elsewhere stays intact). When the
-  // acked message came back as an ERROR (reply failed after ack), the
-  // sent draft is copied to the clipboard and left in sessionStorage so the
-  // user never loses what they typed; on success the draft is cleared.
+  // acked message came back as an ERROR (reply failed after ack), the sent
+  // text (held in-memory on the slot) is copied to the clipboard and written
+  // back to sessionStorage so it is restorable — never lost on a failed reply.
   useEffect(() => {
     if (!activeConvId || !isStreaming || !pendingReplyId || !messages) return;
     const acked = messages.find((m) => m.id === pendingReplyId);
     if (!acked) return;
-    const draftKey = `${DRAFT_STORAGE_KEY_PREFIX}${activeConvId}`;
     if (acked.metadata?.error) {
       // Reply failed after the message was acked. The composer already
       // cleared on ack (the message is persisted in history), but put the
-      // sent text on the clipboard and keep the draft so it is never lost.
-      let draft = "";
-      try {
-        draft = sessionStorage.getItem(draftKey) ?? "";
-      } catch {
-        // sessionStorage unavailable — ignore.
+      // sent text on the clipboard and write it back to sessionStorage so it
+      // is restorable — the user never loses what they typed.
+      const sent = streams[activeConvId]?.sentText;
+      if (sent) {
+        copyTextToClipboard(sent);
+        try {
+          sessionStorage.setItem(`${DRAFT_STORAGE_KEY_PREFIX}${activeConvId}`, sent);
+        } catch {
+          // sessionStorage unavailable — ignore.
+        }
       }
-      if (draft) copyTextToClipboard(draft);
       toast.error("The reply failed. Your message was saved — retry below.", {
         title: "Reply failed",
       });
-    } else {
-      // Reply succeeded — the draft is no longer needed.
-      try {
-        sessionStorage.removeItem(draftKey);
-      } catch {
-        // sessionStorage unavailable — ignore.
-      }
     }
     setStream(activeConvId, (prev) => ({
       ...prev,
@@ -345,10 +345,11 @@ function AskOrchiconPage() {
       reconnecting: false,
       optimisticUserMsg: null,
       pendingReplyId: null,
+      sentText: null,
       items: [],
     }));
     qc.invalidateQueries({ queryKey: askKeys.conversations });
-  }, [messages, isStreaming, pendingReplyId, activeConvId, setStream, qc, toast]);
+  }, [messages, isStreaming, pendingReplyId, activeConvId, streams, setStream, qc, toast]);
 
   // Re-attach a running turn after a refresh / from another tab or device.
   // The in-memory stream slot is gone (or never existed), but the server-side
@@ -486,6 +487,7 @@ function AskOrchiconPage() {
           reconnecting: false,
           optimisticUserMsg: null,
           pendingReplyId: null,
+          sentText: null,
           items: [],
         }));
         qc.invalidateQueries({ queryKey: askKeys.conversations });
@@ -633,6 +635,7 @@ function AskOrchiconPage() {
         isThinking: true,
         reconnecting: false,
         pendingReplyId: null,
+        sentText: text,
         items: [],
       }));
       return runStream(convId, text, attachments, "send");
@@ -655,6 +658,7 @@ function AskOrchiconPage() {
         isThinking: true,
         reconnecting: false,
         pendingReplyId: null,
+        sentText: text,
         items: [],
       }));
       return runStream(convId, text, attachments, "interject");
@@ -1296,11 +1300,18 @@ function ChatInputField({
           if (inputRef.current) {
             inputRef.current.style.height = "auto";
           }
-          // The composer clears on ack (the message is persisted server-side),
-          // but the sessionStorage draft is deliberately KEPT here: the reply
-          // is collected detached and may still fail. The completion effect
-          // copies the draft to the clipboard and leaves it restorable on
-          // reply failure, and clears it once the reply succeeds.
+          if (convId) {
+            try {
+              sessionStorage.removeItem(`${DRAFT_STORAGE_KEY_PREFIX}${convId}`);
+            } catch {
+              // ignore
+            }
+          }
+          // The composer clears on ack (the message is persisted server-side)
+          // and the sessionStorage draft is cleared too, so a successful send
+          // never resurrects the text. The sent text is held in-memory on the
+          // stream slot (sentText) and written back to sessionStorage only if
+          // the reply later fails — restorable only when it actually failed.
         }
         // on false: text stays so user can fix & retry.
       } finally {
