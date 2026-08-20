@@ -261,10 +261,21 @@ function AskOrchiconPage() {
   const { data: settings } = useGetSettings();
 
   // Keep the conversation-list poll live while any conversation is running
-  // and stop it once everything settles (see listPollMs above).
+  // and stop it once everything settles (see listPollMs above). The condition
+  // is the UNION of local streaming (a turn this page started — the earliest
+  // signal, since the server flag only becomes visible once we poll) and the
+  // server-reported turn_in_flight (a turn started elsewhere / another tab,
+  // discovered on the next poll). Polling from the moment a local turn starts
+  // means the sidebar's running dot + Stop button appear immediately, not just
+  // after a refresh.
+  const anyStreaming = useMemo(
+    () => Object.values(streams).some((s) => s.isStreaming),
+    [streams],
+  );
   useEffect(() => {
-    setListPollMs(conversations?.some((c) => c.turnInFlight) ? 3000 : false);
-  }, [conversations]);
+    const serverRunning = conversations?.some((c) => c.turnInFlight) ?? false;
+    setListPollMs(anyStreaming || serverRunning ? 3000 : false);
+  }, [conversations, anyStreaming]);
   const createConv = useCreateConversation();
   const deleteConv = useDeleteConversation();
   const updateTitle = useUpdateConversationTitle();
