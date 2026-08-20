@@ -7,7 +7,7 @@ import (
 
 func TestArchitectSeedWorkflowsJSON(t *testing.T) {
 	// The Architect workflows added as canned seeds must carry valid,
-	// parseable steps with positions, edge_handles, and per-step config.
+	// parseable steps with positions and per-step config.
 	type arch struct {
 		id  string
 		wf  *cannedWorkflow
@@ -16,8 +16,6 @@ func TestArchitectSeedWorkflowsJSON(t *testing.T) {
 	wants := []arch{
 		{id: "01KZ43VD5CGFXHK1SWPDJKEGPT", ref: "w_se_principal_architect"},
 		{id: "01KZ1W513F25ASPZM1XW4ZJ2MB", ref: "w_se_principal_architect"},
-		{id: "01KZA9H7935CRTAHVE3EHVC1NZ", ref: "w_se_architect_vision"},
-		{id: "01KZA9M2PMVNZG3QPHQ7AS3GA1", ref: "w_se_architect_vision"},
 	}
 	for i := range wants {
 		for j := range cannedWorkflows {
@@ -36,10 +34,10 @@ func TestArchitectSeedWorkflowsJSON(t *testing.T) {
 		if err := json.Unmarshal([]byte(w.wf.StepsJSON), &steps); err != nil {
 			t.Fatalf("%s: steps not valid JSON: %v", label, err)
 		}
-		// All Architect templates parallelize PR review + QA under an
-		// explicit Parallel step feeding a single fan-in loop gate,
-		// so each has 9 steps.
-		const wantSteps = 9
+		// The SDLC Architect templates parallelize PR review + QA under an
+		// explicit Parallel step feeding a single fan-in loop gate, plus the
+		// Architect entry step and a final conflict loop-decision — 10 steps.
+		const wantSteps = 10
 		if len(steps) != wantSteps {
 			t.Errorf("%s: expected %d steps, got %d", label, wantSteps, len(steps))
 		}
@@ -57,8 +55,8 @@ func TestArchitectSeedWorkflowsJSON(t *testing.T) {
 				t.Errorf("%s: step %v missing position", label, s["id"])
 			}
 		}
-		// The Architect step (Principal Architect or Vision variant) must be
-		// present with the expected worker ref.
+		// The Architect step (Principal Architect) must be present with the
+		// expected worker ref.
 		hasArch := false
 		for _, s := range steps {
 			if s["ref"] == w.ref {
@@ -68,18 +66,14 @@ func TestArchitectSeedWorkflowsJSON(t *testing.T) {
 		if !hasArch {
 			t.Errorf("%s: missing Architect step (ref %s)", label, w.ref)
 		}
-		// The entry step (the only one with no dependencies — the Architect
-		// step, since step-repo was removed) carries the edge_handles map.
+		// There must be an entry step (the only one with no dependencies — the
+		// Principal Architect step). edge_handles is derived from depends_on by
+		// the workflow editor at load time, so the canned seed does not store it.
 		entryFound := false
 		for _, s := range steps {
 			deps, _ := s["depends_on"].([]any)
 			if len(deps) == 0 {
 				entryFound = true
-				if s["edge_handles"] == nil {
-					t.Errorf("%s: entry step %v missing edge_handles", label, s["id"])
-				} else if eh, ok := s["edge_handles"].(map[string]any); !ok || len(eh) == 0 {
-					t.Errorf("%s: entry step %v edge_handles empty", label, s["id"])
-				}
 			}
 		}
 		if !entryFound {

@@ -11,13 +11,17 @@ export const askKeys = {
   config: ["ask", "config"] as const,
 };
 
-export function useListConversations() {
+export function useListConversations(opts?: { refetchInterval?: number | false }) {
   return useQuery({
     queryKey: askKeys.conversations,
     queryFn: async () => {
       const res = await askOrchiconClient.listConversations({ pageSize: 50 });
       return (res.conversations ?? []) as Conversation[];
     },
+    // The caller polls while any conversation has a running turn so running
+    // state (sidebar indicators + Stop affordances) stays fresh across tabs
+    // and devices; false = no polling.
+    refetchInterval: opts?.refetchInterval ?? false,
   });
 }
 

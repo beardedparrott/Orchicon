@@ -434,7 +434,7 @@ func TestAbortConversationTurn(t *testing.T) {
 	// Register a turn manually (as the collector would) with a recording
 	// cancel so the abort's cancellation is observable.
 	turnCtx, cancelTurn := context.WithCancelCause(context.Background())
-	if _, ok := s.turns.register(convID, "tnt_dev", cancelTurn); !ok {
+	if _, ok := s.turns.register(convID, "tnt_dev", "msg_abort", cancelTurn); !ok {
 		t.Fatal("register turn")
 	}
 	cancelled := make(chan struct{})
@@ -460,6 +460,78 @@ func TestAbortConversationTurn(t *testing.T) {
 	defer client.mu.Unlock()
 	if len(client.aborted) != 1 || client.aborted[0] != "ses_keep" {
 		t.Errorf("aborted sessions = %v, want [ses_keep]", client.aborted)
+	}
+}
+
+// TestConversationSurfacesRunningTurn verifies GetConversation and
+// ListConversations report an in-flight turn (turn_in_flight + the pending
+// assistant message id) while the turn registry holds it — the data a
+// refreshed frontend / another tab uses to restore the Stop button — and
+// report idle again once the turn is released.
+func TestConversationSurfacesRunningTurn(t *testing.T) {
+	pool := chatDBTestPool(t)
+	client := &fakeSessionClient{}
+	s := newChatService(t, pool, client)
+
+	convID := createConversation(t, pool, "")
+	ctx := tenant.WithID(context.Background(), "tnt_dev")
+
+	// No running turn yet: both reads report idle.
+	get, err := s.GetConversation(ctx, connect.NewRequest(&apiv1.GetConversationRequest{Id: convID}))
+	if err != nil {
+		t.Fatalf("GetConversation: %v", err)
+	}
+	if get.Msg.Conversation.TurnInFlight || get.Msg.Conversation.PendingAssistantMessageId != "" {
+		t.Fatalf("idle conversation reported running: turn_in_flight=%v pending=%q",
+			get.Msg.Conversation.TurnInFlight, get.Msg.Conversation.PendingAssistantMessageId)
+	}
+
+	// Register a running turn (as the collector would) carrying its acked
+	// assistant message id.
+	assistantMsgID := "msg_pending_1"
+	token, ok := s.turns.register(convID, "tnt_dev", assistantMsgID, func(error) {})
+	if !ok {
+		t.Fatal("register turn")
+	}
+	t.Cleanup(func() { s.turns.remove(convID, token) })
+
+	get, err = s.GetConversation(ctx, connect.NewRequest(&apiv1.GetConversationRequest{Id: convID}))
+	if err != nil {
+		t.Fatalf("GetConversation (running): %v", err)
+	}
+	if !get.Msg.Conversation.TurnInFlight || get.Msg.Conversation.PendingAssistantMessageId != assistantMsgID {
+		t.Fatalf("running conversation not surfaced: turn_in_flight=%v pending=%q",
+			get.Msg.Conversation.TurnInFlight, get.Msg.Conversation.PendingAssistantMessageId)
+	}
+
+	list, err := s.ListConversations(ctx, connect.NewRequest(&apiv1.ListConversationsRequest{}))
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	var listed *apiv1.Conversation
+	for i := range list.Msg.Conversations {
+		if list.Msg.Conversations[i].Id == convID {
+			listed = list.Msg.Conversations[i]
+			break
+		}
+	}
+	if listed == nil {
+		t.Fatal("conversation missing from list")
+	}
+	if !listed.TurnInFlight || listed.PendingAssistantMessageId != assistantMsgID {
+		t.Fatalf("list reported wrong turn state: turn_in_flight=%v pending=%q",
+			listed.TurnInFlight, listed.PendingAssistantMessageId)
+	}
+
+	// Release the turn (the collector's finalize) — both reads go idle again.
+	s.turns.remove(convID, token)
+	get, err = s.GetConversation(ctx, connect.NewRequest(&apiv1.GetConversationRequest{Id: convID}))
+	if err != nil {
+		t.Fatalf("GetConversation (released): %v", err)
+	}
+	if get.Msg.Conversation.TurnInFlight || get.Msg.Conversation.PendingAssistantMessageId != "" {
+		t.Fatalf("released conversation still running: turn_in_flight=%v pending=%q",
+			get.Msg.Conversation.TurnInFlight, get.Msg.Conversation.PendingAssistantMessageId)
 	}
 }
 

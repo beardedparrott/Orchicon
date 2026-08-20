@@ -899,7 +899,7 @@ The actor-based audit trail records **who did what** across the whole plane. Eve
 
 **Interject (the chat nudge with an interrupt):** `InterjectConversationTurn` is a server-streaming RPC (same response shape as `ChatStream`) that lets the user **steer an in-flight turn** — the chat equivalent of a worker-execution nudge, but it **supersedes** rather than queues: the running turn's collector is cancelled, the conversation's opencode session is **aborted** so the model stops generating NOW, and the interjection is dispatched on a fresh turn that acks a **new** assistant message id and streams live. The superseded turn's partial content is persisted as a **plain assistant message** (skipped entirely when nothing arrived — no error bubble; the interjection is intentional, not a failure). Idempotent: interjecting with nothing running behaves exactly like `ChatStream`. The frontend enables the input **while streaming**: sending mid-reply routes to the interject RPC, and Stop remains available alongside Send — a conversation can never be stuck behind a wedged turn.
 
-**No orphaned turns:** the in-memory turn registry is token-guarded and TTL'd. Every entry carries a token; `remove` only deletes when the token matches, so a superseded collector's finalize can never clobber the replacement turn (the stale-finalize race is eliminated by construction). A background sweeper evicts entries older than `ORCHICON_ASK_TURN_MAX_AGE` (default: reply window + slack, 31m), cancelling the collector and **aborting the serve session** — the "every turn has a hard backstop" guarantee: a collector that can never finalize is reaped in bounded time instead of blocking the conversation until a server restart. In the UI, a dropped ChatStream socket on an **acked** turn keeps the stream slot attached (the Stop button + interject input stay; a "Connection lost — still working…" notice appears) and completion is resolved by the existing `ListMessages` poll, which works across socket drops, page reloads, and server restarts because the detached collector persists the reply regardless.
+**No orphaned turns:** the in-memory turn registry is token-guarded and TTL'd. Every entry carries a token; `remove` only deletes when the token matches, so a superseded collector's finalize can never clobber the replacement turn (the stale-finalize race is eliminated by construction). A background sweeper evicts entries older than `ORCHICON_ASK_TURN_MAX_AGE` (default: reply window + slack, 31m), cancelling the collector and **aborting the serve session** — the "every turn has a hard backstop" guarantee: a collector that can never finalize is reaped in bounded time instead of blocking the conversation until a server restart. In the UI, a dropped ChatStream socket on an **acked** turn keeps the stream slot attached (the Stop button + interject input stay; a "Connection lost — still working…" notice appears) and completion is resolved by the existing `ListMessages` poll, which works across socket drops and page reloads because the detached collector persists the reply regardless. **The Stop button survives a refresh / another tab or device:** each running turn's acked assistant message id is kept in the turn registry and surfaced on reads as computed `Conversation.turn_in_flight` + `Conversation.pending_assistant_message_id` (`GetConversation` and `ListConversations`) — the same authoritative source as the one-turn gate. When the server reports a turn in flight for the conversation you're viewing but the local stream slot is idle (refresh, or a turn started in another tab), the frontend **re-attaches** the slot keyed to the server's pending id, so the Stop button, the thinking indicator, and the completion poll all come back; a live local slot is never overwritten (server state only fills gaps). The conversations sidebar shows a **pulsing dot + Stop button** on every running conversation (so a turn is stoppable even when you're not looking at it) and the list polls on a ~3s cadence **while any conversation is running**, so running state stays live across tabs and devices and settles back to idle polling once everything completes. **Drafts are cleared on send, restored only on failure:** the composer clears immediately when you send (no text lingers while the model responds); a **pre-ack failure** puts the text back in the box and copies it to the clipboard; a turn that is **acked but whose reply later fails** (model error/stall/timeout, discovered via the `ListMessages` poll) signals the composer to put the sent text back and copies it to the clipboard — so a failed send never forces retyping, and a successful send never leaves stale text behind.
 
 **Reasoning stream + persistence (Task 3):** reasoning (thinking) parts are unwrapped from the SSE bus in the live turn loop via the same `LegacyEventFromBus` mapping executions use (`{"type":"reasoning","part":{...}}` — only at part end, `time.end` set), accumulated separately from the reply text (never folded into assistant content), and **persisted as reasoning chunks on the assistant message** (`ask_orchicon_messages.reasoning jsonb NOT NULL DEFAULT '[]'`, a JSON array of strings — one entry per reasoning part, boundaries preserved). Partial reasoning is preserved on error/stop/timeout turns too. `ChatMessage` exposes `repeated string reasoning = 10` (delivered via the existing `ListMessages` poll — the frontend renders thinking bubbles from it) and the `ChatStreamResponse` oneof gains a typed `ReasoningChunk` event (field 7, defined-but-not-emitted like `text_chunk` — retained for a future SSE surface). The data path is additive: a model that emits no reasoning parts yields no events and an empty array.
 
@@ -1124,7 +1124,10 @@ The fastest local development cycle — stop the dev instance, rebuild the binar
 
 ```bash
 make container-rebuild instance=dev     # stop dev container → build bin/orchicon + image → start dev container
+make container-rebuild instance=prod    # same for the prod (dogfooding) instance
 ```
+
+`container-rebuild` **always forces a fresh frontend build** (`force-fe=1`), so a rebuilt instance is guaranteed to reflect the current source — the `fe-build` stamp check that normally skips an unchanged frontend is bypassed. This avoids the trap where a stale `frontend/dist` silently ships the previous UI after a rebuild (the repeated "my frontend fix went invisible" failure): the one-command rebuild is a trustworthy "rebuild dev / rebuild prod and test recent changes" flow.
 
 Or run the individual steps:
 
@@ -1133,6 +1136,8 @@ make build                              # bin/orchicon (frontend + container con
 scripts/container.sh down dev           # stop the dev instance
 scripts/container.sh up dev             # start it again with the new image
 ```
+
+For a fast Go-only iteration (no frontend change), `make build` alone uses the stamp-checked `fe-build` and skips the frontend rebuild; pass `force-fe=1` (`make build force-fe=1`) to force it.
 
 ### Dual-Instance (dev + prod containers)
 
@@ -1301,7 +1306,7 @@ For source-level iteration on the control plane itself, rebuild the image and re
 | `rls-check` | Verify every `tenant_id` table has RLS policy |
 | **Container** | |
 | `container-build` | Build `bin/orchicon` + the container image |
-| `container-rebuild` | Stop an instance, rebuild the image, start it (usage: `make container-rebuild instance=dev\|prod`) |
+| `container-rebuild` | Stop an instance, rebuild the image (frontend always forced), start it (usage: `make container-rebuild instance=dev\|prod`) |
 | `container-up` | Start the dev single-container instance |
 | `container-down` | Stop the dev single-container instance |
 | `container-status` | Show single-container instance status |
@@ -1310,7 +1315,7 @@ For source-level iteration on the control plane itself, rebuild the image and re
 | **Frontend** | |
 | `fe-install` | Install frontend dependencies |
 | `fe-dev` | Start Vite dev server |
-| `fe-build` | Build for production |
+| `fe-build` | Build for production (`force-fe=1` always rebuilds) |
 | `fe-lint` | Lint frontend |
 | **Install** | |
 | `install-dry-run` | Dry-run the install script (no changes made) |

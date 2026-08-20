@@ -119,6 +119,27 @@ export class Conversation extends Message<Conversation> {
    */
   mode = ConversationMode.UNSPECIFIED;
 
+  /**
+   * turn_in_flight reports whether a reply turn is currently running for this
+   * conversation (one turn per conversation, tracked server-side in the turn
+   * registry). Computed at read time — never persisted. The frontend uses it
+   * to restore the Stop button + streaming state after a refresh, when the
+   * in-memory stream slot is gone but the server-side turn is still running.
+   *
+   * @generated from field: bool turn_in_flight = 11;
+   */
+  turnInFlight = false;
+
+  /**
+   * pending_assistant_message_id is the acked assistant message id under which
+   * the running turn's reply (or error) will be persisted. Set only while
+   * turn_in_flight is true; the frontend polls ListMessages for this id to
+   * resolve the restored turn's completion.
+   *
+   * @generated from field: string pending_assistant_message_id = 12;
+   */
+  pendingAssistantMessageId = "";
+
   constructor(data?: PartialMessage<Conversation>) {
     super();
     proto3.util.initPartial(data, this);
@@ -137,6 +158,8 @@ export class Conversation extends Message<Conversation> {
     { no: 8, name: "updated_at", kind: "message", T: Timestamp },
     { no: 9, name: "session_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 10, name: "mode", kind: "enum", T: proto3.getEnumType(ConversationMode) },
+    { no: 11, name: "turn_in_flight", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 12, name: "pending_assistant_message_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Conversation {

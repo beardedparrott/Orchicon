@@ -263,7 +263,7 @@ func TestAuditServiceAbortConversationTurn(t *testing.T) {
 	// A registered turn makes the abort path cancel it (exercise the full
 	// handler, not just the no-op branch).
 	turnCtx, cancelTurn := context.WithCancelCause(context.Background())
-	if _, ok := s.turns.register(convID, tenantID, cancelTurn); !ok {
+	if _, ok := s.turns.register(convID, tenantID, "msg_abort", cancelTurn); !ok {
 		t.Fatal("register turn")
 	}
 	done := make(chan struct{})

@@ -36,7 +36,10 @@ import { useGetSettings } from "@/api/settings";
 import { askOrchiconClient } from "@/api/clients";
 import { useToast, useToastStore } from "@/components/ui/toast";
 import { ConversationMode } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
-import type { ChatMessage } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
+import type {
+  ChatMessage,
+  Conversation,
+} from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 import { AttachmentInput } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 import {
   UserBubble,
@@ -65,9 +68,6 @@ export const Route = createRoute({
   path: "/ask-orchicon",
   component: AskOrchiconPage,
 });
-
-// --- draft persistence constants ---
-const DRAFT_STORAGE_KEY_PREFIX = "orchicon:draft:";
 
 // --- clipboard helper (strict superset of inline navigator.clipboard?.writeText patterns) ---
 function copyTextToClipboard(text: string): void {
@@ -160,15 +160,20 @@ interface ConvStream {
   reconnecting: boolean;
   optimisticUserMsg: string | null;
   pendingReplyId: string | null;
+  // sentText is the message text captured at send time, held in-memory so the
+  // completion effect can copy it to the clipboard if the turn is ACKED but
+  // the reply later fails. Cleared on completion (success or failure) — it is
+  // not a persisted draft, so it never resurrects into the composer.
+  sentText: string | null;
   items: StreamItem[];
 }
-
 const EMPTY_STREAM: ConvStream = {
   isStreaming: false,
   isThinking: false,
   reconnecting: false,
   optimisticUserMsg: null,
   pendingReplyId: null,
+  sentText: null,
   items: [],
 };
 
@@ -195,6 +200,33 @@ function AskOrchiconPage() {
   // interject turn that replaced it — the classic stale-closure hazard once
   // two streams can overlap for a conversation.
   const dispatchGenRef = useRef<Record<string, number>>({});
+
+  // Per-conversation "a local runStream is actively iterating" flag. The
+  // completion effect must NOT finalize (clear) a stream slot while the local
+  // stream is still delivering chunks — otherwise it clears on every poll and
+  // the restore effect re-arms it, making the Stop button flicker continuously
+  // and unclickable. Set true while runStream's for-await runs, false after.
+  const liveStreamRef = useRef<Record<string, boolean>>({});
+  // Per-conversation sent text, mirrored out of the stream slot so the
+  // completion effect can copy it on reply-failure without depending on
+  // `streams` (which changes on every chunk and would re-run the effect).
+  const sentTextRef = useRef<Record<string, string>>({});
+
+  // A reply-failure restore signal: when the completion effect detects a turn
+  // that was acked but whose reply errored, it sets this so the active
+  // ChatInputField puts the sent text back in the box. token changes each time
+  // so a repeated failure re-triggers the restore.
+  const [restoreDraft, setRestoreDraft] = useState<{
+    convId: string;
+    text: string;
+    token: number;
+  } | null>(null);
+
+  // Conversation-list poll cadence: 3s while ANY conversation has a running
+  // turn (so running indicators + Stop affordances stay live across tabs and
+  // devices), false when nothing is running — no idle network churn. The
+  // effect that updates it lives below with the conversations query.
+  const [listPollMs, setListPollMs] = useState<number | false>(false);
 
   // Conversation rename state
   const [renamingConvId, setRenamingConvId] = useState<string | null>(null);
@@ -237,13 +269,36 @@ function AskOrchiconPage() {
   const streamItems = activeStream?.items ?? [];
 
   const { data: conversations, isLoading: convsLoading } =
-    useListConversations();
+    useListConversations({
+      // Poll while ANY conversation has a running turn so the sidebar's
+      // running indicators + Stop buttons stay live across tabs and devices
+      // (a turn started elsewhere appears within a few seconds), and stop
+      // polling once everything settles — no idle network churn.
+      refetchInterval: listPollMs,
+    });
   const { data: messages, isLoading: msgsLoading } = useListMessages(
     activeConvId ?? "",
     { refetchInterval: isStreaming ? 2000 : false },
   );
   const { data: activeConv } = useGetConversation(activeConvId ?? "");
   const { data: settings } = useGetSettings();
+
+  // Keep the conversation-list poll live while any conversation is running
+  // and stop it once everything settles (see listPollMs above). The condition
+  // is the UNION of local streaming (a turn this page started — the earliest
+  // signal, since the server flag only becomes visible once we poll) and the
+  // server-reported turn_in_flight (a turn started elsewhere / another tab,
+  // discovered on the next poll). Polling from the moment a local turn starts
+  // means the sidebar's running dot + Stop button appear immediately, not just
+  // after a refresh.
+  const anyStreaming = useMemo(
+    () => Object.values(streams).some((s) => s.isStreaming),
+    [streams],
+  );
+  useEffect(() => {
+    const serverRunning = conversations?.some((c) => c.turnInFlight) ?? false;
+    setListPollMs(anyStreaming || serverRunning ? 3000 : false);
+  }, [conversations, anyStreaming]);
   const createConv = useCreateConversation();
   const deleteConv = useDeleteConversation();
   const updateTitle = useUpdateConversationTitle();
@@ -275,22 +330,85 @@ function AskOrchiconPage() {
   // The reply (or error) is persisted under the acked assistant message id.
   // When it appears via polling, the turn is over — clear the ACTIVE
   // conversation's stream slot (other conversations keep their own state,
-  // so a turn running while you browse elsewhere stays intact).
+  // so a turn running while you browse elsewhere stays intact). When the
+  // acked message came back as an ERROR (reply failed after ack), the sent
+  // text is copied to the clipboard and the composer is signalled to put it
+  // back in the box so the user never loses what they typed on a failed reply.
+  //
+  // This effect does NOT depend on `streams` (which changes on every streaming
+  // chunk): clearing the slot on every chunk while the local stream is still
+  // delivering text made the restore effect re-arm it, so the Stop button
+  // flickered continuously and could never be clicked. The liveStreamRef guard
+  // (a local runStream actively iterating) prevents finalizing a live turn; the
+  // effect only finalizes once the local stream has ended, or for a restored
+  // server turn with no local stream.
   useEffect(() => {
     if (!activeConvId || !isStreaming || !pendingReplyId || !messages) return;
-    if (messages.some((m) => m.id === pendingReplyId)) {
-      setStream(activeConvId, (prev) => ({
-        ...prev,
-        isStreaming: false,
-        isThinking: false,
-        reconnecting: false,
-        optimisticUserMsg: null,
-        pendingReplyId: null,
-        items: [],
-      }));
-      qc.invalidateQueries({ queryKey: askKeys.conversations });
+    if (liveStreamRef.current[activeConvId]) return;
+    const acked = messages.find((m) => m.id === pendingReplyId);
+    if (!acked) return;
+    if (acked.metadata?.error) {
+      // Reply failed after the message was acked. The composer already cleared
+      // on send (the message is persisted in history), but copy the sent text
+      // to the clipboard AND signal the composer to put it back in the box so
+      // the user never loses what they typed.
+      const sent = sentTextRef.current[activeConvId] ?? "";
+      if (sent) {
+        copyTextToClipboard(sent);
+        setRestoreDraft({
+          convId: activeConvId,
+          text: sent,
+          token: Date.now(),
+        });
+      }
+      toast.error("The reply failed. Your message was saved — retry below.", {
+        title: "Reply failed",
+      });
     }
-  }, [messages, isStreaming, pendingReplyId, activeConvId, setStream, qc]);
+    setStream(activeConvId, (prev) => ({
+      ...prev,
+      isStreaming: false,
+      isThinking: false,
+      reconnecting: false,
+      optimisticUserMsg: null,
+      pendingReplyId: null,
+      sentText: null,
+      items: [],
+    }));
+    delete sentTextRef.current[activeConvId];
+    qc.invalidateQueries({ queryKey: askKeys.conversations });
+  }, [messages, isStreaming, pendingReplyId, activeConvId, setStream, qc, toast]);
+
+  // Re-attach a running turn after a refresh / from another tab or device.
+  // The in-memory stream slot is gone (or never existed), but the server-side
+  // turn registry is authoritative: when it reports a turn in flight for the
+  // active conversation and the local slot is idle, restore the slot (Stop
+  // button + thinking indicator + completion poll) keyed to the server's
+  // pending assistant message id. A live local slot is never overwritten —
+  // server state only fills gaps, so a locally-started turn keeps its own
+  // stream until it completes.
+  useEffect(() => {
+    if (!activeConvId) return;
+    const server = conversations?.find((c) => c.id === activeConvId);
+    const serverRunning =
+      server?.turnInFlight ?? activeConv?.turnInFlight ?? false;
+    if (!serverRunning) return;
+    if (streams[activeConvId]?.isStreaming) return;
+    setStream(activeConvId, (prev) => {
+      if (prev.isStreaming) return prev;
+      return {
+        ...prev,
+        isStreaming: true,
+        isThinking: true,
+        reconnecting: true,
+        pendingReplyId:
+          server?.pendingAssistantMessageId ||
+          activeConv?.pendingAssistantMessageId ||
+          prev.pendingReplyId,
+        items: [],
+      };
+    });
+  }, [activeConvId, activeConv, conversations, streams, setStream]);
 
   const handleNewChat = useCallback(() => {
     setActiveConvId(null);
@@ -381,23 +499,39 @@ function AskOrchiconPage() {
     setFolderRenameValue("");
   }, []);
 
-  const handleStopStreaming = useCallback(async () => {
+  // Stop a running turn on any conversation — the active conversation's Stop
+  // button or a sidebar row's. Aborts the server-side turn (idempotent) and
+  // drops the local stream slot so the UI recovers immediately; the
+  // conversation-list refetch clears the running indicator once the server
+  // finalizes the abort.
+  const handleStopConversation = useCallback(
+    async (convId: string) => {
+      try {
+        await abortTurn.mutateAsync(convId);
+        liveStreamRef.current[convId] = false;
+        delete sentTextRef.current[convId];
+        setStream(convId, (prev) => ({
+          ...prev,
+          isStreaming: false,
+          isThinking: false,
+          reconnecting: false,
+          optimisticUserMsg: null,
+          pendingReplyId: null,
+          sentText: null,
+          items: [],
+        }));
+        qc.invalidateQueries({ queryKey: askKeys.conversations });
+      } catch {
+        toast.error("Failed to stop the reply", { title: "Error" });
+      }
+    },
+    [abortTurn, setStream, toast, qc],
+  );
+
+  const handleStopStreaming = useCallback(() => {
     if (!activeConvId) return;
-    try {
-      await abortTurn.mutateAsync(activeConvId);
-      setStream(activeConvId, (prev) => ({
-        ...prev,
-        isStreaming: false,
-        isThinking: false,
-        reconnecting: false,
-        optimisticUserMsg: null,
-        pendingReplyId: null,
-        items: [],
-      }));
-    } catch {
-      toast.error("Failed to stop the reply", { title: "Error" });
-    }
-  }, [activeConvId, abortTurn, setStream, toast]);
+    return handleStopConversation(activeConvId);
+  }, [activeConvId, handleStopConversation]);
 
   // Streaming helper — takes convId as a parameter so it is never stale.
   // Mutates the given conversation's OWN stream slot via functional
@@ -460,6 +594,7 @@ function AskOrchiconPage() {
       };
 
       let acked: boolean = false;
+      liveStreamRef.current[convId] = true;
       try {
         for await (const chunk of stream) {
           if (chunk.event.case === "turnStarted") {
@@ -515,6 +650,8 @@ function AskOrchiconPage() {
         }
       } catch (err: unknown) {
         fail(err);
+      } finally {
+        liveStreamRef.current[convId] = false;
       }
       return acked;
     },
@@ -531,8 +668,10 @@ function AskOrchiconPage() {
         isThinking: true,
         reconnecting: false,
         pendingReplyId: null,
+        sentText: text,
         items: [],
       }));
+      sentTextRef.current[convId] = text;
       return runStream(convId, text, attachments, "send");
     },
     [runStream, setStream],
@@ -553,8 +692,10 @@ function AskOrchiconPage() {
         isThinking: true,
         reconnecting: false,
         pendingReplyId: null,
+        sentText: text,
         items: [],
       }));
+      sentTextRef.current[convId] = text;
       return runStream(convId, text, attachments, "interject");
     },
     [runStream, setStream],
@@ -669,9 +810,10 @@ function AskOrchiconPage() {
     return getItemsForCategory(convPrefs.state, conversations.map((c) => c.id));
   }, [conversations, convPrefs.state]);
 
-  // Map for quick lookup of conversations by id
+  // Map for quick lookup of conversations by id. Carries the server-reported
+  // turn state so the sidebar can show which conversations are busy.
   const convById = useMemo(() => {
-    if (!conversations) return new Map<string, { id: string; title: string; lastMessagePreview?: string }>();
+    if (!conversations) return new Map<string, Conversation>();
     return new Map(conversations.map((c) => [c.id, c]));
   }, [conversations]);
 
@@ -912,6 +1054,7 @@ function AskOrchiconPage() {
                 mode={localMode}
                 onModeChange={handleModeChange}
                 convId={activeConvId}
+                restoreDraft={restoreDraft}
               />
             </div>
           </div>
@@ -997,6 +1140,7 @@ function AskOrchiconPage() {
                     onCancelRenameConv={cancelRenameConv}
                     onRenameConvChange={setRenameValue}
                     onDeleteConv={handleDeleteConv}
+                    onStopConv={handleStopConversation}
                     activeDragId={activeDragId}
                   />
                 );
@@ -1017,6 +1161,7 @@ function AskOrchiconPage() {
                 onCancelRenameConv={cancelRenameConv}
                 onRenameConvChange={setRenameValue}
                 onDeleteConv={handleDeleteConv}
+                onStopConv={handleStopConversation}
                 activeDragId={activeDragId}
                 isOver={overFolderId === "__uncategorized__"}
                 hasFolders={convPrefs.state.categories.length > 0}
@@ -1119,6 +1264,7 @@ function ChatInputField({
   mode = ConversationMode.BRAINSTORM,
   onModeChange,
   convId,
+  restoreDraft,
 }: {
   onSend: (text: string, attachments?: AttachmentInput[]) => Promise<boolean>;
   onStop: () => void;
@@ -1127,6 +1273,10 @@ function ChatInputField({
   mode?: ConversationMode;
   onModeChange?: (mode: ConversationMode) => void;
   convId?: string | null;
+  // When the parent detects a reply failure (a turn that was acked but whose
+  // reply errored), it signals this with the sent text so the composer puts
+  // it back in the box. Null/absent = nothing to restore.
+  restoreDraft?: { convId: string; text: string; token: number } | null;
 }) {
   // The input stays ENABLED while streaming: sending mid-reply is the
   // interject path (interrupt + redirect), not a rejected "already
@@ -1137,74 +1287,50 @@ function ChatInputField({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Restore draft from sessionStorage when conversation changes.
+  // On a reply failure the parent signals the text to put back in the box.
+  // No sessionStorage draft persistence — the box is cleared on send and the
+  // text is only restored when a send actually fails, so it never lingers
+  // across conversations or while a reply is in flight.
   useEffect(() => {
-    if (!convId) {
-      setText("");
-      return;
+    if (restoreDraft && restoreDraft.convId === convId && restoreDraft.text) {
+      setText(restoreDraft.text);
     }
-    try {
-      const key = `${DRAFT_STORAGE_KEY_PREFIX}${convId}`;
-      const saved = sessionStorage.getItem(key);
-      if (saved) {
-        setText(saved);
-      }
-    } catch {
-      // sessionStorage unavailable — ignore.
-    }
-  }, [convId]);
+  }, [restoreDraft, convId]);
 
-  // Persist draft to sessionStorage as the user types.
   const handleTextChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      const next = e.target.value;
-      setText(next);
-      if (!convId) return;
-      try {
-        const key = `${DRAFT_STORAGE_KEY_PREFIX}${convId}`;
-        if (next) {
-          sessionStorage.setItem(key, next);
-        } else {
-          sessionStorage.removeItem(key);
-        }
-      } catch {
-        // sessionStorage unavailable — ignore.
-      }
+      setText(e.target.value);
       e.target.style.height = "auto";
       e.target.style.height = `${Math.min(e.target.scrollHeight, 192)}px`;
     },
-    [convId],
+    [],
   );
 
   const handleSubmit = useCallback(async () => {
     if (sending) return;
-    if (text.trim() || attachments.length > 0) {
+    const sentText = text.trim();
+    const sentAttachments = attachments.length > 0 ? attachments : undefined;
+    if (sentText || attachments.length > 0) {
       setSending(true);
+      // Clear the box immediately on send (no lingering text while the model
+      // responds); the sent text is captured for recovery on failure.
+      setText("");
+      setAttachments([]);
+      if (inputRef.current) {
+        inputRef.current.style.height = "auto";
+      }
       try {
-        const ok = await onSend(
-          text.trim(),
-          attachments.length > 0 ? attachments : undefined,
-        );
-        if (ok) {
-          setText("");
-          setAttachments([]);
-          if (inputRef.current) {
-            inputRef.current.style.height = "auto";
-          }
-          if (convId) {
-            try {
-              sessionStorage.removeItem(`${DRAFT_STORAGE_KEY_PREFIX}${convId}`);
-            } catch {
-              // ignore
-            }
-          }
+        const ok = await onSend(sentText, sentAttachments);
+        if (!ok) {
+          // Pre-ack failure: put the text back so the user can fix & retry.
+          setText(sentText);
+          setAttachments(sentAttachments ?? []);
         }
-        // on false: text stays so user can fix & retry.
       } finally {
         setSending(false);
       }
     }
-  }, [text, attachments, onSend, sending, convId]);
+  }, [sending, text, attachments, onSend]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -1447,6 +1573,12 @@ interface ConversationItemProps {
   lastMessagePreview?: string;
   isActive: boolean;
   isRenaming: boolean;
+  // isRunning + onStop surface a running turn on this conversation (server
+  // turn_in_flight): a pulsing dot + an always-visible Stop button, so a turn
+  // is stoppable from the sidebar even when the conversation isn't the active
+  // one (e.g. after a refresh, or a turn started in another tab/device).
+  isRunning?: boolean;
+  onStop?: () => void;
   renameValue: string;
   renameInputRef: React.MutableRefObject<HTMLInputElement | null>;
   onSelect: () => void;
@@ -1464,6 +1596,8 @@ function ConversationItem({
   lastMessagePreview,
   isActive,
   isRenaming,
+  isRunning = false,
+  onStop,
   renameValue,
   renameInputRef,
   onSelect,
@@ -1519,7 +1653,41 @@ function ConversationItem({
                 className="w-full bg-background border rounded px-1 py-0.5 text-sm outline-none focus:ring-1 focus:ring-ring"
               />
             ) : (
-              <span className="truncate block">{title || "New conversation"}</span>
+              <div className="flex items-center gap-1.5 min-w-0">
+                {isRunning && (
+                  <span
+                    className="shrink-0 relative flex h-1.5 w-1.5"
+                    title="Reply in progress"
+                  >
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-sky-500" />
+                  </span>
+                )}
+                <span className="truncate block flex-1 min-w-0">
+                  {title || "New conversation"}
+                </span>
+                {isRunning && onStop && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onStop();
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onStop();
+                      }
+                    }}
+                    className="shrink-0 cursor-pointer text-destructive hover:text-destructive-foreground"
+                    title="Stop this reply"
+                  >
+                    <Square className="h-3 w-3 fill-current" />
+                  </span>
+                )}
+              </div>
             )}
             {lastMessagePreview && (
               <p className="mt-0.5 text-xs text-muted-foreground truncate">
@@ -1566,7 +1734,7 @@ interface FolderItemProps {
   onRenameChange: (value: string) => void;
   onDelete: () => void;
   convIds: string[];
-  convById: Map<string, { id: string; title: string; lastMessagePreview?: string }>;
+  convById: Map<string, Conversation>;
   activeConvId: string | null;
   renamingConvId: string | null;
   convRenameValue: string;
@@ -1577,6 +1745,7 @@ interface FolderItemProps {
   onCancelRenameConv: () => void;
   onRenameConvChange: (value: string) => void;
   onDeleteConv: (id: string, e: React.MouseEvent) => void;
+  onStopConv: (id: string) => void;
   activeDragId: string | null;
 }
 
@@ -1606,6 +1775,7 @@ function FolderItem({
   onCancelRenameConv,
   onRenameConvChange,
   onDeleteConv,
+  onStopConv,
   activeDragId,
 }: FolderItemProps) {
   const { setNodeRef } = useDroppable({ id });
@@ -1678,6 +1848,8 @@ function FolderItem({
                 convId={convId}
                 title={conv.title}
                 lastMessagePreview={conv.lastMessagePreview}
+                isRunning={conv.turnInFlight ?? false}
+                onStop={() => onStopConv(convId)}
                 isActive={activeConvId === convId}
                 isRenaming={renamingConvId === convId}
                 renameValue={convRenameValue}
@@ -1701,7 +1873,7 @@ function FolderItem({
 interface UncategorizedDropZoneProps {
   id: string;
   convIds: string[];
-  convById: Map<string, { id: string; title: string; lastMessagePreview?: string }>;
+  convById: Map<string, Conversation>;
   activeConvId: string | null;
   renamingConvId: string | null;
   renameValue: string;
@@ -1712,6 +1884,7 @@ interface UncategorizedDropZoneProps {
   onCancelRenameConv: () => void;
   onRenameConvChange: (value: string) => void;
   onDeleteConv: (id: string, e: React.MouseEvent) => void;
+  onStopConv: (id: string) => void;
   activeDragId: string | null;
   isOver: boolean;
   hasFolders: boolean;
@@ -1731,6 +1904,7 @@ function UncategorizedDropZone({
   onCancelRenameConv,
   onRenameConvChange,
   onDeleteConv,
+  onStopConv,
   activeDragId,
   isOver,
   hasFolders,
@@ -1762,6 +1936,8 @@ function UncategorizedDropZone({
             convId={convId}
             title={conv.title}
             lastMessagePreview={conv.lastMessagePreview}
+            isRunning={conv.turnInFlight ?? false}
+            onStop={() => onStopConv(convId)}
             isActive={activeConvId === convId}
             isRenaming={renamingConvId === convId}
             renameValue={renameValue}
