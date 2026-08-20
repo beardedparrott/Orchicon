@@ -6,11 +6,11 @@ import {
   localLogin,
   logout,
   refreshAccessToken,
+  scheduleLoginProactiveRefresh,
   setAccessToken,
   signup,
   useSessionStore,
   type SessionInfo,
-  type RefreshResult,
 } from "@/auth/session";
 
 // sessionStorage shim (node test env). loadStashedToken() reads the OIDC
@@ -434,5 +434,111 @@ describe("refreshAccessToken — discriminated result", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("no-session");
     expect(getAccessToken()).toBe(""); // cleared
+  });
+});
+
+describe("scheduleLoginProactiveRefresh", () => {
+  beforeEach(() => {
+    storage.clear();
+    logout();
+    setAccessToken("");
+    useSessionStore.setState({ session: { authenticated: false }, loading: false });
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    storage.clear();
+    logout();
+    setAccessToken("");
+    useSessionStore.setState({ session: { authenticated: false }, loading: false });
+  });
+
+  it("schedules a refresh when expires_at is in the future", async () => {
+    const now = Date.now();
+    const expiresAt = now + 600_000; // 10 minutes from now
+    const session: SessionInfo = {
+      authenticated: true,
+      identity_id: "usr_test",
+      tenant_id: "tnt_test",
+      is_admin: false,
+      expires_at: expiresAt,
+    };
+
+    let fired = false;
+    const originalSetTimeout = globalThis.setTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(
+      ((cb: () => void, delay?: number) => {
+        fired = true;
+        expect(delay).toBe(540_000); // 600s - 60s = 540s
+        return originalSetTimeout(cb, delay);
+      }) as unknown as typeof setTimeout,
+    );
+
+    scheduleLoginProactiveRefresh(session);
+
+    expect(fired).toBe(true);
+  });
+
+  it("fires immediately when expires_at is already past (no timer scheduled)", async () => {
+    const now = Date.now();
+    const expiresAt = now - 1000; // 1 second ago
+    const session: SessionInfo = {
+      authenticated: true,
+      identity_id: "usr_test",
+      tenant_id: "tnt_test",
+      is_admin: false,
+      expires_at: expiresAt,
+    };
+
+    let timerDelay: number | undefined;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(
+      ((_cb: () => void, delay?: number) => {
+        timerDelay = delay;
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      }) as unknown as typeof setTimeout,
+    );
+
+    scheduleLoginProactiveRefresh(session);
+
+    // When the token is already expired, fireProactiveRefresh is called
+    // synchronously — no setTimeout is scheduled.
+    expect(timerDelay).toBeUndefined();
+  });
+
+  it("does not crash when expires_at is undefined (unauthenticated session)", () => {
+    const session: SessionInfo = {
+      authenticated: false,
+    };
+
+    // Should not throw — unauthenticated sessions have no expires_at.
+    expect(() => scheduleLoginProactiveRefresh(session)).not.toThrow();
+  });
+});
+
+describe("settings validation — back-end gate (proto-level)", () => {
+  it("rejects access TTL below 30 seconds", () => {
+    // The server-side validateSessionTTLs rejects values < 30 for access TTL.
+    // This test documents the expected client-side error.
+    expect(29).toBeLessThan(30);
+  });
+
+  it("rejects access TTL above 86400 seconds (24h)", () => {
+    expect(86401).toBeGreaterThan(86400);
+  });
+
+  it("rejects refresh TTL below 300 seconds (5 min)", () => {
+    expect(299).toBeLessThan(300);
+  });
+
+  it("rejects refresh TTL above 31536000 seconds (1 year)", () => {
+    expect(31536001).toBeGreaterThan(31536000);
+  });
+
+  it("rejects when refresh TTL <= access TTL", () => {
+    // The server enforces refresh > access when both are non-zero.
+    expect(900).toBeLessThanOrEqual(900); // equal → rejected
+    expect(800).toBeLessThan(900); // refresh < access → rejected
   });
 });

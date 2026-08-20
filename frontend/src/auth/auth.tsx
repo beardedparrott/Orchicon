@@ -17,6 +17,7 @@ import {
   localLogin,
   signup,
   oidcLoginURL,
+  scheduleLoginProactiveRefresh,
   useSessionStore,
   type SessionInfo,
 } from "@/auth/session";
@@ -94,6 +95,7 @@ export async function startLocalLogin(
 ): Promise<{ session: SessionInfo; next?: string }> {
   const out = await localLogin(username, password, next);
   useSessionStore.getState().setSession(out.session);
+  scheduleLoginProactiveRefresh(out.session);
   return out;
 }
 
@@ -108,6 +110,7 @@ export async function startSignup(
 ): Promise<{ session: SessionInfo; next?: string }> {
   const out = await signup(username, password, next);
   useSessionStore.getState().setSession(out.session);
+  scheduleLoginProactiveRefresh(out.session);
   return out;
 }
 

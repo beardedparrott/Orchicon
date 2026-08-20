@@ -161,6 +161,16 @@ export function oidcLoginURL(): string {
   return "/auth/oidc/login";
 }
 
+// scheduleLoginProactiveRefresh wires proactive refresh into the login/refresh
+// flow. It is called whenever a new session (with expires_at) is established,
+// so idle users never hit a hard access-TTL boundary — the token is refreshed
+// before it expires.
+export function scheduleLoginProactiveRefresh(session: SessionInfo): void {
+  if (session.expires_at) {
+    scheduleProactiveRefresh(session.expires_at);
+  }
+}
+
 // refreshAccessToken exchanges the HttpOnly refresh cookie for a new
 // access token. Returns a discriminated RefreshResult so the caller
 // can distinguish "session is over" (no-session) from "transient failure"
@@ -309,7 +319,6 @@ async function refreshWithRetry(): Promise<RefreshResult> {
 // prevents idle users from hitting a hard access-TTL boundary.
 // Returns a RefreshResult; transient failures schedule one retry after
 // ~5 seconds (bounded, no timer storm).
-let proactiveRefreshScheduled = false;
 let proactiveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function scheduleProactiveRefresh(expiresAt: number): void {
@@ -318,7 +327,6 @@ export function scheduleProactiveRefresh(expiresAt: number): void {
     clearTimeout(proactiveRefreshTimer);
     proactiveRefreshTimer = null;
   }
-  proactiveRefreshScheduled = true;
 
   const now = Date.now();
   const remaining = expiresAt - now;
@@ -335,12 +343,12 @@ export function scheduleProactiveRefresh(expiresAt: number): void {
 // fireProactiveRefresh performs the actual refresh. On transient failure
 // it schedules one retry after ~5s.
 async function fireProactiveRefresh(): Promise<void> {
-  proactiveRefreshScheduled = false;
   proactiveRefreshTimer = null;
   const result = await refreshAccessToken();
   if (result.ok) {
-    // Update expires_at in the session store.
+    // Update expires_at in the session store and reschedule.
     useSessionStore.getState().setSession(result.session);
+    scheduleLoginProactiveRefresh(result.session);
     return;
   }
   if (result.reason === "transient") {
@@ -349,6 +357,7 @@ async function fireProactiveRefresh(): Promise<void> {
       const retry = await refreshAccessToken();
       if (retry.ok) {
         useSessionStore.getState().setSession(retry.session);
+        scheduleLoginProactiveRefresh(retry.session);
       }
     }, 5000);
   }
