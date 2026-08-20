@@ -58,6 +58,14 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+
+	// Validate session TTLs before touching the DB.
+	if s := req.Msg.Settings; s != nil {
+		if err := validateSessionTTLs(s.SessionAccessTokenTtlSeconds, s.SessionRefreshTokenTtlSeconds); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+	}
+
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -68,7 +76,12 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "settings.updated", "settings", tenantID,
-		nil, audit.Snapshot(map[string]any{"default_worker_model": row.DefaultWorkerModel, "default_ask_orchicon_model": row.DefaultAskOrchiconModel})); err != nil {
+		nil, audit.Snapshot(map[string]any{
+			"default_worker_model":             row.DefaultWorkerModel,
+			"default_ask_orchicon_model":       row.DefaultAskOrchiconModel,
+			"session_access_token_ttl_seconds": row.SessionAccessTokenTtlSeconds,
+			"session_refresh_token_ttl_seconds": row.SessionRefreshTokenTtlSeconds,
+		})); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit settings.updated: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
@@ -159,6 +172,8 @@ func settingsRowToProto(r *db.TenantSettingsRow) *apiv1.TenantSettings {
 		LogRetentionDays:                 r.LogRetentionDays,
 		LogMaxFiles:                      r.LogMaxFiles,
 		MaxConcurrentRuns:                &maxConcurrentRuns,
+		SessionAccessTokenTtlSeconds:     r.SessionAccessTokenTtlSeconds,
+		SessionRefreshTokenTtlSeconds:    r.SessionRefreshTokenTtlSeconds,
 		CreatedAt:                        timestamppb.New(r.CreatedAt),
 		UpdatedAt:                        timestamppb.New(r.UpdatedAt),
 	}
@@ -206,6 +221,8 @@ func settingsProtoToRow(s *apiv1.TenantSettings) db.TenantSettingsRow {
 		LogMaxFiles:                      s.LogMaxFiles,
 		MaxConcurrentRuns:                maxConcurrentRuns,
 		MaxConcurrentRunsSet:             maxConcurrentRunsSet,
+		SessionAccessTokenTtlSeconds:     s.SessionAccessTokenTtlSeconds,
+		SessionRefreshTokenTtlSeconds:    s.SessionRefreshTokenTtlSeconds,
 	}
 }
 
@@ -299,4 +316,34 @@ func containsPathSeparator(s string) bool {
 		}
 	}
 	return false
+}
+
+// Session TTL validation constants.
+const (
+	minSessionAccessTokenTTLSeconds  int64 = 30
+	maxSessionAccessTokenTTLSeconds  int64 = 86400  // 24 hours
+	minSessionRefreshTokenTTLSeconds int64 = 300    // 5 minutes
+	maxSessionRefreshTokenTTLSeconds int64 = 31536000 // 1 year
+)
+
+// validateSessionTTLs validates the session TTL fields from the proto.
+// Zero values are allowed (meaning "leave unchanged" on update).
+// Access TTL must be in [30s, 86400s]; refresh TTL in [300s, 31536000s].
+// If both are non-zero, refresh TTL must exceed access TTL.
+func validateSessionTTLs(accessTTL, refreshTTL int64) error {
+	if accessTTL != 0 {
+		if accessTTL < minSessionAccessTokenTTLSeconds || accessTTL > maxSessionAccessTokenTTLSeconds {
+			return fmt.Errorf("session: access token TTL must be between %d and %d seconds", minSessionAccessTokenTTLSeconds, maxSessionAccessTokenTTLSeconds)
+		}
+	}
+	if refreshTTL != 0 {
+		if refreshTTL < minSessionRefreshTokenTTLSeconds || refreshTTL > maxSessionRefreshTokenTTLSeconds {
+			return fmt.Errorf("session: refresh token TTL must be between %d and %d seconds", minSessionRefreshTokenTTLSeconds, maxSessionRefreshTokenTTLSeconds)
+		}
+	}
+	// Only enforce refresh > access when both are explicitly set (non-zero).
+	if accessTTL != 0 && refreshTTL != 0 && refreshTTL <= accessTTL {
+		return fmt.Errorf("session: refresh token TTL must exceed access token TTL")
+	}
+	return nil
 }

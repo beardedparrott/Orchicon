@@ -67,6 +67,18 @@ export type SessionInfo = {
   force_password_change?: boolean;
 };
 
+// RefreshResult is a discriminated union for the refresh outcome.
+// `ok: true` means the session is alive with a fresh token.
+// `ok: false, reason: "no-session"` means the refresh token is absent,
+// invalid, or expired — the session is genuinely over and re-login is
+// correct. `ok: false, reason: "transient"` means a network error,
+// 5xx, or server hiccup occurred — the session may still be valid and
+// the in-memory token is NOT cleared (it can retry).
+export type RefreshResult =
+  | { ok: true; session: SessionInfo }
+  | { ok: false; reason: "no-session" }
+  | { ok: false; reason: "transient" };
+
 // localLogin authenticates a local account against the embedded IdP with a
 // username + password. The server verifies the stored argon2id/bcrypt hash,
 // mints the token pair, sets the HttpOnly refresh cookie, and — when `next`
@@ -149,26 +161,53 @@ export function oidcLoginURL(): string {
   return "/auth/oidc/login";
 }
 
-// refreshAccessToken exchanges the HttpOnly refresh cookie for a new
-// access token. Returns null if the refresh failed (expired/revoked).
-export async function refreshAccessToken(): Promise<SessionInfo | null> {
-  const res = await fetch("/auth/refresh", {
-    method: "POST",
-    credentials: "include",
-  });
-  if (!res.ok) {
-    clearAccessToken();
-    return null;
+// scheduleLoginProactiveRefresh wires proactive refresh into the login/refresh
+// flow. It is called whenever a new session (with expires_at) is established,
+// so idle users never hit a hard access-TTL boundary — the token is refreshed
+// before it expires.
+export function scheduleLoginProactiveRefresh(session: SessionInfo): void {
+  if (session.expires_at) {
+    scheduleProactiveRefresh(session.expires_at);
   }
-  const body = await res.json();
-  setAccessToken(body.access_token);
-  return {
-    authenticated: true,
-    identity_id: body.identity_id,
-    tenant_id: body.tenant_id,
-    is_admin: body.is_admin,
-    expires_at: Date.now() + body.expires_in * 1000,
-  };
+}
+
+// refreshAccessToken exchanges the HttpOnly refresh cookie for a new
+// access token. Returns a discriminated RefreshResult so the caller
+// can distinguish "session is over" (no-session) from "transient failure"
+// (the in-memory token is NOT cleared on transient).
+export async function refreshAccessToken(): Promise<RefreshResult> {
+  try {
+    const res = await fetch("/auth/refresh", {
+      method: "POST",
+      credentials: "include",
+    });
+    if (!res.ok) {
+      // 401/403/404 = the refresh token is absent, invalid, or expired.
+      // The session is genuinely over.
+      if (res.status >= 400 && res.status < 500) {
+        clearAccessToken();
+        return { ok: false, reason: "no-session" };
+      }
+      // 5xx = server error. The session may still be valid; don't
+      // clear the in-memory token.
+      return { ok: false, reason: "transient" };
+    }
+    const body = await res.json();
+    setAccessToken(body.access_token);
+    return {
+      ok: true,
+      session: {
+        authenticated: true,
+        identity_id: body.identity_id,
+        tenant_id: body.tenant_id,
+        is_admin: body.is_admin,
+        expires_at: Date.now() + body.expires_in * 1000,
+      },
+    };
+  } catch {
+    // Network error / parse failure: don't clear the in-memory token.
+    return { ok: false, reason: "transient" };
+  }
 }
 
 // fetchSession queries the backend for the current resolved identity.
@@ -200,9 +239,11 @@ let sessionPromise: Promise<SessionInfo> | null = null;
 // persistent), so the HttpOnly refresh cookie is exchanged for a new access
 // token — a live session survives a reload without forcing a re-login. A
 // genuinely logged-out visitor (no cookie) resolves unauthenticated and the
-// guard redirects to /login. Network/parse failures also resolve
-// unauthenticated (never throw) so the guard lands on /login rather than an
-// error boundary.
+// guard redirects to /login.
+//
+// Transient refresh failures are retried (up to 3 times with backoff)
+// before concluding unauthenticated — a transient DB hiccup or network
+// blip no longer bounces an authenticated user to /login.
 export function ensureSession(): Promise<SessionInfo> {
   if (!sessionPromise) {
     sessionPromise = (async (): Promise<SessionInfo> => {
@@ -219,9 +260,23 @@ export function ensureSession(): Promise<SessionInfo> {
           useSessionStore.getState().setLoading(false);
           return unauth;
         }
-        const s = getAccessToken()
-          ? await fetchSession()
-          : ((await refreshAccessToken()) ?? { authenticated: false });
+        if (!getAccessToken()) {
+          // First load: try refreshing with retry for transient failures.
+          const result = await refreshWithRetry();
+          if (result.ok) {
+            useSessionStore.getState().setSession(result.session);
+            useSessionStore.getState().setLoading(false);
+            return result.session;
+          }
+          // no-session or exhausted retries: unauthenticated.
+          const unauth: SessionInfo = { authenticated: false };
+          useSessionStore.getState().setSession(unauth);
+          useSessionStore.getState().setLoading(false);
+          return unauth;
+        }
+        // We already have a token (from OIDC callback or prior call):
+        // verify it against the server.
+        const s = await fetchSession();
         useSessionStore.getState().setSession(s);
         useSessionStore.getState().setLoading(false);
         return s;
@@ -240,6 +295,94 @@ export function ensureSession(): Promise<SessionInfo> {
   return sessionPromise;
 }
 
+// refreshWithRetry attempts refreshAccessToken with exponential backoff
+// for transient failures. On a no-session result it returns immediately
+// (no retry). Up to 3 attempts with ~1s, ~2s delays.
+async function refreshWithRetry(): Promise<RefreshResult> {
+  const delays = [0, 1000, 2000];
+  for (let attempt = 0; attempt < delays.length; attempt++) {
+    const result = await refreshAccessToken();
+    if (result.ok) return result;
+    if (result.reason === "no-session") return result; // definitive: no retry
+    // Transient: wait and retry (if more attempts remain).
+    if (attempt < delays.length - 1) {
+      await new Promise((r) => setTimeout(r, delays[attempt + 1]));
+    }
+  }
+  // All retries exhausted: treat as transient (caller gets no-session
+  // since the in-memory token is still stale and will be stale).
+  return { ok: false, reason: "no-session" };
+}
+
+// proactiveRefresh fires a background refresh when the access token
+// is within 60 seconds of expiry and the document is visible. This
+// prevents idle users from hitting a hard access-TTL boundary.
+// Returns a RefreshResult; transient failures schedule one retry after
+// ~5 seconds (bounded, no timer storm).
+let proactiveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function scheduleProactiveRefresh(expiresAt: number): void {
+  // Clear any existing timer.
+  if (proactiveRefreshTimer) {
+    clearTimeout(proactiveRefreshTimer);
+    proactiveRefreshTimer = null;
+  }
+
+  const now = Date.now();
+  const remaining = expiresAt - now;
+  if (remaining <= 0) {
+    // Already expired: fire immediately.
+    fireProactiveRefresh();
+    return;
+  }
+  // Fire when < 60s of life remains.
+  const fireIn = Math.max(0, remaining - 60_000);
+  proactiveRefreshTimer = setTimeout(fireProactiveRefresh, fireIn);
+}
+
+// fireProactiveRefresh performs the actual refresh. On transient failure
+// it schedules one retry after ~5s.
+async function fireProactiveRefresh(): Promise<void> {
+  proactiveRefreshTimer = null;
+  const result = await refreshAccessToken();
+  if (result.ok) {
+    // Update expires_at in the session store and reschedule.
+    useSessionStore.getState().setSession(result.session);
+    scheduleLoginProactiveRefresh(result.session);
+    return;
+  }
+  if (result.reason === "transient") {
+    // Schedule one retry after 5s.
+    proactiveRefreshTimer = setTimeout(async () => {
+      const retry = await refreshAccessToken();
+      if (retry.ok) {
+        useSessionStore.getState().setSession(retry.session);
+        scheduleLoginProactiveRefresh(retry.session);
+      }
+    }, 5000);
+  }
+  // no-session: don't retry — the session is genuinely over.
+}
+
+// setupProactiveRefreshHook wires the proactive refresh to document
+// visibility and focus events. When the tab becomes visible or focused,
+// if the access token is expired or within 60s of expiry, refresh
+// immediately. This catches idle users who return to a stale tab.
+export function setupProactiveRefreshHook(): void {
+  const handleVisibility = (): void => {
+    if (document.visibilityState !== "visible") return;
+    const expiresAt = useSessionStore.getState().session.expires_at;
+    if (!expiresAt) return;
+    const now = Date.now();
+    const remaining = expiresAt - now;
+    if (remaining <= 0 || remaining < 60_000) {
+      fireProactiveRefresh();
+    }
+  };
+  document.addEventListener("visibilitychange", handleVisibility);
+  window.addEventListener("focus", handleVisibility);
+}
+
 // logout ends the session. The in-memory token is cleared and the signedOut
 // flag prevents the router guard from silently re-authenticating via the
 // refresh cookie for the rest of this page session. A best-effort
@@ -249,6 +392,11 @@ export function ensureSession(): Promise<SessionInfo> {
 export function logout(): void {
   signedOut = true;
   clearAccessToken();
+  // Cancel any pending proactive refresh timer.
+  if (proactiveRefreshTimer) {
+    clearTimeout(proactiveRefreshTimer);
+    proactiveRefreshTimer = null;
+  }
   void fetch("/auth/logout", { method: "POST", credentials: "include" }).catch(
     () => {
       /* best-effort: the in-page flag still prevents re-authentication */

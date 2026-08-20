@@ -31,6 +31,8 @@ type TenantSettingsRow struct {
 	LogMaxFiles                      int32  // max rotated log files kept; 0 = default
 	MaxConcurrentRuns                int    // tenant-wide cap on concurrently running executions; 0 = no cap
 	MaxConcurrentRunsSet             bool   // true when the update explicitly sets max_concurrent_runs (0 is meaningful)
+	SessionAccessTokenTtlSeconds     int64  // access-token TTL in seconds; 0 = leave unchanged on update
+	SessionRefreshTokenTtlSeconds    int64  // refresh-token TTL in seconds; 0 = leave unchanged on update
 	CreatedAt                        time.Time
 	UpdatedAt                        time.Time
 }
@@ -47,6 +49,7 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		COALESCE(log_directory, ''), COALESCE(log_max_size_mb, 0), COALESCE(log_roll_interval_hours, 0),
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
 		max_concurrent_runs,
+		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
 		created_at, updated_at
 		FROM tenant_settings WHERE tenant_id = $1`
 	row, err := tx.Query(ctx, q, tenantID)
@@ -69,6 +72,7 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		COALESCE(log_directory, ''), COALESCE(log_max_size_mb, 0), COALESCE(log_roll_interval_hours, 0),
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
 		max_concurrent_runs,
+		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
 		created_at, updated_at`
 	ins, err := tx.Query(ctx, insertQ, tenantID)
 	if err != nil {
@@ -95,8 +99,9 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		backup_schedule, backup_retention_days, backup_directory,
 		log_directory, log_max_size_mb, log_roll_interval_hours,
 		log_retention_days, log_max_files, max_concurrent_runs,
+		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
 		updated_at
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, now())
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $22, $23, now())
 	ON CONFLICT (tenant_id) DO UPDATE SET
 		default_worker_model = CASE WHEN $2 <> '' THEN $2 ELSE tenant_settings.default_worker_model END,
 		default_ask_orchicon_model = CASE WHEN $3 <> '' THEN $3 ELSE tenant_settings.default_ask_orchicon_model END,
@@ -117,6 +122,8 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		log_retention_days = CASE WHEN $18 <> 0 THEN $18 ELSE tenant_settings.log_retention_days END,
 		log_max_files = CASE WHEN $19 <> 0 THEN $19 ELSE tenant_settings.log_max_files END,
 		max_concurrent_runs = CASE WHEN $21 THEN $20 ELSE tenant_settings.max_concurrent_runs END,
+		session_access_token_ttl_seconds = CASE WHEN $22 <> 0 THEN $22 ELSE tenant_settings.session_access_token_ttl_seconds END,
+		session_refresh_token_ttl_seconds = CASE WHEN $23 <> 0 THEN $23 ELSE tenant_settings.session_refresh_token_ttl_seconds END,
 		updated_at = now()
 	RETURNING tenant_id, default_worker_model, default_ask_orchicon_model,
 		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
@@ -127,6 +134,7 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		COALESCE(log_directory, ''), COALESCE(log_max_size_mb, 0), COALESCE(log_roll_interval_hours, 0),
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
 		max_concurrent_runs,
+		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
 		created_at, updated_at`
 	row, err := tx.Query(ctx, q,
 		tenantID, in.DefaultWorkerModel, in.DefaultAskOrchiconModel,
@@ -138,6 +146,7 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		in.LogDirectory, in.LogMaxSizeMB, in.LogRollIntervalHours,
 		in.LogRetentionDays, in.LogMaxFiles, in.MaxConcurrentRuns,
 		in.MaxConcurrentRunsSet,
+		in.SessionAccessTokenTtlSeconds, in.SessionRefreshTokenTtlSeconds,
 	)
 	if err != nil {
 		return TenantSettingsRow{}, fmt.Errorf("db: update tenant settings: %w", err)
@@ -161,6 +170,7 @@ func scanTenantSettings(row pgx.Rows) (TenantSettingsRow, error) {
 		&r.LogDirectory, &r.LogMaxSizeMB, &r.LogRollIntervalHours,
 		&r.LogRetentionDays, &r.LogMaxFiles,
 		&r.MaxConcurrentRuns,
+		&r.SessionAccessTokenTtlSeconds, &r.SessionRefreshTokenTtlSeconds,
 		&r.CreatedAt, &r.UpdatedAt,
 	); err != nil {
 		return TenantSettingsRow{}, fmt.Errorf("db: scan tenant settings: %w", err)

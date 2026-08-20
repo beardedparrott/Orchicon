@@ -53,3 +53,40 @@ func TestSettingsRowToProtoMaxConcurrentRuns(t *testing.T) {
 }
 
 func int32Ptr(v int32) *int32 { return &v }
+
+// TestValidateSessionTTLs exercises the session TTL validation constants
+// and boundary conditions enforced by validateSessionTTLs.
+func TestValidateSessionTTLs(t *testing.T) {
+	cases := []struct {
+		name      string
+		accessTTL int64
+		refreshTTL int64
+		wantErr   bool
+	}{
+		{"both zero — leave unchanged", 0, 0, false},
+		{"access zero, refresh set", 0, 86400, false},
+		{"access set, refresh zero", 900, 0, false},
+		{"both set — valid", 900, 86400, false},
+		{"access below minimum (29)", 29, 0, true},
+		{"access at minimum (30)", 30, 0, false},
+		{"access above maximum (86401)", 86401, 0, true},
+		{"access at maximum (86400)", 86400, 0, false},
+		{"refresh below minimum (299)", 900, 299, true},
+		{"refresh at minimum (300)", 900, 300, false},
+		{"refresh above maximum (31536001)", 900, 31536001, true},
+		{"refresh at maximum (31536000)", 900, 31536000, false},
+		{"refresh equal to access — rejected", 900, 900, true},
+		{"refresh less than access — rejected", 900, 800, true},
+		{"refresh just above access — accepted", 900, 901, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := validateSessionTTLs(c.accessTTL, c.refreshTTL)
+			gotErr := err != nil
+			if gotErr != c.wantErr {
+				t.Errorf("validateSessionTTLs(%d, %d) error = %v, wantErr = %v",
+					c.accessTTL, c.refreshTTL, err, c.wantErr)
+			}
+		})
+	}
+}

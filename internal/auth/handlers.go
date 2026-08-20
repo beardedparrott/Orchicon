@@ -268,12 +268,13 @@ func (h *Handler) localLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	}
-	pair, err := h.issuer.IssuePair(identityID, tenantID, ents, isAdmin)
+	accessTTL, refreshTTL := h.sessionTTLs(r.Context(), tenantID)
+	pair, err := h.issuer.IssuePairWithTTL(identityID, tenantID, ents, isAdmin, accessTTL, refreshTTL)
 	if err != nil {
 		http.Error(w, "failed to issue tokens", http.StatusInternalServerError)
 		return
 	}
-	h.setRefreshCookie(w, pair.RefreshToken)
+	h.setRefreshCookie(w, pair.RefreshToken, refreshTTL)
 	// Server-sourced forced-change flag (ADR-4): the SPA renders the
 	// change-password gate for flagged credentials; the token is still
 	// issued so the gate can call the change RPC.
@@ -396,12 +397,13 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create account", http.StatusInternalServerError)
 		return
 	}
-	pair, err := h.issuer.IssuePair(ident.ID, tenantID, ents, isAdmin)
+	accessTTL, refreshTTL := h.sessionTTLs(r.Context(), tenantID)
+	pair, err := h.issuer.IssuePairWithTTL(ident.ID, tenantID, ents, isAdmin, accessTTL, refreshTTL)
 	if err != nil {
 		http.Error(w, "failed to issue tokens", http.StatusInternalServerError)
 		return
 	}
-	h.setRefreshCookie(w, pair.RefreshToken)
+	h.setRefreshCookie(w, pair.RefreshToken, refreshTTL)
 	resp := tokenResponse{
 		AccessToken: pair.AccessToken,
 		TokenType:   "Bearer",
@@ -562,10 +564,20 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 	}
 	ents, isAdmin, err := h.resolver.ResolveIdentity(r.Context(), claims.TenantID, claims.Subject)
 	if err != nil {
-		http.Error(w, "identity not found", http.StatusUnauthorized)
+		// Distinguish "identity genuinely missing" from "transient DB error".
+		// ErrNotFound → 401 (session is over); any other error → 503
+		// (transient: the client may retry; the session is not invalid).
+		if errors.Is(err, db.ErrNotFound) {
+			http.Error(w, "identity not found", http.StatusUnauthorized)
+			return
+		}
+		h.log.Error("refresh: resolve identity", "error", err)
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	access, err := h.issuer.IssueAccess(claims.Subject, claims.TenantID, ents, isAdmin)
+	accessTTL, _ := h.sessionTTLs(r.Context(), claims.TenantID)
+	access, err := h.issuer.IssueAccessWithTTL(claims.Subject, claims.TenantID, ents, isAdmin, accessTTL)
 	if err != nil {
 		http.Error(w, "failed to issue access token", http.StatusInternalServerError)
 		return
@@ -574,7 +586,7 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tokenResponse{
 		AccessToken: access,
 		TokenType:   "Bearer",
-		ExpiresIn:   int64(h.cfg.AccessTTL / time.Second),
+		ExpiresIn:   int64(accessTTL / time.Second),
 		IdentityID:  claims.Subject,
 		TenantID:    claims.TenantID,
 		IsAdmin:     isAdmin,
@@ -690,12 +702,13 @@ func (h *Handler) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		ents = nil
 	}
-	pair, err := h.issuer.IssuePair(ident.ID, tenantID, ents, isAdmin)
+	accessTTL, refreshTTL := h.sessionTTLs(r.Context(), tenantID)
+	pair, err := h.issuer.IssuePairWithTTL(ident.ID, tenantID, ents, isAdmin, accessTTL, refreshTTL)
 	if err != nil {
 		http.Error(w, "failed to issue tokens", http.StatusInternalServerError)
 		return
 	}
-	h.setRefreshCookie(w, pair.RefreshToken)
+	h.setRefreshCookie(w, pair.RefreshToken, refreshTTL)
 	// Redirect into the SPA with the access token in the URL fragment
 	// (fragments are not sent to servers, so the token does not leak into
 	// server logs or referrers). The SPA reads it on load.
@@ -761,7 +774,8 @@ func (h *Handler) localCredential(ctx context.Context, tenantID, identityID stri
 // setRefreshCookie sets the refresh token as an HttpOnly cookie. In
 // local mode (plain HTTP) the Secure flag is relaxed so the cookie
 // survives the non-TLS connection; production always sets Secure.
-func (h *Handler) setRefreshCookie(w http.ResponseWriter, token string) {
+// The maxAge parameter is the refresh token TTL (used for MaxAge).
+func (h *Handler) setRefreshCookie(w http.ResponseWriter, token string, maxAge time.Duration) {
 	secure := h.mode == config.ModeProduction
 	http.SetCookie(w, &http.Cookie{
 		Name:     RefreshCookie,
@@ -770,7 +784,7 @@ func (h *Handler) setRefreshCookie(w http.ResponseWriter, token string) {
 		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(h.cfg.RefreshTTL / time.Second),
+		MaxAge:   int(maxAge / time.Second),
 	})
 }
 
@@ -801,6 +815,57 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// sessionTTLs resolves the session TTLs for a tenant by reading the
+// tenant_settings row. On any error it falls back to the handler's
+// config defaults (h.cfg.AccessTTL / h.cfg.RefreshTTL) and logs —
+// login and refresh must never fail because of a settings read.
+//
+// The TTLs are validated defensively: access ∈ [30s, 86400s],
+// refresh ∈ [300s, 31536000s], refresh > access. Invalid values are
+// clamped to the config defaults.
+func (h *Handler) sessionTTLs(ctx context.Context, tenantID string) (accessTTL, refreshTTL time.Duration) {
+	accessTTL = h.cfg.AccessTTL
+	refreshTTL = h.cfg.RefreshTTL
+	if tenantID == "" {
+		return
+	}
+	ttx, err := h.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		h.log.Warn("sessionTTLs: begin tx", "error", err)
+		return
+	}
+	defer ttx.Rollback(ctx)
+	row, err := db.GetTenantSettings(ctx, ttx.Tx, tenantID)
+	if err != nil {
+		h.log.Warn("sessionTTLs: read settings", "error", err)
+		return
+	}
+	accessSeconds := row.SessionAccessTokenTtlSeconds
+	refreshSeconds := row.SessionRefreshTokenTtlSeconds
+	// Zero = use config default (the DB column default is 900/86400,
+	// but a hand-edited row could have 0; the validation below handles it).
+	if accessSeconds < 30 {
+		accessSeconds = 0
+	}
+	if refreshSeconds < 300 {
+		refreshSeconds = 0
+	}
+	if accessSeconds > 0 {
+		accessTTL = time.Duration(accessSeconds) * time.Second
+	}
+	if refreshSeconds > 0 {
+		refreshTTL = time.Duration(refreshSeconds) * time.Second
+	}
+	// Ensure refresh > access.
+	if refreshTTL <= accessTTL {
+		refreshTTL = accessTTL + 5*time.Minute
+		if refreshTTL > 31536000*time.Second {
+			refreshTTL = 31536000 * time.Second
+		}
+	}
+	return accessTTL, refreshTTL
 }
 
 // ErrUnauthenticated is returned when no valid credential is present.

@@ -27,18 +27,21 @@ import { WebhookService } from "@/api/gen/orchicon/api/v1/webhook_service_connec
 import { SettingsService } from "@/api/gen/orchicon/api/v1/settings_service_connect";
 import { RuntimeImageService } from "@/api/gen/orchicon/api/v1/runtime_image_service_connect";
 import { getAccessToken, refreshAccessToken } from "@/auth/session";
+import type { RefreshResult } from "@/auth/session";
 
 // Refreshing is a module-level guard so concurrent 401s share one
 // refresh promise (avoiding a refresh storm).
-let refreshInFlight: Promise<boolean> | null = null;
+let refreshInFlight: Promise<RefreshResult> | null = null;
 
-async function doRefresh(): Promise<boolean> {
+// doRefresh performs a single refresh cycle with single-flight. It
+// returns a RefreshResult so the caller can distinguish no-session
+// from transient.
+async function doRefresh(): Promise<RefreshResult> {
   if (refreshInFlight) {
     return refreshInFlight;
   }
   refreshInFlight = (async () => {
-    const session = await refreshAccessToken();
-    return !!session?.authenticated;
+    return await refreshAccessToken();
   })().finally(() => {
     refreshInFlight = null;
   });
@@ -47,8 +50,9 @@ async function doRefresh(): Promise<boolean> {
 
 // authInterceptor injects the bearer access token on every RPC. On a
 // 401 it transparently refreshes via the HttpOnly cookie and retries
-// the call once (docs/10 §7). There is no pre-login fallback: without a
-// token the call 401s and the app shell redirects the user to /login.
+// the call once if the refresh was transient (docs/10 §7). There is
+// no pre-login fallback: without a token the call 401s and the app
+// shell redirects the user to /login.
 const authInterceptor: Interceptor = (next) => async (req) => {
   const token = getAccessToken();
   if (token) {
@@ -61,11 +65,23 @@ const authInterceptor: Interceptor = (next) => async (req) => {
     const code = (err as { code?: number })?.code ?? (err as { metadata?: { get?: (k: string) => string | null } })?.metadata?.get?.("grpc-status");
     if (code === 16 || code === "16") {
       // Unauthenticated — try one refresh + retry.
-      const ok = await doRefresh();
-      if (ok) {
+      const result = await doRefresh();
+      if (result.ok) {
         req.header.set("Authorization", `Bearer ${getAccessToken()}`);
         return await next(req);
       }
+      // Transient: retry the original RPC once after a short delay.
+      if (result.reason === "transient") {
+        await new Promise((r) => setTimeout(r, 1000));
+        req.header.set("Authorization", `Bearer ${getAccessToken()}`);
+        try {
+          return await next(req);
+        } catch {
+          // Second attempt also failed: throw the original error.
+          // The app shell will handle the 401.
+        }
+      }
+      // no-session: throw as today.
     }
     throw err;
   }

@@ -5,7 +5,7 @@ import { Moon, Sun, Palette, Menu, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useSession, logout } from "@/auth/auth";
-import { useSessionStore } from "@/auth/session";
+import { setupProactiveRefreshHook, useSessionStore } from "@/auth/session";
 import { useThemeStore } from "@/lib/theme-store";
 
 // Application layout shell (docs/10_Frontend_Architecture.md §5).
@@ -46,6 +46,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   const session = useSession();
   const loading = useSessionStore((s) => s.loading);
   const navigate = useNavigate();
+
+  // Wire the proactive refresh visibility/focus hook once on mount.
+  useEffect(() => {
+    setupProactiveRefreshHook();
+  }, []);
 
   // Unauthenticated redirect: once the session has finished loading and no
   // identity resolved, bounce to /login. /login, /signup and /auth/callback

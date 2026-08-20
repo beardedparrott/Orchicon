@@ -103,11 +103,20 @@ type TenantSettings struct {
 	// at their cap hold ready items until a running execution frees a slot.
 	// Optional so an update can distinguish "set to 0 (no cap)" from
 	// "leave unchanged"; absent = unchanged. Zero (default) = no tenant cap.
-	MaxConcurrentRuns *int32                 `protobuf:"varint,28,opt,name=max_concurrent_runs,json=maxConcurrentRuns,proto3,oneof" json:"max_concurrent_runs,omitempty"`
-	CreatedAt         *timestamppb.Timestamp `protobuf:"bytes,100,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt         *timestamppb.Timestamp `protobuf:"bytes,101,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	MaxConcurrentRuns *int32 `protobuf:"varint,28,opt,name=max_concurrent_runs,json=maxConcurrentRuns,proto3,oneof" json:"max_concurrent_runs,omitempty"`
+	// --- Session timeout ---
+	// Access-token TTL in seconds (how long an access token is valid).
+	// Zero = leave unchanged on update. Default is 900 (15 minutes).
+	// Range: [30, 86400].
+	SessionAccessTokenTtlSeconds int64 `protobuf:"varint,29,opt,name=session_access_token_ttl_seconds,json=sessionAccessTokenTtlSeconds,proto3" json:"session_access_token_ttl_seconds,omitempty"`
+	// Refresh-token TTL in seconds (how long a refresh token is valid).
+	// Zero = leave unchanged on update. Default is 86400 (24 hours).
+	// Range: [300, 31536000].
+	SessionRefreshTokenTtlSeconds int64                  `protobuf:"varint,30,opt,name=session_refresh_token_ttl_seconds,json=sessionRefreshTokenTtlSeconds,proto3" json:"session_refresh_token_ttl_seconds,omitempty"`
+	CreatedAt                     *timestamppb.Timestamp `protobuf:"bytes,100,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt                     *timestamppb.Timestamp `protobuf:"bytes,101,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields                 protoimpl.UnknownFields
+	sizeCache                     protoimpl.SizeCache
 }
 
 func (x *TenantSettings) Reset() {
@@ -273,6 +282,20 @@ func (x *TenantSettings) GetMaxConcurrentRuns() int32 {
 	return 0
 }
 
+func (x *TenantSettings) GetSessionAccessTokenTtlSeconds() int64 {
+	if x != nil {
+		return x.SessionAccessTokenTtlSeconds
+	}
+	return 0
+}
+
+func (x *TenantSettings) GetSessionRefreshTokenTtlSeconds() int64 {
+	if x != nil {
+		return x.SessionRefreshTokenTtlSeconds
+	}
+	return 0
+}
+
 func (x *TenantSettings) GetCreatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.CreatedAt
@@ -291,7 +314,8 @@ var File_orchicon_api_v1_settings_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"\n" +
-	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xbb\t\n" +
+	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcd\n" +
+	"\n" +
 	"\x0eTenantSettings\x120\n" +
 	"\x14default_worker_model\x18\x01 \x01(\tR\x12defaultWorkerModel\x12;\n" +
 	"\x1adefault_ask_orchicon_model\x18\x02 \x01(\tR\x17defaultAskOrchiconModel\x12F\n" +
@@ -312,7 +336,9 @@ const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"\x17log_roll_interval_hours\x18\x19 \x01(\x03R\x14logRollIntervalHours\x12,\n" +
 	"\x12log_retention_days\x18\x1a \x01(\x05R\x10logRetentionDays\x12\"\n" +
 	"\rlog_max_files\x18\x1b \x01(\x05R\vlogMaxFiles\x123\n" +
-	"\x13max_concurrent_runs\x18\x1c \x01(\x05H\x00R\x11maxConcurrentRuns\x88\x01\x01\x129\n" +
+	"\x13max_concurrent_runs\x18\x1c \x01(\x05H\x00R\x11maxConcurrentRuns\x88\x01\x01\x12F\n" +
+	" session_access_token_ttl_seconds\x18\x1d \x01(\x03R\x1csessionAccessTokenTtlSeconds\x12H\n" +
+	"!session_refresh_token_ttl_seconds\x18\x1e \x01(\x03R\x1dsessionRefreshTokenTtlSeconds\x129\n" +
 	"\n" +
 	"created_at\x18d \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
