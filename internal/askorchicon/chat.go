@@ -161,6 +161,12 @@ type turnEntry struct {
 	// tenant is the turn's tenant, needed by the sweeper to load the
 	// conversation row (RLS) for the serve-session abort.
 	tenant string
+	// assistantMsgID is the acked assistant message id under which this turn's
+	// reply (or error) will be persisted. Surfaced to the frontend via
+	// Conversation.pending_assistant_message_id so a refreshed page can
+	// re-attach to the running turn (Stop + completion poll), not just know
+	// that one exists.
+	assistantMsgID string
 }
 
 // turnRegistry tracks in-flight Ask Orchicon turns (keyed by conversation
@@ -193,8 +199,10 @@ func newTurnRegistry() *turnRegistry {
 
 // register records a turn's cancellation function for a conversation. It
 // returns the caller's token and ok=true, or (0, false) when a turn is
-// already in flight for that conversation.
-func (r *turnRegistry) register(convID, tenant string, cancel context.CancelCauseFunc) (uint64, bool) {
+// already in flight for that conversation. assistantMsgID is the acked
+// assistant message id under which the reply will be persisted — the running
+// turn's identity exposed to readers of the registry.
+func (r *turnRegistry) register(convID, tenant, assistantMsgID string, cancel context.CancelCauseFunc) (uint64, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.turns[convID]; ok {
@@ -202,8 +210,20 @@ func (r *turnRegistry) register(convID, tenant string, cancel context.CancelCaus
 	}
 	r.nextTok++
 	token := r.nextTok
-	r.turns[convID] = turnEntry{cancel: cancel, token: token, started: time.Now(), tenant: tenant}
+	r.turns[convID] = turnEntry{cancel: cancel, token: token, started: time.Now(), tenant: tenant, assistantMsgID: assistantMsgID}
 	return token, true
+}
+
+// get reports whether a turn is in flight for a conversation and, if so,
+// returns its entry (the caller uses entry.assistantMsgID to re-attach to the
+// running turn). This is the server-side source of truth for "is this
+// conversation busy right now" — the frontend reconciles its in-memory stream
+// slot against it after a page refresh.
+func (r *turnRegistry) get(convID string) (turnEntry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, ok := r.turns[convID]
+	return entry, ok
 }
 
 // cancel fires the collector's cancellation for a conversation (if any) with
@@ -397,7 +417,12 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// below, the turn is released.
 	detached := context.WithoutCancel(ctx)
 	turnCtx, cancelTurn := context.WithCancelCause(detached)
-	token, ok := s.turns.register(convID, tenantID, cancelTurn)
+	// The acked assistant message id is generated up front so the registry
+	// entry can carry it — a refreshed page re-attaches to the running turn
+	// via Conversation.pending_assistant_message_id, which is read from this
+	// entry.
+	assistantID := db.NewID()
+	token, ok := s.turns.register(convID, tenantID, assistantID, cancelTurn)
 	if !ok {
 		return "", nil, connect.NewError(connect.CodeFailedPrecondition,
 			errors.New("a reply is still in progress for this conversation — wait for it to complete or stop it first"))
@@ -505,7 +530,6 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// client. The stream channel is buffered so the collector never blocks.
 	// When the channel closes (turn complete or error), the drain goroutine
 	// exits, which lets ChatStream return, closing the HTTP stream. ---
-	assistantID := db.NewID()
 	streamEventCh := make(chan *apiv1.ChatStreamResponse, 64)
 	onStreamEvent := func(resp *apiv1.ChatStreamResponse) {
 		select {

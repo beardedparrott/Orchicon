@@ -47,6 +47,17 @@ message Conversation {
   // needs no session change or serve restart — the next message carries the
   // new persona on the same session.
   ConversationMode mode = 10;
+  // turn_in_flight reports whether a reply turn is currently running for this
+  // conversation (one turn per conversation, tracked server-side in the turn
+  // registry). Computed at read time — never persisted. The frontend uses it
+  // to restore the Stop button + streaming state after a refresh, when the
+  // in-memory stream slot is gone but the server-side turn is still running.
+  bool turn_in_flight = 11;
+  // pending_assistant_message_id is the acked assistant message id under which
+  // the running turn's reply (or error) will be persisted. Set only while
+  // turn_in_flight is true; the frontend polls ListMessages for this id to
+  // resolve the restored turn's completion.
+  string pending_assistant_message_id = 12;
 }
 
 // ChatMessage is a single message within a conversation.

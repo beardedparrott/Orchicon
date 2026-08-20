@@ -36,7 +36,10 @@ import { useGetSettings } from "@/api/settings";
 import { askOrchiconClient } from "@/api/clients";
 import { useToast, useToastStore } from "@/components/ui/toast";
 import { ConversationMode } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
-import type { ChatMessage } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
+import type {
+  ChatMessage,
+  Conversation,
+} from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 import { AttachmentInput } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 import {
   UserBubble,
@@ -196,6 +199,12 @@ function AskOrchiconPage() {
   // two streams can overlap for a conversation.
   const dispatchGenRef = useRef<Record<string, number>>({});
 
+  // Conversation-list poll cadence: 3s while ANY conversation has a running
+  // turn (so running indicators + Stop affordances stay live across tabs and
+  // devices), false when nothing is running — no idle network churn. The
+  // effect that updates it lives below with the conversations query.
+  const [listPollMs, setListPollMs] = useState<number | false>(false);
+
   // Conversation rename state
   const [renamingConvId, setRenamingConvId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -237,13 +246,25 @@ function AskOrchiconPage() {
   const streamItems = activeStream?.items ?? [];
 
   const { data: conversations, isLoading: convsLoading } =
-    useListConversations();
+    useListConversations({
+      // Poll while ANY conversation has a running turn so the sidebar's
+      // running indicators + Stop buttons stay live across tabs and devices
+      // (a turn started elsewhere appears within a few seconds), and stop
+      // polling once everything settles — no idle network churn.
+      refetchInterval: listPollMs,
+    });
   const { data: messages, isLoading: msgsLoading } = useListMessages(
     activeConvId ?? "",
     { refetchInterval: isStreaming ? 2000 : false },
   );
   const { data: activeConv } = useGetConversation(activeConvId ?? "");
   const { data: settings } = useGetSettings();
+
+  // Keep the conversation-list poll live while any conversation is running
+  // and stop it once everything settles (see listPollMs above).
+  useEffect(() => {
+    setListPollMs(conversations?.some((c) => c.turnInFlight) ? 3000 : false);
+  }, [conversations]);
   const createConv = useCreateConversation();
   const deleteConv = useDeleteConversation();
   const updateTitle = useUpdateConversationTitle();
@@ -291,6 +312,37 @@ function AskOrchiconPage() {
       qc.invalidateQueries({ queryKey: askKeys.conversations });
     }
   }, [messages, isStreaming, pendingReplyId, activeConvId, setStream, qc]);
+
+  // Re-attach a running turn after a refresh / from another tab or device.
+  // The in-memory stream slot is gone (or never existed), but the server-side
+  // turn registry is authoritative: when it reports a turn in flight for the
+  // active conversation and the local slot is idle, restore the slot (Stop
+  // button + thinking indicator + completion poll) keyed to the server's
+  // pending assistant message id. A live local slot is never overwritten —
+  // server state only fills gaps, so a locally-started turn keeps its own
+  // stream until it completes.
+  useEffect(() => {
+    if (!activeConvId) return;
+    const server = conversations?.find((c) => c.id === activeConvId);
+    const serverRunning =
+      server?.turnInFlight ?? activeConv?.turnInFlight ?? false;
+    if (!serverRunning) return;
+    if (streams[activeConvId]?.isStreaming) return;
+    setStream(activeConvId, (prev) => {
+      if (prev.isStreaming) return prev;
+      return {
+        ...prev,
+        isStreaming: true,
+        isThinking: true,
+        reconnecting: true,
+        pendingReplyId:
+          server?.pendingAssistantMessageId ||
+          activeConv?.pendingAssistantMessageId ||
+          prev.pendingReplyId,
+        items: [],
+      };
+    });
+  }, [activeConvId, activeConv, conversations, streams, setStream]);
 
   const handleNewChat = useCallback(() => {
     setActiveConvId(null);
@@ -381,23 +433,36 @@ function AskOrchiconPage() {
     setFolderRenameValue("");
   }, []);
 
-  const handleStopStreaming = useCallback(async () => {
+  // Stop a running turn on any conversation — the active conversation's Stop
+  // button or a sidebar row's. Aborts the server-side turn (idempotent) and
+  // drops the local stream slot so the UI recovers immediately; the
+  // conversation-list refetch clears the running indicator once the server
+  // finalizes the abort.
+  const handleStopConversation = useCallback(
+    async (convId: string) => {
+      try {
+        await abortTurn.mutateAsync(convId);
+        setStream(convId, (prev) => ({
+          ...prev,
+          isStreaming: false,
+          isThinking: false,
+          reconnecting: false,
+          optimisticUserMsg: null,
+          pendingReplyId: null,
+          items: [],
+        }));
+        qc.invalidateQueries({ queryKey: askKeys.conversations });
+      } catch {
+        toast.error("Failed to stop the reply", { title: "Error" });
+      }
+    },
+    [abortTurn, setStream, toast, qc],
+  );
+
+  const handleStopStreaming = useCallback(() => {
     if (!activeConvId) return;
-    try {
-      await abortTurn.mutateAsync(activeConvId);
-      setStream(activeConvId, (prev) => ({
-        ...prev,
-        isStreaming: false,
-        isThinking: false,
-        reconnecting: false,
-        optimisticUserMsg: null,
-        pendingReplyId: null,
-        items: [],
-      }));
-    } catch {
-      toast.error("Failed to stop the reply", { title: "Error" });
-    }
-  }, [activeConvId, abortTurn, setStream, toast]);
+    return handleStopConversation(activeConvId);
+  }, [activeConvId, handleStopConversation]);
 
   // Streaming helper — takes convId as a parameter so it is never stale.
   // Mutates the given conversation's OWN stream slot via functional
@@ -669,9 +734,10 @@ function AskOrchiconPage() {
     return getItemsForCategory(convPrefs.state, conversations.map((c) => c.id));
   }, [conversations, convPrefs.state]);
 
-  // Map for quick lookup of conversations by id
+  // Map for quick lookup of conversations by id. Carries the server-reported
+  // turn state so the sidebar can show which conversations are busy.
   const convById = useMemo(() => {
-    if (!conversations) return new Map<string, { id: string; title: string; lastMessagePreview?: string }>();
+    if (!conversations) return new Map<string, Conversation>();
     return new Map(conversations.map((c) => [c.id, c]));
   }, [conversations]);
 
@@ -997,6 +1063,7 @@ function AskOrchiconPage() {
                     onCancelRenameConv={cancelRenameConv}
                     onRenameConvChange={setRenameValue}
                     onDeleteConv={handleDeleteConv}
+                    onStopConv={handleStopConversation}
                     activeDragId={activeDragId}
                   />
                 );
@@ -1017,6 +1084,7 @@ function AskOrchiconPage() {
                 onCancelRenameConv={cancelRenameConv}
                 onRenameConvChange={setRenameValue}
                 onDeleteConv={handleDeleteConv}
+                onStopConv={handleStopConversation}
                 activeDragId={activeDragId}
                 isOver={overFolderId === "__uncategorized__"}
                 hasFolders={convPrefs.state.categories.length > 0}
@@ -1447,6 +1515,12 @@ interface ConversationItemProps {
   lastMessagePreview?: string;
   isActive: boolean;
   isRenaming: boolean;
+  // isRunning + onStop surface a running turn on this conversation (server
+  // turn_in_flight): a pulsing dot + an always-visible Stop button, so a turn
+  // is stoppable from the sidebar even when the conversation isn't the active
+  // one (e.g. after a refresh, or a turn started in another tab/device).
+  isRunning?: boolean;
+  onStop?: () => void;
   renameValue: string;
   renameInputRef: React.MutableRefObject<HTMLInputElement | null>;
   onSelect: () => void;
@@ -1464,6 +1538,8 @@ function ConversationItem({
   lastMessagePreview,
   isActive,
   isRenaming,
+  isRunning = false,
+  onStop,
   renameValue,
   renameInputRef,
   onSelect,
@@ -1519,7 +1595,41 @@ function ConversationItem({
                 className="w-full bg-background border rounded px-1 py-0.5 text-sm outline-none focus:ring-1 focus:ring-ring"
               />
             ) : (
-              <span className="truncate block">{title || "New conversation"}</span>
+              <div className="flex items-center gap-1.5 min-w-0">
+                {isRunning && (
+                  <span
+                    className="shrink-0 relative flex h-1.5 w-1.5"
+                    title="Reply in progress"
+                  >
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-sky-500" />
+                  </span>
+                )}
+                <span className="truncate block flex-1 min-w-0">
+                  {title || "New conversation"}
+                </span>
+                {isRunning && onStop && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onStop();
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onStop();
+                      }
+                    }}
+                    className="shrink-0 cursor-pointer text-destructive hover:text-destructive-foreground"
+                    title="Stop this reply"
+                  >
+                    <Square className="h-3 w-3 fill-current" />
+                  </span>
+                )}
+              </div>
             )}
             {lastMessagePreview && (
               <p className="mt-0.5 text-xs text-muted-foreground truncate">
@@ -1577,6 +1687,7 @@ interface FolderItemProps {
   onCancelRenameConv: () => void;
   onRenameConvChange: (value: string) => void;
   onDeleteConv: (id: string, e: React.MouseEvent) => void;
+  onStopConv: (id: string) => void;
   activeDragId: string | null;
 }
 
@@ -1606,6 +1717,7 @@ function FolderItem({
   onCancelRenameConv,
   onRenameConvChange,
   onDeleteConv,
+  onStopConv,
   activeDragId,
 }: FolderItemProps) {
   const { setNodeRef } = useDroppable({ id });
@@ -1678,6 +1790,8 @@ function FolderItem({
                 convId={convId}
                 title={conv.title}
                 lastMessagePreview={conv.lastMessagePreview}
+                isRunning={conv.turnInFlight ?? false}
+                onStop={() => onStopConv(convId)}
                 isActive={activeConvId === convId}
                 isRenaming={renamingConvId === convId}
                 renameValue={convRenameValue}
@@ -1712,6 +1826,7 @@ interface UncategorizedDropZoneProps {
   onCancelRenameConv: () => void;
   onRenameConvChange: (value: string) => void;
   onDeleteConv: (id: string, e: React.MouseEvent) => void;
+  onStopConv: (id: string) => void;
   activeDragId: string | null;
   isOver: boolean;
   hasFolders: boolean;
@@ -1731,6 +1846,7 @@ function UncategorizedDropZone({
   onCancelRenameConv,
   onRenameConvChange,
   onDeleteConv,
+  onStopConv,
   activeDragId,
   isOver,
   hasFolders,
@@ -1762,6 +1878,8 @@ function UncategorizedDropZone({
             convId={convId}
             title={conv.title}
             lastMessagePreview={conv.lastMessagePreview}
+            isRunning={conv.turnInFlight ?? false}
+            onStop={() => onStopConv(convId)}
             isActive={activeConvId === convId}
             isRenaming={renamingConvId === convId}
             renameValue={renameValue}

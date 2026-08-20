@@ -1235,15 +1235,26 @@ func TestTurnRegistry(t *testing.T) {
 	ctx1, c1 := context.WithCancelCause(context.Background())
 	_, c2 := context.WithCancelCause(context.Background())
 
-	tok1, ok := r.register("conv_a", "tnt_dev", c1)
+	tok1, ok := r.register("conv_a", "tnt_dev", "msg_a1", c1)
 	if !ok {
 		t.Fatal("first register should succeed")
 	}
 	if tok1 == 0 {
 		t.Fatal("register must return a non-zero token")
 	}
-	if _, ok := r.register("conv_a", "tnt_dev", c2); ok {
+	if _, ok := r.register("conv_a", "tnt_dev", "msg_a2", c2); ok {
 		t.Fatal("second register for the same conversation must fail (one turn at a time)")
+	}
+
+	// get reports the running turn and its pending assistant message id (the
+	// id the frontend uses to re-attach the Stop button + completion poll
+	// after a refresh), and reports not-in-flight for unknown conversations.
+	entry, ok := r.get("conv_a")
+	if !ok || entry.assistantMsgID != "msg_a1" {
+		t.Fatalf("get after register = (assistantMsgID %q, ok %v), want msg_a1/true", entry.assistantMsgID, ok)
+	}
+	if _, ok := r.get("conv_missing"); ok {
+		t.Fatal("get for an unregistered conversation must report not in flight")
 	}
 
 	// cancel fires the collector's cancel with the cause and returns the
@@ -1267,18 +1278,18 @@ func TestTurnRegistry(t *testing.T) {
 	}
 	// The entry stays until the collector removes it — a new send is still
 	// gated while the old turn finalizes.
-	if _, ok := r.register("conv_a", "tnt_dev", c2); ok {
+	if _, ok := r.register("conv_a", "tnt_dev", "msg_a3", c2); ok {
 		t.Fatal("register must still fail after cancel (entry removed on finalize)")
 	}
 
 	// Token-guarded removal: a STALE finalize (wrong token) must not remove
 	// the entry; the current token does.
 	r.remove("conv_a", tok1+999)
-	if _, ok := r.register("conv_a", "tnt_dev", c2); ok {
+	if _, ok := r.register("conv_a", "tnt_dev", "msg_a3", c2); ok {
 		t.Fatal("stale-token remove must not delete the entry")
 	}
 	r.remove("conv_a", tok1)
-	tok2, ok := r.register("conv_a", "tnt_dev", c2)
+	tok2, ok := r.register("conv_a", "tnt_dev", "msg_a2", c2)
 	if !ok || tok2 <= tok1 {
 		t.Fatal("register must succeed after the collector removes its entry, with a fresh token")
 	}
@@ -1295,11 +1306,11 @@ func TestTurnRegistrySweep(t *testing.T) {
 	r := newTurnRegistry()
 	_, c1 := context.WithCancelCause(context.Background())
 	_, c2 := context.WithCancelCause(context.Background())
-	_, ok := r.register("conv_old", "tnt_old", c1)
+	_, ok := r.register("conv_old", "tnt_old", "msg_old", c1)
 	if !ok {
 		t.Fatal("register conv_old")
 	}
-	_, ok = r.register("conv_fresh", "tnt_fresh", c2)
+	_, ok = r.register("conv_fresh", "tnt_fresh", "msg_fresh", c2)
 	if !ok {
 		t.Fatal("register conv_fresh")
 	}
