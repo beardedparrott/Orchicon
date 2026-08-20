@@ -126,6 +126,17 @@ message TenantSettings {
   // "leave unchanged"; absent = unchanged. Zero (default) = no tenant cap.
   optional int32 max_concurrent_runs = 28;
 
+  // --- Session timeout ---
+  // Access-token TTL in seconds (how long an access token is valid).
+  // Zero = leave unchanged on update. Default is 900 (15 minutes).
+  // Range: [30, 86400].
+  int64 session_access_token_ttl_seconds = 29;
+
+  // Refresh-token TTL in seconds (how long a refresh token is valid).
+  // Zero = leave unchanged on update. Default is 86400 (24 hours).
+  // Range: [300, 31536000].
+  int64 session_refresh_token_ttl_seconds = 30;
+
   google.protobuf.Timestamp created_at = 100;
   google.protobuf.Timestamp updated_at = 101;
 }

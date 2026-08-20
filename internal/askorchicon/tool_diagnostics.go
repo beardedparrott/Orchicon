@@ -131,6 +131,8 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 		StallTextLoopWindowSeconds   int64  `json:"stall_text_loop_window_seconds"`
 		StallRepetitionCount         int32  `json:"stall_repetition_count"`
 		StallRepetitionWindowSeconds int64  `json:"stall_repetition_window_seconds"`
+		SessionAccessTokenTtlSeconds int64  `json:"session_access_token_ttl_seconds"`
+		SessionRefreshTokenTtlSeconds int64 `json:"session_refresh_token_ttl_seconds"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -149,6 +151,8 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 		StallTextLoopWindowSeconds:   params.StallTextLoopWindowSeconds,
 		StallRepetitionCount:         params.StallRepetitionCount,
 		StallRepetitionWindowSeconds: params.StallRepetitionWindowSeconds,
+		SessionAccessTokenTtlSeconds: params.SessionAccessTokenTtlSeconds,
+		SessionRefreshTokenTtlSeconds: params.SessionRefreshTokenTtlSeconds,
 	})
 	if err != nil {
 		return nil, err

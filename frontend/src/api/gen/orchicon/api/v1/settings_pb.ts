@@ -187,6 +187,25 @@ export class TenantSettings extends Message<TenantSettings> {
   maxConcurrentRuns?: number;
 
   /**
+   * --- Session timeout ---
+   * Access-token TTL in seconds (how long an access token is valid).
+   * Zero = leave unchanged on update. Default is 900 (15 minutes).
+   * Range: [30, 86400].
+   *
+   * @generated from field: int64 session_access_token_ttl_seconds = 29;
+   */
+  sessionAccessTokenTtlSeconds = protoInt64.zero;
+
+  /**
+   * Refresh-token TTL in seconds (how long a refresh token is valid).
+   * Zero = leave unchanged on update. Default is 86400 (24 hours).
+   * Range: [300, 31536000].
+   *
+   * @generated from field: int64 session_refresh_token_ttl_seconds = 30;
+   */
+  sessionRefreshTokenTtlSeconds = protoInt64.zero;
+
+  /**
    * @generated from field: google.protobuf.Timestamp created_at = 100;
    */
   createdAt?: Timestamp;
@@ -223,6 +242,8 @@ export class TenantSettings extends Message<TenantSettings> {
     { no: 26, name: "log_retention_days", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 27, name: "log_max_files", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 28, name: "max_concurrent_runs", kind: "scalar", T: 5 /* ScalarType.INT32 */, opt: true },
+    { no: 29, name: "session_access_token_ttl_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 30, name: "session_refresh_token_ttl_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 100, name: "created_at", kind: "message", T: Timestamp },
     { no: 101, name: "updated_at", kind: "message", T: Timestamp },
   ]);

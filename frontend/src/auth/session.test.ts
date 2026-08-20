@@ -5,10 +5,12 @@ import {
   getAccessToken,
   localLogin,
   logout,
+  refreshAccessToken,
   setAccessToken,
   signup,
   useSessionStore,
   type SessionInfo,
+  type RefreshResult,
 } from "@/auth/session";
 
 // sessionStorage shim (node test env). loadStashedToken() reads the OIDC
@@ -358,5 +360,79 @@ describe("localLogin", () => {
 
     expect(out.session.force_password_change).toBe(false);
     expect(out.session.username).toBe("admin");
+  });
+});
+
+describe("refreshAccessToken — discriminated result", () => {
+  beforeEach(() => {
+    storage.clear();
+    logout();
+    setAccessToken("");
+    useSessionStore.setState({ session: { authenticated: false }, loading: false });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    storage.clear();
+    logout();
+    setAccessToken("");
+    useSessionStore.setState({ session: { authenticated: false }, loading: false });
+  });
+
+  it("returns { ok: true, session } on HTTP 200", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => okResponse(sessionBody())));
+
+    const result = await refreshAccessToken();
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.session.authenticated).toBe(true);
+      expect(result.session.identity_id).toBe("usr_test");
+      expect(getAccessToken()).toBe("token-after-refresh");
+    }
+  });
+
+  it("returns { ok: false, reason: 'no-session' } on HTTP 401 (token cleared)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 401 })));
+
+    setAccessToken("existing-token");
+    const result = await refreshAccessToken();
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("no-session");
+    expect(getAccessToken()).toBe(""); // cleared on no-session
+  });
+
+  it("returns { ok: false, reason: 'transient' } on HTTP 500 (token NOT cleared)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 500 })));
+
+    setAccessToken("existing-token");
+    const result = await refreshAccessToken();
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("transient");
+    expect(getAccessToken()).toBe("existing-token"); // NOT cleared
+  });
+
+  it("returns { ok: false, reason: 'transient' } on network error (token NOT cleared)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("network"); }));
+
+    setAccessToken("existing-token");
+    const result = await refreshAccessToken();
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("transient");
+    expect(getAccessToken()).toBe("existing-token"); // NOT cleared
+  });
+
+  it("returns { ok: false, reason: 'no-session' } on HTTP 403", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 403 })));
+
+    setAccessToken("existing-token");
+    const result = await refreshAccessToken();
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("no-session");
+    expect(getAccessToken()).toBe(""); // cleared
   });
 });

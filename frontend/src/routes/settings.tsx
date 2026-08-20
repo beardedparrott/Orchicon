@@ -1,6 +1,6 @@
 import { createRoute } from "@tanstack/react-router";
 import { useState, useEffect, useCallback } from "react";
-import { Sun, Moon, Check, Save, BookOpen, Palette, SlidersHorizontal, Database, Download, RotateCcw, Folder, ArrowUp, Loader2, Trash2 } from "lucide-react";
+import { Sun, Moon, Check, Save, BookOpen, Palette, SlidersHorizontal, Database, Download, RotateCcw, Folder, ArrowUp, Loader2, Trash2, Clock } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -19,7 +19,7 @@ export const Route = createRoute({
   component: SettingsPage,
 });
 
-type SettingsTab = "appearance" | "defaults" | "backups" | "guide";
+type SettingsTab = "appearance" | "defaults" | "session" | "backups" | "guide";
 
 function SettingsPage() {
   const [tab, setTab] = useState<SettingsTab>("appearance");
@@ -37,6 +37,7 @@ function SettingsPage() {
         {([
           ["appearance", "Appearance", Palette],
           ["defaults", "Defaults", SlidersHorizontal],
+          ["session", "Session", Clock],
           ["backups", "Backups", Database],
           ["guide", "User Guide", BookOpen],
         ] as const).map(([id, label, Icon]) => (
@@ -58,6 +59,7 @@ function SettingsPage() {
 
       {tab === "appearance" && <AppearanceTab />}
       {tab === "defaults" && <DefaultsTab />}
+      {tab === "session" && <SessionTab />}
       {tab === "backups" && <BackupsTab />}
       {tab === "guide" && <UserGuideTab />}
     </div>
@@ -876,6 +878,80 @@ function UserGuideTab() {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function SessionTab() {
+  const { data: settings, isLoading } = useGetSettings();
+  const updateSettings = useUpdateSettings();
+
+  const [draftAccessTtl, setDraftAccessTtl] = useState("");
+  const [draftRefreshTtl, setDraftRefreshTtl] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (settings) {
+      setDraftAccessTtl(settings.sessionAccessTokenTtlSeconds ? String(settings.sessionAccessTokenTtlSeconds) : "900");
+      setDraftRefreshTtl(settings.sessionRefreshTokenTtlSeconds ? String(settings.sessionRefreshTokenTtlSeconds) : "86400");
+    }
+  }, [settings]);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await updateSettings.mutateAsync({
+        sessionAccessTokenTtlSeconds: parseInt(draftAccessTtl) || 0,
+        sessionRefreshTokenTtlSeconds: parseInt(draftRefreshTtl) || 0,
+      } as any);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="space-y-8">
+      {isLoading && <p className="text-sm text-muted-foreground">Loading settings…</p>}
+
+      {!isLoading && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Session timeout</CardTitle>
+            <CardDescription>
+              Controls how long authentication tokens remain valid. A shorter access-TTL
+              means more frequent transparent refreshes; a longer refresh-TTL keeps the
+              HttpOnly refresh cookie alive longer. Zero fields keep the current value.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <StallField
+                label="Access token TTL (seconds)"
+                description="How long an access token is valid. Range: 30–86400. Default: 900 (15 min)."
+                value={draftAccessTtl}
+                onChange={setDraftAccessTtl}
+                placeholder="900"
+              />
+              <StallField
+                label="Refresh token TTL (seconds)"
+                description="How long a refresh token (HttpOnly cookie) is valid. Range: 300–31536000. Default: 86400 (24 hours). Must exceed access token TTL."
+                value={draftRefreshTtl}
+                onChange={setDraftRefreshTtl}
+                placeholder="86400"
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {!isLoading && (
+        <div className="flex justify-end">
+          <Button onClick={handleSave} disabled={saving}>
+            <Save className="mr-2 h-4 w-4" />
+            {saving ? "Saving…" : "Save session settings"}
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
 
