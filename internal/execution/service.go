@@ -1234,6 +1234,36 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 	return connect.NewResponse(&apiv1.ContinueExecutionSessionResponse{Reply: reply}), nil
 }
 
+// GetExecutionTodos returns the worker's most recent todo list for an
+// execution, parsed from the session transcript's latest todowrite tool
+// call. It is display-only data: the todos live in the durable transcript
+// (execution_session_parts) and are the source of truth. Returns an empty
+// list when the worker never recorded a todowrite call (or the transcript is
+// empty).
+func (s *Service) GetExecutionTodos(ctx context.Context, req *connect.Request[apiv1.GetExecutionTodosRequest]) (*connect.Response[apiv1.GetExecutionTodosResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	msg := req.Msg
+	if msg.ExecutionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("execution_id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	parts, err := db.LatestToolUseParts(ctx, ttx.Tx, tenantID, msg.ExecutionId, 1000)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&apiv1.GetExecutionTodosResponse{Todos: latestTodos(parts)}), nil
+}
+
 // composeFollowUpPrompt rebuilds the worker's composed system prompt for a
 // follow-up session (mirrors the TaskReconciler's composeSystemPrompt).
 //

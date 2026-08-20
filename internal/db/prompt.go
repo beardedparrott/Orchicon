@@ -43,6 +43,22 @@ const efficiencyBlock = "\n## Efficiency — minimize tool output and tool calls
 	"- **Batch your tool calls.** Read multiple files in a single `read` call (use `limit`/`offset` or read several paths), combine related commands into one `bash` call (e.g. one `git status && git log`), and prefer `grep`/`glob` over sequential reads. Avoid micro tool calls: each call re-sends the whole conversation to the model, so fewer, larger calls are dramatically cheaper.\n" +
 	"- Compact commands are still real commands: you MUST verify state with actual tool calls and never fabricate output. Batching combines commands, not results — never invent a combined result you did not observe.\n\n"
 
+// todoListBlock is the shared "## Todo list" guidance block injected into
+// the stable prompt prefix of every worker (StablePromptPrefix). It mirrors
+// opencode's todowrite tool guidance so workers proactively maintain a
+// structured task list that the execution UI surfaces live with an X/Y
+// progress counter. The `todowrite` tool ships with the opencode runtime's
+// built-in tool set; this block is what tells the worker to actually use it
+// (replacement semantics, one in_progress at a time, immediate completion).
+const todoListBlock = "\n## Todo list\n" +
+	"- **Use the `todowrite` tool to maintain a structured task list for this run.** It is available in your toolset and keeps the operator informed of your progress in real time.\n" +
+	"- Use it **proactively for multi-step work (roughly 3+ steps)**: break the task into specific, actionable items and track each one.\n" +
+	"- Keep exactly **one** item `in_progress` at a time.\n" +
+	"- Mark items `completed` **immediately** as the work finishes — never batch completions at the end.\n" +
+	"- Mark items `cancelled` when they become irrelevant instead of silently dropping them.\n" +
+	"- `todowrite` replaces the whole list on every call: always send the full updated array of `{content, status, priority}` items, using only `pending | in_progress | completed | cancelled` statuses.\n" +
+	"- The list is surfaced live in the execution UI — keep it accurate so the operator can track where you are at a glance.\n\n"
+
 // RuntimeEnvironmentBlock is the machine-generated "## Runtime environment"
 // section of the stable prompt prefix. It tells the worker the ground truth
 // about its execution sandbox so it does not waste cycles empirically probing
@@ -87,6 +103,7 @@ func StablePromptPrefix(runtimeImage string) string {
 	sb.WriteString(WorkerIdentityPreamble)
 	sb.WriteString(safetyBlock)
 	sb.WriteString(efficiencyBlock)
+	sb.WriteString(todoListBlock)
 	sb.WriteString(RuntimeEnvironmentBlock(runtimeImage))
 	return sb.String()
 }

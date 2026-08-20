@@ -9,7 +9,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { ApproveToolCallRequest, ApproveToolCallResponse, BatchDeleteExecutionsRequest, BatchDeleteExecutionsResponse, CancelExecutionRequest, CancelExecutionResponse, CheckpointNowRequest, CheckpointNowResponse, ContinueExecutionSessionRequest, ContinueExecutionSessionResponse, CreateFollowUpExecutionRequest, CreateFollowUpExecutionResponse, DeleteExecutionRequest, DeleteExecutionResponse, GetExecutionRequest, GetExecutionResponse, GetExecutionSessionRequest, GetExecutionSessionResponse, ListExecutionsRequest, ListExecutionsResponse, ListPendingApprovalsRequest, ListPendingApprovalsResponse, PauseExecutionRequest, PauseExecutionResponse, ResumeExecutionRequest, ResumeExecutionResponse, SendExecutionMessageRequest, SendExecutionMessageResponse, StreamExecutionEventsRequest, StreamExecutionEventsResponse } from "./execution_pb.js";
+import { ApproveToolCallRequest, ApproveToolCallResponse, BatchDeleteExecutionsRequest, BatchDeleteExecutionsResponse, CancelExecutionRequest, CancelExecutionResponse, CheckpointNowRequest, CheckpointNowResponse, ContinueExecutionSessionRequest, ContinueExecutionSessionResponse, CreateFollowUpExecutionRequest, CreateFollowUpExecutionResponse, DeleteExecutionRequest, DeleteExecutionResponse, GetExecutionRequest, GetExecutionResponse, GetExecutionSessionRequest, GetExecutionSessionResponse, GetExecutionTodosRequest, GetExecutionTodosResponse, ListExecutionsRequest, ListExecutionsResponse, ListPendingApprovalsRequest, ListPendingApprovalsResponse, PauseExecutionRequest, PauseExecutionResponse, ResumeExecutionRequest, ResumeExecutionResponse, SendExecutionMessageRequest, SendExecutionMessageResponse, StreamExecutionEventsRequest, StreamExecutionEventsResponse } from "./execution_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -201,6 +201,19 @@ export const ExecutionService = {
       name: "ContinueExecutionSession",
       I: ContinueExecutionSessionRequest,
       O: ContinueExecutionSessionResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * GetExecutionTodos returns the worker's most recent todo list for an
+     * execution, parsed from the session transcript's latest todowrite tool
+     * call. Empty when the worker never recorded one.
+     *
+     * @generated from rpc orchicon.api.v1.ExecutionService.GetExecutionTodos
+     */
+    getExecutionTodos: {
+      name: "GetExecutionTodos",
+      I: GetExecutionTodosRequest,
+      O: GetExecutionTodosResponse,
       kind: MethodKind.Unary,
     },
   }

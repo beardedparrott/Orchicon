@@ -215,6 +215,43 @@ func TestCompositeStablePrefixSharedAcrossWorkers(t *testing.T) {
 	}
 }
 
+// TestCompositePromptTodoListDirectives verifies every worker's composite
+// prompt carries the Todo list guidance block in the stable prefix — the
+// todowrite tool is available in the opencode runtime toolset, and the
+// prompt must tell the worker to use it proactively for multi-step work
+// (acceptance: proactive use for 3+ steps, one in_progress at a time,
+// immediate completion, full-list replacement semantics).
+func TestCompositePromptTodoListDirectives(t *testing.T) {
+	ctx := context.Background()
+	item := db.WorkItemRow{Title: "Todo directives", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
+	worker := db.WorkerVersionRow{Role: "Engineer"}
+	r := &WorkflowReconciler{}
+	out, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, worker, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"## Todo list",
+		"todowrite",
+		"3+ steps",
+		"`in_progress` at a time",
+		"`completed`",
+		"`cancelled`",
+		"pending | in_progress | completed | cancelled",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("composite prompt missing %q; got:\n%s", want, out)
+		}
+	}
+
+	// The standalone (non-workflow) dispatch path must carry the same block
+	// via the shared stable prefix.
+	standalone := buildStandaloneComposite(nil, db.ExecutionRow{}, item, worker, "", "")
+	if !strings.Contains(standalone, "## Todo list") {
+		t.Errorf("standalone composite missing the Todo list block")
+	}
+}
+
 // TestCompositePromptEfficiencyAndBatchingDirectives verifies every worker's
 // composite prompt carries the tool-output-discipline and tool-call-batching
 // directives (acceptance: explicit minimize-tool-output + batch-tool-calls

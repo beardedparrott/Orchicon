@@ -219,6 +219,82 @@ proto3.util.setEnumType(ExecutionEventType, "orchicon.api.v1.ExecutionEventType"
 ]);
 
 /**
+ * TodoStatus is the lifecycle state of a worker's todo item, mirroring the
+ * opencode todowrite tool's statuses.
+ *
+ * @generated from enum orchicon.api.v1.TodoStatus
+ */
+export enum TodoStatus {
+  /**
+   * @generated from enum value: TODO_STATUS_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: TODO_STATUS_PENDING = 1;
+   */
+  PENDING = 1,
+
+  /**
+   * @generated from enum value: TODO_STATUS_IN_PROGRESS = 2;
+   */
+  IN_PROGRESS = 2,
+
+  /**
+   * @generated from enum value: TODO_STATUS_COMPLETED = 3;
+   */
+  COMPLETED = 3,
+
+  /**
+   * @generated from enum value: TODO_STATUS_CANCELLED = 4;
+   */
+  CANCELLED = 4,
+}
+// Retrieve enum metadata with: proto3.getEnumType(TodoStatus)
+proto3.util.setEnumType(TodoStatus, "orchicon.api.v1.TodoStatus", [
+  { no: 0, name: "TODO_STATUS_UNSPECIFIED" },
+  { no: 1, name: "TODO_STATUS_PENDING" },
+  { no: 2, name: "TODO_STATUS_IN_PROGRESS" },
+  { no: 3, name: "TODO_STATUS_COMPLETED" },
+  { no: 4, name: "TODO_STATUS_CANCELLED" },
+]);
+
+/**
+ * TodoPriority is the priority of a worker's todo item, mirroring the
+ * opencode todowrite tool's priorities.
+ *
+ * @generated from enum orchicon.api.v1.TodoPriority
+ */
+export enum TodoPriority {
+  /**
+   * @generated from enum value: TODO_PRIORITY_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: TODO_PRIORITY_HIGH = 1;
+   */
+  HIGH = 1,
+
+  /**
+   * @generated from enum value: TODO_PRIORITY_MEDIUM = 2;
+   */
+  MEDIUM = 2,
+
+  /**
+   * @generated from enum value: TODO_PRIORITY_LOW = 3;
+   */
+  LOW = 3,
+}
+// Retrieve enum metadata with: proto3.getEnumType(TodoPriority)
+proto3.util.setEnumType(TodoPriority, "orchicon.api.v1.TodoPriority", [
+  { no: 0, name: "TODO_PRIORITY_UNSPECIFIED" },
+  { no: 1, name: "TODO_PRIORITY_HIGH" },
+  { no: 2, name: "TODO_PRIORITY_MEDIUM" },
+  { no: 3, name: "TODO_PRIORITY_LOW" },
+]);
+
+/**
  * WorkerExecution is a concrete invocation of a Worker against a Task on
  * a specific RuntimeAdapter instance (docs/02 §2.7, docs/09 §3.3).
  * Created by the scheduler at dispatch; owns the adapter session.
@@ -1942,6 +2018,136 @@ export class ContinueExecutionSessionResponse extends Message<ContinueExecutionS
 
   static equals(a: ContinueExecutionSessionResponse | PlainMessage<ContinueExecutionSessionResponse> | undefined, b: ContinueExecutionSessionResponse | PlainMessage<ContinueExecutionSessionResponse> | undefined): boolean {
     return proto3.util.equals(ContinueExecutionSessionResponse, a, b);
+  }
+}
+
+/**
+ * TodoItem is a single entry of a worker's todo list, as recorded by the
+ * latest todowrite tool call in the execution's session transcript.
+ *
+ * @generated from message orchicon.api.v1.TodoItem
+ */
+export class TodoItem extends Message<TodoItem> {
+  /**
+   * @generated from field: string content = 1;
+   */
+  content = "";
+
+  /**
+   * @generated from field: orchicon.api.v1.TodoStatus status = 2;
+   */
+  status = TodoStatus.UNSPECIFIED;
+
+  /**
+   * @generated from field: orchicon.api.v1.TodoPriority priority = 3;
+   */
+  priority = TodoPriority.UNSPECIFIED;
+
+  constructor(data?: PartialMessage<TodoItem>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.TodoItem";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "content", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "status", kind: "enum", T: proto3.getEnumType(TodoStatus) },
+    { no: 3, name: "priority", kind: "enum", T: proto3.getEnumType(TodoPriority) },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): TodoItem {
+    return new TodoItem().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): TodoItem {
+    return new TodoItem().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): TodoItem {
+    return new TodoItem().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: TodoItem | PlainMessage<TodoItem> | undefined, b: TodoItem | PlainMessage<TodoItem> | undefined): boolean {
+    return proto3.util.equals(TodoItem, a, b);
+  }
+}
+
+/**
+ * GetExecutionTodos returns the worker's most recent todo list for an
+ * execution, parsed from the session transcript's latest todowrite tool
+ * call. Empty when the worker never recorded a todo list.
+ *
+ * @generated from message orchicon.api.v1.GetExecutionTodosRequest
+ */
+export class GetExecutionTodosRequest extends Message<GetExecutionTodosRequest> {
+  /**
+   * @generated from field: string execution_id = 1;
+   */
+  executionId = "";
+
+  constructor(data?: PartialMessage<GetExecutionTodosRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GetExecutionTodosRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "execution_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetExecutionTodosRequest {
+    return new GetExecutionTodosRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetExecutionTodosRequest {
+    return new GetExecutionTodosRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetExecutionTodosRequest {
+    return new GetExecutionTodosRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetExecutionTodosRequest | PlainMessage<GetExecutionTodosRequest> | undefined, b: GetExecutionTodosRequest | PlainMessage<GetExecutionTodosRequest> | undefined): boolean {
+    return proto3.util.equals(GetExecutionTodosRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.GetExecutionTodosResponse
+ */
+export class GetExecutionTodosResponse extends Message<GetExecutionTodosResponse> {
+  /**
+   * @generated from field: repeated orchicon.api.v1.TodoItem todos = 1;
+   */
+  todos: TodoItem[] = [];
+
+  constructor(data?: PartialMessage<GetExecutionTodosResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GetExecutionTodosResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "todos", kind: "message", T: TodoItem, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetExecutionTodosResponse {
+    return new GetExecutionTodosResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetExecutionTodosResponse {
+    return new GetExecutionTodosResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetExecutionTodosResponse {
+    return new GetExecutionTodosResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetExecutionTodosResponse | PlainMessage<GetExecutionTodosResponse> | undefined, b: GetExecutionTodosResponse | PlainMessage<GetExecutionTodosResponse> | undefined): boolean {
+    return proto3.util.equals(GetExecutionTodosResponse, a, b);
   }
 }
 
