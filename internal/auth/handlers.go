@@ -397,12 +397,13 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create account", http.StatusInternalServerError)
 		return
 	}
-	pair, err := h.issuer.IssuePair(ident.ID, tenantID, ents, isAdmin)
+	accessTTL, refreshTTL := h.sessionTTLs(r.Context(), tenantID)
+	pair, err := h.issuer.IssuePairWithTTL(ident.ID, tenantID, ents, isAdmin, accessTTL, refreshTTL)
 	if err != nil {
 		http.Error(w, "failed to issue tokens", http.StatusInternalServerError)
 		return
 	}
-	h.setRefreshCookie(w, pair.RefreshToken, h.cfg.RefreshTTL)
+	h.setRefreshCookie(w, pair.RefreshToken, refreshTTL)
 	resp := tokenResponse{
 		AccessToken: pair.AccessToken,
 		TokenType:   "Bearer",
