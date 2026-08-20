@@ -1676,7 +1676,7 @@ interface FolderItemProps {
   onRenameChange: (value: string) => void;
   onDelete: () => void;
   convIds: string[];
-  convById: Map<string, { id: string; title: string; lastMessagePreview?: string }>;
+  convById: Map<string, Conversation>;
   activeConvId: string | null;
   renamingConvId: string | null;
   convRenameValue: string;
@@ -1815,7 +1815,7 @@ function FolderItem({
 interface UncategorizedDropZoneProps {
   id: string;
   convIds: string[];
-  convById: Map<string, { id: string; title: string; lastMessagePreview?: string }>;
+  convById: Map<string, Conversation>;
   activeConvId: string | null;
   renamingConvId: string | null;
   renameValue: string;
