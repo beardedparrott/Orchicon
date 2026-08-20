@@ -307,22 +307,48 @@ function AskOrchiconPage() {
   // The reply (or error) is persisted under the acked assistant message id.
   // When it appears via polling, the turn is over — clear the ACTIVE
   // conversation's stream slot (other conversations keep their own state,
-  // so a turn running while you browse elsewhere stays intact).
+  // so a turn running while you browse elsewhere stays intact). When the
+  // acked message came back as an ERROR (reply failed after ack), the
+  // sent draft is copied to the clipboard and left in sessionStorage so the
+  // user never loses what they typed; on success the draft is cleared.
   useEffect(() => {
     if (!activeConvId || !isStreaming || !pendingReplyId || !messages) return;
-    if (messages.some((m) => m.id === pendingReplyId)) {
-      setStream(activeConvId, (prev) => ({
-        ...prev,
-        isStreaming: false,
-        isThinking: false,
-        reconnecting: false,
-        optimisticUserMsg: null,
-        pendingReplyId: null,
-        items: [],
-      }));
-      qc.invalidateQueries({ queryKey: askKeys.conversations });
+    const acked = messages.find((m) => m.id === pendingReplyId);
+    if (!acked) return;
+    const draftKey = `${DRAFT_STORAGE_KEY_PREFIX}${activeConvId}`;
+    if (acked.metadata?.error) {
+      // Reply failed after the message was acked. The composer already
+      // cleared on ack (the message is persisted in history), but put the
+      // sent text on the clipboard and keep the draft so it is never lost.
+      let draft = "";
+      try {
+        draft = sessionStorage.getItem(draftKey) ?? "";
+      } catch {
+        // sessionStorage unavailable — ignore.
+      }
+      if (draft) copyTextToClipboard(draft);
+      toast.error("The reply failed. Your message was saved — retry below.", {
+        title: "Reply failed",
+      });
+    } else {
+      // Reply succeeded — the draft is no longer needed.
+      try {
+        sessionStorage.removeItem(draftKey);
+      } catch {
+        // sessionStorage unavailable — ignore.
+      }
     }
-  }, [messages, isStreaming, pendingReplyId, activeConvId, setStream, qc]);
+    setStream(activeConvId, (prev) => ({
+      ...prev,
+      isStreaming: false,
+      isThinking: false,
+      reconnecting: false,
+      optimisticUserMsg: null,
+      pendingReplyId: null,
+      items: [],
+    }));
+    qc.invalidateQueries({ queryKey: askKeys.conversations });
+  }, [messages, isStreaming, pendingReplyId, activeConvId, setStream, qc, toast]);
 
   // Re-attach a running turn after a refresh / from another tab or device.
   // The in-memory stream slot is gone (or never existed), but the server-side
@@ -1270,13 +1296,11 @@ function ChatInputField({
           if (inputRef.current) {
             inputRef.current.style.height = "auto";
           }
-          if (convId) {
-            try {
-              sessionStorage.removeItem(`${DRAFT_STORAGE_KEY_PREFIX}${convId}`);
-            } catch {
-              // ignore
-            }
-          }
+          // The composer clears on ack (the message is persisted server-side),
+          // but the sessionStorage draft is deliberately KEPT here: the reply
+          // is collected detached and may still fail. The completion effect
+          // copies the draft to the clipboard and leaves it restorable on
+          // reply failure, and clears it once the reply succeeds.
         }
         // on false: text stays so user can fix & retry.
       } finally {
