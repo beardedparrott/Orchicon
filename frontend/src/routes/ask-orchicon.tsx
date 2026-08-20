@@ -69,9 +69,6 @@ export const Route = createRoute({
   component: AskOrchiconPage,
 });
 
-// --- draft persistence constants ---
-const DRAFT_STORAGE_KEY_PREFIX = "orchicon:draft:";
-
 // --- clipboard helper (strict superset of inline navigator.clipboard?.writeText patterns) ---
 function copyTextToClipboard(text: string): void {
   navigator.clipboard?.writeText(text).catch(() => {});
@@ -215,6 +212,16 @@ function AskOrchiconPage() {
   // `streams` (which changes on every chunk and would re-run the effect).
   const sentTextRef = useRef<Record<string, string>>({});
 
+  // A reply-failure restore signal: when the completion effect detects a turn
+  // that was acked but whose reply errored, it sets this so the active
+  // ChatInputField puts the sent text back in the box. token changes each time
+  // so a repeated failure re-triggers the restore.
+  const [restoreDraft, setRestoreDraft] = useState<{
+    convId: string;
+    text: string;
+    token: number;
+  } | null>(null);
+
   // Conversation-list poll cadence: 3s while ANY conversation has a running
   // turn (so running indicators + Stop affordances stay live across tabs and
   // devices), false when nothing is running — no idle network churn. The
@@ -325,8 +332,8 @@ function AskOrchiconPage() {
   // conversation's stream slot (other conversations keep their own state,
   // so a turn running while you browse elsewhere stays intact). When the
   // acked message came back as an ERROR (reply failed after ack), the sent
-  // text is copied to the clipboard and written back to sessionStorage so it
-  // is restorable — never lost on a failed reply.
+  // text is copied to the clipboard and the composer is signalled to put it
+  // back in the box so the user never loses what they typed on a failed reply.
   //
   // This effect does NOT depend on `streams` (which changes on every streaming
   // chunk): clearing the slot on every chunk while the local stream is still
@@ -341,18 +348,18 @@ function AskOrchiconPage() {
     const acked = messages.find((m) => m.id === pendingReplyId);
     if (!acked) return;
     if (acked.metadata?.error) {
-      // Reply failed after the message was acked. The composer already
-      // cleared on ack (the message is persisted in history), but put the
-      // sent text on the clipboard and write it back to sessionStorage so it
-      // is restorable — the user never loses what they typed.
+      // Reply failed after the message was acked. The composer already cleared
+      // on send (the message is persisted in history), but copy the sent text
+      // to the clipboard AND signal the composer to put it back in the box so
+      // the user never loses what they typed.
       const sent = sentTextRef.current[activeConvId] ?? "";
       if (sent) {
         copyTextToClipboard(sent);
-        try {
-          sessionStorage.setItem(`${DRAFT_STORAGE_KEY_PREFIX}${activeConvId}`, sent);
-        } catch {
-          // sessionStorage unavailable — ignore.
-        }
+        setRestoreDraft({
+          convId: activeConvId,
+          text: sent,
+          token: Date.now(),
+        });
       }
       toast.error("The reply failed. Your message was saved — retry below.", {
         title: "Reply failed",
@@ -1047,6 +1054,7 @@ function AskOrchiconPage() {
                 mode={localMode}
                 onModeChange={handleModeChange}
                 convId={activeConvId}
+                restoreDraft={restoreDraft}
               />
             </div>
           </div>
@@ -1256,6 +1264,7 @@ function ChatInputField({
   mode = ConversationMode.BRAINSTORM,
   onModeChange,
   convId,
+  restoreDraft,
 }: {
   onSend: (text: string, attachments?: AttachmentInput[]) => Promise<boolean>;
   onStop: () => void;
@@ -1264,6 +1273,10 @@ function ChatInputField({
   mode?: ConversationMode;
   onModeChange?: (mode: ConversationMode) => void;
   convId?: string | null;
+  // When the parent detects a reply failure (a turn that was acked but whose
+  // reply errored), it signals this with the sent text so the composer puts
+  // it back in the box. Null/absent = nothing to restore.
+  restoreDraft?: { convId: string; text: string; token: number } | null;
 }) {
   // The input stays ENABLED while streaming: sending mid-reply is the
   // interject path (interrupt + redirect), not a rejected "already
@@ -1274,79 +1287,50 @@ function ChatInputField({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Restore draft from sessionStorage when conversation changes.
+  // On a reply failure the parent signals the text to put back in the box.
+  // No sessionStorage draft persistence — the box is cleared on send and the
+  // text is only restored when a send actually fails, so it never lingers
+  // across conversations or while a reply is in flight.
   useEffect(() => {
-    if (!convId) {
-      setText("");
-      return;
+    if (restoreDraft && restoreDraft.convId === convId && restoreDraft.text) {
+      setText(restoreDraft.text);
     }
-    try {
-      const key = `${DRAFT_STORAGE_KEY_PREFIX}${convId}`;
-      const saved = sessionStorage.getItem(key);
-      if (saved) {
-        setText(saved);
-      }
-    } catch {
-      // sessionStorage unavailable — ignore.
-    }
-  }, [convId]);
+  }, [restoreDraft, convId]);
 
-  // Persist draft to sessionStorage as the user types.
   const handleTextChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      const next = e.target.value;
-      setText(next);
-      if (!convId) return;
-      try {
-        const key = `${DRAFT_STORAGE_KEY_PREFIX}${convId}`;
-        if (next) {
-          sessionStorage.setItem(key, next);
-        } else {
-          sessionStorage.removeItem(key);
-        }
-      } catch {
-        // sessionStorage unavailable — ignore.
-      }
+      setText(e.target.value);
       e.target.style.height = "auto";
       e.target.style.height = `${Math.min(e.target.scrollHeight, 192)}px`;
     },
-    [convId],
+    [],
   );
 
   const handleSubmit = useCallback(async () => {
     if (sending) return;
-    if (text.trim() || attachments.length > 0) {
+    const sentText = text.trim();
+    const sentAttachments = attachments.length > 0 ? attachments : undefined;
+    if (sentText || attachments.length > 0) {
       setSending(true);
+      // Clear the box immediately on send (no lingering text while the model
+      // responds); the sent text is captured for recovery on failure.
+      setText("");
+      setAttachments([]);
+      if (inputRef.current) {
+        inputRef.current.style.height = "auto";
+      }
       try {
-        const ok = await onSend(
-          text.trim(),
-          attachments.length > 0 ? attachments : undefined,
-        );
-        if (ok) {
-          setText("");
-          setAttachments([]);
-          if (inputRef.current) {
-            inputRef.current.style.height = "auto";
-          }
-          if (convId) {
-            try {
-              sessionStorage.removeItem(`${DRAFT_STORAGE_KEY_PREFIX}${convId}`);
-            } catch {
-              // ignore
-            }
-          }
-          // The composer clears on ack (the message is persisted server-side)
-          // and the sessionStorage draft is cleared too, so a successful send
-          // never resurrects the text. The sent text is held in-memory on the
-          // stream slot (sentText) and written back to sessionStorage only if
-          // the reply later fails — restorable only when it actually failed.
+        const ok = await onSend(sentText, sentAttachments);
+        if (!ok) {
+          // Pre-ack failure: put the text back so the user can fix & retry.
+          setText(sentText);
+          setAttachments(sentAttachments ?? []);
         }
-        // on false: text stays so user can fix & retry.
       } finally {
         setSending(false);
       }
     }
-  }, [text, attachments, onSend, sending, convId]);
+  }, [sending, text, attachments, onSend]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
