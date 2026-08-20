@@ -12,6 +12,7 @@ import type { ExecutionEvent } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { ApprovalRequest } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { StreamExecutionEventsRequest } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { StreamExecutionEventsResponse } from "@/api/gen/orchicon/api/v1/execution_pb";
+import type { TodoItem } from "@/api/gen/orchicon/api/v1/execution_pb";
 
 import type { PartialMessage } from "@bufbuild/protobuf";
 
@@ -55,6 +56,7 @@ export const executionKeys = {
     [...executionKeys.all, "list", projectId, status, sortOrder] as const,
   detail: (id: string) => [...executionKeys.all, "detail", id] as const,
   session: (id: string) => [...executionKeys.all, "session", id] as const,
+  todos: (id: string) => [...executionKeys.all, "todos", id] as const,
   pendingApprovals: (executionId?: string) =>
     [...executionKeys.all, "approvals", executionId] as const,
 };
@@ -292,6 +294,22 @@ export function useGetExecutionSession(executionId: string, enabled = true) {
       return res.parts;
     },
     enabled: Boolean(executionId) && enabled,
+  });
+}
+
+// useGetExecutionTodos fetches the worker's most recent todo list for an
+// execution, parsed from the session transcript's latest todowrite tool
+// call. Polls at pollMs while running (matching the transcript poll cadence);
+// pass 0 to disable polling (static once the execution is terminal).
+export function useGetExecutionTodos(executionId: string, pollMs = 2000) {
+  return useQuery({
+    queryKey: executionKeys.todos(executionId),
+    queryFn: async () => {
+      const res = await executionClient.getExecutionTodos({ executionId });
+      return res.todos as TodoItem[];
+    },
+    enabled: Boolean(executionId),
+    refetchInterval: pollMs > 0 ? pollMs : undefined,
   });
 }
 

@@ -120,6 +120,41 @@ func ListExecutionSessionPartsTail(ctx context.Context, tx pgx.Tx, tenantID, exe
 	return out, rows.Err()
 }
 
+// LatestToolUseParts returns the MOST RECENT `limit` tool_use parts of an
+// execution's transcript (kind='tool_use' ORDER BY seq DESC LIMIT n), which
+// is what the todos parser walks to find the latest todowrite payload.
+// limit is clamped to 1..1000; the caller may reverse the result if it needs
+// chronological order. The query is index-backed by the
+// UNIQUE(tenant_id, execution_id, seq) constraint.
+func LatestToolUseParts(ctx context.Context, tx pgx.Tx, tenantID, executionID string, limit int) ([]SessionPart, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	const q = `SELECT execution_id, tenant_id, seq, kind, payload, created_at
+		FROM execution_session_parts
+		WHERE tenant_id = $1 AND execution_id = $2 AND kind = $3
+		ORDER BY seq DESC LIMIT $4`
+	rows, err := tx.Query(ctx, q, tenantID, executionID, SessionPartToolUse, limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list latest tool use parts: %w", err)
+	}
+	defer rows.Close()
+	var out []SessionPart
+	for rows.Next() {
+		var p SessionPart
+		var payload []byte
+		if err := rows.Scan(&p.ExecutionID, &p.TenantID, &p.Seq, &p.Kind, &payload, &p.CreatedAt); err != nil {
+			return nil, fmt.Errorf("db: scan session part: %w", err)
+		}
+		p.Payload = payload
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // SessionPartKind constants.
 const (
 	SessionPartUserMessage  = "user_message"

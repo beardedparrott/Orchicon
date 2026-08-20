@@ -74,4 +74,9 @@ service ExecutionService {
   // worker's session in place — no new execution, work item, or workflow
   // state — and records the reply into the session transcript.
   rpc ContinueExecutionSession(ContinueExecutionSessionRequest) returns (ContinueExecutionSessionResponse);
+
+  // GetExecutionTodos returns the worker's most recent todo list for an
+  // execution, parsed from the session transcript's latest todowrite tool
+  // call. Empty when the worker never recorded one.
+  rpc GetExecutionTodos(GetExecutionTodosRequest) returns (GetExecutionTodosResponse);
 }

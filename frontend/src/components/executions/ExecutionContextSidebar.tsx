@@ -19,7 +19,10 @@ import { useMemo } from "react";
 import type { WorkerExecution } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { StreamExecutionEventsResponse } from "@/api/gen/orchicon/api/v1/execution_pb";
 import type { UsageRecord } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
-import { useGetExecutionSession } from "@/api/executions";
+import type { TodoItem } from "@/api/gen/orchicon/api/v1/execution_pb";
+import { TodoStatus } from "@/api/gen/orchicon/api/v1/execution_pb";
+import { TodoPriority } from "@/api/gen/orchicon/api/v1/execution_pb";
+import { useGetExecutionSession, useGetExecutionTodos } from "@/api/executions";
 import { cn } from "@/lib/utils";
 
 const EXEC_STATUS_LABELS: Record<number, string> = {
@@ -91,6 +94,8 @@ export function ExecutionContextSidebar({
   executionId,
 }: ExecutionContextSidebarProps) {
   const { data: transcript } = useGetExecutionSession(executionId ?? "", Boolean(executionId));
+  const execTerminal = exec.status === 7 || exec.status === 8 || exec.status === 9 || exec.status === 10;
+  const { data: todos } = useGetExecutionTodos(executionId ?? "", execTerminal ? 0 : 2000);
   const stats = useMemo<EventStats>(() => {
     const s: EventStats = {
       assistantCount: 0,
@@ -350,6 +355,13 @@ export function ExecutionContextSidebar({
         )}
       </div>
 
+      {/* Todo List — the worker's live task list from the latest todowrite
+          tool call. Hidden entirely when the worker never recorded one (or
+          the execution predates the feature) so the sidebar stays clean. */}
+      {todos && todos.length > 0 && (
+        <TodoListCard todos={todos} />
+      )}
+
       {/* Last assistant message preview */}
       {stats.lastAssistantAt && (
         <div className="rounded-xl border bg-card p-4 shadow-sm">
@@ -413,6 +425,109 @@ export function ExecutionContextSidebar({
         </div>
       )}
     </aside>
+  );
+}
+
+// TodoListCard — the worker's live task list from the latest todowrite
+// tool call. Renders an X/Y completed counter, a thin progress bar (mirroring
+// the Context card), and per-status item rows. Called only when the worker
+// actually recorded a todo list (non-empty).
+function TodoListCard({ todos }: { todos: TodoItem[] }) {
+  const completed = todos.filter(
+    (t) => t.status === TodoStatus.COMPLETED,
+  ).length;
+  const total = todos.length;
+  const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+  return (
+    <div className="rounded-xl border bg-card p-4 shadow-sm">
+      <div className="mb-2 flex items-center justify-between">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Todo List
+        </h3>
+        <span className="text-xs font-medium text-muted-foreground">
+          {completed}/{total}
+        </span>
+      </div>
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+        <div
+          className={cn(
+            "h-full rounded-full transition-all",
+            pct === 100 ? "bg-emerald-500" : "bg-blue-500",
+          )}
+          style={{ width: `${Math.max(pct, 2)}%` }}
+        />
+      </div>
+      <ul className="mt-3 space-y-1.5">
+        {todos.map((todo, i) => (
+          <TodoRow key={i} todo={todo} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// TodoRow renders a single todo item with a status indicator: completed
+// (checked + strikethrough), in_progress (pulsing dot + highlighted),
+// pending (unchecked circle), cancelled (dimmed/struck). UNSPECIFIED status
+// renders as pending (forward-compatible).
+function TodoRow({ todo }: { todo: TodoItem }) {
+  const status = todo.status;
+  const isCompleted = status === TodoStatus.COMPLETED;
+  const isInProgress = status === TodoStatus.IN_PROGRESS;
+  const isCancelled = status === TodoStatus.CANCELLED;
+  const priority =
+    todo.priority === TodoPriority.HIGH
+      ? "high"
+      : todo.priority === TodoPriority.MEDIUM
+        ? "med"
+        : todo.priority === TodoPriority.LOW
+          ? "low"
+          : "";
+  return (
+    <li className="flex items-start gap-2 text-sm">
+      <span
+        className={cn(
+          "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border",
+          isCompleted && "border-emerald-500 bg-emerald-500 text-white",
+          isInProgress && "border-amber-500 bg-amber-100 dark:bg-amber-950",
+          !isCompleted && !isInProgress && !isCancelled && "border-muted-foreground/40",
+          isCancelled && "border-muted-foreground/30 bg-muted",
+        )}
+      >
+        {isCompleted && (
+          <svg
+            className="h-3 w-3"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={3}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M20 6 9 17l-5-5" />
+          </svg>
+        )}
+        {isInProgress && (
+          <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+        )}
+      </span>
+      <span
+        className={cn(
+          "min-w-0 flex-1 leading-snug",
+          isCompleted && "text-muted-foreground line-through",
+          isInProgress && "font-medium text-foreground",
+          isCancelled && "text-muted-foreground/60 line-through",
+          !isCompleted && !isInProgress && !isCancelled && "text-foreground/80",
+        )}
+      >
+        {todo.content}
+        {priority && (
+          <span className="ml-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+            {priority}
+          </span>
+        )}
+      </span>
+    </li>
   );
 }
 

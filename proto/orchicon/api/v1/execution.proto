@@ -295,3 +295,41 @@ message ContinueExecutionSessionRequest {
 message ContinueExecutionSessionResponse {
   string reply = 1;
 }
+
+// TodoStatus is the lifecycle state of a worker's todo item, mirroring the
+// opencode todowrite tool's statuses.
+enum TodoStatus {
+  TODO_STATUS_UNSPECIFIED = 0;
+  TODO_STATUS_PENDING = 1;
+  TODO_STATUS_IN_PROGRESS = 2;
+  TODO_STATUS_COMPLETED = 3;
+  TODO_STATUS_CANCELLED = 4;
+}
+
+// TodoPriority is the priority of a worker's todo item, mirroring the
+// opencode todowrite tool's priorities.
+enum TodoPriority {
+  TODO_PRIORITY_UNSPECIFIED = 0;
+  TODO_PRIORITY_HIGH = 1;
+  TODO_PRIORITY_MEDIUM = 2;
+  TODO_PRIORITY_LOW = 3;
+}
+
+// TodoItem is a single entry of a worker's todo list, as recorded by the
+// latest todowrite tool call in the execution's session transcript.
+message TodoItem {
+  string content = 1;
+  TodoStatus status = 2;
+  TodoPriority priority = 3;
+}
+
+// GetExecutionTodos returns the worker's most recent todo list for an
+// execution, parsed from the session transcript's latest todowrite tool
+// call. Empty when the worker never recorded a todo list.
+message GetExecutionTodosRequest {
+  string execution_id = 1;
+}
+
+message GetExecutionTodosResponse {
+  repeated TodoItem todos = 1;
+}

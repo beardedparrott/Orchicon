@@ -84,6 +84,9 @@ const (
 	// ExecutionServiceContinueExecutionSessionProcedure is the fully-qualified name of the
 	// ExecutionService's ContinueExecutionSession RPC.
 	ExecutionServiceContinueExecutionSessionProcedure = "/orchicon.api.v1.ExecutionService/ContinueExecutionSession"
+	// ExecutionServiceGetExecutionTodosProcedure is the fully-qualified name of the ExecutionService's
+	// GetExecutionTodos RPC.
+	ExecutionServiceGetExecutionTodosProcedure = "/orchicon.api.v1.ExecutionService/GetExecutionTodos"
 )
 
 // ExecutionServiceClient is a client for the orchicon.api.v1.ExecutionService service.
@@ -138,6 +141,10 @@ type ExecutionServiceClient interface {
 	// worker's session in place — no new execution, work item, or workflow
 	// state — and records the reply into the session transcript.
 	ContinueExecutionSession(context.Context, *connect.Request[v1.ContinueExecutionSessionRequest]) (*connect.Response[v1.ContinueExecutionSessionResponse], error)
+	// GetExecutionTodos returns the worker's most recent todo list for an
+	// execution, parsed from the session transcript's latest todowrite tool
+	// call. Empty when the worker never recorded one.
+	GetExecutionTodos(context.Context, *connect.Request[v1.GetExecutionTodosRequest]) (*connect.Response[v1.GetExecutionTodosResponse], error)
 }
 
 // NewExecutionServiceClient constructs a client for the orchicon.api.v1.ExecutionService service.
@@ -241,6 +248,12 @@ func NewExecutionServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(executionServiceMethods.ByName("ContinueExecutionSession")),
 			connect.WithClientOptions(opts...),
 		),
+		getExecutionTodos: connect.NewClient[v1.GetExecutionTodosRequest, v1.GetExecutionTodosResponse](
+			httpClient,
+			baseURL+ExecutionServiceGetExecutionTodosProcedure,
+			connect.WithSchema(executionServiceMethods.ByName("GetExecutionTodos")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -261,6 +274,7 @@ type executionServiceClient struct {
 	sendExecutionMessage     *connect.Client[v1.SendExecutionMessageRequest, v1.SendExecutionMessageResponse]
 	getExecutionSession      *connect.Client[v1.GetExecutionSessionRequest, v1.GetExecutionSessionResponse]
 	continueExecutionSession *connect.Client[v1.ContinueExecutionSessionRequest, v1.ContinueExecutionSessionResponse]
+	getExecutionTodos        *connect.Client[v1.GetExecutionTodosRequest, v1.GetExecutionTodosResponse]
 }
 
 // GetExecution calls orchicon.api.v1.ExecutionService.GetExecution.
@@ -338,6 +352,11 @@ func (c *executionServiceClient) ContinueExecutionSession(ctx context.Context, r
 	return c.continueExecutionSession.CallUnary(ctx, req)
 }
 
+// GetExecutionTodos calls orchicon.api.v1.ExecutionService.GetExecutionTodos.
+func (c *executionServiceClient) GetExecutionTodos(ctx context.Context, req *connect.Request[v1.GetExecutionTodosRequest]) (*connect.Response[v1.GetExecutionTodosResponse], error) {
+	return c.getExecutionTodos.CallUnary(ctx, req)
+}
+
 // ExecutionServiceHandler is an implementation of the orchicon.api.v1.ExecutionService service.
 type ExecutionServiceHandler interface {
 	// GetExecution returns a single execution by id.
@@ -390,6 +409,10 @@ type ExecutionServiceHandler interface {
 	// worker's session in place — no new execution, work item, or workflow
 	// state — and records the reply into the session transcript.
 	ContinueExecutionSession(context.Context, *connect.Request[v1.ContinueExecutionSessionRequest]) (*connect.Response[v1.ContinueExecutionSessionResponse], error)
+	// GetExecutionTodos returns the worker's most recent todo list for an
+	// execution, parsed from the session transcript's latest todowrite tool
+	// call. Empty when the worker never recorded one.
+	GetExecutionTodos(context.Context, *connect.Request[v1.GetExecutionTodosRequest]) (*connect.Response[v1.GetExecutionTodosResponse], error)
 }
 
 // NewExecutionServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -489,6 +512,12 @@ func NewExecutionServiceHandler(svc ExecutionServiceHandler, opts ...connect.Han
 		connect.WithSchema(executionServiceMethods.ByName("ContinueExecutionSession")),
 		connect.WithHandlerOptions(opts...),
 	)
+	executionServiceGetExecutionTodosHandler := connect.NewUnaryHandler(
+		ExecutionServiceGetExecutionTodosProcedure,
+		svc.GetExecutionTodos,
+		connect.WithSchema(executionServiceMethods.ByName("GetExecutionTodos")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/orchicon.api.v1.ExecutionService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ExecutionServiceGetExecutionProcedure:
@@ -521,6 +550,8 @@ func NewExecutionServiceHandler(svc ExecutionServiceHandler, opts ...connect.Han
 			executionServiceGetExecutionSessionHandler.ServeHTTP(w, r)
 		case ExecutionServiceContinueExecutionSessionProcedure:
 			executionServiceContinueExecutionSessionHandler.ServeHTTP(w, r)
+		case ExecutionServiceGetExecutionTodosProcedure:
+			executionServiceGetExecutionTodosHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -588,4 +619,8 @@ func (UnimplementedExecutionServiceHandler) GetExecutionSession(context.Context,
 
 func (UnimplementedExecutionServiceHandler) ContinueExecutionSession(context.Context, *connect.Request[v1.ContinueExecutionSessionRequest]) (*connect.Response[v1.ContinueExecutionSessionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.ExecutionService.ContinueExecutionSession is not implemented"))
+}
+
+func (UnimplementedExecutionServiceHandler) GetExecutionTodos(context.Context, *connect.Request[v1.GetExecutionTodosRequest]) (*connect.Response[v1.GetExecutionTodosResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.ExecutionService.GetExecutionTodos is not implemented"))
 }
