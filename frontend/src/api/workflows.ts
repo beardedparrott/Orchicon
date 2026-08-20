@@ -33,6 +33,15 @@ export const workflowKeys = {
   editLock: (id: string) => [...workflowKeys.all, "edit-lock", id] as const,
   runs: (workflowId: string, status?: WorkflowRunStatus) =>
     [...workflowKeys.all, "runs", workflowId, status] as const,
+  runsList: (opts: {
+    workflowId?: string;
+    projectId?: string;
+    workItemId?: string;
+    status?: WorkflowRunStatus;
+    sortBy?: string;
+    sortOrder?: string;
+    pageSize?: number;
+  }) => [...workflowKeys.all, "runs-list", opts] as const,
   run: (id: string) => [...workflowKeys.all, "run", id] as const,
   stepRuns: (runId: string) => [...workflowKeys.all, "step-runs", runId] as const,
 };
@@ -206,6 +215,7 @@ export function useStartWorkflow() {
     },
     onSuccess: (run) => {
       qc.invalidateQueries({ queryKey: workflowKeys.runs(run.workflowId) });
+      qc.invalidateQueries({ queryKey: [...workflowKeys.all, "runs-list"] });
     },
   });
 }
@@ -263,6 +273,7 @@ export function useAbortWorkflow() {
       qc.invalidateQueries({ queryKey: workflowKeys.run(run.id) });
       qc.invalidateQueries({ queryKey: workflowKeys.runs(run.workflowId) });
       qc.invalidateQueries({ queryKey: workflowKeys.stepRuns(run.id) });
+      qc.invalidateQueries({ queryKey: [...workflowKeys.all, "runs-list"] });
     },
   });
 }
@@ -299,6 +310,7 @@ export function useForceProgressWorkflowRun() {
       qc.invalidateQueries({ queryKey: workflowKeys.run(run.id) });
       qc.invalidateQueries({ queryKey: workflowKeys.stepRuns(run.id) });
       qc.invalidateQueries({ queryKey: workflowKeys.runs(run.workflowId) });
+      qc.invalidateQueries({ queryKey: [...workflowKeys.all, "runs-list"] });
     },
   });
 }
@@ -318,6 +330,7 @@ export function useRetryFailedWorkflowRun() {
       qc.invalidateQueries({ queryKey: workflowKeys.run(run.id) });
       qc.invalidateQueries({ queryKey: workflowKeys.stepRuns(run.id) });
       qc.invalidateQueries({ queryKey: workflowKeys.runs(run.workflowId) });
+      qc.invalidateQueries({ queryKey: [...workflowKeys.all, "runs-list"] });
     },
   });
 }
@@ -334,20 +347,44 @@ export function useGetWorkflowRun(id: string) {
   });
 }
 
-// useListWorkflowRuns fetches a page of runs for a workflow.
-export function useListWorkflowRuns(workflowId: string, status?: WorkflowRunStatus) {
+// useListWorkflowRuns fetches a page of runs scoped by any combination of
+// workflow / project / work item (all optional). Sort by the run's real
+// started_at when sortBy="started_at" for run-history views; the default id
+// sort is preserved for the workflow editor's run list.
+export function useListWorkflowRuns(opts?: {
+  workflowId?: string;
+  projectId?: string;
+  workItemId?: string;
+  status?: WorkflowRunStatus;
+  sortBy?: string;
+  sortOrder?: string;
+  pageSize?: number;
+  refetchInterval?: number;
+}) {
   return useQuery({
-    queryKey: workflowKeys.runs(workflowId, status),
+    queryKey: workflowKeys.runsList({
+      workflowId: opts?.workflowId,
+      projectId: opts?.projectId,
+      workItemId: opts?.workItemId,
+      status: opts?.status,
+      sortBy: opts?.sortBy,
+      sortOrder: opts?.sortOrder,
+      pageSize: opts?.pageSize,
+    }),
     queryFn: async () => {
       const res = await workflowClient.listWorkflowRuns({
-        workflowId,
-        pageSize: 100,
-        status: status ?? undefined,
+        workflowId: opts?.workflowId ?? "",
+        projectId: opts?.projectId ?? "",
+        workItemId: opts?.workItemId ?? "",
+        pageSize: opts?.pageSize ?? 100,
+        status: opts?.status ?? undefined,
+        sortBy: opts?.sortBy ?? "",
+        sortOrder: opts?.sortOrder ?? "",
       });
       return res.runs as WorkflowRun[];
     },
-    enabled: !!workflowId,
-    refetchInterval: 5_000,
+    enabled: true,
+    refetchInterval: opts?.refetchInterval ?? 5_000,
   });
 }
 

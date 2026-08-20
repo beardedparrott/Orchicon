@@ -187,7 +187,11 @@ export const WorkflowService = {
       kind: MethodKind.Unary,
     },
     /**
-     * ListWorkflowRuns returns a page of WorkflowRuns for a workflow.
+     * ListWorkflowRuns returns a page of WorkflowRuns scoped by tenant and
+     * any combination of workflow / project / work item. All scope filters
+     * are optional (empty = no filter); at least one scope filter or an
+     * empty scope is allowed. Runs are sorted by id descending by default,
+     * or by their real started_at when sort_by=started_at.
      *
      * @generated from rpc orchicon.api.v1.WorkflowService.ListWorkflowRuns
      */

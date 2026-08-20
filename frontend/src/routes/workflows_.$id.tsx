@@ -109,7 +109,7 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const navigate = useNavigate();
   const { data, isLoading, error } = useGetWorkflow(workflowId);
   const { data: versions } = useListWorkflowVersions(workflowId);
-  const { data: runs } = useListWorkflowRuns(workflowId);
+  const { data: runs } = useListWorkflowRuns({ workflowId });
   const { data: editLock } = useGetWorkflowEditLock(workflowId);
   const acquireLock = useAcquireWorkflowEditLock();
   const releaseLock = useReleaseWorkflowEditLock();

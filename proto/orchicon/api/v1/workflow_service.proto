@@ -75,7 +75,11 @@ service WorkflowService {
   // GetWorkflowRun returns a single WorkflowRun by id.
   rpc GetWorkflowRun(GetWorkflowRunRequest) returns (GetWorkflowRunResponse);
 
-  // ListWorkflowRuns returns a page of WorkflowRuns for a workflow.
+  // ListWorkflowRuns returns a page of WorkflowRuns scoped by tenant and
+  // any combination of workflow / project / work item. All scope filters
+  // are optional (empty = no filter); at least one scope filter or an
+  // empty scope is allowed. Runs are sorted by id descending by default,
+  // or by their real started_at when sort_by=started_at.
   rpc ListWorkflowRuns(ListWorkflowRunsRequest) returns (ListWorkflowRunsResponse);
 
   // GetWorkflowStepRuns returns all step runs for a WorkflowRun.
@@ -281,10 +285,14 @@ message GetWorkflowRunResponse {
 }
 
 message ListWorkflowRunsRequest {
-  string workflow_id = 1;
+  string workflow_id = 1; // optional scope; empty = all workflows in tenant
   string page_token = 2;
   int32 page_size = 3;
   optional WorkflowRunStatus status = 4;
+  string project_id = 5; // optional scope; empty = all projects
+  string work_item_id = 6; // optional scope; empty = all work items
+  string sort_by = 7; // "id" (default) or "started_at"
+  string sort_order = 8; // "desc" (default) or "asc"
 }
 
 message ListWorkflowRunsResponse {

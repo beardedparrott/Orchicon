@@ -5,9 +5,13 @@
 // while the lock request is in flight).
 //
 // Status badges are small pill-shaped components used in the version
-// history and runs lists below the canvas.
+// history and runs lists below the canvas. RunStatusBadge is defined in
+// work-item-badges.tsx (shared with the Schedules History view) and
+// re-exported here so existing editor imports keep working.
 
 import { cn } from "@/lib/utils";
+
+export { RunStatusBadge } from "@/components/work-items/work-item-badges";
 
 export function EditLockBanner({
   lockAcquired,
@@ -75,31 +79,3 @@ export function VersionStatusBadge({ status }: { status: number }) {
   );
 }
 
-export function RunStatusBadge({ status }: { status: number }) {
-  const labels: Record<number, string> = {
-    1: "pending",
-    2: "running",
-    3: "completed",
-    4: "failed",
-    5: "aborted",
-    6: "paused",
-  };
-  const styles: Record<number, string> = {
-    1: "bg-gray-200 text-gray-700 dark:bg-gray-800 dark:text-gray-300",
-    2: "bg-blue-100 text-blue-800 dark:bg-blue-950/60 dark:text-blue-200",
-    3: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200",
-    4: "bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-200",
-    5: "bg-gray-300 text-gray-700 dark:bg-gray-700 dark:text-gray-200",
-    6: "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-200",
-  };
-  return (
-    <span
-      className={cn(
-        "rounded-full px-2 py-0.5 text-[10px] font-medium",
-        styles[status] ?? "bg-muted text-muted-foreground",
-      )}
-    >
-      {labels[status] ?? "unknown"}
-    </span>
-  );
-}
