@@ -15,6 +15,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/auth/op"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -330,10 +331,11 @@ func isUniqueViolation(err error) bool {
 // atomically provisions a fresh identity + argon2id-hashed local credential
 // in the deployment tenant, then runs the local-login tail verbatim — mint
 // the token pair, set the HttpOnly refresh cookie, complete a pending
-// embedded-OP authorize request when `next` carries one. No role binding is
-// created: a self-signed-up account is a plain user identity with zero
-// entitlements (least privilege for an open endpoint — the bootstrap admin
-// stays the sole initial admin).
+// embedded-OP authorize request when `next` carries one. The FIRST sign-up
+// on a tenant with no admin becomes the tenant admin (granted atomically
+// with account creation, inside the same tx); second/subsequent sign-ups
+// are plain user identities with zero entitlements (least privilege for an
+// open endpoint — an existing admin is never demoted or clobbered).
 func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -464,6 +466,16 @@ func (h *Handler) createLocalAccount(ctx context.Context, tenantID, username, ha
 		}
 		return db.IdentityRow{}, err
 	}
+	// First-admin grant: when the tenant has no admin binding yet, this
+	// fresh identity becomes the tenant admin — atomically with account
+	// creation, inside this same tx. Second/subsequent sign-ups never become
+	// admin (an admin binding exists → the helper skips). Serialized with a
+	// tenant-scoped advisory lock so two concurrent first sign-ups on a
+	// fresh plane cannot both become admin.
+	if err := h.grantFirstAdminRole(ctx, ttx.Tx, tenantID, ident.ID); err != nil {
+		h.log.Error("sign-up: grant first-admin role", "error", err)
+		return db.IdentityRow{}, err
+	}
 	// Self-service account creation: actor == target (the fresh identity).
 	// The audit row commits atomically with the identity + credential
 	// insert. action = auth.signup (the signup act); identity.created is
@@ -485,6 +497,48 @@ func (h *Handler) createLocalAccount(ctx context.Context, tenantID, username, ha
 		return db.IdentityRow{}, err
 	}
 	return ident, nil
+}
+
+// grantFirstAdminRole grants the tenant admin role to identityID when the
+// tenant has no admin binding yet (first-wins). It is the SINGLE
+// admin-provisioning path shared by the local first sign-up and the
+// external-OIDC first login, so exactly one tenant admin can exist
+// regardless of which IdP created the identity or whether the identity row
+// was new — whichever path runs first wins. It is serialized with a
+// tenant-scoped transactional advisory lock (mirroring the DAG-cycle
+// trigger's pg_advisory_xact_lock pattern): a second concurrent writer
+// waits, re-reads the bindings after the first commits, sees the admin
+// binding, and skips the grant. The lock must be taken on the SAME tx that
+// performs the binding, and is held to commit/abort.
+func (h *Handler) grantFirstAdminRole(ctx context.Context, tx pgx.Tx, tenantID, identityID string) error {
+	// Serialize all first-admin writers for this tenant. Keyed on the
+	// tenant id alone (a distinct key space from the DAG trigger's
+	// tenant||':'||project — no cross-lock deadlock, since this tx never
+	// acquires the project lock and vice versa).
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", tenantID); err != nil {
+		return err
+	}
+	adminRoleID, err := ensureAdminRole(ctx, tx, tenantID)
+	if err != nil {
+		return err
+	}
+	// "Has an admin" = an admin role binding exists. ensureAdminRole is
+	// idempotent; if it created an empty admin role but no binding exists,
+	// that is still "no admin" and the grant proceeds to bind the first
+	// identity.
+	bound, err := adminBoundIdentities(ctx, tx, tenantID, adminRoleID)
+	if err != nil {
+		return err
+	}
+	if len(bound) > 0 {
+		// An admin already exists — never demote or clobber it.
+		return nil
+	}
+	if err := bindAdminRole(ctx, tx, tenantID, identityID, adminRoleID); err != nil {
+		return err
+	}
+	h.log.Info("first-admin role granted", "identity", identityID, "tenant", tenantID)
+	return nil
 }
 
 // verifyLocalCredential is the default LocalCredentialVerifier: it looks up
@@ -669,32 +723,31 @@ func (h *Handler) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	if display == "" {
 		display = out.Email
 	}
-	ident, created, err := h.resolver.EnsureIdentityForSubject(r.Context(), tenantID, out.Subject, display, "user")
+	ident, _, err := h.resolver.EnsureIdentityForSubject(r.Context(), tenantID, out.Subject, display, "user")
 	if err != nil {
 		http.Error(w, "failed to provision identity", http.StatusInternalServerError)
 		return
 	}
-	if created {
-		// First-login admin grant (decision #179, idempotent): provision the
-		// tenant admin role + binding for the fresh identity. Routed through
-		// the bootstrap helpers (ensureAdminRole + bindAdminRole) so there is
-		// exactly one admin-provisioning path; errors are logged, never fatal
-		// to the callback (an admin can grant roles later via Admin → Roles).
-		ttx, err := h.pool.BeginTenantTx(r.Context(), tenantID)
+	// First-admin grant (decision #179, idempotent): provision the tenant
+	// admin role + binding when the tenant has no admin binding yet. Routed
+	// through the shared grantFirstAdminRole helper (the same guarded path
+	// the local first sign-up uses) so there is exactly one
+	// admin-provisioning path and exactly one tenant admin regardless of
+	// which IdP ran first. The identity was already committed by
+	// EnsureIdentityForSubject, so this runs in its own tx; errors are
+	// logged, never fatal to the callback (an admin can grant roles later
+	// via Admin → Roles).
+	ttx, err := h.pool.BeginTenantTx(r.Context(), tenantID)
+	if err != nil {
+		h.log.Warn("oidc callback: begin admin-grant tx", "error", err)
+	} else {
+		defer ttx.Rollback(r.Context())
+		err = h.grantFirstAdminRole(r.Context(), ttx.Tx, tenantID, ident.ID)
+		if err == nil {
+			err = ttx.Commit(r.Context())
+		}
 		if err != nil {
-			h.log.Warn("oidc callback: begin admin-grant tx", "error", err)
-		} else {
-			defer ttx.Rollback(r.Context())
-			adminRoleID, err := ensureAdminRole(r.Context(), ttx.Tx, tenantID)
-			if err == nil {
-				err = bindAdminRole(r.Context(), ttx.Tx, tenantID, ident.ID, adminRoleID)
-			}
-			if err == nil {
-				err = ttx.Commit(r.Context())
-			}
-			if err != nil {
-				h.log.Warn("oidc callback: grant first-login admin role", "error", err)
-			}
+			h.log.Warn("oidc callback: grant first-admin role", "error", err)
 		}
 	}
 	h.auditAuthEvent(r.Context(), tenantID, ident.ID, "auth.login", "oidc")
