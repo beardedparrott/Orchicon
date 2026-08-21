@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1373,6 +1374,61 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 		}
 	}
 	resultsJSON, _ := json.Marshal(results)
+	// Write authored PR URL/state into the run's run_context (for the run
+	// detail page) and the execution row columns (for the work item card
+	// and execution detail page). The PR is a fact — extracted regardless
+	// of execution success, so a PR that was created but not merged still
+	// surfaces (the worker may have failed after creating it).
+	prURL, prState := extractPRFields(output)
+	if exec.WorkflowRunID != "" && (prURL != "" || prState != "") {
+		run, err := db.GetWorkflowRun(ctx, ttx.Tx, "tnt_dev", exec.WorkflowRunID)
+		if err != nil {
+			if err == db.ErrNotFound {
+				r.log.Warn("transition: workflow run not found for PR capture", "run", exec.WorkflowRunID, "execution", exec.ID)
+			} else {
+				r.log.Error("transition: get workflow run for PR capture", "run", exec.WorkflowRunID, "execution", exec.ID, "error", err)
+			}
+		} else {
+			ctxBytes, ok := mergeRunContext(run.RunContext, map[string]any{
+				"pr_url":   prURL,
+				"pr_state": prState,
+			})
+			if ok {
+				_, err := db.UpdateWorkflowRun(ctx, ttx.Tx, "tnt_dev", exec.WorkflowRunID, run.Version, db.UpdateWorkflowRunFields{RunContext: &ctxBytes})
+				if err != nil {
+					// One retry on CAS conflict: re-read the run and try once more.
+					reRead, reErr := db.GetWorkflowRun(ctx, ttx.Tx, "tnt_dev", exec.WorkflowRunID)
+					if reErr == nil {
+						ctxBytes2, ok2 := mergeRunContext(reRead.RunContext, map[string]any{
+							"pr_url":   prURL,
+							"pr_state": prState,
+						})
+						if ok2 {
+							_, err = db.UpdateWorkflowRun(ctx, ttx.Tx, "tnt_dev", exec.WorkflowRunID, reRead.Version, db.UpdateWorkflowRunFields{RunContext: &ctxBytes2})
+						}
+					}
+					if err != nil {
+						r.log.Warn("transition: update run_context for PR capture (best-effort)", "run", exec.WorkflowRunID, "execution", exec.ID, "error", err)
+					}
+				}
+			}
+		}
+	}
+	// Update the execution row columns for PR URL/state (non-empty only,
+	// so partial reports don't clobber existing values).
+	if prURL != "" || prState != "" {
+		fields := db.UpdateExecutionFields{}
+		if prURL != "" {
+			fields.PrURL = &prURL
+		}
+		if prState != "" {
+			fields.PrState = &prState
+		}
+		_, err := db.UpdateExecution(ctx, ttx.Tx, "tnt_dev", exec.ID, exec.Version, fields)
+		if err != nil {
+			r.log.Warn("transition: update execution PR fields", "execution", exec.ID, "error", err)
+		}
+	}
 	// A work item bound to an ACTIVE workflow run tracks the RUN, not any
 	// single step execution: the ticket is a shared input reference and
 	// stays "running" for the whole run — its per-step results/status are
@@ -2077,6 +2133,74 @@ func extractIssuesLine(output string, results map[string]any) {
 			}
 		}
 	}
+}
+
+// extractPRFields parses PR_URL: and PR_STATE: lines from the worker's
+// final output and returns the extracted (prURL, prState). The contract:
+//
+// Workers emit these lines anywhere in their final output, line-anchored:
+//
+//	PR_URL: https://github.com/OWNER/REPO/pull/42
+//	PR_STATE: merged
+//
+// Rules:
+//
+// - Last occurrence of each line wins (final state is authoritative).
+// - Leading markdown bullets ("- " / "* ") and code-fence markers (```),
+//   stripped before matching — exactly as extractIssuesLine does.
+// - PR_URL: value after the colon, trimmed. Accepted only if non-empty and
+//   an absolute http:// or https:// URL (net/url parse + scheme check).
+// - PR_STATE: value after the colon, trimmed, lowercased. Accepted set:
+//   open, merged, draft, closed, none. Unknown values are ignored.
+// - Lines are case-sensitive uppercase (consistent with
+//   ORCHICON WORKER SUMMARY: and FACTS LEARNED:).
+// - Extraction is not gated on execution success: a PR URL is a fact.
+// - Only non-empty fields are written, per-key: a URL-only report must
+//   not clobber a previously recorded state, and vice versa.
+//
+// Returns ("", "") when no valid lines are found.
+func extractPRFields(output string) (prURL, prState string) {
+	if output == "" {
+		return "", ""
+	}
+	validStates := map[string]bool{
+		"open":   true,
+		"merged": true,
+		"draft":  true,
+		"closed": true,
+		"none":   true,
+	}
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		// Strip a leading markdown list bullet ("- " / "* ").
+		trimmed = strings.TrimPrefix(trimmed, "- ")
+		trimmed = strings.TrimPrefix(trimmed, "* ")
+		trimmed = strings.TrimSpace(trimmed)
+		// Strip markdown code-fence markers.
+		trimmed = strings.TrimPrefix(trimmed, "```")
+		trimmed = strings.TrimSuffix(trimmed, "```")
+		trimmed = strings.TrimSpace(trimmed)
+
+		if strings.HasPrefix(trimmed, "PR_URL:") {
+			raw := strings.TrimSpace(trimmed[len("PR_URL:"):])
+			if raw == "" {
+				continue
+			}
+			if u, err := url.Parse(raw); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+				if u.Host != "" {
+					prURL = raw
+				}
+			}
+		}
+		if strings.HasPrefix(trimmed, "PR_STATE:") {
+			raw := strings.TrimSpace(trimmed[len("PR_STATE:"):])
+			state := strings.ToLower(raw)
+			if validStates[state] {
+				prState = state
+			}
+		}
+	}
+	return prURL, prState
 }
 
 // extractComposite pulls the "composite" string out of a work item's

@@ -33,7 +33,7 @@ const cannedWorkerIdentity = "You are an autonomous worker running inside the Or
 // every canned worker's AGENTS.md in place of the safety rules. The rules
 // themselves now ship in the composite's stable prompt prefix
 // (StablePromptPrefix) so they are not duplicated per worker.
-const seedSafetyMarker = "orchicon.safety=v20"
+const seedSafetyMarker = "orchicon.safety=v21"
 
 // safetyBlock is the shared safety-rules block delivered to every worker via
 // the stable prompt prefix (StablePromptPrefix in prompt.go). It carries the
@@ -286,6 +286,27 @@ var cannedWorkers = []cannedWorker{
 			bt + bt + bt + "\n\n" +
 			"List the conflicting files in the failure message if you can determine them.\n\n" +
 			"Always use the GitHub CLI (" + bt + "gh" + bt + ") for operations.\n\n" +
+			"### PR reporting (required)\n" +
+			"After opening (or verifying an existing) PR, emit both lines in your final output,\n" +
+			"**immediately before** the `ORCHICON WORKER SUMMARY:` line:\n\n" +
+			"- " + bt + "PR_URL:" + bt + " the PR's real HTML URL as printed by " + bt + "gh pr create" + bt + " / " + bt + "gh pr view" + bt + "\n" +
+			"  (`https://github.com/OWNER/REPO/pull/N`) — never a `pull/new/...` link.\n" +
+			"- " + bt + "PR_STATE:" + bt + " the verified state — " + bt + "merged" + bt + " after a successful merge, " + bt + "open" + bt + " when\n" +
+			"  the PR is open and the workflow waits, " + bt + "draft" + bt + " if created as draft, " + bt + "closed" + bt + " if closed.\n\n" +
+			"Emit the lines whenever a PR exists at step end, including when one pre-existed.\n" +
+			"Emit neither line when no PR exists (the platform keeps the deterministic fallback).\n\n" +
+			"Example — merge success:\n\n" +
+			bt + bt + bt + "\n" +
+			"PR_URL: https://github.com/OWNER/REPO/pull/42\n" +
+			"PR_STATE: merged\n" +
+			"ORCHICON WORKER SUMMARY: success — merged into develop\n" +
+			bt + bt + bt + "\n\n" +
+			"Example — PR created but merge skipped:\n\n" +
+			bt + bt + bt + "\n" +
+			"PR_URL: https://github.com/OWNER/REPO/pull/42\n" +
+			"PR_STATE: open\n" +
+			"ORCHICON WORKER SUMMARY: success — PR created, merge skipped\n" +
+			bt + bt + bt + "\n\n" +
 			"## Your scope in this workflow\n" +
 			"Your steps in this workflow are **identifying the repository** (verify it exists via the remote) and **PR & merge** (final: after approval). " +
 			"The platform provisions your branch and worktree before you start — do not create or switch branches. " +
