@@ -84,6 +84,36 @@ func workerVersionStatus(t *testing.T, pool *db.Pool, workerID string, version i
 	return status
 }
 
+func workerVersionModel(t *testing.T, pool *db.Pool, workerID string, version int) string {
+	t.Helper()
+	var model string
+	err := pool.QueryRow(context.Background(),
+		`SELECT model_ref FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = $2`,
+		workerID, version).Scan(&model)
+	if err != nil {
+		t.Fatalf("query v%d model_ref: %v", version, err)
+	}
+	return model
+}
+
+func setWorkerVersionModel(t *testing.T, pool *db.Pool, workerID string, version int, model string) {
+	t.Helper()
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	if _, err := ttx.Exec(ctx,
+		`UPDATE worker_versions SET model_ref = $3 WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = $2`,
+		workerID, version, model); err != nil {
+		t.Fatalf("set v%d model_ref: %v", version, err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}
+
 // resetWorker deletes the canned worker (cascade versions) and re-seeds it so
 // each test starts from a clean, fresh seed state — independent of residue
 // from a previous run against the same disposable DB.
@@ -557,5 +587,110 @@ func TestSeedDevOpsCarriesMergeConflictResolutionContract(t *testing.T) {
 		if strings.Contains(agents, forbid) {
 			t.Errorf("DevOps Engineer agents_md must not contain %q (merge conflicts are resolved, not routed)", forbid)
 		}
+	}
+}
+
+// TestSeedFreshCannedWorkersHaveBlankModelRef: freshly seeded canned workers
+// must carry an EMPTY model_ref so dispatch inherits the tenant
+// default_worker_model — model selection is user-owned after creation.
+func TestSeedFreshCannedWorkersHaveBlankModelRef(t *testing.T) {
+	pool := seedTestPool(t)
+	const workerID = "w_se_design_approver"
+	resetWorker(t, pool, workerID)
+
+	if model := workerVersionModel(t, pool, workerID, 1); model != "" {
+		t.Errorf("freshly seeded canned worker must have blank model_ref, got %q", model)
+	}
+	// Re-seed again: the blank model_ref must be stable across boots (no
+	// force-align back to a seed default).
+	if err := db.SeedDevWorkers(context.Background(), pool); err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+	if model := workerVersionModel(t, pool, workerID, 1); model != "" {
+		t.Errorf("canned worker model_ref must stay blank after re-seed, got %q", model)
+	}
+}
+
+// TestSeedUserModelEditSurvivesReseed: a user's model edit on a canned worker
+// version must survive a boot re-seed — the seeder never overrides model_ref.
+func TestSeedUserModelEditSurvivesReseed(t *testing.T) {
+	pool := seedTestPool(t)
+	const workerID = "w_se_senior_software_engineer"
+	resetWorker(t, pool, workerID)
+
+	setWorkerVersionModel(t, pool, workerID, 1, "anthropic/claude-sonnet-4")
+
+	if err := db.SeedDevWorkers(context.Background(), pool); err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+	if model := workerVersionModel(t, pool, workerID, 1); model != "anthropic/claude-sonnet-4" {
+		t.Errorf("user model edit must survive re-seed, got %q want anthropic/claude-sonnet-4", model)
+	}
+}
+
+// TestSeedRollForwardPreservesModelRef: when the safety-context roll-forward
+// appends a new published version (current published version is NOT v1), the
+// new version must carry the current version's model_ref (user-owned), not the
+// seed's.
+func TestSeedRollForwardPreservesModelRef(t *testing.T) {
+	pool := seedTestPool(t)
+	ctx := context.Background()
+	const workerID = "w_se_devops_engineer"
+	resetWorker(t, pool, workerID)
+
+	// Build a user-created published v2 (seed's v1 stays as the base), carrying
+	// a user-chosen model and a stale safety marker so the seeder rolls forward.
+	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	var v1id string
+	if err := ttx.QueryRow(ctx,
+		`SELECT id FROM worker_versions WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+		workerID).Scan(&v1id); err != nil {
+		t.Fatalf("query v1: %v", err)
+	}
+	if _, err := ttx.Exec(ctx,
+		`INSERT INTO worker_versions
+		    (id, tenant_id, worker_id, version, version_note, status,
+		     runtime_ref, model_ref, role, skills, behavior, agents_md,
+		     context_sources, permissions, gated_tools, budget_overrides,
+		     execution_policy_ref, concurrency_limit, recovery_workflow_ref,
+		     labels, published_at, created_at)
+		 SELECT $1, 'tnt_dev', worker_id, 2, 'user version', 'published',
+		        runtime_ref, 'google/gemini-2.5-pro', role, skills, behavior,
+		        replace(agents_md, 'orchicon.safety=v20', 'orchicon.safety=v0'),
+		        context_sources, permissions, gated_tools, budget_overrides,
+		        execution_policy_ref, concurrency_limit, recovery_workflow_ref,
+		        labels, now(), now()
+		   FROM worker_versions
+		  WHERE id = $2 AND tenant_id = 'tnt_dev'`,
+		db.NewID(), v1id); err != nil {
+		t.Fatalf("insert published v2: %v", err)
+	}
+	if _, err := ttx.Exec(ctx,
+		`UPDATE workers SET current_version = 2 WHERE id = $1 AND tenant_id = 'tnt_dev'`, workerID); err != nil {
+		t.Fatalf("bump current_version: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// v2 carries a stale marker -> the seeder rolls a new published version
+	// forward that must preserve v2's model_ref.
+	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+	var curVer int
+	if err := pool.QueryRow(ctx,
+		`SELECT current_version FROM workers WHERE id = $1 AND tenant_id = 'tnt_dev'`, workerID).Scan(&curVer); err != nil {
+		t.Fatalf("query current_version: %v", err)
+	}
+	if curVer != 3 {
+		t.Fatalf("roll-forward should create v3, got current_version=%d", curVer)
+	}
+	if model := workerVersionModel(t, pool, workerID, 3); model != "google/gemini-2.5-pro" {
+		t.Errorf("roll-forward version must preserve the current version's model_ref, got %q want google/gemini-2.5-pro", model)
 	}
 }
