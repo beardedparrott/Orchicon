@@ -30,6 +30,8 @@ service AuthService {
 
   // --- RBAC roles + bindings ---
   rpc CreateRole(CreateRoleRequest) returns (CreateRoleResponse);
+  rpc UpdateRole(UpdateRoleRequest) returns (UpdateRoleResponse);
+  rpc DeleteRole(DeleteRoleRequest) returns (DeleteRoleResponse);
   rpc ListRoles(ListRolesRequest) returns (ListRolesResponse);
   rpc AssignRole(AssignRoleRequest) returns (AssignRoleResponse);
   rpc RevokeRole(RevokeRoleRequest) returns (RevokeRoleResponse);
@@ -179,6 +181,36 @@ message CreateRoleRequest {
 message CreateRoleResponse {
   Role role = 1;
 }
+// UpdateRoleRequest edits a role's name and/or entitlements. scope and
+// scope_ref are intentionally immutable here (project-scoped bindings are
+// a non-goal for the admin UI). The optional version enables optimistic
+// concurrency: when present and mismatched the update fails with NotFound.
+message UpdateRoleRequest {
+  string id = 1;
+  // Optional. When absent the name is left unchanged.
+  optional string name = 2;
+  // Optional. When absent the entitlements are left unchanged. When present,
+  // the role's entitlements are replaced exactly by this set — an empty set
+  // clears the role to zero entitlements.
+  optional EntitlementSet entitlements = 3;
+  optional int32 version = 4;
+}
+
+// EntitlementSet wraps a list of entitlements so UpdateRoleRequest can
+// distinguish "leave entitlements unchanged" (field absent) from "set the
+// entitlements to exactly these" (field present, possibly empty).
+message EntitlementSet {
+  repeated string values = 1;
+}
+message UpdateRoleResponse {
+  Role role = 1;
+}
+// DeleteRoleRequest hard-deletes a role plus its role bindings in one
+// tenant-scoped transaction. The role named "admin" cannot be deleted.
+message DeleteRoleRequest {
+  string id = 1;
+}
+message DeleteRoleResponse {}
 message ListRolesRequest {
   string tenant_id = 1;
   string page_token = 2;

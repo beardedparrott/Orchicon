@@ -641,6 +641,126 @@ func (s *Service) CreateRole(ctx context.Context, req *connect.Request[apiv1.Cre
 	return connect.NewResponse(&apiv1.CreateRoleResponse{Role: roleRowToProto(row)}), nil
 }
 
+// UpdateRole edits a role's name and/or entitlements. scope/scope_ref
+// are immutable in this UI (project-scoped bindings are a non-goal). The
+// role named "admin" cannot be edited at all: it carries entitlements
+// ["*"] and ListIdentityEntitlements treats a bound role named exactly
+// "admin" as the tenant-admin bypass, so renaming it would strand the
+// plane and re-entitling it could weaken the bypass.
+func (s *Service) UpdateRole(ctx context.Context, req *connect.Request[apiv1.UpdateRoleRequest]) (*connect.Response[apiv1.UpdateRoleResponse], error) {
+	msg := req.Msg
+	actor := ActorFromContext(ctx)
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	if msg.Name == nil && msg.Entitlements == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("nothing to update"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetRole(ctx, ttx.Tx, tenantID, msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if current.Name == "admin" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("the admin role cannot be edited"))
+	}
+	name := current.Name
+	if msg.Name != nil {
+		name = strings.TrimSpace(*msg.Name)
+		if !roleNameRE.MatchString(name) {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("name must match %s", roleNameRE.String()))
+		}
+	}
+	ents := current.Entitlements
+	if msg.Entitlements != nil {
+		ents, err = validateEntitlements(msg.Entitlements.Values)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+	}
+	expectedVersion := expectedVersion(msg.Version)
+	row, err := db.UpdateRole(ctx, ttx.Tx, tenantID, msg.Id, name, ents, expectedVersion)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := audit.Record(ctx, ttx.Tx, audit.Entry{
+		TenantID:        tenantID,
+		ActorIdentityID: actor.ActorIdentityID,
+		ActorType:       actor.ActorType,
+		AuthMethod:      actor.AuthMethod,
+		Action:          "role.updated",
+		TargetType:      "role",
+		TargetID:        row.ID,
+		Before:          audit.Snapshot(roleAuditSnapshot(current)),
+		After:           audit.Snapshot(roleAuditSnapshot(row)),
+	}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit role.updated: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("role updated", "id", row.ID, "tenant", tenantID)
+	return connect.NewResponse(&apiv1.UpdateRoleResponse{Role: roleRowToProto(row)}), nil
+}
+
+// DeleteRole hard-deletes a role and its role bindings. The role named
+// "admin" cannot be deleted (it is the tenant-admin carrier and deleting
+// it would strand the plane without an admin).
+func (s *Service) DeleteRole(ctx context.Context, req *connect.Request[apiv1.DeleteRoleRequest]) (*connect.Response[apiv1.DeleteRoleResponse], error) {
+	msg := req.Msg
+	actor := ActorFromContext(ctx)
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetRole(ctx, ttx.Tx, tenantID, msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if current.Name == "admin" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("the admin role cannot be deleted"))
+	}
+	if err := db.DeleteRoleBindingsByRole(ctx, ttx.Tx, tenantID, msg.Id); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := db.DeleteRole(ctx, ttx.Tx, tenantID, msg.Id); err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := audit.Record(ctx, ttx.Tx, audit.Entry{
+		TenantID:        tenantID,
+		ActorIdentityID: actor.ActorIdentityID,
+		ActorType:       actor.ActorType,
+		AuthMethod:      actor.AuthMethod,
+		Action:          "role.deleted",
+		TargetType:      "role",
+		TargetID:        msg.Id,
+		Before:          audit.Snapshot(roleAuditSnapshot(current)),
+	}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit role.deleted: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("role deleted", "id", msg.Id, "tenant", tenantID)
+	return connect.NewResponse(&apiv1.DeleteRoleResponse{}), nil
+}
+
 // ListRoles returns a page of roles.
 func (s *Service) ListRoles(ctx context.Context, req *connect.Request[apiv1.ListRolesRequest]) (*connect.Response[apiv1.ListRolesResponse], error) {
 	tenantID, err := requireTenant(ctx)
@@ -1121,8 +1241,17 @@ func mapDBError(err error) error {
 
 var roleNameRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
+// validEntitlementRE matches a well-formed "resource:action" entitlement.
+// Wildcards are permitted (and consumed by rbac.Has): "*" (tenant admin),
+// "*:action", "resource:*", and "resource:action". Anything else is
+// rejected so dead strings like "project:create" cannot persist.
+var validEntitlementRE = regexp.MustCompile(`^(?:\*|[\w-]+):(?:\*|[\w.-]+)$`)
+
 // validateEntitlements normalizes + bounds-checks a list of
-// "resource:action" entitlements.
+// "resource:action" entitlements. Only `*`, `*:action`, `resource:*`, and
+// `resource:action` forms are accepted (the exact set the RBAC interceptor
+// enforces); any malformed string is rejected with InvalidArgument so the
+// picker cannot persist dead entitlements.
 func validateEntitlements(ents []string) ([]string, error) {
 	if len(ents) > 200 {
 		return nil, errors.New("too many entitlements")
@@ -1136,6 +1265,9 @@ func validateEntitlements(ents []string) ([]string, error) {
 		}
 		if len(e) > 64 {
 			return nil, fmt.Errorf("entitlement too long: %s", e)
+		}
+		if e != "*" && !validEntitlementRE.MatchString(e) {
+			return nil, fmt.Errorf("entitlement must be resource:action or *, got %q", e)
 		}
 		if _, ok := seen[e]; ok {
 			continue

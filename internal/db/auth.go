@@ -380,6 +380,60 @@ func GetRole(ctx context.Context, tx pgx.Tx, tenantID, id string) (RoleRow, erro
 	return r, nil
 }
 
+// UpdateRole edits a role's name and entitlements with optimistic
+// concurrency (expectedVersion < 0 disables the version check). The
+// service re-validates name + entitlements before this is reached.
+func UpdateRole(ctx context.Context, tx pgx.Tx, tenantID, id, name string, entitlements []string, expectedVersion int) (RoleRow, error) {
+	ent, err := json.Marshal(entitlements)
+	if err != nil {
+		return RoleRow{}, fmt.Errorf("db: marshal entitlements: %w", err)
+	}
+	const q = `UPDATE roles SET name = $1, entitlements = $2, updated_at = now(), version = version + 1
+		WHERE tenant_id = $3 AND id = $4 AND ($5 < 0 OR version = $5)
+		RETURNING id, tenant_id, name, scope, scope_ref, entitlements, version, created_at, updated_at`
+	var r RoleRow
+	var entBytes []byte
+	err = tx.QueryRow(ctx, q, name, ent, tenantID, id, expectedVersion).Scan(
+		&r.ID, &r.TenantID, &r.Name, &r.Scope, &r.ScopeRef, &entBytes, &r.Version, &r.CreatedAt, &r.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RoleRow{}, ErrNotFound
+	}
+	if err != nil {
+		return RoleRow{}, fmt.Errorf("db: update role: %w", err)
+	}
+	r.Entitlements = scanEntitlements(entBytes)
+	return r, nil
+}
+
+// DeleteRole hard-deletes a role. The caller must ensure it is not the
+// admin role before this is reached; the data-access layer deletes the
+// role's bindings in the same statement as a cleanup (role_bindings has
+// no FK to roles, so orphaned rows would otherwise silently stop
+// contributing entitlements).
+func DeleteRole(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
+	const q = `DELETE FROM roles WHERE tenant_id = $1 AND id = $2`
+	ct, err := tx.Exec(ctx, q, tenantID, id)
+	if err != nil {
+		return fmt.Errorf("db: delete role: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteRoleBindingsByRole removes all role bindings referencing a role
+// within the tenant scope. Used to keep role_bindings clean when a role
+// is deleted (no FK exists, so this prevents dangling rows).
+func DeleteRoleBindingsByRole(ctx context.Context, tx pgx.Tx, tenantID, roleID string) error {
+	const q = `DELETE FROM role_bindings WHERE tenant_id = $1 AND role_id = $2`
+	if _, err := tx.Exec(ctx, q, tenantID, roleID); err != nil {
+		return fmt.Errorf("db: delete role bindings by role: %w", err)
+	}
+	return nil
+}
+
 // ListRoles returns a page of roles for the tenant.
 func ListRoles(ctx context.Context, tx pgx.Tx, tenantID string, pageSize int, afterID string) ([]RoleRow, error) {
 	if pageSize <= 0 || pageSize > 1000 {

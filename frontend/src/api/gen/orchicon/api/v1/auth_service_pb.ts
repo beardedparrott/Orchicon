@@ -1149,6 +1149,221 @@ export class CreateRoleResponse extends Message<CreateRoleResponse> {
 }
 
 /**
+ * UpdateRoleRequest edits a role's name and/or entitlements. scope and
+ * scope_ref are intentionally immutable here (project-scoped bindings are
+ * a non-goal for the admin UI). The optional version enables optimistic
+ * concurrency: when present and mismatched the update fails with NotFound.
+ *
+ * @generated from message orchicon.api.v1.UpdateRoleRequest
+ */
+export class UpdateRoleRequest extends Message<UpdateRoleRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * Optional. When absent the name is left unchanged.
+   *
+   * @generated from field: optional string name = 2;
+   */
+  name?: string;
+
+  /**
+   * Optional. When absent the entitlements are left unchanged. When present,
+   * the role's entitlements are replaced exactly by this set — an empty set
+   * clears the role to zero entitlements.
+   *
+   * @generated from field: optional orchicon.api.v1.EntitlementSet entitlements = 3;
+   */
+  entitlements?: EntitlementSet;
+
+  /**
+   * @generated from field: optional int32 version = 4;
+   */
+  version?: number;
+
+  constructor(data?: PartialMessage<UpdateRoleRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.UpdateRoleRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 3, name: "entitlements", kind: "message", T: EntitlementSet, opt: true },
+    { no: 4, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */, opt: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateRoleRequest {
+    return new UpdateRoleRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UpdateRoleRequest {
+    return new UpdateRoleRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UpdateRoleRequest {
+    return new UpdateRoleRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: UpdateRoleRequest | PlainMessage<UpdateRoleRequest> | undefined, b: UpdateRoleRequest | PlainMessage<UpdateRoleRequest> | undefined): boolean {
+    return proto3.util.equals(UpdateRoleRequest, a, b);
+  }
+}
+
+/**
+ * EntitlementSet wraps a list of entitlements so UpdateRoleRequest can
+ * distinguish "leave entitlements unchanged" (field absent) from "set the
+ * entitlements to exactly these" (field present, possibly empty).
+ *
+ * @generated from message orchicon.api.v1.EntitlementSet
+ */
+export class EntitlementSet extends Message<EntitlementSet> {
+  /**
+   * @generated from field: repeated string values = 1;
+   */
+  values: string[] = [];
+
+  constructor(data?: PartialMessage<EntitlementSet>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.EntitlementSet";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "values", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): EntitlementSet {
+    return new EntitlementSet().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): EntitlementSet {
+    return new EntitlementSet().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): EntitlementSet {
+    return new EntitlementSet().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: EntitlementSet | PlainMessage<EntitlementSet> | undefined, b: EntitlementSet | PlainMessage<EntitlementSet> | undefined): boolean {
+    return proto3.util.equals(EntitlementSet, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.UpdateRoleResponse
+ */
+export class UpdateRoleResponse extends Message<UpdateRoleResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.Role role = 1;
+   */
+  role?: Role;
+
+  constructor(data?: PartialMessage<UpdateRoleResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.UpdateRoleResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "role", kind: "message", T: Role },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateRoleResponse {
+    return new UpdateRoleResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UpdateRoleResponse {
+    return new UpdateRoleResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UpdateRoleResponse {
+    return new UpdateRoleResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: UpdateRoleResponse | PlainMessage<UpdateRoleResponse> | undefined, b: UpdateRoleResponse | PlainMessage<UpdateRoleResponse> | undefined): boolean {
+    return proto3.util.equals(UpdateRoleResponse, a, b);
+  }
+}
+
+/**
+ * DeleteRoleRequest hard-deletes a role plus its role bindings in one
+ * tenant-scoped transaction. The role named "admin" cannot be deleted.
+ *
+ * @generated from message orchicon.api.v1.DeleteRoleRequest
+ */
+export class DeleteRoleRequest extends Message<DeleteRoleRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  constructor(data?: PartialMessage<DeleteRoleRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DeleteRoleRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteRoleRequest {
+    return new DeleteRoleRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteRoleRequest {
+    return new DeleteRoleRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteRoleRequest {
+    return new DeleteRoleRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteRoleRequest | PlainMessage<DeleteRoleRequest> | undefined, b: DeleteRoleRequest | PlainMessage<DeleteRoleRequest> | undefined): boolean {
+    return proto3.util.equals(DeleteRoleRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.DeleteRoleResponse
+ */
+export class DeleteRoleResponse extends Message<DeleteRoleResponse> {
+  constructor(data?: PartialMessage<DeleteRoleResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DeleteRoleResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteRoleResponse {
+    return new DeleteRoleResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteRoleResponse {
+    return new DeleteRoleResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteRoleResponse {
+    return new DeleteRoleResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteRoleResponse | PlainMessage<DeleteRoleResponse> | undefined, b: DeleteRoleResponse | PlainMessage<DeleteRoleResponse> | undefined): boolean {
+    return proto3.util.equals(DeleteRoleResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.ListRolesRequest
  */
 export class ListRolesRequest extends Message<ListRolesRequest> {

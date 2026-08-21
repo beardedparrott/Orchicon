@@ -75,6 +75,10 @@ const (
 	AuthServiceListEntitlementsProcedure = "/orchicon.api.v1.AuthService/ListEntitlements"
 	// AuthServiceCreateRoleProcedure is the fully-qualified name of the AuthService's CreateRole RPC.
 	AuthServiceCreateRoleProcedure = "/orchicon.api.v1.AuthService/CreateRole"
+	// AuthServiceUpdateRoleProcedure is the fully-qualified name of the AuthService's UpdateRole RPC.
+	AuthServiceUpdateRoleProcedure = "/orchicon.api.v1.AuthService/UpdateRole"
+	// AuthServiceDeleteRoleProcedure is the fully-qualified name of the AuthService's DeleteRole RPC.
+	AuthServiceDeleteRoleProcedure = "/orchicon.api.v1.AuthService/DeleteRole"
 	// AuthServiceListRolesProcedure is the fully-qualified name of the AuthService's ListRoles RPC.
 	AuthServiceListRolesProcedure = "/orchicon.api.v1.AuthService/ListRoles"
 	// AuthServiceAssignRoleProcedure is the fully-qualified name of the AuthService's AssignRole RPC.
@@ -118,6 +122,8 @@ type AuthServiceClient interface {
 	ListEntitlements(context.Context, *connect.Request[v1.ListEntitlementsRequest]) (*connect.Response[v1.ListEntitlementsResponse], error)
 	// --- RBAC roles + bindings ---
 	CreateRole(context.Context, *connect.Request[v1.CreateRoleRequest]) (*connect.Response[v1.CreateRoleResponse], error)
+	UpdateRole(context.Context, *connect.Request[v1.UpdateRoleRequest]) (*connect.Response[v1.UpdateRoleResponse], error)
+	DeleteRole(context.Context, *connect.Request[v1.DeleteRoleRequest]) (*connect.Response[v1.DeleteRoleResponse], error)
 	ListRoles(context.Context, *connect.Request[v1.ListRolesRequest]) (*connect.Response[v1.ListRolesResponse], error)
 	AssignRole(context.Context, *connect.Request[v1.AssignRoleRequest]) (*connect.Response[v1.AssignRoleResponse], error)
 	RevokeRole(context.Context, *connect.Request[v1.RevokeRoleRequest]) (*connect.Response[v1.RevokeRoleResponse], error)
@@ -221,6 +227,18 @@ func NewAuthServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(authServiceMethods.ByName("CreateRole")),
 			connect.WithClientOptions(opts...),
 		),
+		updateRole: connect.NewClient[v1.UpdateRoleRequest, v1.UpdateRoleResponse](
+			httpClient,
+			baseURL+AuthServiceUpdateRoleProcedure,
+			connect.WithSchema(authServiceMethods.ByName("UpdateRole")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteRole: connect.NewClient[v1.DeleteRoleRequest, v1.DeleteRoleResponse](
+			httpClient,
+			baseURL+AuthServiceDeleteRoleProcedure,
+			connect.WithSchema(authServiceMethods.ByName("DeleteRole")),
+			connect.WithClientOptions(opts...),
+		),
 		listRoles: connect.NewClient[v1.ListRolesRequest, v1.ListRolesResponse](
 			httpClient,
 			baseURL+AuthServiceListRolesProcedure,
@@ -293,6 +311,8 @@ type authServiceClient struct {
 	deleteIdentity     *connect.Client[v1.DeleteIdentityRequest, v1.DeleteIdentityResponse]
 	listEntitlements   *connect.Client[v1.ListEntitlementsRequest, v1.ListEntitlementsResponse]
 	createRole         *connect.Client[v1.CreateRoleRequest, v1.CreateRoleResponse]
+	updateRole         *connect.Client[v1.UpdateRoleRequest, v1.UpdateRoleResponse]
+	deleteRole         *connect.Client[v1.DeleteRoleRequest, v1.DeleteRoleResponse]
 	listRoles          *connect.Client[v1.ListRolesRequest, v1.ListRolesResponse]
 	assignRole         *connect.Client[v1.AssignRoleRequest, v1.AssignRoleResponse]
 	revokeRole         *connect.Client[v1.RevokeRoleRequest, v1.RevokeRoleResponse]
@@ -369,6 +389,16 @@ func (c *authServiceClient) CreateRole(ctx context.Context, req *connect.Request
 	return c.createRole.CallUnary(ctx, req)
 }
 
+// UpdateRole calls orchicon.api.v1.AuthService.UpdateRole.
+func (c *authServiceClient) UpdateRole(ctx context.Context, req *connect.Request[v1.UpdateRoleRequest]) (*connect.Response[v1.UpdateRoleResponse], error) {
+	return c.updateRole.CallUnary(ctx, req)
+}
+
+// DeleteRole calls orchicon.api.v1.AuthService.DeleteRole.
+func (c *authServiceClient) DeleteRole(ctx context.Context, req *connect.Request[v1.DeleteRoleRequest]) (*connect.Response[v1.DeleteRoleResponse], error) {
+	return c.deleteRole.CallUnary(ctx, req)
+}
+
 // ListRoles calls orchicon.api.v1.AuthService.ListRoles.
 func (c *authServiceClient) ListRoles(ctx context.Context, req *connect.Request[v1.ListRolesRequest]) (*connect.Response[v1.ListRolesResponse], error) {
 	return c.listRoles.CallUnary(ctx, req)
@@ -432,6 +462,8 @@ type AuthServiceHandler interface {
 	ListEntitlements(context.Context, *connect.Request[v1.ListEntitlementsRequest]) (*connect.Response[v1.ListEntitlementsResponse], error)
 	// --- RBAC roles + bindings ---
 	CreateRole(context.Context, *connect.Request[v1.CreateRoleRequest]) (*connect.Response[v1.CreateRoleResponse], error)
+	UpdateRole(context.Context, *connect.Request[v1.UpdateRoleRequest]) (*connect.Response[v1.UpdateRoleResponse], error)
+	DeleteRole(context.Context, *connect.Request[v1.DeleteRoleRequest]) (*connect.Response[v1.DeleteRoleResponse], error)
 	ListRoles(context.Context, *connect.Request[v1.ListRolesRequest]) (*connect.Response[v1.ListRolesResponse], error)
 	AssignRole(context.Context, *connect.Request[v1.AssignRoleRequest]) (*connect.Response[v1.AssignRoleResponse], error)
 	RevokeRole(context.Context, *connect.Request[v1.RevokeRoleRequest]) (*connect.Response[v1.RevokeRoleResponse], error)
@@ -531,6 +563,18 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(authServiceMethods.ByName("CreateRole")),
 		connect.WithHandlerOptions(opts...),
 	)
+	authServiceUpdateRoleHandler := connect.NewUnaryHandler(
+		AuthServiceUpdateRoleProcedure,
+		svc.UpdateRole,
+		connect.WithSchema(authServiceMethods.ByName("UpdateRole")),
+		connect.WithHandlerOptions(opts...),
+	)
+	authServiceDeleteRoleHandler := connect.NewUnaryHandler(
+		AuthServiceDeleteRoleProcedure,
+		svc.DeleteRole,
+		connect.WithSchema(authServiceMethods.ByName("DeleteRole")),
+		connect.WithHandlerOptions(opts...),
+	)
 	authServiceListRolesHandler := connect.NewUnaryHandler(
 		AuthServiceListRolesProcedure,
 		svc.ListRoles,
@@ -613,6 +657,10 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 			authServiceListEntitlementsHandler.ServeHTTP(w, r)
 		case AuthServiceCreateRoleProcedure:
 			authServiceCreateRoleHandler.ServeHTTP(w, r)
+		case AuthServiceUpdateRoleProcedure:
+			authServiceUpdateRoleHandler.ServeHTTP(w, r)
+		case AuthServiceDeleteRoleProcedure:
+			authServiceDeleteRoleHandler.ServeHTTP(w, r)
 		case AuthServiceListRolesProcedure:
 			authServiceListRolesHandler.ServeHTTP(w, r)
 		case AuthServiceAssignRoleProcedure:
@@ -690,6 +738,14 @@ func (UnimplementedAuthServiceHandler) ListEntitlements(context.Context, *connec
 
 func (UnimplementedAuthServiceHandler) CreateRole(context.Context, *connect.Request[v1.CreateRoleRequest]) (*connect.Response[v1.CreateRoleResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.CreateRole is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) UpdateRole(context.Context, *connect.Request[v1.UpdateRoleRequest]) (*connect.Response[v1.UpdateRoleResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.UpdateRole is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) DeleteRole(context.Context, *connect.Request[v1.DeleteRoleRequest]) (*connect.Response[v1.DeleteRoleResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AuthService.DeleteRole is not implemented"))
 }
 
 func (UnimplementedAuthServiceHandler) ListRoles(context.Context, *connect.Request[v1.ListRolesRequest]) (*connect.Response[v1.ListRolesResponse], error) {

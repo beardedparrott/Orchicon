@@ -63,7 +63,7 @@ message Role {
   string name = 3;
   string scope = 4; // "tenant" | "project"
   string scope_ref = 5; // project id when scope=project
-  repeated string entitlements = 6; // e.g. ["project:create", "worker:publish"]
+  repeated string entitlements = 6; // e.g. ["workitem:read", "policy:publish"]; "*" = admin
   int32 version = 7;
   google.protobuf.Timestamp created_at = 8;
   google.protobuf.Timestamp updated_at = 9;

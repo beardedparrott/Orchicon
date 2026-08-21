@@ -246,7 +246,7 @@ export class Role extends Message<Role> {
   scopeRef = "";
 
   /**
-   * e.g. ["project:create", "worker:publish"]
+   * e.g. ["workitem:read", "policy:publish"]; "*" = admin
    *
    * @generated from field: repeated string entitlements = 6;
    */

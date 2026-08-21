@@ -10,7 +10,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AssignRoleRequest, AssignRoleResponse, CreateApiKeyRequest, CreateApiKeyResponse, CreateIdentityRequest, CreateIdentityResponse, CreateRoleRequest, CreateRoleResponse, CreateTenantRequest, CreateTenantResponse, DeleteIdentityRequest, DeleteIdentityResponse, GetApiKeyRequest, GetApiKeyResponse, GetIdentityRequest, GetIdentityResponse, ListApiKeysRequest, ListApiKeysResponse, ListAuditEntriesRequest, ListAuditEntriesResponse, ListAuditEventsRequest, ListAuditEventsResponse, ListEntitlementsRequest, ListEntitlementsResponse, ListIdentitiesRequest, ListIdentitiesResponse, ListRoleBindingsRequest, ListRoleBindingsResponse, ListRolesRequest, ListRolesResponse, ListTenantsRequest, ListTenantsResponse, RevokeApiKeyRequest, RevokeApiKeyResponse, RevokeRoleRequest, RevokeRoleResponse, RotateApiKeyRequest, RotateApiKeyResponse, SetIdentityStatusRequest, SetIdentityStatusResponse, SetLocalCredentialRequest, SetLocalCredentialResponse, UpdateIdentityRequest, UpdateIdentityResponse } from "./auth_service_pb.js";
+import { AssignRoleRequest, AssignRoleResponse, CreateApiKeyRequest, CreateApiKeyResponse, CreateIdentityRequest, CreateIdentityResponse, CreateRoleRequest, CreateRoleResponse, CreateTenantRequest, CreateTenantResponse, DeleteIdentityRequest, DeleteIdentityResponse, DeleteRoleRequest, DeleteRoleResponse, GetApiKeyRequest, GetApiKeyResponse, GetIdentityRequest, GetIdentityResponse, ListApiKeysRequest, ListApiKeysResponse, ListAuditEntriesRequest, ListAuditEntriesResponse, ListAuditEventsRequest, ListAuditEventsResponse, ListEntitlementsRequest, ListEntitlementsResponse, ListIdentitiesRequest, ListIdentitiesResponse, ListRoleBindingsRequest, ListRoleBindingsResponse, ListRolesRequest, ListRolesResponse, ListTenantsRequest, ListTenantsResponse, RevokeApiKeyRequest, RevokeApiKeyResponse, RevokeRoleRequest, RevokeRoleResponse, RotateApiKeyRequest, RotateApiKeyResponse, SetIdentityStatusRequest, SetIdentityStatusResponse, SetLocalCredentialRequest, SetLocalCredentialResponse, UpdateIdentityRequest, UpdateIdentityResponse, UpdateRoleRequest, UpdateRoleResponse } from "./auth_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -140,6 +140,24 @@ export const AuthService = {
       name: "CreateRole",
       I: CreateRoleRequest,
       O: CreateRoleResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc orchicon.api.v1.AuthService.UpdateRole
+     */
+    updateRole: {
+      name: "UpdateRole",
+      I: UpdateRoleRequest,
+      O: UpdateRoleResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc orchicon.api.v1.AuthService.DeleteRole
+     */
+    deleteRole: {
+      name: "DeleteRole",
+      I: DeleteRoleRequest,
+      O: DeleteRoleResponse,
       kind: MethodKind.Unary,
     },
     /**

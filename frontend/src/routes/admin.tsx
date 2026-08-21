@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoute } from "@tanstack/react-router";
 import { Timestamp } from "@bufbuild/protobuf";
 
@@ -11,12 +11,16 @@ import {
   useSetIdentityStatus,
   useDeleteIdentity,
   useListRoles,
+  useListRoleBindings,
   useListApiKeys,
   useListAuditEntries,
   useListAuditEvents,
   type AuditEventFilters,
   useCreateRole,
+  useUpdateRole,
+  useDeleteRole,
   useAssignRole,
+  useRevokeRole,
   useCreateApiKey,
   useRevokeApiKey,
   useRotateApiKey,
@@ -186,6 +190,8 @@ function TenantsTab() {
 
 function IdentitiesTab() {
   const { data, isLoading, error } = useListIdentities();
+  const { data: roleBindings } = useListRoleBindings();
+  const { data: roles } = useListRoles();
   const create = useCreateIdentity();
   const update = useUpdateIdentity();
   const setStatus = useSetIdentityStatus();
@@ -251,6 +257,25 @@ function IdentitiesTab() {
         : new Set(filtered.map((i) => i.id))
     );
   };
+
+  // Map identityId -> list of bound role names, resolved from the role
+  // table by id (human-readable role names, not ids).
+  const roleNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of roles ?? []) m.set(r.id, r.name);
+    return m;
+  }, [roles]);
+
+  const rolesByIdentity = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const b of roleBindings ?? []) {
+      const name = roleNameById.get(b.roleId) ?? b.roleId;
+      const cur = m.get(b.identityId) ?? [];
+      cur.push(name);
+      m.set(b.identityId, cur);
+    }
+    return m;
+  }, [roleBindings, roleNameById]);
 
   async function handleCreate() {
     const name = createName.trim();
@@ -485,6 +510,7 @@ function IdentitiesTab() {
               <th className="py-2 pr-4">Name</th>
               <th className="py-2 pr-4">Username</th>
               <th className="py-2 pr-4">Type</th>
+              <th className="py-2 pr-4">Roles</th>
               <th className="py-2 pr-4">Status</th>
               <th className="py-2 pr-4">Actions</th>
             </tr>
@@ -492,7 +518,7 @@ function IdentitiesTab() {
           <tbody>
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={8} className="py-3 text-muted-foreground">
+                <td colSpan={9} className="py-3 text-muted-foreground">
                   No identities match.
                 </td>
               </tr>
@@ -513,6 +539,22 @@ function IdentitiesTab() {
                 <td className="py-2 pr-4">{i.displayName}</td>
                 <td className="py-2 pr-4 font-mono text-xs">{i.username || ""}</td>
                 <td className="py-2 pr-4">{i.identityType}</td>
+                <td className="py-2 pr-4">
+                  {(rolesByIdentity.get(i.id) ?? []).length === 0 ? (
+                    <span className="text-muted-foreground">—</span>
+                  ) : (
+                    <div className="flex flex-wrap gap-1">
+                      {(rolesByIdentity.get(i.id) ?? []).map((rn, idx) => (
+                        <span
+                          key={idx}
+                          className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+                        >
+                          {rn}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </td>
                 <td className="py-2 pr-4">
                   <span className={cn(
                     "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
@@ -637,99 +679,471 @@ function IdentitiesTab() {
   );
 }
 
-function RolesTab() {
-  const { data } = useListRoles();
-  const createRole = useCreateRole();
-  const assignRole = useAssignRole();
-  const toast = useToast();
-  const [name, setName] = useState("");
-  const [ents, setEnts] = useState("project:create,project:write");
-  const [identityId, setIdentityId] = useState("");
-  const [roleId, setRoleId] = useState("");
+// The exact resource set the RBAC interceptor knows (internal/rbac/rbac.go
+// serviceToResource) + the 4 granular actions. The picker must only ever
+// emit strings the interceptor enforces (resource:read / resource:write /
+// these granular actions / *), never dead strings like "project:create".
+const RBAC_RESOURCES = [
+  "project",
+  "workitem",
+  "worker",
+  "workflow",
+  "policy",
+  "recovery",
+  "execution",
+  "adapter",
+  "telemetry",
+  "aigateway",
+  "auth",
+  "webhook",
+  "runtimeimage",
+] as const;
 
-  async function handleCreateRole() {
+const RBAC_GRANULAR_ACTIONS = [
+  "policy:supersede",
+  "policy:publish",
+  "worker:publish",
+  "workflow:publish",
+] as const;
+
+// EntitlementPicker renders grouped read/write toggles per resource plus a
+// granular-actions group and an "Admin — all entitlements (*)" master toggle.
+// Emits exactly the entitlement strings the interceptor enforces.
+function EntitlementPicker({
+  value,
+  onChange,
+}: {
+  value: string[];
+  onChange: (next: string[]) => void;
+}) {
+  // `admin` is derived from the current `value`, never kept as independent
+  // state, so it always reflects the entitlements actually set. The dialog
+  // stays mounted across create/edit sessions (no `key`), so storing this
+  // in state would leave the Admin checkbox and disabled fieldset stale
+  // (e.g. toggled on, cancelled, then Create reopened for a non-admin role).
+  const admin = value.length === 1 && value[0] === "*";
+  const set = (e: string, on: boolean) => {
+    onChange(on ? [...new Set([...value, e])] : value.filter((v) => v !== e));
+  };
+
+  const toggleAdmin = (on: boolean) => {
+    onChange(on ? ["*"] : []);
+  };
+
+  return (
+    <div className="space-y-4">
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={admin}
+          onChange={(e) => toggleAdmin(e.target.checked)}
+          className="h-4 w-4 rounded border-input"
+        />
+        <span className="font-medium">Admin — all entitlements (*)</span>
+        <span className="text-xs text-muted-foreground">
+          Grants every entitlement; disables the per-resource toggles.
+        </span>
+      </label>
+
+      <fieldset disabled={admin} className="space-y-3">
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+          {RBAC_RESOURCES.map((res) => (
+            <div
+              key={res}
+              className="flex items-center justify-between rounded-md border bg-background px-3 py-2"
+            >
+              <span className="text-sm font-medium">{res}</span>
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-1 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={value.includes(`${res}:read`)}
+                    onChange={(e) => set(`${res}:read`, e.target.checked)}
+                    className="h-3.5 w-3.5 rounded border-input"
+                  />
+                  read
+                </label>
+                <label className="flex items-center gap-1 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={value.includes(`${res}:write`)}
+                    onChange={(e) => set(`${res}:write`, e.target.checked)}
+                    className="h-3.5 w-3.5 rounded border-input"
+                  />
+                  write
+                </label>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div>
+          <p className="mb-2 text-xs font-semibold text-muted-foreground">
+            Granular actions
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {RBAC_GRANULAR_ACTIONS.map((a) => (
+              <label
+                key={a}
+                className="flex items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-xs"
+              >
+                <input
+                  type="checkbox"
+                  checked={value.includes(a)}
+                  onChange={(e) => set(a, e.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-input"
+                />
+                {a}
+              </label>
+            ))}
+          </div>
+        </div>
+      </fieldset>
+    </div>
+  );
+}
+
+// entitlementChips renders human-readable chips: "resource:read"/"write"
+// become "resource read"/"resource write"; granular actions keep their
+// full resource:action form; "*" renders as "admin (*)".
+function entitlementChips(ents: string[]) {
+  const rows: { key: string; label: string }[] = [];
+  for (const e of ents ?? []) {
+    if (e === "*") {
+      rows.push({ key: e, label: "admin (*)" });
+    } else {
+      const [res, action] = e.split(":");
+      rows.push({ key: e, label: action === "write" || action === "read" ? `${res} ${action}` : e });
+    }
+  }
+  if (rows.length === 0) {
+    return <span className="text-muted-foreground">No entitlements</span>;
+  }
+  return (
+    <div className="flex flex-wrap gap-1">
+      {rows.map((r) => (
+        <span
+          key={r.key}
+          className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+        >
+          {r.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function RolesTab() {
+  const { data: roles } = useListRoles();
+  const { data: identities } = useListIdentities();
+  const { data: bindings } = useListRoleBindings();
+  const createRole = useCreateRole();
+  const updateRole = useUpdateRole();
+  const deleteRole = useDeleteRole();
+  const assignRole = useAssignRole();
+  const revokeRole = useRevokeRole();
+  const toast = useToast();
+
+  // Create / edit role modal state.
+  const [editing, setEditing] = useState<{ id?: string; name: string } | null>(null);
+  const [formName, setFormName] = useState("");
+  const [formEnts, setFormEnts] = useState<string[]>([]);
+  const roleDialogRef = useRef<HTMLDialogElement>(null);
+
+  // Manage Identity Roles state.
+  const [mgrIdentityId, setMgrIdentityId] = useState("");
+  const [mgrRoleId, setMgrRoleId] = useState("");
+
+  useEffect(() => {
+    const dialog = roleDialogRef.current;
+    if (!dialog) return;
+    if (editing) {
+      dialog.showModal();
+    } else {
+      dialog.close();
+    }
+  }, [editing]);
+
+  const roleName = useCallback(
+    (id: string) => roles?.find((r) => r.id === id)?.name ?? id,
+    [roles]
+  );
+
+  const identityName = useCallback(
+    (id: string) =>
+      identities?.find((i) => i.id === id)?.displayName ??
+      identities?.find((i) => i.id === id)?.subject ??
+      id,
+    [identities]
+  );
+
+  // Role bindings of the selected identity (by id), used to render the
+  // already-bound roles and drive the revoke picker.
+  const selectedBindings = useMemo(
+    () => (bindings ?? []).filter((b) => b.identityId === mgrIdentityId),
+    [bindings, mgrIdentityId]
+  );
+
+  // Role names the selected identity already holds — excluded from the
+  // assign picker so the admin cannot double-assign.
+  const boundRoleNames = useMemo(() => {
+    if (!mgrIdentityId) return new Set<string>();
+    return new Set(selectedBindings.map((b) => roleName(b.roleId)));
+  }, [selectedBindings, mgrIdentityId, roleName]);
+
+  const assignableRoles = useMemo(
+    () => (roles ?? []).filter((r) => !boundRoleNames.has(r.name)),
+    [roles, boundRoleNames]
+  );
+
+  function startCreate() {
+    setEditing({ id: "", name: "" });
+    setFormName("");
+    setFormEnts([]);
+  }
+
+  function startEdit(id: string) {
+    const r = roles?.find((x) => x.id === id);
+    if (!r) return;
+    setEditing({ id, name: r.name });
+    setFormName(r.name);
+    setFormEnts(r.entitlements ?? []);
+  }
+
+  function cancelRole() {
+    setEditing(null);
+  }
+
+  async function handleSaveRole() {
+    const name = formName.trim();
+    if (!name || !editing) return;
     try {
-      const r = await createRole.mutateAsync({
-        name,
-        scope: "tenant",
-        entitlements: ents.split(",").map((s) => s.trim()).filter(Boolean),
-      });
-      toast.success(`Role "${r?.name ?? name}" created.`);
-      setName("");
+      if (editing.id) {
+        await updateRole.mutateAsync({ id: editing.id, name, entitlements: formEnts });
+        toast.success(`Role "${name}" updated.`);
+      } else {
+        await createRole.mutateAsync({ name, scope: "tenant", entitlements: formEnts });
+        toast.success(`Role "${name}" created.`);
+      }
+      cancelRole();
     } catch {
-      /* error already toasted by global handler */
+      // error already toasted
     }
   }
 
-  async function handleAssignRole() {
-    if (!identityId || !roleId) return;
+  async function handleDelete(id: string, name: string) {
+    if (!window.confirm(`Delete role "${name}"? This removes the role and its assignments and cannot be undone.`)) return;
     try {
-      await assignRole.mutateAsync({ identityId, roleId, scope: "tenant" });
-      toast.success("Role assigned.");
-      setIdentityId("");
-      setRoleId("");
+      await deleteRole.mutateAsync(id);
+      toast.success(`Role "${name}" deleted.`);
     } catch {
-      /* error already toasted */
+      // error already toasted
+    }
+  }
+
+  async function handleAssign() {
+    if (!mgrIdentityId || !mgrRoleId) return;
+    try {
+      await assignRole.mutateAsync({ identityId: mgrIdentityId, roleId: mgrRoleId, scope: "tenant" });
+      toast.success(`Assigned "${roleName(mgrRoleId)}" to ${identityName(mgrIdentityId)}.`);
+      setMgrRoleId("");
+    } catch {
+      // error already toasted
+    }
+  }
+
+  async function handleRevoke(bindingId: string) {
+    try {
+      await revokeRole.mutateAsync(bindingId);
+      toast.success("Role revoked.");
+    } catch {
+      // error already toasted
     }
   }
 
   return (
     <div className="space-y-6">
-      <div className="space-y-2">
-        <h3 className="text-sm font-semibold">Create role</h3>
-        <div className="flex gap-2">
-          <Input placeholder="role-name" value={name} onChange={(e) => setName(e.target.value)} />
-          <Input
-            className="flex-1"
-            placeholder="entitlements (comma-separated)"
-            value={ents}
-            onChange={(e) => setEnts(e.target.value)}
-          />
-          <Button
-            onClick={handleCreateRole}
-            disabled={!name || createRole.isPending}
-          >
-            {createRole.isPending ? "Creating…" : "Create"}
-          </Button>
-        </div>
+      {/* Create / edit role */}
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold">Roles</h3>
+        <Button size="sm" onClick={startCreate}>
+          New role
+        </Button>
       </div>
+
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b text-left text-muted-foreground">
-              <th className="py-2 pr-4">ID</th>
               <th className="py-2 pr-4">Name</th>
               <th className="py-2 pr-4">Scope</th>
               <th className="py-2 pr-4">Entitlements</th>
+              <th className="py-2 pr-4">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {data?.map((r) => (
+            {(roles ?? []).length === 0 && (
+              <tr>
+                <td colSpan={4} className="py-3 text-muted-foreground">
+                  No roles yet.
+                </td>
+              </tr>
+            )}
+            {(roles ?? []).map((r) => (
               <tr key={r.id} className="border-b">
-                <td className="py-2 pr-4 font-mono text-xs">{r.id}</td>
                 <td className="py-2 pr-4">{r.name}</td>
                 <td className="py-2 pr-4">{r.scope}</td>
-                <td className="py-2 pr-4 font-mono text-xs">
-                  {(r.entitlements ?? []).join(", ")}
+                <td className="py-2 pr-4">{entitlementChips(r.entitlements ?? [])}</td>
+                <td className="py-2 pr-4 space-x-2 whitespace-nowrap">
+                  <Button size="sm" variant="outline" onClick={() => startEdit(r.id)} disabled={r.name === "admin"}>
+                    Edit
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => handleDelete(r.id, r.name)}
+                    disabled={r.name === "admin"}
+                    title={r.name === "admin" ? "The admin role cannot be deleted" : "Delete role"}
+                  >
+                    Delete
+                  </Button>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
       <div className="space-y-2">
-        <h3 className="text-sm font-semibold">Assign role</h3>
-        <div className="flex gap-2">
-          <Input placeholder="identity id" value={identityId} onChange={(e) => setIdentityId(e.target.value)} />
-          <Input placeholder="role id" value={roleId} onChange={(e) => setRoleId(e.target.value)} />
+        <h3 className="text-sm font-semibold">Manage Identity Roles</h3>
+        <p className="text-xs text-muted-foreground">
+          Assign and revoke roles on identities using human-readable pickers.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <select
+            className="h-9 rounded-md border border-input bg-background px-3 py-1.5 text-sm"
+            value={mgrIdentityId}
+            onChange={(e) => {
+              setMgrIdentityId(e.target.value);
+              setMgrRoleId("");
+            }}
+            aria-label="Identity"
+          >
+            <option value="">Select identity…</option>
+            {(identities ?? []).map((i) => (
+              <option key={i.id} value={i.id}>
+                {i.displayName || i.subject} {i.subject && i.displayName ? `(${i.subject})` : ""}
+              </option>
+            ))}
+          </select>
+          <select
+            className="h-9 rounded-md border border-input bg-background px-3 py-1.5 text-sm"
+            value={mgrRoleId}
+            onChange={(e) => setMgrRoleId(e.target.value)}
+            aria-label="Role"
+          >
+            <option value="">Select role…</option>
+            {assignableRoles.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+              </option>
+            ))}
+          </select>
           <Button
-            onClick={handleAssignRole}
-            disabled={!identityId || !roleId || assignRole.isPending}
+            onClick={handleAssign}
+            disabled={!mgrIdentityId || !mgrRoleId || assignRole.isPending}
           >
             {assignRole.isPending ? "Assigning…" : "Assign"}
           </Button>
         </div>
+
+        {mgrIdentityId && (
+          <div className="mt-2">
+            <p className="mb-2 text-xs font-medium text-muted-foreground">
+              Roles bound to {identityName(mgrIdentityId)}:
+            </p>
+            {selectedBindings.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No roles assigned.</p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {selectedBindings.map((b) => (
+                  <div
+                    key={b.id}
+                    className="flex items-center gap-2 rounded-full bg-muted px-3 py-1 text-xs"
+                  >
+                    <span>{roleName(b.roleId)}</span>
+                    <button
+                      onClick={() => handleRevoke(b.id)}
+                      disabled={revokeRole.isPending}
+                      className="text-muted-foreground hover:text-destructive"
+                      title="Revoke role"
+                      aria-label={`Revoke ${roleName(b.roleId)}`}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
+
+      {/* Create / edit role modal */}
+      <dialog
+        ref={roleDialogRef}
+        onClose={cancelRole}
+        className={cn(
+          "rounded-lg border bg-background text-foreground p-0 shadow-lg backdrop:bg-black/50",
+          "w-full max-w-2xl",
+        )}
+        onClick={(e) => {
+          if (e.target === roleDialogRef.current) cancelRole();
+        }}
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            handleSaveRole();
+          }}
+          className="p-6"
+        >
+          <h2 className="text-lg font-semibold mb-4">
+            {editing?.id ? `Edit role "${editing.name}"` : "Create role"}
+          </h2>
+          <div className="space-y-4">
+            <div>
+              <label htmlFor="role-name" className="block text-sm font-medium mb-1.5">
+                Name
+              </label>
+              <Input
+                id="role-name"
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+                placeholder="e.g. project-editor"
+                autoFocus
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                Must match <code className="font-mono">^[a-z0-9]+(?:-[a-z0-9]+)*$</code>.
+              </p>
+            </div>
+            <div>
+              <p className="mb-1.5 text-sm font-medium">Entitlements</p>
+              <EntitlementPicker value={formEnts} onChange={setFormEnts} />
+            </div>
+          </div>
+          <div className="mt-6 flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={cancelRole}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={!formName.trim() || createRole.isPending || updateRole.isPending}
+            >
+              {createRole.isPending || updateRole.isPending ? "Saving…" : "Save"}
+            </Button>
+          </div>
+        </form>
+      </dialog>
     </div>
   );
 }
