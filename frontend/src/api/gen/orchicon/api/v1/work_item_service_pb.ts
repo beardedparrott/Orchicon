@@ -395,6 +395,17 @@ export class ListWorkItemsRequest extends Message<ListWorkItemsRequest> {
    */
   pageSize = 0;
 
+  /**
+   * include_archived: when false (default), the query returns ONLY active
+   * items (archived_at IS NULL) — every normal view uses this default. When
+   * true, the query returns ONLY archived items (archived_at IS NOT NULL) —
+   * the dedicated archive view sets it. Additive/regression-free: current
+   * data has no archived rows, so the default path is byte-for-byte unchanged.
+   *
+   * @generated from field: bool include_archived = 10;
+   */
+  includeArchived = false;
+
   constructor(data?: PartialMessage<ListWorkItemsRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -412,6 +423,7 @@ export class ListWorkItemsRequest extends Message<ListWorkItemsRequest> {
     { no: 7, name: "sort_order", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 8, name: "page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 9, name: "page_size", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 10, name: "include_archived", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListWorkItemsRequest {
@@ -1473,6 +1485,165 @@ export class ControlSequenceResponse extends Message<ControlSequenceResponse> {
 
   static equals(a: ControlSequenceResponse | PlainMessage<ControlSequenceResponse> | undefined, b: ControlSequenceResponse | PlainMessage<ControlSequenceResponse> | undefined): boolean {
     return proto3.util.equals(ControlSequenceResponse, a, b);
+  }
+}
+
+/**
+ * ArchiveWorkItemRequest archives a terminal work item. The request is
+ * idempotency-free; the work item's current version is read server-side
+ * (the ArchiveWorkItem RPC re-fetches and bumps it like ArchiveProject),
+ * so no client version is required.
+ *
+ * @generated from message orchicon.api.v1.ArchiveWorkItemRequest
+ */
+export class ArchiveWorkItemRequest extends Message<ArchiveWorkItemRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  constructor(data?: PartialMessage<ArchiveWorkItemRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ArchiveWorkItemRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ArchiveWorkItemRequest {
+    return new ArchiveWorkItemRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ArchiveWorkItemRequest {
+    return new ArchiveWorkItemRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ArchiveWorkItemRequest {
+    return new ArchiveWorkItemRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ArchiveWorkItemRequest | PlainMessage<ArchiveWorkItemRequest> | undefined, b: ArchiveWorkItemRequest | PlainMessage<ArchiveWorkItemRequest> | undefined): boolean {
+    return proto3.util.equals(ArchiveWorkItemRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ArchiveWorkItemResponse
+ */
+export class ArchiveWorkItemResponse extends Message<ArchiveWorkItemResponse> {
+  /**
+   * the archived item, server-confirmed
+   *
+   * @generated from field: orchicon.api.v1.WorkItem work_item = 1;
+   */
+  workItem?: WorkItem;
+
+  constructor(data?: PartialMessage<ArchiveWorkItemResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ArchiveWorkItemResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "work_item", kind: "message", T: WorkItem },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ArchiveWorkItemResponse {
+    return new ArchiveWorkItemResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ArchiveWorkItemResponse {
+    return new ArchiveWorkItemResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ArchiveWorkItemResponse {
+    return new ArchiveWorkItemResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ArchiveWorkItemResponse | PlainMessage<ArchiveWorkItemResponse> | undefined, b: ArchiveWorkItemResponse | PlainMessage<ArchiveWorkItemResponse> | undefined): boolean {
+    return proto3.util.equals(ArchiveWorkItemResponse, a, b);
+  }
+}
+
+/**
+ * RestoreWorkItemRequest returns an archived work item to the active views.
+ *
+ * @generated from message orchicon.api.v1.RestoreWorkItemRequest
+ */
+export class RestoreWorkItemRequest extends Message<RestoreWorkItemRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  constructor(data?: PartialMessage<RestoreWorkItemRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RestoreWorkItemRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RestoreWorkItemRequest {
+    return new RestoreWorkItemRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RestoreWorkItemRequest {
+    return new RestoreWorkItemRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RestoreWorkItemRequest {
+    return new RestoreWorkItemRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RestoreWorkItemRequest | PlainMessage<RestoreWorkItemRequest> | undefined, b: RestoreWorkItemRequest | PlainMessage<RestoreWorkItemRequest> | undefined): boolean {
+    return proto3.util.equals(RestoreWorkItemRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.RestoreWorkItemResponse
+ */
+export class RestoreWorkItemResponse extends Message<RestoreWorkItemResponse> {
+  /**
+   * the restored item, server-confirmed
+   *
+   * @generated from field: orchicon.api.v1.WorkItem work_item = 1;
+   */
+  workItem?: WorkItem;
+
+  constructor(data?: PartialMessage<RestoreWorkItemResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RestoreWorkItemResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "work_item", kind: "message", T: WorkItem },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RestoreWorkItemResponse {
+    return new RestoreWorkItemResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RestoreWorkItemResponse {
+    return new RestoreWorkItemResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RestoreWorkItemResponse {
+    return new RestoreWorkItemResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RestoreWorkItemResponse | PlainMessage<RestoreWorkItemResponse> | undefined, b: RestoreWorkItemResponse | PlainMessage<RestoreWorkItemResponse> | undefined): boolean {
+    return proto3.util.equals(RestoreWorkItemResponse, a, b);
   }
 }
 

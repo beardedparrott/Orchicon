@@ -77,9 +77,18 @@ type WorkItemRow struct {
 	// used by the scheduler due-scan cursor. NULL = not recurring or
 	// no next occurrence yet.
 	NextRunAt *time.Time
-	Version   int
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	// ArchivedAt is set when the work item is archived (NULL = active).
+	// Every active work-item read filters archived_at IS NULL; the
+	// dedicated archive view opts in via ListWorkItems include_archived
+	// (archived_at IS NOT NULL).
+	ArchivedAt *time.Time
+	// ArchivedFromStatus is the terminal status the item had when
+	// archived. RestoreWorkItem returns the item to this status (not
+	// pending). NULL = never archived.
+	ArchivedFromStatus *string
+	Version            int
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // CreateWorkItem inserts a new work item within the given tenant
@@ -136,7 +145,7 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 	return row, nil
 }
 
-// WorkItemSelectCols is the canonical 29-column SELECT / RETURNING list
+// WorkItemSelectCols is the canonical 31-column SELECT / RETURNING list
 // shared by every query that reads a full WorkItemRow. Keeping it in one
 // place prevents the column-list drift that caused UnassignWorker to
 // silently zero-out fields (the original bug that motivated this constant).
@@ -146,6 +155,7 @@ const WorkItemSelectCols = `id, tenant_id, project_id, parent_id, kind, title, d
 	priority, budgets, context_window, sort_order, results, prompt_context,
 	scheduled_start_at, auto_start_workflow, runtime_image, context_files,
 	recurring_schedule, next_run_at,
+	archived_at, archived_from_status,
 	version, created_at, updated_at`
 
 // WorkItemScanPtrs returns a slice of Scan pointers matching
@@ -160,6 +170,7 @@ func WorkItemScanPtrs(w *WorkItemRow) []any {
 		&w.PromptContext,
 		&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ContextFiles,
 		&w.RecurringSchedule, &w.NextRunAt,
+		&w.ArchivedAt, &w.ArchivedFromStatus,
 		&w.Version, &w.CreatedAt, &w.UpdatedAt,
 	}
 }
@@ -191,6 +202,12 @@ type ListWorkItemsFilter struct {
 	SortOrder string  // "asc" or "desc" (default "asc")
 	PageSize  int
 	AfterID   string
+	// IncludeArchived selects which archive partition to return:
+	//   false (default) → ONLY active items (archived_at IS NULL) — every
+	//     normal view (board/tree/list/sequence/workflows/counts).
+	//   true → ONLY archived items (archived_at IS NOT NULL) — the dedicated
+	//     archive view.
+	IncludeArchived bool
 }
 
 // ListWorkItems returns a page of work items for a project, ordered by
@@ -203,6 +220,14 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 		FROM work_items
 		WHERE tenant_id = $1 AND ($2 = '' OR project_id = $2) AND ($3 = '' OR id > $3)`
 	args := []any{f.TenantID, f.ProjectID, f.AfterID}
+	// Archive gate (the single additive, regression-free default): active
+	// reads filter archived_at IS NULL; the archive view opts in with
+	// archived_at IS NOT NULL.
+	if f.IncludeArchived {
+		q += ` AND archived_at IS NOT NULL`
+	} else {
+		q += ` AND archived_at IS NULL`
+	}
 	if f.ParentID != nil {
 		if *f.ParentID == "" {
 			q += fmt.Sprintf(` AND parent_id IS NULL`)
@@ -270,7 +295,8 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 // direct children that can no longer sit under a switched item.
 func ListDirectChildren(ctx context.Context, tx pgx.Tx, tenantID, parentID string) ([]WorkItemRow, error) {
 	const q = `SELECT ` + WorkItemSelectCols + `
-		FROM work_items WHERE tenant_id = $1 AND parent_id = $2 ORDER BY sort_order NULLS LAST, created_at, id`
+		FROM work_items WHERE tenant_id = $1 AND parent_id = $2 AND archived_at IS NULL
+		ORDER BY sort_order NULLS LAST, created_at, id`
 	rows, err := tx.Query(ctx, q, tenantID, parentID)
 	if err != nil {
 		return nil, fmt.Errorf("db: list direct children: %w", err)
@@ -337,13 +363,13 @@ func ListSiblingsForReorder(ctx context.Context, tx pgx.Tx, tenantID, projectID,
 	if parentID == "" {
 		q = `SELECT ` + WorkItemSelectCols + `
 		FROM work_items
-		WHERE tenant_id = $1 AND project_id = $2 AND parent_id IS NULL
+		WHERE tenant_id = $1 AND project_id = $2 AND parent_id IS NULL AND archived_at IS NULL
 		ORDER BY sort_order NULLS LAST, created_at, id`
 		args = []any{tenantID, projectID}
 	} else {
 		q = `SELECT ` + WorkItemSelectCols + `
 		FROM work_items
-		WHERE tenant_id = $1 AND project_id = $2 AND parent_id = $3
+		WHERE tenant_id = $1 AND project_id = $2 AND parent_id = $3 AND archived_at IS NULL
 		ORDER BY sort_order NULLS LAST, created_at, id`
 		args = []any{tenantID, projectID, parentID}
 	}
@@ -595,6 +621,51 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 	}
 	if err != nil {
 		return WorkItemRow{}, fmt.Errorf("db: update work item: %w", err)
+	}
+	return w, nil
+}
+
+// ArchiveWorkItem marks a work item archived with optimistic concurrency
+// (docs/09 §5): sets status='archived', archived_at=now() and preserves the
+// pre-archive terminal status in archived_from_status. The tenant_id +
+// version are injected into the WHERE clause. Returns ErrNotFound if no row
+// matches id+tenant+version. The caller (ArchiveWorkItem RPC) enforces the
+// terminal-status and no-children preconditions before calling.
+func ArchiveWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, fromStatus string) (WorkItemRow, error) {
+	const q = `UPDATE work_items
+		SET status = 'archived', archived_at = now(), archived_from_status = $4,
+			updated_at = now(), version = version + 1
+		WHERE tenant_id = $1 AND id = $2 AND version = $3
+		RETURNING ` + WorkItemSelectCols
+	var w WorkItemRow
+	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, fromStatus).Scan(WorkItemScanPtrs(&w)...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return WorkItemRow{}, ErrNotFound
+	}
+	if err != nil {
+		return WorkItemRow{}, fmt.Errorf("db: archive work item: %w", err)
+	}
+	return w, nil
+}
+
+// RestoreWorkItem returns an archived work item to the active views with
+// optimistic concurrency: clears archived_at and archived_from_status and
+// returns the item to the terminal status it was archived from. The caller
+// (RestoreWorkItem RPC) enforces the currently-archived invariant before
+// calling. Returns ErrNotFound on a version mismatch.
+func RestoreWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, fromStatus string) (WorkItemRow, error) {
+	const q = `UPDATE work_items
+		SET status = $4, archived_at = NULL, archived_from_status = NULL,
+			updated_at = now(), version = version + 1
+		WHERE tenant_id = $1 AND id = $2 AND version = $3
+		RETURNING ` + WorkItemSelectCols
+	var w WorkItemRow
+	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, fromStatus).Scan(WorkItemScanPtrs(&w)...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return WorkItemRow{}, ErrNotFound
+	}
+	if err != nil {
+		return WorkItemRow{}, fmt.Errorf("db: restore work item: %w", err)
 	}
 	return w, nil
 }

@@ -190,6 +190,8 @@ func validateStatus(status apiv1.WorkItemStatus) string {
 		return domain.WorkItemBlocked
 	case apiv1.WorkItemStatus_WORK_ITEM_STATUS_SKIPPED:
 		return domain.WorkItemSkipped
+	case apiv1.WorkItemStatus_WORK_ITEM_STATUS_ARCHIVED:
+		return domain.WorkItemArchived
 	default:
 		return domain.WorkItemPending
 	}

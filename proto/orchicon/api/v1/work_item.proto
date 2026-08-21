@@ -110,6 +110,13 @@ message WorkItem {
   // unsatisfied edges exist — even for a pending/ready item the reconciler
   // has not yet flipped to blocked — so the reason is always visible.
   repeated WorkItemBlocker blocked_by = 32;
+  // archived_at is set when the work item is archived (NULL = active). Every
+  // active work-item read filters archived_at IS NULL; the dedicated archive
+  // view opts in via ListWorkItems include_archived.
+  google.protobuf.Timestamp archived_at = 33;
+  // archived_from_status is the terminal status the item had when archived;
+  // RestoreWorkItem returns the item to this status (not pending).
+  string archived_from_status = 34;
 }
 
 // WorkItemBlocker is one upstream dependency edge that keeps its dependent
@@ -158,6 +165,12 @@ enum WorkItemStatus {
   // least one step skipped. Satisfies dependency edges exactly like
   // SUCCEEDED (never blocks dependents). Never user-assignable.
   WORK_ITEM_STATUS_SKIPPED = 13;
+  // User-initiated terminal status: the item is hidden from every normal
+  // work-item view (archived_at IS NOT NULL). Only archivable from a
+  // terminal status (SUCCEEDED/FAILED/CANCELLED/SKIPPED) and only when the
+  // item has no children. Reversible via RestoreWorkItem, which returns the
+  // item to its archived_from_status.
+  WORK_ITEM_STATUS_ARCHIVED = 14;
 }
 
 // WorkItemDependency is an edge in the work DAG. The scheduler treats

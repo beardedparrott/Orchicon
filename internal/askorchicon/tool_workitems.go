@@ -734,6 +734,89 @@ func toolDeleteWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	return json.Marshal(map[string]any{"id": params.ID, "status": domain.WorkItemCancelled})
 }
 
+// toolArchiveWorkItem hides a terminal work item from every normal view,
+// matching the ArchiveWorkItem RPC the UI uses. Only allowed from a terminal
+// status and blocked when the item has children.
+func toolArchiveWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if params.ID == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	tenantID := tenant.FromContext(ctx)
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, params.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !domain.WorkItemIsTerminalArchivable(current.Status) {
+		return nil, fmt.Errorf("work item must be in a terminal state (succeeded, failed, cancelled, or skipped) to be archived; finish or cancel it first")
+	}
+	children, err := db.ListDirectChildren(ctx, ttx.Tx, tenantID, current.ID)
+	if err != nil {
+		return nil, err
+	}
+	if len(children) > 0 {
+		return nil, fmt.Errorf("cannot archive a work item that has %d child work item(s); archive the children first", len(children))
+	}
+	archived, err := db.ArchiveWorkItem(ctx, ttx.Tx, tenantID, current.ID, current.Version, current.Status)
+	if err != nil {
+		return nil, err
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return json.Marshal(archived)
+}
+
+// toolRestoreWorkItem returns an archived work item to the active views,
+// back to the terminal status it was archived from, matching the
+// RestoreWorkItem RPC the UI uses.
+func toolRestoreWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if params.ID == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	tenantID := tenant.FromContext(ctx)
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, params.ID)
+	if err != nil {
+		return nil, err
+	}
+	if current.Status != domain.WorkItemArchived {
+		return nil, fmt.Errorf("work item is not archived; only archived work items can be restored")
+	}
+	fromStatus := domain.WorkItemCancelled
+	if current.ArchivedFromStatus != nil && *current.ArchivedFromStatus != "" {
+		fromStatus = *current.ArchivedFromStatus
+	}
+	restored, err := db.RestoreWorkItem(ctx, ttx.Tx, tenantID, current.ID, current.Version, fromStatus)
+	if err != nil {
+		return nil, err
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return json.Marshal(restored)
+}
+
 // toolScheduleWorkItem sets a work item's status to "scheduled" and
 // optionally sets its scheduled_start_at. Accepts a work_item_id and an
 // optional scheduled_time (ISO 8601 or "N [minutes|hours] from now").

@@ -13,7 +13,7 @@
 import { createRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { useBatchDeleteWorkItems, useGetDependencyGraph, useListWorkItems, useReorderWorkItems } from "@/api/workItems";
+import { useBatchDeleteWorkItems, useGetDependencyGraph, useListWorkItems, useReorderWorkItems, useRestoreWorkItem } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
 import { useListExecutions } from "@/api/executions";
 import { Button } from "@/components/ui/button";
@@ -41,6 +41,7 @@ import {
 import {
   WorkItemsFilterBar,
 } from "@/components/work-items/work-items-filter-bar";
+import { WorkItemsArchiveView } from "@/components/work-items/work-items-archive-view";
 import { useDebouncedValue } from "@/components/work-items/use-debounced-value";
 import { WorkItemsTree } from "@/components/work-items/work-items-tree";
 import { useWorkItemsPreferences, parentIds } from "@/components/work-items/work-items-preferences";
@@ -84,6 +85,17 @@ function WorkItemsPage() {
   const { moveItems, isPending: movePending } = useBatchMoveWorkItems(projectId);
   const toast = useToast();
   const reorder = useReorderWorkItems();
+  const restoreWorkItem = useRestoreWorkItem(projectId);
+  const handleRestore = (id: string) => {
+    restoreWorkItem.mutate(id, {
+      onSuccess: (item) => {
+        toast.success(`Restored "${item.title}" to the active views.`);
+      },
+      onError: (e) => {
+        toast.error(`Failed to restore: ${String(e)}`);
+      },
+    });
+  };
   const handleReorder = (parentId: string, childIds: string[]) => {
     // The RPC requires the siblings' project — derive it from the items
     // themselves so reorder works in the "All projects" view too (the
@@ -115,6 +127,10 @@ function WorkItemsPage() {
   } = useListWorkItems(projectId, {
     sortBy: sortBy || undefined,
     sortOrder: sortOrder || undefined,
+    // The archive view is the ONLY caller that opts in to archived items;
+    // every active view (tree/board) leaves this false so archived items
+    // never surface in them.
+    includeArchived: view === "archive",
   });
   const { data: graph } = useGetDependencyGraph(projectId, { refetchInterval: 5_000 });
 
@@ -323,7 +339,15 @@ function WorkItemsPage() {
             </p>
           )}
           <TooltipProvider delayDuration={200}>
-            {view === "tree" ? (
+            {view === "archive" ? (
+              <WorkItemsArchiveView
+                items={items}
+                isLoading={isLoading}
+                error={error}
+                onRestore={handleRestore}
+                restorePending={restoreWorkItem.isPending}
+              />
+            ) : view === "tree" ? (
               <WorkItemsTree
                 treeItems={treeData.treeItems}
                 allItems={items}

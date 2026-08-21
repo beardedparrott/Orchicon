@@ -554,6 +554,16 @@ table "work_items" {
     null = false
     default = 0
   }
+  column "archived_at" {
+    type = timestamptz
+    null = true
+    comment = "Set when the work item is archived (NULL = active). Drives the default archived-at-IS-NULL filter on every active work-item read."
+  }
+  column "archived_from_status" {
+    type = text
+    null = true
+    comment = "The terminal status the item had when archived; RestoreWorkItem returns the item to this status. NULL = never archived."
+  }
   column "sort_order" {
     type = double
     null = true
@@ -600,6 +610,9 @@ table "work_items" {
   }
   index "work_items_tenant_status_idx" {
     columns = [column.tenant_id, column.status]
+  }
+  index "idx_work_items_archived_at" {
+    columns = [column.archived_at]
   }
 }
 

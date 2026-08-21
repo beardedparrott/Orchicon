@@ -78,6 +78,12 @@ const (
 	// WorkItemServiceReorderWorkItemsProcedure is the fully-qualified name of the WorkItemService's
 	// ReorderWorkItems RPC.
 	WorkItemServiceReorderWorkItemsProcedure = "/orchicon.api.v1.WorkItemService/ReorderWorkItems"
+	// WorkItemServiceArchiveWorkItemProcedure is the fully-qualified name of the WorkItemService's
+	// ArchiveWorkItem RPC.
+	WorkItemServiceArchiveWorkItemProcedure = "/orchicon.api.v1.WorkItemService/ArchiveWorkItem"
+	// WorkItemServiceRestoreWorkItemProcedure is the fully-qualified name of the WorkItemService's
+	// RestoreWorkItem RPC.
+	WorkItemServiceRestoreWorkItemProcedure = "/orchicon.api.v1.WorkItemService/RestoreWorkItem"
 	// WorkItemServiceControlSequenceProcedure is the fully-qualified name of the WorkItemService's
 	// ControlSequence RPC.
 	WorkItemServiceControlSequenceProcedure = "/orchicon.api.v1.WorkItemService/ControlSequence"
@@ -123,6 +129,14 @@ type WorkItemServiceClient interface {
 	// derived from sort_order at reconcile time, so a mid-run drag shifts
 	// only future arming.
 	ReorderWorkItems(context.Context, *connect.Request[v1.ReorderWorkItemsRequest]) (*connect.Response[v1.ReorderWorkItemsResponse], error)
+	// ArchiveWorkItem hides a terminal work item (succeeded/failed/cancelled/
+	// skipped) from every normal view. Blocked when the item has children.
+	// Reversible via RestoreWorkItem. Audited as work_item.archived.
+	ArchiveWorkItem(context.Context, *connect.Request[v1.ArchiveWorkItemRequest]) (*connect.Response[v1.ArchiveWorkItemResponse], error)
+	// RestoreWorkItem returns an archived work item to the active views,
+	// back to the terminal status it was archived from (not pending).
+	// Audited as work_item.restored.
+	RestoreWorkItem(context.Context, *connect.Request[v1.RestoreWorkItemRequest]) (*connect.Response[v1.RestoreWorkItemResponse], error)
 	// ControlSequence drives a sequence parent manually (START / RESUME /
 	// STOP). A parent with children IS a sequence run; these explicit
 	// gestures are what the engine's derived cursor cannot infer on its own:
@@ -218,6 +232,18 @@ func NewWorkItemServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workItemServiceMethods.ByName("ReorderWorkItems")),
 			connect.WithClientOptions(opts...),
 		),
+		archiveWorkItem: connect.NewClient[v1.ArchiveWorkItemRequest, v1.ArchiveWorkItemResponse](
+			httpClient,
+			baseURL+WorkItemServiceArchiveWorkItemProcedure,
+			connect.WithSchema(workItemServiceMethods.ByName("ArchiveWorkItem")),
+			connect.WithClientOptions(opts...),
+		),
+		restoreWorkItem: connect.NewClient[v1.RestoreWorkItemRequest, v1.RestoreWorkItemResponse](
+			httpClient,
+			baseURL+WorkItemServiceRestoreWorkItemProcedure,
+			connect.WithSchema(workItemServiceMethods.ByName("RestoreWorkItem")),
+			connect.WithClientOptions(opts...),
+		),
 		controlSequence: connect.NewClient[v1.ControlSequenceRequest, v1.ControlSequenceResponse](
 			httpClient,
 			baseURL+WorkItemServiceControlSequenceProcedure,
@@ -241,6 +267,8 @@ type workItemServiceClient struct {
 	assignWorker       *connect.Client[v1.AssignWorkerRequest, v1.AssignWorkerResponse]
 	unassignWorker     *connect.Client[v1.UnassignWorkerRequest, v1.UnassignWorkerResponse]
 	reorderWorkItems   *connect.Client[v1.ReorderWorkItemsRequest, v1.ReorderWorkItemsResponse]
+	archiveWorkItem    *connect.Client[v1.ArchiveWorkItemRequest, v1.ArchiveWorkItemResponse]
+	restoreWorkItem    *connect.Client[v1.RestoreWorkItemRequest, v1.RestoreWorkItemResponse]
 	controlSequence    *connect.Client[v1.ControlSequenceRequest, v1.ControlSequenceResponse]
 }
 
@@ -304,6 +332,16 @@ func (c *workItemServiceClient) ReorderWorkItems(ctx context.Context, req *conne
 	return c.reorderWorkItems.CallUnary(ctx, req)
 }
 
+// ArchiveWorkItem calls orchicon.api.v1.WorkItemService.ArchiveWorkItem.
+func (c *workItemServiceClient) ArchiveWorkItem(ctx context.Context, req *connect.Request[v1.ArchiveWorkItemRequest]) (*connect.Response[v1.ArchiveWorkItemResponse], error) {
+	return c.archiveWorkItem.CallUnary(ctx, req)
+}
+
+// RestoreWorkItem calls orchicon.api.v1.WorkItemService.RestoreWorkItem.
+func (c *workItemServiceClient) RestoreWorkItem(ctx context.Context, req *connect.Request[v1.RestoreWorkItemRequest]) (*connect.Response[v1.RestoreWorkItemResponse], error) {
+	return c.restoreWorkItem.CallUnary(ctx, req)
+}
+
 // ControlSequence calls orchicon.api.v1.WorkItemService.ControlSequence.
 func (c *workItemServiceClient) ControlSequence(ctx context.Context, req *connect.Request[v1.ControlSequenceRequest]) (*connect.Response[v1.ControlSequenceResponse], error) {
 	return c.controlSequence.CallUnary(ctx, req)
@@ -349,6 +387,14 @@ type WorkItemServiceHandler interface {
 	// derived from sort_order at reconcile time, so a mid-run drag shifts
 	// only future arming.
 	ReorderWorkItems(context.Context, *connect.Request[v1.ReorderWorkItemsRequest]) (*connect.Response[v1.ReorderWorkItemsResponse], error)
+	// ArchiveWorkItem hides a terminal work item (succeeded/failed/cancelled/
+	// skipped) from every normal view. Blocked when the item has children.
+	// Reversible via RestoreWorkItem. Audited as work_item.archived.
+	ArchiveWorkItem(context.Context, *connect.Request[v1.ArchiveWorkItemRequest]) (*connect.Response[v1.ArchiveWorkItemResponse], error)
+	// RestoreWorkItem returns an archived work item to the active views,
+	// back to the terminal status it was archived from (not pending).
+	// Audited as work_item.restored.
+	RestoreWorkItem(context.Context, *connect.Request[v1.RestoreWorkItemRequest]) (*connect.Response[v1.RestoreWorkItemResponse], error)
 	// ControlSequence drives a sequence parent manually (START / RESUME /
 	// STOP). A parent with children IS a sequence run; these explicit
 	// gestures are what the engine's derived cursor cannot infer on its own:
@@ -440,6 +486,18 @@ func NewWorkItemServiceHandler(svc WorkItemServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workItemServiceMethods.ByName("ReorderWorkItems")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workItemServiceArchiveWorkItemHandler := connect.NewUnaryHandler(
+		WorkItemServiceArchiveWorkItemProcedure,
+		svc.ArchiveWorkItem,
+		connect.WithSchema(workItemServiceMethods.ByName("ArchiveWorkItem")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workItemServiceRestoreWorkItemHandler := connect.NewUnaryHandler(
+		WorkItemServiceRestoreWorkItemProcedure,
+		svc.RestoreWorkItem,
+		connect.WithSchema(workItemServiceMethods.ByName("RestoreWorkItem")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workItemServiceControlSequenceHandler := connect.NewUnaryHandler(
 		WorkItemServiceControlSequenceProcedure,
 		svc.ControlSequence,
@@ -472,6 +530,10 @@ func NewWorkItemServiceHandler(svc WorkItemServiceHandler, opts ...connect.Handl
 			workItemServiceUnassignWorkerHandler.ServeHTTP(w, r)
 		case WorkItemServiceReorderWorkItemsProcedure:
 			workItemServiceReorderWorkItemsHandler.ServeHTTP(w, r)
+		case WorkItemServiceArchiveWorkItemProcedure:
+			workItemServiceArchiveWorkItemHandler.ServeHTTP(w, r)
+		case WorkItemServiceRestoreWorkItemProcedure:
+			workItemServiceRestoreWorkItemHandler.ServeHTTP(w, r)
 		case WorkItemServiceControlSequenceProcedure:
 			workItemServiceControlSequenceHandler.ServeHTTP(w, r)
 		default:
@@ -529,6 +591,14 @@ func (UnimplementedWorkItemServiceHandler) UnassignWorker(context.Context, *conn
 
 func (UnimplementedWorkItemServiceHandler) ReorderWorkItems(context.Context, *connect.Request[v1.ReorderWorkItemsRequest]) (*connect.Response[v1.ReorderWorkItemsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkItemService.ReorderWorkItems is not implemented"))
+}
+
+func (UnimplementedWorkItemServiceHandler) ArchiveWorkItem(context.Context, *connect.Request[v1.ArchiveWorkItemRequest]) (*connect.Response[v1.ArchiveWorkItemResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkItemService.ArchiveWorkItem is not implemented"))
+}
+
+func (UnimplementedWorkItemServiceHandler) RestoreWorkItem(context.Context, *connect.Request[v1.RestoreWorkItemRequest]) (*connect.Response[v1.RestoreWorkItemResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkItemService.RestoreWorkItem is not implemented"))
 }
 
 func (UnimplementedWorkItemServiceHandler) ControlSequence(context.Context, *connect.Request[v1.ControlSequenceRequest]) (*connect.Response[v1.ControlSequenceResponse], error) {
