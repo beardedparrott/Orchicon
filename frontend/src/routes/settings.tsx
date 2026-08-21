@@ -468,6 +468,9 @@ function DefaultsTab() {
   const [draftTextLoop, setDraftTextLoop] = useState("");
   const [draftRepetitionCount, setDraftRepetitionCount] = useState("");
   const [draftRepetitionWindow, setDraftRepetitionWindow] = useState("");
+  const [draftNudgeMax, setDraftNudgeMax] = useState("");
+  const [draftNudgeReplyWindow, setDraftNudgeReplyWindow] = useState("");
+  const [draftNudgeCooldown, setDraftNudgeCooldown] = useState("");
   const [draftBudgetTokens, setDraftBudgetTokens] = useState("");
   const [draftBudgetCost, setDraftBudgetCost] = useState("");
   const [draftBudgetWallClock, setDraftBudgetWallClock] = useState("");
@@ -491,6 +494,9 @@ function DefaultsTab() {
       setDraftTextLoop(String(settings.stallTextLoopWindowSeconds ?? ""));
       setDraftRepetitionCount(String(settings.stallRepetitionCount ?? ""));
       setDraftRepetitionWindow(String(settings.stallRepetitionWindowSeconds ?? ""));
+      setDraftNudgeMax(String(settings.stallNudgeMax ?? ""));
+      setDraftNudgeReplyWindow(String(settings.stallNudgeReplyWindowSeconds ?? ""));
+      setDraftNudgeCooldown(String(settings.stallNudgeCooldownSeconds ?? ""));
       const budget = parseBudgetDefaults(settings.defaultBudgetOverrides);
       setDraftBudgetTokens(budget.tokens);
       setDraftBudgetCost(budget.costUsd);
@@ -518,6 +524,9 @@ function DefaultsTab() {
         stallTextLoopWindowSeconds: parseInt(draftTextLoop) || 0,
         stallRepetitionCount: parseInt(draftRepetitionCount) || 0,
         stallRepetitionWindowSeconds: parseInt(draftRepetitionWindow) || 0,
+        stallNudgeMax: parseInt(draftNudgeMax) || 0,
+        stallNudgeReplyWindowSeconds: parseInt(draftNudgeReplyWindow) || 0,
+        stallNudgeCooldownSeconds: parseInt(draftNudgeCooldown) || 0,
         defaultBudgetOverrides: buildBudgetDefaults(
           draftBudgetTokens,
           draftBudgetCost,
@@ -620,6 +629,27 @@ function DefaultsTab() {
                 value={draftRepetitionWindow}
                 onChange={setDraftRepetitionWindow}
                 placeholder="300"
+              />
+              <StallField
+                label="Nudge max"
+                description="Max nudges to a live session before an advisory stall escalates to a kill + recovery"
+                value={draftNudgeMax}
+                onChange={setDraftNudgeMax}
+                placeholder="2"
+              />
+              <StallField
+                label="Nudge reply window (seconds)"
+                description="How long a nudge waits for the worker to break the pattern before the next trip escalates"
+                value={draftNudgeReplyWindow}
+                onChange={setDraftNudgeReplyWindow}
+                placeholder="300"
+              />
+              <StallField
+                label="Nudge cooldown (seconds)"
+                description="Minimum gap between nudges"
+                value={draftNudgeCooldown}
+                onChange={setDraftNudgeCooldown}
+                placeholder="60"
               />
             </div>
           </CardContent>

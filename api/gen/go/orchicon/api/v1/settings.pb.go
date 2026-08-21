@@ -55,6 +55,14 @@ type TenantSettings struct {
 	StallRepetitionCount int32 `protobuf:"varint,13,opt,name=stall_repetition_count,json=stallRepetitionCount,proto3" json:"stall_repetition_count,omitempty"`
 	// Window for repetition detection. Seconds. Default 300 (5 min).
 	StallRepetitionWindowSeconds int64 `protobuf:"varint,14,opt,name=stall_repetition_window_seconds,json=stallRepetitionWindowSeconds,proto3" json:"stall_repetition_window_seconds,omitempty"`
+	// Max nudges sent to a live session before an advisory stall escalates to
+	// a fatal kill + recovery. Default 2.
+	StallNudgeMax int32 `protobuf:"varint,31,opt,name=stall_nudge_max,json=stallNudgeMax,proto3" json:"stall_nudge_max,omitempty"`
+	// How long a nudge waits for the worker to break the pattern before the
+	// next trip escalates. Seconds. Default 300 (5 min).
+	StallNudgeReplyWindowSeconds int64 `protobuf:"varint,32,opt,name=stall_nudge_reply_window_seconds,json=stallNudgeReplyWindowSeconds,proto3" json:"stall_nudge_reply_window_seconds,omitempty"`
+	// Minimum gap between nudges. Seconds. Default 60.
+	StallNudgeCooldownSeconds int64 `protobuf:"varint,33,opt,name=stall_nudge_cooldown_seconds,json=stallNudgeCooldownSeconds,proto3" json:"stall_nudge_cooldown_seconds,omitempty"`
 	// How long an execution must have been running before it becomes
 	// eligible for reaping (skips the fresh-dispatch race). Seconds.
 	// Default 60.
@@ -198,6 +206,27 @@ func (x *TenantSettings) GetStallRepetitionWindowSeconds() int64 {
 	return 0
 }
 
+func (x *TenantSettings) GetStallNudgeMax() int32 {
+	if x != nil {
+		return x.StallNudgeMax
+	}
+	return 0
+}
+
+func (x *TenantSettings) GetStallNudgeReplyWindowSeconds() int64 {
+	if x != nil {
+		return x.StallNudgeReplyWindowSeconds
+	}
+	return 0
+}
+
+func (x *TenantSettings) GetStallNudgeCooldownSeconds() int64 {
+	if x != nil {
+		return x.StallNudgeCooldownSeconds
+	}
+	return 0
+}
+
 func (x *TenantSettings) GetExecutionReapGraceSeconds() int64 {
 	if x != nil {
 		return x.ExecutionReapGraceSeconds
@@ -314,8 +343,7 @@ var File_orchicon_api_v1_settings_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"\n" +
-	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcd\n" +
-	"\n" +
+	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xfe\v\n" +
 	"\x0eTenantSettings\x120\n" +
 	"\x14default_worker_model\x18\x01 \x01(\tR\x12defaultWorkerModel\x12;\n" +
 	"\x1adefault_ask_orchicon_model\x18\x02 \x01(\tR\x17defaultAskOrchiconModel\x12F\n" +
@@ -324,7 +352,10 @@ const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"!stall_no_file_diff_window_seconds\x18\v \x01(\x03R\x1cstallNoFileDiffWindowSeconds\x12B\n" +
 	"\x1estall_text_loop_window_seconds\x18\f \x01(\x03R\x1astallTextLoopWindowSeconds\x124\n" +
 	"\x16stall_repetition_count\x18\r \x01(\x05R\x14stallRepetitionCount\x12E\n" +
-	"\x1fstall_repetition_window_seconds\x18\x0e \x01(\x03R\x1cstallRepetitionWindowSeconds\x12?\n" +
+	"\x1fstall_repetition_window_seconds\x18\x0e \x01(\x03R\x1cstallRepetitionWindowSeconds\x12&\n" +
+	"\x0fstall_nudge_max\x18\x1f \x01(\x05R\rstallNudgeMax\x12F\n" +
+	" stall_nudge_reply_window_seconds\x18  \x01(\x03R\x1cstallNudgeReplyWindowSeconds\x12?\n" +
+	"\x1cstall_nudge_cooldown_seconds\x18! \x01(\x03R\x19stallNudgeCooldownSeconds\x12?\n" +
 	"\x1cexecution_reap_grace_seconds\x18\x0f \x01(\x03R\x19executionReapGraceSeconds\x12M\n" +
 	"#execution_reap_consecutive_failures\x18\x10 \x01(\x05R executionReapConsecutiveFailures\x128\n" +
 	"\x18default_budget_overrides\x18\x13 \x01(\tR\x16defaultBudgetOverrides\x12'\n" +

@@ -971,6 +971,8 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	var stallNoProgress, stallNoFileDiff, stallTextLoop int64
 	var stallRepCount int32
 	var stallRepWindow int64
+	var stallNudgeMax int32
+	var stallNudgeReplyWindow, stallNudgeCooldown int64
 	var defaultBudgetOverrides []byte
 	{
 		settingsCtx := context.Background()
@@ -984,6 +986,9 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				stallTextLoop = s.StallTextLoopWindowSeconds
 				stallRepCount = s.StallRepetitionCount
 				stallRepWindow = s.StallRepetitionWindowSeconds
+				stallNudgeMax = s.StallNudgeMax
+				stallNudgeReplyWindow = s.StallNudgeReplyWindowSeconds
+				stallNudgeCooldown = s.StallNudgeCooldownSeconds
 				defaultBudgetOverrides = s.DefaultBudgetOverrides
 			}
 			stx.Rollback(settingsCtx)
@@ -1019,6 +1024,9 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		StallTextLoopWindowSeconds:   stallTextLoop,
 		StallRepetitionCount:         stallRepCount,
 		StallRepetitionWindowSeconds: stallRepWindow,
+		StallNudgeMax:                stallNudgeMax,
+		StallNudgeReplyWindowSeconds: stallNudgeReplyWindow,
+		StallNudgeCooldownSeconds:    stallNudgeCooldown,
 	}
 	if err := r.bridge.Start(ctx, exec, manifest, r); err != nil {
 		r.log.Error("adapter start failed", "execution", exec.ID, "error", err)
@@ -1696,21 +1704,19 @@ func (r *TaskReconciler) OnHealth(ctx context.Context, execID, healthState strin
 //
 // `fatal` distinguishes the two cases:
 //
-//   - FATAL (no_progress / text_loop / repetition): a genuine hang/loop.
-//     The adapter has already hard-killed the subprocess, so the execution
-//     is marked unhealthy and the work item transitions to failed — the
-//     downstream recover step (if any) activates on the next reconcile
-//     pass. This closes the "worker stuck looping" gap: a worker that
-//     repeats the same tool calls, makes no file changes, or makes no
-//     token progress is recovered rather than running forever.
-//   - ADVISORY (no_file_progress): the subprocess is NOT killed and the
-//     execution is NOT failed. A reviewer or analyst may legitimately go
-//     long stretches without touching files while still producing output
-//     (observed: the SSE worker was flagged yet completed successfully).
-//     The execution gets a non-terminal `stalled` health notice + reason
-//     so the operator sees the flag, stays `running`, and is either
-//     revived to healthy when file progress resumes (OnRecovered) or
-//     reaches its real terminal state via OnResult.
+//   - FATAL (no_progress only): total silence — there is no responsive
+//     surface to nudge. The adapter has already hard-killed the subprocess,
+//     so the execution is marked unhealthy and the work item transitions to
+//     failed — the downstream recover step (if any) activates on the next
+//     reconcile pass.
+//   - ADVISORY (text_loop / repetition / no_file_progress): the worker is
+//     generating text / issuing tool calls, so a nudge can reach it. The
+//     subprocess is NOT killed and the execution is NOT failed. The
+//     execution gets a non-terminal `stalled` health notice + reason so the
+//     operator sees the flag, stays `running`, and is either revived to
+//     healthy when progress resumes (OnRecovered) or — after the nudge
+//     budget is spent without the worker breaking the pattern — escalated
+//     to a fatal kill + recovery by the session's onStall.
 func (r *TaskReconciler) OnStall(ctx context.Context, execID, reason string, fatal bool) {
 	r.log.Warn("execution stalled",
 		"execution", execID, "reason", reason, "fatal", fatal)

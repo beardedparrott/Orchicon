@@ -418,7 +418,7 @@ func TestCompletionProbeDecision(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			probe, fail := completionProbeDecision(tc.output, tc.nudges, tc.lastNudge, now)
+			probe, fail := completionProbeDecision(tc.output, tc.nudges, tc.lastNudge, now, nudgeMax(), nudgeCooldown())
 			if probe != tc.wantProbe || fail != tc.wantFail {
 				t.Fatalf("probe=%v fail=%v, want probe=%v fail=%v", probe, fail, tc.wantProbe, tc.wantFail)
 			}

@@ -49,6 +49,24 @@ message TenantSettings {
   // Window for repetition detection. Seconds. Default 300 (5 min).
   int64 stall_repetition_window_seconds = 14;
 
+  // --- Nudge knobs (advisory-stall escalation) ---
+  // These tune the nudge-first routing: an advisory stall (text_loop /
+  // repetition / no_file_progress) nudges the live session first, and only
+  // escalates to a fatal kill + recovery after the nudge budget is spent.
+  // Each field has an env-var counterpart (ORCHICON_STALL_NUDGE_*). Zero
+  // means "use the env var or code default".
+
+  // Max nudges sent to a live session before an advisory stall escalates to
+  // a fatal kill + recovery. Default 2.
+  int32 stall_nudge_max = 31;
+
+  // How long a nudge waits for the worker to break the pattern before the
+  // next trip escalates. Seconds. Default 300 (5 min).
+  int64 stall_nudge_reply_window_seconds = 32;
+
+  // Minimum gap between nudges. Seconds. Default 60.
+  int64 stall_nudge_cooldown_seconds = 33;
+
   // --- Execution liveness reaper ---
   // The liveness reaper fails executions whose runtime process is gone
   // (control-plane restart, lost runtime container). The liveness probe

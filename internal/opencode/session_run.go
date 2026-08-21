@@ -52,6 +52,13 @@ type sessionRun struct {
 	probeDeadline time.Time
 	probePending  bool
 
+	// Session-scoped nudge tuning (manifest value first, env fallback).
+	// Populated by initNudgeTuning before the monitor starts. These drive
+	// both the advisory-stall nudge path and the completion-probe path.
+	nudgeMaxVal         int
+	nudgeReplyWindowVal time.Duration
+	nudgeCooldownVal    time.Duration
+
 	// Durable transcript (execution_session_parts): recorded as events
 	// arrive, flushed in batches by a background goroutine and at finish.
 	store        SessionStoreFunc
@@ -85,6 +92,51 @@ func nudgeReplyWindow() time.Duration {
 
 func nudgeCooldown() time.Duration {
 	return envDuration("ORCHICON_STALL_NUDGE_COOLDOWN", defaultNudgeCooldown)
+}
+
+// initNudgeTuning resolves the session's nudge knobs: manifest (tenant
+// settings) value first, env-var fallback, then code default. Zero in the
+// manifest means "use the env var or code default". Called once before the
+// monitor starts so the session's nudge budget is stable for its lifetime.
+func (r *sessionRun) initNudgeTuning() {
+	r.nudgeMaxVal = nudgeMax()
+	r.nudgeReplyWindowVal = nudgeReplyWindow()
+	r.nudgeCooldownVal = nudgeCooldown()
+	if r.manifest.StallNudgeMax > 0 && os.Getenv("ORCHICON_STALL_NUDGE_MAX") == "" {
+		r.nudgeMaxVal = int(r.manifest.StallNudgeMax)
+	}
+	if r.manifest.StallNudgeReplyWindowSeconds > 0 && os.Getenv("ORCHICON_STALL_NUDGE_REPLY_WINDOW") == "" {
+		r.nudgeReplyWindowVal = time.Duration(r.manifest.StallNudgeReplyWindowSeconds) * time.Second
+	}
+	if r.manifest.StallNudgeCooldownSeconds > 0 && os.Getenv("ORCHICON_STALL_NUDGE_COOLDOWN") == "" {
+		r.nudgeCooldownVal = time.Duration(r.manifest.StallNudgeCooldownSeconds) * time.Second
+	}
+}
+
+// nudgeMax returns the session's resolved nudge budget (manifest value
+// first, env fallback). Falls back to the package default if the session
+// was constructed without initNudgeTuning (e.g. tests).
+func (r *sessionRun) nudgeMax() int {
+	if r.nudgeMaxVal > 0 {
+		return r.nudgeMaxVal
+	}
+	return nudgeMax()
+}
+
+// nudgeReplyWindow returns the session's resolved nudge reply window.
+func (r *sessionRun) nudgeReplyWindow() time.Duration {
+	if r.nudgeReplyWindowVal > 0 {
+		return r.nudgeReplyWindowVal
+	}
+	return nudgeReplyWindow()
+}
+
+// nudgeCooldown returns the session's resolved nudge cooldown.
+func (r *sessionRun) nudgeCooldown() time.Duration {
+	if r.nudgeCooldownVal > 0 {
+		return r.nudgeCooldownVal
+	}
+	return nudgeCooldown()
 }
 
 // livenessProbeText is the injected liveness check sent on an advisory
@@ -179,6 +231,7 @@ func (r *sessionRun) run() error {
 	// shares the guardrails). Advisory
 	// (no_file_progress) trips a liveness probe; fatal signals abort the
 	// session and fail the execution.
+	r.initNudgeTuning()
 	r.monitor = newProgressMonitor(r.execRow.ID, stallWindowsFromManifest(r.manifest))
 	go r.monitor.run(r.parentCtx,
 		func(_ string, reason string) { r.onStall(reason) },
@@ -559,10 +612,16 @@ func (r *sessionRun) noteSessionProgress() {
 	r.a.mu.Unlock()
 }
 
-// onStall is the progress monitor's stall callback. Fatal signals abort
-// the session and fail the execution (the response to a genuine
-// hang/loop). The advisory no_file_progress signal sends a liveness probe
-// instead of just a stalled notice.
+// onStall is the progress monitor's stall callback. Nudge-first routing:
+//
+//   - no_progress: FATAL — total silence, no responsive surface to nudge.
+//     Abort the session and fail the execution immediately.
+//   - text_loop / repetition / no_file_progress: ADVISORY-first. The
+//     worker is generating text / issuing tool calls, so a nudge can reach
+//     it. Send a liveness probe into the live session (context preserved);
+//     only after the nudge budget is spent (and the worker still hasn't
+//     broken the pattern) does the next trip escalate to a fatal kill +
+//     recovery.
 func (r *sessionRun) onStall(reason string) {
 	fatal := isFatalStall(reason)
 	r.callbacks.OnStall(r.parentCtx, r.execRow.ID, reason, fatal)
@@ -580,8 +639,12 @@ func (r *sessionRun) onStall(reason string) {
 	r.maybeNudge(reason)
 }
 
-// maybeNudge injects the liveness probe when the advisory no_file_progress
-// stall trips and the nudge budget/cooldown allow it.
+// maybeNudge injects the liveness probe when an advisory stall (text_loop /
+// repetition / no_file_progress) trips and the nudge budget/cooldown allow
+// it. When the budget is spent and the worker is STILL tripping the same
+// advisory signal, it escalates to a fatal kill + recovery instead of
+// silently dropping the signal (the nudge-first reframe: nudge the live
+// session first, escalate only after persistent failure).
 func (r *sessionRun) maybeNudge(reason string) {
 	r.mu.Lock()
 	if r.finished || r.probePending {
@@ -589,17 +652,24 @@ func (r *sessionRun) maybeNudge(reason string) {
 		return
 	}
 	now := time.Now()
-	if r.nudgesSent >= nudgeMax() || now.Sub(r.lastNudgeAt) < nudgeCooldown() {
+	if r.nudgesSent >= r.nudgeMax() || now.Sub(r.lastNudgeAt) < r.nudgeCooldown() {
+		// Nudge budget spent (or inside the cooldown) and the worker is
+		// still tripping the advisory signal — escalate to fatal. The
+		// worker has had its nudges and has not broken the pattern.
 		r.mu.Unlock()
+		r.a.log.Warn("advisory stall budget exhausted — escalating to fatal",
+			"execution", r.execRow.ID, "reason", reason, "nudges", r.nudgesSent, "max", r.nudgeMax())
+		r.finish(false, reason)
+		_ = r.client.Abort(r.parentCtx, r.sessionID)
 		return
 	}
 	r.nudgesSent++
 	r.probePending = true
-	r.probeDeadline = now.Add(nudgeReplyWindow())
+	r.probeDeadline = now.Add(r.nudgeReplyWindow())
 	r.mu.Unlock()
 
 	r.a.log.Info("advisory stall — sending liveness probe",
-		"execution", r.execRow.ID, "reason", reason, "nudge", r.nudgesSent, "max", nudgeMax())
+		"execution", r.execRow.ID, "reason", reason, "nudge", r.nudgesSent, "max", r.nudgeMax())
 	if err := r.client.SendMessage(r.parentCtx, r.sessionID, r.system, r.modelRef, livenessProbeText); err != nil {
 		r.mu.Lock()
 		r.probePending = false
@@ -616,7 +686,7 @@ func (r *sessionRun) maybeNudge(reason string) {
 		select {
 		case <-r.done:
 			return
-		case <-time.After(nudgeReplyWindow()):
+		case <-time.After(r.nudgeReplyWindow()):
 		}
 		r.mu.Lock()
 		still := r.probePending && !r.finished
@@ -635,11 +705,15 @@ func (r *sessionRun) maybeNudge(reason string) {
 //   - marker missing, budget left     → (true,  false): send a probe.
 //   - marker missing, budget spent    → (false, true): fail — the worker
 //     never delivered its decision signal.
-func completionProbeDecision(output string, nudgesSent int, lastNudgeAt, now time.Time) (probe bool, fail bool) {
+//
+// nudgeMax and nudgeCooldown are the session's resolved tuning (manifest
+// value first, env fallback) so the completion probe shares the same
+// per-session budget as the advisory-stall nudge path.
+func completionProbeDecision(output string, nudgesSent int, lastNudgeAt, now time.Time, nudgeMax int, nudgeCooldown time.Duration) (probe bool, fail bool) {
 	if strings.Contains(output, decisionMarker) {
 		return false, false
 	}
-	if nudgesSent >= nudgeMax() || now.Sub(lastNudgeAt) < nudgeCooldown() {
+	if nudgesSent >= nudgeMax || now.Sub(lastNudgeAt) < nudgeCooldown {
 		return false, true
 	}
 	return true, false
@@ -665,7 +739,7 @@ func (r *sessionRun) maybeProbeCompletion() bool {
 		r.mu.Unlock()
 		return false
 	}
-	probe, fail := completionProbeDecision(r.output.String(), r.nudgesSent, r.lastNudgeAt, time.Now())
+	probe, fail := completionProbeDecision(r.output.String(), r.nudgesSent, r.lastNudgeAt, time.Now(), r.nudgeMax(), r.nudgeCooldown())
 	if fail {
 		// Probe budget exhausted and still no signal — this is NOT a success.
 		// The final turn was truncated / the summary was lost.
@@ -682,11 +756,11 @@ func (r *sessionRun) maybeProbeCompletion() bool {
 	now := time.Now()
 	r.nudgesSent++
 	r.probePending = true
-	r.probeDeadline = now.Add(nudgeReplyWindow())
+	r.probeDeadline = now.Add(r.nudgeReplyWindow())
 	r.mu.Unlock()
 
 	r.a.log.Info("session idle without decision signal — sending completion probe",
-		"execution", r.execRow.ID, "nudge", r.nudgesSent, "max", nudgeMax())
+		"execution", r.execRow.ID, "nudge", r.nudgesSent, "max", r.nudgeMax())
 	if err := r.client.SendMessage(r.parentCtx, r.sessionID, r.system, r.modelRef, completionProbeText); err != nil {
 		r.mu.Lock()
 		r.probePending = false
@@ -706,7 +780,7 @@ func (r *sessionRun) maybeProbeCompletion() bool {
 		select {
 		case <-r.done:
 			return
-		case <-time.After(nudgeReplyWindow()):
+		case <-time.After(r.nudgeReplyWindow()):
 		}
 		r.mu.Lock()
 		still := r.probePending && !r.finished
