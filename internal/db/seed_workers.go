@@ -130,10 +130,6 @@ type cannedWorker struct {
 	Skills      string
 	Behavior    string
 	AgentsMD    string
-	// ModelRef is the worker's seed-managed default model. Empty falls back
-	// to defaultCannedModel. Every published version of the worker is kept
-	// aligned to it (dispatch never targets a dead model).
-	ModelRef string
 	// RecreateSlugOwner deletes any worker that owns the canned slug but is
 	// NOT the canned ID, then recreates fresh under the canned ID. Used by
 	// workers that were adopted under ULID ids before they were canned — the
@@ -141,19 +137,6 @@ type cannedWorker struct {
 	// problems). Deleting breaks workflow step refs that point at the old id;
 	// the operator updates those manually.
 	RecreateSlugOwner bool
-}
-
-// defaultCannedModel is the model canned workers default to when they don't
-// carry their own ModelRef (most seed-managed workers are paid deepseek).
-const defaultCannedModel = "opencode-go/deepseek-v4-flash"
-
-// modelRef resolves the worker's seed-managed default model, falling back to
-// defaultCannedModel when the cannedWorker carries none.
-func (w cannedWorker) modelRef() string {
-	if w.ModelRef != "" {
-		return w.ModelRef
-	}
-	return defaultCannedModel
 }
 
 var cannedWorkers = []cannedWorker{
@@ -601,13 +584,14 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 				     execution_policy_ref, concurrency_limit, recovery_workflow_ref,
 				     labels, published_at, created_at)
 				 SELECT $1, 'tnt_dev', worker_id, $2, 'Safety context roll-forward',
-				        'published', runtime_ref, $8, $3, $4, $5, $6,
+				        'published', runtime_ref, COALESCE(NULLIF(model_ref,''), ''),
+				        $3, $4, $5, $6,
 				        context_sources, permissions, gated_tools, budget_overrides,
 				        execution_policy_ref, concurrency_limit, recovery_workflow_ref,
 				        labels, now(), now()
 				   FROM worker_versions
 				  WHERE id = $7 AND tenant_id = 'tnt_dev'`,
-				NewID(), newVer, w.Role, w.Skills, w.Behavior, seedAgentsMD(w), pubID, w.modelRef(),
+				NewID(), newVer, w.Role, w.Skills, w.Behavior, seedAgentsMD(w), pubID,
 			)
 			_, _ = ttx.Exec(ctx,
 				`UPDATE workers SET current_version = $1 WHERE id = $2 AND tenant_id = 'tnt_dev'`,
@@ -629,7 +613,7 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	// version.
 	pubTag, _ := ttx.Exec(ctx,
 		`UPDATE worker_versions SET status = 'published',
-			model_ref = COALESCE(NULLIF(model_ref, ''), $2)
+			model_ref = COALESCE(NULLIF(model_ref, ''), '')
 		 WHERE tenant_id = 'tnt_dev' AND status = 'draft'
 		   AND worker_id = $1
 		   AND NOT EXISTS (
@@ -642,7 +626,7 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 		     SELECT max(version) FROM worker_versions
 		     WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND status = 'draft'
 		   )`,
-		targetID, w.modelRef(),
+		targetID,
 	)
 	if pubTag.RowsAffected() > 0 {
 		_, _ = ttx.Exec(ctx,
@@ -654,21 +638,6 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 			targetID,
 		)
 	}
-
-	// Canned-worker model_ref is seed-managed. Older seeds defaulted to
-	// 'opencode/deepseek-v4-flash', which is not a valid model for this
-	// runtime (the paid model is 'opencode-go/deepseek-v4-flash' — the
-	// one the configured API key covers); the stale value propagated to
-	// every roll-forward version. Keep all versions aligned to the
-	// worker's OWN seed model so dispatch never targets a dead or wrong
-	// model. (model_ref is not a user-edited field on canned workers —
-	// role/skills/behavior/agents_md are.)
-	_, _ = ttx.Exec(ctx,
-		`UPDATE worker_versions SET model_ref = $2
-		 WHERE worker_id = $1 AND tenant_id = 'tnt_dev'
-		   AND model_ref != $2`,
-		targetID, w.modelRef(),
-	)
 	return nil
 }
 
@@ -809,7 +778,9 @@ func deleteWorkerByID(ctx context.Context, ttx *TenantTx, workerID string) error
 }
 
 // seedNewWorker inserts a brand-new canned worker (its slug is confirmed
-// free) with a published v1 carrying the canned profile.
+// free) with a published v1 carrying the canned profile. model_ref is seeded
+// blank so dispatch falls back to the tenant default_worker_model — model
+// selection is fully user-owned after creation.
 func seedNewWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	// Create worker.
 	_, err := ttx.Exec(ctx,
@@ -830,12 +801,12 @@ func seedNewWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 			context_sources, permissions, gated_tools, budget_overrides, execution_policy_ref,
 			concurrency_limit, recovery_workflow_ref, labels, published_at, created_at)
 		 VALUES ($1, 'tnt_dev', $2, 1, 'Pre-canned worker', 'published',
-			'opencode', $7,
+			'opencode', '',
 			$3, $4, $5, $6,
 			'[]', '{}', '[]', '{}', '', 1, '', '{}',
 			now(), now())
 		 ON CONFLICT DO NOTHING`,
-		vid, w.ID, w.Role, w.Skills, w.Behavior, seedAgentsMD(w), w.modelRef(),
+		vid, w.ID, w.Role, w.Skills, w.Behavior, seedAgentsMD(w),
 	)
 	if err != nil {
 		return fmt.Errorf("insert worker version: %w", err)
