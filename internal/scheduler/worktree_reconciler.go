@@ -384,8 +384,11 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 		}
 	}
 
-	// Phase 4 — create against the resolved base ref.
-	if err := r.addWorktree(ctx, projectDir, path, branch, base); err != nil {
+	// Phase 4 — create or attach against the resolved base ref. When the
+	// deterministic branch already exists (a retried run reusing its branch),
+	// provisionWorktree ATTACHES to it so the branch's existing commits carry
+	// over — never `-b`, which fails on an existing branch.
+	if err := r.provisionWorktree(ctx, projectDir, path, branch, base); err != nil {
 		if isAlreadyTrackedErr(err) {
 			// A concurrent pass won the create race — converge on the
 			// worktree git now has at our path.
@@ -500,7 +503,7 @@ func (r *WorktreeReconciler) reconcileStepRunOne(ctx context.Context, tenantID, 
 	} else {
 		base = r.resolveBaseRef(ctx, projectDir)
 	}
-	if err := r.addWorktree(ctx, projectDir, path, branch, base); err != nil {
+	if err := r.provisionWorktree(ctx, projectDir, path, branch, base); err != nil {
 		if isAlreadyTrackedErr(err) {
 			// A concurrent pass won the create race — converge.
 			if existing, lerr := r.worktreeAt(ctx, projectDir, path); lerr == nil && existing != nil && existing.branch == branch {
@@ -567,7 +570,9 @@ func (r *WorktreeReconciler) branchWorktreeName(ctx context.Context, tenantID st
 // pruneStepRunOne reaps a terminal step run's branch worktree: remove the
 // working tree dir, run `git worktree prune` in the main repo, and record
 // 'pruned' on the step run row. Idempotent by construction — every step
-// treats "already gone" as success. The branch ref is NEVER deleted.
+// treats "already gone" as success. On run SUCCESS the branch ref is also
+// deleted (gated on merged-into-base); on failure/cancellation the branch
+// survives so a retry re-attaches to it.
 func (r *WorktreeReconciler) pruneStepRunOne(ctx context.Context, tenantID string, sr db.WorkflowStepRunRow) error {
 	if sr.WorktreeStatus != domain.WorktreeReady || sr.WorktreePath == "" {
 		return nil
@@ -612,6 +617,18 @@ func (r *WorktreeReconciler) pruneStepRunOne(ctx context.Context, tenantID strin
 	if _, err := runGit(ctx, projectDir, "worktree", "prune"); err != nil {
 		r.log.Warn("worktree: git worktree prune failed",
 			"run", sr.WorkflowRunID, "step_run", sr.ID, "error", err)
+	}
+
+	// AC: on run SUCCESS only, delete the branch the reconciler provably
+	// created for this step run. Never on failure/cancellation — a failed
+	// run keeps its step branches so a retry re-attaches to them. Gated on
+	// the branch being merged into the base, never the current branch, and
+	// never main/develop.
+	if run.Status == domain.WorkflowRunCompleted {
+		if err := r.deleteBranch(ctx, projectDir, sr.WorktreeBranch); err != nil {
+			r.log.Warn("worktree: branch worktree branch deletion failed",
+				"run", sr.WorkflowRunID, "step_run", sr.ID, "branch", sr.WorktreeBranch, "error", err)
+		}
 	}
 
 	return r.markStepPruned(ctx, tenantID, sr.ID, "")
@@ -666,9 +683,10 @@ func isTerminalStepRun(sr db.WorkflowStepRunRow) bool {
 //     reap → no-op.
 //   - A recorded worktree that no longer exists on disk (already removed,
 //     or the repo plane is gone) is treated as already pruned → success.
-//   - The branch is NEVER deleted: `git worktree remove` and
-//     `git worktree prune` leave refs intact — branch deletion after merge
-//     stays with the DevOps merge step.
+//   - On run SUCCESS the branch is deleted (gated on merged-into-base, never
+//     the current branch, never main/develop). On failure/cancellation the
+//     branch survives so a retry re-attaches to it (carry-over of partial
+//     work).
 func (r *WorktreeReconciler) pruneOne(ctx context.Context, tenantID string, run db.WorkflowRunRow) error {
 	// Idempotent guard: only reap a worktree this reconciler provably
 	// provisioned and recorded 'ready'. A terminal run in any other
@@ -734,6 +752,17 @@ func (r *WorktreeReconciler) pruneOne(ctx context.Context, tenantID string, run 
 		// The working tree removal above already succeeded; the prune step
 		// is best-effort housekeeping, so warn rather than wedge the run.
 		r.log.Warn("worktree: git worktree prune failed", "run", run.ID, "error", err)
+	}
+
+	// AC: on SUCCESS only, delete the branch the reconciler provably created
+	// for this run. The branch is never deleted on failure/cancellation — a
+	// failed run keeps its branch so a retry re-attaches to it (carry-over of
+	// partial work). Deletion is gated on the branch being merged into the
+	// base, never the current branch, and never main/develop.
+	if run.Status == domain.WorkflowRunCompleted {
+		if err := r.deleteBranch(ctx, projectDir, run.WorktreeBranch); err != nil {
+			r.log.Warn("worktree: branch deletion failed", "run", run.ID, "branch", run.WorktreeBranch, "error", err)
+		}
 	}
 
 	return r.markPruned(ctx, tenantID, run.ID, "")
@@ -1287,6 +1316,33 @@ func (r *WorktreeReconciler) resolveBaseRef(ctx context.Context, projectDir stri
 	return ""
 }
 
+// branchExists reports whether a local branch ref exists in the repo.
+func (r *WorktreeReconciler) branchExists(ctx context.Context, projectDir, branch string) bool {
+	if branch == "" {
+		return false
+	}
+	if _, err := runGit(ctx, projectDir, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
+		return false
+	}
+	return true
+}
+
+// provisionWorktree creates or attaches a worktree at path on branch. When
+// the branch already exists in git (a retried run reusing its branch), it
+// ATTACHES with `git worktree add <path> <branch>` so the branch's existing
+// commits carry over — never `-b`, which fails on an existing branch. When
+// the branch does not exist, it CREATES it from base with
+// `git worktree add <path> -b <branch> <base>`.
+func (r *WorktreeReconciler) provisionWorktree(ctx context.Context, projectDir, path, branch, base string) error {
+	if r.branchExists(ctx, projectDir, branch) {
+		if _, err := runGit(ctx, projectDir, "worktree", "add", path, branch); err != nil {
+			return err
+		}
+		return nil
+	}
+	return r.addWorktree(ctx, projectDir, path, branch, base)
+}
+
 // addWorktree runs `git worktree add <path> -b <branch> [<base>]` with
 // argv-only arguments (never a shell string). base may be "" to start the
 // branch at HEAD.
@@ -1309,6 +1365,64 @@ func isAlreadyTrackedErr(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "already exists") || strings.Contains(msg, "already tracked")
+}
+
+// isProtectedBranch reports whether a branch must never be deleted by the
+// reconciler: the integration/release branches and any remote-tracking ref.
+func isProtectedBranch(branch string) bool {
+	switch branch {
+	case "", "main", "develop", "master":
+		return true
+	}
+	return strings.HasPrefix(branch, "origin/")
+}
+
+// currentBranch returns the repo's currently checked-out branch ("" if
+// detached or unresolvable).
+func (r *WorktreeReconciler) currentBranch(ctx context.Context, projectDir string) string {
+	out, err := runGit(ctx, projectDir, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// branchMergedIntoBase reports whether branch's tip is an ancestor of the
+// integration base (develop / origin/develop) — i.e. its commits are already
+// merged. The reconciler never deletes a branch whose work is not merged.
+func (r *WorktreeReconciler) branchMergedIntoBase(ctx context.Context, projectDir, branch string) bool {
+	for _, ref := range []string{"develop", "origin/develop"} {
+		if _, err := runGit(ctx, projectDir, "merge-base", "--is-ancestor", branch, ref); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// deleteBranch deletes a branch ref after a successful run, gated on the
+// branch being provably ours (the deterministic name recorded on the row),
+// not protected, not the current branch, and merged into the base. Idempotent
+// by construction: a missing branch is success.
+func (r *WorktreeReconciler) deleteBranch(ctx context.Context, projectDir, branch string) error {
+	if branch == "" || isProtectedBranch(branch) {
+		return nil
+	}
+	if cur := r.currentBranch(ctx, projectDir); cur != "" && cur == branch {
+		r.log.Warn("worktree: refusing to delete the current branch", "branch", branch)
+		return nil
+	}
+	if !r.branchExists(ctx, projectDir, branch) {
+		return nil // already gone — idempotent
+	}
+	if !r.branchMergedIntoBase(ctx, projectDir, branch) {
+		r.log.Warn("worktree: refusing to delete unmerged branch", "branch", branch)
+		return nil
+	}
+	if _, err := runGit(ctx, projectDir, "branch", "-D", branch); err != nil {
+		return fmt.Errorf("git branch -D %s: %w", branch, err)
+	}
+	r.log.Info("worktree: deleted branch after successful run", "branch", branch)
+	return nil
 }
 
 // --- row state transitions (each a short optimistic tx) --------------------
@@ -1438,9 +1552,10 @@ func (r *WorktreeReconciler) admitInPlace(ctx context.Context, tx pgx.Tx, tenant
 // markPruned records that a terminal run's worktree has been reaped. The
 // existing `mark` refuses terminal runs by design, so pruning needs its own
 // writer. In one optimistic transaction it sets worktree_status='pruned'
-// and clears worktree_path; worktree_branch is KEPT so the DevOps merge
-// step knows which branch the run used (branch deletion stays there — the
-// control plane never deletes a branch).
+// and clears worktree_path; worktree_branch is KEPT so a retry can
+// re-attach to the same branch (and so the DevOps merge step knows which
+// branch the run used). Branch deletion on success is handled by
+// pruneOne's deleteBranch call, not here.
 func (r *WorktreeReconciler) markPruned(ctx context.Context, tenantID, runID, reason string) error {
 	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -1614,9 +1729,10 @@ func (r *WorktreeReconciler) stepInPlaceAdmitted(ctx context.Context, tx pgx.Tx,
 
 // markStepPruned records that a terminal step run's branch worktree has
 // been reaped. In one optimistic transaction it sets worktree_status
-// 'pruned' and clears worktree_path; worktree_branch is KEPT so the
-// DevOps merge step knows which branch the branch step used (the control
-// plane never deletes a branch).
+// 'pruned' and clears worktree_path; worktree_branch is KEPT so a retry can
+// re-attach to the same branch (and so the DevOps merge step knows which
+// branch the branch step used). Branch deletion on success is handled by
+// pruneStepRunOne's deleteBranch call, not here.
 func (r *WorktreeReconciler) markStepPruned(ctx context.Context, tenantID, stepRunID, reason string) error {
 	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
