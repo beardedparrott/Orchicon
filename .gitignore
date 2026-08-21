@@ -45,6 +45,8 @@ data/
 .gotmp/
 .go-tmp/
 .gtmp/
+# Go build cache (GOCACHE) — local dev artifact, never committed.
+.gocache/
 # Workflow-runner scratch caches (Go build/test + GOTMPDIR) — never committed.
 .cache-build/
 .qa-gocache/

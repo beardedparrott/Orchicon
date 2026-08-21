@@ -848,3 +848,97 @@ func TestReorderWorkItemsToolValidation(t *testing.T) {
 		})
 	}
 }
+
+// callToolArchive invokes toolArchiveWorkItem with the given id and returns
+// the archived row.
+func callToolArchive(t *testing.T, ctx context.Context, pool *db.Pool, id string) (db.WorkItemRow, error) {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{"id": id})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	res, err := toolArchiveWorkItem(ctx, pool, raw)
+	if err != nil {
+		return db.WorkItemRow{}, err
+	}
+	var item db.WorkItemRow
+	if err := json.Unmarshal(res, &item); err != nil {
+		t.Fatalf("unmarshal tool result: %v", err)
+	}
+	return item, nil
+}
+
+// TestArchiveWorkItemToolDB verifies the archive_work_item tool hides a
+// terminal item (status → archived, archived_at set, archived_from_status
+// preserved) and that restore_work_item returns it to its prior terminal
+// status.
+func TestArchiveWorkItemToolDB(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+	projectID := createProjectForTest(t, ctx, pool)
+	parent := createParentEpicForTest(t, ctx, pool, projectID)
+	item, err := callToolCreate(t, ctx, pool, map[string]any{
+		"project_id": projectID, "title": "Archive tool item", "kind": "task", "parent_id": parent,
+	})
+	if err != nil {
+		t.Fatalf("create item: %v", err)
+	}
+	// Flip to a terminal status (succeeded) so it is archivable.
+	if _, err := callToolUpdate(t, ctx, pool, map[string]any{"id": item.ID, "status": domain.WorkItemSucceeded}); err != nil {
+		t.Fatalf("set succeeded: %v", err)
+	}
+
+	archived, err := callToolArchive(t, ctx, pool, item.ID)
+	if err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	if archived.Status != domain.WorkItemArchived {
+		t.Fatalf("status = %q, want archived", archived.Status)
+	}
+	if archived.ArchivedAt == nil {
+		t.Fatal("archived_at not set")
+	}
+	if archived.ArchivedFromStatus == nil || *archived.ArchivedFromStatus != domain.WorkItemSucceeded {
+		t.Fatalf("archived_from_status = %v, want succeeded", archived.ArchivedFromStatus)
+	}
+
+	// Restore returns it to the prior terminal status.
+	raw, err := json.Marshal(map[string]any{"id": item.ID})
+	if err != nil {
+		t.Fatalf("marshal restore args: %v", err)
+	}
+	res, err := toolRestoreWorkItem(ctx, pool, raw)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	var restored db.WorkItemRow
+	if err := json.Unmarshal(res, &restored); err != nil {
+		t.Fatalf("unmarshal restore result: %v", err)
+	}
+	if restored.Status != domain.WorkItemSucceeded {
+		t.Fatalf("restored status = %q, want succeeded", restored.Status)
+	}
+	if restored.ArchivedAt != nil {
+		t.Fatal("archived_at not cleared on restore")
+	}
+}
+
+// TestArchiveWorkItemToolRejectsNonTerminal verifies the tool refuses to
+// archive a non-terminal item.
+func TestArchiveWorkItemToolRejectsNonTerminal(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+	projectID := createProjectForTest(t, ctx, pool)
+	parent := createParentEpicForTest(t, ctx, pool, projectID)
+	item, err := callToolCreate(t, ctx, pool, map[string]any{
+		"project_id": projectID, "title": "Non-terminal", "kind": "task", "parent_id": parent,
+	})
+	if err != nil {
+		t.Fatalf("create item: %v", err)
+	}
+	if _, err := callToolArchive(t, ctx, pool, item.ID); err == nil {
+		t.Fatal("expected archive of a non-terminal item to fail")
+	} else if !strings.Contains(err.Error(), "terminal state") {
+		t.Fatalf("archive error %q does not mention terminal state", err.Error())
+	}
+}

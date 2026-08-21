@@ -20,6 +20,7 @@ import {
 import {
   kindMeta,
   statusMeta,
+  statusMetaFromString,
   columnForStatus,
   allowedStatusesForKind,
   isTerminal,
@@ -89,6 +90,22 @@ describe("status meta palette variants", () => {
     expect(statusMeta(WorkItemStatus.PENDING).titleLabel).toBe("Pending");
     expect(statusMeta(WorkItemStatus.SUCCEEDED).titleLabel).toBe("Succeeded");
     expect(statusMeta(WorkItemStatus.READY).label).toBe("ready");
+  });
+});
+
+describe("statusMetaFromString", () => {
+  it("maps canonical server status strings to the numeric-enum meta", () => {
+    expect(statusMetaFromString("succeeded").titleLabel).toBe("Succeeded");
+    expect(statusMetaFromString("failed").titleLabel).toBe("Failed");
+    expect(statusMetaFromString("cancelled").titleLabel).toBe("Cancelled");
+    expect(statusMetaFromString("skipped").titleLabel).toBe("Skipped");
+    expect(statusMetaFromString("archived").titleLabel).toBe("Archived");
+    expect(statusMetaFromString("pending").label).toBe("pending");
+  });
+
+  it("falls back to unknown for unrecognized strings (defensive)", () => {
+    expect(statusMetaFromString("").label).toBe("unknown");
+    expect(statusMetaFromString("bogus").label).toBe("unknown");
   });
 });
 

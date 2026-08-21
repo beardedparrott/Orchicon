@@ -366,13 +366,14 @@ func (s *Service) ListWorkItems(ctx context.Context, req *connect.Request[apiv1.
 	}
 	// Empty project_id = list across all projects (for "All" filter).
 	f := db.ListWorkItemsFilter{
-		TenantID:  tenantID,
-		ProjectID: req.Msg.ProjectId,
-		PageSize:  int(req.Msg.PageSize),
-		AfterID:   req.Msg.PageToken,
-		Search:    req.Msg.Search,
-		SortBy:    req.Msg.SortBy,
-		SortOrder: req.Msg.SortOrder,
+		TenantID:        tenantID,
+		ProjectID:       req.Msg.ProjectId,
+		PageSize:        int(req.Msg.PageSize),
+		AfterID:         req.Msg.PageToken,
+		Search:          req.Msg.Search,
+		SortBy:          req.Msg.SortBy,
+		SortOrder:       req.Msg.SortOrder,
+		IncludeArchived: req.Msg.IncludeArchived,
 	}
 	if req.Msg.ParentId != nil {
 		pid := *req.Msg.ParentId
@@ -447,7 +448,18 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		fields.AcceptanceReview = &ar
 	}
 	if msg.Status != nil {
-		fields.Status = strPtr(validateStatus(*msg.Status))
+		st := validateStatus(*msg.Status)
+		// Archiving is a deliberate, gated action with its own preconditions
+		// (terminal status only, no children) and its own archived_at /
+		// archived_from_status bookkeeping. Routing it through the generic
+		// update path would set status='archived' with archived_at NULL —
+		// which every active view (archived_at IS NULL filter) would then
+		// wrongly surface. Reject it here; callers must use ArchiveWorkItem.
+		if st == domain.WorkItemArchived {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				errors.New("archiving must go through ArchiveWorkItem; it is not settable via the generic update path"))
+		}
+		fields.Status = strPtr(st)
 	}
 	if msg.Priority != nil {
 		fields.Priority = intPtr(int(*msg.Priority))
@@ -1331,6 +1343,112 @@ func (s *Service) ReorderWorkItems(ctx context.Context, req *connect.Request[api
 	return connect.NewResponse(resp), nil
 }
 
+// ArchiveWorkItem hides a terminal work item from every normal view. It is
+// only allowed from a terminal status (succeeded/failed/cancelled/skipped)
+// and is blocked when the item has children (block, not cascade — silently
+// archiving a parent would orphan its live children). Audited as
+// work_item.archived and emits a work_item.archived outbox event.
+func (s *Service) ArchiveWorkItem(ctx context.Context, req *connect.Request[apiv1.ArchiveWorkItemRequest]) (*connect.Response[apiv1.ArchiveWorkItemResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if !domain.WorkItemIsTerminalArchivable(current.Status) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("work item must be in a terminal state (succeeded, failed, cancelled, or skipped) to be archived; finish or cancel it first"))
+	}
+	children, err := db.ListDirectChildren(ctx, ttx.Tx, tenantID, current.ID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if len(children) > 0 {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("cannot archive a work item that has %d child work item(s); archive the children first", len(children)))
+	}
+
+	archived, err := db.ArchiveWorkItem(ctx, ttx.Tx, tenantID, current.ID, current.Version, current.Status)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.archived", archived); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.archived", "work_item", archived.ID,
+		audit.Snapshot(workItemAuditSnapshot(current)), audit.Snapshot(workItemAuditSnapshot(archived))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.archived: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("work item archived", "id", archived.ID)
+	return connect.NewResponse(&apiv1.ArchiveWorkItemResponse{WorkItem: rowToProto(archived)}), nil
+}
+
+// RestoreWorkItem returns an archived work item to the active views, back
+// to the terminal status it was archived from (archived_from_status, not
+// pending). Audited as "work_item.restored" and emits a
+// work_item.restored outbox event.
+func (s *Service) RestoreWorkItem(ctx context.Context, req *connect.Request[apiv1.RestoreWorkItemRequest]) (*connect.Response[apiv1.RestoreWorkItemResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if current.Status != domain.WorkItemArchived {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("work item is not archived; only archived work items can be restored"))
+	}
+	fromStatus := current.ArchivedFromStatus
+	if fromStatus == nil || *fromStatus == "" {
+		// Defensive fallback: an archived item should always carry its
+		// prior status; default to cancelled (a terminal, non-dispatchable
+		// state) rather than pending so a restored item never becomes
+		// dispatchable unexpectedly.
+		fromStatus = strPtr(domain.WorkItemCancelled)
+	}
+	restored, err := db.RestoreWorkItem(ctx, ttx.Tx, tenantID, current.ID, current.Version, *fromStatus)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.restored", restored); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.restored", "work_item", restored.ID,
+		audit.Snapshot(workItemAuditSnapshot(current)), audit.Snapshot(workItemAuditSnapshot(restored))); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.restored: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("work item restored", "id", restored.ID)
+	return connect.NewResponse(&apiv1.RestoreWorkItemResponse{WorkItem: rowToProto(restored)}), nil
+}
+
 // ControlSequence drives a sequence parent manually (START / RESUME /
 // STOP). A parent with children IS a sequence run; these explicit gestures
 // are what the engine's derived cursor cannot infer on its own:
@@ -2126,6 +2244,8 @@ func statusToProto(status string) apiv1.WorkItemStatus {
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_BLOCKED
 	case domain.WorkItemSkipped:
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_SKIPPED
+	case domain.WorkItemArchived:
+		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_ARCHIVED
 	default:
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_UNSPECIFIED
 	}
@@ -2211,6 +2331,12 @@ func rowToProto(w db.WorkItemRow) *apiv1.WorkItem {
 	}
 	if w.NextRunAt != nil {
 		p.NextRunAt = timestamppb.New(*w.NextRunAt)
+	}
+	if w.ArchivedAt != nil {
+		p.ArchivedAt = timestamppb.New(*w.ArchivedAt)
+	}
+	if w.ArchivedFromStatus != nil {
+		p.ArchivedFromStatus = *w.ArchivedFromStatus
 	}
 	return p
 }

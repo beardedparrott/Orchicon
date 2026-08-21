@@ -156,7 +156,30 @@ const (
 	// and never blocks dependents (docs/02_Domain_Model.md §2.2). Never
 	// user-settable; mirrors WorkItemBlocked's system-managed rule.
 	WorkItemSkipped = "skipped"
+	// WorkItemArchived is a user-initiated terminal status set by
+	// ArchiveWorkItem. An archived item is hidden from every normal
+	// work-item view (board/tree/list/sequence/workflows/counts) because
+	// it carries archived_at IS NOT NULL and every active read filters
+	// archived_at IS NULL. Archiving is only allowed from a terminal
+	// status (succeeded/failed/cancelled/skipped) and only when the item
+	// has no children. Reversible via RestoreWorkItem, which returns the
+	// item to the terminal status recorded in archived_from_status.
+	WorkItemArchived = "archived"
 )
+
+// WorkItemIsTerminalArchivable reports whether a work item may be
+// archived — i.e. it is in a terminal (non-pending, non-running) state.
+// The set is exactly succeeded | failed | cancelled | skipped. Pending,
+// ready, assigned, running, checkpointing, recovering, scheduled,
+// recurring and blocked items must first finish or be cancelled.
+func WorkItemIsTerminalArchivable(status string) bool {
+	switch status {
+	case WorkItemSucceeded, WorkItemFailed, WorkItemCancelled, WorkItemSkipped:
+		return true
+	default:
+		return false
+	}
+}
 
 // WorkItemIsTerminalSuccess reports whether a work item is terminal-
 // success for dependency/arming purposes: succeeded or skipped. This is

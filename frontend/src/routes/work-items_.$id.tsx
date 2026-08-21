@@ -12,6 +12,8 @@ import {
   useRemoveDependency,
   useGetDependencyGraph,
   useListWorkItems,
+  useArchiveWorkItem,
+  useRestoreWorkItem,
 } from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
 import { useListWorkflows } from "@/api/workflows";
@@ -56,6 +58,8 @@ function WorkItemDetailPage() {
   const updateWorkItem = useUpdateWorkItem(item?.projectId ?? "");
   const deleteWorkItem = useDeleteWorkItem(item?.projectId ?? "");
   const hardDeleteWorkItem = useHardDeleteWorkItem(item?.projectId ?? "");
+  const archiveWorkItem = useArchiveWorkItem(item?.projectId ?? "");
+  const restoreWorkItem = useRestoreWorkItem(item?.projectId ?? "");
   const addDependency = useAddDependency(item?.projectId ?? "");
   const removeDependency = useRemoveDependency(item?.projectId ?? "");
   const createWorkItem = useCreateWorkItem();
@@ -158,6 +162,38 @@ function WorkItemDetailPage() {
       hardDeleteWorkItem.mutate(id, {
         onSuccess: () => navigate({ to: "/work-items" }),
       });
+    }
+  };
+
+  const handleArchive = () => {
+    if (directChildren.length > 0) {
+      window.alert(
+        "This work item has child work items. Archive the children first.",
+      );
+      return;
+    }
+    if (!isTerminal(item.status)) {
+      window.alert(
+        "This work item is not finished. Finish or cancel it before archiving.",
+      );
+      return;
+    }
+    if (
+      window.confirm(
+        "Archive this work item? It will be hidden from all views and only visible in the Archive view.",
+      )
+    ) {
+      archiveWorkItem.mutate(id);
+    }
+  };
+
+  const handleRestore = () => {
+    if (
+      window.confirm(
+        "Restore this work item? It will reappear in the active views with its prior status.",
+      )
+    ) {
+      restoreWorkItem.mutate(id);
     }
   };
 
@@ -269,6 +305,30 @@ function WorkItemDetailPage() {
           >
             {deleteWorkItem.isPending ? "Cancelling…" : "Cancel item"}
           </Button>
+          {item.status === WorkItemStatus.ARCHIVED ? (
+            <Button
+              variant="outline"
+              onClick={handleRestore}
+              disabled={restoreWorkItem.isPending}
+            >
+              {restoreWorkItem.isPending ? "Restoring…" : "Restore"}
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              onClick={handleArchive}
+              disabled={archiveWorkItem.isPending}
+              title={
+                !isTerminal(item.status)
+                  ? "Finish or cancel the work item before archiving"
+                  : directChildren.length > 0
+                    ? "Archive the child work items first"
+                    : "Hide this work item from all views"
+              }
+            >
+              {archiveWorkItem.isPending ? "Archiving…" : "Archive"}
+            </Button>
+          )}
           <Button
             variant="destructive"
             onClick={handleHardDelete}

@@ -298,6 +298,22 @@ func allTools(pool *db.Pool, log *slog.Logger) []ToolDefinition {
 			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Work item ID"}},
 			Required:    []string{"id"},
 		},
+		{
+			Name:        "archive_work_item",
+			Description: "Archive a terminal work item (succeeded/failed/cancelled/skipped) by ID — hides it from every normal work-item view (board/tree/list/sequence/workflows/counts). Only allowed from a terminal state and blocked when the item has children (archive the children first). Reversible via restore_work_item.",
+			Mutating:    true,
+			Fn:          toolArchiveWorkItem,
+			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Work item ID"}},
+			Required:    []string{"id"},
+		},
+		{
+			Name:        "restore_work_item",
+			Description: "Restore an archived work item by ID back to the active views, with the terminal status it was archived from. Reverses archive_work_item.",
+			Mutating:    true,
+			Fn:          toolRestoreWorkItem,
+			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Work item ID"}},
+			Required:    []string{"id"},
+		},
 
 		// --- Workers ---
 		{

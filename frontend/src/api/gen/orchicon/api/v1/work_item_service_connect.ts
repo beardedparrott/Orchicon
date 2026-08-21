@@ -12,7 +12,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AddDependencyRequest, AddDependencyResponse, AssignWorkerRequest, AssignWorkerResponse, ControlSequenceRequest, ControlSequenceResponse, CreateWorkItemRequest, CreateWorkItemResponse, DeleteWorkItemRequest, DeleteWorkItemResponse, GetDependencyGraphRequest, GetDependencyGraphResponse, GetWorkItemRequest, GetWorkItemResponse, HardDeleteWorkItemRequest, HardDeleteWorkItemResponse, ListWorkItemsRequest, ListWorkItemsResponse, RemoveDependencyRequest, RemoveDependencyResponse, ReorderWorkItemsRequest, ReorderWorkItemsResponse, UnassignWorkerRequest, UnassignWorkerResponse, UpdateWorkItemRequest, UpdateWorkItemResponse } from "./work_item_service_pb.js";
+import { AddDependencyRequest, AddDependencyResponse, ArchiveWorkItemRequest, ArchiveWorkItemResponse, AssignWorkerRequest, AssignWorkerResponse, ControlSequenceRequest, ControlSequenceResponse, CreateWorkItemRequest, CreateWorkItemResponse, DeleteWorkItemRequest, DeleteWorkItemResponse, GetDependencyGraphRequest, GetDependencyGraphResponse, GetWorkItemRequest, GetWorkItemResponse, HardDeleteWorkItemRequest, HardDeleteWorkItemResponse, ListWorkItemsRequest, ListWorkItemsResponse, RemoveDependencyRequest, RemoveDependencyResponse, ReorderWorkItemsRequest, ReorderWorkItemsResponse, RestoreWorkItemRequest, RestoreWorkItemResponse, UnassignWorkerRequest, UnassignWorkerResponse, UpdateWorkItemRequest, UpdateWorkItemResponse } from "./work_item_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -165,6 +165,32 @@ export const WorkItemService = {
       name: "ReorderWorkItems",
       I: ReorderWorkItemsRequest,
       O: ReorderWorkItemsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ArchiveWorkItem hides a terminal work item (succeeded/failed/cancelled/
+     * skipped) from every normal view. Blocked when the item has children.
+     * Reversible via RestoreWorkItem. Audited as work_item.archived.
+     *
+     * @generated from rpc orchicon.api.v1.WorkItemService.ArchiveWorkItem
+     */
+    archiveWorkItem: {
+      name: "ArchiveWorkItem",
+      I: ArchiveWorkItemRequest,
+      O: ArchiveWorkItemResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * RestoreWorkItem returns an archived work item to the active views,
+     * back to the terminal status it was archived from (not pending).
+     * Audited as work_item.restored.
+     *
+     * @generated from rpc orchicon.api.v1.WorkItemService.RestoreWorkItem
+     */
+    restoreWorkItem: {
+      name: "RestoreWorkItem",
+      I: RestoreWorkItemRequest,
+      O: RestoreWorkItemResponse,
       kind: MethodKind.Unary,
     },
     /**

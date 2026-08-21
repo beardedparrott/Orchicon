@@ -182,6 +182,17 @@ export enum WorkItemStatus {
    * @generated from enum value: WORK_ITEM_STATUS_SKIPPED = 13;
    */
   SKIPPED = 13,
+
+  /**
+   * User-initiated terminal status: the item is hidden from every normal
+   * work-item view (archived_at IS NOT NULL). Only archivable from a
+   * terminal status (SUCCEEDED/FAILED/CANCELLED/SKIPPED) and only when the
+   * item has no children. Reversible via RestoreWorkItem, which returns the
+   * item to its archived_from_status.
+   *
+   * @generated from enum value: WORK_ITEM_STATUS_ARCHIVED = 14;
+   */
+  ARCHIVED = 14,
 }
 // Retrieve enum metadata with: proto3.getEnumType(WorkItemStatus)
 proto3.util.setEnumType(WorkItemStatus, "orchicon.api.v1.WorkItemStatus", [
@@ -199,6 +210,7 @@ proto3.util.setEnumType(WorkItemStatus, "orchicon.api.v1.WorkItemStatus", [
   { no: 11, name: "WORK_ITEM_STATUS_RECURRING" },
   { no: 12, name: "WORK_ITEM_STATUS_BLOCKED" },
   { no: 13, name: "WORK_ITEM_STATUS_SKIPPED" },
+  { no: 14, name: "WORK_ITEM_STATUS_ARCHIVED" },
 ]);
 
 /**
@@ -463,6 +475,23 @@ export class WorkItem extends Message<WorkItem> {
    */
   blockedBy: WorkItemBlocker[] = [];
 
+  /**
+   * archived_at is set when the work item is archived (NULL = active). Every
+   * active work-item read filters archived_at IS NULL; the dedicated archive
+   * view opts in via ListWorkItems include_archived.
+   *
+   * @generated from field: google.protobuf.Timestamp archived_at = 33;
+   */
+  archivedAt?: Timestamp;
+
+  /**
+   * archived_from_status is the terminal status the item had when archived;
+   * RestoreWorkItem returns the item to this status (not pending).
+   *
+   * @generated from field: string archived_from_status = 34;
+   */
+  archivedFromStatus = "";
+
   constructor(data?: PartialMessage<WorkItem>) {
     super();
     proto3.util.initPartial(data, this);
@@ -502,6 +531,8 @@ export class WorkItem extends Message<WorkItem> {
     { no: 30, name: "next_run_at", kind: "message", T: Timestamp },
     { no: 31, name: "depends_on", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
     { no: 32, name: "blocked_by", kind: "message", T: WorkItemBlocker, repeated: true },
+    { no: 33, name: "archived_at", kind: "message", T: Timestamp },
+    { no: 34, name: "archived_from_status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkItem {

@@ -508,6 +508,7 @@ func ListReadyTasks(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkItem
 		priority, budgets, context_window, sort_order, results, prompt_context, context_files, version, created_at, updated_at
 		FROM work_items
 		WHERE tenant_id = $1 AND status = 'ready' AND assigned_worker_ref IS NOT NULL
+		  AND archived_at IS NULL
 		ORDER BY priority DESC, created_at ASC`
 	rows, err := tx.Query(ctx, q, tenantID)
 	if err != nil {
@@ -556,6 +557,7 @@ func ListBlockedTasks(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkIt
 		priority, budgets, context_window, sort_order, results, prompt_context, context_files, version, created_at, updated_at
 		FROM work_items
 		WHERE tenant_id = $1 AND status = 'blocked' AND assigned_worker_ref IS NOT NULL
+		  AND archived_at IS NULL
 		ORDER BY priority DESC, created_at ASC`
 	rows, err := tx.Query(ctx, q, tenantID)
 	if err != nil {

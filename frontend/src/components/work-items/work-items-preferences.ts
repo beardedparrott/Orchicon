@@ -115,7 +115,7 @@ function writeEnvelope(key: string, value: object): void {
 
 export function loadViewPreference(): WorkItemsView {
   const parsed = parseEnvelope<{ view: string }>(`${PREFIX}view`);
-  return parsed?.view === "tree" || parsed?.view === "board" ? parsed.view : DEFAULT_VIEW;
+  return parsed?.view === "tree" || parsed?.view === "board" || parsed?.view === "archive" ? parsed.view : DEFAULT_VIEW;
 }
 
 export function saveViewPreference(view: WorkItemsView): void {

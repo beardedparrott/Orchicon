@@ -65,6 +65,16 @@ service WorkItemService {
   // only future arming.
   rpc ReorderWorkItems(ReorderWorkItemsRequest) returns (ReorderWorkItemsResponse);
 
+  // ArchiveWorkItem hides a terminal work item (succeeded/failed/cancelled/
+  // skipped) from every normal view. Blocked when the item has children.
+  // Reversible via RestoreWorkItem. Audited as work_item.archived.
+  rpc ArchiveWorkItem(ArchiveWorkItemRequest) returns (ArchiveWorkItemResponse);
+
+  // RestoreWorkItem returns an archived work item to the active views,
+  // back to the terminal status it was archived from (not pending).
+  // Audited as work_item.restored.
+  rpc RestoreWorkItem(RestoreWorkItemRequest) returns (RestoreWorkItemResponse);
+
   // ControlSequence drives a sequence parent manually (START / RESUME /
   // STOP). A parent with children IS a sequence run; these explicit
   // gestures are what the engine's derived cursor cannot infer on its own:
@@ -136,6 +146,12 @@ message ListWorkItemsRequest {
   string sort_order = 7; // "asc" or "desc" (default "asc")
   string page_token = 8;
   int32 page_size = 9;
+  // include_archived: when false (default), the query returns ONLY active
+  // items (archived_at IS NULL) — every normal view uses this default. When
+  // true, the query returns ONLY archived items (archived_at IS NOT NULL) —
+  // the dedicated archive view sets it. Additive/regression-free: current
+  // data has no archived rows, so the default path is byte-for-byte unchanged.
+  bool include_archived = 10;
 }
 
 message ListWorkItemsResponse {
@@ -272,4 +288,25 @@ message ControlSequenceRequest {
 
 message ControlSequenceResponse {
   WorkItem work_item = 1; // the parent after the action, server-confirmed
+}
+
+// ArchiveWorkItemRequest archives a terminal work item. The request is
+// idempotency-free; the work item's current version is read server-side
+// (the ArchiveWorkItem RPC re-fetches and bumps it like ArchiveProject),
+// so no client version is required.
+message ArchiveWorkItemRequest {
+  string id = 1;
+}
+
+message ArchiveWorkItemResponse {
+  WorkItem work_item = 1; // the archived item, server-confirmed
+}
+
+// RestoreWorkItemRequest returns an archived work item to the active views.
+message RestoreWorkItemRequest {
+  string id = 1;
+}
+
+message RestoreWorkItemResponse {
+  WorkItem work_item = 1; // the restored item, server-confirmed
 }

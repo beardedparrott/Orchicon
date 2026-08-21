@@ -11,7 +11,7 @@
 // (design-notes/visual-and-functional-tweaks-to-work-items-page.md,
 // ADR-WI-2/ADR-WI-6): OR within a group, AND across groups, empty = all.
 
-import { ChevronsDownUp, ChevronsUpDown, Columns3, FolderTree, Search, Trash2 } from "lucide-react";
+import { Archive as ArchiveIcon, ChevronsDownUp, ChevronsUpDown, Columns3, FolderTree, Search, Trash2 } from "lucide-react";
 
 import type { Project } from "@/api/gen/orchicon/api/v1/project_pb";
 import {
@@ -25,7 +25,7 @@ import { Input } from "@/components/ui/input";
 import { MultiSelect } from "@/components/ui/multi-select";
 import { cn } from "@/lib/utils";
 
-export type WorkItemsView = "tree" | "board";
+export type WorkItemsView = "tree" | "board" | "archive";
 
 /** Target statuses offered by the bulk "Move to…" select — every board
  *  column except the system-managed ones (Running etc. are only set by
@@ -199,7 +199,7 @@ export function WorkItemsFilterBar({
           type="button"
           aria-pressed={view === "board"}
           className={cn(
-            "flex items-center gap-1.5 rounded-r-md px-3 py-1.5 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+            "flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring",
             view === "board"
               ? "bg-accent text-accent-foreground"
               : "text-muted-foreground hover:bg-accent/50",
@@ -208,6 +208,20 @@ export function WorkItemsFilterBar({
         >
           <Columns3 aria-hidden className="h-3.5 w-3.5" />
           Board
+        </button>
+        <button
+          type="button"
+          aria-pressed={view === "archive"}
+          className={cn(
+            "flex items-center gap-1.5 rounded-r-md px-3 py-1.5 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+            view === "archive"
+              ? "bg-accent text-accent-foreground"
+              : "text-muted-foreground hover:bg-accent/50",
+          )}
+          onClick={() => onViewChange("archive")}
+        >
+          <ArchiveIcon aria-hidden className="h-3.5 w-3.5" />
+          Archive
         </button>
       </div>
 

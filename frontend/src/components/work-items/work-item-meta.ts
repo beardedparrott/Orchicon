@@ -272,6 +272,16 @@ const STATUS_META: Record<number, StatusMeta> = {
     pillDark: "bg-yellow-500/15 text-yellow-300",
     dot: "bg-yellow-500",
   },
+  // Slate — visually distinct from every other status. User-initiated
+  // terminal status: the item is hidden from every normal view and only
+  // visible in the dedicated Archive view, where it can be restored.
+  [WorkItemStatus.ARCHIVED]: {
+    label: "archived",
+    titleLabel: "Archived",
+    pill: "bg-slate-500/15 text-slate-800",
+    pillDark: "bg-slate-500/15 text-slate-300",
+    dot: "bg-slate-500",
+  },
 };
 
 export function statusMeta(status: number): StatusMeta {
@@ -284,6 +294,45 @@ export function statusMeta(status: number): StatusMeta {
       dot: "bg-muted",
     }
   );
+}
+
+/** Map a canonical status string (as stored server-side, e.g. "succeeded",
+ *  and as echoed in WorkItem.archivedFromStatus) to its numeric enum value
+ *  for statusMeta(). Returns WorkItemStatus.UNSPECIFIED for unknown strings
+ *  so callers fall back to the "unknown" presentation. */
+export function statusMetaFromString(status: string): StatusMeta {
+  switch (status) {
+    case "pending":
+      return statusMeta(WorkItemStatus.PENDING);
+    case "ready":
+      return statusMeta(WorkItemStatus.READY);
+    case "assigned":
+      return statusMeta(WorkItemStatus.ASSIGNED);
+    case "running":
+      return statusMeta(WorkItemStatus.RUNNING);
+    case "checkpointing":
+      return statusMeta(WorkItemStatus.CHECKPOINTING);
+    case "succeeded":
+      return statusMeta(WorkItemStatus.SUCCEEDED);
+    case "failed":
+      return statusMeta(WorkItemStatus.FAILED);
+    case "cancelled":
+      return statusMeta(WorkItemStatus.CANCELLED);
+    case "recovering":
+      return statusMeta(WorkItemStatus.RECOVERING);
+    case "scheduled":
+      return statusMeta(WorkItemStatus.SCHEDULED);
+    case "recurring":
+      return statusMeta(WorkItemStatus.RECURRING);
+    case "blocked":
+      return statusMeta(WorkItemStatus.BLOCKED);
+    case "skipped":
+      return statusMeta(WorkItemStatus.SKIPPED);
+    case "archived":
+      return statusMeta(WorkItemStatus.ARCHIVED);
+    default:
+      return statusMeta(WorkItemStatus.UNSPECIFIED);
+  }
 }
 
 export const STATUS_FILTER_OPTIONS = [
