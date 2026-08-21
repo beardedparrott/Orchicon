@@ -271,7 +271,7 @@ type Role struct {
 	Name          string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
 	Scope         string                 `protobuf:"bytes,4,opt,name=scope,proto3" json:"scope,omitempty"`                       // "tenant" | "project"
 	ScopeRef      string                 `protobuf:"bytes,5,opt,name=scope_ref,json=scopeRef,proto3" json:"scope_ref,omitempty"` // project id when scope=project
-	Entitlements  []string               `protobuf:"bytes,6,rep,name=entitlements,proto3" json:"entitlements,omitempty"`         // e.g. ["project:create", "worker:publish"]
+	Entitlements  []string               `protobuf:"bytes,6,rep,name=entitlements,proto3" json:"entitlements,omitempty"`         // e.g. ["workitem:read", "policy:publish"]; "*" = admin
 	Version       int32                  `protobuf:"varint,7,opt,name=version,proto3" json:"version,omitempty"`
 	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`

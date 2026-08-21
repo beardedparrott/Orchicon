@@ -8,6 +8,7 @@ export const authKeys = {
   tenants: () => ["auth", "tenants"] as const,
   identities: () => ["auth", "identities"] as const,
   roles: () => ["auth", "roles"] as const,
+  roleBindings: () => ["auth", "roleBindings"] as const,
   apiKeys: () => ["auth", "apiKeys"] as const,
   entitlements: (id: string) => ["auth", "entitlements", id] as const,
   audit: () => ["auth", "audit"] as const,
@@ -112,7 +113,55 @@ export function useCreateRole() {
       scopeRef?: string;
       entitlements: string[];
     }) => (await authClient.createRole(input)).role,
-    onSuccess: () => qc.invalidateQueries({ queryKey: authKeys.roles() }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: authKeys.roles() });
+      qc.invalidateQueries({ queryKey: authKeys.roleBindings() });
+    },
+  });
+}
+
+export function useUpdateRole() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      id: string;
+      name?: string;
+      entitlements?: string[];
+      version?: number;
+    }) =>
+      (await authClient.updateRole({
+        id: input.id,
+        name: input.name,
+        entitlements: input.entitlements !== undefined
+          ? { values: input.entitlements }
+          : undefined,
+        version: input.version,
+      })).role,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: authKeys.roles() });
+      qc.invalidateQueries({ queryKey: authKeys.roleBindings() });
+    },
+  });
+}
+
+export function useDeleteRole() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      await authClient.deleteRole({ id });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: authKeys.roles() });
+      qc.invalidateQueries({ queryKey: authKeys.roleBindings() });
+    },
+  });
+}
+
+export function useListRoleBindings() {
+  return useQuery({
+    queryKey: authKeys.roleBindings(),
+    queryFn: async () =>
+      (await authClient.listRoleBindings({ pageSize: 100 })).bindings ?? [],
   });
 }
 
@@ -128,6 +177,21 @@ export function useAssignRole() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: authKeys.roles() });
       qc.invalidateQueries({ queryKey: authKeys.identities() });
+      qc.invalidateQueries({ queryKey: authKeys.roleBindings() });
+    },
+  });
+}
+
+export function useRevokeRole() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      await authClient.revokeRole({ id });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: authKeys.roles() });
+      qc.invalidateQueries({ queryKey: authKeys.identities() });
+      qc.invalidateQueries({ queryKey: authKeys.roleBindings() });
     },
   });
 }
