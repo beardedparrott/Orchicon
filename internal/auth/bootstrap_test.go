@@ -97,10 +97,11 @@ func adminRoleBound(t *testing.T, pool *db.Pool, tenantID string) bool {
 	return false
 }
 
-// TestBootstrapLocalAdminSeeds verifies a fresh local plane gets a usable
-// first admin: identity + admin role binding + local credential, and that
-// the seeded credential actually verifies. A PINNED password (env set) is
-// an explicit operator choice and is seeded unflagged — no forced change.
+// TestBootstrapLocalAdminSeeds verifies a fresh local plane with BOTH envs
+// pinned gets a usable first admin: identity + admin role binding + local
+// credential, and that the seeded credential actually verifies. A PINNED
+// password (env set) is an explicit operator choice and is seeded
+// unflagged — no forced change.
 func TestBootstrapLocalAdminSeeds(t *testing.T) {
 	pool := testBootstrapEnv(t)
 	t.Setenv(localAdminUsernameEnv, "seed-admin")
@@ -140,10 +141,12 @@ func TestBootstrapLocalAdminSeeds(t *testing.T) {
 	}
 }
 
-// TestBootstrapLocalAdminDefaultCredential pins the built-in default
-// (ADR-2): with no env pin the seed uses admin/admin and flags the
-// credential for a forced password change on first login.
-func TestBootstrapLocalAdminDefaultCredential(t *testing.T) {
+// TestBootstrapLocalAdminNoEnvIsNoOp pins the opt-in contract: with NO env
+// pin (neither username nor password), the bootstrap is a no-op — no
+// credential is minted AND no admin role is created. A fresh plane is
+// bootstrapped by the operator creating their own admin via the sign-up
+// link, never by a default credential.
+func TestBootstrapLocalAdminNoEnvIsNoOp(t *testing.T) {
 	pool := testBootstrapEnv(t)
 	t.Setenv(localAdminUsernameEnv, "")
 	t.Setenv(localAdminPasswordEnv, "")
@@ -152,31 +155,51 @@ func TestBootstrapLocalAdminDefaultCredential(t *testing.T) {
 	if err := BootstrapLocalAdmin(ctx, pool, slog.New(slog.DiscardHandler), cfg); err != nil {
 		t.Fatalf("BootstrapLocalAdmin: %v", err)
 	}
-	t.Cleanup(func() { cleanupBootstrap(ctx, pool, localAdminDefaultUsername) })
 
+	// No admin role binding was created.
+	if adminRoleBound(t, pool, "tnt_dev") {
+		t.Fatal("bootstrap created an admin with no env pin; want no-op")
+	}
+	// No credential was minted (no default admin/admin, no generated
+	// password).
 	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)
 	}
-	row, err := db.GetLocalCredentialByUsername(ctx, ttx.Tx, "tnt_dev", localAdminDefaultUsername)
+	defer ttx.Rollback(ctx)
+	roles, err := db.ListRoles(ctx, ttx.Tx, "tnt_dev", 1000, "")
 	if err != nil {
-		t.Fatalf("GetLocalCredentialByUsername: %v", err)
+		t.Fatalf("list roles: %v", err)
 	}
-	_ = ttx.Rollback(ctx)
-	if row.Username != localAdminDefaultUsername {
-		t.Fatalf("username = %q, want %q", row.Username, localAdminDefaultUsername)
+	for _, rl := range roles {
+		if rl.Name == "admin" {
+			t.Fatal("bootstrap created an admin role with no env pin; want no-op")
+		}
 	}
-	// The hash verifies against the built-in default (never plaintext)...
-	valid, err := VerifyPassword(localAdminDefaultPassword, row.PasswordHash)
-	if err != nil || !valid {
-		t.Fatalf("default password does not verify (err=%v)", err)
+}
+
+// TestBootstrapLocalAdminPartialPinIsNoOp pins the opt-in contract: pinning
+// only ONE of the two envs is still a no-op — both must be set for a
+// credential to be minted.
+func TestBootstrapLocalAdminPartialPinIsNoOp(t *testing.T) {
+	pool := testBootstrapEnv(t)
+	t.Setenv(localAdminUsernameEnv, "partial-admin")
+	t.Setenv(localAdminPasswordEnv, "")
+	ctx := context.Background()
+	cfg := bootstrapConfig()
+	if err := BootstrapLocalAdmin(ctx, pool, slog.New(slog.DiscardHandler), cfg); err != nil {
+		t.Fatalf("BootstrapLocalAdmin: %v", err)
 	}
-	if containsPlaintext(row.PasswordHash, localAdminDefaultPassword) {
-		t.Fatal("plaintext leaked into the stored hash")
+	if adminRoleBound(t, pool, "tnt_dev") {
+		t.Fatal("bootstrap created an admin with only the username pinned; want no-op")
 	}
-	// ...and the flag is set: the default must be changed on first login.
-	if !row.ForcePasswordChange {
-		t.Fatal("default seed did not set force_password_change, want true")
+	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	if _, err := db.GetLocalCredentialByUsername(ctx, ttx.Tx, "tnt_dev", "partial-admin"); err == nil {
+		t.Fatal("bootstrap minted a credential with only the username pinned; want no-op")
 	}
 }
 
@@ -299,17 +322,17 @@ func TestBootstrapLocalAdminNoClobber(t *testing.T) {
 // when the tenant admin role already binds an identity but that identity
 // has NO local credential (a volume that only ever used dev-login, or an
 // OIDC-first-login volume), the seed provisions a credential for the
-// EXISTING identity — identity + role binding preserved, and the default
-// admin/admin login resolves to that identity.
+// EXISTING identity — identity + role binding preserved, and the pinned
+// login resolves to that identity.
 func TestBootstrapLocalAdminCredentialGap(t *testing.T) {
 	pool := testBootstrapEnv(t)
-	t.Setenv(localAdminUsernameEnv, "")
-	t.Setenv(localAdminPasswordEnv, "")
+	t.Setenv(localAdminUsernameEnv, "gap-admin")
+	t.Setenv(localAdminPasswordEnv, "gap-password")
 	t.Setenv(localAdminResetEnv, "")
 	ctx := context.Background()
 
 	// A dev-login-era admin: role binding, but NO local credential, and a
-	// subject that is NOT the default "admin".
+	// subject that is NOT the pinned username.
 	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)
@@ -344,27 +367,27 @@ func TestBootstrapLocalAdminCredentialGap(t *testing.T) {
 		t.Fatalf("BootstrapLocalAdmin: %v", err)
 	}
 
-	// The default "admin" credential was provisioned and resolves to the
-	// EXISTING identity — identity + role binding preserved.
+	// The pinned credential was provisioned and resolves to the EXISTING
+	// identity — identity + role binding preserved.
 	ttx2, err := pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {
 		t.Fatalf("begin tx2: %v", err)
 	}
 	defer ttx2.Rollback(ctx)
-	row, err := db.GetLocalCredentialByUsername(ctx, ttx2.Tx, "tnt_dev", localAdminDefaultUsername)
+	row, err := db.GetLocalCredentialByUsername(ctx, ttx2.Tx, "tnt_dev", "gap-admin")
 	if err != nil {
-		t.Fatalf("GetLocalCredentialByUsername(admin): %v", err)
+		t.Fatalf("GetLocalCredentialByUsername(gap-admin): %v", err)
 	}
 	if row.IdentityID != ident.ID {
 		t.Fatalf("credential bound to identity %s, want the existing admin %s (identity must be preserved)", row.IdentityID, ident.ID)
 	}
-	valid, err := VerifyPassword(localAdminDefaultPassword, row.PasswordHash)
+	valid, err := VerifyPassword("gap-password", row.PasswordHash)
 	if err != nil || !valid {
-		t.Fatalf("admin/admin does not verify against the seeded credential (err=%v)", err)
+		t.Fatalf("pinned password does not verify against the seeded credential (err=%v)", err)
 	}
-	// The built-in default was seeded: the forced-change gate must fire.
-	if !row.ForcePasswordChange {
-		t.Fatal("upgrade credential seed did not set force_password_change, want true")
+	// A pinned credential is an explicit operator choice: no forced change.
+	if row.ForcePasswordChange {
+		t.Fatal("upgrade credential seed set force_password_change, want false")
 	}
 	// The admin identity's subject/type were NOT clobbered.
 	kept, err := db.GetIdentity(ctx, ttx2.Tx, "tnt_dev", ident.ID)
@@ -499,15 +522,14 @@ func TestBootstrapLocalAdminReset(t *testing.T) {
 	}
 }
 
-// TestBootstrapLocalAdminResetUnpinned pins the no-pin reset rule (ADR-2):
-// a lockout reset WITHOUT a pinned password re-arms the built-in default
-// admin/admin and re-arms the forced-change flag, so a locked-out operator
-// always has a known credential — with a mandatory change, instead of
-// another log-line password to hunt for.
-func TestBootstrapLocalAdminResetUnpinned(t *testing.T) {
+// TestBootstrapLocalAdminResetRequiresPin pins the opt-in reset rule: a
+// lockout reset WITHOUT both envs pinned is a no-op — no default credential
+// is ever minted as a fallback. The operator must pin the new username +
+// password to recover.
+func TestBootstrapLocalAdminResetRequiresPin(t *testing.T) {
 	pool := testBootstrapEnv(t)
 	t.Setenv(localAdminUsernameEnv, "resetc-admin")
-	t.Setenv(localAdminPasswordEnv, "")
+	t.Setenv(localAdminPasswordEnv, "first-password")
 	t.Setenv(localAdminResetEnv, "")
 	ctx := context.Background()
 	cfg := bootstrapConfig()
@@ -517,29 +539,27 @@ func TestBootstrapLocalAdminResetUnpinned(t *testing.T) {
 	}
 	t.Cleanup(func() { cleanupBootstrap(ctx, pool, "resetc-admin") })
 
-	// The operator lost the password: set the reset override (no pin) and boot again.
+	// The operator lost the password: set the reset override but UNPIN the
+	// password (only the username is pinned) and boot again.
 	t.Setenv(localAdminResetEnv, "1")
+	t.Setenv(localAdminPasswordEnv, "")
 	if err := BootstrapLocalAdmin(ctx, pool, log, cfg); err != nil {
 		t.Fatalf("unpinned reset seed: %v", err)
 	}
 
+	// The credential is untouched — the reset was a no-op (no default
+	// credential fallback).
 	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)
 	}
+	defer ttx.Rollback(ctx)
 	row, err := db.GetLocalCredentialByUsername(ctx, ttx.Tx, "tnt_dev", "resetc-admin")
 	if err != nil {
 		t.Fatalf("credential after unpinned reset: %v", err)
 	}
-	_ = ttx.Rollback(ctx)
-	// The credential is back to the built-in default...
-	valid, err := VerifyPassword(localAdminDefaultPassword, row.PasswordHash)
-	if err != nil || !valid {
-		t.Fatalf("unpinned reset did not restore the default password (err=%v)", err)
-	}
-	// ...and the forced-change prompt is re-armed.
-	if !row.ForcePasswordChange {
-		t.Fatal("unpinned reset did not re-arm force_password_change, want true")
+	if valid, _ := VerifyPassword("first-password", row.PasswordHash); !valid {
+		t.Fatal("unpinned reset clobbered the existing credential; want no-op")
 	}
 }
 
@@ -548,6 +568,8 @@ func TestBootstrapLocalAdminResetUnpinned(t *testing.T) {
 // pool would panic if it tried to run).
 func TestBootstrapLocalAdminResetGuards(t *testing.T) {
 	t.Setenv(localAdminResetEnv, "1")
+	t.Setenv(localAdminUsernameEnv, "guard-admin")
+	t.Setenv(localAdminPasswordEnv, "guard-password")
 
 	prod := bootstrapConfig()
 	prod.Mode = config.ModeProduction

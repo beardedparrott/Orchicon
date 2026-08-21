@@ -995,38 +995,36 @@ MCP work item mutations honor the transactional outbox pattern (invariant #3): `
   username or an already-existing identity → generic 409, which also blocks
   identity squatting on BYO-IdP handles), then runs the local-login tail
   verbatim — token pair + HttpOnly refresh cookie + OP authorize completion.
-  A signed-up account is a plain `user` identity with **zero entitlements**
-  (no admin grant on an open endpoint); the bootstrap admin stays the sole
-  initial admin and operators grant roles later via Admin → Identities.
-  The SPA `/signup` route (linked from `/login` only when the plane
-  advertises it) collects username + password and lands the user in the app
-  in one step.
+  The **first sign-up on a tenant with no admin becomes the tenant admin**
+  (granted atomically with account creation, inside the same transaction);
+  second/subsequent sign-ups are plain `user` identities with **zero
+  entitlements** (an existing admin is never demoted or clobbered). This is
+  how a fresh plane is bootstrapped: on first load, click **Sign up** to
+  create the first (admin) account. The SPA `/signup` route (linked from
+  `/login` only when the plane advertises it) collects username + password
+  and lands the user in the app in one step.
   Provisioning is the admin-only `AuthService.SetLocalCredential` RPC
   (`auth:write`), which hashes at the boundary and never returns the hash.
   The SPA `/login` route shows the username+password form.
 - **Local dev**: The embedded OpenID Provider is the default IdP — no
   external IdP needed. OIDC is the base auth path in **every** mode: there
   is no anonymous dev bypass (a request without a credential is 401
-  everywhere) and no synthetic dev-login surface. Every local-mode plane
-  (dev and prod volumes alike) seeds a first admin for the embedded-OP
-  login on boot (local mode + embedded OP only; username/password pinned
-  via `ORCHICON_LOCAL_ADMIN_USERNAME` / `ORCHICON_LOCAL_ADMIN_PASSWORD`,
-  the built-in default `admin`/`admin` when unpinned) so the UI is usable
-  out of the box. The unpinned default is self-expiring: the seeded
-  credential is flagged for a forced password change, so the first login
-  with `admin`/`admin` lands on a full-screen change-password gate and the
-  default stops working as soon as a new password is set (pinning
-  `ORCHICON_LOCAL_ADMIN_PASSWORD` skips the gate — an explicit choice).
-  The seed is idempotent and never clobbers an existing admin credential;
-  on an upgrade volume whose admin has no local credential (e.g. one that
-  only ever used the old dev-login surface), it provisions one for that
-  existing admin identity, so `admin`/`admin` works after upgrade with no
-  further action. To re-arm the seed as lockout recovery (lost the admin
+  everywhere) and no synthetic dev-login surface. A fresh plane is
+  bootstrapped by the operator creating their own admin account: on first
+  load, click **Sign up** and the first account becomes the tenant admin
+  (via the embedded IdP). The local-mode bootstrap is **opt-in** — it mints
+  a credential ONLY when the operator pins BOTH
+  `ORCHICON_LOCAL_ADMIN_USERNAME` and `ORCHICON_LOCAL_ADMIN_PASSWORD`; there
+  is no built-in default `admin`/`admin` and no generated password. The
+  seed is idempotent and never clobbers an existing admin credential; on an
+  upgrade volume whose admin has no local credential (e.g. one that only
+  ever used the old dev-login surface), it provisions one for that existing
+  admin identity. To re-arm the seed as lockout recovery (lost the admin
   password), set `ORCHICON_LOCAL_ADMIN_RESET=1` — same guards (local mode
-  + embedded OP only, explicit opt-in, never a default), it overwrites the
-  admin credential on next boot with `admin`/`admin` (re-arming the forced
-  change) or the pinned password, keeping the identity and admin role
-  binding. Config validation requires an issuer (embedded OP **or**
+  + embedded OP only, explicit opt-in, never a default) and it also
+  requires both envs pinned; it overwrites the admin credential on next
+  boot with the pinned username/password, keeping the identity and admin
+  role binding. Config validation requires an issuer (embedded OP **or**
   external IdP) in every mode. The public `GET /auth/config` endpoint
   mirrors the plane's auth capabilities (`embedded_op` / `external_oidc` /
   `signup`) for the honest login page; the unauthenticated SPA redirects
@@ -1037,11 +1035,8 @@ MCP work item mutations honor the transactional outbox pattern (invariant #3): `
   argon2id-hashed at the boundary and the hash is never returned). The
   Username column shows each identity's login handle (empty when it has no
   local credential); the modal prefills it and setting a new password
-  changes the credential. This is the documented way to change the default
-  admin's credentials after first boot; it is also the path the first-login
-  forced password change takes (the full-screen gate shown after signing in
-  with the seeded `admin`/`admin` default), and a successful set clears the
-  forced-change flag.
+  changes the credential. This is the documented way to change an admin's
+  credentials after first boot.
 - **Identity lifecycle (create / edit / disable / delete)** — Admin →
   Identities (the same tab, not a new surface) drives four admin-only
   `AuthService` RPCs, all gated to `auth:write` by the RBAC interceptor:
@@ -1575,17 +1570,19 @@ volume cannot grow unbounded:
 
 ### Admin Access & Lockout Recovery
 
-The plane guarantees there is **always at least one admin path in** (AC of
-the first-boot admin bootstrap): a fresh install seeds an admin for the
-embedded-OP login, and a locked-out operator can always re-arm the credential
-at boot.
+A fresh plane is bootstrapped by the operator creating their own admin
+account: on first load, click **Sign up** and the first account becomes the
+tenant admin (via the embedded IdP). The local-mode bootstrap is **opt-in**
+(requires both `ORCHICON_LOCAL_ADMIN_USERNAME` and
+`ORCHICON_LOCAL_ADMIN_PASSWORD` pinned); there is no built-in default
+`admin`/`admin` credential.
 
 | Task | How |
 |---|---|
-| First-boot admin credentials | Sign in with the built-in default `admin`/`admin` and set a new password on first login — the SPA shows a full-screen change-password gate and the default stops working once changed. A pinned `ORCHICON_LOCAL_ADMIN_PASSWORD` is used as-is with no forced change. |
+| First-boot admin | On first load, click **Sign up** and create the first account — it becomes the tenant admin (is_admin true, admin role bound atomically with account creation). A second sign-up is a plain `user` with no admin grant. |
 | Change the admin password (you are logged in) | **Admin → Identities → Edit**: pick the identity, set the Username + New password fields in the row-edit modal and Save. This calls the admin-only `SetLocalCredential` RPC (`auth:write`); the password is argon2id-hashed at the boundary and the hash is never returned. Equivalent API call: `POST /orchicon.api.v1.AuthService/SetLocalCredential` with `{identity_id, username, password}`. |
-| Lost the admin password (locked out) | Stop the plane, set `ORCHICON_LOCAL_ADMIN_RESET=1` (pin the new one with `ORCHICON_LOCAL_ADMIN_PASSWORD`, or leave it unset for the built-in default `admin`/`admin`, which re-arms the forced password change), start it again, sign in with the new credential, then unset the env so the next boot is normal. The reset overwrites only the credential — the admin identity and role binding are preserved. It is local mode + embedded OP only, so a locked-out operator always has a path back in. |
-| No admin was ever seeded | The seed runs on every local-mode boot with the embedded OP enabled. If no admin exists, the plane is in production mode (external IdP owns auth) or the embedded OP is disabled — those planes never auto-provision. In local mode with the embedded OP enabled, set `ORCHICON_LOCAL_ADMIN_RESET=1` to force the seed to run. |
+| Lost the admin password (locked out) | Stop the plane, set `ORCHICON_LOCAL_ADMIN_RESET=1` **and** pin the new credential with both `ORCHICON_LOCAL_ADMIN_USERNAME` and `ORCHICON_LOCAL_ADMIN_PASSWORD`, start it again, sign in with the new credential, then unset the env so the next boot is normal. The reset overwrites only the credential — the admin identity and role binding are preserved. It is local mode + embedded OP only and requires the pin (no default credential fallback), so a locked-out operator always has a path back in. |
+| No admin exists yet | A fresh plane has zero admins until the first sign-up (or the opt-in bootstrap) creates one. If no admin exists, the plane is in production mode (external IdP owns auth), the embedded OP is disabled, or no one has signed up yet — those planes never auto-provision a default credential. In local mode with the embedded OP enabled, sign up (first account becomes admin) or pin both `ORCHICON_LOCAL_ADMIN_*` envs. |
 
 ### Frontend Issues
 

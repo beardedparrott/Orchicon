@@ -167,12 +167,14 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	authHandler := auth.NewHandler(cfg, pool, log)
 	log.Info("auth configured", "issuer", cfg.Auth.Issuer, "mode", cfg.Mode)
 
-	// Local-mode first-admin bootstrap: seed the embedded-OP login
-	// credential for a fresh plane (admin/admin with a forced password
-	// change) so it is usable out of the box. Runs in every local-mode
-	// plane with the embedded OP (dev AND prod volumes); no-op in
-	// production, when the OP is disabled, or once an admin credential
-	// already exists. Logs the generated password once on first boot.
+	// Local-mode first-admin bootstrap: OPT-IN. A fresh plane is
+	// bootstrapped by the operator creating their own admin account via the
+	// embedded-OP sign-up link on first load (the first sign-up on a tenant
+	// with no admin becomes the tenant admin). BootstrapLocalAdmin mints a
+	// credential ONLY when the operator pins BOTH
+	// ORCHICON_LOCAL_ADMIN_USERNAME and ORCHICON_LOCAL_ADMIN_PASSWORD; no
+	// default credential is ever seeded. No-op in production, when the OP
+	// is disabled, or when either env is unset.
 	if err := auth.BootstrapLocalAdmin(context.Background(), pool, log, cfg); err != nil {
 		log.Warn("local admin bootstrap failed (continuing)", "error", err)
 	}

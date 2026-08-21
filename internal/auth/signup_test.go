@@ -10,9 +10,11 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	assets "github.com/beardedparrott/orchicon"
 	"github.com/beardedparrott/orchicon/internal/config"
@@ -20,14 +22,18 @@ import (
 	"github.com/beardedparrott/orchicon/internal/migrate"
 )
 
-// TestSignupHappyPath creates a fresh account through POST /auth/signup and
-// asserts the full session contract: identity + credential rows exist, the
-// stored hash verifies, the token pair is issued, the refresh cookie is
-// HttpOnly, and the account is a plain user (no admin grant).
-func TestSignupHappyPath(t *testing.T) {
+// TestSignupFirstAccountIsAdmin creates the FIRST account on a fresh plane
+// through POST /auth/signup and asserts the full session contract: identity
+// + credential rows exist, the stored hash verifies, the token pair is
+// issued, the refresh cookie is HttpOnly, and the account is the tenant
+// admin (is_admin true, admin role bound atomically with account creation).
+func TestSignupFirstAccountIsAdmin(t *testing.T) {
 	srv, pool, _ := testLocalLoginEnv(t)
 	const tenantID = "tnt_dev"
-	username := "signup_ok"
+	username := "signup_ok_" + strconv.Itoa(int(time.Now().UnixNano()))
+	// The test DB is shared across tests, so clear any pre-existing admin
+	// bindings to start from a genuinely fresh plane.
+	clearAdminBindings(t, pool, tenantID)
 
 	resp, body := postSignup(t, srv.URL, username, "signup-password-1")
 	if resp.StatusCode != http.StatusOK {
@@ -43,8 +49,28 @@ func TestSignupHappyPath(t *testing.T) {
 	if out.IdentityID == "" || out.TenantID != tenantID {
 		t.Fatalf("identity/tenant = %+v, want tenant %q", out, tenantID)
 	}
-	if out.IsAdmin {
-		t.Fatal("a self-signed-up account must not be an admin")
+	t.Cleanup(func() { cleanupSignupIdentity(t, pool, tenantID, out.IdentityID) })
+	// The FIRST sign-up on a fresh plane becomes the tenant admin.
+	if !out.IsAdmin {
+		t.Fatal("the first sign-up on a fresh plane must be the tenant admin")
+	}
+
+	// The admin role is bound to the fresh identity.
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	ents, isAdmin, err := db.ListIdentityEntitlements(ctx, ttx.Tx, tenantID, out.IdentityID)
+	if err != nil {
+		t.Fatalf("ListIdentityEntitlements: %v", err)
+	}
+	if !isAdmin {
+		t.Fatal("first sign-up identity has no admin role binding; want admin")
+	}
+	if len(ents) == 0 {
+		t.Fatal("first sign-up identity has no entitlements; want the admin role's")
 	}
 
 	// The refresh token must land in an HttpOnly cookie.
@@ -57,15 +83,57 @@ func TestSignupHappyPath(t *testing.T) {
 	if refreshCookie == nil || !refreshCookie.HttpOnly {
 		t.Fatal("refresh cookie missing or not HttpOnly")
 	}
+}
 
-	// Cleanup (identity delete cascades to the credential).
-	cleanupSignupIdentity(t, pool, tenantID, out.IdentityID)
+// TestSignupSecondAccountIsUser seeds an admin first, then signs up a second
+// account: it must be a plain user with NO admin grant, and the existing
+// admin must never be demoted or clobbered.
+func TestSignupSecondAccountIsUser(t *testing.T) {
+	srv, pool, _ := testLocalLoginEnv(t)
+	const tenantID = "tnt_dev"
+	seedAdmin(t, pool, tenantID, "first-admin@orchicon.local")
+
+	username := "signup_second"
+	resp, body := postSignup(t, srv.URL, username, "signup-password-2")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", resp.StatusCode, body)
+	}
+	var out tokenResponse
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	t.Cleanup(func() { cleanupSignupIdentity(t, pool, tenantID, out.IdentityID) })
+	if out.IsAdmin {
+		t.Fatal("a second sign-up must not become an admin")
+	}
+
+	// The second account has no admin role binding.
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	ents, isAdmin, err := db.ListIdentityEntitlements(ctx, ttx.Tx, tenantID, out.IdentityID)
+	if err != nil {
+		t.Fatalf("ListIdentityEntitlements: %v", err)
+	}
+	if isAdmin || len(ents) != 0 {
+		t.Fatalf("second sign-up must have no entitlements: isAdmin=%v ents=%v", isAdmin, ents)
+	}
+	// The existing admin is untouched.
+	if !adminRoleBound(t, pool, tenantID) {
+		t.Fatal("the existing admin was lost after a second sign-up")
+	}
 }
 
 func TestSignupPersistsCredentialAndVerifies(t *testing.T) {
 	srv, pool, _ := testLocalLoginEnv(t)
 	const tenantID = "tnt_dev"
 	username := "signup_persist"
+	// Seed an admin first so this sign-up is a plain user (the first
+	// sign-up on a fresh plane would otherwise become the admin).
+	seedAdmin(t, pool, tenantID, "persist-admin@orchicon.local")
 
 	resp, body := postSignup(t, srv.URL, username, "signup-password-2")
 	if resp.StatusCode != http.StatusOK {
@@ -394,7 +462,109 @@ func TestSignupConcurrentSameUsername(t *testing.T) {
 	cleanupSignupIdentity(t, pool, "tnt_dev", cred.IdentityID)
 }
 
+// TestSignupConcurrentFirstSignupExactlyOneAdmin fires N concurrent FIRST
+// sign-ups on a fresh plane (no admin yet). The tenant-scoped advisory lock
+// serializes the admin-exists check + grant, so exactly ONE of them becomes
+// the tenant admin and the rest are plain users.
+func TestSignupConcurrentFirstSignupExactlyOneAdmin(t *testing.T) {
+	srv, pool, _ := testLocalLoginEnv(t)
+	const tenantID = "tnt_dev"
+	// The test DB is shared across tests, so clear any pre-existing admin
+	// bindings to start from a genuinely fresh plane.
+	clearAdminBindings(t, pool, tenantID)
+
+	const n = 6
+	var wg sync.WaitGroup
+	admins := make([]bool, n)
+	ids := make([]string, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			username := "signup_first_" + strconv.Itoa(i)
+			resp, err := http.Post(srv.URL+"/auth/signup", "application/json",
+				strings.NewReader(`{"username":"`+username+`","password":"race-password"}`))
+			if err != nil {
+				return
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				return
+			}
+			var out tokenResponse
+			if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+				return
+			}
+			admins[i] = out.IsAdmin
+			ids[i] = out.IdentityID
+		}(i)
+	}
+	wg.Wait()
+
+	var adminCount int
+	for i, isAdmin := range admins {
+		if isAdmin {
+			adminCount++
+		}
+		if ids[i] != "" {
+			t.Cleanup(func() { cleanupSignupIdentity(t, pool, tenantID, ids[i]) })
+		}
+	}
+	if adminCount != 1 {
+		t.Fatalf("adminCount = %d, want exactly 1 (admins %v)", adminCount, admins)
+	}
+}
+
 // --- helpers ---------------------------------------------------------------
+
+// clearAdminBindings removes every admin role binding and the admin role
+// itself, so a test can start from a genuinely fresh plane (the test DB is
+// shared across tests in the package).
+func clearAdminBindings(t *testing.T, pool *db.Pool, tenantID string) {
+	t.Helper()
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	if _, err := ttx.Exec(ctx, `DELETE FROM role_bindings WHERE role_id IN (SELECT id FROM roles WHERE name = 'admin')`); err != nil {
+		t.Fatalf("clear admin bindings: %v", err)
+	}
+	if _, err := ttx.Exec(ctx, `DELETE FROM roles WHERE name = 'admin'`); err != nil {
+		t.Fatalf("clear admin role: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}
+
+// seedAdmin provisions a tenant admin the way a human would (identity +
+// admin role binding), so a subsequent sign-up is a plain user. It is the
+// "an admin already exists" precondition for the second-signup tests.
+func seedAdmin(t *testing.T, pool *db.Pool, tenantID, subject string) {
+	t.Helper()
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	ident, _, err := db.GetOrCreateIdentity(ctx, ttx.Tx, tenantID, subject, "Seeded Admin", "user")
+	if err != nil {
+		t.Fatalf("GetOrCreateIdentity: %v", err)
+	}
+	adminRoleID, err := ensureAdminRole(ctx, ttx.Tx, tenantID)
+	if err != nil {
+		t.Fatalf("ensureAdminRole: %v", err)
+	}
+	if err := bindAdminRole(ctx, ttx.Tx, tenantID, ident.ID, adminRoleID); err != nil {
+		t.Fatalf("bindAdminRole: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	t.Cleanup(func() { cleanupSignupIdentity(t, pool, tenantID, ident.ID) })
+}
 
 func postSignup(t *testing.T, base, username, password string) (*http.Response, string) {
 	t.Helper()
@@ -423,6 +593,11 @@ func cleanupSignupIdentity(t *testing.T, pool *db.Pool, tenantID, identityID str
 	if err != nil {
 		return
 	}
+	// role_bindings has no FK on identity_id, so the binding must be
+	// removed explicitly before the identity (the local_credentials row
+	// cascades via its identity_id FK). A first sign-up may have been
+	// granted the admin role, so this also clears that binding.
+	_, _ = dtx.Exec(ctx, `DELETE FROM role_bindings WHERE identity_id = $1`, identityID)
 	_, _ = dtx.Exec(ctx, `DELETE FROM identities WHERE id = $1`, identityID)
 	_ = dtx.Commit(ctx)
 }
