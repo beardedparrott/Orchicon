@@ -49,6 +49,11 @@ type ExecutionManifest struct {
 	StallTextLoopWindowSeconds   int64
 	StallRepetitionCount         int32
 	StallRepetitionWindowSeconds int64
+	// Nudge knobs (advisory-stall escalation) from tenant settings. Zero
+	// means "use env-var or built-in default".
+	StallNudgeMax                int32
+	StallNudgeReplyWindowSeconds int64
+	StallNudgeCooldownSeconds    int64
 }
 
 // ExecutionCallbacks are the status callbacks the adapter bridge uses to

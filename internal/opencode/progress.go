@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -123,6 +125,9 @@ type progressMonitor struct {
 
 	// tool-call signature history for repetition detection.
 	// signature (tool+args hash) → timestamps within the window.
+	// Only ERROR-status tool calls are recorded (result-aware repetition);
+	// a completed call or file_diff resets the history (progress resets
+	// the counters).
 	sigs map[string][]time.Time
 
 	// fired tracks whether the monitor has already raised a FATAL stall
@@ -175,6 +180,10 @@ func (m *progressMonitor) observe(eventType string, part map[string]any) {
 	case "step_finish":
 		m.lastStepFinish = now
 		m.lastMeaningfulAction = now
+		// A step finishing is real progress — reset the repetition
+		// signature history (the worker is making forward progress, not
+		// looping).
+		m.sigs = make(map[string][]time.Time)
 		// Track cumulative token count so no-new-tokens is detectable even
 		// if step_finish fires without a token delta.
 		if tokens, ok := part["tokens"].(map[string]any); ok {
@@ -188,20 +197,32 @@ func (m *progressMonitor) observe(eventType string, part map[string]any) {
 	case "file_diff":
 		m.lastFileDiff = now
 		m.lastMeaningfulAction = now
+		// File progress is real progress — reset the repetition history.
+		m.sigs = make(map[string][]time.Time)
 	case "tool_use", "tool_call":
 		m.lastMeaningfulAction = now
-		sig := toolUseSignature(part)
-		cutoff := now.Add(-m.w.repetitionW)
-		hist := m.sigs[sig]
-		// drop entries outside the window
-		kept := hist[:0]
-		for _, t := range hist {
-			if t.After(cutoff) {
-				kept = append(kept, t)
+		// Result-aware repetition: only ERROR-status tool calls count
+		// toward the repetition threshold. A completed call is real
+		// progress — it resets the signature history (the normal
+		// build-fix-iterate-debug loop).
+		status, _ := part["state"].(map[string]any)["status"].(string)
+		if status == "error" {
+			sig := toolUseSignature(part)
+			cutoff := now.Add(-m.w.repetitionW)
+			hist := m.sigs[sig]
+			// drop entries outside the window
+			kept := hist[:0]
+			for _, t := range hist {
+				if t.After(cutoff) {
+					kept = append(kept, t)
+				}
 			}
+			kept = append(kept, now)
+			m.sigs[sig] = kept
+		} else {
+			// completed (or unknown) — progress resets the counters.
+			m.sigs = make(map[string][]time.Time)
 		}
-		kept = append(kept, now)
-		m.sigs[sig] = kept
 	}
 }
 
@@ -220,6 +241,13 @@ func (m *progressMonitor) observe(eventType string, part map[string]any) {
 // Go's encoding/json marshal of a map[string]any sorts map keys, so equal
 // args maps produce identical bytes regardless of insertion order — this
 // gives stable signatures for semantically identical calls.
+//
+// Conservative normalization (design A, gated through result-aware B):
+// the signature is normalized ONLY for ERRORING calls, so a worker looping
+// on a blocked write (each retry carrying different volatile content/path)
+// collapses to a stable signature while genuinely distinct legitimate
+// commands stay distinct. Successful calls keep the exact full-args
+// signature (never collapsed) and reset the counter state in observe().
 func toolUseSignature(part map[string]any) string {
 	tool, _ := part["tool"].(string)
 	args := part["state"]
@@ -228,8 +256,73 @@ func toolUseSignature(part map[string]any) string {
 			args = input
 		}
 	}
+	status, _ := part["state"].(map[string]any)["status"].(string)
+	if status == "error" {
+		args = normalizeErrorArgs(tool, args)
+	}
 	argsJSON, _ := json.Marshal(args)
 	return tool + "|" + string(argsJSON)
+}
+
+// normalizeErrorArgs strips volatile content from an ERRORING tool call's
+// args so identical retries collapse to one signature while distinct
+// commands stay distinct. Applied only to erroring calls (see
+// toolUseSignature). It never collapses distinct legitimate commands:
+//   - write -> key on path (drop the volatile content payload). opencode's
+//     write tool emits {filePath, content}.
+//   - edit  -> key on filePath + a stable fingerprint of oldString/newString
+//     so genuinely different edits remain distinct while identical retries
+//     to the same file collapse. opencode's edit tool emits {filePath,
+//     oldString, newString, replaceAll}.
+//   - bash  -> key on the scrubbed command: drop volatile args (timestamps,
+//     temp IDs, long hex/digit tokens), preserving distinct commands
+//     (git status != git log). opencode's shell tool emits {command, ...}.
+func normalizeErrorArgs(tool string, args any) any {
+	switch tool {
+	case "write":
+		if m, ok := args.(map[string]any); ok {
+			path, _ := m["filePath"].(string)
+			return map[string]any{"filePath": path}
+		}
+	case "edit":
+		if m, ok := args.(map[string]any); ok {
+			path, _ := m["filePath"].(string)
+			oldS, _ := m["oldString"].(string)
+			newS, _ := m["newString"].(string)
+			return map[string]any{
+				"filePath":  path,
+				"oldString": fingerprint(oldS),
+				"newString": fingerprint(newS),
+			}
+		}
+	case "bash":
+		if m, ok := args.(map[string]any); ok {
+			cmd, _ := m["command"].(string)
+			return map[string]any{"command": scrubCommand(cmd)}
+		}
+	}
+	return args
+}
+
+// fingerprint returns a stable short hash of a string so identical content
+// collapses while different content stays distinct (used for edit old/new).
+func fingerprint(s string) string {
+	if s == "" {
+		return ""
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(s))
+	return fmt.Sprintf("%x", h.Sum32())
+}
+
+// scrubCommand removes volatile tokens from a bash command so a worker
+// retrying the same command with different timestamps/temp IDs collapses to
+// one signature, while distinct commands (git status vs git log) stay
+// distinct. It replaces long hex/digit runs and common volatile patterns
+// with a placeholder.
+func scrubCommand(cmd string) string {
+	re := regexp.MustCompile(`(?:[0-9a-fA-F]{8,}|[0-9]{4,}|/tmp/[A-Za-z0-9._-]+)`)
+	return re.ReplaceAllString(cmd, "<vol>")
 }
 
 // run starts the background stall checker. It ticks every pollInterval
@@ -308,12 +401,21 @@ func (m *progressMonitor) check() string {
 	// text_loop: text flowing but no meaningful action (tool call, file
 	// diff, step finish) within the window. Catches workers that talk
 	// forever ("but wait, let me reconsider…") without ever doing work.
+	//
+	// ADVISORY-first (nudge-first routing): the worker is generating text,
+	// so a nudge can reach it. The monitor keeps ticking so the session's
+	// onStall can nudge the live session; only after the nudge budget is
+	// spent (and the worker still hasn't broken the pattern) does the
+	// session escalate to a fatal kill + recovery.
 	if m.w.textLoop > 0 && now.Sub(m.lastMeaningfulAction) > m.w.textLoop {
-		m.fired = true
 		return "stalled:text_loop:You were talking in circles without making progress. On the next attempt, start fresh with a clear plan, make a concrete tool call or file edit within the first few turns."
 	}
 	// repetition: same tool_call signature repeated more than the
 	// threshold within the window.
+	//
+	// ADVISORY-first (nudge-first routing): same as text_loop — nudge the
+	// live session first, escalate to fatal only after the nudge budget is
+	// spent.
 	if m.w.repetitionN > 0 {
 		cutoff := now.Add(-m.w.repetitionW)
 		for sig, ts := range m.sigs {
@@ -325,7 +427,6 @@ func (m *progressMonitor) check() string {
 			}
 			m.sigs[sig] = kept
 			if len(kept) > m.w.repetitionN {
-				m.fired = true
 				return fmt.Sprintf("stalled:repetition:%s", sig)
 			}
 		}
@@ -412,19 +513,20 @@ var _ = domain.HealthStalled
 // isFatalStall reports whether a stall reason warrants terminating the
 // subprocess (hard kill → recovery) versus being advisory-only.
 //
-//   - no_progress / text_loop / repetition: genuine hangs or loops — the
-//     worker is not making progress. Terminating routes the execution to
-//     `failed` via OnResult(false), which the workflow reconciler's
-//     pollTaskStep already turns into recovery.
-//   - no_file_progress: advisory. A reviewer or QA worker may
-//     legitimately go long stretches without modifying files while still
-//     producing output (token/text progress), so killing it would reap a
-//     healthy execution (observed: an SSE worker flagged no_file_progress
-//     yet completed successfully moments later). The monitor keeps the
-//     execution running with a non-terminal `stalled` health notice and
-//     revives it to `healthy` when file progress resumes.
+// Nudge-first routing (the core reframe): a LOOPING worker is responsive
+// (tokens flowing, tool calls happening) and holds full context — killing
+// it destroys that context and forces a cold recovery re-dispatch. So only
+// a signal with NO responsive surface to nudge stays fatal:
+//
+//   - no_progress: FATAL. Total silence — there is no live session surface
+//     to nudge, so the existing probe-then-escalate machinery handles it.
+//   - text_loop / repetition / no_file_progress: ADVISORY-first. The
+//     worker is generating text / issuing tool calls, so a nudge can reach
+//     it. The session's onStall nudges the live session; only after the
+//     nudge budget is spent (and the worker still hasn't broken the
+//     pattern) does it escalate to a fatal kill + recovery.
 func isFatalStall(reason string) bool {
-	return !strings.HasPrefix(reason, "stalled:no_file_progress")
+	return strings.HasPrefix(reason, "stalled:no_progress")
 }
 
 // defaultWallClockTimeout is the hard per-execution timeout applied when a

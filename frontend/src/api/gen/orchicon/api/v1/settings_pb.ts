@@ -78,6 +78,29 @@ export class TenantSettings extends Message<TenantSettings> {
   stallRepetitionWindowSeconds = protoInt64.zero;
 
   /**
+   * Max nudges sent to a live session before an advisory stall escalates to
+   * a fatal kill + recovery. Default 2.
+   *
+   * @generated from field: int32 stall_nudge_max = 31;
+   */
+  stallNudgeMax = 0;
+
+  /**
+   * How long a nudge waits for the worker to break the pattern before the
+   * next trip escalates. Seconds. Default 300 (5 min).
+   *
+   * @generated from field: int64 stall_nudge_reply_window_seconds = 32;
+   */
+  stallNudgeReplyWindowSeconds = protoInt64.zero;
+
+  /**
+   * Minimum gap between nudges. Seconds. Default 60.
+   *
+   * @generated from field: int64 stall_nudge_cooldown_seconds = 33;
+   */
+  stallNudgeCooldownSeconds = protoInt64.zero;
+
+  /**
    * How long an execution must have been running before it becomes
    * eligible for reaping (skips the fresh-dispatch race). Seconds.
    * Default 60.
@@ -230,6 +253,9 @@ export class TenantSettings extends Message<TenantSettings> {
     { no: 12, name: "stall_text_loop_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 13, name: "stall_repetition_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 14, name: "stall_repetition_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 31, name: "stall_nudge_max", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 32, name: "stall_nudge_reply_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 33, name: "stall_nudge_cooldown_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 15, name: "execution_reap_grace_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 16, name: "execution_reap_consecutive_failures", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 19, name: "default_budget_overrides", kind: "scalar", T: 9 /* ScalarType.STRING */ },
