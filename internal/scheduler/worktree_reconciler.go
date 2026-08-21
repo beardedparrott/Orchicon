@@ -1389,8 +1389,17 @@ func (r *WorktreeReconciler) currentBranch(ctx context.Context, projectDir strin
 
 // branchMergedIntoBase reports whether branch's tip is an ancestor of the
 // integration base (develop / origin/develop) — i.e. its commits are already
-// merged. The reconciler never deletes a branch whose work is not merged.
+// merged. The DevOps worker merges via `gh pr merge`, which advances the
+// REMOTE develop but not the local refs; the base is therefore fetched before
+// the ancestor check, or the gate always reads the stale pre-merge state and
+// a successfully-merged branch is never deleted (the leak this feature exists
+// to fix). A failed fetch falls through to the local refs — conservative:
+// never delete on uncertainty. The reconciler never deletes unmerged work.
 func (r *WorktreeReconciler) branchMergedIntoBase(ctx context.Context, projectDir, branch string) bool {
+	if _, err := runGit(ctx, projectDir, "fetch", "origin", "develop"); err != nil {
+		r.log.Warn("worktree: fetch origin develop failed; merge gate uses local refs",
+			"branch", branch, "error", err)
+	}
 	for _, ref := range []string{"develop", "origin/develop"} {
 		if _, err := runGit(ctx, projectDir, "merge-base", "--is-ancestor", branch, ref); err == nil {
 			return true

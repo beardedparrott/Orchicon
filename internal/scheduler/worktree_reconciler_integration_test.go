@@ -873,6 +873,63 @@ func TestWorktreePruneKeepsUnmergedBranchOnSuccess(t *testing.T) {
 	}
 }
 
+// TestWorktreePruneDeletesBranchMergedOnRemote locks in the stale-ref fix:
+// the DevOps worker merges via `gh pr merge` on the REMOTE, which advances
+// origin/develop but not the local refs. The merge gate must fetch the remote
+// before the ancestor check — otherwise it reads the stale pre-merge state,
+// always returns false, and a successfully-merged branch is never deleted
+// (the branch leak this feature exists to fix).
+func TestWorktreePruneDeletesBranchMergedOnRemote(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	// Worker work on the branch.
+	gitRun(t, env.expectedPath(), "config", "user.email", "worktree-test@orchicon.dev")
+	gitRun(t, env.expectedPath(), "config", "user.name", "Worktree Test")
+	if err := os.WriteFile(filepath.Join(env.expectedPath(), "merged.txt"), []byte("merged work\n"), 0o644); err != nil {
+		t.Fatalf("write merged file: %v", err)
+	}
+	gitRun(t, env.expectedPath(), "add", ".")
+	gitRun(t, env.expectedPath(), "commit", "-m", "merged work")
+
+	// Create a bare remote, push develop + the feature branch, then merge
+	// the feature branch into develop ON THE REMOTE — exactly what the
+	// DevOps worker's `gh pr merge` does. The local repo's refs stay stale.
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	gitRun(t, env.repo, "clone", "--bare", env.repo, bare)
+	gitRun(t, env.repo, "remote", "add", "origin", bare)
+	gitRun(t, env.repo, "push", "origin", "develop")
+	gitRun(t, env.repo, "push", "origin", env.expectedBranch())
+
+	// Perform the merge in a scratch checkout of the remote.
+	scratch := t.TempDir()
+	gitRun(t, scratch, "clone", bare, filepath.Join(scratch, "work"))
+	work := filepath.Join(scratch, "work")
+	gitRun(t, work, "merge", "origin/"+env.expectedBranch())
+	gitRun(t, work, "push", "origin", "develop")
+
+	// Guard: the LOCAL develop ref must not contain the branch — this is the
+	// stale state the old gate wrongly rejected.
+	if err := exec.Command("git", "-C", env.repo, "merge-base", "--is-ancestor", env.expectedBranch(), "develop").Run(); err == nil {
+		t.Fatalf("test setup wrong: local develop already contains the branch; no stale-ref scenario to guard")
+	}
+
+	setRunStatus(t, env, domain.WorkflowRunCompleted)
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (prune): %v", res.Error)
+	}
+	assertPruned(t, env)
+
+	// The branch was merged on the remote and must be deleted even though
+	// the LOCAL develop ref never advanced.
+	if out := gitRun(t, env.repo, "branch", "--list", env.expectedBranch()); out != "" {
+		t.Fatalf("merged-on-remote branch %q was NOT deleted — stale-ref gate kept it", env.expectedBranch())
+	}
+}
+
 // TestWorktreePruneNeverDeletesProtectedBranches locks in the safety gate:
 // the reconciler never deletes main/develop/current branch. A completed run
 // whose recorded branch is a protected name is left intact.
