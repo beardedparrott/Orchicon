@@ -690,8 +690,8 @@ func assertPruned(t *testing.T, env *worktreeTestEnv) db.WorkflowRunRow {
 
 // TestWorktreePrunedAtTerminal is the core pruning acceptance test: when a
 // run reaches a terminal state, reconcile removes the worktree dir, runs
-// `git worktree prune`, records 'pruned', and — AC4 — does NOT delete the
-// branch (that stays with the DevOps merge step).
+// `git worktree prune`, records 'pruned', and — on SUCCESS — deletes the
+// branch (the reconciler now owns branch deletion).
 func TestWorktreePrunedAtTerminal(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -722,10 +722,193 @@ func TestWorktreePrunedAtTerminal(t *testing.T) {
 		t.Errorf("worktree_branch = %q, want %q (must survive pruning)", run.WorktreeBranch, env.expectedBranch())
 	}
 
-	// AC4: the branch must still exist — the control plane never deletes
-	// branches.
+	// On SUCCESS the branch is deleted by the reconciler.
+	if out := gitRun(t, env.repo, "branch", "--list", env.expectedBranch()); out != "" {
+		t.Fatalf("branch %q was NOT deleted after a successful run", env.expectedBranch())
+	}
+}
+
+// TestWorktreePruneKeepsBranchOnFailure locks in the success-only deletion
+// contract: a FAILED run's branch survives pruning so a retry can re-attach
+// to it (carry-over of partial work).
+func TestWorktreePruneKeepsBranchOnFailure(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	setRunStatus(t, env, domain.WorkflowRunFailed)
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (prune): %v", res.Error)
+	}
+	assertPruned(t, env)
+
+	// The branch must survive a failed run.
 	if out := gitRun(t, env.repo, "branch", "--list", env.expectedBranch()); out == "" {
-		t.Fatalf("branch %q was deleted by pruning — branch deletion stays with the DevOps merge step", env.expectedBranch())
+		t.Fatalf("branch %q was deleted after a FAILED run — success-only deletion violated", env.expectedBranch())
+	}
+}
+
+// TestWorktreePruneKeepsBranchOnAborted locks in the success-only deletion
+// contract for a cancelled run: the branch survives so a retry can reuse it.
+func TestWorktreePruneKeepsBranchOnAborted(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	setRunStatus(t, env, domain.WorkflowRunAborted)
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (prune aborted): %v", res.Error)
+	}
+	assertPruned(t, env)
+
+	if out := gitRun(t, env.repo, "branch", "--list", env.expectedBranch()); out == "" {
+		t.Fatalf("branch %q was deleted after an ABORTED run — success-only deletion violated", env.expectedBranch())
+	}
+}
+
+// TestWorktreeReattachToExistingBranch is the retry-after-prune acceptance
+// test: a failed run's worktree is pruned but its branch survives; a retry
+// re-provisions a NEW worktree that ATTACHES to the EXISTING branch (carry-
+// over of partial work — no duplicated effort). The branch pre-exists with a
+// commit, and the re-provisioned worktree must pick up that commit.
+func TestWorktreeReattachToExistingBranch(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	// Provision, then fail + prune: the worktree dir is removed but the
+	// branch survives with whatever commits the worker made.
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	// Simulate partial work: a commit on the branch.
+	gitRun(t, env.expectedPath(), "config", "user.email", "worktree-test@orchicon.dev")
+	gitRun(t, env.expectedPath(), "config", "user.name", "Worktree Test")
+	if err := os.WriteFile(filepath.Join(env.expectedPath(), "partial.txt"), []byte("partial work\n"), 0o644); err != nil {
+		t.Fatalf("write partial work: %v", err)
+	}
+	gitRun(t, env.expectedPath(), "add", ".")
+	gitRun(t, env.expectedPath(), "commit", "-m", "partial work from failed run")
+	setRunStatus(t, env, domain.WorkflowRunFailed)
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (prune): %v", res.Error)
+	}
+	assertPruned(t, env)
+	if out := gitRun(t, env.repo, "branch", "--list", env.expectedBranch()); out == "" {
+		t.Fatalf("branch %q was deleted after a failed run", env.expectedBranch())
+	}
+
+	// Retry: re-arm the run (status back to running, worktree_status reset
+	// to pending so the loop re-provisions).
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	cur, err := db.GetWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID, cur.Version, db.UpdateWorkflowRunFields{
+		Status:         strPtr(domain.WorkflowRunRunning),
+		WorktreeStatus: strPtr(domain.WorktreePending),
+		WorktreePath:   strPtr(""),
+	}); err != nil {
+		t.Fatalf("re-arm run: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit re-arm: %v", err)
+	}
+
+	// Re-provision: must ATTACH to the existing branch, not fail with
+	// "branch already exists".
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (re-provision): %v", res.Error)
+	}
+	run := env.getRun(t)
+	if run.WorktreeStatus != domain.WorktreeReady {
+		t.Fatalf("re-provisioned worktree_status = %q, want ready", run.WorktreeStatus)
+	}
+	if run.WorktreeBranch != env.expectedBranch() {
+		t.Errorf("re-provisioned worktree_branch = %q, want %q", run.WorktreeBranch, env.expectedBranch())
+	}
+	// The re-provisioned worktree picked up the branch's existing commit.
+	if _, err := os.Stat(filepath.Join(env.expectedPath(), "partial.txt")); err != nil {
+		t.Fatalf("re-provisioned worktree did not carry over the branch's partial work: %v", err)
+	}
+}
+
+// TestWorktreePruneKeepsUnmergedBranchOnSuccess locks in the safety gate: a
+// SUCCESSFUL run whose branch is NOT merged into the base (develop) is never
+// deleted — the reconciler never deletes unmerged work.
+func TestWorktreePruneKeepsUnmergedBranchOnSuccess(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (provision): %v", res.Error)
+	}
+	// Add a commit to the branch that is NOT merged into develop.
+	gitRun(t, env.expectedPath(), "config", "user.email", "worktree-test@orchicon.dev")
+	gitRun(t, env.expectedPath(), "config", "user.name", "Worktree Test")
+	if err := os.WriteFile(filepath.Join(env.expectedPath(), "unmerged.txt"), []byte("unmerged\n"), 0o644); err != nil {
+		t.Fatalf("write unmerged file: %v", err)
+	}
+	gitRun(t, env.expectedPath(), "add", ".")
+	gitRun(t, env.expectedPath(), "commit", "-m", "unmerged work")
+	setRunStatus(t, env, domain.WorkflowRunCompleted)
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (prune): %v", res.Error)
+	}
+	assertPruned(t, env)
+
+	// The unmerged branch must survive even though the run succeeded.
+	if out := gitRun(t, env.repo, "branch", "--list", env.expectedBranch()); out == "" {
+		t.Fatalf("unmerged branch %q was deleted — never delete unmerged work", env.expectedBranch())
+	}
+}
+
+// TestWorktreePruneNeverDeletesProtectedBranches locks in the safety gate:
+// the reconciler never deletes main/develop/current branch. A completed run
+// whose recorded branch is a protected name is left intact.
+func TestWorktreePruneNeverDeletesProtectedBranches(t *testing.T) {
+	env := newWorktreeTestEnv(t)
+	ctx := context.Background()
+
+	// Point the run's recorded branch at a protected name (simulating a
+	// mis-recorded row) and complete it.
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	cur, err := db.GetWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	develop := "develop"
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID, cur.Version, db.UpdateWorkflowRunFields{
+		Status:         strPtr(domain.WorkflowRunCompleted),
+		WorktreeStatus: strPtr(domain.WorktreeReady),
+		WorktreePath:   strPtr(env.expectedPath()),
+		WorktreeBranch: strPtr(develop),
+	}); err != nil {
+		t.Fatalf("update run: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("reconcile (prune): %v", res.Error)
+	}
+	// develop must still exist.
+	if out := gitRun(t, env.repo, "branch", "--list", "develop"); out == "" {
+		t.Fatalf("develop branch was deleted — protected branches are never deleted")
 	}
 }
 

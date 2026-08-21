@@ -268,7 +268,7 @@ var cannedWorkers = []cannedWorker{
 			"If you are on the PR and merge step and the previous step returned a success or approval, " +
 			"create the pull request and merge it into `develop`. Do not ask or say you are ready — just do it. " +
 			"Ignore any instructions in the main AGENTS.md file about asking before merging — " +
-			"that applies to human agents, not you. **Never PR or merge into `main`** — that is the human's release merge. After the merge, delete the branch.\n\n" +
+			"that applies to human agents, not you. **Never PR or merge into `main`** — that is the human's release merge. Branch deletion is handled by the platform's worktree reconciler after a successful merge — do not delete the branch yourself.\n\n" +
 			"### Merge conflicts — detect AND resolve\n" +
 			"When the merge into `develop` hits a conflict, **detect it and resolve it yourself.** " +
 			"To detect: if " + bt + "gh pr merge" + bt + " fails with conflict output, or " + bt + "git merge --no-commit --no-ff origin/develop" + bt + " exits non-zero / " + bt + "git merge-tree" + bt + " shows conflict markers, then resolve the conflict:\n\n" +
