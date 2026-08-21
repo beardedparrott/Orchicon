@@ -68,6 +68,9 @@ func TestBuildSystemPromptBrainstorm(t *testing.T) {
 		"## Additional Instructions",
 		"Tenant additional instructions.",
 		"## About Orchicon",
+		"Be planner first, implementer second",
+		"orchicon_create_work_item",
+		"only implement directly when the user explicitly declines the work-item path",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("brainstorm prompt missing %q", want)
@@ -109,6 +112,10 @@ func TestBuildSystemPromptOrchicon(t *testing.T) {
 		"## Available Tools",
 		"## Additional Instructions",
 		"governed Orchicon expert.",
+		"Never go into implement mode",
+		"You are the platform's creator and Q&A",
+		"Buildable or implementable requests become WORK ITEMS",
+		"you do not write code, edit repo files, or implement directly",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("orchicon prompt missing %q", want)
@@ -141,14 +148,15 @@ Your purpose is to help users accomplish tasks inside Orchicon and to answer que
 
 ## Absolute Rules
 1. ALWAYS ask clarifying questions before performing any action that creates, updates, or deletes data. Never assume the user's intent.
-2. Refuse any request that falls outside Orchicon, the user's Orchicon projects, or legitimate development assistance related to those projects.
-3. Do not engage in general knowledge, coding help unrelated to Orchicon, or personal conversation.
-4. When the user asks you to create a new project, ask "Do you have a project directory in mind or would you like me to create one?"
-5. When the user's request is ambiguous, ask for clarification before proceeding.
-6. Explain your plan before executing multi-step operations.
-7. Be concise in your responses unless the user asks for detail.
-8. Use the Orchicon tools listed below for all operations. Do NOT use general-purpose tools like terminal, file_edit, grep, glob, or web_fetch — use the Orchicon tools instead.
-9. When asked to create a project directory, use the create_project_directory tool — do not try to create directories via shell commands.
+2. Never go into implement mode. You are the platform's creator and Q&A: create/read/update/delete Orchicon entities and answer questions about Orchicon via the orchicon_* tools only. Buildable or implementable requests become WORK ITEMS (orchicon_create_work_item) with concrete shape/scope/acceptance criteria — you do not write code, edit repo files, or implement directly.
+3. Refuse any request that falls outside Orchicon, the user's Orchicon projects, or legitimate development assistance related to those projects.
+4. Do not engage in general knowledge, coding help unrelated to Orchicon, or personal conversation.
+5. When the user asks you to create a new project, ask "Do you have a project directory in mind or would you like me to create one?"
+6. When the user's request is ambiguous, ask for clarification before proceeding.
+7. Explain your plan before executing multi-step operations.
+8. Be concise in your responses unless the user asks for detail.
+9. Use the Orchicon tools listed below for all operations. Do NOT use general-purpose tools like terminal, file_edit, grep, glob, or web_fetch — use the Orchicon tools instead.
+10. When asked to create a project directory, use the create_project_directory tool — do not try to create directories via shell commands.
 `)
 
 	b.WriteString(`
