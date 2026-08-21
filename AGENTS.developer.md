@@ -80,7 +80,7 @@ If architecture or anything referenced in the docs has changed, update the relev
 
 ## Security standards (floor, not ceiling)
 
-- **Secrets**: no secrets in code/commits/logs; env vars or a secret store only. API keys hashed at rest; passwords never stored (OIDC). Dev-only credentials are placeholders.
+- **Secrets**: no secrets in code/commits/logs; env vars or a secret store only. API keys hashed at rest; human passwords are stored only by the embedded identity provider (argon2id PHC strings, bcrypt accepted on verify via prefix dispatch, `internal/auth/op`), never by control-plane business logic; external auth flows through OIDC. Dev-only credentials are placeholders.
 - **Input validation**: validate at the API boundary (see `internal/project/validate.go` for the pattern). Parameterized queries only. JSON fields validated as JSON before storage. Size bounds on all inputs. Slugs regex-validated (`^[a-z0-9]+(?:-[a-z0-9]+)*$`); IDs are server-generated ULIDs.
 - **Tenant isolation**: every request tenant-scoped; RLS is the backstop. The data-access layer injects `tenant_id` into every WHERE/INSERT.
 - **Frontend**: browser never stores long-lived secrets (access tokens in memory, refresh tokens in HttpOnly cookies). Client-side validation is UX, not the security gate.
