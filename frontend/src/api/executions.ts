@@ -310,6 +310,11 @@ export function useGetExecutionTodos(executionId: string, pollMs = 2000) {
     },
     enabled: Boolean(executionId),
     refetchInterval: pollMs > 0 ? pollMs : undefined,
+    // Keep polling while the tab/window is backgrounded so the todo list
+    // stays live across focus changes (global config sets refetchOnWindowFocus
+    // false and staleTime 30s, so in-background polling is the only reliable
+    // liveness lever here). Inert when refetchInterval is undefined.
+    refetchIntervalInBackground: true,
   });
 }
 

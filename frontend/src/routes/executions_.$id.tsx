@@ -71,6 +71,7 @@ function ExecutionDetailPage() {
     onEvent: () => {
       qc.invalidateQueries({ queryKey: executionKeys.detail(id) });
       qc.invalidateQueries({ queryKey: executionKeys.session(id) });
+      qc.invalidateQueries({ queryKey: executionKeys.todos(id) });
     },
   });
 
