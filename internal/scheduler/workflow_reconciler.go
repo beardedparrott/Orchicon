@@ -2637,7 +2637,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 		}
 	}
 	if hasPriorSteps {
-		sb.WriteString("**Before you begin:** read this run's `.orchicon/` files from the working directory to see what earlier steps produced and what they require of you. They are the authoritative feedback — do not start until you have read them:\n\n")
+		fmt.Fprintf(&sb, "**Before you begin:** read this run's `.orchicon/` files (%s) to see what earlier steps produced and what they require of you. They are the authoritative feedback — do not start until you have read them:\n\n", orchiconLocationNote(projectDir))
 		fmt.Fprintf(&sb, "- `.orchicon/%s/facts_learned` — a running ledger of facts, root causes, environment gotchas, and decisions established by earlier steps. **A fact already recorded here is established — do not re-verify or re-derive it.** If you establish something new, append a `FACTS LEARNED:` line (see below)\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/status` — `success` or `failure` from the previous step\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/summary` — what the previous worker did\n", wi.WorkflowRunID)
@@ -2771,6 +2771,17 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 // db.RuntimeEnvironmentBlock so scheduler tests and callers stay terse. The
 // canonical implementation lives in internal/db (alongside the other stable
 // prompt-prefix content).
+// orchiconLocationNote returns a concise note about where the .orchicon/
+// directory lives, so workers don't search the worktree for it. When projectDir
+// is non-empty the absolute path is interpolated; otherwise a placeholder
+// directs the worker to the project root.
+func orchiconLocationNote(projectDir string) string {
+	if projectDir != "" {
+		return fmt.Sprintf("the `.orchicon/` directory lives at the **project root** (%s/.orchicon/) — **not inside the worktree**", projectDir)
+	}
+	return "the `.orchicon/` directory lives at the **project root** — **not inside the worktree**"
+}
+
 func runtimeEnvironmentBlock(image string) string {
 	return db.RuntimeEnvironmentBlock(image)
 }

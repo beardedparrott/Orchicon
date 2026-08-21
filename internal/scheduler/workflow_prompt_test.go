@@ -382,3 +382,52 @@ func TestCompositePromptGitGuidanceGitBacked(t *testing.T) {
 		t.Errorf("git-backed run must not get the in-place block; got:\n%s", out)
 	}
 }
+
+// TestOrchiconLocationNote verifies the helper that tells workers where
+// the .orchicon/ directory lives: with a projectDir it interpolates the
+// absolute path; without it falls back to a generic note.
+func TestOrchiconLocationNote(t *testing.T) {
+	got := orchiconLocationNote("")
+	for _, want := range []string{
+		".orchicon/",
+		"project root",
+		"not inside the worktree",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("orchiconLocationNote(\"\") missing %q; got %q", want, got)
+		}
+	}
+	got = orchiconLocationNote("/home/user/myproject")
+	if !strings.Contains(got, "/home/user/myproject/.orchicon/") {
+		t.Errorf("orchiconLocationNote with path missing interpolated dir; got %q", got)
+	}
+	if !strings.Contains(got, "not inside the worktree") {
+		t.Errorf("orchiconLocationNote with path must still say 'not inside the worktree'; got %q", got)
+	}
+}
+
+// TestCompositePromptOrchiconLocationNote asserts that the composite
+// prompt's Instructions section contains the clarifying note that
+// .orchicon/ lives at the project root, not the worktree, and that the
+// old "from the working directory" phrase is gone.
+func TestCompositePromptOrchiconLocationNote(t *testing.T) {
+	ctx := context.Background()
+	item := db.WorkItemRow{Title: "Location note", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
+	runs := map[string]db.WorkflowStepRunRow{
+		"step1": {ID: "sr1", Status: domain.StepRunSucceeded},
+	}
+	steps := []workflow.StepWire{{ID: "step1", Name: "Step One", Kind: "task"}}
+	r := &WorkflowReconciler{}
+	out, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, db.WorkerVersionRow{Role: "Engineer"}, steps, runs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"project root", "not inside the worktree", ".orchicon/"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("composite prompt missing %q in hasPriorSteps block; got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "from the working directory") {
+		t.Errorf("composite prompt must not contain old phrase 'from the working directory'; got:\n%s", out)
+	}
+}
