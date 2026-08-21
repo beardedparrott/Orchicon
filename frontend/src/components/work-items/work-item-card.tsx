@@ -125,11 +125,11 @@ export function BlockedChip({
   return null;
 }
 
-/** Compact external-link chip to a run's PR. Theme-aware (dark palette via
- *  useDarkPalette); an authored PR chip is tinted primary, the deterministic
- *  "pull/new/{branch}" fallback (no PR authored yet) is muted. */
-export function PrLinkChip({ run, repoSlug }: { run: PrRun; repoSlug?: string }) {
-  const link = prLinkForRun(run, repoSlug);
+/** Compact external-link chip to a completed run's actual authored PR.
+ *  Theme-aware (dark palette via useDarkPalette); always tinted primary.
+ *  Renders nothing for in-flight runs or runs with no captured PR. */
+export function PrLinkChip({ run }: { run: PrRun }) {
+  const link = prLinkForRun(run);
   if (!link) return null;
   return (
     <a
@@ -140,9 +140,7 @@ export function PrLinkChip({ run, repoSlug }: { run: PrRun; repoSlug?: string })
       title={link.href}
       className={cn(
         "inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-semibold no-underline hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
-        link.isFallback
-          ? "bg-muted text-muted-foreground hover:bg-accent"
-          : "bg-primary/10 text-primary hover:bg-primary/15",
+        "bg-primary/10 text-primary hover:bg-primary/15",
       )}
     >
       <ExternalLink className="h-3 w-3" aria-hidden />
@@ -157,13 +155,7 @@ export function PrLinkChip({ run, repoSlug }: { run: PrRun; repoSlug?: string })
  *  run is active so parallelism is visible at a glance. Renders nothing when
  *  there are no runs. Keeps the F2 BlockedChip rendering unaffected (it
  *  lives in the card header row). */
-export function RunFooter({
-  runs,
-  repoSlug,
-}: {
-  runs?: PrRun[];
-  repoSlug?: string;
-}) {
+export function RunFooter({ runs }: { runs?: PrRun[] }) {
   if (!runs || runs.length === 0) return null;
   // Dedupe by branch (a run's branch is unique); fall back to prUrl.
   const seen = new Set<string>();
@@ -186,7 +178,7 @@ export function RunFooter({
               </span>
             </span>
           )}
-          <PrLinkChip run={r} repoSlug={repoSlug} />
+          <PrLinkChip run={r} />
         </span>
       ))}
       {showConcurrency && (
@@ -208,7 +200,6 @@ export function WorkItemCard({
   actions,
   badge,
   runs,
-  repoSlug,
 }: {
   item: WorkItem;
   selected: boolean;
@@ -223,8 +214,6 @@ export function WorkItemCard({
   badge?: ReactNode;
   /** optional run footer data — branch/worktree/PR per active run */
   runs?: PrRun[];
-  /** project git origin slug (owner/repo) for deterministic PR fallback */
-  repoSlug?: string;
 }) {
   const meta = kindMeta(item.kind);
   const priority = priorityLabel(item.priority);
@@ -280,7 +269,7 @@ export function WorkItemCard({
           {actions && <span className="ml-auto shrink-0">{actions}</span>}
         </div>
       )}
-      <RunFooter runs={runs} repoSlug={repoSlug} />
+      <RunFooter runs={runs} />
     </div>
   );
 }

@@ -25,7 +25,6 @@ import {
   useApproveToolCall,
 } from "@/api/executions";
 import { executionKeys } from "@/api/executions";
-import { useListProjects } from "@/api/projects";
 import { useGetUsage } from "@/api/aigateway";
 import { Markdown } from "@/components/markdown";
 import { SessionChatPane } from "@/components/executions/SessionChatPane";
@@ -34,6 +33,7 @@ import { PrLinkChip } from "@/components/work-items/work-item-card";
 import { worktreeTileItems } from "@/components/WorktreeTiles";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { isTerminalExecutionStatus } from "@/lib/pr";
 import { Route as rootRoute } from "@/routes/__root";
 
 export const Route = createRoute({
@@ -48,9 +48,6 @@ function ExecutionDetailPage() {
 
   const { data: exec, isLoading, error } = useGetExecution(id);
   const { data: usage } = useGetUsage({ executionId: id });
-  // repo_slug for the deterministic PR fallback link on the run branch.
-  const { data: projects } = useListProjects();
-  const repoSlug = projects?.find((p) => p.id === exec?.projectId)?.repoSlug;
   const pauseExec = usePauseExecution();
   const resumeExec = useResumeExecution();
   const cancelExec = useCancelExecution();
@@ -211,7 +208,7 @@ function ExecutionDetailPage() {
           {/* Execution context — kept as a footer card with the
               structured metadata (worker, adapter, task, workflow)
               since that data doesn't fit naturally in the sidebar. */}
-          <ExecutionContextFooter exec={exec} repoSlug={repoSlug} />
+          <ExecutionContextFooter exec={exec} />
         </div>
 
         <ExecutionContextSidebar
@@ -307,11 +304,8 @@ function ExecutionLiveBadge({
 
 function ExecutionContextFooter({
   exec,
-  repoSlug,
 }: {
   exec: import("@/api/gen/orchicon/api/v1/execution_pb").WorkerExecution;
-  /** project git origin slug (owner/repo) for deterministic PR fallback */
-  repoSlug?: string;
 }) {
   const items = [
     {
@@ -339,10 +333,8 @@ function ExecutionContextFooter({
             run={{
               prUrl: exec.prUrl || undefined,
               prState: exec.prState || undefined,
-              worktreeStatus: exec.worktreeStatus || undefined,
-              worktreeBranch: exec.worktreeBranch || undefined,
+              completed: isTerminalExecutionStatus(exec.status),
             }}
-            repoSlug={repoSlug}
           />
           <span className="font-mono text-[10px] text-muted-foreground/70 sm:hidden">
             {exec.id}

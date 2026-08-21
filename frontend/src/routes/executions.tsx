@@ -4,7 +4,6 @@ import { z } from "zod";
 import { Trash2, SearchX } from "lucide-react";
 
 import { useBatchDeleteExecutions, useListExecutions } from "@/api/executions";
-import { useListProjects } from "@/api/projects";
 import { PrLinkChip } from "@/components/work-items/work-item-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +14,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { isTerminalExecutionStatus } from "@/lib/pr";
 import { Route as rootRoute } from "@/routes/__root";
 
 const executionsSearchSchema = z.object({
@@ -74,15 +74,6 @@ function ExecutionsPage() {
     return allExecutions;
   }, [allExecutions, status]);
   const batchDelete = useBatchDeleteExecutions();
-
-  // repo_slug per project for the deterministic PR fallback link on each
-  // execution row's run branch.
-  const { data: projects } = useListProjects();
-  const projectSlugById = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const p of projects ?? []) if (p.repoSlug) m.set(p.id, p.repoSlug);
-    return m;
-  }, [projects]);
 
   const toggleSelect = (id: string) => {
     setSelected((prev) => {
@@ -243,9 +234,8 @@ function ExecutionsPage() {
                         run={{
                           prUrl: e.prUrl || undefined,
                           prState: e.prState || undefined,
-                          worktreeStatus: e.worktreeStatus || undefined,
                           worktreeBranch: e.worktreeBranch || undefined,
-                          repoSlug: projectSlugById.get(e.projectId) || undefined,
+                          completed: isTerminalExecutionStatus(e.status),
                         }}
                       />
                       <HealthBadge health={e.healthState} status={e.status} />

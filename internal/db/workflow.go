@@ -1252,6 +1252,51 @@ func ListTerminalRunsWithWorktrees(ctx context.Context, tx pgx.Tx, tenantID stri
 	return out, rows.Err()
 }
 
+// ListBackfillPRRuns returns git-backed terminal workflow runs whose
+// run_context has no pr_url yet — the one-shot PR backfill target set
+// (architecture-notes/backfill-real-pr-urls-on-completed-runs-link-only-to-the-actual-pr.md).
+// A run qualifies when it is terminal (completed/failed/aborted), is
+// git-backed (a worktree was provisioned and a branch recorded), and has not
+// already captured a pr_url. worktree_status of 'pruned' or 'ready' both count
+// as git-backed; runs that were skipped/failed to provision a worktree carry
+// no branch to resolve.
+func ListBackfillPRRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkflowRunRow, error) {
+	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
+		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
+		runtime_ready, worktree_status, worktree_path, worktree_branch,
+			version, started_at, ended_at, created_at, updated_at
+		FROM workflow_runs
+		WHERE tenant_id = $1 AND status IN ('completed', 'failed', 'aborted')
+		  AND worktree_status IN ('ready', 'pruned') AND worktree_branch <> ''
+		  AND (run_context->>'pr_url' IS NULL OR run_context->>'pr_url' = '')
+		ORDER BY created_at ASC`
+	rows, err := tx.Query(ctx, q, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("db: list backfill pr runs: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkflowRunRow
+	for rows.Next() {
+		var r WorkflowRunRow
+		var wiID *string
+		if err := rows.Scan(
+			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
+			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
+			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.Version, &r.StartedAt, &r.EndedAt,
+			&r.CreatedAt, &r.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan backfill pr run: %w", err)
+		}
+		if wiID != nil {
+			r.WorkItemID = *wiID
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // ListWorktreeStepRunCandidates returns workflow step runs the
 // WorktreeReconciler should provision a per-branch isolated working tree
 // for: step runs belonging to NON-terminal runs that have a bound project,

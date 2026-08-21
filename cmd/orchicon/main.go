@@ -57,6 +57,8 @@ func main() {
 			os.Exit(runMCP(context.Background(), os.Args[2:], log))
 		case "db":
 			os.Exit(runDB(os.Args[2:], log))
+		case "backfill-pr":
+			os.Exit(runBackfillPR(os.Args[2:], log))
 		case "runtime-daemon":
 			os.Exit(exitOnErr(runRuntimeDaemon(os.Args[2:], log)))
 		case "runtime-supervisor":
@@ -257,7 +259,8 @@ Usage:
   %s db list        List available backups
   %s db restore     Restore from a backup
   %s db prune       Remove backups older than N days
-`, bin, version.Current().Tag, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin)
+  %s backfill-pr    Backfill real PR URLs for completed git-backed runs
+`, bin, version.Current().Tag, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin)
 
 	fmt.Printf(`
   %s version       Print version info
