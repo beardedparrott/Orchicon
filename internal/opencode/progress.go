@@ -188,13 +188,9 @@ func (m *progressMonitor) observe(eventType string, part map[string]any) {
 	case "file_diff":
 		m.lastFileDiff = now
 		m.lastMeaningfulAction = now
-	case "tool_call":
+	case "tool_use", "tool_call":
 		m.lastMeaningfulAction = now
-		// Signature = tool name + marshaled args. Repeating the exact same
-		// call (same tool, same args) is the loop signal.
-		tool, _ := part["tool"].(string)
-		argsJSON, _ := json.Marshal(part["args"])
-		sig := tool + "|" + string(argsJSON)
+		sig := toolUseSignature(part)
 		cutoff := now.Add(-m.w.repetitionW)
 		hist := m.sigs[sig]
 		// drop entries outside the window
@@ -207,6 +203,33 @@ func (m *progressMonitor) observe(eventType string, part map[string]any) {
 		kept = append(kept, now)
 		m.sigs[sig] = kept
 	}
+}
+
+// toolUseSignature builds the repetition signature for a tool event: the
+// tool name plus a stable, canonical marshal of its arguments. Repeating
+// the exact same call (same tool, same args) is the loop signal.
+//
+// opencode's `--format json` emits tool parts with args nested under
+// part.state.input (e.g. state.input.command for bash), NOT under a
+// top-level part["args"] (progress.go's legacy tool_call case read the
+// nonexistent top-level field, so every call of a tool collapsed to one
+// signature like "bash|null"). LegacyEventFromBus (session.go) maps these
+// to the "tool_use" event type. Fall back to the whole state when input is
+// absent so signature extraction degrades gracefully.
+//
+// Go's encoding/json marshal of a map[string]any sorts map keys, so equal
+// args maps produce identical bytes regardless of insertion order — this
+// gives stable signatures for semantically identical calls.
+func toolUseSignature(part map[string]any) string {
+	tool, _ := part["tool"].(string)
+	args := part["state"]
+	if state, ok := part["state"].(map[string]any); ok {
+		if input, ok := state["input"]; ok {
+			args = input
+		}
+	}
+	argsJSON, _ := json.Marshal(args)
+	return tool + "|" + string(argsJSON)
 }
 
 // run starts the background stall checker. It ticks every pollInterval

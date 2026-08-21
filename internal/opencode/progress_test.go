@@ -83,17 +83,53 @@ func TestAdvisoryStallRevives(t *testing.T) {
 }
 
 // TestStallRepetition verifies the repetition signal trips when the same
-// tool_call signature exceeds the threshold within the window.
+// tool_use signature exceeds the threshold within the window. Parts are
+// shaped like LegacyEventFromBus emits them (tool_use with args under
+// state.input) — the exact repro of execution 01M0B5RWXN9ZH56FXME5MKWRT4
+// where 100 identical `bash` calls never tripped because the monitor only
+// listened for the dead `tool_call` type.
 func TestStallRepetition(t *testing.T) {
 	w := stallWindows{noProgress: time.Hour, noFileDiff: time.Hour, repetitionN: 3, repetitionW: time.Minute}
 	m := newTestMonitor(w)
-	// Feed the same tool_call 4 times (> threshold of 3).
+	// Feed the same tool_use 4 times (> threshold of 3).
 	for i := 0; i < 4; i++ {
-		m.observe("tool_call", map[string]any{"tool": "read_file", "args": map[string]any{"path": "/x"}})
+		m.observe("tool_use", map[string]any{
+			"tool":  "bash",
+			"state": map[string]any{"status": "completed", "input": map[string]any{"command": "git status"}},
+		})
 	}
 	reason := m.check()
 	if len(reason) < len("stalled:repetition:") || reason[:len("stalled:repetition:")] != "stalled:repetition:" {
 		t.Fatalf("expected stalled:repetition:..., got %q", reason)
+	}
+	if !strings.Contains(reason, "git status") {
+		t.Fatalf("expected the signature to carry the real args from state.input, got %q", reason)
+	}
+}
+
+// TestStallRepetitionNoFalsePositive verifies distinct tool_use calls (even
+// to the same tool) within the window do NOT trip repetition — different
+// state.input args must yield distinct signatures. This is the control that
+// proves args are really read from state.input; if args collapsed to a
+// constant the varied calls would false-fire.
+func TestStallRepetitionNoFalsePositive(t *testing.T) {
+	w := stallWindows{noProgress: time.Hour, noFileDiff: time.Hour, repetitionN: 3, repetitionW: time.Minute}
+	m := newTestMonitor(w)
+	calls := []map[string]any{
+		{"tool": "bash", "state": map[string]any{"input": map[string]any{"command": "git status"}}},
+		{"tool": "bash", "state": map[string]any{"input": map[string]any{"command": "git log"}}},
+		{"tool": "read", "state": map[string]any{"input": map[string]any{"file_path": "/a"}}},
+		{"tool": "read", "state": map[string]any{"input": map[string]any{"file_path": "/b"}}},
+		{"tool": "edit", "state": map[string]any{"input": map[string]any{"file_path": "/a", "old": "x"}}},
+		{"tool": "edit", "state": map[string]any{"input": map[string]any{"file_path": "/a", "old": "y"}}},
+	}
+	for i := 0; i < 3; i++ { // repeat the varied set; each signature appears 3x = threshold, no trip
+		for _, c := range calls {
+			m.observe("tool_use", c)
+		}
+	}
+	if reason := m.check(); reason != "" {
+		t.Fatalf("expected no repetition on varied calls, got %q", reason)
 	}
 }
 
@@ -119,7 +155,7 @@ func TestStallNoTripWhenProgressing(t *testing.T) {
 	// Recent progress on all signals.
 	m.observe("step_finish", map[string]any{"tokens": map[string]any{"input": 10.0}})
 	m.observe("file_diff", map[string]any{"path": "/x"})
-	m.observe("tool_call", map[string]any{"tool": "read", "args": map[string]any{}}) // 1 < 3
+	m.observe("tool_use", map[string]any{"tool": "read", "state": map[string]any{"input": map[string]any{"file_path": "/a"}}}) // 1 < 3
 	if reason := m.check(); reason != "" {
 		t.Fatalf("expected no stall, got %q", reason)
 	}
