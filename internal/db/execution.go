@@ -261,6 +261,8 @@ type UpdateExecutionFields struct {
 	WorktreeStatus *string
 	WorktreePath   *string
 	WorktreeBranch *string
+	PrURL          *string
+	PrState        *string
 	ErrorMessage   *string
 	Output         *string
 	Conversation   *[]byte
@@ -331,6 +333,16 @@ func UpdateExecution(ctx context.Context, tx pgx.Tx, tenantID, id string, expect
 	if f.WorktreeBranch != nil {
 		q += fmt.Sprintf(`, worktree_branch = $%d`, setIdx)
 		args = append(args, *f.WorktreeBranch)
+		setIdx++
+	}
+	if f.PrURL != nil {
+		q += fmt.Sprintf(`, pr_url = $%d`, setIdx)
+		args = append(args, *f.PrURL)
+		setIdx++
+	}
+	if f.PrState != nil {
+		q += fmt.Sprintf(`, pr_state = $%d`, setIdx)
+		args = append(args, *f.PrState)
 		setIdx++
 	}
 	if f.ErrorMessage != nil {

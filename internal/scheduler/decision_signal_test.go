@@ -302,3 +302,175 @@ func TestExtractFactsLearned(t *testing.T) {
 		t.Errorf("expected no facts for empty summary, got %v", got)
 	}
 }
+
+// TestExtractPRFieldsHappyPath verifies the happy path for PR URL/state extraction.
+func TestExtractPRFieldsHappyPath(t *testing.T) {
+	prURL, prState := extractPRFields("PR_URL: https://github.com/OWNER/REPO/pull/42\nPR_STATE: merged\nORCHICON WORKER SUMMARY: success\n")
+	if prURL != "https://github.com/OWNER/REPO/pull/42" {
+		t.Errorf("prURL = %q, want %q", prURL, "https://github.com/OWNER/REPO/pull/42")
+	}
+	if prState != "merged" {
+		t.Errorf("prState = %q, want %q", prState, "merged")
+	}
+}
+
+// TestExtractPRFieldsLastOccurrenceWins verifies last occurrence wins.
+func TestExtractPRFieldsLastOccurrenceWins(t *testing.T) {
+	output := "PR_URL: https://github.com/OWNER/REPO/pull/10\nPR_STATE: open\n" +
+		"Some work done...\n" +
+		"PR_URL: https://github.com/OWNER/REPO/pull/42\nPR_STATE: merged\n" +
+		"ORCHICON WORKER SUMMARY: success\n"
+	prURL, prState := extractPRFields(output)
+	if prURL != "https://github.com/OWNER/REPO/pull/42" {
+		t.Errorf("prURL = %q, want %q", prURL, "https://github.com/OWNER/REPO/pull/42")
+	}
+	if prState != "merged" {
+		t.Errorf("prState = %q, want %q", prState, "merged")
+	}
+}
+
+// TestExtractPRFieldsBulletFenceStripping verifies markdown bullets and fences are stripped.
+func TestExtractPRFieldsBulletFenceStripping(t *testing.T) {
+	output := "```\n- PR_URL: https://github.com/OWNER/REPO/pull/42\n* PR_STATE: draft\n```\nORCHICON WORKER SUMMARY: success\n"
+	prURL, prState := extractPRFields(output)
+	if prURL != "https://github.com/OWNER/REPO/pull/42" {
+		t.Errorf("prURL = %q, want %q", prURL, "https://github.com/OWNER/REPO/pull/42")
+	}
+	if prState != "draft" {
+		t.Errorf("prState = %q, want %q", prState, "draft")
+	}
+}
+
+// TestExtractPRFieldsInvalidURLs verifies invalid URLs are ignored.
+func TestExtractPRFieldsInvalidURLs(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+	}{
+		{"relative path", "PR_URL: /OWNER/REPO/pull/42"},
+		{"ftp scheme", "PR_URL: ftp://example.com/pull/42"},
+		{"no host", "PR_URL: https://"},
+		{"empty value", "PR_URL:"},
+		{"just whitespace", "PR_URL:    "},
+		{"missing scheme", "PR_URL: github.com/OWNER/REPO/pull/42"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prURL, prState := extractPRFields(tc.line + "\nPR_STATE: open")
+			if prURL != "" {
+				t.Errorf("prURL = %q, want empty for %q", prURL, tc.line)
+			}
+			if prState != "open" {
+				t.Errorf("prState = %q, want %q", prState, "open")
+			}
+		})
+	}
+}
+
+// TestExtractPRFieldsUnknownState verifies unknown states are ignored.
+func TestExtractPRFieldsUnknownState(t *testing.T) {
+	prURL, prState := extractPRFields("PR_URL: https://github.com/OWNER/REPO/pull/42\nPR_STATE: unknown_state\n")
+	if prURL != "https://github.com/OWNER/REPO/pull/42" {
+		t.Errorf("prURL = %q, want %q", prURL, "https://github.com/OWNER/REPO/pull/42")
+	}
+	if prState != "" {
+		t.Errorf("prState = %q, want empty", prState)
+	}
+}
+
+// TestExtractPRFieldsCaseNormalization verifies state is lowercased.
+func TestExtractPRFieldsCaseNormalization(t *testing.T) {
+	cases := []struct {
+		input  string
+		output string
+	}{
+		{"PR_STATE: Merged", "merged"},
+		{"PR_STATE: OPEN", "open"},
+		{"PR_STATE: Draft", "draft"},
+		{"PR_STATE: CLOSED", "closed"},
+		{"PR_STATE: None", "none"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			_, prState := extractPRFields(tc.input)
+			if prState != tc.output {
+				t.Errorf("prState = %q, want %q", prState, tc.output)
+			}
+		})
+	}
+}
+
+// TestExtractPRFieldsURLOnly verifies a URL-only report doesn't clobber existing state.
+func TestExtractPRFieldsURLOnly(t *testing.T) {
+	prURL, prState := extractPRFields("PR_URL: https://github.com/OWNER/REPO/pull/42\n")
+	if prURL != "https://github.com/OWNER/REPO/pull/42" {
+		t.Errorf("prURL = %q, want %q", prURL, "https://github.com/OWNER/REPO/pull/42")
+	}
+	if prState != "" {
+		t.Errorf("prState = %q, want empty", prState)
+	}
+}
+
+// TestExtractPRFieldsStateOnly verifies a state-only report doesn't clobber existing URL.
+func TestExtractPRFieldsStateOnly(t *testing.T) {
+	prURL, prState := extractPRFields("PR_STATE: merged\n")
+	if prURL != "" {
+		t.Errorf("prURL = %q, want empty", prURL)
+	}
+	if prState != "merged" {
+		t.Errorf("prState = %q, want %q", prState, "merged")
+	}
+}
+
+// TestExtractPRFieldsNoLines verifies empty/empty when no valid lines.
+func TestExtractPRFieldsNoLines(t *testing.T) {
+	prURL, prState := extractPRFields("ORCHICON WORKER SUMMARY: success — done.\n")
+	if prURL != "" || prState != "" {
+		t.Errorf("prURL = %q, prState = %q, want empty/empty", prURL, prState)
+	}
+}
+
+// TestExtractPRFieldsEmptyOutput verifies empty/empty for empty input.
+func TestExtractPRFieldsEmptyOutput(t *testing.T) {
+	prURL, prState := extractPRFields("")
+	if prURL != "" || prState != "" {
+		t.Errorf("prURL = %q, prState = %q, want empty/empty", prURL, prState)
+	}
+}
+
+// TestExtractPRFieldsFencedBlockBeforeSummary verifies lines inside a fenced block before the summary marker.
+func TestExtractPRFieldsFencedBlockBeforeSummary(t *testing.T) {
+	output := "```\nPR_URL: https://github.com/OWNER/REPO/pull/42\nPR_STATE: merged\n```\nORCHICON WORKER SUMMARY: success — merged into develop\n"
+	prURL, prState := extractPRFields(output)
+	if prURL != "https://github.com/OWNER/REPO/pull/42" {
+		t.Errorf("prURL = %q, want %q", prURL, "https://github.com/OWNER/REPO/pull/42")
+	}
+	if prState != "merged" {
+		t.Errorf("prState = %q, want %q", prState, "merged")
+	}
+}
+
+// TestExtractPRFieldsAcceptedStates verifies all accepted states.
+func TestExtractPRFieldsAcceptedStates(t *testing.T) {
+	states := []string{"open", "merged", "draft", "closed", "none"}
+	for _, s := range states {
+		t.Run(s, func(t *testing.T) {
+			_, prState := extractPRFields("PR_STATE: " + s)
+			if prState != s {
+				t.Errorf("prState = %q, want %q", prState, s)
+			}
+		})
+	}
+}
+
+// TestExtractPRFieldsHTTPSAndHTTP verify both http and https schemes accepted.
+func TestExtractPRFieldsHTTPSAndHTTP(t *testing.T) {
+	prURL, _ := extractPRFields("PR_URL: https://github.com/OWNER/REPO/pull/42\n")
+	if prURL != "https://github.com/OWNER/REPO/pull/42" {
+		t.Errorf("HTTPS prURL = %q, want %q", prURL, "https://github.com/OWNER/REPO/pull/42")
+	}
+	prURL, _ = extractPRFields("PR_URL: http://github.com/OWNER/REPO/pull/42\n")
+	if prURL != "http://github.com/OWNER/REPO/pull/42" {
+		t.Errorf("HTTP prURL = %q, want %q", prURL, "http://github.com/OWNER/REPO/pull/42")
+	}
+}
