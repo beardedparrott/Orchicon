@@ -85,8 +85,6 @@ export interface WorkItemsTreeProps {
   hasQuery: boolean;
   /** per-work-item run footer data (branch/worktree/PR per active run) */
   runsByItem?: Map<string, PrRun[]>;
-  /** project git origin slug (owner/repo) for deterministic PR fallback */
-  repoSlug?: string;
 }
 
 export function WorkItemsTree({
@@ -107,7 +105,6 @@ export function WorkItemsTree({
   error,
   hasQuery,
   runsByItem,
-  repoSlug,
 }: WorkItemsTreeProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
   // A drag ends with the browser dispatching a click on the element under
@@ -278,7 +275,6 @@ export function WorkItemsTree({
                 activeId={activeId}
                 dragDisabled={filterActive}
                 runsByItem={runsByItem}
-                repoSlug={repoSlug}
               />
             ))}
           </SortableContext>
@@ -306,7 +302,6 @@ function TreeNode({
   activeId,
   dragDisabled,
   runsByItem,
-  repoSlug,
 }: {
   item: WorkItem;
   childrenOf: (parentId: string) => WorkItem[];
@@ -325,7 +320,6 @@ function TreeNode({
   activeId: string | null;
   dragDisabled: boolean;
   runsByItem?: Map<string, PrRun[]>;
-  repoSlug?: string;
 }) {
   const children = childrenOf(item.id);
   const hasChildren = children.length > 0;
@@ -372,7 +366,6 @@ function TreeNode({
         isActive={activeId === item.id}
         dragDisabled={filterActive}
         runs={runsByItem?.get(item.id)}
-        repoSlug={repoSlug}
       />
       {expanded && (
         <SortableContext
@@ -399,7 +392,6 @@ function TreeNode({
               activeId={activeId}
               dragDisabled={dragDisabled}
               runsByItem={runsByItem}
-              repoSlug={repoSlug}
             />
           ))}
         </SortableContext>
@@ -429,7 +421,6 @@ function SortableTreeRow({
   isActive,
   dragDisabled,
   runs,
-  repoSlug,
 }: {
   item: WorkItem;
   depth: number;
@@ -451,8 +442,6 @@ function SortableTreeRow({
   dragDisabled: boolean;
   /** run footer data (branch/worktree/PR per active run) */
   runs?: PrRun[];
-  /** project git origin slug (owner/repo) for deterministic PR fallback */
-  repoSlug?: string;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({
@@ -570,7 +559,7 @@ function SortableTreeRow({
                 <span className="max-w-[8rem] truncate">{runs[0].worktreeBranch}</span>
               </span>
             )}
-            <PrLinkChip run={runs[0]} repoSlug={repoSlug} />
+            <PrLinkChip run={runs[0]} />
             {runs.length > 1 && (
               <span className="rounded-full bg-accent px-1.5 py-0.5 text-[11px] font-semibold text-accent-foreground">
                 +{runs.length - 1}

@@ -46,7 +46,7 @@ import { useDebouncedValue } from "@/components/work-items/use-debounced-value";
 import { WorkItemsTree } from "@/components/work-items/work-items-tree";
 import { useWorkItemsPreferences, parentIds } from "@/components/work-items/work-items-preferences";
 import { cn } from "@/lib/utils";
-import type { PrRun } from "@/lib/pr";
+import { isTerminalExecutionStatus, type PrRun } from "@/lib/pr";
 import { Route as rootRoute } from "@/routes/__root";
 
 export const Route = createRoute({
@@ -142,13 +142,6 @@ function WorkItemsPage() {
   const { data: executions } = useListExecutions({
     projectId: projectId || undefined,
   });
-  // repo_slug per project for the deterministic PR fallback (all-projects
-  // view needs per-item origin resolution).
-  const projectSlugById = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const p of projects ?? []) if (p.repoSlug) m.set(p.id, p.repoSlug);
-    return m;
-  }, [projects]);
   const runsByItem = useMemo(() => {
     const m = new Map<string, PrRun[]>();
     for (const e of executions ?? []) {
@@ -156,22 +149,15 @@ function WorkItemsPage() {
       const pr: PrRun = {
         prUrl: e.prUrl || undefined,
         prState: e.prState || undefined,
-        worktreeStatus: e.worktreeStatus || undefined,
         worktreeBranch: e.worktreeBranch || undefined,
-        repoSlug: projectSlugById.get(e.projectId) || undefined,
+        completed: isTerminalExecutionStatus(e.status),
       };
       const list = m.get(e.taskId);
       if (list) list.push(pr);
       else m.set(e.taskId, [pr]);
     }
     return m;
-  }, [executions, projectSlugById]);
-  // Single-project view: the card-level fallback slug (overridden per run
-  // by repoSlug above when items span projects).
-  const repoSlug = useMemo(
-    () => (projectId ? projectSlugById.get(projectId) : undefined),
-    [projectId, projectSlugById],
-  );
+  }, [executions]);
 
   const blockState = useMemo(
     () => computeBlockState(graph?.nodes, graph?.edges),
@@ -366,7 +352,6 @@ function WorkItemsPage() {
                 error={error}
                 hasQuery={hasQuery}
                 runsByItem={runsByItem}
-                repoSlug={repoSlug}
               />
             ) : (
               <WorkItemsBoard
@@ -382,7 +367,6 @@ function WorkItemsPage() {
                 error={error}
                 hasQuery={hasQuery}
                 runsByItem={runsByItem}
-                repoSlug={repoSlug}
               />
             )}
           </TooltipProvider>

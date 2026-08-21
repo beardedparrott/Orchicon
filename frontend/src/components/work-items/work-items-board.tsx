@@ -86,8 +86,6 @@ export interface WorkItemsBoardProps {
   /** per-work-item run footer data (branch/worktree/PR per active run) —
    *  makes concurrent runs visible on the board card */
   runsByItem?: Map<string, PrRun[]>;
-  /** project git origin slug (owner/repo) for deterministic PR fallback */
-  repoSlug?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,7 +137,6 @@ export function WorkItemsBoard({
   error,
   hasQuery,
   runsByItem,
-  repoSlug,
 }: WorkItemsBoardProps) {
   const updateStatus = useUpdateWorkItem(projectId);
   const { moveItems: batchMoveItems } = useBatchMoveWorkItems(projectId);
@@ -394,7 +391,6 @@ export function WorkItemsBoard({
               dragCount={dragCount}
               positions={positions}
               runsByItem={runsByItem}
-              repoSlug={repoSlug}
             />
           );
         })}
@@ -412,7 +408,6 @@ export function WorkItemsBoard({
                 (blockState.blockedBy.get(activeItem.id)?.length ?? 0)
               }
               runs={runsByItem?.get(activeItem.id)}
-              repoSlug={repoSlug}
             />
             {dragCount > 1 && (
               <span
@@ -447,7 +442,6 @@ function BoardColumn({
   dragCount,
   positions,
   runsByItem,
-  repoSlug,
 }: {
   column: { status: number; label: string };
   items: WorkItem[];
@@ -462,7 +456,6 @@ function BoardColumn({
   dragCount: number;
   positions: Map<string, number>;
   runsByItem?: Map<string, PrRun[]>;
-  repoSlug?: string;
 }) {
   const isReadOnly = MANUALLY_UNMOVABLE_STATUSES.has(column.status);
 
@@ -535,7 +528,6 @@ function BoardColumn({
               dragCount={dragCount}
               positions={positions}
               runsByItem={runsByItem}
-              repoSlug={repoSlug}
             />
           ))}
         </SortableContext>
@@ -568,7 +560,6 @@ function HierarchyNodeComponent({
   dragCount,
   positions,
   runsByItem,
-  repoSlug,
   depth = 0,
 }: {
   node: HierarchyNode;
@@ -583,7 +574,6 @@ function HierarchyNodeComponent({
   dragCount: number;
   positions: Map<string, number>;
   runsByItem?: Map<string, PrRun[]>;
-  repoSlug?: string;
   depth?: number;
 }) {
   // Persisted per-project collapse state; default EXPANDED (ADR-WI-3) so
@@ -607,7 +597,6 @@ function HierarchyNodeComponent({
           multiDragCount={dragCount}
           position={positions.get(node.item.id)}
           runs={runsByItem?.get(node.item.id)}
-          repoSlug={repoSlug}
         />
       </div>
       {expanded &&
@@ -627,7 +616,6 @@ function HierarchyNodeComponent({
             dragCount={dragCount}
             positions={positions}
             runsByItem={runsByItem}
-            repoSlug={repoSlug}
             depth={depth + 1}
           />
         ))}
@@ -652,7 +640,6 @@ function SortableCard({
   multiDragCount = 0,
   position,
   runs,
-  repoSlug,
 }: {
   item: WorkItem;
   selected: Set<string>;
@@ -669,8 +656,6 @@ function SortableCard({
   position?: number;
   /** run footer data (branch/worktree/PR per active run) */
   runs?: PrRun[];
-  /** project git origin slug (owner/repo) for deterministic PR fallback */
-  repoSlug?: string;
 }) {
   const {
     attributes,
@@ -741,7 +726,6 @@ function SortableCard({
           </div>
         }
         runs={runs}
-        repoSlug={repoSlug}
       />
     </div>
   );

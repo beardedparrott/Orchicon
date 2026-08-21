@@ -27,7 +27,6 @@ import {
   useRetryStepRun,
 } from "@/api/workflows";
 import { useListExecutions } from "@/api/executions";
-import { useListProjects } from "@/api/projects";
 import { useStreamWorkflowEvents } from "@/api/workflowEvents";
 import { workflowKeys } from "@/api/workflows";
 import { PrLinkChip } from "@/components/work-items/work-item-card";
@@ -109,9 +108,6 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
   const { data: run, isLoading, error } = useGetWorkflowRun(runId);
   const { data: stepRuns } = useGetWorkflowStepRuns(runId);
   const { data: runExecs } = useListExecutions({ workflowRunId: runId, sortOrder: "asc" });
-  // repo_slug for the deterministic PR fallback link on the run's branch.
-  const { data: projects } = useListProjects();
-  const repoSlug = projects?.find((p) => p.id === run?.projectId)?.repoSlug;
   const abortRun = useAbortWorkflow();
   const forceProgress = useForceProgressWorkflowRun();
   const retryFailed = useRetryFailedWorkflowRun();
@@ -380,10 +376,8 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
                 run={{
                   prUrl: run.prUrl || undefined,
                   prState: run.prState || undefined,
-                  worktreeStatus: run.worktreeStatus || undefined,
-                  worktreeBranch: run.worktreeBranch || undefined,
+                  completed: isTerminal,
                 }}
-                repoSlug={repoSlug}
               />
             )}
           </h3>

@@ -1,55 +1,51 @@
 // Unit tests for the PR-link resolution helper (parallel board view).
 //
-// Two source types: the authoritative worker-authored pr_url/pr_state and
-// the deterministic pull/new/{branch} fallback derived from the project's
-// repo_slug. Both must be provider-free on the read path.
+// The link resolves only from the authoritative worker-authored pr_url/pr_state
+// and renders only for completed (terminal) runs. There is no synthesized
+// pull/new/{branch} fallback.
 
 import { describe, expect, it } from "vitest";
 
-import { prLinkForRun, prStateLabel, type PrRun } from "@/lib/pr";
+import { prLinkForRun, prStateLabel, isTerminalExecutionStatus, type PrRun } from "@/lib/pr";
 
 describe("prLinkForRun", () => {
-  it("prefers the authored PR url", () => {
+  it("prefers the authored PR url on a completed run", () => {
     const run: PrRun = {
       prUrl: "https://github.com/a/b/pull/12",
       prState: "open",
-      worktreeStatus: "ready",
-      worktreeBranch: "feat-x-abc",
+      completed: true,
     };
-    const link = prLinkForRun(run, "a/b");
-    expect(link).toEqual({ href: "https://github.com/a/b/pull/12", label: "PR open", isFallback: false });
+    const link = prLinkForRun(run);
+    expect(link).toEqual({ href: "https://github.com/a/b/pull/12", label: "PR open" });
   });
 
-  it("falls back to a deterministic pull/new link for a ready git-backed run", () => {
-    const run: PrRun = { worktreeStatus: "ready", worktreeBranch: "feat-x-abc" };
-    const link = prLinkForRun(run, "beardedparrott/Orchicon");
-    expect(link).toEqual({
-      href: "https://github.com/beardedparrott/Orchicon/pull/new/feat-x-abc",
-      label: "No PR yet",
-      isFallback: true,
+  it("renders a merged chip for a completed run", () => {
+    const run: PrRun = {
+      prUrl: "https://github.com/a/b/pull/12",
+      prState: "merged",
+      completed: true,
+    };
+    expect(prLinkForRun(run)).toEqual({
+      href: "https://github.com/a/b/pull/12",
+      label: "PR merged",
     });
   });
 
-  it("prefers the per-run repoSlug over the card-level slug", () => {
-    const run: PrRun = {
-      worktreeStatus: "ready",
-      worktreeBranch: "feat-x-abc",
-      repoSlug: "other/repo",
-    };
-    const link = prLinkForRun(run, "a/b");
-    expect(link?.href).toBe("https://github.com/other/repo/pull/new/feat-x-abc");
+  it("returns null for a completed run with no authored pr_url (no fallback)", () => {
+    expect(prLinkForRun({ completed: true })).toBeNull();
+    expect(prLinkForRun({ completed: true, prState: "merged" })).toBeNull();
   });
 
-  it("returns null when there is no branch and no authored url", () => {
-    expect(prLinkForRun({ worktreeStatus: "pending" }, "a/b")).toBeNull();
+  it("returns null for a non-completed (in-flight) run even with a pr_url", () => {
+    const run: PrRun = { prUrl: "https://github.com/a/b/pull/12", prState: "open" };
+    expect(prLinkForRun(run)).toBeNull();
+    expect(prLinkForRun({ prUrl: "https://github.com/a/b/pull/12", completed: false })).toBeNull();
   });
 
-  it("does not fall back when the worktree is not ready", () => {
-    expect(prLinkForRun({ worktreeStatus: "skipped", worktreeBranch: "x" }, "a/b")).toBeNull();
-  });
-
-  it("does not fall back without a repo slug", () => {
-    expect(prLinkForRun({ worktreeStatus: "ready", worktreeBranch: "x" }, undefined)).toBeNull();
+  it("never emits a pull/new compare-page link", () => {
+    const link = prLinkForRun({ prUrl: "https://github.com/a/b/pull/12", completed: true });
+    expect(link?.href).not.toContain("pull/new");
+    expect(link?.href).not.toContain("/pull/new/");
   });
 });
 
@@ -64,5 +60,22 @@ describe("prStateLabel", () => {
   it("falls back for unknown/empty", () => {
     expect(prStateLabel(undefined)).toBe("View PR");
     expect(prStateLabel("weird")).toBe("View PR");
+  });
+});
+
+describe("isTerminalExecutionStatus", () => {
+  it("marks terminal execution statuses", () => {
+    expect(isTerminalExecutionStatus(7)).toBe(true); // TERMINATED
+    expect(isTerminalExecutionStatus(8)).toBe(true); // FAILED_TO_START
+    expect(isTerminalExecutionStatus(9)).toBe(true); // SUCCEEDED
+    expect(isTerminalExecutionStatus(10)).toBe(true); // FAILED
+  });
+  it("marks in-flight statuses as non-terminal", () => {
+    expect(isTerminalExecutionStatus(0)).toBe(false); // UNSPECIFIED
+    expect(isTerminalExecutionStatus(1)).toBe(false); // DISPATCHING
+    expect(isTerminalExecutionStatus(2)).toBe(false); // RUNNING
+    expect(isTerminalExecutionStatus(3)).toBe(false); // HEALTHY
+    expect(isTerminalExecutionStatus(6)).toBe(false); // TERMINATING
+    expect(isTerminalExecutionStatus(undefined)).toBe(false);
   });
 });
