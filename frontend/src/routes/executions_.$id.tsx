@@ -1,6 +1,6 @@
 // Execution detail page — the live execution view (docs/10, docs/07
 // §3.8, docs/04 §4). Streams telemetry/tool-call/health events in real
-// time, provides manual controls (pause/resume/cancel/checkpoint), and
+// time, provides manual controls (pause/resume/cancel), and
 // shows Tier 2 per-tool-call approval requests (docs/05 §7.1).
 //
 // Layout: a two-column workspace on lg+ — the chat-style runtime session
@@ -12,7 +12,7 @@
 // and the context sidebar the secondary reference.
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { Pause, Play, Square, Save, Trash2, ArrowLeft } from "lucide-react";
+import { Pause, Play, Square, Trash2, ArrowLeft } from "lucide-react";
 
 import {
   useGetExecution,
@@ -20,7 +20,6 @@ import {
   usePauseExecution,
   useResumeExecution,
   useCancelExecution,
-  useCheckpointNow,
   useDeleteExecution,
   useListPendingApprovals,
   useApproveToolCall,
@@ -55,7 +54,6 @@ function ExecutionDetailPage() {
   const pauseExec = usePauseExecution();
   const resumeExec = useResumeExecution();
   const cancelExec = useCancelExecution();
-  const checkpointNow = useCheckpointNow();
   const deleteExec = useDeleteExecution();
 
   const navigate = useNavigate();
@@ -102,7 +100,7 @@ function ExecutionDetailPage() {
   return (
     <div className="space-y-4">
       {/* Compact top action bar — back to list, ID, status pill,
-          and the lifecycle actions (pause/resume/cancel/checkpoint/
+          and the lifecycle actions (pause/resume/cancel/
           delete) as icon buttons. On phones the icon-only buttons
           collapse into a wrap-friendly row; on desktop they sit in
           a single line. */}
@@ -140,14 +138,6 @@ function ExecutionDetailPage() {
               label="Resume"
               onClick={() => resumeExec.mutate(id)}
               disabled={resumeExec.isPending}
-            />
-          )}
-          {isRunning && (
-            <IconAction
-              icon={Save}
-              label="Checkpoint"
-              onClick={() => checkpointNow.mutate(id)}
-              disabled={checkpointNow.isPending}
             />
           )}
           {!isTerminal && (
