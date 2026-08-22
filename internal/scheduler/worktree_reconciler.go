@@ -39,6 +39,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,6 +54,12 @@ import (
 // worktreeDirName is the subdirectory under project_dir where per-run
 // working trees live.
 const worktreeDirName = ".orchicon-worktrees"
+
+// stagingPrefix names the transient sibling directory used to stage a
+// nested branch worktree out of a run container during adoption
+// (stagingDirName). These are never run namespaces and are never swept as
+// orphans.
+const stagingPrefix = "_stage-"
 
 // gitCmdTimeout bounds every git subprocess the reconciler spawns.
 const gitCmdTimeout = 30 * time.Second
@@ -622,14 +629,21 @@ func (r *WorktreeReconciler) pruneStepRunOne(ctx context.Context, tenantID strin
 	// AC: on run SUCCESS only, delete the branch the reconciler provably
 	// created for this step run. Never on failure/cancellation — a failed
 	// run keeps its step branches so a retry re-attaches to them. Gated on
-	// the branch being merged into the base, never the current branch, and
-	// never main/develop.
+	// the branch being provably merged into the base (squash-aware: the
+	// run's pr_state is the authoritative merged signal), never the current
+	// branch, and never main/develop.
 	if run.Status == domain.WorkflowRunCompleted {
-		if err := r.deleteBranch(ctx, projectDir, sr.WorktreeBranch); err != nil {
+		_, prState := db.PrFromRunContext(run.RunContext)
+		if err := r.deleteBranch(ctx, projectDir, sr.WorktreeBranch, prState); err != nil {
 			r.log.Warn("worktree: branch worktree branch deletion failed",
 				"run", sr.WorkflowRunID, "step_run", sr.ID, "branch", sr.WorktreeBranch, "error", err)
 		}
 	}
+
+	// Reap a now-empty run-namespaced container left behind once its
+	// registered/nested worktrees are all gone (orphan sweep). This must run
+	// after the step worktree above is removed so an empty <runID>/ is seen.
+	r.sweepOrphanContainers(ctx, projectDir)
 
 	return r.markStepPruned(ctx, tenantID, sr.ID, "")
 }
@@ -757,13 +771,21 @@ func (r *WorktreeReconciler) pruneOne(ctx context.Context, tenantID string, run 
 	// AC: on SUCCESS only, delete the branch the reconciler provably created
 	// for this run. The branch is never deleted on failure/cancellation — a
 	// failed run keeps its branch so a retry re-attaches to it (carry-over of
-	// partial work). Deletion is gated on the branch being merged into the
-	// base, never the current branch, and never main/develop.
+	// partial work). Deletion is gated on the branch being provably merged
+	// into the base (squash-aware: the run's pr_state is the authoritative
+	// merged signal), never the current branch, and never main/develop.
 	if run.Status == domain.WorkflowRunCompleted {
-		if err := r.deleteBranch(ctx, projectDir, run.WorktreeBranch); err != nil {
+		_, prState := db.PrFromRunContext(run.RunContext)
+		if err := r.deleteBranch(ctx, projectDir, run.WorktreeBranch, prState); err != nil {
 			r.log.Warn("worktree: branch deletion failed", "run", run.ID, "branch", run.WorktreeBranch, "error", err)
 		}
 	}
+
+	// Reap a now-empty run-namespaced container left behind once its
+	// registered/nested worktrees are all gone (orphan sweep; also reaps the
+	// ones past manual cleanups left). Runs after the registered run worktree
+	// removal above.
+	r.sweepOrphanContainers(ctx, projectDir)
 
 	return r.markPruned(ctx, tenantID, run.ID, "")
 }
@@ -1192,6 +1214,57 @@ func (r *WorktreeReconciler) childIsOrchiconOwned(parent string, e os.DirEntry, 
 	return false
 }
 
+// sweepOrphanContainers removes run-namespaced container directories under
+// .orchicon-worktrees/ that are EMPTY and provably ours. After a terminal
+// run's registered/nested worktrees are pruned, an empty <runID>/ can be
+// left behind (a parallel-branch step run was provisioned first without a
+// run worktree, or a past manual cleanup left it) — this reaps it. Never
+// touches: a still-registered worktree (a live run/step worktree has a
+// checked-out tree, so it is not empty), a non-empty provably-ours container
+// (it still holds live nested worktrees), any foreign content (isOrchicon
+// Container fails closed), or a staging dir (_stage-*, mid-adoption).
+func (r *WorktreeReconciler) sweepOrphanContainers(ctx context.Context, projectDir string) {
+	root := filepath.Join(projectDir, worktreeDirName)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		r.log.Warn("worktree: orphan sweep: cannot list containers", "error", err)
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), stagingPrefix) {
+			continue
+		}
+		child := filepath.Join(root, e.Name())
+		ours, oerr := r.isOrchiconContainer(ctx, projectDir, child)
+		if oerr != nil || !ours {
+			continue // foreign or unresolvable — never touch non-native content
+		}
+		// A live registered worktree is never empty (its checked-out tree is
+		// present); if it somehow is, leave it alone.
+		if wt, werr := r.worktreeAt(ctx, projectDir, child); werr != nil || wt != nil {
+			continue
+		}
+		empty, eerr := dirEmpty(child)
+		if eerr != nil || !empty {
+			continue // still holds nested worktrees/artifacts — not an orphan
+		}
+		if rerr := os.Remove(child); rerr != nil {
+			r.log.Warn("worktree: orphan sweep: remove failed", "path", child, "error", rerr)
+			continue
+		}
+		r.log.Info("worktree: orphan sweep removed empty run container", "path", child)
+	}
+}
+
+// dirEmpty reports whether path exists and contains no entries.
+func dirEmpty(path string) (bool, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false, err
+	}
+	return len(entries) == 0, nil
+}
+
 // adoptRunContainer repairs the run-worktree race: when a parallel-branch
 // step run was provisioned first, <path> (the runID dir) is a plain
 // container holding nested branch worktrees at <path>/<child>. git refuses
@@ -1272,7 +1345,7 @@ func (r *WorktreeReconciler) adoptRunContainer(ctx context.Context, projectDir, 
 // the container, and the "_stage-" prefix keeps it out of the run
 // namespace so git's worktree list never mistakes it for a real worktree.
 func stagingDirName(child string) string {
-	return "_stage-" + child
+	return stagingPrefix + child
 }
 
 // removeWorktreeArtifact removes a provably-ours partial worktree directory
@@ -1410,9 +1483,11 @@ func (r *WorktreeReconciler) branchMergedIntoBase(ctx context.Context, projectDi
 
 // deleteBranch deletes a branch ref after a successful run, gated on the
 // branch being provably ours (the deterministic name recorded on the row),
-// not protected, not the current branch, and merged into the base. Idempotent
-// by construction: a missing branch is success.
-func (r *WorktreeReconciler) deleteBranch(ctx context.Context, projectDir, branch string) error {
+// not protected, not the current branch, and provably landed in the base.
+// prState is the run's authoritative PR state from run_context ("" when not
+// recorded); it feeds the squash-aware proof gate (branchProvablyMerged).
+// Idempotent by construction: a missing branch is success.
+func (r *WorktreeReconciler) deleteBranch(ctx context.Context, projectDir, branch, prState string) error {
 	if branch == "" || isProtectedBranch(branch) {
 		return nil
 	}
@@ -1423,15 +1498,124 @@ func (r *WorktreeReconciler) deleteBranch(ctx context.Context, projectDir, branc
 	if !r.branchExists(ctx, projectDir, branch) {
 		return nil // already gone — idempotent
 	}
-	if !r.branchMergedIntoBase(ctx, projectDir, branch) {
-		r.log.Warn("worktree: refusing to delete unmerged branch", "branch", branch)
+	merged, reason := r.branchProvablyMerged(ctx, projectDir, branch, prState)
+	if !merged {
+		r.log.Warn("worktree: refusing to delete branch (not provably merged)",
+			"branch", branch, "reason", reason)
 		return nil
 	}
 	if _, err := runGit(ctx, projectDir, "branch", "-D", branch); err != nil {
 		return fmt.Errorf("git branch -D %s: %w", branch, err)
 	}
-	r.log.Info("worktree: deleted branch after successful run", "branch", branch)
+	r.log.Info("worktree: deleted branch after successful run", "branch", branch, "reason", reason)
 	return nil
+}
+
+// branchProvablyMerged reports whether a branch's tip provably landed in the
+// integration base, so a squash-merged PR (whose branch tip is never an
+// ancestor of the base) is still reclaimed on terminal success. This is a
+// tri-state proof, not a single ancestry boolean: uncertainty never deletes.
+//
+//   - P1 (ancestry): the branch tip is an ancestor of develop/origin/develop.
+//   - P2 (authoritative PR merged): the run row records pr_state == "merged"
+//     (worker-authored after a successful `gh pr merge --squash`) AND the
+//     branch tip is not newer than the base tip (nothing was committed after
+//     the merge). Preferred.
+//   - P3 (remote branch gone, fallback): only when the run row records no
+//     pr_state, the remote PR branch ref is provably gone (fail-closed — a
+//     network/lookup failure keeps the branch) AND the branch tip is not
+//     newer than the base tip (no proof the branch's unique commits were
+//     landed).
+//
+// reason names the proof that applied (or "uncertain"), and is logged so a
+// human can audit which gate authorized a prune.
+func (r *WorktreeReconciler) branchProvablyMerged(ctx context.Context, projectDir, branch, prState string) (bool, string) {
+	// P1 — fast path: the branch tip is an ancestor of the base. The fetch
+	// raises the remote base ref before the check, so a stale local develop
+	// never hides a merged branch.
+	if r.branchMergedIntoBase(ctx, projectDir, branch) {
+		return true, "ancestry"
+	}
+	// P2 — authoritative PR merged (the squash path): pr_state is worker-
+	// written only after a successful merge, so it is the strongest signal.
+	if prState == "merged" {
+		if r.branchTipNotNewerThanBase(ctx, projectDir, branch) {
+			return true, "pr_state=merged"
+		}
+		r.log.Warn("worktree: pr_state=merged but branch tip newer than base; keeping",
+			"branch", branch)
+		return false, "pr_state=merged-but-tip-newer"
+	}
+	// P3 — fallback when the run row carries no pr_state: a branch whose
+	// remote ref is gone is treated as merged, but only on a successful
+	// probe AND when its tip is not newer than the base (no proof its unique
+	// commits landed). A failed probe is uncertain (keep) — never delete on
+	// a lookup failure or on unproven commits.
+	if prState == "" {
+		r.log.Info("worktree: no pr_state; probing remote branch ref", "branch", branch)
+		if r.remoteBranchRefGone(ctx, projectDir, branch) && r.branchTipNotNewerThanBase(ctx, projectDir, branch) {
+			return true, "remote-branch-gone"
+		}
+		return false, "uncertain"
+	}
+	return false, "uncertain"
+}
+
+// branchTipNotNewerThanBase reports whether branch's tip committer date is
+// not newer than the base tip's (origin/develop preferred, else local
+// develop). A squash merge lands a NEW base commit dated after the last
+// branch commit, so a provably-squashed branch has tip <= base. A branch
+// tip strictly NEWER than the base carries commits that were never merged
+// (uploaded after the merge) — treat as uncertain and keep. Any read
+// failure returns false so a branch is never deleted on uncertainty.
+func (r *WorktreeReconciler) branchTipNotNewerThanBase(ctx context.Context, projectDir, branch string) bool {
+	branchDate := r.commitDate(ctx, projectDir, branch)
+	if branchDate == 0 {
+		return false
+	}
+	var baseDate int64
+	if _, err := runGit(ctx, projectDir, "rev-parse", "--verify", "--quiet", "origin/develop"); err == nil {
+		baseDate = r.commitDate(ctx, projectDir, "origin/develop")
+	} else {
+		baseDate = r.commitDate(ctx, projectDir, "develop")
+	}
+	if baseDate == 0 {
+		return false
+	}
+	return branchDate <= baseDate
+}
+
+// commitDate returns the unix committer timestamp of the tip of ref, or 0
+// when the ref cannot be resolved (never delete on a failed read).
+func (r *WorktreeReconciler) commitDate(ctx context.Context, projectDir, ref string) int64 {
+	out, err := runGit(ctx, projectDir, "log", "-1", "--format=%ct", ref)
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// remoteBranchRefGone reports whether the remote PR branch ref is gone,
+// used as the P3 fallback ONLY when the run row records no pr_state. It
+// prunes stale remote-tracking refs, then treats the branch as gone when
+// origin/<branch> no longer resolves. Fail-closed: a fetch/lookup failure
+// (no origin, no network) returns false so a branch is never deleted on an
+// unsuccessful probe — a weaker signal than pr_state, so it must never
+// delete on doubt.
+func (r *WorktreeReconciler) remoteBranchRefGone(ctx context.Context, projectDir, branch string) bool {
+	if _, err := runGit(ctx, projectDir, "fetch", "--prune", "origin"); err != nil {
+		r.log.Warn("worktree: remote-branch-gone probe fetch failed; keeping branch",
+			"branch", branch, "error", err)
+		return false
+	}
+	if _, err := runGit(ctx, projectDir, "rev-parse", "--verify", "--quiet", "origin/"+branch); err != nil {
+		return true
+	}
+	return false
 }
 
 // --- row state transitions (each a short optimistic tx) --------------------
